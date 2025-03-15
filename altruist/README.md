@@ -1,4 +1,6 @@
-# ![image](https://github.com/user-attachments/assets/5a6f2c26-36ce-42fb-85f1-b2a17607d5ce) Altruist Firmware
+# ![image](https://github.com/user-attachments/assets/457108cf-d3f8-4f7b-a78e-32420f34fe75) Altruist Firmware
+[![License](https://img.shields.io/badge/License-Apache2.0-blue.svg)](../LICENSE)
+
 
 > The Altruist Air Quality Sensor is a decentralized device for monitoring air quality, noise, dust, and temperature, contributing to a DePIN network. [Read more...](https://robonomics.network/devices/altruist/)
 
