@@ -1,0 +1,27 @@
+[[bin]]
+name = "altruist"
+path = "./src/bin/async_main.rs"
+
+[package]
+name = "altruist-rs"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[dependencies]
+robonomics-hal = { workspace = true }
+esp-backtrace = { workspace = true }
+esp-hal = { workspace = true }
+esp-println = { workspace = true }
+esp-hal-embassy = { workspace = true }
+embassy-executor = { workspace = true }
+embassy-time = { workspace = true }
+static_cell = { workspace = true }
+critical-section = { workspace = true }
+log = { workspace = true }
+sds011-rs = { workspace = true }

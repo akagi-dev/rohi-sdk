@@ -1,2 +1,3 @@
 # rohi-sdk
-Robonomics OpenHardware Initiative development kit
+
+Robonomics Open Hardware Initiative SDK 
