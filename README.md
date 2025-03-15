@@ -5,12 +5,18 @@
   
 # Robonomics Open Hardware Initiative SDK
 
+
 > The SDK repository provides all the components needed to start build IoT devices
 > powered by [Robonomics](https://robonomics.network/) network, a Web3 cloud platform
 > designed to manage IoT devices and robotics.
 
 </div>
 
+## 🌟 Features
+
+* Type- & memory-safe using [Rust Language](https://www.rust-lang.org/)
+* Fully async code powered by [Embassy Framework](https://embassy.dev/)
+* Secure & decentralized infrastructure on [Robonomics Network](https://robonomics.network/)
 
 ## ⚡ Quickstart
 
