@@ -1,6 +1,9 @@
 [book]
+title = "ROHI SDK :: Documentation"
 authors = ["Akagi Engineering"]
 language = "en"
 multilingual = false
 src = "."
-title = "ROHI SDK Documentation"
+
+[rust]
+edition = "2024"
