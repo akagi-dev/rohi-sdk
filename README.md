@@ -28,6 +28,7 @@ TODO
 
 ## 📚 Documentation
 
-* [The Book](https://rohi.akagi.dev)
+* [ROHI Book](https://rohi.akagi.dev)
 * [🦀 rust-docs](https://docs.rs/rohi-hal)
 * [Robonomics Wiki](https://wiki.robonomics.network/)
+* [Embedded Rust on ESP](https://docs.esp-rs.org/no_std-training/)

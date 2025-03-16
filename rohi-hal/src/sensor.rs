@@ -15,7 +15,7 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-//! Different kinds of sensors and how to access it's data. 
+//! Different kinds of sensors and how to access it's data.
 
 /// A Particulate Matter (PM) Sensor measures the floating particles in the air.
 pub trait ParticulateMatter: Sized {

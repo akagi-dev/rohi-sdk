@@ -1,5 +1,5 @@
 [book]
-title = "ROHI SDK :: Documentation"
+title = "ROHI SDK Book"
 authors = ["Akagi Engineering"]
 language = "en"
 multilingual = false
@@ -9,4 +9,4 @@ src = "."
 git-repository-url = "https://github.com/akagi-dev/rohi-sdk"
 
 [rust]
-edition = "2024"
+edition = "2021"

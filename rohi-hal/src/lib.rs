@@ -18,11 +18,10 @@
 #![no_std]
 
 //! Robonomics Open Hardware abstraction layer.
-///
-/// This crate introduce Rust support for devices designed and assembled
-/// as part of Robonomics Open Hardware Initiative (ROHI). Details available at
-/// https://robonomics.network/devices/
-///
+//!
+//! This crate introduce Rust support for devices designed and assembled
+//! as part of Robonomics Open Hardware Initiative (ROHI). Details available at
+//! https://robonomics.network/devices/
 
 /// Air Quality sensor Altruist
 /// Details: https://robonomics.network/devices/altruist/
