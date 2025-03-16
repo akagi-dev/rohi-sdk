@@ -14,7 +14,7 @@ dependencies = [
  "esp-hal-embassy",
  "esp-println",
  "log",
- "robonomics-hal",
+ "rohi-hal",
  "sds011-rs",
  "static_cell",
 ]
@@ -817,7 +817,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "robonomics-hal"
+name = "rohi-hal"
 version = "0.0.0"
 
 [[package]]

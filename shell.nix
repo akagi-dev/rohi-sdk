@@ -9,6 +9,7 @@ with llvmPackages;
 mkShell {
   buildInputs = [
     taplo
+    mdbook
     espflash
     toolchain
   ];

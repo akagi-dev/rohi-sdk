@@ -1,0 +1,6 @@
+[book]
+authors = ["Akagi Engineering"]
+language = "en"
+multilingual = false
+src = "."
+title = "ROHI SDK Documentation"

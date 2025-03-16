@@ -1,17 +1,17 @@
 [workspace.package]
-edition = "2021"
+edition = "2024"
 authors = ["Akagi Engineering <research@akagi.dev>"]
 license = "Apache-2.0"
 homepage = "https://rohi.akagi.dev"
 repository = "https://github.com/akagi-dev/rohi-sdk"
 
 [workspace]
-members = ["altruist", "robonomics-hal"]
+members = ["altruist", "rohi-hal"]
 resolver = "2"
 
 [workspace.dependencies]
 # Local
-robonomics-hal = { path = "robonomics-hal" }
+rohi-hal = { path = "rohi-hal" }
 
 # ESP
 esp-backtrace = { version = "0.15.0", features = [

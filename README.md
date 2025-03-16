@@ -28,6 +28,6 @@ TODO
 
 ## 📚 Documentation
 
-* [ROHI Book](https://rohi.akagi.dev)
-* [🦀 rust-docs](https://akagi-dev.github.io/rohi-sdk/master/rohi_sdk_docs/index.html)
+* [The Book](https://rohi.akagi.dev)
+* [🦀 rust-docs](https://docs.rs/rohi-hal)
 * [Robonomics Wiki](https://wiki.robonomics.network/)

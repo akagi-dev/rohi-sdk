@@ -28,5 +28,6 @@
 /// Details: https://robonomics.network/devices/altruist/
 pub mod altruist;
 
-/// Robonomics Hardware sensors
-pub mod sensors;
+/// A sensor is often defined as a device that receives and responds to a signal or stimulus.
+/// Temperature and humidity sensors is usual sample for IoT.
+pub mod sensor;

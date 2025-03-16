@@ -14,7 +14,7 @@ repository.workspace = true
 maintenance = { status = "actively-developed" }
 
 [dependencies]
-robonomics-hal = { workspace = true }
+rohi-hal = { workspace = true }
 esp-backtrace = { workspace = true }
 esp-hal = { workspace = true }
 esp-println = { workspace = true }
