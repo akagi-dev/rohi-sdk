@@ -5,5 +5,8 @@ language = "en"
 multilingual = false
 src = "."
 
+[output.html]
+git-repository-url = "https://github.com/akagi-dev/rohi-sdk"
+
 [rust]
 edition = "2024"
