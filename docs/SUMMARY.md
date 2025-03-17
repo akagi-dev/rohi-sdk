@@ -4,8 +4,8 @@
 
 # Quick Start
 
-- [Installation]()
-- [Air Quality Terminal]()
+- [Installation](install.md)
+- [Air Quality Terminal](air-quality-terminal.md)
 
 # Deep Dive
 
