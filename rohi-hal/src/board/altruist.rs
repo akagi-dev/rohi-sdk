@@ -36,12 +36,12 @@ use sds011::{SDS011, sensor_state::Polling};
 use crate::sensor::bus::*;
 
 /// Altruist hardware instance.
-pub struct Altruist<'a> {
-    sds011: Option<SDS011<Uart<'a, Async>, Polling>>,
-    bme280: Option<BME280<I2c<'a, Async>>>,
+pub struct Altruist {
+    sds011: Option<SDS011<Uart<'static, Async>, Polling>>,
+    bme280: Option<BME280<I2c<'static, Async>>>,
 }
 
-impl Altruist<'_> {
+impl Altruist {
     /// Initialize peripherial devices.
     pub async fn init() -> Result<Self, Error> {
         let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
@@ -107,7 +107,7 @@ pub enum Error {
     DoubleInit,
 }
 
-impl ParticulateMatter for Altruist<'_> {
+impl ParticulateMatter for Altruist {
     async fn pm10(&mut self) -> Option<u16> {
         if let Some(sds011) = &mut self.sds011 {
             let data = sds011.measure(&mut Delay).await.unwrap();
@@ -127,7 +127,7 @@ impl ParticulateMatter for Altruist<'_> {
     }
 }
 
-impl Temperature for Altruist<'_> {
+impl Temperature for Altruist {
     async fn temperature(&mut self) -> Option<i16> {
         if let Some(bme280) = &mut self.bme280 {
             let data = bme280.measure(&mut Delay).await.unwrap();
@@ -139,7 +139,7 @@ impl Temperature for Altruist<'_> {
     }
 }
 
-impl Pressure for Altruist<'_> {
+impl Pressure for Altruist {
     async fn pressure(&mut self) -> Option<u32> {
         if let Some(bme280) = &mut self.bme280 {
             let data = bme280.measure(&mut Delay).await.unwrap();

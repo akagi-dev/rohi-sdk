@@ -32,7 +32,7 @@ async fn main(_spawner: Spawner) {
     esp_println::logger::init_logger_from_env();
 
     let mut altruist = Altruist::init().await.unwrap();
-    let mut sensor = Sensor::new(&mut altruist);
+    let mut sensor = Sensor(&mut altruist);
 
     loop {
         info!("PM10 measure: {:?}", sensor.pm10().await);

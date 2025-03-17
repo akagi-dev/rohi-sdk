@@ -27,15 +27,21 @@ use embassy_time::Timer;
 use rohi_hal::Sensor;
 use rohi_hal::board::Altruist;
 
-#[esp_hal_embassy::main]
-async fn main(_spawner: Spawner) {
-    esp_println::logger::init_logger_from_env();
-
-    let mut altruist = Altruist::init().await.unwrap();
-    let mut sensor = Sensor::new(&mut altruist);
+#[embassy_executor::task]
+async fn print_pm25_task(mut board: Altruist) {
+    let mut sensor = Sensor(&mut board);
 
     loop {
-        info!("PM25 measure: {:?}", sensor.pm25().await);
+        info!("PM25: {:?}", sensor.pm25().await);
         Timer::after_secs(10).await;
     }
+}
+
+#[esp_hal_embassy::main]
+async fn main(spawner: Spawner) {
+    esp_println::logger::init_logger_from_env();
+
+    let altruist = Altruist::init().await.unwrap();
+
+    spawner.spawn(print_pm25_task(altruist)).ok();
 }

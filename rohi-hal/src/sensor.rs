@@ -29,46 +29,37 @@ pub(crate) mod bus;
 use bus::*;
 
 /// Generic sensor data interface.
-pub struct Sensor<'a, T> {
-    bus: &'a mut T,
-}
-
-impl<'a, T> Sensor<'a, T> {
-    /// Create instance for given bus interface.
-    pub fn new(bus: &'a mut T) -> Self {
-        Self { bus }
-    }
-}
+pub struct Sensor<'a, T>(pub &'a mut T);
 
 impl<T: ParticulateMatter> Sensor<'_, T> {
     /// A measurement of PM2.5 fine dust pollution.
     pub async fn pm10(&mut self) -> Option<u16> {
-        self.bus.pm10().await
+        self.0.pm10().await
     }
 
     /// A measurement of PM10 fine dust pollution.
     pub async fn pm25(&mut self) -> Option<u16> {
-        self.bus.pm25().await
+        self.0.pm25().await
     }
 }
 
 impl<T: Humidity> Sensor<'_, T> {
     /// The measured humidity in tenths of a percent.
     pub async fn humidity(&mut self) -> Option<u16> {
-        self.bus.humidity().await
+        self.0.humidity().await
     }
 }
 
 impl<T: Temperature> Sensor<'_, T> {
     /// The measured temperature in tenths of degrees **Celsius**.
     pub async fn temperature(&mut self) -> Option<i16> {
-        self.bus.temperature().await
+        self.0.temperature().await
     }
 }
 
 impl<T: Pressure> Sensor<'_, T> {
     /// The measured pressure in **Pascals**.
     pub async fn pressure(&mut self) -> Option<u32> {
-        self.bus.pressure().await
+        self.0.pressure().await
     }
 }
