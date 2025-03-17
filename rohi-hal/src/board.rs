@@ -15,20 +15,9 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-#![no_std]
-#![allow(private_bounds)]
+//! Robonomics Open Hardware development board collection.
+//! Device list available on https://robonomics.network/devices/
 
-//! Robonomics Open Hardware abstraction layer.
-//!
-//! This crate introduce Rust support for devices designed and assembled
-//! as part of Robonomics Open Hardware Initiative (ROHI). Details available at
-//! https://robonomics.network/devices/
-
-/// Robonomics Open Hardware devices collection.
-/// For example, Altruist is devkit for Air Quality sensing applications.
-pub mod board;
-
-/// A sensor is often defined as a device that receives and responds to a signal or stimulus.
-/// For example, temperature and humidity sensors is very usual for IoT.
-pub mod sensor;
-pub use sensor::Sensor;
+/// Altruist Air Quality Sensor HAL.
+pub mod altruist;
+pub use altruist::Altruist;

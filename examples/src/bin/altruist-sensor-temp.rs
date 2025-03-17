@@ -16,19 +16,26 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 #![no_std]
-#![allow(private_bounds)]
+#![no_main]
 
-//! Robonomics Open Hardware abstraction layer.
-//!
-//! This crate introduce Rust support for devices designed and assembled
-//! as part of Robonomics Open Hardware Initiative (ROHI). Details available at
-//! https://robonomics.network/devices/
+use esp_backtrace as _;
+use log::info;
 
-/// Robonomics Open Hardware devices collection.
-/// For example, Altruist is devkit for Air Quality sensing applications.
-pub mod board;
+use embassy_executor::Spawner;
+use embassy_time::Timer;
 
-/// A sensor is often defined as a device that receives and responds to a signal or stimulus.
-/// For example, temperature and humidity sensors is very usual for IoT.
-pub mod sensor;
-pub use sensor::Sensor;
+use rohi_hal::Sensor;
+use rohi_hal::board::Altruist;
+
+#[esp_hal_embassy::main]
+async fn main(_spawner: Spawner) {
+    esp_println::logger::init_logger_from_env();
+
+    let altruist = Altruist::init().await.unwrap();
+    let mut sensor = Sensor::new(altruist);
+
+    loop {
+        info!("Temperature: {:?} C", sensor.temperature().await);
+        Timer::after_secs(10).await;
+    }
+}

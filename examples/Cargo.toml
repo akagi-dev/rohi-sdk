@@ -1,10 +1,18 @@
 [[bin]]
-name = "altruist"
-path = "./src/bin/async_main.rs"
+name = "example-altruist-sensor-pm25"
+path = "./src/bin/altruist-sensor-pm25.rs"
+
+[[bin]]
+name = "example-altruist-sensor-temp"
+path = "./src/bin/altruist-sensor-temp.rs"
+
+[[bin]]
+name = "example-altruist-sensor-press"
+path = "./src/bin/altruist-sensor-press.rs"
 
 [package]
-name = "altruist-rs"
-version = "0.1.0"
+name = "rohi-examples"
+version = "0.0.0"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true

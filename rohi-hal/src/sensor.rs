@@ -1,6 +1,6 @@
 ///////////////////////////////////////////////////////////////////////////////
 //
-//  Copyright 2025 Akagi Engineering <research@akagi.dev>
+//  Copyright 2025 Akagi Engineering <admin@akagi.dev>
 //
 //  Licensed under the Apache License, Version 2.0 (the "License");
 //  you may not use this file except in compliance with the License.
@@ -15,13 +15,60 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-//! Different kinds of sensors and how to access it's data.
+//! Robonomics sensors collection provide different kinds of measures via same
+//! async interface. For example, access sensor data for board instance will
+//! looks like:
+//!
+//! let board = ...
+//! let sensor = Sensor::new(board);
+//! let temp = sensor.temperature().await;
+//! println!("{}", temp);
+//!
 
-/// A Particulate Matter (PM) Sensor measures the floating particles in the air.
-pub trait ParticulateMatter: Sized {
-    /// Errors happens, be ready.
-    type Error;
+pub(crate) mod bus;
+use bus::*;
 
-    /// Measure PM value.
-    fn measure(&self) -> Result<Self, Self::Error>;
+/// Generic sensor data interface.
+pub struct Sensor<T> {
+    bus: T,
+}
+
+impl<T> Sensor<T> {
+    /// Create instance for given bus interface.
+    pub fn new(bus: T) -> Self {
+        Self { bus }
+    }
+}
+
+impl<T: ParticulateMatter> Sensor<T> {
+    /// A measurement of PM2.5 fine dust pollution.
+    pub async fn pm10(&mut self) -> Option<u16> {
+        self.bus.pm10().await
+    }
+
+    /// A measurement of PM10 fine dust pollution.
+    pub async fn pm25(&mut self) -> Option<u16> {
+        self.bus.pm25().await
+    }
+}
+
+impl<T: Humidity> Sensor<T> {
+    /// The measured humidity in tenths of a percent.
+    pub async fn humidity(&mut self) -> Option<u16> {
+        self.bus.humidity().await
+    }
+}
+
+impl<T: Temperature> Sensor<T> {
+    /// The measured temperature in tenths of degrees **Celsius**.
+    pub async fn temperature(&mut self) -> Option<i16> {
+        self.bus.temperature().await
+    }
+}
+
+impl<T: Pressure> Sensor<T> {
+    /// The measured pressure in **Pascals**.
+    pub async fn pressure(&mut self) -> Option<u32> {
+        self.bus.pressure().await
+    }
 }
