@@ -7,7 +7,7 @@
 
 
 > The SDK repository provides all the components needed to start build IoT devices
-> powered by [Robonomics](https://robonomics.network/) network, a Web3 cloud platform
+> powered by [Robonomics Network](https://robonomics.network/), a Web3 cloud platform
 > designed to manage IoT devices and robotics.
 
 </div>
@@ -20,15 +20,16 @@
 
 ## ⚡ Quickstart
 
-TODO
+* Check out usage [examples](examples/src/bin).
+* Look into Quickstart section of [ROHI book](https://rohi.akagi.dev).
 
 ## 🛠️ Firmware
+
+SDK also contains alternative firmwares for [Robonomics Devices](https://robonomics.network/devices/).
 
 * [Altruist Air Quality Sensor](https://github.com/akagi-dev/rohi-sdk/tree/master/altruist#-altruist-firmware)
 
 ## 📚 Documentation
 
-* [ROHI Book](https://rohi.akagi.dev)
-* [🦀 rust-docs](https://docs.rs/rohi-hal)
+* [🦀 crates-docs](https://docs.rs/rohi-hal)
 * [Robonomics Wiki](https://wiki.robonomics.network/)
-* [Embedded Rust on ESP](https://docs.esp-rs.org/no_std-training/)
