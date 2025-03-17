@@ -31,8 +31,8 @@ use rohi_hal::board::Altruist;
 async fn main(_spawner: Spawner) {
     esp_println::logger::init_logger_from_env();
 
-    let altruist = Altruist::init().await.unwrap();
-    let mut sensor = Sensor::new(altruist);
+    let mut altruist = Altruist::init().await.unwrap();
+    let mut sensor = Sensor::new(&mut altruist);
 
     loop {
         info!("PM25 measure: {:?}", sensor.pm25().await);
