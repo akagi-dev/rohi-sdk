@@ -10,7 +10,7 @@
 > powered by [Robonomics Network](https://robonomics.network/), a Web3 cloud platform
 > designed to manage IoT devices and robotics.
 
-![Crates.io License](https://img.shields.io/crates/l/rohi-hal) ![Crates.io Version](https://img.shields.io/crates/v/rohi-hal)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0) ![Crates.io Version](https://img.shields.io/crates/v/rohi-hal) [![Documentation](https://docs.rs/rohi-hal/badge.svg)](https://docs.rs/rohi-hal)
 
 </div>
 
