@@ -1,5 +1,5 @@
 [[bin]]
-name = "altruist"
+name = "altruist-sensors-social"
 path = "./src/bin/async_main.rs"
 
 [package]
@@ -10,6 +10,7 @@ license.workspace = true
 edition.workspace = true
 homepage.workspace = true
 repository.workspace = true
+description = "Altruist board firmware for sensors.social project."
 
 [badges]
 maintenance = { status = "actively-developed" }

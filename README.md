@@ -23,17 +23,17 @@
 ## ⚡ Quickstart
 
 * Check out usage [examples](examples/src/bin).
-* Look into Quickstart section of [ROHI book](https://rohi.akagi.dev).
+* Look into Quickstart section of [ROHI Book](https://rohi.akagi.dev).
 
 ## 🛠️ Firmware
 
 SDK also contains alternative firmwares for [Robonomics Devices](https://robonomics.network/devices/).
 
-* [Altruist Air Quality Sensor](https://github.com/akagi-dev/rohi-sdk/tree/master/altruist#-altruist-firmware)
+* [Altruist Sensors Social](https://github.com/akagi-dev/rohi-sdk/tree/master/firmwares/altruist-sensors-social)
 
 ## 📚 Documentation
 
-* [ROHI SDK](https://rohi.akagi.dev).
+* [ROHI Book](https://rohi.akagi.dev).
 * [Robonomics Wiki](https://wiki.robonomics.network/)
 * [Espressif Rust](https://docs.esp-rs.org/book/)
 * [Embassy Framework](https://embassy.dev/book/)
