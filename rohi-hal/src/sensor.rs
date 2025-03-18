@@ -19,10 +19,10 @@
 //! async interface. For example, access sensor data for board instance will
 //! looks like:
 //!
-//! let board = ...
-//! let sensor = Sensor::new(board);
-//! let temp = sensor.temperature().await;
-//! println!("{}", temp);
+//!   let board = ...
+//!   let sensor = Sensor(&board);
+//!   let temp = sensor.temperature().await;
+//!   println!("{}", temp);
 //!
 
 pub(crate) mod bus;

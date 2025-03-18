@@ -903,7 +903,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-hal"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "bme280",
  "embassy-time",

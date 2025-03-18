@@ -1,11 +1,12 @@
 [package]
 name = "rohi-hal"
-version = "0.0.0"
+version = "0.1.0"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
 homepage.workspace = true
 repository.workspace = true
+description = "Robonomics Open Hardware Abstraction Layer"
 
 [package.metadata.docs.rs]
 targets = ["riscv32imc-unknown-none-elf"]
