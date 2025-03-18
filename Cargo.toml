@@ -6,7 +6,7 @@ homepage = "https://rohi.akagi.dev"
 repository = "https://github.com/akagi-dev/rohi-sdk"
 
 [workspace]
-members = ["altruist", "rohi-hal", "examples"]
+members = ["firmwares/altruist-sensors-social", "rohi-hal", "examples"]
 resolver = "2"
 
 [workspace.dependencies]

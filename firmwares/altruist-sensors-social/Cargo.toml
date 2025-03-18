@@ -3,7 +3,7 @@ name = "altruist-sensors-social"
 path = "./src/bin/async_main.rs"
 
 [package]
-name = "altruist-rs"
+name = "firmware-altruist-sensors-social"
 version = "0.1.0"
 authors.workspace = true
 license.workspace = true
