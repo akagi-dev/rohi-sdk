@@ -29,9 +29,12 @@ use embassy_time::Delay;
 use esp_hal::Async;
 use esp_hal::clock::CpuClock;
 use esp_hal::i2c::master::I2c;
+use esp_hal::rng::Rng;
 use esp_hal::uart::{self, Uart};
 use log::{info, warn};
 use sds011::{SDS011, sensor_state::Polling};
+
+use rohi_net::{Network, wifi::Wifi};
 
 use crate::sensor::bus::*;
 
@@ -39,6 +42,8 @@ use crate::sensor::bus::*;
 pub struct Altruist {
     sds011: Option<SDS011<Uart<'static, Async>, Polling>>,
     bme280: Option<BME280<I2c<'static, Async>>>,
+    rng: Rng,
+    pub wifi: Wifi,
 }
 
 impl Altruist {
@@ -96,15 +101,33 @@ impl Altruist {
             }
         };
 
-        Ok(Self { sds011, bme280 })
+        let rng = esp_hal::rng::Rng::new(peripherals.RNG);
+
+        // Create Wifi HAL
+        let wifi = Wifi::new(
+            peripherals.WIFI,
+            peripherals.TIMG0,
+            peripherals.RADIO_CLK,
+            rng.clone(),
+        );
+
+        Ok(Self {
+            sds011,
+            bme280,
+            wifi,
+            rng,
+        })
+    }
+
+    pub fn network(&self) -> Network {
+        Network::new(self.rng.clone())
     }
 }
 
 /// Hardware related errors.
 #[derive(Debug)]
 pub enum Error {
-    /// Trying to do double initialization.
-    DoubleInit,
+    WifiError,
 }
 
 impl ParticulateMatter for Altruist {

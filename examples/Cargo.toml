@@ -10,6 +10,10 @@ path = "./src/bin/altruist-sensor-temp.rs"
 name = "example-altruist-sensor-press"
 path = "./src/bin/altruist-sensor-press.rs"
 
+[[bin]]
+name = "example-altruist-ap-dhcp"
+path = "./src/bin/altruist-ap-dhcp.rs"
+
 [package]
 name = "rohi-examples"
 version = "0.0.0"
@@ -24,6 +28,8 @@ maintenance = { status = "actively-developed" }
 
 [dependencies]
 rohi-hal = { workspace = true }
+rohi-net = { workspace = true }
+esp-alloc = { workspace = true }
 esp-backtrace = { workspace = true }
 esp-hal = { workspace = true }
 esp-println = { workspace = true }
@@ -32,4 +38,5 @@ embassy-executor = { workspace = true }
 embassy-time = { workspace = true }
 static_cell = { workspace = true }
 critical-section = { workspace = true }
+heapless = { workspace = true }
 log = { workspace = true }

@@ -19,6 +19,6 @@ log = { workspace = true }
 esp-hal = { workspace = true }
 esp-hal-embassy = { workspace = true }
 embassy-time = { workspace = true }
-trait-variant = { workspace = true }
+rohi-net = { workspace = true }
 sds011-rs = { workspace = true }
 bme280 = { workspace = true }
