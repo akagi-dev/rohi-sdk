@@ -20,4 +20,3 @@
 
 /// Altruist Air Quality Sensor HAL.
 pub mod altruist;
-pub use altruist::Altruist;

@@ -2,13 +2,13 @@
 name = "example-altruist-sensor-pm25"
 path = "./src/bin/altruist-sensor-pm25.rs"
 
-[[bin]]
-name = "example-altruist-sensor-temp"
-path = "./src/bin/altruist-sensor-temp.rs"
+#[[bin]]
+#name = "example-altruist-sensor-temp"
+#path = "./src/bin/altruist-sensor-temp.rs"
 
-[[bin]]
-name = "example-altruist-sensor-press"
-path = "./src/bin/altruist-sensor-press.rs"
+#[[bin]]
+#name = "example-altruist-sensor-press"
+#path = "./src/bin/altruist-sensor-press.rs"
 
 [[bin]]
 name = "example-altruist-ap-dhcp"
@@ -33,7 +33,8 @@ esp-alloc = { workspace = true }
 esp-backtrace = { workspace = true }
 esp-hal = { workspace = true }
 esp-println = { workspace = true }
-esp-hal-embassy = { workspace = true }
+esp-rtos = { workspace = true }
+esp-bootloader-esp-idf = { workspace = true }
 embassy-executor = { workspace = true }
 embassy-time = { workspace = true }
 static_cell = { workspace = true }

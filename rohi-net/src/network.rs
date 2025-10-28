@@ -27,12 +27,16 @@ use edge_nal_embassy::{Udp, UdpBuffers};
 use embassy_executor::Spawner;
 use embassy_net::{Ipv4Cidr, Runner, Stack, StackResources, StaticConfigV4};
 use embassy_time::Timer;
-use esp_hal::rng::Rng;
-use esp_wifi::wifi::{WifiApDevice, WifiController, WifiDevice, WifiError};
+use esp_hal::{peripherals::WIFI, rng::Rng};
+use esp_radio::{
+    Controller,
+    wifi::{
+        AccessPointConfig, ModeConfig, WifiApState, WifiController, WifiDevice, WifiError,
+        WifiEvent,
+    },
+};
 use heapless::String;
 use log::{info, warn};
-
-use crate::wifi::{self, Wifi};
 
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{
@@ -45,80 +49,92 @@ macro_rules! mk_static {
 
 /// General network service interface.
 pub struct Network {
-    rng: Rng,
-    wifi_ap: Option<WifiApConfig>,
+    wifi: WIFI<'static>,
+    wifi_config: Option<WifiConfig>,
 }
 
-struct WifiApConfig {
-    runner: Runner<'static, WifiDevice<'static, WifiApDevice>>,
-    controller: WifiController<'static>,
-    stack: Stack<'static>,
-    ssid: String<32>,
-    ip: Ipv4Addr,
+/// WiFi interface configuration.
+pub enum WifiConfig {
+    /// Access point with given SSID and IP.
+    Ap { ssid: String<32>, ip: Ipv4Cidr },
 }
 
 impl Network {
-    pub fn new(rng: Rng) -> Self {
-        Self { rng, wifi_ap: None }
+    pub fn new(wifi: WIFI<'static>) -> Self {
+        Self {
+            wifi,
+            wifi_config: None,
+        }
     }
 
-    /// Create WiFi AP with DHCPv4 server on given IP
-    pub fn with_wifi_ap(
-        mut self,
-        wifi: Wifi,
-        ssid: String<32>,
-        address: Ipv4Cidr,
-    ) -> Result<Self, WifiError> {
-        let (device, controller) = wifi.into_ap()?;
-
-        let ip = address.address();
-        let config = embassy_net::Config::ipv4_static(StaticConfigV4 {
-            address,
-            gateway: None,
-            dns_servers: Default::default(),
-        });
-        let seed = (self.rng.random() as u64) << 32 | self.rng.random() as u64;
-
-        let (stack, runner) = embassy_net::new(
-            device,
-            config,
-            mk_static!(StackResources<5>, StackResources::<5>::new()),
-            seed,
-        );
-
-        self.wifi_ap = Some(WifiApConfig {
-            runner,
-            controller,
-            stack,
-            ssid,
-            ip,
-        });
-        Ok(self)
+    /// Set WiFi config
+    pub fn with_wifi_config(mut self, config: WifiConfig) -> Self {
+        self.wifi_config = Some(config);
+        self
     }
 
-    /// Launch background network services like dhcp, wifi, etc.
-    pub fn start(self, spawner: &Spawner) {
-        if let Some(WifiApConfig {
-            runner,
-            controller,
-            stack,
-            ssid,
-            ip,
-        }) = self.wifi_ap
-        {
-            info!(
-                "[Network] > Start WiFi AP with config: SSID({}) IP({})",
-                ssid, ip
-            );
-            spawner.spawn(wifi::ap_setup_task(controller, ssid)).ok();
-            spawner.spawn(ap_network_task(runner)).ok();
-            spawner.spawn(dhcp_server_task(stack, ip)).ok();
+    /// Spawn background network services like dhcp, wifi, etc.
+    pub fn start(self, spawner: &Spawner) -> Result<(), WifiError> {
+        match self.wifi_config {
+            Some(WifiConfig::Ap { ssid, ip }) => {
+                info!(
+                    "[Network] > Start WiFi AP with config: SSID({}) IP({})",
+                    ssid, ip
+                );
+
+                let esp_ctrl = &*mk_static!(Controller<'static>, esp_radio::init().unwrap());
+                let (controller, interfaces) =
+                    esp_radio::wifi::new(&esp_ctrl, self.wifi, Default::default())?;
+
+                let rng = Rng::new();
+                let ip_config = embassy_net::Config::ipv4_static(StaticConfigV4 {
+                    address: ip,
+                    gateway: None,
+                    dns_servers: Default::default(),
+                });
+                let seed = (rng.random() as u64) << 32 | rng.random() as u64;
+
+                let (stack, runner) = embassy_net::new(
+                    interfaces.ap,
+                    ip_config,
+                    mk_static!(StackResources<5>, StackResources::<5>::new()),
+                    seed,
+                );
+
+                spawner.spawn(ap_setup_task(controller, ssid)).ok();
+                spawner.spawn(ap_network_task(runner)).ok();
+                spawner.spawn(dhcp_server_task(stack, ip.address())).ok();
+            }
+            None => (),
+        }
+
+        Ok(())
+    }
+}
+
+#[embassy_executor::task]
+pub async fn ap_setup_task(mut controller: WifiController<'static>, ssid: String<32>) {
+    info!("[Network] > Wifi AP setup task started");
+    let config =
+        ModeConfig::AccessPoint(AccessPointConfig::default().with_ssid(ssid.as_str().into()));
+    loop {
+        match esp_radio::wifi::ap_state() {
+            WifiApState::Started => {
+                controller.wait_for_event(WifiEvent::ApStop).await;
+                Timer::after_secs(5).await
+            }
+            _ => {}
+        }
+        if !matches!(controller.is_started(), Ok(true)) {
+            controller.set_config(&config).unwrap();
+            controller.start_async().await.unwrap();
+            info!("[Network] > Wifi started!");
         }
     }
 }
 
 #[embassy_executor::task]
-pub async fn ap_network_task(mut runner: Runner<'static, WifiDevice<'static, WifiApDevice>>) {
+pub async fn ap_network_task(mut runner: Runner<'static, WifiDevice<'static>>) {
     info!("[Network] > Wifi AP network task started");
     runner.run().await
 }

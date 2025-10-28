@@ -26,12 +26,9 @@
 //! Same as other ROHI SDK crates this is **async-only**. It based on [embassy-net](https://crates.io/crates/embassy-net)
 //! as low level networking and uses [edge-http](https://crates.io/crates/edge-http) for HTTP.
 
-/// The [esp-wifi](https://crates.io/crates/esp-wifi) based Wifi AP/Client support.
-pub mod wifi;
-
 /// HTTP server and client support.
 pub mod http;
 
 /// Entry point for networking.
 pub mod network;
-pub use network::Network;
+pub use network::*;

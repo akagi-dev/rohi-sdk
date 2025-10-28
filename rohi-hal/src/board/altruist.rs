@@ -24,113 +24,94 @@
 //! * https://robonomics.network/devices/altruist/
 //!
 
-use bme280::i2c::AsyncBME280 as BME280;
 use embassy_time::Delay;
 use esp_hal::Async;
 use esp_hal::clock::CpuClock;
-use esp_hal::i2c::master::I2c;
-use esp_hal::rng::Rng;
-use esp_hal::uart::{self, Uart};
+//use esp_hal::i2c::master::I2c;
+#[cfg(target_arch = "riscv32")]
+use esp_hal::interrupt::software::SoftwareInterruptControl;
+use esp_hal::timer::timg::TimerGroup;
+use esp_hal::uart::{self, RxConfig, Uart};
 use log::{info, warn};
 use sds011::{SDS011, sensor_state::Polling};
 
-use rohi_net::{Network, wifi::Wifi};
+use rohi_net::Network;
 
 use crate::sensor::bus::*;
 
-/// Altruist hardware instance.
-pub struct Altruist {
+/// Altruist board sensors.
+pub struct Sensors {
     sds011: Option<SDS011<Uart<'static, Async>, Polling>>,
-    bme280: Option<BME280<I2c<'static, Async>>>,
-    rng: Rng,
-    pub wifi: Wifi,
+    // TODO: use embedded-devices implementation when it ready
+    //bme280: Option<BME280<I2c<'static, Async>>>,
 }
 
-impl Altruist {
-    /// Initialize peripherial devices.
-    pub async fn init() -> Result<Self, Error> {
-        let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
-        let peripherals = esp_hal::init(config);
+/// Initialize peripherial devices: sensors, network.
+pub async fn init() -> (Sensors, Network) {
+    let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
+    let peripherals = esp_hal::init(config);
 
-        let timer0 = esp_hal::timer::systimer::SystemTimer::new(peripherals.SYSTIMER);
-        esp_hal_embassy::init(timer0.alarm0);
-        info!("[Altruist] Embassy execution engine ready");
+    let timg0 = TimerGroup::new(peripherals.TIMG0);
+    #[cfg(target_arch = "riscv32")]
+    let sw_int = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
+    esp_rtos::start(
+        timg0.timer0,
+        #[cfg(target_arch = "riscv32")]
+        sw_int.software_interrupt0,
+    );
+    info!("[Altruist] Embassy execution engine ready");
 
-        let config = uart::Config::default()
-            .with_baudrate(9600)
-            .with_rx_fifo_full_threshold(10);
-        let uart1 = Uart::new(peripherals.UART1, config)
-            .unwrap()
-            .with_tx(peripherals.GPIO10)
-            .with_rx(peripherals.GPIO1)
-            .into_async();
+    let config = uart::Config::default()
+        .with_baudrate(9600)
+        .with_rx(RxConfig::default().with_fifo_full_threshold(10u16));
+    let uart1 = Uart::new(peripherals.UART1, config)
+        .unwrap()
+        .with_tx(peripherals.GPIO10)
+        .with_rx(peripherals.GPIO1)
+        .into_async();
 
-        // Create SDS011 instance and save it in case of successful init.
-        let sds011_device = SDS011::new(uart1, sds011::Config::default());
-        let sds011 = match sds011_device.init(&mut Delay).await {
-            Ok(sds011) => {
-                info!(
-                    "[Altruist] SDS011 version {}, ID {}",
-                    sds011.version(),
-                    sds011.id()
-                );
-                Some(sds011)
-            }
-            Err(e) => {
-                warn!("[Altruist] SDS011 init failure: {}", e);
-                None
-            }
-        };
+    // Create SDS011 instance and save it in case of successful init.
+    let sds011_device = SDS011::new(uart1, sds011::Config::default());
+    let sds011 = match sds011_device.init(&mut Delay).await {
+        Ok(sds011) => {
+            info!(
+                "[Altruist] SDS011 version {}, ID {}",
+                sds011.version(),
+                sds011.id()
+            );
+            Some(sds011)
+        }
+        Err(e) => {
+            warn!("[Altruist] SDS011 init failure: {}", e);
+            None
+        }
+    };
 
-        let i2c = I2c::new(peripherals.I2C0, Default::default())
-            .unwrap()
-            .with_sda(peripherals.GPIO3)
-            .with_scl(peripherals.GPIO0)
-            .into_async();
+    /*
+    let i2c = I2c::new(peripherals.I2C0, Default::default())
+        .unwrap()
+        .with_sda(peripherals.GPIO3)
+        .with_scl(peripherals.GPIO0)
+        .into_async();
 
-        // Create BME280 instance and save it in case of successful init.
-        let mut bme280_device = BME280::new_primary(i2c);
-        let bme280 = match bme280_device.init(&mut Delay).await {
-            Ok(_) => {
-                info!("[Altruist] BME280 init complete");
-                Some(bme280_device)
-            }
-            Err(e) => {
-                warn!("[Altruist] BME280 init failure: {:?}", e);
-                None
-            }
-        };
+    // Create BME280 instance and save it in case of successful init.
+    let mut bme280_device = BME280::new_primary(i2c);
+    let bme280 = match bme280_device.init(&mut Delay).await {
+        Ok(_) => {
+            info!("[Altruist] BME280 init complete");
+            Some(bme280_device)
+        }
+        Err(e) => {
+            warn!("[Altruist] BME280 init failure: {:?}", e);
+            None
+        }
+    };
+    */
 
-        let rng = esp_hal::rng::Rng::new(peripherals.RNG);
-
-        // Create Wifi HAL
-        let wifi = Wifi::new(
-            peripherals.WIFI,
-            peripherals.TIMG0,
-            peripherals.RADIO_CLK,
-            rng.clone(),
-        );
-
-        Ok(Self {
-            sds011,
-            bme280,
-            wifi,
-            rng,
-        })
-    }
-
-    pub fn network(&self) -> Network {
-        Network::new(self.rng.clone())
-    }
+    (Sensors { sds011 }, Network::new(peripherals.WIFI))
 }
 
-/// Hardware related errors.
-#[derive(Debug)]
-pub enum Error {
-    WifiError,
-}
-
-impl ParticulateMatter for Altruist {
+impl ParticulateMatter for Sensors {
     async fn pm10(&mut self) -> Option<u16> {
         if let Some(sds011) = &mut self.sds011 {
             let data = sds011.measure(&mut Delay).await.unwrap();
@@ -150,6 +131,7 @@ impl ParticulateMatter for Altruist {
     }
 }
 
+/*
 impl Temperature for Altruist {
     async fn temperature(&mut self) -> Option<i16> {
         if let Some(bme280) = &mut self.bme280 {
@@ -172,3 +154,4 @@ impl Pressure for Altruist {
         }
     }
 }
+*/

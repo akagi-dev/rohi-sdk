@@ -17,31 +17,41 @@
 ///////////////////////////////////////////////////////////////////////////////
 #![no_std]
 #![no_main]
+#![deny(
+    clippy::mem_forget,
+    reason = "mem::forget is generally not safe to do with esp_hal types, especially those \
+    holding buffers for the duration of a data transfer."
+)]
 
-use esp_backtrace as _;
 use log::info;
 
 use embassy_executor::Spawner;
 use embassy_time::Timer;
 
 use rohi_hal::Sensor;
-use rohi_hal::board::Altruist;
+use rohi_hal::board::altruist::{self, Sensors};
+
+use esp_backtrace as _;
+
+// This creates a default app-descriptor required by the esp-idf bootloader.
+// For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
+esp_bootloader_esp_idf::esp_app_desc!();
 
 #[embassy_executor::task]
-async fn print_pm25_task(mut board: Altruist) {
-    let mut sensor = Sensor(&mut board);
-
+async fn print_pm25_task(mut sensors: Sensors) {
+    let mut sensor = Sensor(&mut sensors);
     loop {
         info!("PM25: {:?}", sensor.pm25().await);
         Timer::after_secs(10).await;
     }
 }
 
-#[esp_hal_embassy::main]
+#[esp_rtos::main]
 async fn main(spawner: Spawner) {
     esp_println::logger::init_logger_from_env();
+    esp_alloc::heap_allocator!(#[unsafe(link_section = ".dram2_uninit")] size: 66320);
 
-    let altruist = Altruist::init().await.unwrap();
+    let (sensors, _) = altruist::init().await;
 
-    spawner.spawn(print_pm25_task(altruist)).ok();
+    spawner.spawn(print_pm25_task(sensors)).ok();
 }

@@ -17,27 +17,37 @@
 ///////////////////////////////////////////////////////////////////////////////
 #![no_std]
 #![no_main]
-
-use esp_backtrace as _;
+#![deny(
+    clippy::mem_forget,
+    reason = "mem::forget is generally not safe to do with esp_hal types, especially those \
+    holding buffers for the duration of a data transfer."
+)]
 
 use embassy_executor::Spawner;
 use heapless::String;
 
-use rohi_hal::board::Altruist;
+use rohi_hal::board::altruist;
+use rohi_net::WifiConfig;
 
-#[esp_hal_embassy::main]
+use esp_backtrace as _;
+
+extern crate alloc;
+
+// This creates a default app-descriptor required by the esp-idf bootloader.
+// For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
+esp_bootloader_esp_idf::esp_app_desc!();
+
+#[esp_rtos::main]
 async fn main(spawner: Spawner) {
     esp_println::logger::init_logger_from_env();
-    esp_alloc::heap_allocator!(72 * 1024);
+    esp_alloc::heap_allocator!(#[unsafe(link_section = ".dram2_uninit")] size: 66320);
 
-    let altruist = Altruist::init().await.unwrap();
+    let (_, network) = altruist::init().await;
 
-    let ssid = String::try_from("hello_altruist").unwrap();
-    let address = "192.168.42.1/24".parse().unwrap();
+    let ssid: String<32> = String::try_from("hello_altruist").unwrap();
+    let ip = "192.168.42.1/24".parse().unwrap();
 
-    altruist
-        .network()
-        .with_wifi_ap(altruist.wifi, ssid, address)
-        .unwrap()
+    let _ = network
+        .with_wifi_config(WifiConfig::Ap { ssid, ip })
         .start(&spawner);
 }

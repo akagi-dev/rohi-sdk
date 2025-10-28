@@ -1,6 +1,6 @@
 [package]
 name = "rohi-net"
-version = "0.1.0"
+version = "0.2.0"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
@@ -19,7 +19,7 @@ log = { workspace = true }
 static_cell = { workspace = true }
 heapless = { workspace = true }
 esp-hal = { workspace = true }
-esp-wifi = { workspace = true }
+esp-radio = { workspace = true }
 esp-alloc = { workspace = true }
 embassy-net = { workspace = true }
 embassy-time = { workspace = true }

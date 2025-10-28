@@ -1,6 +1,6 @@
 [[bin]]
 name = "altruist-sensors-social"
-path = "./src/bin/async_main.rs"
+path = "./src/bin/main.rs"
 
 [package]
 name = "firmware-altruist-sensors-social"
@@ -17,10 +17,12 @@ maintenance = { status = "actively-developed" }
 
 [dependencies]
 rohi-hal = { workspace = true }
-esp-backtrace = { workspace = true }
 esp-hal = { workspace = true }
 esp-println = { workspace = true }
-esp-hal-embassy = { workspace = true }
+esp-alloc = { workspace = true }
+esp-backtrace = { workspace = true }
+esp-rtos = { workspace = true }
+esp-bootloader-esp-idf = { workspace = true }
 embassy-executor = { workspace = true }
 embassy-time = { workspace = true }
 static_cell = { workspace = true }
