@@ -68,7 +68,7 @@ async fn main(spawner: Spawner) {
     let ip = "192.168.42.1/24".parse().unwrap();
     let wifi_config = WifiConfig::Ap { ssid, ip };
 
-    let altruist = Altruist::new(hardware, Some(wifi_config)).await;
+    let altruist = Altruist::new(hardware).await;
 
-    let _ = altruist.network.start(&spawner);
+    let _ = altruist.network.start_wifi(wifi_config, &spawner);
 }
