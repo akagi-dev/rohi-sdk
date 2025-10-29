@@ -32,10 +32,7 @@ use esp_hal::interrupt::software::SoftwareInterruptControl;
 use esp_hal::timer::timg::TimerGroup;
 
 use rohi_hal::Sensor;
-use rohi_hal::board::{
-    Altruist,
-    altruist::{self, Sensors},
-};
+use rohi_hal::board::{Altruist, altruist};
 
 use esp_backtrace as _;
 
@@ -44,7 +41,7 @@ use esp_backtrace as _;
 esp_bootloader_esp_idf::esp_app_desc!();
 
 #[embassy_executor::task]
-async fn print_pm25_task(mut sensors: Sensors) {
+async fn print_pm25_task(mut sensors: altruist::Sensors) {
     let mut sensor = Sensor(&mut sensors);
     loop {
         info!("PM25: {:?}", sensor.pm25().await);

@@ -70,5 +70,5 @@ async fn main(spawner: Spawner) {
 
     let altruist = Altruist::new(hardware).await;
 
-    let _ = altruist.network.start_wifi(wifi_config, &spawner);
+    altruist.network.start_wifi(wifi_config, &spawner);
 }

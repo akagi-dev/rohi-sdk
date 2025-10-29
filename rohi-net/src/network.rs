@@ -64,7 +64,7 @@ impl Network {
     pub fn new(wifi: WIFI<'static>) -> Self {
         let esp_ctrl = &*mk_static!(Controller<'static>, esp_radio::init().unwrap());
         let (wifi_controller, wifi_interfaces) =
-            esp_radio::wifi::new(&esp_ctrl, wifi, Default::default()).unwrap();
+            esp_radio::wifi::new(esp_ctrl, wifi, Default::default()).unwrap();
         Self {
             wifi_controller,
             wifi_interfaces,
@@ -111,12 +111,9 @@ pub async fn ap_setup_task(mut controller: WifiController<'static>, ssid: String
     let config =
         ModeConfig::AccessPoint(AccessPointConfig::default().with_ssid(ssid.as_str().into()));
     loop {
-        match esp_radio::wifi::ap_state() {
-            WifiApState::Started => {
-                controller.wait_for_event(WifiEvent::ApStop).await;
-                Timer::after_secs(5).await
-            }
-            _ => {}
+        if esp_radio::wifi::ap_state() == WifiApState::Started {
+            controller.wait_for_event(WifiEvent::ApStop).await;
+            Timer::after_secs(5).await
         }
         if !matches!(controller.is_started(), Ok(true)) {
             controller.set_config(&config).unwrap();
