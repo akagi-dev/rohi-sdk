@@ -20,12 +20,20 @@
 //! looks like:
 //!
 //! ```rust
-//! let board = ...
-//! let sensor = Sensor(&board);
+//! let board_sensors = ...
+//! let sensor = Sensor(&board_sensors);
 //! let temp = sensor.temperature().await;
 //! println!("{}", temp);
 //! ```
 //!
+//! > Structure wrapping is required by async functions in public traits limitation:
+//! > there is no way to use async methods for Sensor traits, so, wrapping into struct
+//! > is a simple way to do it.
+//! >
+//! > An error example when async used in public trait:
+//! > ```
+//! > use of `async fn` in public traits is discouraged as auto trait bounds cannot be specified
+//! > ```
 
 pub(crate) mod bus;
 use bus::*;

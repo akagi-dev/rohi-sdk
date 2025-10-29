@@ -24,14 +24,16 @@
 )]
 
 use embassy_executor::Spawner;
+use esp_hal::clock::CpuClock;
+use esp_hal::interrupt::software::SoftwareInterruptControl;
+use esp_hal::timer::timg::TimerGroup;
 use heapless::String;
+use log::info;
 
-use rohi_hal::board::altruist;
+use rohi_hal::board::{Altruist, altruist};
 use rohi_net::WifiConfig;
 
 use esp_backtrace as _;
-
-extern crate alloc;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
@@ -42,12 +44,31 @@ async fn main(spawner: Spawner) {
     esp_println::logger::init_logger_from_env();
     esp_alloc::heap_allocator!(#[unsafe(link_section = ".dram2_uninit")] size: 66320);
 
-    let (_, network) = altruist::init().await;
+    let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
+    let peripherals = esp_hal::init(config);
+
+    let timg0 = TimerGroup::new(peripherals.TIMG0);
+    #[cfg(target_arch = "riscv32")]
+    let sw_int = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
+    esp_rtos::start(
+        timg0.timer0,
+        #[cfg(target_arch = "riscv32")]
+        sw_int.software_interrupt0,
+    );
+    info!("Embassy execution engine ready");
+
+    let hardware = altruist::Hardware {
+        uart1: peripherals.UART1,
+        uart1_rx: peripherals.GPIO1,
+        uart1_tx: peripherals.GPIO10,
+        wifi: peripherals.WIFI,
+    };
 
     let ssid: String<32> = String::try_from("hello_altruist").unwrap();
     let ip = "192.168.42.1/24".parse().unwrap();
+    let wifi_config = WifiConfig::Ap { ssid, ip };
 
-    let _ = network
-        .with_wifi_config(WifiConfig::Ap { ssid, ip })
-        .start(&spawner);
+    let altruist = Altruist::new(hardware, Some(wifi_config)).await;
+
+    let _ = altruist.network.start(&spawner);
 }

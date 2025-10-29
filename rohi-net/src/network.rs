@@ -31,7 +31,7 @@ use esp_hal::{peripherals::WIFI, rng::Rng};
 use esp_radio::{
     Controller,
     wifi::{
-        AccessPointConfig, ModeConfig, WifiApState, WifiController, WifiDevice, WifiError,
+        AccessPointConfig, Interfaces, ModeConfig, WifiApState, WifiController, WifiDevice,
         WifiEvent,
     },
 };
@@ -49,8 +49,8 @@ macro_rules! mk_static {
 
 /// General network service interface.
 pub struct Network {
-    wifi: WIFI<'static>,
-    wifi_config: Option<WifiConfig>,
+    wifi_controller: WifiController<'static>,
+    wifi_interfaces: Interfaces<'static>,
 }
 
 /// WiFi interface configuration.
@@ -60,31 +60,25 @@ pub enum WifiConfig {
 }
 
 impl Network {
+    /// New network instance.
     pub fn new(wifi: WIFI<'static>) -> Self {
+        let esp_ctrl = &*mk_static!(Controller<'static>, esp_radio::init().unwrap());
+        let (wifi_controller, wifi_interfaces) =
+            esp_radio::wifi::new(&esp_ctrl, wifi, Default::default()).unwrap();
         Self {
-            wifi,
-            wifi_config: None,
+            wifi_controller,
+            wifi_interfaces,
         }
     }
 
-    /// Set WiFi config
-    pub fn with_wifi_config(mut self, config: WifiConfig) -> Self {
-        self.wifi_config = Some(config);
-        self
-    }
-
     /// Spawn background network services like dhcp, wifi, etc.
-    pub fn start(self, spawner: &Spawner) -> Result<(), WifiError> {
-        match self.wifi_config {
-            Some(WifiConfig::Ap { ssid, ip }) => {
+    pub fn start_wifi(self, config: WifiConfig, spawner: &Spawner) {
+        match config {
+            WifiConfig::Ap { ssid, ip } => {
                 info!(
                     "[Network] > Start WiFi AP with config: SSID({}) IP({})",
                     ssid, ip
                 );
-
-                let esp_ctrl = &*mk_static!(Controller<'static>, esp_radio::init().unwrap());
-                let (controller, interfaces) =
-                    esp_radio::wifi::new(&esp_ctrl, self.wifi, Default::default())?;
 
                 let rng = Rng::new();
                 let ip_config = embassy_net::Config::ipv4_static(StaticConfigV4 {
@@ -95,20 +89,19 @@ impl Network {
                 let seed = (rng.random() as u64) << 32 | rng.random() as u64;
 
                 let (stack, runner) = embassy_net::new(
-                    interfaces.ap,
+                    self.wifi_interfaces.ap,
                     ip_config,
                     mk_static!(StackResources<5>, StackResources::<5>::new()),
                     seed,
                 );
 
-                spawner.spawn(ap_setup_task(controller, ssid)).ok();
+                spawner
+                    .spawn(ap_setup_task(self.wifi_controller, ssid))
+                    .ok();
                 spawner.spawn(ap_network_task(runner)).ok();
                 spawner.spawn(dhcp_server_task(stack, ip.address())).ok();
             }
-            None => (),
         }
-
-        Ok(())
     }
 }
 

@@ -864,7 +864,6 @@ dependencies = [
  "esp-rtos",
  "log",
  "rohi-hal",
- "rohi-net",
  "static_cell",
 ]
 
@@ -1329,7 +1328,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-hal"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "embassy-time 0.5.0",
  "esp-hal",

@@ -26,11 +26,8 @@
 
 use embassy_time::Delay;
 use esp_hal::Async;
-use esp_hal::clock::CpuClock;
 //use esp_hal::i2c::master::I2c;
-#[cfg(target_arch = "riscv32")]
-use esp_hal::interrupt::software::SoftwareInterruptControl;
-use esp_hal::timer::timg::TimerGroup;
+use esp_hal::peripherals::{GPIO1, GPIO10, UART1, WIFI};
 use esp_hal::uart::{self, RxConfig, Uart};
 use log::{info, warn};
 use sds011::{SDS011, sensor_state::Polling};
@@ -39,76 +36,94 @@ use rohi_net::Network;
 
 use crate::sensor::bus::*;
 
+/// Air-quality sensor board Altruist.
+///
+/// - ESP32-C3FH4 — high-performance 32-bit single-core RISC-V CPU, up to 160 MHz
+/// - 384 KB ROM, 400 KB SRAM (including 16 KB cache), 8 KB SRAM in RTC, 4 MB Flash
+/// - Wi-Fi 2.4 GHz, IEEE 802.11 b/g/n-compliant, BLE
+///
+pub struct Altruist {
+    pub sensors: Sensors,
+    pub network: Network,
+}
+
+/// Altruist board hardware configuration. Please fill it up with peripherals items.
+pub struct Hardware {
+    pub uart1: UART1<'static>,
+    pub uart1_tx: GPIO10<'static>,
+    pub uart1_rx: GPIO1<'static>,
+    pub wifi: WIFI<'static>,
+}
+
+impl Altruist {
+    /// Initialize board hardware and interfaces.
+    pub async fn new(hardware: Hardware) -> Self {
+        let config = uart::Config::default()
+            .with_baudrate(9600)
+            .with_rx(RxConfig::default().with_fifo_full_threshold(10u16));
+        let uart1 = Uart::new(hardware.uart1, config)
+            .unwrap()
+            .with_tx(hardware.uart1_tx)
+            .with_rx(hardware.uart1_rx)
+            .into_async();
+
+        // Create SDS011 instance and save it in case of successful init.
+        let sds011_device = SDS011::new(uart1, sds011::Config::default());
+        let sds011 = match sds011_device.init(&mut Delay).await {
+            Ok(sds011) => {
+                info!(
+                    "[Altruist] SDS011 version {}, ID {}",
+                    sds011.version(),
+                    sds011.id()
+                );
+                Some(sds011)
+            }
+            Err(e) => {
+                warn!("[Altruist] SDS011 init failure: {}", e);
+                None
+            }
+        };
+
+        /*
+        let i2c = I2c::new(peripherals.I2C0, Default::default())
+            .unwrap()
+            .with_sda(peripherals.GPIO3)
+            .with_scl(peripherals.GPIO0)
+            .into_async();
+
+        // Create BME280 instance and save it in case of successful init.
+        let mut bme280_device = BME280::new_primary(i2c);
+        let bme280 = match bme280_device.init(&mut Delay).await {
+            Ok(_) => {
+                info!("[Altruist] BME280 init complete");
+                Some(bme280_device)
+            }
+            Err(e) => {
+                warn!("[Altruist] BME280 init failure: {:?}", e);
+                None
+            }
+        };
+        */
+
+        Self {
+            sensors: Sensors { sds011 },
+            network: Network::new(hardware.wifi),
+        }
+    }
+}
+
 /// Altruist board sensors.
+///
+/// - Air-quality sensor: SDS011 laser-based particulate-matter sensor (PM2.5 / PM10);
+/// - Noise sensor: ICS-43434 digital MEMS microphone for ambient-noise monitoring;
+/// - Environmental sensor: BME280 for atmospheric pressure, humidity, and temperature.
+///
+/// This structi implements [`Sensor`] interface to access sensors data.
+///
 pub struct Sensors {
     sds011: Option<SDS011<Uart<'static, Async>, Polling>>,
     // TODO: use embedded-devices implementation when it ready
     //bme280: Option<BME280<I2c<'static, Async>>>,
-}
-
-/// Initialize peripherial devices: sensors, network.
-pub async fn init() -> (Sensors, Network) {
-    let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
-    let peripherals = esp_hal::init(config);
-
-    let timg0 = TimerGroup::new(peripherals.TIMG0);
-    #[cfg(target_arch = "riscv32")]
-    let sw_int = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
-    esp_rtos::start(
-        timg0.timer0,
-        #[cfg(target_arch = "riscv32")]
-        sw_int.software_interrupt0,
-    );
-    info!("[Altruist] Embassy execution engine ready");
-
-    let config = uart::Config::default()
-        .with_baudrate(9600)
-        .with_rx(RxConfig::default().with_fifo_full_threshold(10u16));
-    let uart1 = Uart::new(peripherals.UART1, config)
-        .unwrap()
-        .with_tx(peripherals.GPIO10)
-        .with_rx(peripherals.GPIO1)
-        .into_async();
-
-    // Create SDS011 instance and save it in case of successful init.
-    let sds011_device = SDS011::new(uart1, sds011::Config::default());
-    let sds011 = match sds011_device.init(&mut Delay).await {
-        Ok(sds011) => {
-            info!(
-                "[Altruist] SDS011 version {}, ID {}",
-                sds011.version(),
-                sds011.id()
-            );
-            Some(sds011)
-        }
-        Err(e) => {
-            warn!("[Altruist] SDS011 init failure: {}", e);
-            None
-        }
-    };
-
-    /*
-    let i2c = I2c::new(peripherals.I2C0, Default::default())
-        .unwrap()
-        .with_sda(peripherals.GPIO3)
-        .with_scl(peripherals.GPIO0)
-        .into_async();
-
-    // Create BME280 instance and save it in case of successful init.
-    let mut bme280_device = BME280::new_primary(i2c);
-    let bme280 = match bme280_device.init(&mut Delay).await {
-        Ok(_) => {
-            info!("[Altruist] BME280 init complete");
-            Some(bme280_device)
-        }
-        Err(e) => {
-            warn!("[Altruist] BME280 init failure: {:?}", e);
-            None
-        }
-    };
-    */
-
-    (Sensors { sds011 }, Network::new(peripherals.WIFI))
 }
 
 impl ParticulateMatter for Sensors {
