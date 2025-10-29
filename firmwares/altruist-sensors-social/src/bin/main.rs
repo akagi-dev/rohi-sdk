@@ -40,18 +40,8 @@ use esp_backtrace as _;
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
 esp_bootloader_esp_idf::esp_app_desc!();
 
-#[embassy_executor::task]
-async fn print_temp_task(mut sensors: altruist::Sensors) {
-    let _sensor = Sensor(&mut sensors);
-
-    loop {
-        //info!("Temperature: {:?} C", sensor.temperature().await);
-        Timer::after_secs(10).await;
-    }
-}
-
 #[esp_rtos::main]
-async fn main(spawner: Spawner) {
+async fn main(_spawner: Spawner) {
     esp_println::logger::init_logger_from_env();
     esp_alloc::heap_allocator!(#[unsafe(link_section = ".dram2_uninit")] size: 66320);
 
@@ -75,7 +65,12 @@ async fn main(spawner: Spawner) {
         wifi: peripherals.WIFI,
     };
 
-    let altruist = Altruist::new(hardware).await;
+    let mut altruist = Altruist::new(hardware).await;
 
-    spawner.spawn(print_temp_task(altruist.sensors)).ok();
+    let mut sensor = Sensor(&mut altruist.sensors);
+
+    loop {
+        info!("PM10 measure: {:?}", sensor.pm10().await);
+        Timer::after_secs(10).await;
+    }
 }

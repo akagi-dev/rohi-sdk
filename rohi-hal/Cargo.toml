@@ -1,6 +1,6 @@
 [package]
 name = "rohi-hal"
-version = "0.1.0"
+version = "0.2.0"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
@@ -17,8 +17,8 @@ maintenance = { status = "actively-developed" }
 [dependencies]
 log = { workspace = true }
 esp-hal = { workspace = true }
-esp-hal-embassy = { workspace = true }
+esp-rtos = { workspace = true }
 embassy-time = { workspace = true }
 rohi-net = { workspace = true }
 sds011-rs = { workspace = true }
-bme280 = { workspace = true }
+#embedded-devices = { workspace = true }

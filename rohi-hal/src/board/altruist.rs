@@ -24,45 +24,47 @@
 //! * https://robonomics.network/devices/altruist/
 //!
 
-use bme280::i2c::AsyncBME280 as BME280;
 use embassy_time::Delay;
 use esp_hal::Async;
-use esp_hal::clock::CpuClock;
-use esp_hal::i2c::master::I2c;
-use esp_hal::rng::Rng;
-use esp_hal::uart::{self, Uart};
+//use esp_hal::i2c::master::I2c;
+use esp_hal::peripherals::{GPIO1, GPIO10, UART1, WIFI};
+use esp_hal::uart::{self, RxConfig, Uart};
 use log::{info, warn};
 use sds011::{SDS011, sensor_state::Polling};
 
-use rohi_net::{Network, wifi::Wifi};
+use rohi_net::Network;
 
 use crate::sensor::bus::*;
 
-/// Altruist hardware instance.
+/// Air-quality sensor board Altruist.
+///
+/// - ESP32-C3FH4 — high-performance 32-bit single-core RISC-V CPU, up to 160 MHz
+/// - 384 KB ROM, 400 KB SRAM (including 16 KB cache), 8 KB SRAM in RTC, 4 MB Flash
+/// - Wi-Fi 2.4 GHz, IEEE 802.11 b/g/n-compliant, BLE
+///
 pub struct Altruist {
-    sds011: Option<SDS011<Uart<'static, Async>, Polling>>,
-    bme280: Option<BME280<I2c<'static, Async>>>,
-    rng: Rng,
-    pub wifi: Wifi,
+    pub sensors: Sensors,
+    pub network: Network,
+}
+
+/// Altruist board hardware configuration. Please fill it up with peripherals items.
+pub struct Hardware {
+    pub uart1: UART1<'static>,
+    pub uart1_tx: GPIO10<'static>,
+    pub uart1_rx: GPIO1<'static>,
+    pub wifi: WIFI<'static>,
 }
 
 impl Altruist {
-    /// Initialize peripherial devices.
-    pub async fn init() -> Result<Self, Error> {
-        let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
-        let peripherals = esp_hal::init(config);
-
-        let timer0 = esp_hal::timer::systimer::SystemTimer::new(peripherals.SYSTIMER);
-        esp_hal_embassy::init(timer0.alarm0);
-        info!("[Altruist] Embassy execution engine ready");
-
+    /// Initialize board hardware and interfaces.
+    pub async fn new(hardware: Hardware) -> Self {
         let config = uart::Config::default()
             .with_baudrate(9600)
-            .with_rx_fifo_full_threshold(10);
-        let uart1 = Uart::new(peripherals.UART1, config)
+            .with_rx(RxConfig::default().with_fifo_full_threshold(10u16));
+        let uart1 = Uart::new(hardware.uart1, config)
             .unwrap()
-            .with_tx(peripherals.GPIO10)
-            .with_rx(peripherals.GPIO1)
+            .with_tx(hardware.uart1_tx)
+            .with_rx(hardware.uart1_rx)
             .into_async();
 
         // Create SDS011 instance and save it in case of successful init.
@@ -82,6 +84,7 @@ impl Altruist {
             }
         };
 
+        /*
         let i2c = I2c::new(peripherals.I2C0, Default::default())
             .unwrap()
             .with_sda(peripherals.GPIO3)
@@ -100,37 +103,30 @@ impl Altruist {
                 None
             }
         };
+        */
 
-        let rng = esp_hal::rng::Rng::new(peripherals.RNG);
-
-        // Create Wifi HAL
-        let wifi = Wifi::new(
-            peripherals.WIFI,
-            peripherals.TIMG0,
-            peripherals.RADIO_CLK,
-            rng.clone(),
-        );
-
-        Ok(Self {
-            sds011,
-            bme280,
-            wifi,
-            rng,
-        })
-    }
-
-    pub fn network(&self) -> Network {
-        Network::new(self.rng.clone())
+        Self {
+            sensors: Sensors { sds011 },
+            network: Network::new(hardware.wifi),
+        }
     }
 }
 
-/// Hardware related errors.
-#[derive(Debug)]
-pub enum Error {
-    WifiError,
+/// Altruist board sensors.
+///
+/// - Air-quality sensor: SDS011 laser-based particulate-matter sensor (PM2.5 / PM10);
+/// - Noise sensor: ICS-43434 digital MEMS microphone for ambient-noise monitoring;
+/// - Environmental sensor: BME280 for atmospheric pressure, humidity, and temperature.
+///
+/// This structi implements [`Sensor`] interface to access sensors data.
+///
+pub struct Sensors {
+    sds011: Option<SDS011<Uart<'static, Async>, Polling>>,
+    // TODO: use embedded-devices implementation when it ready
+    //bme280: Option<BME280<I2c<'static, Async>>>,
 }
 
-impl ParticulateMatter for Altruist {
+impl ParticulateMatter for Sensors {
     async fn pm10(&mut self) -> Option<u16> {
         if let Some(sds011) = &mut self.sds011 {
             let data = sds011.measure(&mut Delay).await.unwrap();
@@ -150,6 +146,7 @@ impl ParticulateMatter for Altruist {
     }
 }
 
+/*
 impl Temperature for Altruist {
     async fn temperature(&mut self) -> Option<i16> {
         if let Some(bme280) = &mut self.bme280 {
@@ -172,3 +169,4 @@ impl Pressure for Altruist {
         }
     }
 }
+*/

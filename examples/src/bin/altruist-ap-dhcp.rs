@@ -17,27 +17,58 @@
 ///////////////////////////////////////////////////////////////////////////////
 #![no_std]
 #![no_main]
+#![deny(
+    clippy::mem_forget,
+    reason = "mem::forget is generally not safe to do with esp_hal types, especially those \
+    holding buffers for the duration of a data transfer."
+)]
+
+use embassy_executor::Spawner;
+use esp_hal::clock::CpuClock;
+use esp_hal::interrupt::software::SoftwareInterruptControl;
+use esp_hal::timer::timg::TimerGroup;
+use heapless::String;
+use log::info;
+
+use rohi_hal::board::{Altruist, altruist};
+use rohi_net::WifiConfig;
 
 use esp_backtrace as _;
 
-use embassy_executor::Spawner;
-use heapless::String;
+// This creates a default app-descriptor required by the esp-idf bootloader.
+// For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
+esp_bootloader_esp_idf::esp_app_desc!();
 
-use rohi_hal::board::Altruist;
-
-#[esp_hal_embassy::main]
+#[esp_rtos::main]
 async fn main(spawner: Spawner) {
     esp_println::logger::init_logger_from_env();
-    esp_alloc::heap_allocator!(72 * 1024);
+    esp_alloc::heap_allocator!(#[unsafe(link_section = ".dram2_uninit")] size: 66320);
 
-    let altruist = Altruist::init().await.unwrap();
+    let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
+    let peripherals = esp_hal::init(config);
 
-    let ssid = String::try_from("hello_altruist").unwrap();
-    let address = "192.168.42.1/24".parse().unwrap();
+    let timg0 = TimerGroup::new(peripherals.TIMG0);
+    #[cfg(target_arch = "riscv32")]
+    let sw_int = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
+    esp_rtos::start(
+        timg0.timer0,
+        #[cfg(target_arch = "riscv32")]
+        sw_int.software_interrupt0,
+    );
+    info!("Embassy execution engine ready");
 
-    altruist
-        .network()
-        .with_wifi_ap(altruist.wifi, ssid, address)
-        .unwrap()
-        .start(&spawner);
+    let hardware = altruist::Hardware {
+        uart1: peripherals.UART1,
+        uart1_rx: peripherals.GPIO1,
+        uart1_tx: peripherals.GPIO10,
+        wifi: peripherals.WIFI,
+    };
+
+    let ssid: String<32> = String::try_from("hello_altruist").unwrap();
+    let ip = "192.168.42.1/24".parse().unwrap();
+    let wifi_config = WifiConfig::Ap { ssid, ip };
+
+    let altruist = Altruist::new(hardware).await;
+
+    altruist.network.start_wifi(wifi_config, &spawner);
 }
