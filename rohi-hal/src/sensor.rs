@@ -49,7 +49,7 @@ pub trait Temperature {
     async fn temperature(&mut self) -> Option<i16>;
 }
 
-/// A Pressure sensors measures air / liquid pressure in environment.
+/// A Pressure sensor measures air / liquid pressure in environment.
 #[allow(async_fn_in_trait)]
 pub trait Pressure {
     /// The measured pressure in **Pascals**.
