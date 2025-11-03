@@ -15,6 +15,7 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
+//! ROHI Network example that spawn WiFi access point with DHCP server enabled.
 #![no_std]
 #![no_main]
 #![deny(
@@ -30,8 +31,7 @@ use esp_hal::timer::timg::TimerGroup;
 use heapless::String;
 use log::info;
 
-use rohi_hal::board::{Altruist, altruist};
-use rohi_net::WifiConfig;
+use rohi_net::{Network, WifiConfig};
 
 use esp_backtrace as _;
 
@@ -57,18 +57,10 @@ async fn main(spawner: Spawner) {
     );
     info!("Embassy execution engine ready");
 
-    let hardware = altruist::Hardware {
-        uart1: peripherals.UART1,
-        uart1_rx: peripherals.GPIO1,
-        uart1_tx: peripherals.GPIO10,
-        wifi: peripherals.WIFI,
-    };
-
-    let ssid: String<32> = String::try_from("hello_altruist").unwrap();
+    let ssid: String<32> = String::try_from("hello_rohi_net").unwrap();
     let ip = "192.168.42.1/24".parse().unwrap();
     let wifi_config = WifiConfig::Ap { ssid, ip };
 
-    let altruist = Altruist::new(hardware).await;
-
-    altruist.network.start_wifi(wifi_config, &spawner);
+    let network = Network::new(peripherals.WIFI);
+    network.start_wifi(wifi_config, &spawner);
 }

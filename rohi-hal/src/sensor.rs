@@ -21,55 +21,37 @@
 //!
 //! ```rust
 //! let board_sensors = ...
-//! let sensor = Sensor(&board_sensors);
-//! let temp = sensor.temperature().await;
+//! let temp = board_sensors.temperature().await;
 //! println!("{}", temp);
 //! ```
-//!
-//! > Structure wrapping is required by async functions in public traits limitation:
-//! > there is no way to use async methods for Sensor traits, so, wrapping into struct
-//! > is a simple way to do it.
-//! >
-//! > An error example when async used in public trait:
-//! > ```
-//! > use of `async fn` in public traits is discouraged as auto trait bounds cannot be specified
-//! > ```
 
-pub(crate) mod bus;
-use bus::*;
-
-/// Generic sensor data interface.
-pub struct Sensor<'a, T>(pub &'a mut T);
-
-impl<T: ParticulateMatter> Sensor<'_, T> {
+/// A Particulate Matter (PM) sensor measures the floating particles in the air.
+#[allow(async_fn_in_trait)]
+pub trait ParticulateMatter {
     /// A measurement of PM2.5 fine dust pollution.
-    pub async fn pm10(&mut self) -> Option<u16> {
-        self.0.pm10().await
-    }
+    async fn pm10(&mut self) -> Option<u16>;
 
     /// A measurement of PM10 fine dust pollution.
-    pub async fn pm25(&mut self) -> Option<u16> {
-        self.0.pm25().await
-    }
+    async fn pm25(&mut self) -> Option<u16>;
 }
 
-impl<T: Humidity> Sensor<'_, T> {
+/// A Humidity sensor measures relative humidity of the environment.
+#[allow(async_fn_in_trait)]
+pub trait Humidity {
     /// The measured humidity in tenths of a percent.
-    pub async fn humidity(&mut self) -> Option<u16> {
-        self.0.humidity().await
-    }
+    async fn humidity(&mut self) -> Option<u16>;
 }
 
-impl<T: Temperature> Sensor<'_, T> {
+/// A Temperature sensor measures temperature of the environment.
+#[allow(async_fn_in_trait)]
+pub trait Temperature {
     /// The measured temperature in tenths of degrees **Celsius**.
-    pub async fn temperature(&mut self) -> Option<i16> {
-        self.0.temperature().await
-    }
+    async fn temperature(&mut self) -> Option<i16>;
 }
 
-impl<T: Pressure> Sensor<'_, T> {
+/// A Pressure sensor measures air / liquid pressure in environment.
+#[allow(async_fn_in_trait)]
+pub trait Pressure {
     /// The measured pressure in **Pascals**.
-    pub async fn pressure(&mut self) -> Option<u32> {
-        self.0.pressure().await
-    }
+    async fn pressure(&mut self) -> Option<u32>;
 }

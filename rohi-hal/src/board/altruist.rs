@@ -27,14 +27,12 @@
 use embassy_time::Delay;
 use esp_hal::Async;
 //use esp_hal::i2c::master::I2c;
-use esp_hal::peripherals::{GPIO1, GPIO10, UART1, WIFI};
+use esp_hal::peripherals::{GPIO1, GPIO10, UART1};
 use esp_hal::uart::{self, RxConfig, Uart};
 use log::{info, warn};
 use sds011::{SDS011, sensor_state::Polling};
 
-use rohi_net::Network;
-
-use crate::sensor::bus::*;
+use crate::sensor::*;
 
 /// Air-quality sensor board Altruist.
 ///
@@ -44,7 +42,6 @@ use crate::sensor::bus::*;
 ///
 pub struct Altruist {
     pub sensors: Sensors,
-    pub network: Network,
 }
 
 /// Altruist board hardware configuration. Please fill it up with peripherals items.
@@ -52,7 +49,6 @@ pub struct Hardware {
     pub uart1: UART1<'static>,
     pub uart1_tx: GPIO10<'static>,
     pub uart1_rx: GPIO1<'static>,
-    pub wifi: WIFI<'static>,
 }
 
 impl Altruist {
@@ -107,7 +103,6 @@ impl Altruist {
 
         Self {
             sensors: Sensors { sds011 },
-            network: Network::new(hardware.wifi),
         }
     }
 }
