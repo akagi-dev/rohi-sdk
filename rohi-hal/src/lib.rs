@@ -16,7 +16,6 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 #![no_std]
-#![allow(private_bounds)]
 
 //! Robonomics Open Hardware abstraction layer.
 //!
@@ -31,4 +30,3 @@ pub mod board;
 /// A sensor is often defined as a device that receives and responds to a signal or stimulus.
 /// For example, temperature and humidity sensors is very usual for IoT.
 pub mod sensor;
-pub use sensor::Sensor;

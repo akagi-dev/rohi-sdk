@@ -1334,7 +1334,6 @@ dependencies = [
  "esp-hal",
  "esp-rtos",
  "log",
- "rohi-net",
  "sds011-rs",
 ]
 

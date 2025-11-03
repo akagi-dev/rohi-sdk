@@ -1,18 +1,10 @@
 [[bin]]
-name = "example-altruist-sensor-pm25"
-path = "./src/bin/altruist-sensor-pm25.rs"
-
-#[[bin]]
-#name = "example-altruist-sensor-temp"
-#path = "./src/bin/altruist-sensor-temp.rs"
-
-#[[bin]]
-#name = "example-altruist-sensor-press"
-#path = "./src/bin/altruist-sensor-press.rs"
+name = "example-altruist-sensor"
+path = "./src/bin/altruist-sensor.rs"
 
 [[bin]]
-name = "example-altruist-ap-dhcp"
-path = "./src/bin/altruist-ap-dhcp.rs"
+name = "example-network-ap-dhcp"
+path = "./src/bin/network-ap-dhcp.rs"
 
 [package]
 name = "rohi-examples"

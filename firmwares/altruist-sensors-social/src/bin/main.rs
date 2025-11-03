@@ -31,8 +31,8 @@ use esp_hal::clock::CpuClock;
 use esp_hal::interrupt::software::SoftwareInterruptControl;
 use esp_hal::timer::timg::TimerGroup;
 
-use rohi_hal::Sensor;
 use rohi_hal::board::{Altruist, altruist};
+use rohi_hal::sensor::*;
 
 use esp_backtrace as _;
 
@@ -62,15 +62,12 @@ async fn main(_spawner: Spawner) {
         uart1: peripherals.UART1,
         uart1_rx: peripherals.GPIO1,
         uart1_tx: peripherals.GPIO10,
-        wifi: peripherals.WIFI,
     };
 
     let mut altruist = Altruist::new(hardware).await;
 
-    let mut sensor = Sensor(&mut altruist.sensors);
-
     loop {
-        info!("PM10 measure: {:?}", sensor.pm10().await);
+        info!("PM10 measure: {:?}", altruist.sensors.pm10().await);
         Timer::after_secs(10).await;
     }
 }
