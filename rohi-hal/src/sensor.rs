@@ -42,7 +42,7 @@ pub trait Humidity {
     async fn humidity(&mut self) -> Option<u16>;
 }
 
-/// A Temperature sensors measures temperature of the environment.
+/// A Temperature sensor measures temperature of the environment.
 #[allow(async_fn_in_trait)]
 pub trait Temperature {
     /// The measured temperature in tenths of degrees **Celsius**.
