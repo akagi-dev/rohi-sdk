@@ -14,6 +14,7 @@ resolver = "2"
 # Local
 rohi-hal = { path = "crates/rohi-hal" }
 rohi-net = { path = "crates/rohi-net" }
+rohi-sensor-core = { path = "crates/rohi-sensor-core" }
 
 # ESP
 esp-hal = { version = "=1.0.0-rc.1", features = ["unstable", "esp32c3"] }
