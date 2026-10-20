@@ -7,18 +7,14 @@ homepage = "https://rohi.akagi.dev"
 repository = "https://github.com/akagi-dev/rohi-sdk"
 
 [workspace]
-members = [
-  "firmwares/altruist-sensors-social",
-  "rohi-hal",
-  "rohi-net",
-  "examples",
-]
+members = ["crates/*", "firmwares/*", "examples"]
 resolver = "2"
 
 [workspace.dependencies]
 # Local
-rohi-hal = { path = "rohi-hal" }
-rohi-net = { path = "rohi-net" }
+rohi-hal = { path = "crates/rohi-hal" }
+rohi-net = { path = "crates/rohi-net" }
+rohi-sensor-core = { path = "crates/rohi-sensor-core" }
 
 # ESP
 esp-hal = { version = "=1.0.0-rc.1", features = ["unstable", "esp32c3"] }
@@ -74,7 +70,8 @@ critical-section = "1.2.0"
 opt-level = "s"
 
 [profile.release]
-codegen-units = 1        # LLVM can perform better optimizations using a single thread
+# LLVM can perform better optimizations using a single thread
+codegen-units = 1
 debug = 2
 debug-assertions = false
 incremental = false

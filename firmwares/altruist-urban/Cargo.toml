@@ -1,16 +1,16 @@
 [[bin]]
-name = "altruist-sensors-social"
+name = "altruist-urban"
 path = "./src/bin/main.rs"
 
 [package]
-name = "firmware-altruist-sensors-social"
+name = "altruist-urban"
 version = "0.1.0"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
 homepage.workspace = true
 repository.workspace = true
-description = "Altruist board firmware for sensors.social project."
+description = "Altruist Urban firmware."
 
 [badges]
 maintenance = { status = "actively-developed" }
