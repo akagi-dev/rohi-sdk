@@ -27,9 +27,9 @@
 
 ## 🛠️ Firmware
 
-SDK also contains alternative firmwares for [Robonomics Devices](https://robonomics.network/devices/).
+SDK also contains firmwares for [Robonomics Devices](https://robonomics.network/devices/).
 
-* [Altruist Sensors Social](https://github.com/akagi-dev/rohi-sdk/tree/master/firmwares/altruist-sensors-social)
+* [Altruist Urban](https://github.com/akagi-dev/rohi-sdk/tree/master/firmwares/altruist-urban)
 
 ## 📚 Documentation
 

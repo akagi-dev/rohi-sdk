@@ -43,3 +43,13 @@ To verify that all dependencies are installed correctly, try building the ROHI e
 cargo build --release -p rohi-examples
 ```
 
+
+## Build firmware
+
+The Altruist Urban firmware lives in `firmwares/altruist-urban`.
+
+```bash
+cargo build --release -p altruist-urban
+```
+
+Connect the board via USB and flash it with `cargo run --release -p altruist-urban`.

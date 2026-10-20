@@ -1,4 +1,4 @@
-# ![image](https://github.com/user-attachments/assets/457108cf-d3f8-4f7b-a78e-32420f34fe75) Altruist Firmware
+# ![image](https://github.com/user-attachments/assets/457108cf-d3f8-4f7b-a78e-32420f34fe75) Altruist Urban Firmware
 [![License](https://img.shields.io/badge/License-Apache2.0-blue.svg)](../LICENSE)
 
 
@@ -23,5 +23,5 @@ cd rohi-sdk && nix-shell
 4. Build & upload firmware
 
 ```bash
-cargo run --release
+cargo run --release -p altruist-urban
 ```
