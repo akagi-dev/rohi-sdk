@@ -31,9 +31,9 @@ or standard library available by default.
 
 ### Main task
 
-The main task spawns first. `init()` configures logging, the heap, the [Embassy Framework](https://embassy.dev/)
-runtime and the board (I²C, UART and I²S pins are defined in
-`crates/rohi-hal/src/board/altruist_c3.rs`). Then it starts two tasks and parks.
+`main` is a plain `#[esp_hal::main]` function. `run()` configures logging, the time driver of the
+[Embassy Framework](https://embassy.dev/) (no RTOS, no heap) and the board (I²C, UART and I²S pins are defined in
+`crates/rohi-hal/src/board/altruist_c3.rs`), then starts the Embassy executor, which spawns the two tasks below.
 See the [Embassy Docs](https://embassy.dev/book/#_task_declaration) for details.
 
 ### Sensor task and events

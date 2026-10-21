@@ -21,17 +21,15 @@
 //! I2S microphone example: prints average and maximum noise level every 10 s window.
 
 use altruist_urban::tasks::sensors::noise_task;
-use embassy_executor::Spawner;
 use esp_backtrace as _;
-use rohi_examples::{init, print_events_task};
+use rohi_examples::{print_events_task, run};
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
-#[esp_rtos::main]
-async fn main(spawner: Spawner) {
-    let board = init();
-
-    spawner.spawn(print_events_task().unwrap());
-    spawner.spawn(noise_task(board.microphone).unwrap());
-    core::future::pending::<()>().await
+#[esp_hal::main]
+fn main() -> ! {
+    run(|spawner, board| {
+        spawner.spawn(print_events_task().unwrap());
+        spawner.spawn(noise_task(board.microphone).unwrap());
+    })
 }

@@ -28,25 +28,23 @@
 //! | Function          | Pin    | Status      |
 //! |-------------------|--------|-------------|
 //! | I2C0 SDA          | GPIO3  | known       |
-//! | I2C0 SCL          | GPIO0  | known       |
-//! | SDS011 UART1 TX   | GPIO10 | known       |
-//! | SDS011 UART1 RX   | GPIO1  | known       |
-//! | I2S BCLK          | GPIO4  | PLACEHOLDER |
-//! | I2S WS            | GPIO5  | PLACEHOLDER |
-//! | I2S DIN           | GPIO6  | PLACEHOLDER |
-//! | Sensor power ctrl | GPIO7  | PLACEHOLDER, disabled |
+//! | I2C0 SCL          | GPIO2  | known       |
+//! | SDS011 UART1 TX   | GPIO5  | known       |
+//! | SDS011 UART1 RX   | GPIO4  | known       |
+//! | I2S BCLK          | GPIO10 | known       |
+//! | I2S WS            | GPIO1  | known       |
+//! | I2S DIN           | GPIO11 | known       |
 //!
 //! PLACEHOLDER pins are not verified against the hardware design and must be
 //! replaced with the real assignment before use on a device.
 
 use esp_hal::Async;
 use esp_hal::dma_rx_stream_buffer;
-use esp_hal::gpio::{Level, Output, OutputConfig};
 use esp_hal::i2c::master::{BusTimeout, Config as I2cConfig, I2c};
 use esp_hal::i2s::master::{Channels, DataFormat, I2s, TdmConfig};
 use esp_hal::peripherals::{
-    DMA_CH0, FROM_CPU_INTR0, GPIO0, GPIO1, GPIO3, GPIO4, GPIO5, GPIO6, GPIO7, GPIO10, I2C0, I2S0,
-    Peripherals, TIMG0, UART1,
+    DMA_CH0, GPIO0, GPIO1, GPIO2, GPIO3, GPIO4, GPIO5, GPIO6, GPIO7, GPIO8, GPIO10, GPIO11, I2C0, I2S0, Peripherals,
+    SYSTIMER, UART1,
 };
 use esp_hal::time::Rate;
 use esp_hal::uart::{self, RxConfig, Uart};
@@ -56,10 +54,6 @@ use crate::sensors::noise::SAMPLE_RATE_HZ;
 
 /// SDS011 UART baud rate.
 pub const SDS011_BAUD_RATE: u32 = 9_600;
-
-/// Whether the sensor power control pin is driven. Disabled until the real pin
-/// is known, so an unverified GPIO is never touched.
-pub const SENSOR_POWER_ENABLED: bool = false;
 
 /// I2S DMA ring buffer size in bytes: about 128 ms of mono 32-bit audio.
 const I2S_DMA_BUFFER_BYTES: usize = 8 * 1024;
@@ -72,22 +66,19 @@ pub struct Hardware {
     i2c_sda: GPIO3<'static>,
     i2c_scl: GPIO0<'static>,
     uart: UART1<'static>,
-    uart_tx: GPIO10<'static>,
-    uart_rx: GPIO1<'static>,
+    uart_tx: GPIO1<'static>,
+    uart_rx: GPIO10<'static>,
     i2s: I2S0<'static>,
     i2s_dma: DMA_CH0<'static>,
-    i2s_bclk: GPIO4<'static>,
-    i2s_ws: GPIO5<'static>,
-    i2s_din: GPIO6<'static>,
-    power_control: GPIO7<'static>,
+    i2s_bclk: GPIO7<'static>,
+    i2s_ws: GPIO6<'static>,
+    i2s_din: GPIO8<'static>,
 }
 
 /// Peripherals left for the runtime after the board took its share.
 pub struct Runtime {
-    /// Timer group used as the Embassy time base.
-    pub timg0: TIMG0<'static>,
-    /// Software interrupt used by the RTOS scheduler.
-    pub sw_interrupt0: FROM_CPU_INTR0<'static>,
+    /// System timer used as the Embassy time base, see [`crate::esp::time_driver`].
+    pub systimer: SYSTIMER<'static>,
 }
 
 impl Hardware {
@@ -99,18 +90,16 @@ impl Hardware {
                 i2c_sda: peripherals.GPIO3,
                 i2c_scl: peripherals.GPIO0,
                 uart: peripherals.UART1,
-                uart_tx: peripherals.GPIO10,
-                uart_rx: peripherals.GPIO1,
+                uart_tx: peripherals.GPIO1,
+                uart_rx: peripherals.GPIO10,
                 i2s: peripherals.I2S0,
                 i2s_dma: peripherals.DMA_CH0,
-                i2s_bclk: peripherals.GPIO4,
-                i2s_ws: peripherals.GPIO5,
-                i2s_din: peripherals.GPIO6,
-                power_control: peripherals.GPIO7,
+                i2s_bclk: peripherals.GPIO7,
+                i2s_ws: peripherals.GPIO6,
+                i2s_din: peripherals.GPIO8,
             },
             Runtime {
-                timg0: peripherals.TIMG0,
-                sw_interrupt0: peripherals.FROM_CPU_INTR0,
+                systimer: peripherals.SYSTIMER,
             },
         )
     }
@@ -137,16 +126,11 @@ pub struct AltruistC3 {
     pub sds011_uart: Uart<'static, Async>,
     /// Noise microphone.
     pub microphone: I2sMicrophone,
-    /// Sensor power control, if enabled. Keep it alive to keep sensors powered.
-    pub sensor_power: Option<Output<'static>>,
 }
 
 impl AltruistC3 {
     /// Configure buses and peripherals. Does not talk to any sensor.
     pub fn new(hardware: Hardware) -> Result<Self, Error> {
-        let sensor_power = SENSOR_POWER_ENABLED
-            .then(|| Output::new(hardware.power_control, Level::High, OutputConfig::default()));
-
         let i2c = I2c::new(
             hardware.i2c,
             I2cConfig::default().with_timeout(BusTimeout::Maximum),
@@ -185,7 +169,6 @@ impl AltruistC3 {
             i2c,
             sds011_uart,
             microphone,
-            sensor_power,
         })
     }
 }

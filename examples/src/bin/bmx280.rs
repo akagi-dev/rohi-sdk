@@ -22,20 +22,19 @@
 
 use altruist_urban::tasks::sensors::bmx280_task;
 use altruist_urban::tasks::sensors::{SharedI2cBus, i2c_handle};
-use embassy_executor::Spawner;
 use embassy_sync::mutex::Mutex;
 use esp_backtrace as _;
-use rohi_examples::{init, print_events_task};
+use rohi_examples::{print_events_task, run};
 use static_cell::StaticCell;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
-#[esp_rtos::main]
-async fn main(spawner: Spawner) {
-    let board = init();
-    static I2C_BUS: StaticCell<SharedI2cBus> = StaticCell::new();
-    let i2c_bus = I2C_BUS.init(Mutex::new(board.i2c));
-    spawner.spawn(print_events_task().unwrap());
-    spawner.spawn(bmx280_task(i2c_handle(i2c_bus)).unwrap());
-    core::future::pending::<()>().await
+#[esp_hal::main]
+fn main() -> ! {
+    run(|spawner, board| {
+        spawner.spawn(print_events_task().unwrap());
+        static I2C_BUS: StaticCell<SharedI2cBus> = StaticCell::new();
+        let i2c_bus = I2C_BUS.init(Mutex::new(board.i2c));
+        spawner.spawn(bmx280_task(i2c_handle(i2c_bus)).unwrap());
+    })
 }

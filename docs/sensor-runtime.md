@@ -11,6 +11,11 @@ Dependency direction: `altruist-urban` → `rohi-hal` → `rohi-sensor-core`. Dr
 serialization or any other transport, and nothing is averaged or fused across sensors: `bmx280.temperature` and
 `scd4x.temperature` are separate observations.
 
+## Runtime
+
+The firmware runs on native Embassy, without an RTOS: `embassy-executor` in thread mode (`wfi` when idle) and a
+SYSTIMER based `embassy-time` driver (1 MHz ticks, `rohi_hal::esp::time_driver`). Nothing allocates, so the firmware has no heap.
+
 ## Components
 
 | Component | Location | Role |
@@ -78,8 +83,7 @@ SDS011 state (e.g. flag windows while it is in `Warmup`/`Sampling`) without coup
 ## Pins
 
 All GPIO assignments live in `board/altruist_c3.rs`. I²C (GPIO3/GPIO0) and SDS011 UART (GPIO10/GPIO1) come from the
-previous firmware; **the I²S pins (GPIO4/5/6) and the sensor power control (GPIO7, disabled via
-`SENSOR_POWER_ENABLED`) are PLACEHOLDERS** that must be replaced with the real hardware assignment.
+previous firmware; **the I²S pins (GPIO4/5/6) are PLACEHOLDERS** that must be replaced with the real hardware assignment.
 
 ## Testing
 
@@ -111,11 +115,11 @@ arriving; no sensor starves another. Hot-reconnect check: unplug/replug an I²C 
 
 | Item | Size |
 |------|------|
-| `.text` (flash) | 116 990 B |
-| `.rodata` (flash) | 26 232 B |
-| `.rwtext` + `.data` (RAM) | 3 704 B + 2 784 B |
-| `.bss` (RAM, includes task futures, DMA ring buffer) | 15 488 B |
-| Heap region (`.dram2_uninit`, required by the RTOS only; drivers do not allocate) | 66 320 B |
+| `.text` (flash) | 112 744 B |
+| `.rodata` (flash) | 23 768 B |
+| `.rwtext` + `.data` (RAM) | 1 700 B + 2 104 B |
+| `.bss` (RAM, includes task futures, DMA ring buffer) | 15 360 B |
+| Heap | none (no allocator) |
 | Event queue | 16 events |
 | Noise buffers | 256 samples (1 KiB) stack + 8 KiB DMA ring |
 
@@ -132,5 +136,5 @@ Run `altruist-urban` without networking for at least 24 h (preferably 72 h) with
 | Sensor errors per sensor | |
 | Recovery events | |
 | `dropped events` (log) | |
-| Free heap / memory stability | |
+| Memory stability | |
 | Task stalls (snapshots stop updating) | |

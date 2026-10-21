@@ -23,26 +23,51 @@
 //! demonstrates and prints the typed [`SensorEvent`]s they publish.
 
 use altruist_urban::tasks::EVENTS;
+use embassy_executor::{Executor, Spawner};
+use esp_hal::Async;
 use esp_hal::clock::CpuClock;
-use esp_hal::timer::timg::TimerGroup;
+use esp_hal::i2c::master::I2c;
+use esp_hal::uart::Uart;
 use log::info;
 use rohi_hal::board::altruist_c3::{AltruistC3, Hardware};
+use rohi_hal::esp::{I2sMicrophone, time_driver};
 use rohi_sensor_core::SensorEvent;
+use static_cell::StaticCell;
 
-/// Initialize logging, heap, the Embassy runtime and the board.
-pub fn init() -> AltruistC3 {
+static EXECUTOR: StaticCell<Executor> = StaticCell::new();
+
+/// Board peripherals handed to an example.
+pub struct Board {
+    /// I2C bus of BMx280 and SCD4x.
+    pub i2c: I2c<'static, Async>,
+    /// UART of the SDS011.
+    pub sds011_uart: Uart<'static, Async>,
+    /// Noise microphone.
+    pub microphone: I2sMicrophone,
+}
+
+/// Initialize logging, the Embassy runtime and the board, then run `init` on
+/// the executor to spawn the example tasks.
+pub fn run(init: impl FnOnce(Spawner, Board)) -> ! {
     esp_println::logger::init_logger_from_env();
-    esp_alloc::heap_allocator!(#[unsafe(link_section = ".dram2_uninit")] size: 66320);
 
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
     let (hardware, runtime) = Hardware::split(peripherals);
 
-    let timg0 = TimerGroup::new(runtime.timg0);
-    esp_rtos::start(timg0.timer0, runtime.sw_interrupt0);
+    time_driver::init(runtime.systimer);
     info!("Embassy execution engine ready");
 
-    AltruistC3::new(hardware).expect("board initialization failed")
+    let board = AltruistC3::new(hardware).expect("board initialization failed");
+    let board = Board {
+        i2c: board.i2c,
+        sds011_uart: board.sds011_uart,
+        microphone: board.microphone,
+    };
+
+    EXECUTOR
+        .init(Executor::new())
+        .run(|spawner| init(spawner, board))
 }
 
 /// Print every sensor event: measurements, state changes and errors.

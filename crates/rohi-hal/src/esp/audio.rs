@@ -34,32 +34,58 @@ const SAMPLES_PER_READ: usize = 64;
 /// I2S microphone error.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Error {
-    /// The DMA transfer failed; it is restarted automatically.
+    /// The DMA transfer failed; the next read starts a fresh one.
     Dma(DmaError),
-    /// The DMA transfer could not be restarted.
+    /// The DMA transfer could not be started.
     Stopped,
+}
+
+enum State {
+    /// Not receiving. The ring buffer is only drained while a read is in
+    /// progress, and an undrained ring overflows with a DMA descriptor error,
+    /// so the transfer is only running while it is being read.
+    Idle(I2sRx<'static, Async>, DmaRxStreamBuf),
+    Running(I2sRxDmaTransfer<'static, Async, DmaRxStreamBuf>),
+    Failed,
 }
 
 /// DMA backed I2S microphone, one 32-bit slot per sample.
 pub struct I2sMicrophone {
-    transfer: Option<I2sRxDmaTransfer<'static, Async, DmaRxStreamBuf>>,
+    state: State,
 }
 
 impl I2sMicrophone {
-    /// Start receiving into `buffer`.
+    /// Prepare to receive into `buffer`. The transfer starts on the first
+    /// read, so the ring is drained as soon as it starts to fill.
     pub fn new(rx: I2sRx<'static, Async>, buffer: DmaRxStreamBuf) -> Result<Self, Error> {
-        match rx.read(buffer) {
-            Ok(transfer) => Ok(Self {
-                transfer: Some(transfer),
-            }),
-            Err(_) => Err(Error::Stopped),
+        Ok(Self {
+            state: State::Idle(rx, buffer),
+        })
+    }
+
+    fn start(&mut self) -> Result<&mut I2sRxDmaTransfer<'static, Async, DmaRxStreamBuf>, Error> {
+        if matches!(self.state, State::Idle(..)) {
+            let State::Idle(rx, buffer) = core::mem::replace(&mut self.state, State::Failed) else {
+                return Err(Error::Stopped);
+            };
+            match rx.read(buffer) {
+                Ok(transfer) => self.state = State::Running(transfer),
+                Err((_, rx, buffer)) => {
+                    self.state = State::Idle(rx, buffer);
+                    return Err(Error::Stopped);
+                }
+            }
+        }
+        match &mut self.state {
+            State::Running(transfer) => Ok(transfer),
+            _ => Err(Error::Stopped),
         }
     }
 
-    fn restart(&mut self) {
-        if let Some(transfer) = self.transfer.take() {
+    fn stop(&mut self) {
+        if let State::Running(transfer) = core::mem::replace(&mut self.state, State::Failed) {
             let (rx, buffer) = transfer.stop();
-            self.transfer = rx.read(buffer).ok();
+            self.state = State::Idle(rx, buffer);
         }
     }
 }
@@ -72,9 +98,9 @@ impl AudioSource for I2sMicrophone {
         let mut bytes = [0u8; SAMPLES_PER_READ * 4];
 
         loop {
-            let transfer = self.transfer.as_mut().ok_or(Error::Stopped)?;
+            let transfer = self.start()?;
             if let Err(e) = transfer.wait_for_available_async().await {
-                self.restart();
+                self.stop();
                 return Err(Error::Dma(e));
             }
             let available = transfer.available_bytes() & !3;
