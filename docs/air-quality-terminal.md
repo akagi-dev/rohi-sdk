@@ -1,8 +1,8 @@
 # Air Quality Terminal
 
-> This section assumes you are using the Nix package manager.
+> This section assumes you are using the Nix package manager (`nix develop`).
 > If you have a different environment, don't worry—most commands will be the same,
-> except you won't need to launch nix-shell first.
+> except you won't need to enter the Nix shell first.
 
 If you have successfully installed the SDK, let's understand how the Altruist examples work step by step.
 The Altruist board has one example per supported sensor:
@@ -16,7 +16,8 @@ The Altruist board has one example per supported sensor:
 | `example-all-sensors`  | All of the above, concurrently           |
 
 We'll start from the [sds011.rs](https://github.com/akagi-dev/rohi-sdk/blob/master/examples/src/bin/sds011.rs)
-example, it's based on a particulate matter sensor.
+example, it's based on a particulate matter sensor. One SDS011 cycle takes about two minutes: the sensor wakes up, warms
+up, takes several samples, and the aggregated PM2.5 / PM10 is printed before the sensor goes back to sleep.
 
 ## Explore the code
 
@@ -38,10 +39,11 @@ See the [Embassy Docs](https://embassy.dev/book/#_task_declaration) for details.
 
 ### Sensor task and events
 
-`sds011_task` runs the SDS011 driver. Drivers know nothing about networks or serialization: they publish typed
-`SensorEvent`s (measurements, state changes, errors) into a bounded queue. `print_events_task` consumes them and
+`sds011_task` runs the SDS011 driver in a `Runner` that handles probing, polling and recovery. Drivers know nothing
+about networks or serialization: they publish typed `SensorEvent`s (measurements, state changes, errors) into a
+bounded queue; a successful measurement alone marks the sensor `Ready`. `print_events_task` consumes them and
 prints to the terminal. The production firmware has a single task that applies the events to a `MeasurementStore`
-instead. See [Sensor runtime](sensor-runtime.md).
+instead. See [Sensor Core](sensor-core.md).
 
 <div class="warning">
 

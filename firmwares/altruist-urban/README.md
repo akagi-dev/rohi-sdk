@@ -12,10 +12,10 @@
 git clone  https://github.com/akagi-dev/rohi-sdk
 ```
 
-2. Enter nix-shell or use rustup to install dependencies
+2. Enter the Nix shell or use rustup to install dependencies
 
 ```bash
-cd rohi-sdk && nix-shell
+cd rohi-sdk && nix develop
 ```
 
 3. Connect Altruist via TypeC port
@@ -29,4 +29,13 @@ cargo run --release -p altruist-urban
 ## Sensors
 
 The firmware detects and runs BMP280/BME280, SCD40/SCD41, SDS011 and the I²S noise microphone concurrently, and logs a
-`MeasurementsSnapshot` summary every 30 s. See the [Sensor runtime](../../docs/sensor-runtime.md) documentation.
+`MeasurementsSnapshot` summary every 30 s.
+
+| Sensor | Bus | Cadence |
+|--------|-----|---------|
+| BMP280 / BME280 (auto-probed at `0x76` / `0x77`) | I²C | 10 s |
+| SCD40 / SCD41 | I²C | 5 s |
+| SDS011 (multi-sample duty cycle) | UART | ≈2 min |
+| Noise microphone (unweighted dB SPL) | I²S | 10 s window |
+
+See [Sensor Core](../../docs/sensor-core.md), [Sensors](../../docs/sensors.md) and [Boards](../../docs/boards.md).

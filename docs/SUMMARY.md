@@ -6,11 +6,9 @@
 
 - [Installation](install.md)
 - [Air Quality Terminal](air-quality-terminal.md)
-- [Sensor runtime](sensor-runtime.md)
 
 # Deep Dive
 
-- [The HAL crate]()
-  - [Boards]()
-  - [Sensors]()
-- [Networking]()
+- [Sensor Core](sensor-core.md)
+- [Sensors](sensors.md)
+- [Boards](boards.md)
