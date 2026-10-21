@@ -33,6 +33,7 @@ pub fn block_on<F: Future>(f: F) -> F::Output {
 }
 
 /// Delay that completes immediately.
+#[derive(Clone, Copy)]
 pub struct NoDelay;
 
 impl DelayNs for NoDelay {
@@ -116,71 +117,5 @@ impl Clock for StepClock {
         let t = self.now.get();
         self.now.set(t + self.step_ms);
         MonotonicTimestamp::from_millis(t)
-    }
-}
-
-/// UART failure used by [`MockUart`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MockUartError;
-
-impl core::fmt::Display for MockUartError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("mock uart error")
-    }
-}
-
-impl core::error::Error for MockUartError {}
-
-impl embedded_io_async::Error for MockUartError {
-    fn kind(&self) -> embedded_io_async::ErrorKind {
-        embedded_io_async::ErrorKind::Other
-    }
-}
-
-/// Scripted UART. Reads are served from queued chunks; when the queue is empty
-/// a read never completes (so bounded reads time out).
-#[derive(Default)]
-pub struct MockUart {
-    pub chunks: VecDeque<Result<Vec<u8>, MockUartError>>,
-    pub written: Vec<Vec<u8>>,
-}
-
-impl MockUart {
-    pub fn push_bytes(&mut self, bytes: &[u8], chunk: usize) {
-        for part in bytes.chunks(chunk) {
-            self.chunks.push_back(Ok(part.to_vec()));
-        }
-    }
-}
-
-impl embedded_io_async::ErrorType for MockUart {
-    type Error = MockUartError;
-}
-
-impl embedded_io_async::Read for MockUart {
-    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        match self.chunks.pop_front() {
-            Some(Ok(mut data)) => {
-                let n = data.len().min(buf.len());
-                buf[..n].copy_from_slice(&data[..n]);
-                if data.len() > n {
-                    self.chunks.push_front(Ok(data.split_off(n)));
-                }
-                Ok(n)
-            }
-            Some(Err(e)) => Err(e),
-            None => core::future::pending().await,
-        }
-    }
-}
-
-impl embedded_io_async::Write for MockUart {
-    async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-        self.written.push(buf.to_vec());
-        Ok(buf.len())
-    }
-
-    async fn flush(&mut self) -> Result<(), Self::Error> {
-        Ok(())
     }
 }

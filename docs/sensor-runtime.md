@@ -52,19 +52,20 @@ never block. The store task is the only component mutating the `MeasurementStore
 |--------|---------|---------|
 | BMP280 / BME280 | 10 s | Forced mode: T ×2, P ×4, H ×1, filter off, ≈19 ms per conversion, I²C `0x76` |
 | SCD4x | 5 s | Periodic measurement, data-ready polling every 500 ms (max 20 polls), CRC-8 on every word |
-| SDS011 | ≈130 s cycle | 30 s warm-up, 10 frames (≈10 s), 90 s sleep; see below |
+| SDS011 | ≈125 s cycle | Query mode: 30 s warm-up, one query, 90 s sleep; see below |
 | Noise | 10 s window | 16 kHz mono; see below |
 
 All waits use monotonic async timers; nothing depends on wall-clock time. Every I²C transaction is bounded to 200 ms
-(`TimeoutI2c`), every UART/I²S read to 3 s / 1 s.
+(`TimeoutI2c`), every UART/I²S read to SDS011 5 s / 1 s (I²S).
 
 ### SDS011 cycle
 
-`Sleeping → Wake → Warmup → Sampling → Aggregate → Sleeping`. Frames are read (and discarded) during warm-up so the
-UART FIFO never overflows. The parser has no allocation, resynchronizes on the next `AA` header and validates the
-checksum and tail. Aggregation drops out-of-range samples (> 999.9 µg/m³); with ≥ 5 valid frames the lowest and highest
-value of each channel are dropped and the rest averaged; fewer than 3 valid frames fail the cycle. A silent sensor or
-repeated corrupted frames lead to `Degraded` → `Error` → re-initialization.
+The command flow and wire protocol (`sensors/sds011/protocol.rs`) are derived from the community
+[`sds011-rs`](https://github.com/kenohassler/sds011-rs) driver (MIT OR Apache-2.0). The sensor is kept in query mode and
+asleep between cycles: `wake → warm-up (30 s) → query → sleep`. On top of that the driver bounds every UART read to 5 s,
+discards stale bytes (e.g. frames of a sensor still in active mode), skips unexpected frames, retries the wake-up up to
+3 times, puts the sensor to sleep if a session fails, and rejects values above 999.9 µg/m³. One sample per cycle is
+reported. A silent sensor leads to `Degraded` → `Error` → re-initialization.
 
 ### Noise
 
@@ -78,7 +79,7 @@ repeated corrupted frames lead to `Degraded` → `Error` → re-initialization.
 The legacy firmware coordinated SDS011 activity with noise measurement (the fan is a noise source). This could not be
 verified on current hardware here, so no coordination is implemented. The runtime exposes `STATES`
 (`SensorStates`), a read-only view of every sensor state, so a future noise acquisition policy can react to the
-SDS011 state (e.g. flag windows while it is in `Warmup`/`Sampling`) without coupling the drivers.
+SDS011 state (e.g. flag windows while it is in `Warmup`) without coupling the drivers.
 
 ## Pins
 
