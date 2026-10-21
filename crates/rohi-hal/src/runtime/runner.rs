@@ -28,6 +28,27 @@
 //! reported as `NotDetected` and probed again periodically. A sensor that was
 //! detected before and then disappears is reported as `Error` and keeps being
 //! recovered with exponential backoff, so reconnecting needs no reboot.
+//!
+//! # Timing
+//!
+//! Four delays exist and are never combined:
+//!
+//! * **initial delay** ([`SensorDriver::initial_delay_ms`]): wait before the
+//!   very first sample after the sensor was first detected, `0` by default;
+//! * **poll interval** ([`SensorDriver::poll_interval_ms`]): wait after a
+//!   successful sample before the next one;
+//! * **recovery backoff** ([`RunnerConfig`]): wait after a failed sample or
+//!   init, growing exponentially up to a bound and reset by the next success.
+//!   A retry waits for the backoff only, not for the poll interval on top;
+//! * **sensor-internal warm-up**: owned by the driver, inside
+//!   [`SensorDriver::sample`] (e.g. the SDS011 fan spin-up).
+//!
+//! # Events
+//!
+//! A successful sample is reported by one `Measurements` event; the store
+//! derives `Ready` from it, so no observer can see `Ready` with an old value.
+//! After a successful init the state is `WarmingUp` ([`SensorDriver::WARMS_UP`])
+//! or still `Initializing`, until the first measurement arrives.
 
 use core::fmt::Debug;
 
@@ -69,7 +90,15 @@ pub trait SensorDriver {
         clock: &C,
     ) -> Result<Option<MeasurementUpdate>, Self::Error>;
 
-    /// Delay between two calls of [`SensorDriver::sample`], in milliseconds.
+    /// Wait before the first sample after the sensor was first detected, in
+    /// milliseconds. Warm-up that belongs to the sensor is the driver's own
+    /// business inside [`SensorDriver::sample`] and is not part of this delay.
+    fn initial_delay_ms(&self) -> u32 {
+        0
+    }
+
+    /// Wait after a successful [`SensorDriver::sample`] before the next call,
+    /// in milliseconds. Not applied after failures, see [`RunnerConfig`].
     fn poll_interval_ms(&self) -> u32;
 }
 
@@ -130,6 +159,7 @@ where
     failures: u32,
     probes: u32,
     detected: bool,
+    initial_delay_pending: bool,
 }
 
 impl<'a, D, M, C, T, const N: usize> Runner<'a, D, M, C, T, N>
@@ -151,6 +181,7 @@ where
             failures: 0,
             probes: 0,
             detected: false,
+            initial_delay_pending: false,
         }
     }
 
@@ -166,8 +197,8 @@ where
         }
     }
 
-    /// Perform one probe attempt or one sampling attempt, including the
-    /// following wait.
+    /// Perform one probe attempt or one sampling attempt, including the wait
+    /// that follows it (poll interval after success, backoff after failure).
     pub async fn step(&mut self) {
         match self.phase {
             Phase::Detect => self.detect().await,
@@ -184,14 +215,14 @@ where
 
         match self.driver.init().await {
             Ok(()) => {
+                self.initial_delay_pending = !self.detected;
                 self.detected = true;
                 self.phase = Phase::Running;
                 self.failures = 0;
-                self.backoff.reset();
                 self.reporter.set_state(if D::WARMS_UP {
                     SensorState::WarmingUp
                 } else {
-                    SensorState::Ready
+                    SensorState::Initializing
                 });
             }
             Err(e) if e.is_absent() && !self.detected => {
@@ -210,16 +241,23 @@ where
     }
 
     async fn poll(&mut self) {
-        self.delay.delay_ms(self.driver.poll_interval_ms()).await;
+        if core::mem::take(&mut self.initial_delay_pending) {
+            let initial_delay = self.driver.initial_delay_ms();
+            if initial_delay > 0 {
+                self.delay.delay_ms(initial_delay).await;
+            }
+        }
 
         match self.driver.sample(self.reporter.clock()).await {
             Ok(Some(update)) => {
                 self.failures = 0;
                 self.backoff.reset();
-                self.reporter.set_state(SensorState::Ready);
                 self.reporter.measurement(update);
+                self.delay.delay_ms(self.driver.poll_interval_ms()).await;
             }
-            Ok(None) => {}
+            Ok(None) => {
+                self.delay.delay_ms(self.driver.poll_interval_ms()).await;
+            }
             Err(e) => {
                 log::warn!("[{:?}] sample failed: {:?}", D::KIND, e);
                 self.failures = self.failures.saturating_add(1);
@@ -244,9 +282,12 @@ where
 mod tests {
     use super::*;
     use crate::runtime::bus::EventBus;
-    use crate::testutil::{FixedClock, NoDelay, block_on};
+    use crate::testutil::{FixedClock, NoDelay, RecordingDelay, block_on};
     use embassy_sync::blocking_mutex::raw::NoopRawMutex;
     use rohi_sensor_core::{Bmx280Update, Celsius, MonotonicTimestamp, Pascal, SensorEvent};
+
+    // Different from every backoff step, so waits are attributable.
+    const POLL_INTERVAL_MS: u32 = 90_000;
 
     #[derive(Debug, Clone, Copy)]
     enum FakeError {
@@ -269,6 +310,7 @@ mod tests {
     struct FakeDriver<const I: usize, const S: usize> {
         inits: [Result<(), FakeError>; I],
         samples: [Result<Option<f32>, FakeError>; S],
+        initial_delay_ms: u32,
         init_at: usize,
         sample_at: usize,
     }
@@ -301,8 +343,12 @@ mod tests {
             })
         }
 
+        fn initial_delay_ms(&self) -> u32 {
+            self.initial_delay_ms
+        }
+
         fn poll_interval_ms(&self) -> u32 {
-            1000
+            POLL_INTERVAL_MS
         }
     }
 
@@ -346,6 +392,7 @@ mod tests {
             FakeDriver::<1, 1> {
                 inits: [Err(FakeError::Absent)],
                 samples: [Ok(None)],
+                initial_delay_ms: 0,
                 init_at: 0,
                 sample_at: 0,
             },
@@ -372,6 +419,7 @@ mod tests {
             FakeDriver::<1, 3> {
                 inits: [Ok(())],
                 samples: [Err(FakeError::Bus), Ok(Some(21.0)), Ok(Some(22.0))],
+                initial_delay_ms: 0,
                 init_at: 0,
                 sample_at: 0,
             },
@@ -382,12 +430,7 @@ mod tests {
         let events = drain(&bus);
         assert_eq!(
             states(&events),
-            [
-                SensorState::Initializing,
-                SensorState::Ready,
-                SensorState::Degraded,
-                SensorState::Ready
-            ]
+            [SensorState::Initializing, SensorState::Degraded]
         );
         let measurements = events
             .iter()
@@ -411,6 +454,7 @@ mod tests {
                     Err(FakeError::Bus),
                     Ok(Some(20.0)),
                 ],
+                initial_delay_ms: 0,
                 init_at: 0,
                 sample_at: 0,
             },
@@ -424,15 +468,154 @@ mod tests {
             states(&events),
             [
                 SensorState::Initializing,
-                SensorState::Ready,
                 SensorState::Degraded,
                 SensorState::Error,
                 SensorState::Initializing,
                 SensorState::Error,
                 SensorState::Initializing,
-                SensorState::Ready,
             ]
         );
         assert!(matches!(events.last(), Some(SensorEvent::Measurements(_))));
+    }
+
+    fn timed_runner<'a, const I: usize, const S: usize>(
+        bus: &'a Bus,
+        driver: FakeDriver<I, S>,
+    ) -> (
+        Runner<'a, FakeDriver<I, S>, NoopRawMutex, FixedClock, RecordingDelay, 32>,
+        RecordingDelay,
+    ) {
+        let delay = RecordingDelay::default();
+        let reporter = Reporter::new(
+            SensorKind::Bmx280,
+            bus,
+            FixedClock(MonotonicTimestamp::from_millis(5)),
+        );
+        (
+            Runner::new(driver, reporter, delay.clone(), RunnerConfig::DEFAULT),
+            delay,
+        )
+    }
+
+    fn driver<const I: usize, const S: usize>(
+        inits: [Result<(), FakeError>; I],
+        samples: [Result<Option<f32>, FakeError>; S],
+    ) -> FakeDriver<I, S> {
+        FakeDriver {
+            inits,
+            samples,
+            initial_delay_ms: 0,
+            init_at: 0,
+            sample_at: 0,
+        }
+    }
+
+    #[test]
+    fn first_sample_is_not_delayed_and_success_waits_the_poll_interval() {
+        let bus = Bus::new();
+        let (mut r, delay) = timed_runner(&bus, driver([Ok(())], [Ok(Some(20.0))]));
+        block_on(r.step());
+        assert!(delay.waits().is_empty());
+        block_on(r.step());
+        block_on(r.step());
+        assert_eq!(delay.waits(), [POLL_INTERVAL_MS, POLL_INTERVAL_MS]);
+    }
+
+    #[test]
+    fn initial_delay_applies_once_before_the_first_sample() {
+        let bus = Bus::new();
+        let mut d = driver([Ok(())], [Ok(Some(20.0))]);
+        d.initial_delay_ms = 7_000;
+        let (mut r, delay) = timed_runner(&bus, d);
+        for _ in 0..3 {
+            block_on(r.step());
+        }
+        assert_eq!(delay.waits(), [7_000, POLL_INTERVAL_MS, POLL_INTERVAL_MS]);
+    }
+
+    #[test]
+    fn failure_waits_the_backoff_only_and_success_resets_it() {
+        let bus = Bus::new();
+        let (mut r, delay) = timed_runner(
+            &bus,
+            driver(
+                [Ok(())],
+                [
+                    Err(FakeError::Bus),
+                    Err(FakeError::Bus),
+                    Ok(Some(20.0)),
+                    Err(FakeError::Bus),
+                ],
+            ),
+        );
+        for _ in 0..5 {
+            block_on(r.step());
+        }
+        // No failure is followed by the normal poll interval; the first
+        // failure after a success starts again from the initial backoff.
+        assert_eq!(delay.waits(), [1_000, 2_000, POLL_INTERVAL_MS, 1_000]);
+    }
+
+    #[test]
+    fn backoff_is_bounded_and_not_reset_by_reinit() {
+        let bus = Bus::new();
+        let (mut r, delay) = timed_runner(&bus, driver([Ok(())], [Err(FakeError::Bus)]));
+        // init, 3 failures, re-init, 3 failures, re-init, 1 failure.
+        for _ in 0..10 {
+            block_on(r.step());
+        }
+        assert_eq!(
+            delay.waits(),
+            [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000]
+        );
+    }
+
+    #[test]
+    fn not_detected_sensor_is_reprobed_at_its_own_interval() {
+        let bus = Bus::new();
+        let (mut r, delay) = timed_runner(&bus, driver([Err(FakeError::Absent)], [Ok(None)]));
+        block_on(r.step());
+        block_on(r.step());
+        assert_eq!(
+            delay.waits(),
+            [
+                RunnerConfig::DEFAULT.reprobe_interval_ms,
+                RunnerConfig::DEFAULT.reprobe_interval_ms
+            ]
+        );
+    }
+
+    #[test]
+    fn success_is_one_measurement_event_and_ready_is_derived() {
+        let bus = Bus::new();
+        let mut r = runner(&bus, driver([Ok(())], [Ok(Some(21.0))]));
+        for _ in 0..4 {
+            block_on(r.step());
+        }
+        let events = drain(&bus);
+        // One state change on init, then only measurements: no `Ready` event.
+        assert_eq!(states(&events), [SensorState::Initializing]);
+        assert_eq!(events.len(), 1 + 3);
+        assert!(
+            events[1..]
+                .iter()
+                .all(|e| matches!(e, SensorEvent::Measurements(_)))
+        );
+        assert_eq!(r.reporter().state(), SensorState::Ready);
+    }
+
+    #[test]
+    fn reconnected_sensor_waits_for_its_first_measurement_to_be_ready() {
+        let bus = Bus::new();
+        let mut r = runner(
+            &bus,
+            driver([Err(FakeError::Absent), Ok(())], [Ok(Some(21.0))]),
+        );
+        block_on(r.step());
+        assert_eq!(r.reporter().state(), SensorState::NotDetected);
+        block_on(r.step());
+        assert_eq!(r.reporter().state(), SensorState::Initializing);
+        block_on(r.step());
+        assert_eq!(r.reporter().state(), SensorState::Ready);
     }
 }

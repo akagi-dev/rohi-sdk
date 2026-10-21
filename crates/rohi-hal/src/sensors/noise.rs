@@ -38,6 +38,25 @@
 //!   is about -18 dB SPL (one LSB), far below the microphone noise floor.
 //!   Adjust [`Config::calibration_offset_db`] for other microphones.
 //!
+//! # Metric definition
+//!
+//! | Property | Value |
+//! |----------|-------|
+//! | Metric | sound pressure level, dB SPL, re 20 µPa |
+//! | Weighting | **none**: flat response, **not dBA** and not dBC |
+//! | Time weighting | 125 ms mean-square sub-windows ("fast"); `average` is `Leq` over the 10 s window, `maximum` the loudest sub-window |
+//! | Microphone | ICS-43434 assumed: −26 dBFS at 94 dB SPL (1 kHz) |
+//! | Sample rate | 16 kHz, so content above 8 kHz is not captured |
+//! | Reference | 24-bit full scale = 120 dB SPL; offset [`CALIBRATION_OFFSET_DB`] |
+//! | Calibration | factory sensitivity only, no per-device calibration |
+//!
+//! Values are therefore comparable between devices of the same microphone
+//! model, not with a calibrated, A-weighted sound level meter. The reported
+//! levels include the microphone's own frequency response and the noise of the
+//! device itself (e.g. the SDS011 fan). If an A-weighted level is ever needed
+//! it must be added as a separate, tested weighting stage and exposed under its
+//! own name; this metric stays unweighted dB SPL.
+//!
 //! CPU load is a handful of integer operations per sample plus one logarithm
 //! per sub-window.
 

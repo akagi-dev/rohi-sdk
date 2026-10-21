@@ -22,8 +22,7 @@ use embassy_time::{Duration, Ticker};
 use log::info;
 use rohi_hal::esp::EmbassyClock;
 use rohi_hal::runtime::Clock;
-use rohi_hal::sensors::noise;
-use rohi_sensor_core::{FreshnessPolicy, MeasurementStore, MeasurementsSnapshot, SensorKind};
+use rohi_sensor_core::{MeasurementStore, MeasurementsSnapshot};
 
 use super::EVENTS;
 
@@ -75,11 +74,6 @@ fn log_snapshot(snapshot: &MeasurementsSnapshot) {
 #[embassy_executor::task]
 pub async fn store_task() {
     let mut store = MeasurementStore::new();
-    // The noise window is 10 s, so the default 10 s freshness would flap.
-    store.set_freshness_policy(
-        SensorKind::Microphone,
-        FreshnessPolicy::new(3 * noise::WINDOW_MS as u64),
-    );
     let clock = EmbassyClock;
     let mut ticker = Ticker::every(SNAPSHOT_INTERVAL);
 

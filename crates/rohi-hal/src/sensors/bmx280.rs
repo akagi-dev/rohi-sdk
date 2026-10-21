@@ -27,6 +27,18 @@
 //! forced mode (one conversion per [`SensorDriver::sample`] call; the sensor
 //! sleeps in between). One conversion takes at most about 19 ms.
 //! [`MEASUREMENT_INTERVAL_MS`] is the cadence between conversions.
+//!
+//! # Address
+//!
+//! [`Bmx280::auto`] probes [`ADDRESS_PRIMARY`] (`0x76`) first and then
+//! [`ADDRESS_SECONDARY`] (`0x77`) and uses the first address that answers with
+//! a BMP280 or BME280 chip ID, so either strapping works without a rebuild. A
+//! device with another chip ID is skipped. If valid sensors answer at both
+//! addresses, `0x76` wins; a second BMx280 is not supported. Probing is
+//! repeated by every [`SensorDriver::init`], so a sensor reconnected at the
+//! other address is found again. When nothing is found the error says why:
+//! bus failure, unsupported chip ID, or no device ([`Error::Absent`]), in that
+//! order of precedence.
 
 use core::fmt::Debug;
 
@@ -43,6 +55,8 @@ use crate::runtime::{Clock, DriverError, SensorDriver};
 pub const ADDRESS_PRIMARY: u8 = 0x76;
 /// Alternative I2C address (SDO high).
 pub const ADDRESS_SECONDARY: u8 = 0x77;
+/// Addresses probed by [`Bmx280::auto`], in order of preference.
+pub const ADDRESSES: [u8; 2] = [ADDRESS_PRIMARY, ADDRESS_SECONDARY];
 /// Delay between two measurements.
 pub const MEASUREMENT_INTERVAL_MS: u32 = 10_000;
 
@@ -120,6 +134,19 @@ impl<E: Debug> DriverError for Error<E> {
     fn is_absent(&self) -> bool {
         matches!(self, Error::Absent | Error::UnsupportedChip(_))
     }
+}
+
+/// The more informative of two probe failures: bus failure over unsupported
+/// chip over no device.
+fn more_specific<E>(a: Error<E>, b: Error<E>) -> Error<E> {
+    fn rank<E>(e: &Error<E>) -> u8 {
+        match e {
+            Error::Bus(_) => 2,
+            Error::UnsupportedChip(_) => 1,
+            _ => 0,
+        }
+    }
+    if rank(&b) > rank(&a) { b } else { a }
 }
 
 /// Factory calibration coefficients.
@@ -272,20 +299,38 @@ pub struct Bmx280<I2C, D> {
     i2c: I2C,
     delay: D,
     address: u8,
+    /// Addresses tried by [`Bmx280::detect`]; empty: only `address`.
+    candidates: &'static [u8],
     chip: Option<Chip>,
     calibration: Calibration,
 }
 
 impl<I2C: I2c, D: DelayNs> Bmx280<I2C, D> {
-    /// Create a driver; call [`SensorDriver::init`] (or [`Bmx280::probe`]) next.
+    /// Create a driver for a sensor at a fixed address; call
+    /// [`SensorDriver::init`] (or [`Bmx280::probe`]) next.
     pub fn new(i2c: I2C, delay: D, address: u8) -> Self {
+        Self::with_candidates(i2c, delay, address, &[])
+    }
+
+    /// Create a driver that finds the sensor at [`ADDRESSES`] itself.
+    pub fn auto(i2c: I2C, delay: D) -> Self {
+        Self::with_candidates(i2c, delay, ADDRESS_PRIMARY, &ADDRESSES)
+    }
+
+    fn with_candidates(i2c: I2C, delay: D, address: u8, candidates: &'static [u8]) -> Self {
         Self {
             i2c,
             delay,
             address,
+            candidates,
             chip: None,
             calibration: Calibration::default(),
         }
+    }
+
+    /// Address in use; before detection, the one probed first.
+    pub fn address(&self) -> u8 {
+        self.address
     }
 
     /// Detected chip variant.
@@ -337,9 +382,27 @@ impl<I2C: I2c, D: DelayNs> Bmx280<I2C, D> {
         }
     }
 
+    /// Find the sensor: probe the candidate addresses in order and keep the
+    /// first one with a valid chip ID.
+    pub async fn detect(&mut self) -> Result<Chip, Error<I2C::Error>> {
+        if self.candidates.is_empty() {
+            return self.probe().await;
+        }
+        let mut failure = Error::Absent;
+        for &address in self.candidates {
+            self.address = address;
+            match self.probe().await {
+                Ok(chip) => return Ok(chip),
+                Err(e) => failure = more_specific(failure, e),
+            }
+        }
+        self.address = self.candidates[0];
+        Err(failure)
+    }
+
     /// Detect, reset and read calibration.
     pub async fn initialize(&mut self) -> Result<Chip, Error<I2C::Error>> {
-        let chip = self.probe().await?;
+        let chip = self.detect().await?;
         self.write(REG_RESET, RESET_COMMAND).await?;
         self.delay.delay_ms(5).await;
         self.wait_while(STATUS_IM_UPDATE).await?;
@@ -624,5 +687,151 @@ mod tests {
         bus.push_read(&[0xFF; 24]);
         let mut sensor = Bmx280::new(bus, NoDelay, ADDRESS_PRIMARY);
         assert_eq!(block_on(sensor.initialize()), Err(Error::Calibration));
+    }
+
+    fn bme_bus() -> MockI2c {
+        let mut bus = MockI2c::default();
+        bus.push_read(&[0x60]);
+        bus.push_read(&[0x00]);
+        bus.push_read(&CALIB);
+        bus.push_read(&[75]);
+        bus.push_read(&[0x6E, 0x01, 0x00, 0x13, 0x2B, 0x03, 0x1E]);
+        bus
+    }
+
+    fn auto(bus: MockI2c) -> Bmx280<MockI2c, NoDelay> {
+        Bmx280::auto(bus, NoDelay)
+    }
+
+    #[test]
+    fn auto_finds_the_sensor_at_0x76() {
+        let mut sensor = auto(bmp_bus());
+        assert_eq!(block_on(sensor.initialize()), Ok(Chip::Bmp280));
+        assert_eq!(sensor.address(), 0x76);
+        assert!(sensor.i2c.addresses.iter().all(|&a| a == 0x76));
+    }
+
+    #[test]
+    fn auto_finds_the_sensor_at_0x77() {
+        let mut bus = MockI2c::default();
+        bus.push_error(MockI2c::nack());
+        for read in bmp_bus().reads {
+            bus.reads.push_back(read);
+        }
+        push_measurement(&mut bus);
+        let mut sensor = auto(bus);
+        assert_eq!(block_on(sensor.initialize()), Ok(Chip::Bmp280));
+        assert_eq!(sensor.address(), 0x77);
+        let clock = FixedClock(MonotonicTimestamp::from_millis(1));
+        assert!(block_on(sensor.sample(&clock)).unwrap().is_some());
+        // The failed probe at 0x76 is the only transaction to that address.
+        let addresses = &sensor.i2c.addresses;
+        assert_eq!(addresses[0], 0x76);
+        assert!(addresses[1..].iter().all(|&a| a == 0x77));
+    }
+
+    #[test]
+    fn auto_reports_no_device_when_both_addresses_are_silent() {
+        let mut bus = MockI2c::default();
+        bus.push_error(MockI2c::nack());
+        bus.push_error(MockI2c::nack());
+        let mut sensor = auto(bus);
+        let err = block_on(sensor.initialize()).unwrap_err();
+        assert_eq!(err, Error::Absent);
+        assert!(err.is_absent());
+        assert_eq!(sensor.i2c.addresses, [0x76, 0x77]);
+    }
+
+    #[test]
+    fn auto_skips_an_unsupported_chip_at_0x76() {
+        let mut bus = MockI2c::default();
+        bus.push_read(&[0x42]);
+        for read in bmp_bus().reads {
+            bus.reads.push_back(read);
+        }
+        let mut sensor = auto(bus);
+        assert_eq!(block_on(sensor.initialize()), Ok(Chip::Bmp280));
+        assert_eq!(sensor.address(), 0x77);
+    }
+
+    #[test]
+    fn auto_reports_an_unsupported_chip_when_nothing_else_answers() {
+        let mut bus = MockI2c::default();
+        bus.push_read(&[0x42]);
+        bus.push_error(MockI2c::nack());
+        let mut sensor = auto(bus);
+        assert_eq!(
+            block_on(sensor.initialize()),
+            Err(Error::UnsupportedChip(0x42))
+        );
+        assert_eq!(sensor.address(), 0x76);
+    }
+
+    #[test]
+    fn auto_reports_a_bus_failure_over_absence() {
+        let mut bus = MockI2c::default();
+        bus.push_error(ErrorKind::Bus);
+        bus.push_error(MockI2c::nack());
+        let mut sensor = auto(bus);
+        let err = block_on(sensor.initialize()).unwrap_err();
+        assert_eq!(err, Error::Bus(ErrorKind::Bus));
+        assert!(!err.is_absent());
+    }
+
+    #[test]
+    fn auto_uses_the_second_address_after_a_bus_failure_at_the_first() {
+        let mut bus = MockI2c::default();
+        bus.push_error(ErrorKind::Bus);
+        for read in bmp_bus().reads {
+            bus.reads.push_back(read);
+        }
+        let mut sensor = auto(bus);
+        assert_eq!(block_on(sensor.initialize()), Ok(Chip::Bmp280));
+        assert_eq!(sensor.address(), 0x77);
+    }
+
+    #[test]
+    fn auto_prefers_0x76_when_both_addresses_have_a_sensor() {
+        let mut bus = bmp_bus();
+        // Whatever sits at 0x77 is never touched.
+        bus.push_read(&[0x60]);
+        let mut sensor = auto(bus);
+        assert_eq!(block_on(sensor.initialize()), Ok(Chip::Bmp280));
+        assert_eq!(sensor.address(), 0x76);
+        assert_eq!(sensor.i2c.reads.len(), 1);
+    }
+
+    #[test]
+    fn auto_distinguishes_bmp280_and_bme280() {
+        let mut sensor = auto(bme_bus());
+        assert_eq!(block_on(sensor.initialize()), Ok(Chip::Bme280));
+        assert_eq!(sensor.chip(), Some(Chip::Bme280));
+
+        let mut sensor = auto(bmp_bus());
+        assert_eq!(block_on(sensor.initialize()), Ok(Chip::Bmp280));
+        assert_eq!(sensor.chip(), Some(Chip::Bmp280));
+    }
+
+    #[test]
+    fn reconnect_at_the_other_address_is_found_by_init() {
+        let mut sensor = auto(bmp_bus());
+        block_on(sensor.init()).unwrap();
+        assert_eq!(sensor.address(), 0x76);
+
+        sensor.i2c.push_error(MockI2c::nack());
+        for read in bmp_bus().reads {
+            sensor.i2c.reads.push_back(read);
+        }
+        block_on(sensor.init()).unwrap();
+        assert_eq!(sensor.address(), 0x77);
+    }
+
+    #[test]
+    fn fixed_address_driver_does_not_probe_others() {
+        let mut bus = MockI2c::default();
+        bus.push_error(MockI2c::nack());
+        let mut sensor = Bmx280::new(bus, NoDelay, ADDRESS_SECONDARY);
+        assert_eq!(block_on(sensor.initialize()), Err(Error::Absent));
+        assert_eq!(sensor.i2c.addresses, [0x77]);
     }
 }

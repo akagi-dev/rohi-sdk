@@ -79,9 +79,10 @@ impl MeasurementStore {
 
     /// Apply a sensor event.
     ///
-    /// - A measurement update stores the new values as valid. A sensor that
-    ///   was in error (or not yet ready) becomes `Ready` again; a `Degraded`
-    ///   sensor stays degraded.
+    /// - A measurement update stores the new values as valid and makes the
+    ///   sensor `Ready` in the same step, whatever its previous state (also
+    ///   `Degraded` or `Error`): fresh values and `Ready` are never observable
+    ///   apart.
     /// - A state change updates the sensor state. `NotDetected` removes the
     ///   sensor measurements. `Initializing` and `WarmingUp` mark the
     ///   measurements unavailable / warming up, and `Ready` restores
@@ -170,9 +171,7 @@ impl MeasurementStore {
         }
 
         let status = self.statuses.get_mut(update.sensor());
-        if status.state != SensorState::Degraded {
-            status.state = SensorState::Ready;
-        }
+        status.state = SensorState::Ready;
         status.last_success_at = Some(at);
         status.last_error = None;
     }

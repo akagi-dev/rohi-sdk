@@ -237,9 +237,11 @@ pub struct Sds011Update {
 /// Microphone noise observation.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NoiseUpdate {
-    /// Average sound level.
+    /// Average (equivalent continuous) sound level of the window, in dB SPL
+    /// without frequency weighting; not dBA.
     pub average: Decibels,
-    /// Maximum sound level.
+    /// Highest short-interval sound level of the window, in dB SPL without
+    /// frequency weighting; not dBA.
     pub maximum: Decibels,
     /// Time of the observation.
     pub timestamp: MonotonicTimestamp,

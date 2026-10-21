@@ -35,8 +35,14 @@
 //! | I2S WS            | GPIO6  |
 //! | I2S DIN           | GPIO8  |
 //!
-//! PLACEHOLDER pins are not verified against the hardware design and must be
-//! replaced with the real assignment before use on a device.
+//! Altruist Urban C3 board revision: the Urban board built around the
+//! ESP32-C3 module this firmware targets (`riscv32imc-unknown-none-elf`).
+//!
+//! Verified against: the Altruist Urban pinout, checked by the maintainer
+//! (WP2.1, akagi-dev/rohi-sdk#9) against the hardware design published in the
+//! production documentation linked above. The firmware drives no sensor power
+//! or control pin, so none is part of this map. A different board revision
+//! with another pin map must get its own module, not an edit of this table.
 
 use esp_hal::Async;
 use esp_hal::dma_rx_stream_buffer;

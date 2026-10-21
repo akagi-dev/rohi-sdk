@@ -334,17 +334,36 @@ fn ready_state_restores_valid_value_after_error() {
 }
 
 #[test]
-fn degraded_sensor_stays_degraded_on_update() {
+fn update_restores_ready_from_degraded_and_error_atomically() {
+    for from in [SensorState::Degraded, SensorState::Error] {
+        let mut store = MeasurementStore::new();
+        store.apply(bme280(22.1, 0));
+        store.apply(state(SensorKind::Bmx280, from, 1));
+        store.apply(bme280(22.2, 2));
+        let snap = store.snapshot(ts(2));
+        assert_eq!(
+            snap.sensor_statuses.get(SensorKind::Bmx280).state,
+            SensorState::Ready
+        );
+        let t = snap.measurements.bmx280.unwrap().temperature;
+        assert_eq!(t.state, MS::Valid);
+        assert_eq!(t.value, Some(Celsius(22.2)));
+    }
+}
+
+#[test]
+fn update_makes_warming_up_sensor_ready_with_fresh_value() {
     let mut store = MeasurementStore::new();
-    store.apply(bme280(22.1, 0));
-    store.apply(state(SensorKind::Bmx280, SensorState::Degraded, 1));
-    store.apply(bme280(22.2, 2));
-    let snap = store.snapshot(ts(2));
+    store.apply(state(SensorKind::Scd4x, SensorState::WarmingUp, 0));
+    store.apply(scd4x(21.0, 5));
+    let snap = store.snapshot(ts(5));
     assert_eq!(
-        snap.sensor_statuses.get(SensorKind::Bmx280).state,
-        SensorState::Degraded
+        snap.sensor_statuses.get(SensorKind::Scd4x).state,
+        SensorState::Ready
     );
-    assert!(snap.measurements.bmx280.unwrap().temperature.is_valid());
+    let t = snap.measurements.scd4x.unwrap().temperature;
+    assert_eq!(t.state, MS::Valid);
+    assert_eq!(t.value, Some(Celsius(21.0)));
 }
 
 #[test]

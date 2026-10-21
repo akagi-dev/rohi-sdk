@@ -54,7 +54,7 @@ fn reporter(
 /// BMP280 / BME280.
 #[embassy_executor::task]
 pub async fn bmx280_task(i2c: I2cHandle) {
-    let driver = bmx280::Bmx280::new(i2c, Delay, bmx280::ADDRESS_PRIMARY);
+    let driver = bmx280::Bmx280::auto(i2c, Delay);
     let mut runner = Runner::new(
         driver,
         reporter(SensorKind::Bmx280),

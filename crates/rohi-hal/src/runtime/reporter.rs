@@ -26,7 +26,9 @@ use super::states::SensorStates;
 
 /// Publishes events of one sensor into the [`EventBus`].
 ///
-/// State changes are published only when the state actually changes.
+/// State changes are published only when the state actually changes. A
+/// successful observation implies [`SensorState::Ready`] and is published as a
+/// single event, so the value and the state cannot be observed out of step.
 pub struct Reporter<'a, M: RawMutex, C: Clock, const N: usize> {
     kind: SensorKind,
     bus: &'a EventBus<M, N>,
@@ -79,8 +81,14 @@ impl<'a, M: RawMutex, C: Clock, const N: usize> Reporter<'a, M, C, N> {
         });
     }
 
-    /// Report a successful observation.
+    /// Report a successful observation. The sensor becomes `Ready` without a
+    /// separate `StateChanged` event: the consumer derives it from the
+    /// measurement.
     pub fn measurement(&mut self, update: MeasurementUpdate) {
+        self.state = SensorState::Ready;
+        if let Some(shared) = self.shared {
+            shared.set(self.kind, SensorState::Ready);
+        }
         self.bus.publish(SensorEvent::Measurements(update));
     }
 

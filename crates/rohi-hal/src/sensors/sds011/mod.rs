@@ -18,10 +18,11 @@
 //! SDS011 particulate matter sensor driver.
 //!
 //! The sensor is kept in query mode and asleep between cycles, so the fan and
-//! the laser run for the warm-up time only:
+//! the laser run for the warm-up and sampling time only:
 //!
 //! ```text
-//! wake -> query mode -> warm-up -> query -> sleep -> wait Config::sleep_ms
+//! wake -> query mode -> warm-up -> N x query -> aggregate -> sleep
+//!      -> wait Config::sleep_ms
 //! ```
 //!
 //! The command flow follows the community
@@ -38,8 +39,30 @@
 //!   does not keep running;
 //! * values outside of the sensor range are rejected.
 //!
-//! One cycle reports the single sample taken after [`Config::warmup_ms`].
+//! # Measurement cycle
+//!
+//! After [`Config::warmup_ms`] the driver queries the sensor up to
+//! [`Config::sample_count`] times, [`Config::sample_interval_ms`] apart, and
+//! keeps only valid samples: malformed or checksum-invalid frames and
+//! out-of-range values are dropped and do not count. Sampling ends when enough
+//! valid samples exist or the sampling window [`Config::cycle_timeout_ms`] is
+//! over. The samples are then aggregated by [`aggregate::Samples`] (mean,
+//! without the lowest and highest sample if [`Config::trim_min_max`] is set and
+//! at least [`aggregate::TRIM_MIN_SAMPLES`] samples exist) and published as one
+//! measurement.
+//!
+//! If fewer valid samples than required are collected the cycle fails with
+//! [`Error::InsufficientSamples`]; a partial result is never published. A
+//! silent sensor fails the cycle at once with [`Error::NoResponse`]. After any
+//! failure the sensor is told to sleep, and the runner retries after its
+//! recovery backoff.
+//!
+//! The sampling window is accounted in whole sample intervals; a silent UART
+//! ends the cycle through its own read timeout ([`READ_TIMEOUT_MS`]) and a
+//! rejected frame costs no measurable time. Buffers are fixed-size arrays,
+//! nothing allocates.
 
+pub mod aggregate;
 pub mod protocol;
 
 use core::fmt::{self, Debug, Display};
@@ -50,6 +73,7 @@ use rohi_sensor_core::{
     MeasurementUpdate, MicrogramsPerCubicMeter, Sds011Update, SensorErrorCode, SensorKind,
 };
 
+use self::aggregate::{MAX_SAMPLES, Samples};
 use self::protocol::{Command, Frame, HEAD, REPLY_LEN, Reply};
 use crate::runtime::{Clock, DriverError, SensorDriver, with_timeout};
 
@@ -60,6 +84,21 @@ pub const READ_TIMEOUT_MS: u32 = 5_000;
 pub const INIT_ATTEMPTS: u32 = 3;
 /// Highest value of the sensor range, in 0.1 µg/m³ (999.9 µg/m³).
 pub const MAX_RAW_VALUE: u16 = 9_999;
+
+/// Fan spin-up before sampling; 30 s as recommended by the manufacturer.
+pub const WARMUP_MS: u32 = 30_000;
+/// Valid samples required per measurement cycle.
+pub const SAMPLE_COUNT: usize = 5;
+/// Pause between two queries. The sensor refreshes its reading about once a
+/// second, a slightly longer pause makes consecutive samples distinct.
+pub const SAMPLE_INTERVAL_MS: u32 = 1_500;
+/// Sampling window; ends the cycle with an error if not enough valid samples
+/// arrived (allows about 4 times the required number of queries).
+pub const CYCLE_TIMEOUT_MS: u32 = 30_000;
+/// Discard the lowest and the highest sample before averaging.
+pub const TRIM_MIN_MAX: bool = true;
+/// Sleep between two cycles; the sensor is off during this time.
+pub const SLEEP_MS: u32 = 90_000;
 
 /// Pause before waking the sensor, it may still be busy after a previous
 /// command.
@@ -72,22 +111,40 @@ const MAX_SKIPPED_BYTES: u32 = 64;
 /// Frames ignored while waiting for a reply.
 const MAX_SKIPPED_FRAMES: u32 = 3;
 
-/// Timing parameters.
+/// Measurement cycle parameters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Config {
-    /// Time the fan spins before the measurement is taken.
+    /// Time the fan spins before sampling starts.
     pub warmup_ms: u32,
+    /// Valid samples required per cycle, at most [`MAX_SAMPLES`].
+    pub sample_count: usize,
+    /// Pause between two queries.
+    pub sample_interval_ms: u32,
+    /// Sampling window after the warm-up.
+    pub cycle_timeout_ms: u32,
+    /// Discard the lowest and the highest sample before averaging.
+    pub trim_min_max: bool,
     /// Sleep time between two cycles.
     pub sleep_ms: u32,
 }
 
 impl Config {
-    /// Default parameters: 30 s warm-up as recommended by the manufacturer,
-    /// 90 s sleep.
+    /// Defaults: [`WARMUP_MS`], [`SAMPLE_COUNT`], [`SAMPLE_INTERVAL_MS`],
+    /// [`CYCLE_TIMEOUT_MS`], [`TRIM_MIN_MAX`], [`SLEEP_MS`].
     pub const DEFAULT: Self = Self {
-        warmup_ms: 30_000,
-        sleep_ms: 90_000,
+        warmup_ms: WARMUP_MS,
+        sample_count: SAMPLE_COUNT,
+        sample_interval_ms: SAMPLE_INTERVAL_MS,
+        cycle_timeout_ms: CYCLE_TIMEOUT_MS,
+        trim_min_max: TRIM_MIN_MAX,
+        sleep_ms: SLEEP_MS,
     };
+
+    /// Longest time between two measurements of a healthy sensor: warm-up,
+    /// the whole sampling window and the sleep.
+    pub const fn max_cadence_ms(&self) -> u32 {
+        self.warmup_ms + self.cycle_timeout_ms + self.sleep_ms
+    }
 }
 
 impl Default for Config {
@@ -181,8 +238,10 @@ pub enum Error<E> {
     NoResponse,
     /// The sensor sent only malformed or unexpected frames.
     InvalidFrames,
-    /// The sensor reported a value outside of its range.
-    OutOfRange,
+    /// A frame was cut short: its header arrived, the rest did not.
+    TruncatedFrame,
+    /// The sampling window ended before enough valid samples were collected.
+    InsufficientSamples,
 }
 
 impl<E> From<UartError<E>> for Error<E> {
@@ -208,8 +267,8 @@ impl<E: Debug> DriverError for Error<E> {
         match self {
             Error::Uart(_) => SensorErrorCode::Bus,
             Error::NoResponse => SensorErrorCode::Timeout,
-            Error::InvalidFrames => SensorErrorCode::Crc,
-            Error::OutOfRange => SensorErrorCode::InvalidData,
+            Error::InvalidFrames | Error::TruncatedFrame => SensorErrorCode::Crc,
+            Error::InsufficientSamples => SensorErrorCode::InvalidData,
         }
     }
 
@@ -260,7 +319,14 @@ impl<U: Read + Write, D: DelayNs + Clone> Sds011<U, D> {
             }
         }
         let mut buf = [HEAD; REPLY_LEN];
-        self.uart.read_exact(&mut buf[1..]).await?;
+        match self.uart.read_exact(&mut buf[1..]).await {
+            Ok(()) => {}
+            Err(ReadExactError::Other(UartError::TimedOut) | ReadExactError::UnexpectedEof) => {
+                log::debug!("[sds011] truncated frame");
+                return Err(Error::TruncatedFrame);
+            }
+            Err(e) => return Err(e.into()),
+        }
         log::trace!("[sds011] received {:02x?}", buf);
         protocol::parse(&buf).map_err(|e| {
             log::debug!("[sds011] rejected frame {:02x?}: {:?}", buf, e);
@@ -282,7 +348,7 @@ impl<U: Read + Write, D: DelayNs + Clone> Sds011<U, D> {
                     Some(value) => return Ok(value),
                     None => log::debug!("[sds011] unexpected {:?} after {:?}", frame, command),
                 },
-                Err(Error::InvalidFrames) => {}
+                Err(Error::InvalidFrames | Error::TruncatedFrame) => {}
                 Err(e) => return Err(e),
             }
         }
@@ -316,12 +382,61 @@ impl<U: Read + Write, D: DelayNs + Clone> Sds011<U, D> {
         Ok(())
     }
 
-    async fn query(&mut self) -> Result<(u16, u16), Error<U::Error>> {
-        self.exchange(Command::Query, |f| match f.reply {
-            Reply::Measurement { pm25, pm10 } => Some((pm25, pm10)),
-            _ => None,
-        })
-        .await
+    /// Ask for one measurement and wait for exactly that reply. Unlike
+    /// [`Self::exchange`] a malformed reply ends the attempt at once instead of
+    /// waiting for another frame that will not come.
+    async fn query_sample(&mut self) -> Result<(u16, u16), Error<U::Error>> {
+        self.send(Command::Query).await?;
+        for _ in 0..=MAX_SKIPPED_FRAMES {
+            let frame = self.read_frame().await?;
+            if let Reply::Measurement { pm25, pm10 } = frame.reply {
+                return Ok((pm25, pm10));
+            }
+            log::debug!("[sds011] unexpected {:?} after a query", frame);
+        }
+        Err(Error::InvalidFrames)
+    }
+
+    /// Collect valid samples until `target` exist or the sampling window is
+    /// over, then aggregate them.
+    async fn sample_cycle(&mut self) -> Result<(u16, u16), Error<U::Error>> {
+        let target = self.config.sample_count.clamp(1, MAX_SAMPLES);
+        let mut samples = Samples::new();
+        let mut spent_ms = 0u32;
+        let mut first = true;
+        while samples.len() < target {
+            if !first {
+                let next = spent_ms.saturating_add(self.config.sample_interval_ms);
+                if next > self.config.cycle_timeout_ms {
+                    break;
+                }
+                self.delay.delay_ms(self.config.sample_interval_ms).await;
+                spent_ms = next;
+            }
+            first = false;
+            match self.query_sample().await {
+                Ok((pm25, pm10)) if pm25 <= MAX_RAW_VALUE && pm10 <= MAX_RAW_VALUE => {
+                    samples.push(pm25, pm10);
+                }
+                Ok((pm25, pm10)) => {
+                    log::debug!("[sds011] out-of-range sample pm25 {} pm10 {}", pm25, pm10);
+                }
+                Err(Error::InvalidFrames) => log::debug!("[sds011] sample dropped"),
+                Err(Error::TruncatedFrame) => {
+                    log::debug!("[sds011] sample dropped (truncated)");
+                    // The wait for the missing bytes used up part of the window.
+                    spent_ms = spent_ms.saturating_add(READ_TIMEOUT_MS);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        log::debug!("[sds011] {}/{} valid samples", samples.len(), target);
+        if samples.len() < target {
+            return Err(Error::InsufficientSamples);
+        }
+        samples
+            .aggregate(self.config.trim_min_max)
+            .ok_or(Error::InsufficientSamples)
     }
 
     async fn go_to_sleep(&mut self) -> Result<(), Error<U::Error>> {
@@ -354,10 +469,13 @@ impl<U: Read + Write, D: DelayNs + Clone> Sds011<U, D> {
             return Ok(None);
         }
         log::debug!("[sds011] warm-up {} ms", self.config.warmup_ms);
-        // The first answer after waking up is not trusted.
-        self.query().await?;
+        // The first answer after waking up is not trusted; only silence matters.
+        match self.query_sample().await {
+            Ok(_) | Err(Error::InvalidFrames | Error::TruncatedFrame) => {}
+            Err(e) => return Err(e),
+        }
         self.delay.delay_ms(self.config.warmup_ms).await;
-        let sample = self.query().await?;
+        let sample = self.sample_cycle().await?;
         self.go_to_sleep().await?;
         Ok(Some(sample))
     }
@@ -389,10 +507,6 @@ impl<U: Read + Write, D: DelayNs + Clone> SensorDriver for Sds011<U, D> {
         let Some((pm25, pm10)) = self.session(true).await? else {
             return Ok(None);
         };
-        if pm25 > MAX_RAW_VALUE || pm10 > MAX_RAW_VALUE {
-            log::debug!("[sds011] out-of-range sample pm25 {} pm10 {}", pm25, pm10);
-            return Err(Error::OutOfRange);
-        }
         log::debug!("[sds011] result: pm25 {} pm10 {} (0.1 ug/m3)", pm25, pm10);
         Ok(Some(MeasurementUpdate::Sds011(Sds011Update {
             pm25: MicrogramsPerCubicMeter(f32::from(pm25) / 10.0),
@@ -415,8 +529,16 @@ mod tests {
 
     const TEST_CONFIG: Config = Config {
         warmup_ms: 3_000,
+        sample_count: 5,
+        sample_interval_ms: 100,
+        cycle_timeout_ms: 2_000,
+        trim_min_max: true,
         sleep_ms: 1_000,
     };
+    /// Most queries a cycle sends: the untrusted one, the first sample and one
+    /// per interval of the sampling window.
+    const MAX_QUERIES: usize =
+        2 + (TEST_CONFIG.cycle_timeout_ms / TEST_CONFIG.sample_interval_ms) as usize;
     const SLEEP_COMMAND: [u8; protocol::COMMAND_LEN] = [
         0xAA, 0xB4, 0x06, 0x01, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF, 0x05, 0xAB,
     ];
@@ -427,15 +549,27 @@ mod tests {
         f
     }
 
+    /// Scripted reaction to one query.
+    #[derive(Debug, Clone)]
+    enum Query {
+        Pm(u16, u16),
+        /// Raw bytes instead of a frame (corrupted or truncated).
+        Bytes(Vec<u8>),
+        Mute,
+    }
+
     /// A sensor answering every command like the real one.
     struct FakeSensor {
         input: VecDeque<u8>,
         written: Vec<Vec<u8>>,
         pm: (u16, u16),
+        /// Reactions to the next queries, before `pm` is used again.
+        script: VecDeque<Query>,
         /// Command that is never answered.
         mute: Option<u8>,
         silent: bool,
-        /// Send a measurement before every reply, like a sensor in active mode.
+        /// Send a measurement before every reply except to queries, like a sensor
+        /// that is still in active mode while it is being configured.
         chatty: bool,
     }
 
@@ -445,6 +579,7 @@ mod tests {
                 input: VecDeque::new(),
                 written: Vec::new(),
                 pm,
+                script: VecDeque::new(),
                 mute: None,
                 silent: false,
                 chatty: false,
@@ -492,17 +627,21 @@ mod tests {
             if self.silent || self.mute == Some(buf[2]) {
                 return Ok(buf.len());
             }
-            if self.chatty {
+            if self.chatty && buf[2] != 4 {
                 self.input.extend(frame(0xC0, 1, 0, 2, 0));
             }
             let reply = match buf[2] {
                 2 | 6 => frame(0xC5, buf[2], buf[3], buf[4], 0),
                 7 => frame(0xC5, 7, 24, 5, 17),
-                4 => {
-                    let (a, b) = self.pm;
-                    let (a, b) = (a.to_le_bytes(), b.to_le_bytes());
-                    frame(0xC0, a[0], a[1], b[0], b[1])
-                }
+                4 => match self.script.pop_front() {
+                    Some(Query::Bytes(bytes)) => {
+                        self.input.extend(bytes);
+                        return Ok(buf.len());
+                    }
+                    Some(Query::Mute) => return Ok(buf.len()),
+                    Some(Query::Pm(a, b)) => pm_frame(a, b),
+                    None => pm_frame(self.pm.0, self.pm.1),
+                },
                 other => panic!("unexpected command {other}"),
             };
             self.input.extend(reply);
@@ -512,6 +651,34 @@ mod tests {
         async fn flush(&mut self) -> Result<(), FakeError> {
             Ok(())
         }
+    }
+
+    fn pm_frame(pm25: u16, pm10: u16) -> [u8; REPLY_LEN] {
+        let (a, b) = (pm25.to_le_bytes(), pm10.to_le_bytes());
+        frame(0xC0, a[0], a[1], b[0], b[1])
+    }
+
+    fn corrupted(pm25: u16, pm10: u16) -> Query {
+        let mut f = pm_frame(pm25, pm10);
+        f[8] = f[8].wrapping_add(1);
+        Query::Bytes(f.to_vec())
+    }
+
+    fn queries(sensor: &Sds011<FakeSensor, NoDelay>) -> usize {
+        sensor
+            .uart
+            .uart
+            .written
+            .iter()
+            .filter(|p| p[2] == 4)
+            .count()
+    }
+
+    fn pm_of(update: MeasurementUpdate) -> (f32, f32) {
+        let MeasurementUpdate::Sds011(u) = update else {
+            panic!("expected SDS011 update")
+        };
+        (u.pm25.0, u.pm10.0)
     }
 
     fn is_sleep(packet: &[u8]) -> bool {
@@ -542,7 +709,8 @@ mod tests {
         let written = &sensor.uart.uart.written;
         assert!(is_wake(written.first().unwrap()));
         assert!(is_sleep(written.last().unwrap()));
-        assert_eq!(written.iter().filter(|p| p[2] == 4).count(), 2);
+        // One untrusted query, then one per required sample.
+        assert_eq!(queries(&sensor), 1 + TEST_CONFIG.sample_count);
     }
 
     #[test]
@@ -624,7 +792,160 @@ mod tests {
             TEST_CONFIG,
         );
         let err = sample(&mut sensor).unwrap_err();
-        assert_eq!(err, Error::OutOfRange);
+        assert_eq!(err, Error::InsufficientSamples);
         assert_eq!(err.code(), SensorErrorCode::InvalidData);
+        assert_eq!(queries(&sensor), MAX_QUERIES);
+    }
+
+    #[test]
+    fn spikes_are_trimmed_from_the_valid_samples() {
+        let mut uart = FakeSensor::new((0, 0));
+        // The first query is the untrusted one after waking up.
+        for (a, b) in [
+            (1, 1),
+            (100, 200),
+            (120, 220),
+            (110, 210),
+            (800, 900),
+            (90, 190),
+        ] {
+            uart.script.push_back(Query::Pm(a, b));
+        }
+        let mut sensor = Sds011::new(uart, NoDelay, TEST_CONFIG);
+        let (pm25, pm10) = pm_of(sample(&mut sensor).unwrap());
+        // PM2.5 100 120 110 800 90 -> 110, PM10 200 220 210 900 190 -> 210.
+        assert!((pm25 - 11.0).abs() < 1e-4, "{pm25}");
+        assert!((pm10 - 21.0).abs() < 1e-4, "{pm10}");
+        assert!(is_sleep(sensor.uart.uart.written.last().unwrap()));
+    }
+
+    #[test]
+    fn trimming_can_be_turned_off() {
+        let mut uart = FakeSensor::new((0, 0));
+        for (a, b) in [(1, 1), (100, 10), (120, 10), (110, 10), (800, 10), (90, 10)] {
+            uart.script.push_back(Query::Pm(a, b));
+        }
+        let config = Config {
+            trim_min_max: false,
+            ..TEST_CONFIG
+        };
+        let mut sensor = Sds011::new(uart, NoDelay, config);
+        let (pm25, _) = pm_of(sample(&mut sensor).unwrap());
+        assert!((pm25 - 24.4).abs() < 1e-4, "{pm25}");
+    }
+
+    #[test]
+    fn corrupted_frames_between_valid_ones_are_not_averaged() {
+        let mut uart = FakeSensor::new((100, 100));
+        uart.script.extend([
+            Query::Pm(1, 1),
+            Query::Pm(100, 100),
+            corrupted(9_000, 9_000),
+            Query::Pm(100, 100),
+            corrupted(5_000, 5_000),
+        ]);
+        let mut sensor = Sds011::new(uart, NoDelay, TEST_CONFIG);
+        let (pm25, pm10) = pm_of(sample(&mut sensor).unwrap());
+        assert_eq!((pm25, pm10), (10.0, 10.0));
+        // Untrusted + 5 valid + 2 corrupted.
+        assert_eq!(queries(&sensor), 8);
+    }
+
+    #[test]
+    fn truncated_frame_costs_a_sample_but_the_stream_recovers() {
+        let mut uart = FakeSensor::new((100, 100));
+        let whole = pm_frame(7_000, 7_000);
+        uart.script.extend([
+            Query::Pm(1, 1),
+            Query::Pm(100, 100),
+            Query::Bytes(whole[..6].to_vec()),
+        ]);
+        let config = Config {
+            cycle_timeout_ms: 20_000,
+            ..TEST_CONFIG
+        };
+        let mut sensor = Sds011::new(uart, NoDelay, config);
+        let (pm25, pm10) = pm_of(sample(&mut sensor).unwrap());
+        assert_eq!((pm25, pm10), (10.0, 10.0));
+        assert_eq!(queries(&sensor), 1 + 1 + TEST_CONFIG.sample_count);
+    }
+
+    #[test]
+    fn waiting_for_a_truncated_frame_uses_up_the_sampling_window() {
+        let mut uart = FakeSensor::new((100, 100));
+        let whole = pm_frame(7_000, 7_000);
+        uart.script
+            .extend([Query::Pm(1, 1), Query::Bytes(whole[..6].to_vec())]);
+        let mut sensor = Sds011::new(uart, NoDelay, TEST_CONFIG);
+        assert_eq!(sample(&mut sensor).unwrap_err(), Error::InsufficientSamples);
+        assert_eq!(queries(&sensor), 2);
+    }
+
+    #[test]
+    fn only_corrupted_frames_end_with_insufficient_samples() {
+        let mut uart = FakeSensor::new((100, 100));
+        for _ in 0..MAX_QUERIES + 5 {
+            uart.script.push_back(corrupted(100, 100));
+        }
+        let mut sensor = Sds011::new(uart, NoDelay, TEST_CONFIG);
+        let err = sample(&mut sensor).unwrap_err();
+        assert_eq!(err, Error::InsufficientSamples);
+        assert!(!err.is_absent());
+        assert_eq!(
+            sensor.uart.uart.written.last().unwrap().as_slice(),
+            SLEEP_COMMAND
+        );
+    }
+
+    #[test]
+    fn too_few_valid_samples_are_not_published() {
+        let mut uart = FakeSensor::new((100, 100));
+        uart.script.extend([Query::Pm(1, 1)]);
+        uart.script.extend(
+            (0..TEST_CONFIG.sample_count - 1)
+                .map(|_| Query::Pm(100, 100))
+                .chain((0..MAX_QUERIES).map(|_| corrupted(100, 100))),
+        );
+        let mut sensor = Sds011::new(uart, NoDelay, TEST_CONFIG);
+        assert_eq!(sample(&mut sensor).unwrap_err(), Error::InsufficientSamples);
+    }
+
+    #[test]
+    fn sampling_window_bounds_the_number_of_queries() {
+        let mut uart = FakeSensor::new((100, 100));
+        for _ in 0..MAX_QUERIES * 2 {
+            uart.script.push_back(corrupted(100, 100));
+        }
+        let mut sensor = Sds011::new(uart, NoDelay, TEST_CONFIG);
+        let _ = sample(&mut sensor);
+        assert_eq!(queries(&sensor), MAX_QUERIES);
+    }
+
+    #[test]
+    fn silence_during_sampling_fails_the_cycle_and_sleeps() {
+        let mut uart = FakeSensor::new((100, 100));
+        uart.script
+            .extend([Query::Pm(1, 1), Query::Pm(100, 100), Query::Mute]);
+        let mut sensor = Sds011::new(uart, NoDelay, TEST_CONFIG);
+        assert_eq!(sample(&mut sensor).unwrap_err(), Error::NoResponse);
+        assert_eq!(
+            sensor.uart.uart.written.last().unwrap().as_slice(),
+            SLEEP_COMMAND
+        );
+    }
+
+    #[test]
+    fn next_cycle_succeeds_after_a_failed_one() {
+        let mut uart = FakeSensor::new((100, 100));
+        for _ in 0..MAX_QUERIES {
+            uart.script.push_back(corrupted(100, 100));
+        }
+        let mut sensor = Sds011::new(uart, NoDelay, TEST_CONFIG);
+        assert!(sample(&mut sensor).is_err());
+        let (pm25, _) = pm_of(sample(&mut sensor).unwrap());
+        assert_eq!(pm25, 10.0);
+        let written = &sensor.uart.uart.written;
+        assert!(is_sleep(written.last().unwrap()));
+        assert_eq!(written.iter().filter(|p| is_wake(p)).count(), 2);
     }
 }

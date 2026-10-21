@@ -56,6 +56,8 @@ pub struct MockI2c {
     pub reads: VecDeque<Result<Vec<u8>, ErrorKind>>,
     /// All written byte sequences.
     pub writes: Vec<Vec<u8>>,
+    /// Address of every transaction.
+    pub addresses: Vec<u8>,
 }
 
 impl MockI2c {
@@ -79,9 +81,10 @@ impl ErrorType for MockI2c {
 impl I2c for MockI2c {
     async fn transaction(
         &mut self,
-        _address: u8,
+        address: u8,
         operations: &mut [Operation<'_>],
     ) -> Result<(), Self::Error> {
+        self.addresses.push(address);
         for op in operations {
             match op {
                 Operation::Write(bytes) => self.writes.push(bytes.to_vec()),
@@ -117,5 +120,27 @@ impl Clock for StepClock {
         let t = self.now.get();
         self.now.set(t + self.step_ms);
         MonotonicTimestamp::from_millis(t)
+    }
+}
+
+/// Delay that completes immediately and records every requested wait in
+/// milliseconds; clones share the record.
+#[derive(Clone, Default)]
+pub struct RecordingDelay {
+    waits: std::rc::Rc<core::cell::RefCell<Vec<u32>>>,
+}
+
+impl RecordingDelay {
+    /// Waits requested so far.
+    pub fn waits(&self) -> Vec<u32> {
+        self.waits.borrow().clone()
+    }
+}
+
+impl DelayNs for RecordingDelay {
+    async fn delay_ns(&mut self, _ns: u32) {}
+
+    async fn delay_ms(&mut self, ms: u32) {
+        self.waits.borrow_mut().push(ms);
     }
 }

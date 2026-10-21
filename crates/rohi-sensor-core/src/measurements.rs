@@ -137,14 +137,20 @@ impl FreshnessPolicy {
         Self { stale_after_ms }
     }
 
-    /// Initial policy for a sensor. Production thresholds are expected to be
-    /// tuned later through [`crate::MeasurementStore::set_freshness_policy`].
+    /// Default policy for a sensor: several times its measurement cadence, so
+    /// normal operation never shows `Stale`. The WP2 sensors are checked
+    /// against their driver cadences by tests in `rohi-hal`; thresholds can
+    /// still be tuned through [`crate::MeasurementStore::set_freshness_policy`].
     pub const fn default_for(sensor: SensorKind) -> Self {
         match sensor {
+            // Every 10 s.
             SensorKind::Bmx280 => Self::new(60_000),
+            // Every 5 s.
             SensorKind::Scd4x => Self::new(30_000),
+            // Every ~2.5 min: 30 s warm-up, sampling window, 90 s sleep.
             SensorKind::Sds011 => Self::new(300_000),
-            SensorKind::Microphone => Self::new(10_000),
+            // A result every 10 s window.
+            SensorKind::Microphone => Self::new(30_000),
             SensorKind::Zmod4510 => Self::new(120_000),
             SensorKind::Ags3871 => Self::new(120_000),
             SensorKind::RadSens => Self::new(60_000),
@@ -216,9 +222,9 @@ impl Group for Sds011Measurements {
 /// Microphone noise measurements.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct NoiseMeasurements {
-    /// Average sound level.
+    /// Average sound level, dB SPL, unweighted (not dBA).
     pub average: Measurement<Decibels>,
-    /// Maximum sound level.
+    /// Maximum sound level, dB SPL, unweighted (not dBA).
     pub maximum: Measurement<Decibels>,
 }
 
