@@ -26,9 +26,10 @@
 use embassy_executor::Executor;
 use embassy_sync::mutex::Mutex;
 use esp_hal::clock::CpuClock;
-use log::info;
+use log::{error, info};
 use static_cell::StaticCell;
 
+use altruist_urban::config;
 use altruist_urban::tasks::sensors::{
     SharedI2cBus, bmx280_task, i2c_handle, noise_task, scd4x_task, sds011_task,
 };
@@ -53,6 +54,16 @@ fn main() -> ! {
 
     time_driver::init(runtime.systimer);
     info!("Embassy execution engine ready");
+
+    // Runtime tasks never touch the configuration flash directly. A missing
+    // partition (old partition table) must not stop the sensors.
+    let _config = match config::init(runtime.flash) {
+        Ok(config) => Some(config),
+        Err(error) => {
+            error!("Configuration store unavailable: {:?}", error);
+            None
+        }
+    };
 
     let board = AltruistC3::new(hardware).expect("board initialization failed");
     let AltruistC3 {

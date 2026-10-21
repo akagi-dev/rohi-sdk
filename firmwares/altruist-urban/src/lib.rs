@@ -26,5 +26,8 @@
 //! Sensor tasks never touch the `MeasurementStore`; the store task is its
 //! only owner.
 
+/// Persistent configuration store.
+pub mod config;
+
 /// Embassy tasks.
 pub mod tasks;

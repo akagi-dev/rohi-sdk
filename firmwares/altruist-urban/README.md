@@ -26,6 +26,9 @@ cd rohi-sdk && nix develop
 cargo run --release -p altruist-urban
 ```
 
+The runner flashes the partition table `partitions.csv`, which reserves the `rohi-cfg` region used by the
+[configuration store](../../docs/config-store.md). Run the command from the repository root.
+
 ## Sensors
 
 The firmware detects and runs BMP280/BME280, SCD40/SCD41, SDS011 and the I²S noise microphone concurrently, and logs a

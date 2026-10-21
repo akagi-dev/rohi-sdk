@@ -49,8 +49,8 @@ use esp_hal::dma_rx_stream_buffer;
 use esp_hal::i2c::master::{BusTimeout, Config as I2cConfig, I2c};
 use esp_hal::i2s::master::{Channels, DataFormat, I2s, TdmConfig};
 use esp_hal::peripherals::{
-    DMA_CH0, GPIO0, GPIO1, GPIO3, GPIO6, GPIO7, GPIO8, GPIO10, I2C0, I2S0, Peripherals, SYSTIMER,
-    UART1,
+    DMA_CH0, FLASH, GPIO0, GPIO1, GPIO3, GPIO6, GPIO7, GPIO8, GPIO10, I2C0, I2S0, Peripherals,
+    SYSTIMER, UART1,
 };
 use esp_hal::time::Rate;
 use esp_hal::uart::{self, RxConfig, Uart};
@@ -85,6 +85,8 @@ pub struct Hardware {
 pub struct Runtime {
     /// System timer used as the Embassy time base, see [`crate::esp::time_driver`].
     pub systimer: SYSTIMER<'static>,
+    /// SPI flash, handed to the configuration store.
+    pub flash: FLASH<'static>,
 }
 
 impl Hardware {
@@ -106,6 +108,7 @@ impl Hardware {
             },
             Runtime {
                 systimer: peripherals.SYSTIMER,
+                flash: peripherals.FLASH,
             },
         )
     }

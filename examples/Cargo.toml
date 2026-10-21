@@ -27,6 +27,10 @@ name = "example-noise"
 path = "./src/bin/noise.rs"
 
 [[bin]]
+name = "example-config"
+path = "./src/bin/config.rs"
+
+[[bin]]
 name = "example-all-sensors"
 path = "./src/bin/all-sensors.rs"
 
@@ -34,6 +38,10 @@ path = "./src/bin/all-sensors.rs"
 altruist-urban = { path = "../firmwares/altruist-urban" }
 rohi-hal = { workspace = true, features = ["esp"] }
 rohi-sensor-core = { workspace = true }
+rohi-config = { workspace = true }
+rohi-config-esp = { workspace = true, features = ["esp"] }
+postcard = { workspace = true }
+serde = { workspace = true }
 esp-backtrace = { workspace = true }
 esp-hal = { workspace = true }
 esp-println = { workspace = true }
