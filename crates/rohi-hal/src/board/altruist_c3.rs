@@ -25,15 +25,15 @@
 //!
 //! # Pin map
 //!
-//! | Function          | Pin    | Status      |
-//! |-------------------|--------|-------------|
-//! | I2C0 SDA          | GPIO3  | known       |
-//! | I2C0 SCL          | GPIO0  | known       |
-//! | SDS011 UART1 TX   | GPIO1  | known       |
-//! | SDS011 UART1 RX   | GPIO10 | known       |
-//! | I2S BCLK          | GPIO7  | known       |
-//! | I2S WS            | GPIO6  | known       |
-//! | I2S DIN           | GPIO8  | known       |
+//! | Function          | Pin    |
+//! |-------------------|--------|
+//! | I2C0 SDA          | GPIO3  |
+//! | I2C0 SCL          | GPIO0  |
+//! | SDS011 UART1 TX   | GPIO10 |
+//! | SDS011 UART1 RX   | GPIO1  |
+//! | I2S BCLK          | GPIO7  |
+//! | I2S WS            | GPIO6  |
+//! | I2S DIN           | GPIO8  |
 //!
 //! PLACEHOLDER pins are not verified against the hardware design and must be
 //! replaced with the real assignment before use on a device.
@@ -66,8 +66,8 @@ pub struct Hardware {
     i2c_sda: GPIO3<'static>,
     i2c_scl: GPIO0<'static>,
     uart: UART1<'static>,
-    uart_tx: GPIO1<'static>,
-    uart_rx: GPIO10<'static>,
+    uart_tx: GPIO10<'static>,
+    uart_rx: GPIO1<'static>,
     i2s: I2S0<'static>,
     i2s_dma: DMA_CH0<'static>,
     i2s_bclk: GPIO7<'static>,
@@ -90,8 +90,8 @@ impl Hardware {
                 i2c_sda: peripherals.GPIO3,
                 i2c_scl: peripherals.GPIO0,
                 uart: peripherals.UART1,
-                uart_tx: peripherals.GPIO1,
-                uart_rx: peripherals.GPIO10,
+                uart_tx: peripherals.GPIO10,
+                uart_rx: peripherals.GPIO1,
                 i2s: peripherals.I2S0,
                 i2s_dma: peripherals.DMA_CH0,
                 i2s_bclk: peripherals.GPIO7,
