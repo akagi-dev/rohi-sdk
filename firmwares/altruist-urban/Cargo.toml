@@ -1,7 +1,3 @@
-[[bin]]
-name = "altruist-urban"
-path = "./src/bin/main.rs"
-
 [package]
 name = "altruist-urban"
 version = "0.1.0"
@@ -14,6 +10,10 @@ description = "Altruist Urban firmware."
 
 [badges]
 maintenance = { status = "actively-developed" }
+
+[[bin]]
+name = "altruist-urban"
+path = "./src/bin/main.rs"
 
 [dependencies]
 rohi-hal = { workspace = true, features = ["esp"] }
