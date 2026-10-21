@@ -1,6 +1,6 @@
 ///////////////////////////////////////////////////////////////////////////////
 //
-//  Copyright 2025 Akagi Engineering <admin@akagi.dev>
+//  Copyright 2025-2026 Akagi Engineering <admin@akagi.dev>
 //
 //  Licensed under the Apache License, Version 2.0 (the "License");
 //  you may not use this file except in compliance with the License.
@@ -19,14 +19,31 @@
 
 //! Robonomics Open Hardware abstraction layer.
 //!
-//! This crate introduce Rust support for devices designed and assembled
-//! as part of Robonomics Open Hardware Initiative (ROHI). Details available at
+//! This crate introduces Rust support for devices designed and assembled as
+//! part of Robonomics Open Hardware Initiative (ROHI). Details available at
 //! https://robonomics.network/devices/
+//!
+//! Sensor drivers publish typed `rohi-sensor-core` events and know nothing
+//! about transports. Everything except [`board`] and [`esp`] is hardware
+//! independent and testable on a regular host; those two require the `esp`
+//! feature.
+
+#[cfg(test)]
+extern crate std;
+
+/// Hardware-independent sensor runtime.
+pub mod runtime;
+
+/// Sensor drivers.
+pub mod sensors;
 
 /// Robonomics Open Hardware devices collection.
-/// For example, Altruist is devkit for Air Quality sensing applications.
+#[cfg(feature = "esp")]
 pub mod board;
 
-/// A sensor is often defined as a device that receives and responds to a signal or stimulus.
-/// For example, temperature and humidity sensors is very usual for IoT.
-pub mod sensor;
+/// ESP32 peripheral glue for the hardware-independent drivers.
+#[cfg(feature = "esp")]
+pub mod esp;
+
+#[cfg(test)]
+mod testutil;

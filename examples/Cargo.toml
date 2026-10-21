@@ -1,10 +1,22 @@
 [[bin]]
-name = "example-altruist-sensor"
-path = "./src/bin/altruist-sensor.rs"
+name = "example-bmx280"
+path = "./src/bin/bmx280.rs"
 
 [[bin]]
-name = "example-network-ap-dhcp"
-path = "./src/bin/network-ap-dhcp.rs"
+name = "example-scd4x"
+path = "./src/bin/scd4x.rs"
+
+[[bin]]
+name = "example-sds011"
+path = "./src/bin/sds011.rs"
+
+[[bin]]
+name = "example-noise"
+path = "./src/bin/noise.rs"
+
+[[bin]]
+name = "example-all-sensors"
+path = "./src/bin/all-sensors.rs"
 
 [package]
 name = "rohi-examples"
@@ -19,17 +31,16 @@ repository.workspace = true
 maintenance = { status = "actively-developed" }
 
 [dependencies]
-rohi-hal = { workspace = true }
-rohi-net = { workspace = true }
-esp-alloc = { workspace = true }
+altruist-urban = { path = "../firmwares/altruist-urban" }
+rohi-hal = { workspace = true, features = ["esp"] }
+rohi-sensor-core = { workspace = true }
 esp-backtrace = { workspace = true }
 esp-hal = { workspace = true }
 esp-println = { workspace = true }
-esp-rtos = { workspace = true }
 esp-bootloader-esp-idf = { workspace = true }
 embassy-executor = { workspace = true }
+embassy-sync = { workspace = true }
 embassy-time = { workspace = true }
 static_cell = { workspace = true }
 critical-section = { workspace = true }
-heapless = { workspace = true }
 log = { workspace = true }

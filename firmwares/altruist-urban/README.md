@@ -25,3 +25,8 @@ cd rohi-sdk && nix-shell
 ```bash
 cargo run --release -p altruist-urban
 ```
+
+## Sensors
+
+The firmware detects and runs BMP280/BME280, SCD40/SCD41, SDS011 and the I²S noise microphone concurrently, and logs a
+`MeasurementsSnapshot` summary every 30 s. See the [Sensor runtime](../../docs/sensor-runtime.md) documentation.
