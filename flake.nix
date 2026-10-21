@@ -3,9 +3,11 @@
 
   inputs = {
     systems.url = "github:nix-systems/default";
-    nixpkgs.url = "github:NixOS/nixpkgs/cd4ea8d";
+    nixpkgs.url = "github:NixOS/nixpkgs/f20cd90e28fe0403873f473b29e42662cd86e8c4";
     fenix.url = "github:nix-community/fenix";
     fenix.inputs.nixpkgs.follows = "nixpkgs";
+    robins.url = "github:airalab/robins";
+    robins.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs =
@@ -14,10 +16,12 @@
       nixpkgs,
       systems,
       fenix,
+      robins,
       ...
     }:
     let 
       mkPkgs = system: nixpkgs.legacyPackages.${system}.appendOverlays [
+        robins.overlays.default
         (final: prev: {
           rust-toolchain = fenix.packages.${system}.fromToolchainFile { 
             file = ./rust-toolchain.toml;
@@ -45,6 +49,12 @@
           default = self.lib.${system}.mkDevShell {
             packages = with pkgs; [
               taplo actionlint cargo-nextest cargo-audit cargo-machete mdbook
+            ];
+            env.RUSTC_WRAPPER = pkgs.lib.getExe pkgs.sccache;
+          }; 
+          e2e = self.lib.${system}.mkDevShell {
+            packages = with pkgs; [
+              edge
             ];
             env.RUSTC_WRAPPER = pkgs.lib.getExe pkgs.sccache;
           }; 

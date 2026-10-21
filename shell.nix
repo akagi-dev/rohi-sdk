@@ -34,11 +34,6 @@ let
 in
 with pkgs;
 mkShell.override { stdenv = clangStdenv; } {
-  packages =
-    packages
-    ++ [
-      llvmPackages.lld
-      rust-toolchain
-    ];
+  packages = packages ++ [ rust-toolchain ];
   env = cargoLinker // env;
 }
