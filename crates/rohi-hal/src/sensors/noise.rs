@@ -228,10 +228,22 @@ impl<S: AudioSource, D: DelayNs> Noise<S, D> {
 
     async fn read_chunk(&mut self, chunk: &mut [i32]) -> Result<usize, Error<S::Error>> {
         match with_timeout(&mut self.delay, READ_TIMEOUT_MS, self.source.read(chunk)).await {
-            Err(_) => Err(Error::NoData),
-            Ok(Err(e)) => Err(Error::Source(e)),
-            Ok(Ok(0)) => Err(Error::NoData),
-            Ok(Ok(n)) => Ok(n),
+            Err(_) => {
+                log::debug!("[noise] audio read timed out after {} ms", READ_TIMEOUT_MS);
+                Err(Error::NoData)
+            }
+            Ok(Err(e)) => {
+                log::debug!("[noise] audio source failed: {:?}", e);
+                Err(Error::Source(e))
+            }
+            Ok(Ok(0)) => {
+                log::debug!("[noise] audio source returned no samples");
+                Err(Error::NoData)
+            }
+            Ok(Ok(n)) => {
+                log::trace!("[noise] read {} sample(s)", n);
+                Ok(n)
+            }
         }
     }
 
@@ -241,6 +253,7 @@ impl<S: AudioSource, D: DelayNs> Noise<S, D> {
         loop {
             let n = self.read_chunk(&mut chunk).await?;
             if let Some(levels) = self.meter.process(&chunk[..n]) {
+                log::debug!("[noise] window result: {:?}", levels);
                 return Ok(levels);
             }
         }

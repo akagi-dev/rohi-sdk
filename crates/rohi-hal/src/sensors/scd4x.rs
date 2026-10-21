@@ -197,7 +197,11 @@ impl<I2C: I2c, D: DelayNs> Scd4x<I2C, D> {
     }
 
     async fn command(&mut self, cmd: u16) -> Result<(), Error<I2C::Error>> {
-        self.i2c.write(ADDRESS, &cmd.to_be_bytes()).await?;
+        if let Err(e) = self.i2c.write(ADDRESS, &cmd.to_be_bytes()).await {
+            log::debug!("[scd4x] command {:#06x} failed: {:?}", cmd, e);
+            return Err(e.into());
+        }
+        log::trace!("[scd4x] command {:#06x} sent", cmd);
         Ok(())
     }
 
@@ -211,8 +215,25 @@ impl<I2C: I2c, D: DelayNs> Scd4x<I2C, D> {
         // 3 bytes per word, at most 3 words are ever read.
         let mut buf = [0u8; 9];
         let buf = &mut buf[..N * 3];
-        self.i2c.read(ADDRESS, buf).await?;
-        decode_words(buf).map_err(|_| Error::Crc)
+        if let Err(e) = self.i2c.read(ADDRESS, buf).await {
+            log::debug!(
+                "[scd4x] read of {} word(s) after command {:#06x} failed: {:?}",
+                N,
+                cmd,
+                e
+            );
+            return Err(e.into());
+        }
+        log::trace!("[scd4x] command {:#06x} response: {:02x?}", cmd, buf);
+        decode_words(buf).map_err(|e| {
+            log::debug!(
+                "[scd4x] command {:#06x} response {:02x?} rejected: {:?}",
+                cmd,
+                buf,
+                e
+            );
+            Error::Crc
+        })
     }
 
     /// Stop any running measurement, identify the sensor and start periodic
@@ -224,15 +245,24 @@ impl<I2C: I2c, D: DelayNs> Scd4x<I2C, D> {
         self.command(CMD_REINIT).await?;
         self.delay.delay_ms(REINIT_DELAY_MS).await;
 
-        let _serial: [u16; 3] = self.read_words(CMD_SERIAL_NUMBER, SERIAL_DELAY_MS).await?;
+        let serial: [u16; 3] = self.read_words(CMD_SERIAL_NUMBER, SERIAL_DELAY_MS).await?;
+        log::debug!("[scd4x] serial number: {:04x?}", serial);
         let [variant_word]: [u16; 1] = self
             .read_words(CMD_SENSOR_VARIANT, COMMAND_DELAY_MS)
             .await?;
         let variant = match variant_word >> 12 {
             0x0 => Variant::Scd40,
             0x1 => Variant::Scd41,
-            _ => return Err(Error::UnsupportedVariant(variant_word)),
+            _ => {
+                log::debug!("[scd4x] unsupported variant word {:#06x}", variant_word);
+                return Err(Error::UnsupportedVariant(variant_word));
+            }
         };
+        log::debug!(
+            "[scd4x] detected {:?} (word {:#06x})",
+            variant,
+            variant_word
+        );
 
         self.command(CMD_START_PERIODIC).await?;
         self.variant = Some(variant);
@@ -251,6 +281,7 @@ impl<I2C: I2c, D: DelayNs> Scd4x<I2C, D> {
         while !self.data_ready().await? {
             polls += 1;
             if polls >= MAX_READY_POLLS {
+                log::debug!("[scd4x] no data ready after {} polls", polls);
                 return Err(Error::Timeout);
             }
             self.delay.delay_ms(POLL_INTERVAL_MS).await;
@@ -261,8 +292,14 @@ impl<I2C: I2c, D: DelayNs> Scd4x<I2C, D> {
         let reading = Reading::from_words(words);
         // A zero CO2 value is reported when no valid measurement exists yet.
         if reading.co2 == 0 || reading.co2 > MAX_VALID_CO2_PPM {
+            log::debug!(
+                "[scd4x] invalid reading {:?} from words {:?}",
+                reading,
+                words
+            );
             return Err(Error::InvalidData);
         }
+        log::debug!("[scd4x] reading: {:?}", reading);
         Ok(reading)
     }
 }

@@ -28,12 +28,12 @@
 //! | Function          | Pin    | Status      |
 //! |-------------------|--------|-------------|
 //! | I2C0 SDA          | GPIO3  | known       |
-//! | I2C0 SCL          | GPIO2  | known       |
-//! | SDS011 UART1 TX   | GPIO5  | known       |
-//! | SDS011 UART1 RX   | GPIO4  | known       |
-//! | I2S BCLK          | GPIO10 | known       |
-//! | I2S WS            | GPIO1  | known       |
-//! | I2S DIN           | GPIO11 | known       |
+//! | I2C0 SCL          | GPIO0  | known       |
+//! | SDS011 UART1 TX   | GPIO1  | known       |
+//! | SDS011 UART1 RX   | GPIO10 | known       |
+//! | I2S BCLK          | GPIO7  | known       |
+//! | I2S WS            | GPIO6  | known       |
+//! | I2S DIN           | GPIO8  | known       |
 //!
 //! PLACEHOLDER pins are not verified against the hardware design and must be
 //! replaced with the real assignment before use on a device.
@@ -43,8 +43,8 @@ use esp_hal::dma_rx_stream_buffer;
 use esp_hal::i2c::master::{BusTimeout, Config as I2cConfig, I2c};
 use esp_hal::i2s::master::{Channels, DataFormat, I2s, TdmConfig};
 use esp_hal::peripherals::{
-    DMA_CH0, GPIO0, GPIO1, GPIO2, GPIO3, GPIO4, GPIO5, GPIO6, GPIO7, GPIO8, GPIO10, GPIO11, I2C0, I2S0, Peripherals,
-    SYSTIMER, UART1,
+    DMA_CH0, GPIO0, GPIO1, GPIO3, GPIO6, GPIO7, GPIO8, GPIO10, I2C0, I2S0, Peripherals, SYSTIMER,
+    UART1,
 };
 use esp_hal::time::Rate;
 use esp_hal::uart::{self, RxConfig, Uart};
@@ -55,10 +55,10 @@ use crate::sensors::noise::SAMPLE_RATE_HZ;
 /// SDS011 UART baud rate.
 pub const SDS011_BAUD_RATE: u32 = 9_600;
 
-/// I2S DMA ring buffer size in bytes: about 128 ms of mono 32-bit audio.
-const I2S_DMA_BUFFER_BYTES: usize = 8 * 1024;
+/// I2S DMA ring buffer size in bytes.
+const I2S_DMA_BUFFER_BYTES: usize = I2S_DMA_CHUNK_BYTES * 8;
 /// I2S DMA descriptor chunk size in bytes.
-const I2S_DMA_CHUNK_BYTES: usize = 1024;
+const I2S_DMA_CHUNK_BYTES: usize = 256;
 
 /// Peripherals used by the board, with the pins assigned by this file.
 pub struct Hardware {

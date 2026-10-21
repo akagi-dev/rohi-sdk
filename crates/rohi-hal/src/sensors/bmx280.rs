@@ -294,12 +294,30 @@ impl<I2C: I2c, D: DelayNs> Bmx280<I2C, D> {
     }
 
     async fn read(&mut self, reg: u8, buf: &mut [u8]) -> Result<(), Error<I2C::Error>> {
-        self.i2c.write_read(self.address, &[reg], buf).await?;
+        if let Err(e) = self.i2c.write_read(self.address, &[reg], buf).await {
+            log::debug!(
+                "[bmx280] read of {} byte(s) from register {:#04x} failed: {:?}",
+                buf.len(),
+                reg,
+                e
+            );
+            return Err(e.into());
+        }
+        log::trace!("[bmx280] register {:#04x} read: {:02x?}", reg, buf);
         Ok(())
     }
 
     async fn write(&mut self, reg: u8, value: u8) -> Result<(), Error<I2C::Error>> {
-        self.i2c.write(self.address, &[reg, value]).await?;
+        if let Err(e) = self.i2c.write(self.address, &[reg, value]).await {
+            log::debug!(
+                "[bmx280] write of {:#04x} to register {:#04x} failed: {:?}",
+                value,
+                reg,
+                e
+            );
+            return Err(e.into());
+        }
+        log::trace!("[bmx280] register {:#04x} written: {:#04x}", reg, value);
         Ok(())
     }
 
@@ -307,6 +325,11 @@ impl<I2C: I2c, D: DelayNs> Bmx280<I2C, D> {
     pub async fn probe(&mut self) -> Result<Chip, Error<I2C::Error>> {
         let mut id = [0u8];
         self.read(REG_ID, &mut id).await?;
+        log::debug!(
+            "[bmx280] chip id {:#04x} at address {:#04x}",
+            id[0],
+            self.address
+        );
         match id[0] {
             0x56..=0x58 => Ok(Chip::Bmp280),
             0x60 => Ok(Chip::Bme280),
@@ -332,8 +355,10 @@ impl<I2C: I2c, D: DelayNs> Bmx280<I2C, D> {
             calibration = calibration.with_humidity(h1[0], &rest);
         }
         if !calibration.is_plausible() {
+            log::debug!("[bmx280] implausible calibration: {:?}", calibration);
             return Err(Error::Calibration);
         }
+        log::debug!("[bmx280] {:?} calibration: {:?}", chip, calibration);
 
         self.write(REG_CONFIG, 0).await?;
         self.calibration = calibration;
@@ -350,6 +375,11 @@ impl<I2C: I2c, D: DelayNs> Bmx280<I2C, D> {
             }
             self.delay.delay_ms(POLL_STEP_MS).await;
         }
+        log::debug!(
+            "[bmx280] status mask {:#04x} still set after {} polls",
+            mask,
+            POLL_STEPS
+        );
         Err(Error::Timeout)
     }
 
@@ -368,7 +398,13 @@ impl<I2C: I2c, D: DelayNs> Bmx280<I2C, D> {
         let len = if chip == Chip::Bme280 { 8 } else { 6 };
         self.read(REG_DATA, &mut data[..len]).await?;
         let raw = RawSample::parse(&data[..len], chip == Chip::Bme280);
-        self.compensate(&raw)
+        log::trace!("[bmx280] raw sample: {:?}", raw);
+        let result = self.compensate(&raw);
+        match &result {
+            Ok(reading) => log::debug!("[bmx280] reading: {:?}", reading),
+            Err(e) => log::debug!("[bmx280] compensating {:?} failed: {:?}", raw, e),
+        }
+        result
     }
 
     fn compensate(&self, raw: &RawSample) -> Result<Reading, Error<I2C::Error>> {

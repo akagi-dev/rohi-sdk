@@ -49,7 +49,7 @@ pub struct Board {
 /// Initialize logging, the Embassy runtime and the board, then run `init` on
 /// the executor to spawn the example tasks.
 pub fn run(init: impl FnOnce(Spawner, Board)) -> ! {
-    esp_println::logger::init_logger_from_env();
+    esp_println::logger::init_logger(log::LevelFilter::Debug);
 
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);

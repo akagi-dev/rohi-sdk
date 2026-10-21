@@ -60,7 +60,7 @@ use rohi_sensor_core::{
 use crate::runtime::{Clock, DriverError, SensorDriver, with_timeout};
 
 /// Bound of a single UART read.
-pub const READ_TIMEOUT_MS: u32 = 3_000;
+pub const READ_TIMEOUT_MS: u32 = 5_000;
 /// Minimum valid frames needed to produce a result.
 pub const MIN_FRAMES_FOR_RESULT: usize = 3;
 /// Minimum valid frames to drop the lowest and highest value of each channel.
@@ -199,6 +199,11 @@ impl FrameParser {
         let checksum = b[2..8].iter().fold(0u8, |a, &x| a.wrapping_add(x));
         if b[9] != TAIL || b[8] != checksum {
             self.rejected = self.rejected.saturating_add(1);
+            log::debug!(
+                "[sds011] rejected frame {:02x?} (expected checksum {:#04x})",
+                b,
+                checksum
+            );
             self.resync();
             return None;
         }
@@ -370,11 +375,26 @@ impl<U: Read + Write, D: DelayNs> Sds011<U, D> {
     }
 
     async fn send(&mut self, packet: [u8; COMMAND_LEN]) -> Result<(), Error<U::Error>> {
-        self.uart.write_all(&packet).await.map_err(Error::Uart)?;
-        self.uart.flush().await.map_err(Error::Uart)
+        log::trace!("[sds011] sending command {:02x?}", packet);
+        self.uart.write_all(&packet).await.map_err(|e| {
+            log::debug!("[sds011] UART write failed: {:?}", e);
+            Error::Uart(e)
+        })?;
+        self.uart.flush().await.map_err(|e| {
+            log::debug!("[sds011] UART flush failed: {:?}", e);
+            Error::Uart(e)
+        })
     }
 
     async fn set_awake(&mut self, awake: bool) -> Result<(), Error<U::Error>> {
+        log::debug!(
+            "[sds011] switching {}",
+            if awake {
+                "to work mode"
+            } else {
+                "to sleep mode"
+            }
+        );
         self.send(command(CMD_SLEEP_WORK, 1, awake as u8)).await
     }
 
@@ -387,12 +407,20 @@ impl<U: Read + Write, D: DelayNs> Sds011<U, D> {
         let n = match with_timeout(&mut self.delay, READ_TIMEOUT_MS, self.uart.read(&mut chunk))
             .await
         {
-            Err(_) => return Ok(false),
-            Ok(Err(e)) => return Err(Error::Uart(e)),
+            Err(_) => {
+                log::debug!("[sds011] UART read timed out after {} ms", READ_TIMEOUT_MS);
+                return Ok(false);
+            }
+            Ok(Err(e)) => {
+                log::debug!("[sds011] UART read failed: {:?}", e);
+                return Err(Error::Uart(e));
+            }
             Ok(Ok(n)) => n,
         };
+        log::trace!("[sds011] received {:02x?}", &chunk[..n]);
         for &byte in &chunk[..n] {
             if let Some(frame) = self.parser.push(byte) {
+                log::trace!("[sds011] frame: {:?}", frame);
                 on_frame(frame);
             }
         }
@@ -417,8 +445,14 @@ impl<U: Read + Write, D: DelayNs> Sds011<U, D> {
         let result = self.set_awake(false).await;
         self.phase = Phase::Sleeping;
         if !seen {
+            log::debug!(
+                "[sds011] no valid frame in {} read attempts ({} rejected)",
+                INIT_READ_ATTEMPTS,
+                self.parser.rejected()
+            );
             return Err(Error::NoResponse);
         }
+        log::debug!("[sds011] initialized");
         result
     }
 
@@ -429,6 +463,7 @@ impl<U: Read + Write, D: DelayNs> Sds011<U, D> {
     ) -> Result<(f32, f32), Error<U::Error>> {
         self.phase = Phase::Wake;
         self.parser = FrameParser::new();
+        log::debug!("[sds011] cycle start: {:?}", self.phase);
         if let Err(e) = self.set_awake(true).await {
             self.phase = Phase::Sleeping;
             return Err(e);
@@ -437,6 +472,12 @@ impl<U: Read + Write, D: DelayNs> Sds011<U, D> {
         // Always try to stop the fan, whatever happened.
         let slept = self.set_awake(false).await;
         self.phase = Phase::Sleeping;
+        match &result {
+            Ok((pm25, pm10)) => {
+                log::debug!("[sds011] cycle result: pm25 {} pm10 {}", pm25, pm10)
+            }
+            Err(e) => log::debug!("[sds011] cycle failed: {:?}", e),
+        }
         let value = result?;
         slept?;
         Ok(value)
@@ -446,11 +487,21 @@ impl<U: Read + Write, D: DelayNs> Sds011<U, D> {
         let mut uart_errors = 0;
 
         self.phase = Phase::Warmup;
+        log::debug!(
+            "[sds011] phase {:?} for {} ms",
+            self.phase,
+            self.config.warmup_ms
+        );
         let warmup_end = clock.now().millis + self.config.warmup_ms as u64;
         while clock.now().millis < warmup_end {
             match self.next_frames(&mut |_| ()).await {
                 Err(Error::Uart(e)) => {
                     uart_errors += 1;
+                    log::debug!(
+                        "[sds011] UART error {}/{} during warmup",
+                        uart_errors,
+                        MAX_UART_ERRORS
+                    );
                     if uart_errors >= MAX_UART_ERRORS {
                         return Err(Error::Uart(e));
                     }
@@ -462,6 +513,12 @@ impl<U: Read + Write, D: DelayNs> Sds011<U, D> {
 
         self.phase = Phase::Sampling;
         let wanted = self.config.frames_per_cycle.min(MAX_FRAMES);
+        log::debug!(
+            "[sds011] phase {:?}: collecting {} frame(s) within {} ms",
+            self.phase,
+            wanted,
+            self.config.sampling_timeout_ms
+        );
         let sampling_end = clock.now().millis + self.config.sampling_timeout_ms as u64;
         let mut aggregator = Aggregator::new();
         let rejected_before = self.parser.rejected();
@@ -480,6 +537,11 @@ impl<U: Read + Write, D: DelayNs> Sds011<U, D> {
             {
                 Err(Error::Uart(e)) => {
                     uart_errors += 1;
+                    log::debug!(
+                        "[sds011] UART error {}/{} during sampling",
+                        uart_errors,
+                        MAX_UART_ERRORS
+                    );
                     if uart_errors >= MAX_UART_ERRORS {
                         return Err(Error::Uart(e));
                     }
@@ -492,13 +554,25 @@ impl<U: Read + Write, D: DelayNs> Sds011<U, D> {
             for frame in frames.into_iter().flatten() {
                 if let Frame::Data { pm25, pm10 } = frame
                     && aggregator.len() < wanted
+                    && !aggregator.push(pm25, pm10)
                 {
-                    aggregator.push(pm25, pm10);
+                    log::debug!(
+                        "[sds011] dropped out-of-range sample pm25 {} pm10 {}",
+                        pm25,
+                        pm10
+                    );
                 }
             }
         }
 
         self.phase = Phase::Aggregate;
+        log::debug!(
+            "[sds011] phase {:?}: {} of {} frame(s) accepted, {} rejected",
+            self.phase,
+            aggregator.len(),
+            wanted,
+            self.parser.rejected() - rejected_before
+        );
         match aggregator.result() {
             Some(result) => Ok(result),
             None if !received_anything => Err(Error::NoResponse),
