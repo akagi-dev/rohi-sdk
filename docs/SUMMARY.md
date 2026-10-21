@@ -6,6 +6,7 @@
 
 - [Installation](install.md)
 - [Air Quality Terminal](air-quality-terminal.md)
+- [Sensor runtime](sensor-runtime.md)
 
 # Deep Dive
 

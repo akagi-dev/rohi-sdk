@@ -1,6 +1,6 @@
 ///////////////////////////////////////////////////////////////////////////////
 //
-//  Copyright 2025 Akagi Engineering <admin@akagi.dev>
+//  Copyright 2025-2026 Akagi Engineering <admin@akagi.dev>
 //
 //  Licensed under the Apache License, Version 2.0 (the "License");
 //  you may not use this file except in compliance with the License.
@@ -16,19 +16,22 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 #![no_std]
+#![no_main]
 
-//! Network layer for Robonomics Open Hardware Initiative.
-//!
-//! This crate aims to support general IoT related network services. Provides
-//! abstraction for Robonomics Hardware collection, makes firmware creation
-//! developer friendly.
-//!
-//! Same as other ROHI SDK crates this is **async-only**. It based on [embassy-net](https://crates.io/crates/embassy-net)
-//! as low level networking and uses [edge-http](https://crates.io/crates/edge-http) for HTTP.
+//! I2S microphone example: prints average and maximum noise level every 10 s window.
 
-/// HTTP server and client support.
-pub mod http;
+use altruist_urban::tasks::sensors::noise_task;
+use embassy_executor::Spawner;
+use esp_backtrace as _;
+use rohi_examples::{init, print_events_task};
 
-/// Entry point for networking.
-pub mod network;
-pub use network::*;
+esp_bootloader_esp_idf::esp_app_desc!();
+
+#[esp_rtos::main]
+async fn main(spawner: Spawner) {
+    let board = init();
+
+    spawner.spawn(print_events_task().unwrap());
+    spawner.spawn(noise_task(board.microphone).unwrap());
+    core::future::pending::<()>().await
+}

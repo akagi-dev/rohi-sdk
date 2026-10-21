@@ -1,0 +1,136 @@
+# Sensor runtime
+
+The Altruist Urban firmware turns physical sensors into immutable `MeasurementsSnapshot` values:
+
+```text
+physical sensor -> rohi-hal driver -> async sensor task -> SensorEvent
+  -> bounded event queue -> store task -> MeasurementStore -> MeasurementsSnapshot
+```
+
+Dependency direction: `altruist-urban` → `rohi-hal` → `rohi-sensor-core`. Drivers know nothing about Wi-Fi, BLE,
+serialization or any other transport, and nothing is averaged or fused across sensors: `bmx280.temperature` and
+`scd4x.temperature` are separate observations.
+
+## Components
+
+| Component | Location | Role |
+|-----------|----------|------|
+| Drivers | `crates/rohi-hal/src/sensors/` | BMx280, SCD4x, SDS011, noise. Hardware independent (`embedded-hal-async`, `embedded-io-async`), unit tested on a host |
+| Runtime | `crates/rohi-hal/src/runtime/` | `Runner` lifecycle, `Reporter`, `EventBus`, backoff, bounded I²C |
+| Board | `crates/rohi-hal/src/board/altruist_c3.rs` | All pin assignments, bus configuration (feature `esp`) |
+| Tasks | `firmwares/altruist-urban/src/tasks/` | One Embassy task per sensor, single `MeasurementStore` owner |
+
+## Sensor lifecycle
+
+Each driver is wrapped by a `Runner` which maps results into `SensorState`:
+
+```text
+NotDetected -> Initializing -> WarmingUp -> Ready
+Ready -> Degraded -> Error -> (re-init) -> Initializing -> Ready
+```
+
+* Absence is not an error: a sensor that never answered is `NotDetected` and probed every 10 s.
+* A sensor that was detected before and stops answering is `Error` and recovered with exponential backoff
+  (1 s … 30 s), so a reconnected sensor returns to `Ready` without a reboot.
+* First failure → `Degraded`; 3 consecutive failures → `Error` and driver re-initialization.
+* Errors never erase the last valid observation; they are published as `SensorEvent::Error`.
+
+## Event queue
+
+`EventBus` is a bounded queue of 16 events (`EVENT_QUEUE_CAPACITY`). When it is full, the **oldest** event is dropped
+and counted (`EVENTS.dropped()`, logged with every snapshot): newest state is more useful than a backlog and producers
+never block. The store task is the only component mutating the `MeasurementStore`.
+
+## Timing
+
+| Sensor | Cadence | Details |
+|--------|---------|---------|
+| BMP280 / BME280 | 10 s | Forced mode: T ×2, P ×4, H ×1, filter off, ≈19 ms per conversion, I²C `0x76` |
+| SCD4x | 5 s | Periodic measurement, data-ready polling every 500 ms (max 20 polls), CRC-8 on every word |
+| SDS011 | ≈130 s cycle | 30 s warm-up, 10 frames (≈10 s), 90 s sleep; see below |
+| Noise | 10 s window | 16 kHz mono; see below |
+
+All waits use monotonic async timers; nothing depends on wall-clock time. Every I²C transaction is bounded to 200 ms
+(`TimeoutI2c`), every UART/I²S read to 3 s / 1 s.
+
+### SDS011 cycle
+
+`Sleeping → Wake → Warmup → Sampling → Aggregate → Sleeping`. Frames are read (and discarded) during warm-up so the
+UART FIFO never overflows. The parser has no allocation, resynchronizes on the next `AA` header and validates the
+checksum and tail. Aggregation drops out-of-range samples (> 999.9 µg/m³); with ≥ 5 valid frames the lowest and highest
+value of each channel are dropped and the rest averaged; fewer than 3 valid frames fail the cycle. A silent sensor or
+repeated corrupted frames lead to `Degraded` → `Error` → re-initialization.
+
+### Noise
+
+* 16 kHz, 24-bit samples (ICS-43434 assumed: −26 dBFS at 94 dB SPL, so full scale is 120 dB SPL), unweighted dB SPL.
+* ≈10 Hz integer DC blocker, level every 125 ms sub-window; per 10 s window *average* is the energy average
+  (equivalent continuous level) and *maximum* the highest sub-window level.
+* Raw audio is never stored: a 256-sample stack chunk plus the 8 KiB DMA ring buffer (≈128 ms) are the only buffers.
+
+### SDS011 and noise coordination
+
+The legacy firmware coordinated SDS011 activity with noise measurement (the fan is a noise source). This could not be
+verified on current hardware here, so no coordination is implemented. The runtime exposes `STATES`
+(`SensorStates`), a read-only view of every sensor state, so a future noise acquisition policy can react to the
+SDS011 state (e.g. flag windows while it is in `Warmup`/`Sampling`) without coupling the drivers.
+
+## Pins
+
+All GPIO assignments live in `board/altruist_c3.rs`. I²C (GPIO3/GPIO0) and SDS011 UART (GPIO10/GPIO1) come from the
+previous firmware; **the I²S pins (GPIO4/5/6) and the sensor power control (GPIO7, disabled via
+`SENSOR_POWER_ENABLED`) are PLACEHOLDERS** that must be replaced with the real hardware assignment.
+
+## Testing
+
+Host tests (no hardware needed):
+
+```bash
+cargo test-host        # alias for: cargo test -p rohi-sensor-core -p rohi-hal --target x86_64-unknown-linux-gnu
+cargo check --workspace
+cargo build --release -p altruist-urban
+```
+
+Hardware examples (each prints typed measurements, states and errors):
+
+```bash
+cargo run --release --bin example-bmx280
+cargo run --release --bin example-scd4x
+cargo run --release --bin example-sds011
+cargo run --release --bin example-noise
+cargo run --release --bin example-all-sensors   # combined test
+```
+
+Combined test checklist: BMX280 keeps updating; SCD4x keeps updating; SDS011 cycles correctly; noise windows keep
+arriving; no sensor starves another. Hot-reconnect check: unplug/replug an I²C sensor and confirm
+`Error → Initializing → WarmingUp/Ready` without a reboot.
+
+## Resource baseline
+
+`cargo build --release -p altruist-urban`, ESP32-C3 (before Wi-Fi/BLE/TLS):
+
+| Item | Size |
+|------|------|
+| `.text` (flash) | 116 990 B |
+| `.rodata` (flash) | 26 232 B |
+| `.rwtext` + `.data` (RAM) | 3 704 B + 2 784 B |
+| `.bss` (RAM, includes task futures, DMA ring buffer) | 15 488 B |
+| Heap region (`.dram2_uninit`, required by the RTOS only; drivers do not allocate) | 66 320 B |
+| Event queue | 16 events |
+| Noise buffers | 256 samples (1 KiB) stack + 8 KiB DMA ring |
+
+Task stack usage is not measured yet.
+
+## Stability test
+
+Run `altruist-urban` without networking for at least 24 h (preferably 72 h) with all sensors attached and record:
+
+| Item | Result |
+|------|--------|
+| Duration | |
+| Unexpected reboots / panics | |
+| Sensor errors per sensor | |
+| Recovery events | |
+| `dropped events` (log) | |
+| Free heap / memory stability | |
+| Task stalls (snapshots stop updating) | |

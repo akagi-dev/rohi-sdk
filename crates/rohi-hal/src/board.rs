@@ -1,6 +1,6 @@
 ///////////////////////////////////////////////////////////////////////////////
 //
-//  Copyright 2025 Akagi Engineering <admin@akagi.dev>
+//  Copyright 2025-2026 Akagi Engineering <admin@akagi.dev>
 //
 //  Licensed under the Apache License, Version 2.0 (the "License");
 //  you may not use this file except in compliance with the License.
@@ -18,6 +18,5 @@
 //! Robonomics Open Hardware development board collection.
 //! Device list available on https://robonomics.network/devices/
 
-/// Altruist Air Quality Sensor HAL.
-pub mod altruist;
-pub use altruist::Altruist;
+/// Altruist Urban (ESP32-C3) pin assignments and peripheral bundle.
+pub mod altruist_c3;

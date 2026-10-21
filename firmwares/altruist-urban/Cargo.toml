@@ -16,7 +16,8 @@ description = "Altruist Urban firmware."
 maintenance = { status = "actively-developed" }
 
 [dependencies]
-rohi-hal = { workspace = true }
+rohi-hal = { workspace = true, features = ["esp"] }
+rohi-sensor-core = { workspace = true }
 esp-hal = { workspace = true }
 esp-println = { workspace = true }
 esp-alloc = { workspace = true }
@@ -25,6 +26,9 @@ esp-rtos = { workspace = true }
 esp-bootloader-esp-idf = { workspace = true }
 embassy-executor = { workspace = true }
 embassy-time = { workspace = true }
+embassy-sync = { workspace = true }
+embassy-futures = { workspace = true }
+embassy-embedded-hal = { workspace = true }
 static_cell = { workspace = true }
 critical-section = { workspace = true }
 log = { workspace = true }
