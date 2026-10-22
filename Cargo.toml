@@ -7,11 +7,12 @@ homepage = "https://rohi.akagi.dev"
 repository = "https://github.com/akagi-dev/rohi-sdk"
 
 [workspace]
-members = ["crates/*", "firmwares/*", "examples"]
-# Host commands (`cargo test`, `cargo clippy`) cover the portable crates only.
+members = ["crates/*", "firmwares/*", "tools/*", "examples"]
+# Host commands (`cargo test`, `cargo clippy`) cover the portable crates and
+# the desktop tools only.
 # Firmware and examples are built per chip, see the `check-*` / `build-*`
 # aliases in `.cargo/config.toml`.
-default-members = ["crates/*"]
+default-members = ["crates/*", "tools/*"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -69,6 +70,17 @@ syn = { version = "2.0", features = ["full"] }
 quote = "1.0"
 proc-macro2 = "1.0"
 proc-macro-crate = "3.5"
+
+# Desktop tools (std only, never used by firmware)
+btleplug = "0.13"
+tokio = { version = "1", default-features = false, features = ["rt", "macros", "time", "sync"] }
+futures = "0.3"
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rpassword = "7"
+thiserror = "2"
+uuid = "1"
 
 # Dev
 proptest = "1.7"
