@@ -16,9 +16,11 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-use embedded_storage::nor_flash::{ErrorType, NorFlashError, NorFlashErrorKind, ReadNorFlash};
+use embedded_storage::nor_flash::{
+    ErrorType, MultiwriteNorFlash, NorFlashError, NorFlashErrorKind, ReadNorFlash,
+};
+use minicbor::{CborLen, Decode, Encode};
 use rohi_config::{ConfigSection, ConfigStore};
-use serde::{Deserialize, Serialize};
 
 use super::*;
 
@@ -69,6 +71,8 @@ impl ReadNorFlash for MockFlash {
         FLASH_SIZE
     }
 }
+
+impl MultiwriteNorFlash for MockFlash {}
 
 impl NorFlash for MockFlash {
     const WRITE_SIZE: usize = 4;
@@ -222,16 +226,10 @@ fn write_and_erase_land_in_the_region() {
     assert!(flash.data[..0x4000].iter().all(|b| *b == 0xA5));
 }
 
-#[derive(
-    Debug,
-    PartialEq,
-    Serialize,
-    Deserialize,
-    postcard::experimental::max_size::MaxSize,
-    ConfigSection,
-)]
-#[config(name = "mock", version = 1)]
+#[derive(Debug, PartialEq, Encode, Decode, CborLen, ConfigSection)]
+#[config(version = 1)]
 struct Mock {
+    #[n(0)]
     value: u32,
 }
 

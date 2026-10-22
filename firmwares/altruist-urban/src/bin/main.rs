@@ -59,15 +59,10 @@ async fn main(spawner: Spawner) -> ! {
         radio_heap_free()
     );
 
-    // Runtime tasks never touch the configuration flash directly. A missing
-    // partition (old partition table) must not stop the sensors.
-    let config = match config::init(runtime.flash) {
-        Ok(config) => Some(config),
-        Err(error) => {
-            error!("Configuration store unavailable: {:?}", error);
-            None
-        }
-    };
+    // The configuration task is the single owner of the store; everything else
+    // uses the handle. A missing partition (old partition table) or corrupted
+    // configuration must not stop the sensors.
+    let config = config::start(spawner, runtime.flash);
 
     let board = AltruistC3::new(hardware).expect("board initialization failed");
     let AltruistC3 {

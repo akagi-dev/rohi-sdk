@@ -16,156 +16,163 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-//! On-flash container format. All integers are little-endian and every field
-//! is encoded explicitly; Rust memory layout is never persisted.
+//! Persistent format constants and the minimal CBOR head helpers.
+//!
+//! Everything stored in a slot is a CBOR document:
 //!
 //! ```text
-//! slot:    SlotHeader (24 B) | section 0 | section 1 | ... | 0xFF padding
-//! section: SectionHeader (16 B) | SCALE payload | zero padding to 4 bytes
+//! slot     = SlotEnvelope | 0xFF padding | commit word (last 4 bytes of the slot)
+//! envelope = { 0: bstr(config payload), 1: crc32(config payload) }
+//! payload  = { 0: format version, 1: generation, 2: [ bstr(section record)* ] }
+//! record   = [ section id (u64), section version (u16), bstr(typed section CBOR) ]
 //! ```
+//!
+//! Structured fields are encoded and decoded with `minicbor`. Only the head of a
+//! definite-length byte string is handled here: the byte strings can be larger
+//! than the RAM workspace, so they are streamed to and from flash and their
+//! length has to be known (or read) before their content.
 
-use crate::SectionId;
-
-/// `"ROHC"` in memory order.
-pub const SLOT_MAGIC: u32 = u32::from_le_bytes(*b"ROHC");
-/// Written last; its presence makes a slot valid.
-pub const COMMIT_MARKER: u32 = u32::from_le_bytes(*b"COMT");
+/// Version of the container format (`ConfigPayload` key 0).
 pub const FORMAT_VERSION: u16 = 1;
 
-pub const SLOT_HEADER_SIZE: usize = 24;
-pub const SECTION_HEADER_SIZE: usize = 16;
-/// Section payloads are padded with zeros to this boundary.
-pub const SECTION_ALIGN: usize = 4;
+/// Flash commit word, written last. It is transaction metadata, not schema.
+pub const COMMIT_WORD: u32 = u32::from_le_bytes(*b"COMT");
 
-/// Maximum number of sections in one container.
+/// Commit word of an erased slot.
+pub(crate) const ERASED_WORD: u32 = u32::MAX;
+
+/// Commit word programmed to zero before a committed slot is erased.
+pub(crate) const INVALIDATED_WORD: u32 = 0;
+
+/// Size of the commit word at the end of every slot.
+pub const COMMIT_WORD_SIZE: usize = 4;
+
+/// Maximum number of sections in a configuration.
 pub const MAX_SECTIONS: usize = 16;
-/// Maximum SCALE payload of a single section in bytes.
+
+/// Maximum size of one encoded typed section payload in bytes.
 pub const MAX_SECTION_PAYLOAD: usize = 1024;
-/// Upper bound for one slot; larger regions leave the excess unused.
+
+/// Upper bound of the size of a single slot.
 pub const MAX_SLOT_SIZE: usize = 64 * 1024;
 
-/// Offset of the CRC field inside the slot header.
-pub(crate) const CRC_OFFSET: usize = 16;
-/// Offset of the commit marker inside the slot header.
-pub(crate) const MARKER_OFFSET: usize = 20;
+/// Largest head of a CBOR item (initial byte plus a 64-bit argument).
+pub(crate) const MAX_HEAD: usize = 9;
 
-pub(crate) const fn align_up(value: usize) -> Option<usize> {
-    match value.checked_add(SECTION_ALIGN - 1) {
-        Some(sum) => Some(sum & !(SECTION_ALIGN - 1)),
-        None => None,
+/// Encoded size of the head (initial byte and argument) of an item with
+/// argument `value`, which is also the size of an unsigned integer.
+pub(crate) const fn head_len(value: u64) -> usize {
+    match value {
+        0..=23 => 1,
+        24..=0xFF => 2,
+        0x100..=0xFFFF => 3,
+        0x1_0000..=0xFFFF_FFFF => 5,
+        _ => 9,
     }
 }
 
-/// Slot header fields that are covered by the CRC (bytes `4..16`) plus the
-/// integrity fields.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct SlotHeader {
-    pub magic: u32,
-    pub format_version: u16,
-    pub generation: u32,
-    pub payload_length: u32,
-    pub crc32: u32,
-    pub commit_marker: u32,
-}
-
-impl SlotHeader {
-    pub fn to_bytes(self) -> [u8; SLOT_HEADER_SIZE] {
-        let mut bytes = [0u8; SLOT_HEADER_SIZE];
-        bytes[0..4].copy_from_slice(&self.magic.to_le_bytes());
-        bytes[4..6].copy_from_slice(&self.format_version.to_le_bytes());
-        // bytes[6..8] reserved, zero
-        bytes[8..12].copy_from_slice(&self.generation.to_le_bytes());
-        bytes[12..16].copy_from_slice(&self.payload_length.to_le_bytes());
-        bytes[16..20].copy_from_slice(&self.crc32.to_le_bytes());
-        bytes[20..24].copy_from_slice(&self.commit_marker.to_le_bytes());
-        bytes
-    }
-
-    pub fn from_bytes(bytes: &[u8; SLOT_HEADER_SIZE]) -> Self {
-        Self {
-            magic: u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
-            format_version: u16::from_le_bytes([bytes[4], bytes[5]]),
-            generation: u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]),
-            payload_length: u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]),
-            crc32: u32::from_le_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]),
-            commit_marker: u32::from_le_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]),
+/// Head of a definite-length byte string of `len` bytes.
+pub(crate) fn bytes_head(len: usize) -> ([u8; MAX_HEAD], usize) {
+    let value = len as u64;
+    let mut head = [0u8; MAX_HEAD];
+    let size = head_len(value);
+    match size {
+        1 => head[0] = 0x40 | value as u8,
+        2 => {
+            head[0] = 0x58;
+            head[1] = value as u8;
+        }
+        3 => {
+            head[0] = 0x59;
+            head[1..3].copy_from_slice(&(value as u16).to_be_bytes());
+        }
+        5 => {
+            head[0] = 0x5A;
+            head[1..5].copy_from_slice(&(value as u32).to_be_bytes());
+        }
+        _ => {
+            head[0] = 0x5B;
+            head[1..9].copy_from_slice(&value.to_be_bytes());
         }
     }
+    (head, size)
 }
 
-/// Per-section header preceding every payload.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SectionHeader {
-    pub id: SectionId,
-    pub version: u16,
-    /// Actual SCALE payload length (without padding).
-    pub length: u32,
-}
-
-impl SectionHeader {
-    pub fn to_bytes(self) -> [u8; SECTION_HEADER_SIZE] {
-        let mut bytes = [0u8; SECTION_HEADER_SIZE];
-        bytes[0..8].copy_from_slice(&self.id.0.to_le_bytes());
-        bytes[8..10].copy_from_slice(&self.version.to_le_bytes());
-        // bytes[10..12] reserved, zero
-        bytes[12..16].copy_from_slice(&self.length.to_le_bytes());
-        bytes
+/// Parses the head of a definite-length byte string, returning its length and
+/// the size of the head. Indefinite and non-minimal heads are rejected so that
+/// a copied record is always re-encoded to the identical bytes.
+pub(crate) fn parse_bytes_head(input: &[u8]) -> Option<(u64, usize)> {
+    let first = *input.first()?;
+    if first >> 5 != 2 {
+        return None;
     }
-
-    pub fn from_bytes(bytes: &[u8; SECTION_HEADER_SIZE]) -> Self {
-        Self {
-            id: SectionId(u64::from_le_bytes([
-                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-            ])),
-            version: u16::from_le_bytes([bytes[8], bytes[9]]),
-            length: u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]),
-        }
-    }
+    let (value, size) = match first & 0x1F {
+        info @ 0..=23 => (u64::from(info), 1),
+        24 => (u64::from(*input.get(1)?), 2),
+        25 => (
+            u64::from(u16::from_be_bytes(input.get(1..3)?.try_into().ok()?)),
+            3,
+        ),
+        26 => (
+            u64::from(u32::from_be_bytes(input.get(1..5)?.try_into().ok()?)),
+            5,
+        ),
+        27 => (u64::from_be_bytes(input.get(1..9)?.try_into().ok()?), 9),
+        _ => return None,
+    };
+    (head_len(value) == size).then_some((value, size))
 }
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
+    use std::vec::Vec;
+
     use super::*;
 
     #[test]
-    fn slot_header_layout_is_fixed() {
-        let header = SlotHeader {
-            magic: SLOT_MAGIC,
-            format_version: 1,
-            generation: 0x0403_0201,
-            payload_length: 0x0807_0605,
-            crc32: 0x0C0B_0A09,
-            commit_marker: COMMIT_MARKER,
-        };
-        let bytes = header.to_bytes();
-        assert_eq!(&bytes[0..4], b"ROHC");
-        assert_eq!(&bytes[4..8], &[1, 0, 0, 0]);
-        assert_eq!(&bytes[8..12], &[1, 2, 3, 4]);
-        assert_eq!(&bytes[12..16], &[5, 6, 7, 8]);
-        assert_eq!(&bytes[16..20], &[9, 10, 11, 12]);
-        assert_eq!(&bytes[20..24], b"COMT");
-        assert_eq!(SlotHeader::from_bytes(&bytes), header);
+    fn head_len_boundaries() {
+        assert_eq!(head_len(0), 1);
+        assert_eq!(head_len(23), 1);
+        assert_eq!(head_len(24), 2);
+        assert_eq!(head_len(255), 2);
+        assert_eq!(head_len(256), 3);
+        assert_eq!(head_len(65535), 3);
+        assert_eq!(head_len(65536), 5);
+        assert_eq!(head_len(u64::from(u32::MAX)), 5);
+        assert_eq!(head_len(u64::from(u32::MAX) + 1), 9);
     }
 
     #[test]
-    fn section_header_layout_is_fixed() {
-        let header = SectionHeader {
-            id: SectionId(0x0807_0605_0403_0201),
-            version: 0x0A09,
-            length: 0x0E0D_0C0B,
-        };
-        let bytes = header.to_bytes();
-        assert_eq!(&bytes[0..8], &[1, 2, 3, 4, 5, 6, 7, 8]);
-        assert_eq!(&bytes[8..12], &[9, 10, 0, 0]);
-        assert_eq!(&bytes[12..16], &[11, 12, 13, 14]);
-        assert_eq!(SectionHeader::from_bytes(&bytes), header);
+    fn bytes_head_matches_minicbor() {
+        for len in [0usize, 1, 23, 24, 255, 256, 1024, 65535, 65536] {
+            let content = std::vec![0u8; len];
+            let mut expected = Vec::new();
+            minicbor::Encoder::new(&mut expected)
+                .bytes(&content)
+                .unwrap();
+            let (head, size) = bytes_head(len);
+            assert_eq!(&expected[..size], &head[..size], "len {len}");
+            assert_eq!(expected.len(), size + len);
+            assert_eq!(parse_bytes_head(&head[..size]), Some((len as u64, size)));
+        }
     }
 
     #[test]
-    fn align_up_is_checked() {
-        assert_eq!(align_up(0), Some(0));
-        assert_eq!(align_up(1), Some(4));
-        assert_eq!(align_up(4), Some(4));
-        assert_eq!(align_up(usize::MAX), None);
+    fn parse_rejects_invalid_heads() {
+        // Not a byte string.
+        assert_eq!(parse_bytes_head(&[0x60]), None);
+        assert_eq!(parse_bytes_head(&[0x80]), None);
+        // Indefinite length and reserved additional information.
+        assert_eq!(parse_bytes_head(&[0x5F]), None);
+        assert_eq!(parse_bytes_head(&[0x5C]), None);
+        // Non-minimal encodings.
+        assert_eq!(parse_bytes_head(&[0x58, 0x05]), None);
+        assert_eq!(parse_bytes_head(&[0x59, 0x00, 0xFF]), None);
+        assert_eq!(parse_bytes_head(&[0x5A, 0x00, 0x00, 0xFF, 0xFF]), None);
+        // Truncated.
+        assert_eq!(parse_bytes_head(&[]), None);
+        assert_eq!(parse_bytes_head(&[0x59, 0x01]), None);
     }
 }

@@ -40,8 +40,7 @@ rohi-hal = { workspace = true, features = ["esp"] }
 rohi-sensor-core = { workspace = true }
 rohi-config = { workspace = true }
 rohi-config-esp = { workspace = true, features = ["esp"] }
-postcard = { workspace = true }
-serde = { workspace = true }
+minicbor = { workspace = true }
 esp-backtrace = { workspace = true }
 esp-hal = { workspace = true }
 esp-println = { workspace = true }

@@ -17,14 +17,15 @@
 
 use core::fmt;
 
-use postcard::experimental::max_size::MaxSize;
+use minicbor::bytes::ByteSlice;
+use minicbor::decode::{self, Decoder};
+use minicbor::encode::{self, Encoder, Write};
+use minicbor::{CborLen, Decode, Encode};
 use rohi_config::ConfigSection;
-use serde::de::Visitor;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{MAX_SSID_LEN, MAX_WIFI_PASSWORD_LEN, MIN_WIFI_PASSWORD_LEN, WifiError};
 
-/// Fixed-capacity byte string, serialized as a postcard byte sequence.
+/// Fixed-capacity byte string, encoded as a CBOR byte string.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Bounded<const N: usize> {
     len: u8,
@@ -54,40 +55,35 @@ impl<const N: usize> Bounded<N> {
     }
 }
 
-impl<const N: usize> Serialize for Bounded<N> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_bytes(self.as_bytes())
+impl<C, const N: usize> Encode<C> for Bounded<N> {
+    fn encode<W: Write>(
+        &self,
+        e: &mut Encoder<W>,
+        _: &mut C,
+    ) -> Result<(), encode::Error<W::Error>> {
+        e.bytes(self.as_bytes())?;
+        Ok(())
     }
 }
 
-impl<'de, const N: usize> Deserialize<'de> for Bounded<N> {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct BytesVisitor<const N: usize>;
-
-        impl<const N: usize> Visitor<'_> for BytesVisitor<N> {
-            type Value = Bounded<N>;
-
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(f, "at most {N} bytes")
-            }
-
-            fn visit_bytes<E: serde::de::Error>(self, value: &[u8]) -> Result<Self::Value, E> {
-                Bounded::from_bytes(value).ok_or_else(|| E::invalid_length(value.len(), &self))
-            }
-        }
-
-        deserializer.deserialize_bytes(BytesVisitor::<N>)
+impl<'b, C, const N: usize> Decode<'b, C> for Bounded<N> {
+    fn decode(d: &mut Decoder<'b>, _: &mut C) -> Result<Self, decode::Error> {
+        let position = d.position();
+        Bounded::from_bytes(d.bytes()?)
+            .ok_or_else(|| decode::Error::message("byte string too long").at(position))
     }
 }
 
-impl<const N: usize> MaxSize for Bounded<N> {
-    // One length byte, valid for N <= 127.
-    const POSTCARD_MAX_SIZE: usize = 1 + N;
+impl<C, const N: usize> CborLen<C> for Bounded<N> {
+    fn cbor_len(&self, ctx: &mut C) -> usize {
+        <&ByteSlice>::from(self.as_bytes()).cbor_len(ctx)
+    }
 }
 
 /// Wi-Fi network name: 0..=[`MAX_SSID_LEN`] arbitrary bytes.
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, MaxSize)]
-pub struct WifiSsid(Bounded<MAX_SSID_LEN>);
+#[derive(Clone, Copy, PartialEq, Eq, Encode, Decode, CborLen)]
+#[cbor(transparent)]
+pub struct WifiSsid(#[n(0)] Bounded<MAX_SSID_LEN>);
 
 impl WifiSsid {
     pub const fn empty() -> Self {
@@ -132,8 +128,9 @@ impl fmt::Display for WifiSsid {
 }
 
 /// Wi-Fi password. Secret: its `Debug` output never reveals the value.
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, MaxSize)]
-pub struct WifiPassword(Bounded<MAX_WIFI_PASSWORD_LEN>);
+#[derive(Clone, Copy, PartialEq, Eq, Encode, Decode, CborLen)]
+#[cbor(transparent)]
+pub struct WifiPassword(#[n(0)] Bounded<MAX_WIFI_PASSWORD_LEN>);
 
 impl WifiPassword {
     /// Returns `None` when `value` is longer than [`MAX_WIFI_PASSWORD_LEN`].
@@ -161,14 +158,16 @@ impl fmt::Debug for WifiPassword {
     }
 }
 
-/// Persistent Wi-Fi station configuration (section `wifi`).
+/// Persistent Wi-Fi station configuration (section `WifiConfig`).
 ///
 /// An open network is represented by `password == None`, never by an empty
 /// password.
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, MaxSize, ConfigSection)]
-#[config(name = "wifi", version = 1)]
+#[derive(Clone, Copy, PartialEq, Eq, Encode, Decode, CborLen, ConfigSection)]
+#[config(version = 1)]
 pub struct WifiConfig {
+    #[n(0)]
     pub ssid: WifiSsid,
+    #[n(1)]
     pub password: Option<WifiPassword>,
 }
 
@@ -229,17 +228,34 @@ mod tests {
         WifiPassword::from_bytes(value.as_bytes()).unwrap()
     }
 
+    const BUFFER: usize = 128;
+
     fn roundtrip(config: WifiConfig) -> WifiConfig {
-        let mut buffer = [0u8; WifiConfig::POSTCARD_MAX_SIZE];
-        let used = postcard::to_slice(&config, &mut buffer).unwrap().len();
-        assert!(used <= WifiConfig::POSTCARD_MAX_SIZE);
-        postcard::from_bytes(&buffer[..used]).unwrap()
+        let mut buffer = [0u8; BUFFER];
+        let used = rohi_config::encode_to_slice(&config, &mut buffer).unwrap();
+        assert_eq!(used, minicbor::len(config));
+        rohi_config::decode_exact(&buffer[..used]).unwrap()
     }
 
     #[test]
-    fn section_name_and_version() {
-        assert_eq!(<WifiConfig as rohi_config::ConfigSection>::NAME, "wifi");
-        assert_eq!(<WifiConfig as rohi_config::ConfigSection>::VERSION, 1);
+    fn section_id_and_version() {
+        use rohi_config::{ConfigSection, SectionId};
+        // Struct name, no module path: renaming the type changes persisted data.
+        assert_eq!(WifiConfig::ID, SectionId::from_name("WifiConfig"));
+        assert_eq!(WifiConfig::ID, SectionId(0x3352_46ad_2024_8b26));
+        assert_eq!(WifiConfig::VERSION, 1);
+    }
+
+    #[test]
+    fn cbor_encoding_is_stable() {
+        let mut buffer = [0u8; BUFFER];
+        let config = WifiConfig::new(ssid("ab"), None);
+        let used = rohi_config::encode_to_slice(&config, &mut buffer).unwrap();
+        // A trailing `None` is omitted from the array.
+        assert_eq!(&buffer[..used], [0x81, 0x42, 0x61, 0x62]);
+        let config = WifiConfig::new(ssid("ab"), Some(password("pw")));
+        let used = rohi_config::encode_to_slice(&config, &mut buffer).unwrap();
+        assert_eq!(&buffer[..used], [0x82, 0x42, 0x61, 0x62, 0x42, 0x70, 0x77]);
     }
 
     #[test]
@@ -259,9 +275,10 @@ mod tests {
         let long_ssid = WifiSsid::from_bytes(&[b'a'; MAX_SSID_LEN]).unwrap();
         let long_password = WifiPassword::from_bytes(&[b'p'; MAX_WIFI_PASSWORD_LEN]).unwrap();
         let config = WifiConfig::new(long_ssid, Some(long_password));
-        let mut buffer = [0u8; WifiConfig::POSTCARD_MAX_SIZE];
-        let used = postcard::to_slice(&config, &mut buffer).unwrap().len();
-        assert_eq!(used, WifiConfig::POSTCARD_MAX_SIZE);
+        let mut buffer = [0u8; BUFFER];
+        let used = rohi_config::encode_to_slice(&config, &mut buffer).unwrap();
+        // array(2), ssid (2 byte head + 32), password (2 byte head + 64).
+        assert_eq!(used, 1 + 2 + MAX_SSID_LEN + 2 + MAX_WIFI_PASSWORD_LEN);
         assert_eq!(roundtrip(config), config);
     }
 
@@ -269,10 +286,12 @@ mod tests {
     fn oversized_values_are_rejected() {
         assert!(WifiSsid::from_bytes(&[0; MAX_SSID_LEN + 1]).is_none());
         assert!(WifiPassword::from_bytes(&[0; MAX_WIFI_PASSWORD_LEN + 1]).is_none());
-        // Oversized length prefix in a stored payload must not panic.
+        // An oversized byte string in a stored payload must not panic.
         let mut payload = [0u8; 40];
-        payload[0] = 33;
-        assert!(postcard::from_bytes::<WifiSsid>(&payload).is_err());
+        payload[0] = 0x58;
+        payload[1] = 33;
+        assert!(rohi_config::decode_exact::<WifiSsid>(&payload[..35]).is_err());
+        assert!(rohi_config::decode_exact::<WifiSsid>(&payload[..34]).is_err());
     }
 
     #[test]

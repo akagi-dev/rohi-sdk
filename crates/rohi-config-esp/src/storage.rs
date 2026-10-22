@@ -16,7 +16,7 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-use embedded_storage::nor_flash::NorFlash;
+use embedded_storage::nor_flash::{MultiwriteNorFlash, NorFlash};
 use rohi_config::ConfigStorage;
 
 use crate::{EspStorageError, FlashRegion};
@@ -73,7 +73,9 @@ impl<F: NorFlash> EspConfigStorage<F> {
     }
 }
 
-impl<F: NorFlash> ConfigStorage for EspConfigStorage<F> {
+// The store clears a programmed commit word before erasing its slot, which
+// needs flash that can program a word more than once.
+impl<F: MultiwriteNorFlash> ConfigStorage for EspConfigStorage<F> {
     type Error = EspStorageError;
 
     const ERASE_SIZE: usize = F::ERASE_SIZE;

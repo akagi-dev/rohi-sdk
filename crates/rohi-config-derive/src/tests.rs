@@ -35,10 +35,9 @@ fn fnv1a64_reference_vectors() {
 // Changing any of these values is a breaking persistent storage change.
 #[test]
 fn section_id_golden_values() {
-    assert_eq!(fnv1a64(b"wifi"), 0xa63b_01f6_5577_96a8);
-    assert_eq!(fnv1a64(b"device-identity"), 0xa629_f560_6897_ad50);
-    assert_eq!(fnv1a64(b"telemetry"), 0xa042_ab53_f67e_07c0);
+    assert_eq!(fnv1a64(b"Identity"), 0x94d6_3573_d312_fe9b);
     assert_eq!(fnv1a64(b"WifiConfig"), 0x3352_46ad_2024_8b26);
+    assert_eq!(fnv1a64(b"ConnectivityConfig"), 0x9c57_015a_4066_2d0c);
 }
 
 fn id_literal(id: u64) -> String {
@@ -46,19 +45,18 @@ fn id_literal(id: u64) -> String {
 }
 
 #[test]
-fn explicit_name_wins_over_type_name() {
-    let out = expand_str(r#"#[config(name = "wifi", version = 1)] struct WifiConfig;"#).unwrap();
-    assert!(out.contains(&id_literal(0xa63b_01f6_5577_96a8)));
-    assert!(out.contains("\"wifi\""));
-    assert!(out.contains("1u16"));
+fn default_id_hashes_struct_name() {
+    let out = expand_str("#[config(version = 3)] struct WifiConfig;").unwrap();
+    assert!(out.contains(&id_literal(0x3352_46ad_2024_8b26)));
+    assert!(out.contains("3u16"));
+    assert!(!out.contains("NAME"));
 }
 
 #[test]
-fn default_name_hashes_type_name() {
-    let out = expand_str("#[config(version = 3)] struct WifiConfig;").unwrap();
-    assert!(out.contains(&id_literal(0x3352_46ad_2024_8b26)));
-    assert!(out.contains("\"WifiConfig\""));
-    assert!(out.contains("3u16"));
+fn name_attribute_is_rejected() {
+    let error =
+        expand_str(r#"#[config(name = "wifi", version = 1)] struct WifiConfig;"#).unwrap_err();
+    assert!(error.contains("`name` is not supported"), "{error}");
 }
 
 #[test]
@@ -79,14 +77,30 @@ fn hook_is_forwarded() {
 
 #[test]
 fn generics_are_preserved() {
-    let out = expand_str("#[config(version = 1)] struct Wrapper<T: Clone>(T);").unwrap();
+    let out = expand_str("#[config(id = 7, version = 1)] struct Wrapper<T: Clone>(T);").unwrap();
     assert!(out.contains("Wrapper < T >"));
     assert!(out.contains("T : Clone"));
+    let out = expand_str("#[config(version = 1)] struct Borrowed<'a>(&'a u8);").unwrap();
+    assert!(out.contains(&id_literal(fnv1a64(b"Borrowed"))));
+}
+
+#[test]
+fn generic_types_need_an_explicit_id() {
+    let error = expand_str("#[config(version = 1)] struct Wrapper<T>(T);").unwrap_err();
+    assert!(error.contains("explicit `id"), "{error}");
+    let error = expand_str("#[config(version = 1)] struct Buf<const N: usize>;").unwrap_err();
+    assert!(error.contains("explicit `id"), "{error}");
+}
+
+#[test]
+fn raw_identifiers_hash_without_prefix() {
+    let out = expand_str("#[config(version = 1)] struct r#WifiConfig;").unwrap();
+    assert!(out.contains(&id_literal(0x3352_46ad_2024_8b26)));
 }
 
 #[test]
 fn missing_version_is_rejected() {
-    let error = expand_str(r#"#[config(name = "wifi")] struct A;"#).unwrap_err();
+    let error = expand_str("#[config(id = 1)] struct A;").unwrap_err();
     assert!(error.contains("missing `version`"), "{error}");
     let error = expand_str("struct A;").unwrap_err();
     assert!(error.contains("missing `version`"), "{error}");
@@ -101,12 +115,6 @@ fn invalid_version_is_rejected() {
 }
 
 #[test]
-fn id_and_name_conflict_is_rejected() {
-    let error = expand_str(r#"#[config(name = "a", id = 5, version = 1)] struct A;"#).unwrap_err();
-    assert!(error.contains("mutually exclusive"), "{error}");
-}
-
-#[test]
 fn invalid_id_is_rejected() {
     let error =
         expand_str("#[config(id = 0x1_0000_0000_0000_0000, version = 1)] struct A;").unwrap_err();
@@ -116,18 +124,12 @@ fn invalid_id_is_rejected() {
 }
 
 #[test]
-fn empty_name_is_rejected() {
-    let error = expand_str(r#"#[config(name = "", version = 1)] struct A;"#).unwrap_err();
-    assert!(error.contains("must not be empty"), "{error}");
-}
-
-#[test]
 fn duplicate_attributes_are_rejected() {
     let error = expand_str("#[config(version = 1, version = 2)] struct A;").unwrap_err();
     assert!(error.contains("duplicate `version`"), "{error}");
-    let error = expand_str(r#"#[config(version = 1)] #[config(name = "a", name = "b")] struct A;"#)
-        .unwrap_err();
-    assert!(error.contains("duplicate `name`"), "{error}");
+    let error =
+        expand_str("#[config(version = 1)] #[config(id = 1, id = 2)] struct A;").unwrap_err();
+    assert!(error.contains("duplicate `id`"), "{error}");
     let error = expand_str("#[config(version = 1)] #[config(version = 1)] struct A;").unwrap_err();
     assert!(error.contains("duplicate `version`"), "{error}");
 }

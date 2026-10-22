@@ -23,7 +23,8 @@ use crate::ConfigStorage;
 pub enum MemoryError {
     OutOfBounds,
     Unaligned,
-    /// A write targeted bytes that were not erased.
+    /// A write would have to set bits that are programmed (NOR flash can only
+    /// clear bits until the sector is erased).
     NotErased,
     /// A fault armed with `fail_write_after` / `fail_erase_after` fired.
     Injected,
@@ -32,8 +33,10 @@ pub enum MemoryError {
 /// RAM-backed flash emulation for host tests and examples.
 ///
 /// `N` is the capacity and `ERASE` the erase granularity in bytes. Writes are
-/// 4-byte granular and may only program erased (`0xFF`) bytes; erase fills
-/// sectors with `0xFF`.
+/// 4-byte granular and, like NOR programming, may only clear bits: writing
+/// erased bytes or clearing more bits of programmed ones succeeds, a write
+/// that would have to set a programmed bit fails with
+/// [`MemoryError::NotErased`]. Erase fills sectors with `0xFF`.
 ///
 /// Faults are deterministic. [`fail_write_after`](Self::fail_write_after)
 /// lets exactly `n` more bytes be programmed (a write straddling the limit is
@@ -132,11 +135,17 @@ impl<const N: usize, const ERASE: usize> ConfigStorage for MemoryStorage<N, ERAS
         {
             return Err(MemoryError::Unaligned);
         }
-        if self.data[offset..end].iter().any(|byte| *byte != 0xFF) {
+        if self.data[offset..end]
+            .iter()
+            .zip(data)
+            .any(|(old, new)| old & new != *new)
+        {
             return Err(MemoryError::NotErased);
         }
         let allowed = self.write_budget.map_or(data.len(), |b| b.min(data.len()));
-        self.data[offset..offset + allowed].copy_from_slice(&data[..allowed]);
+        for (old, new) in self.data[offset..offset + allowed].iter_mut().zip(data) {
+            *old &= new;
+        }
         self.written += allowed;
         if let Some(budget) = &mut self.write_budget {
             *budget -= allowed;
@@ -194,8 +203,11 @@ mod tests {
         assert_eq!(mem.write(0, &[0; 3]), Err(MemoryError::Unaligned));
         assert_eq!(mem.erase(8, 16), Err(MemoryError::Unaligned));
         assert_eq!(mem.erase(0, 80), Err(MemoryError::OutOfBounds));
-        mem.write(0, &[0; 4]).unwrap();
-        assert_eq!(mem.write(0, &[0; 4]), Err(MemoryError::NotErased));
+        mem.write(0, &[0x0F; 4]).unwrap();
+        // Programming may only clear bits.
+        assert_eq!(mem.write(0, &[0xF0; 4]), Err(MemoryError::NotErased));
+        mem.write(0, &[0x03; 4]).unwrap();
+        assert_eq!(&mem.as_bytes()[..4], &[0x03; 4]);
         mem.erase(0, 16).unwrap();
         mem.write(0, &[0; 4]).unwrap();
     }
