@@ -8,6 +8,7 @@
 - [Air Quality Terminal](air-quality-terminal.md)
 - [Configuration store](config-store.md)
 - [Network (Wi-Fi)](net.md)
+- [Control plane (BLE)](control.md)
 
 # Deep Dive
 

@@ -54,4 +54,21 @@ See [HAL](../../docs/rohi-hal.md), [Sensors](../../docs/sensors.md) and [Boards]
 
 The firmware starts a Wi-Fi station through [`rohi-net`](../../docs/net.md). If a `WifiConfig` configuration section is
 stored it connects automatically (and reconnects with bounded backoff); otherwise the state stays `NotConfigured`.
-Provisioning over BLE arrives with the control plane (WP4).
+Wi-Fi can be provisioned over BLE with the `rohi` tool, see below.
+
+## Control plane (BLE)
+
+The firmware advertises the ROHI Control Service (device name `ROHI Altruist Urban`) and serves a bounded protobuf
+control protocol over BLE: device information, capabilities, sensors, typed configuration and Wi-Fi scan / status /
+reconnect / disconnect. Wi-Fi and BLE share one radio runtime (`rohi_net_esp::EspWireless`). Use the desktop client:
+
+```bash
+cargo run -p rohi -- scan
+cargo run -p rohi -- sensors
+cargo run -p rohi -- wifi configure --ssid <SSID>   # asks for the password
+```
+
+> **Security:** there is no BLE pairing and no authorization policy in this version, so anyone in radio range can read
+> sensors and change the configuration. See [Control plane](../../docs/control.md#security).
+
+See [Control plane (BLE)](../../docs/control.md) for the protocol, framing, limits and the `rohi` command line.
