@@ -54,6 +54,11 @@ impl<T: ClientTransport> Device<T> {
         self.session.set_timeout(timeout);
     }
 
+    /// Releases the transport, for example to close the connection.
+    pub fn into_transport(self) -> T {
+        self.session.into_transport()
+    }
+
     async fn call(&mut self, call: Call) -> Result<Reply> {
         self.session.call(call).await
     }

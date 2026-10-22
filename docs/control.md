@@ -194,7 +194,7 @@ rohi sensors                    # current measurements
 rohi config                     # stored configuration (never the password)
 rohi wifi                       # = rohi wifi status
 rohi wifi scan
-rohi wifi configure --ssid <SSID>                      # asks for the password (hidden)
+rohi wifi configure --ssid <SSID>                      # asks for the password (hidden; empty keeps the stored one)
 rohi wifi configure --ssid <SSID> --open               # open network, no prompt
 rohi wifi configure --ssid <SSID> --password <PASSWORD>
 rohi wifi reconnect
@@ -208,8 +208,8 @@ does not report the MTU, so the safe default is 20 bytes).
 
 **`--password` is risky**: command line arguments stay in the shell history and are visible to other users in the
 process list. Prefer the hidden prompt, or the `ROHI_WIFI_PASSWORD` environment variable. Without `--password`/`--open`,
-`configure` prompts; an empty answer means an open network. `rohi wifi configure --ssid X` keeps nothing implicitly:
-the prompt (or `--open`) decides the password.
+`configure` prompts; an empty answer keeps the stored password, so `rohi wifi configure --ssid X` can change only the
+network name. Use `--open` to remove the password.
 
 The password is never printed. On Linux the build needs `libdbus` and `pkg-config` (provided by `nix develop`); the
 protobuf compiler `protoc` is needed to build `rohi-control-proto`.

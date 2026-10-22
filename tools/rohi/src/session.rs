@@ -80,6 +80,11 @@ impl<T: ClientTransport> Session<T> {
         self.timeout
     }
 
+    /// Ends the session and returns the transport, for example to close it.
+    pub fn into_transport(self) -> T {
+        self.transport
+    }
+
     /// Sends `call` and returns the matching response.
     ///
     /// A typed error response of the device becomes [`Error::Device`].

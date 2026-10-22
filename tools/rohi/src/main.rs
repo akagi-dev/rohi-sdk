@@ -120,7 +120,8 @@ struct Configure {
     #[arg(long)]
     ssid: Option<String>,
 
-    /// Network password.
+    /// Network password. Without it (and without `--open`) the password is
+    /// asked for; an empty answer keeps the stored one.
     ///
     /// Prefer the prompt or the environment variable: a password on the command line stays in
     /// the shell history and is visible to other users in the process list.
@@ -166,13 +167,13 @@ async fn connect(cli: &Cli) -> rohi::Result<Device<BleLink>> {
 
 fn password_prompt(ssid: Option<&str>) -> rohi::Result<PasswordChange> {
     let prompt = match ssid {
-        Some(ssid) => format!("Password for {ssid} (empty for an open network): "),
-        None => "New password (empty for an open network): ".to_owned(),
+        Some(ssid) => format!("Password for {ssid} (empty to keep the stored one): "),
+        None => "New password (empty to keep the stored one): ".to_owned(),
     };
     let password = rpassword::prompt_password(prompt)
         .map_err(|error| Error::InvalidInput(format!("cannot read the password: {error}")))?;
     Ok(if password.is_empty() {
-        PasswordChange::Clear
+        PasswordChange::Keep
     } else {
         PasswordChange::Set(password.into_bytes())
     })
@@ -247,7 +248,19 @@ async fn run(cli: Cli) -> rohi::Result<()> {
     }
 
     let mut device = connect(&cli).await?;
-    match cli.command {
+    let result = execute(&mut device, cli.command, json).await;
+    // Dropping the peripheral does not disconnect it (BlueZ keeps the link),
+    // and the device accepts a single connection: always close it.
+    let closed = device.into_transport().disconnect().await;
+    result.and(closed)
+}
+
+async fn execute<T: ClientTransport>(
+    device: &mut Device<T>,
+    command: Command,
+    json: bool,
+) -> rohi::Result<()> {
+    match command {
         Command::Scan { .. } => unreachable!("handled above"),
         Command::Info => {
             let info = device.info().await?;
@@ -305,7 +318,7 @@ async fn run(cli: Cli) -> rohi::Result<()> {
             }
         }
         Command::Wifi { action } => {
-            wifi(&mut device, action.unwrap_or(WifiAction::Status), json).await?;
+            wifi(device, action.unwrap_or(WifiAction::Status), json).await?;
         }
     }
     Ok(())
