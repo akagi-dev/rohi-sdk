@@ -16,6 +16,7 @@
 //
 
 use core::cell::Cell;
+use core::pin::pin;
 
 use embassy_futures::select::{Either, Either3, select, select3};
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
@@ -161,6 +162,10 @@ pub struct ManagerConfig {
     pub backoff_initial_ms: u32,
     pub backoff_max_ms: u32,
     /// How often connection details (RSSI) are refreshed while connected.
+    ///
+    /// The reconnect backoff is reset only after the link has stayed up for
+    /// one such interval, so a link that drops right after connecting keeps
+    /// backing off.
     pub info_refresh_ms: u32,
 }
 
@@ -237,15 +242,11 @@ impl<'a, B: WifiBackend, D: DelayNs, M: RawMutex> WifiManager<'a, B, D, M> {
     }
 
     fn publish(&mut self, status: WifiStatus) {
-        if self.status != status {
-            info!("Wi-Fi: {:?} {:?}", status.state, status.error);
-            self.status = status;
-            self.shared.status.sender().send(status);
-        }
+        publish(self.shared, &mut self.status, status);
     }
 
     fn set_info(&self, info: Option<NetworkInfo>) {
-        self.shared.info.lock(|cell| cell.set(info));
+        set_info(self.shared, info);
     }
 
     async fn offline(&mut self, state: WifiState) {
@@ -264,57 +265,108 @@ impl<'a, B: WifiBackend, D: DelayNs, M: RawMutex> WifiManager<'a, B, D, M> {
         self.set_info(None);
         self.publish(WifiStatus::new(WifiState::Connecting));
 
-        let connect = self.backend.connect(&config);
-        match select(connect, self.shared.commands.receive()).await {
-            Either::First(Ok(info)) => {
+        let shared = self.shared;
+        let mut scan_requested = false;
+        let outcome = {
+            let mut connect = pin!(self.backend.connect(&config));
+            loop {
+                match select(connect.as_mut(), shared.commands.receive()).await {
+                    Either::First(result) => break Ok(result),
+                    // The radio is busy connecting: serve the scan afterwards
+                    // instead of aborting the attempt, so periodic scans
+                    // cannot starve the connection.
+                    Either::Second(Command::Scan) => scan_requested = true,
+                    Either::Second(command) => break Err(command),
+                }
+            }
+        };
+
+        match outcome {
+            Ok(Ok(info)) => {
+                // The backoff is reset only once the link proved stable, see `online`.
                 self.set_info(Some(info));
-                self.backoff.reset();
                 self.phase = Phase::Online;
                 self.publish(WifiStatus::new(WifiState::Connected));
             }
-            Either::First(Err(error)) => {
+            Ok(Err(error)) => {
                 warn!("Wi-Fi connect failed: {}", error);
                 self.phase = Phase::Retry;
                 self.publish(WifiStatus::failed(WifiState::Error, error));
             }
-            Either::Second(command) => {
+            Err(command) => {
                 // The interrupted attempt may have left the driver half-connected.
                 let _ = self.backend.disconnect().await;
                 self.on_command(command).await;
             }
         }
+
+        if scan_requested {
+            self.scan().await;
+        }
     }
 
     async fn retry(&mut self) {
         let wait = self.backoff.next_delay_ms();
-        match select(self.delay.delay_ms(wait), self.shared.commands.receive()).await {
-            Either::First(()) => self.phase = Phase::Attempt,
-            Either::Second(command) => self.on_command(command).await,
-        }
+        let shared = self.shared;
+        let command = {
+            // The timer keeps running while scans are served, so scans
+            // neither postpone the retry nor consume backoff steps.
+            let mut delay = pin!(self.delay.delay_ms(wait));
+            loop {
+                match select(delay.as_mut(), shared.commands.receive()).await {
+                    Either::First(()) => {
+                        self.phase = Phase::Attempt;
+                        return;
+                    }
+                    Either::Second(Command::Scan) => {
+                        scan(&mut self.backend, shared, &mut self.status).await;
+                    }
+                    Either::Second(command) => break command,
+                }
+            }
+        };
+        self.on_command(command).await;
     }
 
     async fn online(&mut self) {
-        let refresh = self.settings.info_refresh_ms;
-        match select3(
-            self.backend.wait_link_lost(),
-            self.shared.commands.receive(),
-            self.delay.delay_ms(refresh),
-        )
-        .await
-        {
-            Either3::First(error) => {
-                warn!("Wi-Fi link lost: {}", error);
-                self.set_info(None);
-                self.phase = Phase::Retry;
-                self.publish(WifiStatus::failed(WifiState::Disconnected, error));
-            }
-            Either3::Second(command) => self.on_command(command).await,
-            Either3::Third(()) => {
-                if let Some(info) = self.backend.network_info() {
-                    self.set_info(Some(info));
+        let shared = self.shared;
+        let command = {
+            let mut refresh = pin!(self.delay.delay_ms(self.settings.info_refresh_ms));
+            loop {
+                let event = select3(
+                    self.backend.wait_link_lost(),
+                    shared.commands.receive(),
+                    refresh.as_mut(),
+                )
+                .await;
+                match event {
+                    Either3::First(error) => {
+                        warn!("Wi-Fi link lost: {}", error);
+                        set_info(shared, None);
+                        self.phase = Phase::Retry;
+                        publish(
+                            shared,
+                            &mut self.status,
+                            WifiStatus::failed(WifiState::Disconnected, error),
+                        );
+                        return;
+                    }
+                    Either3::Second(Command::Scan) => {
+                        scan(&mut self.backend, shared, &mut self.status).await;
+                    }
+                    Either3::Second(command) => break command,
+                    Either3::Third(()) => {
+                        // The link survived a full interval: it is stable.
+                        self.backoff.reset();
+                        if let Some(info) = self.backend.network_info() {
+                            set_info(shared, Some(info));
+                        }
+                        return;
+                    }
                 }
             }
-        }
+        };
+        self.on_command(command).await;
     }
 
     async fn on_command(&mut self, command: Command) {
@@ -373,15 +425,38 @@ impl<'a, B: WifiBackend, D: DelayNs, M: RawMutex> WifiManager<'a, B, D, M> {
     }
 
     async fn scan(&mut self) {
-        let previous = self.status;
-        if previous.state != WifiState::Connected {
-            self.publish(WifiStatus::new(WifiState::Scanning));
-        }
-        let result = self.backend.scan().await;
-        self.publish(previous);
-        self.shared.scan_pending.lock(|pending| pending.set(false));
-        self.shared.scan.signal(result);
+        scan(&mut self.backend, self.shared, &mut self.status).await;
     }
+}
+
+// Free functions over disjoint manager fields, so they can run while a
+// pinned timer future borrows the delay.
+
+fn publish<M: RawMutex>(shared: &WifiShared<M>, current: &mut WifiStatus, status: WifiStatus) {
+    if *current != status {
+        info!("Wi-Fi: {:?} {:?}", status.state, status.error);
+        *current = status;
+        shared.status.sender().send(status);
+    }
+}
+
+fn set_info<M: RawMutex>(shared: &WifiShared<M>, info: Option<NetworkInfo>) {
+    shared.info.lock(|cell| cell.set(info));
+}
+
+async fn scan<B: WifiBackend, M: RawMutex>(
+    backend: &mut B,
+    shared: &WifiShared<M>,
+    current: &mut WifiStatus,
+) {
+    let previous = *current;
+    if previous.state != WifiState::Connected {
+        publish(shared, current, WifiStatus::new(WifiState::Scanning));
+    }
+    let result = backend.scan().await;
+    publish(shared, current, previous);
+    shared.scan_pending.lock(|pending| pending.set(false));
+    shared.scan.signal(result);
 }
 
 #[cfg(test)]

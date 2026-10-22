@@ -17,9 +17,10 @@
 
 extern crate std;
 
-use core::future::pending;
+use core::future::{pending, poll_fn};
 use core::net::Ipv4Addr;
 use core::pin::pin;
+use core::task::Poll;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -40,6 +41,8 @@ enum Connect {
     Ok,
     Err(WifiError),
     Hang,
+    /// Pends until `connect_released` is set, then succeeds.
+    Held,
 }
 
 #[derive(Default)]
@@ -50,6 +53,9 @@ struct MockState {
     connect_configs: Vec<WifiConfig>,
     disconnects: usize,
     delays: Vec<u32>,
+    /// Delays pend while set; every started delay is still recorded once.
+    hold_delays: bool,
+    connect_released: bool,
 }
 
 #[derive(Clone, Default)]
@@ -89,6 +95,18 @@ impl WifiBackend for Mock {
         match next {
             Some(Connect::Ok) => Ok(info_for(config)),
             Some(Connect::Err(error)) => Err(error),
+            Some(Connect::Held) => {
+                let state = self.0.clone();
+                poll_fn(|_| {
+                    if state.borrow().connect_released {
+                        Poll::Ready(())
+                    } else {
+                        Poll::Pending
+                    }
+                })
+                .await;
+                Ok(info_for(config))
+            }
             Some(Connect::Hang) | None => pending().await,
         }
     }
@@ -118,6 +136,15 @@ impl DelayNs for MockDelay {
 
     async fn delay_ms(&mut self, ms: u32) {
         self.0.0.borrow_mut().delays.push(ms);
+        let state = self.0.0.clone();
+        poll_fn(|_| {
+            if state.borrow().hold_delays {
+                Poll::Pending
+            } else {
+                Poll::Ready(())
+            }
+        })
+        .await;
     }
 }
 
@@ -226,7 +253,9 @@ fn failures_back_off_and_success_resets() {
     assert_eq!(f.state(), WifiState::Connected);
     assert_eq!(f.mock.0.borrow().delays, [1_000, 2_000, 4_000]);
 
-    // Link loss after a success restarts from the initial delay.
+    // Once the link survived one refresh interval, the backoff restarts
+    // from the initial delay.
+    f.steps(1);
     f.mock
         .0
         .borrow_mut()
@@ -241,7 +270,100 @@ fn failures_back_off_and_success_resets() {
     assert!(f.handle.network_info().is_none());
     f.steps(2);
     assert_eq!(f.state(), WifiState::Connected);
-    assert_eq!(f.mock.0.borrow().delays, [1_000, 2_000, 4_000, 1_000]);
+    assert_eq!(
+        f.mock.0.borrow().delays,
+        [1_000, 2_000, 4_000, 10_000, 1_000]
+    );
+}
+
+#[test]
+fn flapping_link_keeps_backing_off() {
+    let shared = Shared::new();
+    let mut f = fixture(&shared);
+    f.mock.script([Connect::Ok, Connect::Ok, Connect::Ok]);
+    f.mock
+        .0
+        .borrow_mut()
+        .link_lost
+        .extend([WifiError::Disconnected, WifiError::Disconnected]);
+    f.handle.apply_config(Some(config("office"))).unwrap();
+
+    f.steps(2); // command, connect
+    f.steps(1); // link lost immediately
+    f.steps(2); // backoff, connect
+    f.steps(1); // link lost immediately again
+    f.steps(2);
+    assert_eq!(f.state(), WifiState::Connected);
+    // A connection that drops right away does not reset the backoff.
+    assert_eq!(f.mock.0.borrow().delays, [1_000, 2_000]);
+}
+
+#[test]
+fn scan_during_connect_does_not_abort_attempt() {
+    let shared = Shared::new();
+    let mut f = fixture(&shared);
+    f.mock.script([Connect::Held]);
+    f.mock.0.borrow_mut().scan_results = Some(Ok(scan_result()));
+    f.handle.apply_config(Some(config("office"))).unwrap();
+    f.steps(1);
+    let disconnects = f.mock.0.borrow().disconnects;
+    let handle = f.handle;
+    let mock = f.mock.clone();
+
+    let result = block_on(async {
+        let mut step = pin!(f.manager.step());
+        assert!(poll_once(step.as_mut()).is_pending());
+        let mut scan = pin!(handle.scan());
+        assert!(poll_once(scan.as_mut()).is_pending());
+        // The scan request is deferred; the attempt keeps running.
+        assert!(poll_once(step.as_mut()).is_pending());
+        assert_eq!(handle.status().state, WifiState::Connecting);
+
+        mock.0.borrow_mut().connect_released = true;
+        let (result, ()) = join(scan, step).await;
+        result
+    });
+
+    assert!(result.is_ok());
+    assert_eq!(f.state(), WifiState::Connected);
+    assert_eq!(f.mock.0.borrow().connect_configs.len(), 1);
+    assert_eq!(f.mock.0.borrow().disconnects, disconnects);
+}
+
+#[test]
+fn scan_during_backoff_keeps_the_timer() {
+    let shared = Shared::new();
+    let mut f = fixture(&shared);
+    f.mock
+        .script([Connect::Err(WifiError::NetworkNotFound), Connect::Ok]);
+    f.mock.0.borrow_mut().scan_results = Some(Ok(scan_result()));
+    f.handle.apply_config(Some(config("office"))).unwrap();
+    f.steps(2);
+    assert_eq!(f.state(), WifiState::Error);
+    f.mock.0.borrow_mut().hold_delays = true;
+    let handle = f.handle;
+    let mock = f.mock.clone();
+
+    block_on(async {
+        let mut step = pin!(f.manager.step());
+        assert!(poll_once(step.as_mut()).is_pending());
+        let mut scan = pin!(handle.scan());
+        assert!(poll_once(scan.as_mut()).is_pending());
+        // Served without leaving the backoff wait.
+        assert!(poll_once(step.as_mut()).is_pending());
+        assert!(scan.await.is_ok());
+        assert_eq!(
+            handle.status(),
+            WifiStatus::failed(WifiState::Error, WifiError::NetworkNotFound)
+        );
+        mock.0.borrow_mut().hold_delays = false;
+        step.await;
+    });
+    f.steps(1);
+
+    assert_eq!(f.state(), WifiState::Connected);
+    // One timer, one backoff step: the scan neither restarted nor advanced it.
+    assert_eq!(f.mock.0.borrow().delays, [1_000]);
 }
 
 #[test]

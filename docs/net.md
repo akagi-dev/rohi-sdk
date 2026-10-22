@@ -34,10 +34,13 @@ by the board firmware.
 
 - No stored configuration: state `NotConfigured`, no retry loop.
 - Boot: the firmware loads `WifiConfig` from the `ConfigStore` and sends `apply_config` to the manager.
-- Failure or link loss: bounded exponential backoff (1 s doubling up to 60 s), reset by a success. Failures never
-  panic or reboot; sensors keep running.
+- Failure or link loss: bounded exponential backoff (1 s doubling up to 60 s). The backoff is reset only after the
+  link stayed up for one info refresh interval (10 s), so a flapping link keeps backing off. Failures never panic or
+  reboot; sensors keep running.
 - A new configuration, `reconnect`, `disconnect` and `forget` (`apply_config(None)`) are applied without a reboot.
 - Only one scan can be in flight; the command queue is bounded and returns `Busy` when full.
+- Scans never abort or delay reconnection: a scan requested while connecting is served after the attempt, and a
+  scan during the backoff wait or while connected does not restart the backoff or refresh timer.
 
 ## Limits
 
