@@ -7,17 +7,12 @@ edition.workspace = true
 homepage.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Robonomics Open Hardware Abstraction Layer"
-
-[package.metadata.docs.rs]
-targets = ["riscv32imc-unknown-none-elf"]
-features = ["esp"]
+description = "Robonomics Open Hardware abstraction layer"
 
 [badges]
 maintenance = { status = "actively-developed" }
 
 [dependencies]
-rohi-sensor-core.workspace = true
 log.workspace = true
 embedded-hal.workspace = true
 embedded-hal-async.workspace = true
@@ -25,17 +20,3 @@ embedded-io-async.workspace = true
 embassy-sync.workspace = true
 embassy-futures.workspace = true
 libm.workspace = true
-
-# ESP32 related
-esp-hal = { workspace = true, optional = true }
-embassy-time = { workspace = true, optional = true }
-
-[features]
-# Pure sensor logic (parsers, compensation, state machines, runtime) always
-# builds and is testable on a regular host.
-default = []
-#The `esp` feature adds the ESP32-C3 board support and peripheral glue.
-esp = [
-  "dep:esp-hal",
-  "dep:embassy-time",
-]

@@ -15,12 +15,23 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-//! ESP32 peripheral glue for the hardware-independent drivers.
+#![no_std]
 
-/// I2S microphone audio source.
-pub mod audio;
-/// Embassy based monotonic clock.
-pub mod clock;
+//! ESP32 Wi-Fi backend of [`rohi-net`](rohi_net).
+//!
+//! Implements [`WifiBackend`](rohi_net::WifiBackend) on top of `esp-radio` and
+//! `embassy-net`; vendor types never leave this crate. The chip is selected by
+//! exactly one Cargo feature, `esp32c3` or `esp32c6`, forwarded by the final
+//! firmware. Without a chip feature the crate is empty, so it stays buildable
+//! on a regular host.
 
-pub use audio::I2sMicrophone;
-pub use clock::EmbassyClock;
+#[cfg(all(feature = "esp32c3", feature = "esp32c6"))]
+compile_error!(
+    "select exactly one ESP target: features `esp32c3` and `esp32c6` are mutually exclusive"
+);
+
+#[cfg(any(feature = "esp32c3", feature = "esp32c6"))]
+mod wifi;
+
+#[cfg(any(feature = "esp32c3", feature = "esp32c6"))]
+pub use wifi::{EspWifi, NetRunner, RADIO_HEAP_SIZE, init_radio_heap, radio_heap_free};

@@ -1,10 +1,12 @@
-[target.riscv32imc-unknown-none-elf]
-runner = "espflash flash --monitor --partition-table firmwares/altruist-urban/partitions.csv"
+# The default build target is the developer host. ESP targets are always
+# selected explicitly, see the `check-*` / `build-*` aliases below.
 
 [env]
 ESP_LOG = "INFO"
 
-[build]
+# ESP32-C3
+[target.riscv32imc-unknown-none-elf]
+runner = "espflash flash --monitor --partition-table firmwares/altruist-urban/partitions-esp32c3.csv"
 rustflags = [
   # Required to obtain backtraces (e.g. when using the "esp-backtrace" crate.)
   # NOTE: May negatively impact performance of produced code
@@ -12,11 +14,14 @@ rustflags = [
   "force-frame-pointers",
 ]
 
-target = "riscv32imc-unknown-none-elf"
-
-[unstable]
-build-std = ["alloc", "core"]
+# ESP32-C6
+[target.riscv32imac-unknown-none-elf]
+runner = "espflash flash --monitor --partition-table firmwares/altruist-urban/partitions-esp32c6.csv"
+rustflags = ["-C", "force-frame-pointers"]
 
 [alias]
-# Run host-side unit tests of hardware independent crates.
-test-host = "test -p rohi-sensor-core -p rohi-hal -p rohi-config -p rohi-config-derive -p rohi-config-esp -p rohi-net --target x86_64-unknown-linux-gnu"
+check-esp32c3 = "check -p altruist-urban --no-default-features --features esp32c3 --target riscv32imc-unknown-none-elf"
+check-esp32c6 = "check -p altruist-urban --no-default-features --features esp32c6 --target riscv32imac-unknown-none-elf"
+
+build-esp32c3 = "build --release -p altruist-urban --no-default-features --features esp32c3 --target riscv32imc-unknown-none-elf"
+build-esp32c6 = "build --release -p altruist-urban --no-default-features --features esp32c6 --target riscv32imac-unknown-none-elf"

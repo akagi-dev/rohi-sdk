@@ -1,5 +1,5 @@
 [workspace.package]
-rust-version = "1.95"
+rust-version = "1.99.1"
 edition = "2024"
 authors = ["Akagi Engineering <admin@akagi.dev>"]
 license = "Apache-2.0"
@@ -8,39 +8,31 @@ repository = "https://github.com/akagi-dev/rohi-sdk"
 
 [workspace]
 members = ["crates/*", "firmwares/*", "examples"]
+# Host commands (`cargo test`, `cargo clippy`) cover the portable crates only.
+# Firmware and examples are built per chip, see the `check-*` / `build-*`
+# aliases in `.cargo/config.toml`.
+default-members = ["crates/*"]
 resolver = "2"
 
 [workspace.dependencies]
 # Local
 rohi-hal = { path = "crates/rohi-hal" }
-rohi-sensor-core = { path = "crates/rohi-sensor-core" }
+rohi-hal-esp = { path = "crates/rohi-hal-esp" }
 rohi-config = { path = "crates/rohi-config" }
 rohi-config-derive = { path = "crates/rohi-config-derive" }
 rohi-config-esp = { path = "crates/rohi-config-esp" }
 rohi-net = { path = "crates/rohi-net" }
+rohi-net-esp = { path = "crates/rohi-net-esp" }
 
-# ESP
-esp-hal = { version = "1.2.2", features = ["unstable", "esp32c3"] }
-esp-println = { version = "0.18.0", features = ["log-04", "esp32c3"] }
-esp-backtrace = { version = "0.20.0", features = [
-  "panic-handler",
-  "println",
-  "esp32c3",
-] }
-esp-bootloader-esp-idf = { version = "0.6.0", features = ["esp32c3"] }
-esp-rtos = { version = "0.4.0", features = [
-  "embassy",
-  "esp-radio",
-  "esp-alloc",
-  "esp32c3",
-] }
+# ESP. Versions are pinned here; the chip (esp32c3 / esp32c6) is selected by
+# the firmware features, never globally.
+esp-hal = { version = "1.2.2", features = ["unstable"] }
+esp-println = { version = "0.18.0", features = ["log-04"] }
+esp-backtrace = { version = "0.20.0", features = ["panic-handler", "println"] }
+esp-bootloader-esp-idf = "0.6.0"
+esp-rtos = { version = "0.4.0", features = ["embassy", "esp-radio", "esp-alloc"] }
 esp-alloc = "0.11.0"
-esp-radio = { version = "=1.0.0-beta.1", features = [
-  "wifi",
-  "esp-alloc",
-  "unstable",
-  "esp32c3",
-] }
+esp-radio = { version = "=1.0.0-beta.1", features = ["wifi", "esp-alloc", "unstable"] }
 
 # Embedded
 embedded-io = "0.7.1"
@@ -58,7 +50,7 @@ embassy-net = { version = "0.9.1", features = ["tcp", "udp", "dns", "dhcpv4", "m
 
 # Storage
 embedded-storage = "0.3.1"
-esp-storage = { version = "0.10.0", features = ["esp32c3"] }
+esp-storage = "0.10.0"
 
 # Serialization
 minicbor = { version = "2.3.1", default-features = false, features = ["derive"] }
@@ -79,7 +71,6 @@ libm = { version = "0.2.16", default-features = false }
 log = "0.4.34"
 heapless = "0.9.3"
 static_cell = "2.1.1"
-critical-section = "1.2.0"
 
 [profile.dev]
 # Rust debug is too slow.

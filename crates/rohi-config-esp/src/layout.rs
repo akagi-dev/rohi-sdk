@@ -18,8 +18,9 @@
 
 //! Platform-level source of truth for the configuration flash layout.
 //!
-//! `firmwares/altruist-urban/partitions.csv` must agree with these constants;
-//! a test of the firmware crate enforces it.
+//! `firmwares/altruist-urban/partitions-esp32c3.csv` and
+//! `partitions-esp32c6.csv` must agree with these constants; a host test of
+//! this module enforces it.
 
 /// Label of the data partition holding the configuration region.
 pub const PARTITION_LABEL: &str = "rohi-cfg";
@@ -49,8 +50,16 @@ mod tests {
     }
 
     #[test]
-    fn partition_table_matches_the_layout() {
-        let csv = include_str!("../../../firmwares/altruist-urban/partitions.csv");
+    fn partition_tables_match_the_layout() {
+        for csv in [
+            include_str!("../../../firmwares/altruist-urban/partitions-esp32c3.csv"),
+            include_str!("../../../firmwares/altruist-urban/partitions-esp32c6.csv"),
+        ] {
+            assert_partition_matches_layout(csv);
+        }
+    }
+
+    fn assert_partition_matches_layout(csv: &str) {
         let row: std::vec::Vec<&str> = csv
             .lines()
             .filter(|line| !line.trim_start().starts_with('#'))

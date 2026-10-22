@@ -24,9 +24,9 @@
 
 use core::cell::Cell;
 
+use crate::{SensorKind, SensorState};
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::RawMutex;
-use rohi_sensor_core::{SensorKind, SensorState};
 
 /// Current [`SensorState`] of every sensor.
 pub struct SensorStates<M: RawMutex> {

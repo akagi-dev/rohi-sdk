@@ -23,13 +23,58 @@
 //! part of Robonomics Open Hardware Initiative (ROHI). Details available at
 //! https://robonomics.network/devices/
 //!
-//! Sensor drivers publish typed `rohi-sensor-core` events and know nothing
-//! about transports. Everything except [`board`] and [`esp`] is hardware
-//! independent and testable on a regular host; those two require the `esp`
-//! feature.
+//! The crate is hardware independent: it depends on no MCU HAL and is fully
+//! testable on a regular host. Chip specific glue (peripherals, boards) lives
+//! in platform crates such as `rohi-hal-esp`.
+//!
+//! It defines strongly typed units, per-sensor measurements, sensor / device /
+//! uplink state and a [`MeasurementStore`] producing immutable telemetry
+//! snapshots, never allocates, and is the layer sensor drivers publish into.
+//! Sensor drivers publish typed [`SensorEvent`]s and know nothing about
+//! transports.
+//!
+//! Data flow:
+//!
+//! ```text
+//! Sensor drivers -> SensorEvent -> MeasurementStore
+//!                -> MeasurementsSnapshot -> Connectivity / BLE / diagnostics
+//! ```
+//!
+//! # Observations, not interpretation
+//!
+//! Measurements are grouped by the physical sensor that produced them. If
+//! BME280 and SCD4x both report temperature, both values stay available
+//! independently (`bmx280.temperature` and `scd4x.temperature`). The crate
+//! never averages, fuses or selects between sensors.
+//!
+//! # Time
+//!
+//! Time is supplied by the caller as a [`MonotonicTimestamp`]; the crate never
+//! reads a clock and does not need UTC.
 
 #[cfg(test)]
 extern crate std;
+
+/// Monotonic time.
+pub mod time;
+
+/// Typed measurement units.
+pub mod units;
+
+/// Measurements grouped by physical sensor, and snapshots.
+pub mod measurements;
+
+/// Sensor identity, state, errors and events.
+pub mod sensor;
+
+/// Device state.
+pub mod device;
+
+/// Transport-neutral uplink types.
+pub mod uplink;
+
+/// Measurement store.
+pub mod store;
 
 /// Hardware-independent sensor runtime.
 pub mod runtime;
@@ -37,13 +82,21 @@ pub mod runtime;
 /// Sensor drivers.
 pub mod sensors;
 
-/// Robonomics Open Hardware devices collection.
-#[cfg(feature = "esp")]
-pub mod board;
-
-/// ESP32 peripheral glue for the hardware-independent drivers.
-#[cfg(feature = "esp")]
-pub mod esp;
-
 #[cfg(test)]
 mod testutil;
+
+pub use device::DeviceState;
+pub use measurements::{
+    Ags3871Measurements, Bmx280Measurements, FreshnessPolicy, Measurement, MeasurementState,
+    Measurements, MeasurementsSnapshot, NoiseMeasurements, RadSensMeasurements, Scd4xMeasurements,
+    Sds011Measurements, Zmod4510Measurements,
+};
+pub use sensor::{
+    Ags3871Update, Bmx280Update, MeasurementUpdate, NoiseUpdate, RadSensUpdate, Scd4xUpdate,
+    Sds011Update, SensorErrorCode, SensorEvent, SensorKind, SensorState, SensorStatus,
+    SensorStatuses, Zmod4510Update,
+};
+pub use store::MeasurementStore;
+pub use time::MonotonicTimestamp;
+pub use units::*;
+pub use uplink::{ActiveUplink, UplinkMode, UplinkState};

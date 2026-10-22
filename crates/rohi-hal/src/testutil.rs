@@ -21,10 +21,10 @@ use core::future::Future;
 use std::collections::VecDeque;
 use std::vec::Vec;
 
+use crate::MonotonicTimestamp;
 use embedded_hal::i2c::{ErrorKind, ErrorType, NoAcknowledgeSource, Operation};
 use embedded_hal_async::delay::DelayNs;
 use embedded_hal_async::i2c::I2c;
-use rohi_sensor_core::MonotonicTimestamp;
 
 use crate::runtime::Clock;
 

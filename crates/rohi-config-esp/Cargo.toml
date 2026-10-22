@@ -11,7 +11,7 @@ description = "ESP32 flash backend for rohi-config"
 
 [package.metadata.docs.rs]
 targets = ["riscv32imc-unknown-none-elf"]
-features = ["esp"]
+features = ["esp32c3"]
 
 [badges]
 maintenance = { status = "actively-developed" }
@@ -20,9 +20,7 @@ maintenance = { status = "actively-developed" }
 rohi-config.workspace = true
 embedded-storage.workspace = true
 
-esp-storage = { workspace = true, features = [
-  "embedded-storage",
-], optional = true }
+esp-storage = { workspace = true, features = ["embedded-storage"], optional = true }
 esp-bootloader-esp-idf = { workspace = true, optional = true }
 
 [dev-dependencies]
@@ -30,5 +28,8 @@ minicbor.workspace = true
 
 [features]
 default = []
-# Concrete ESP32-C3 flash driver and partition-table lookup.
-esp = ["dep:esp-storage", "dep:esp-bootloader-esp-idf"]
+# Concrete ESP flash driver and partition-table lookup. Exactly one chip
+# feature must be enabled by the final firmware build.
+esp32c3 = ["_esp", "esp-storage/esp32c3", "esp-bootloader-esp-idf/esp32c3"]
+esp32c6 = ["_esp", "esp-storage/esp32c6", "esp-bootloader-esp-idf/esp32c6"]
+_esp = ["dep:esp-storage", "dep:esp-bootloader-esp-idf"]

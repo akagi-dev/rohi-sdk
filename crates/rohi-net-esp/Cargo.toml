@@ -1,0 +1,41 @@
+[package]
+name = "rohi-net-esp"
+version = "0.1.0"
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Robonomics Open Hardware Wi-Fi: ESP32 backend for rohi-net"
+
+[package.metadata.docs.rs]
+targets = ["riscv32imc-unknown-none-elf"]
+features = ["esp32c3"]
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[dependencies]
+rohi-net.workspace = true
+log.workspace = true
+esp-hal = { workspace = true, optional = true }
+esp-radio = { workspace = true, optional = true }
+esp-alloc = { workspace = true, optional = true }
+embassy-net = { workspace = true, optional = true }
+embassy-time = { workspace = true, optional = true }
+static_cell = { workspace = true, optional = true }
+
+[features]
+default = []
+# Exactly one chip feature must be enabled by the final firmware build.
+esp32c3 = ["_esp", "esp-hal/esp32c3", "esp-radio/esp32c3"]
+esp32c6 = ["_esp", "esp-hal/esp32c6", "esp-radio/esp32c6"]
+_esp = [
+  "dep:esp-hal",
+  "dep:esp-radio",
+  "dep:esp-alloc",
+  "dep:embassy-net",
+  "dep:embassy-time",
+  "dep:static_cell",
+]

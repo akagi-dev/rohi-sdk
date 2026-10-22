@@ -17,7 +17,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 //! Monotonic clock abstraction.
 
-use rohi_sensor_core::MonotonicTimestamp;
+use crate::MonotonicTimestamp;
 
 /// Source of monotonic timestamps. Never wall-clock time.
 pub trait Clock {

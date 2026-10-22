@@ -16,11 +16,14 @@ name = "altruist-urban"
 path = "./src/bin/main.rs"
 
 [dependencies]
-rohi-hal = { workspace = true, features = ["esp"] }
-rohi-sensor-core = { workspace = true }
+# Hardware independent
+rohi-hal = { workspace = true }
 rohi-config = { workspace = true }
-rohi-config-esp = { workspace = true, features = ["esp"] }
-rohi-net = { workspace = true, features = ["esp"] }
+rohi-net = { workspace = true }
+# Hardware specific, the chip is selected by the `esp32c3` / `esp32c6` features
+rohi-hal-esp = { workspace = true }
+rohi-config-esp = { workspace = true }
+rohi-net-esp = { workspace = true }
 esp-hal = { workspace = true }
 esp-println = { workspace = true }
 esp-backtrace = { workspace = true }
@@ -32,5 +35,29 @@ embassy-sync = { workspace = true }
 embassy-futures = { workspace = true }
 embassy-embedded-hal = { workspace = true }
 static_cell = { workspace = true }
-critical-section = { workspace = true }
 log = { workspace = true }
+
+[features]
+# Exactly one chip feature must be selected: use `cargo check-esp32c3`,
+# `cargo check-esp32c6`, `cargo build-esp32c3` or `cargo build-esp32c6`.
+default = []
+esp32c3 = [
+  "esp-hal/esp32c3",
+  "esp-println/esp32c3",
+  "esp-backtrace/esp32c3",
+  "esp-bootloader-esp-idf/esp32c3",
+  "esp-rtos/esp32c3",
+  "rohi-hal-esp/esp32c3",
+  "rohi-config-esp/esp32c3",
+  "rohi-net-esp/esp32c3",
+]
+esp32c6 = [
+  "esp-hal/esp32c6",
+  "esp-println/esp32c6",
+  "esp-backtrace/esp32c6",
+  "esp-bootloader-esp-idf/esp32c6",
+  "esp-rtos/esp32c6",
+  "rohi-hal-esp/esp32c6",
+  "rohi-config-esp/esp32c6",
+  "rohi-net-esp/esp32c6",
+]

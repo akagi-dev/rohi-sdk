@@ -35,8 +35,8 @@ use altruist_urban::tasks::sensors::{
     SharedI2cBus, bmx280_task, i2c_handle, noise_task, scd4x_task, sds011_task,
 };
 use altruist_urban::tasks::store::store_task;
-use rohi_hal::board::altruist_c3::{AltruistC3, Hardware};
-use rohi_net::backend::esp::{EspWifi, init_radio_heap, radio_heap_free};
+use rohi_hal_esp::board::altruist_urban::{AltruistUrban, Hardware};
+use rohi_net_esp::{EspWifi, init_radio_heap, radio_heap_free};
 
 use esp_backtrace as _;
 
@@ -51,7 +51,7 @@ async fn main(spawner: Spawner) -> ! {
     let peripherals = esp_hal::init(config);
     let (hardware, runtime) = Hardware::split(peripherals);
 
-    // The radio drivers are the only users of the heap; see `rohi_net::backend::esp`.
+    // The radio drivers are the only users of the heap; see `rohi_net_esp`.
     init_radio_heap();
     esp_rtos::start(TimerGroup::new(runtime.timg0).timer0, runtime.sw_interrupt);
     info!(
@@ -64,8 +64,8 @@ async fn main(spawner: Spawner) -> ! {
     // configuration must not stop the sensors.
     let config = config::start(spawner, runtime.flash);
 
-    let board = AltruistC3::new(hardware).expect("board initialization failed");
-    let AltruistC3 {
+    let board = AltruistUrban::new(hardware).expect("board initialization failed");
+    let AltruistUrban {
         i2c,
         sds011_uart,
         microphone,

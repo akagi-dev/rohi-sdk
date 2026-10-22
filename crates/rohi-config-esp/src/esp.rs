@@ -16,7 +16,7 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-//! ESP32-C3 flash driver and configuration partition lookup.
+//! ESP32 flash driver and configuration partition lookup.
 
 use esp_bootloader_esp_idf::partitions::{
     PARTITION_TABLE_MAX_LEN, PartitionTable, read_partition_table,

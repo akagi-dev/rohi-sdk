@@ -1,0 +1,8 @@
+# ESP-IDF partition table of the Altruist Urban (ESP32-C6, 8 MB flash).
+# `rohi-cfg` is the ROHI configuration region: two 8 KiB A/B slots.
+# Its size must match `rohi_config_esp::layout::REGION_SIZE`.
+# Name,     Type, SubType,   Offset,   Size
+nvs,        data, nvs,       0x9000,   0x6000
+phy_init,   data, phy,       0xf000,   0x1000
+rohi-cfg,   data, undefined, 0x10000,  0x4000
+factory,    app,  factory,   0x20000,  0x7E0000

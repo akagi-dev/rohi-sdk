@@ -26,6 +26,8 @@ use rohi_config::{
 };
 
 type Mem = MemoryStorage<16384, 4096>;
+/// Fault injected into the storage before an operation.
+type Fault = Box<dyn Fn(&mut Mem)>;
 const SLOT: usize = 8192;
 
 #[derive(Debug, Clone, PartialEq, Encode, Decode, CborLen, ConfigSection)]
@@ -914,7 +916,7 @@ fn format_rejects_invalid_geometry() {
 #[test]
 fn interrupted_format_is_corrupt_or_empty_and_can_be_repeated() {
     let corrupt = corrupt_both_slots();
-    let mut faults: Vec<Box<dyn Fn(&mut Mem)>> = Vec::new();
+    let mut faults: Vec<Fault> = Vec::new();
     for budget in 0..8 {
         faults.push(Box::new(move |mem: &mut Mem| mem.fail_write_after(budget)));
     }

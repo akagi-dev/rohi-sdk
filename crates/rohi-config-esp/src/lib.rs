@@ -25,9 +25,9 @@
 //! alignment and maps platform failures to [`EspStorageError`]; it knows
 //! nothing about sections, CBOR documents, CRCs or generations.
 //!
-//! With the `esp` feature the [`esp`] module resolves the region from the
-//! `rohi-cfg` data partition of the device partition table and provides the
-//! ESP32-C3 flash driver constructor.
+//! With a chip feature (`esp32c3` or `esp32c6`, exactly one) the [`esp`] module
+//! resolves the region from the `rohi-cfg` data partition of the device
+//! partition table and provides the ESP32 flash driver constructor.
 //!
 //! ```text
 //! ESP32 flash
@@ -43,7 +43,12 @@
 extern crate std;
 
 mod error;
-#[cfg(feature = "esp")]
+#[cfg(all(feature = "esp32c3", feature = "esp32c6"))]
+compile_error!(
+    "select exactly one ESP target: features `esp32c3` and `esp32c6` are mutually exclusive"
+);
+
+#[cfg(any(feature = "esp32c3", feature = "esp32c6"))]
 pub mod esp;
 pub mod layout;
 mod region;

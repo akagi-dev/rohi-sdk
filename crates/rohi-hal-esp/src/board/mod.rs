@@ -15,19 +15,8 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-//! Monotonic clock backed by `embassy-time`.
+//! Robonomics Open Hardware development board collection.
+//! Device list available on https://robonomics.network/devices/
 
-use embassy_time::Instant;
-use rohi_sensor_core::MonotonicTimestamp;
-
-use crate::runtime::Clock;
-
-/// Time since boot, from the Embassy time driver.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct EmbassyClock;
-
-impl Clock for EmbassyClock {
-    fn now(&self) -> MonotonicTimestamp {
-        MonotonicTimestamp::from_millis(Instant::now().as_millis())
-    }
-}
+/// Altruist Urban pin assignments and peripheral bundle, selected by chip feature.
+pub mod altruist_urban;

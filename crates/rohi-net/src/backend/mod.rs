@@ -44,6 +44,3 @@ pub trait WifiBackend {
     /// Fresh snapshot of the current connection, if connected.
     fn network_info(&mut self) -> Option<NetworkInfo>;
 }
-
-#[cfg(feature = "esp")]
-pub mod esp;

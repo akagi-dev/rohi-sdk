@@ -15,7 +15,7 @@
 //  limitations under the License.
 //
 
-//! ESP32-C3 Wi-Fi station backend.
+//! ESP32 Wi-Fi station backend.
 //!
 //! Everything vendor specific lives here: `esp-radio`, the `embassy-net`
 //! stack, DHCP and the dynamically allocated radio heap. The backend
@@ -25,7 +25,7 @@
 //!
 //! The only platform-specific entry points are [`init_radio_heap`] and
 //! [`EspWifi::new`], called once by the board firmware. Higher layers use
-//! [`WifiHandle`](crate::WifiHandle) only.
+//! [`WifiHandle`](rohi_net::WifiHandle) only.
 
 use core::net::Ipv4Addr;
 
@@ -42,7 +42,7 @@ use esp_radio::wifi::{
 use log::{debug, warn};
 use static_cell::StaticCell;
 
-use crate::{
+use rohi_net::{
     NetworkInfo, ScanCollector, WifiBackend, WifiConfig, WifiError, WifiNetwork, WifiScanResults,
     WifiSecurity, WifiSsid,
 };
@@ -87,7 +87,7 @@ impl NetRunner {
     }
 }
 
-/// ESP32-C3 implementation of [`WifiBackend`].
+/// ESP32 implementation of [`WifiBackend`].
 pub struct EspWifi {
     controller: WifiController<'static>,
     stack: Stack<'static>,

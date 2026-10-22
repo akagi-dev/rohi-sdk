@@ -24,10 +24,10 @@ use embassy_time::Delay;
 use esp_hal::Async;
 use esp_hal::i2c::master::I2c;
 use esp_hal::uart::Uart;
-use rohi_hal::esp::{EmbassyClock, I2sMicrophone};
+use rohi_hal::SensorKind;
 use rohi_hal::runtime::{Reporter, Runner, RunnerConfig, TimeoutI2c};
 use rohi_hal::sensors::{bmx280, noise, scd4x, sds011};
-use rohi_sensor_core::SensorKind;
+use rohi_hal_esp::{EmbassyClock, I2sMicrophone};
 
 use super::{EVENTS, RawMutex, STATES};
 

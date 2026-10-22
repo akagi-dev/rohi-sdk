@@ -34,7 +34,7 @@ or standard library available by default.
 
 `main` is a plain `#[esp_hal::main]` function. `run()` configures logging, the `esp-rtos` runtime that
 provides the time base of the [Embassy Framework](https://embassy.dev/) (with a small heap for its task stacks) and the board (I²C, UART and I²S pins are defined in
-`crates/rohi-hal/src/board/altruist_c3.rs`), then starts the Embassy executor, which spawns the two tasks below.
+`crates/rohi-hal-esp/src/board/altruist_urban/`), then starts the Embassy executor, which spawns the two tasks below.
 See the [Embassy Docs](https://embassy.dev/book/#_task_declaration) for details.
 
 ### Sensor task and events
@@ -43,7 +43,7 @@ See the [Embassy Docs](https://embassy.dev/book/#_task_declaration) for details.
 about networks or serialization: they publish typed `SensorEvent`s (measurements, state changes, errors) into a
 bounded queue; a successful measurement alone marks the sensor `Ready`. `print_events_task` consumes them and
 prints to the terminal. The production firmware has a single task that applies the events to a `MeasurementStore`
-instead. See [Sensor Core](sensor-core.md).
+instead. See [Sensor HAL (rohi-hal)](rohi-hal.md).
 
 <div class="warning">
 
@@ -59,7 +59,7 @@ tasks can use the CPU time to execute their operations.
 Flashing firmware is quite simple—just launch it using cargo as you would run any Rust binary.
 
 ```bash
-cargo run --release --bin example-sds011
+cargo run --release -p rohi-examples --features esp32c3 --target riscv32imc-unknown-none-elf --bin example-sds011
 ```
 
 Behind the scenes, several processes occur:
