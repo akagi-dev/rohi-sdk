@@ -16,20 +16,22 @@
 //
 #![no_std]
 
-//! Platform-independent network (Wi-Fi) abstraction for Robonomics Open
+//! Platform-independent network (Wi-Fi and BLE) abstraction for Robonomics Open
 //! Hardware.
 //!
 //! The public API of this crate is expressed only in ROHI types
 //! ([`WifiConfig`], [`WifiState`], [`WifiNetwork`], [`NetworkInfo`],
 //! [`WifiError`]) and is fully bounded: nothing here allocates. Platform
 //! details (radio drivers, IP stack, radio heap) live in platform crates such as
-//! `rohi-net-esp` behind [`WifiBackend`] and never appear in a public signature.
+//! `rohi-net-esp` behind [`WifiBackend`] and [`BleTransport`] and never appear in
+//! a public signature.
 
 #[cfg(test)]
 extern crate std;
 
 pub mod backend;
 mod backoff;
+mod ble;
 mod config;
 mod error;
 mod limits;
@@ -40,6 +42,9 @@ mod state;
 
 pub use backend::WifiBackend;
 pub use backoff::Backoff;
+pub use ble::{
+    BleConnectionInfo, BleError, BleState, BleTransport, DEFAULT_BLE_PAYLOAD, MAX_BLE_PAYLOAD,
+};
 pub use config::{WifiConfig, WifiPassword, WifiSsid};
 pub use error::WifiError;
 pub use limits::{

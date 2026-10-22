@@ -23,6 +23,9 @@ rohi-config-derive = { path = "crates/rohi-config-derive" }
 rohi-config-esp = { path = "crates/rohi-config-esp" }
 rohi-net = { path = "crates/rohi-net" }
 rohi-net-esp = { path = "crates/rohi-net-esp" }
+rohi-control-proto = { path = "crates/rohi-control-proto" }
+rohi-control = { path = "crates/rohi-control" }
+rohi-control-ble = { path = "crates/rohi-control-ble" }
 
 # ESP. Versions are pinned here; the chip (esp32c3 / esp32c6) is selected by
 # the firmware features, never globally.
@@ -54,6 +57,10 @@ esp-storage = "0.10.0"
 
 # Serialization
 minicbor = { version = "2.3.1", default-features = false, features = ["derive"] }
+
+# Protobuf
+micropb = { version = "0.6.0", default-features = false, features = ["encode", "decode", "enable-64bit"] }
+micropb-gen = "0.6.0"
 
 # Proc-macro
 syn = { version = "2.0", features = ["full"] }

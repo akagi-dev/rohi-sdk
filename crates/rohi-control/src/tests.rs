@@ -1,0 +1,741 @@
+use core::cell::RefCell;
+use core::net::Ipv4Addr;
+use std::vec::Vec;
+
+use embassy_futures::block_on;
+use rohi_control_proto::control::{
+    self as pb, Request_::Request as Call, Response_::Response as Reply,
+};
+use rohi_control_proto::{PROTOCOL_VERSION, decode, encode, limits};
+use rohi_hal::units::{Celsius, Pascal, Ppm, RelativeHumidity};
+use rohi_hal::{
+    Bmx280Update, MeasurementStore, MeasurementUpdate, MeasurementsSnapshot, MonotonicTimestamp,
+    Scd4xUpdate, SensorErrorCode, SensorEvent, SensorKind, SensorState,
+};
+use rohi_net::{
+    NetworkInfo, WifiConfig, WifiNetwork, WifiPassword, WifiScanResults, WifiSecurity, WifiSsid,
+    WifiState, WifiStatus,
+};
+
+use crate::{
+    Capabilities, ControlServices, Controller, DeviceInfo, LinkSecurity, OpenPolicy,
+    RequireAuthenticated, RequireEncryption, ServiceError,
+};
+
+fn ts(ms: u64) -> MonotonicTimestamp {
+    MonotonicTimestamp::from_millis(ms)
+}
+
+fn ssid(value: &str) -> WifiSsid {
+    WifiSsid::from_bytes(value.as_bytes()).unwrap()
+}
+
+fn password(value: &str) -> WifiPassword {
+    WifiPassword::from_bytes(value.as_bytes()).unwrap()
+}
+
+/// In-memory services recording the order of mutations.
+struct Fake {
+    capabilities: Capabilities,
+    snapshot: MeasurementsSnapshot,
+    config: RefCell<Option<WifiConfig>>,
+    applied: RefCell<Vec<Option<WifiConfig>>>,
+    log: RefCell<Vec<&'static str>>,
+    status: WifiStatus,
+    info: Option<NetworkInfo>,
+    scan: WifiScanResults,
+    apply_fails: bool,
+}
+
+impl Fake {
+    fn new() -> Self {
+        let mut store = MeasurementStore::new();
+        store.apply(SensorEvent::StateChanged {
+            sensor: SensorKind::Bmx280,
+            state: SensorState::Ready,
+            timestamp: ts(900),
+        });
+        store.apply(SensorEvent::Measurements(MeasurementUpdate::Bmx280(
+            Bmx280Update::bme280(
+                Celsius(22.5),
+                RelativeHumidity(41.0),
+                Pascal(101_325.0),
+                ts(1_000),
+            ),
+        )));
+        store.apply(SensorEvent::Measurements(MeasurementUpdate::Scd4x(
+            Scd4xUpdate {
+                co2: Ppm(640.0),
+                temperature: Celsius(23.0),
+                humidity: RelativeHumidity(40.0),
+                timestamp: ts(1_500),
+            },
+        )));
+        store.apply(SensorEvent::Error {
+            sensor: SensorKind::Scd4x,
+            error: SensorErrorCode::Crc,
+            timestamp: ts(1_600),
+        });
+        Self {
+            capabilities: Capabilities::ALL,
+            snapshot: store.snapshot(ts(4_000)),
+            config: RefCell::new(None),
+            applied: RefCell::new(Vec::new()),
+            log: RefCell::new(Vec::new()),
+            status: WifiStatus::new(WifiState::NotConfigured),
+            info: None,
+            scan: WifiScanResults::new(),
+            apply_fails: false,
+        }
+    }
+}
+
+impl ControlServices for &Fake {
+    fn device_info(&self) -> DeviceInfo {
+        DeviceInfo {
+            firmware: "fake",
+            firmware_version: "1.2.3",
+            board: "bench",
+            chip: "esp32c3",
+        }
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        self.capabilities
+    }
+
+    async fn measurements(&self) -> Result<MeasurementsSnapshot, ServiceError> {
+        Ok(self.snapshot)
+    }
+
+    async fn wifi_config(&self) -> Result<Option<WifiConfig>, ServiceError> {
+        Ok(*self.config.borrow())
+    }
+
+    async fn store_wifi_config(&self, config: Option<&WifiConfig>) -> Result<(), ServiceError> {
+        self.log.borrow_mut().push("store");
+        *self.config.borrow_mut() = config.copied();
+        Ok(())
+    }
+
+    async fn apply_wifi_config(&self, config: Option<WifiConfig>) -> Result<(), ServiceError> {
+        self.log.borrow_mut().push("apply");
+        if self.apply_fails {
+            return Err(ServiceError::Internal);
+        }
+        self.applied.borrow_mut().push(config);
+        Ok(())
+    }
+
+    async fn wifi_scan(&self) -> Result<WifiScanResults, ServiceError> {
+        Ok(self.scan.clone())
+    }
+
+    fn wifi_status(&self) -> WifiStatus {
+        self.status
+    }
+
+    fn wifi_network_info(&self) -> Option<NetworkInfo> {
+        self.info
+    }
+
+    fn wifi_reconnect(&self) -> Result<(), ServiceError> {
+        self.log.borrow_mut().push("reconnect");
+        Ok(())
+    }
+
+    fn wifi_disconnect(&self) -> Result<(), ServiceError> {
+        self.log.borrow_mut().push("disconnect");
+        Err(ServiceError::Busy)
+    }
+}
+
+const SECURE: LinkSecurity = LinkSecurity {
+    encrypted: true,
+    authenticated: true,
+};
+const PLAIN: LinkSecurity = LinkSecurity {
+    encrypted: false,
+    authenticated: false,
+};
+
+fn request(id: u32, call: Call) -> pb::Request {
+    pb::Request {
+        protocol_version: PROTOCOL_VERSION,
+        request_id: id,
+        request: Some(call),
+    }
+}
+
+fn send<P: crate::AuthorizationPolicy>(
+    controller: &Controller<&Fake, P>,
+    link: &LinkSecurity,
+    request: &pb::Request,
+) -> pb::Response {
+    let mut wire = [0u8; limits::MAX_REQUEST_LEN];
+    let len = encode(request, &mut wire).unwrap();
+    call_raw(controller, link, &wire[..len])
+}
+
+fn call_raw<P: crate::AuthorizationPolicy>(
+    controller: &Controller<&Fake, P>,
+    link: &LinkSecurity,
+    bytes: &[u8],
+) -> pb::Response {
+    let mut out = [0u8; limits::MAX_RESPONSE_LEN];
+    let len = block_on(controller.handle(link, bytes, &mut out));
+    assert!(len > 0);
+    decode(&out[..len]).unwrap()
+}
+
+fn error_code(response: &pb::Response) -> pb::ErrorCode {
+    match &response.response {
+        Some(Reply::Error(error)) => error.code,
+        other => panic!("expected an error, got {other:?}"),
+    }
+}
+
+fn update(ssid_value: Option<&str>, pw: Option<Option<&str>>) -> pb::Request {
+    let mut update = pb::WifiConfigUpdate::default();
+    if let Some(value) = ssid_value {
+        update.set_ssid(heapless::Vec::from_slice(value.as_bytes()).unwrap());
+    }
+    match pw {
+        Some(Some(value)) => {
+            update.password_update = Some(pb::WifiConfigUpdate_::PasswordUpdate::Password(
+                heapless::Vec::from_slice(value.as_bytes()).unwrap(),
+            ));
+        }
+        Some(None) => {
+            update.password_update = Some(pb::WifiConfigUpdate_::PasswordUpdate::ClearPassword(
+                pb::Empty {},
+            ));
+        }
+        None => {}
+    }
+    request(
+        9,
+        Call::UpdateConfig(pb::UpdateConfigRequest {
+            wifi_update: Some(pb::UpdateConfigRequest_::WifiUpdate::UpdateWifi(update)),
+        }),
+    )
+}
+
+#[test]
+fn get_info_echoes_request_id_and_version() {
+    let fake = Fake::new();
+    let controller = Controller::new(&fake, OpenPolicy);
+    let response = send(
+        &controller,
+        &PLAIN,
+        &request(42, Call::GetInfo(pb::GetInfoRequest {})),
+    );
+    assert_eq!(response.request_id, 42);
+    assert_eq!(response.protocol_version, 1);
+    let Some(Reply::GetInfo(info)) = response.response else {
+        panic!("not info");
+    };
+    assert_eq!(info.firmware.as_str(), "fake");
+    assert_eq!(info.firmware_version.as_str(), "1.2.3");
+    assert_eq!(info.board.as_str(), "bench");
+    assert_eq!(info.chip.as_str(), "esp32c3");
+}
+
+#[test]
+fn capabilities_are_listed() {
+    let mut fake = Fake::new();
+    fake.capabilities = Capabilities::SENSORS | Capabilities::WIFI_STATUS;
+    let controller = Controller::new(&fake, OpenPolicy);
+    let response = send(
+        &controller,
+        &PLAIN,
+        &request(1, Call::GetCapabilities(pb::GetCapabilitiesRequest {})),
+    );
+    let Some(Reply::GetCapabilities(caps)) = response.response else {
+        panic!("not capabilities");
+    };
+    assert_eq!(
+        caps.capabilities.as_slice(),
+        &[pb::Capability::Sensors, pb::Capability::WifiStatus]
+    );
+}
+
+#[test]
+fn missing_capability_is_not_supported() {
+    let mut fake = Fake::new();
+    fake.capabilities = Capabilities::SENSORS;
+    let controller = Controller::new(&fake, OpenPolicy);
+    for call in [
+        Call::GetConfig(pb::GetConfigRequest {}),
+        Call::ScanWifi(pb::ScanWifiRequest {}),
+        Call::ReconnectWifi(pb::ReconnectWifiRequest {}),
+    ] {
+        let response = send(&controller, &SECURE, &request(5, call));
+        assert_eq!(error_code(&response), pb::ErrorCode::NotSupported);
+        assert_eq!(response.request_id, 5);
+    }
+    assert!(fake.log.borrow().is_empty());
+}
+
+#[test]
+fn unknown_request_is_a_typed_error() {
+    let fake = Fake::new();
+    let controller = Controller::new(&fake, OpenPolicy);
+    // Request type 99 from a future protocol revision.
+    let response = call_raw(
+        &controller,
+        &PLAIN,
+        &[0x08, 0x01, 0x10, 0x09, 0x9a, 0x06, 0x00],
+    );
+    assert_eq!(error_code(&response), pb::ErrorCode::NotSupported);
+    assert_eq!(response.request_id, 9);
+}
+
+#[test]
+fn malformed_request_is_invalid_argument() {
+    let fake = Fake::new();
+    let controller = Controller::new(&fake, OpenPolicy);
+    let response = call_raw(&controller, &PLAIN, &[0x08, 0x01, 0x10]);
+    assert_eq!(error_code(&response), pb::ErrorCode::InvalidArgument);
+    assert_eq!(response.request_id, 0);
+
+    let response = call_raw(&controller, &PLAIN, &[0xff; limits::MAX_REQUEST_LEN + 1]);
+    assert_eq!(error_code(&response), pb::ErrorCode::InvalidArgument);
+}
+
+#[test]
+fn wrong_protocol_version_is_not_supported() {
+    let fake = Fake::new();
+    let controller = Controller::new(&fake, OpenPolicy);
+    let mut message = request(3, Call::GetInfo(pb::GetInfoRequest {}));
+    message.protocol_version = 2;
+    let response = send(&controller, &PLAIN, &message);
+    assert_eq!(error_code(&response), pb::ErrorCode::NotSupported);
+    assert_eq!(response.request_id, 3);
+    assert_eq!(response.protocol_version, 1);
+}
+
+#[test]
+fn sensors_use_canonical_units_and_request_time_age() {
+    let fake = Fake::new();
+    let controller = Controller::new(&fake, OpenPolicy);
+    let response = send(
+        &controller,
+        &PLAIN,
+        &request(1, Call::GetSensors(pb::GetSensorsRequest {})),
+    );
+    let Some(Reply::GetSensors(sensors)) = response.response else {
+        panic!("not sensors");
+    };
+    assert_eq!(sensors.uptime_ms, 4_000);
+    assert_eq!(sensors.sensors.len(), 2);
+
+    let bmx = &sensors.sensors[0];
+    assert_eq!(bmx.name.as_str(), "bmx280");
+    assert_eq!(bmx.state, pb::SensorState::Ready);
+    assert_eq!(bmx.error(), None);
+    let kinds: Vec<_> = bmx.measurements.iter().map(|m| m.r#type).collect();
+    assert_eq!(
+        kinds,
+        [
+            pb::MeasurementType::Temperature,
+            pb::MeasurementType::Humidity,
+            pb::MeasurementType::Pressure
+        ]
+    );
+    let temperature = &bmx.measurements[0];
+    assert_eq!(temperature.value(), Some(&22.5));
+    assert_eq!(temperature.age_ms(), Some(&3_000));
+    assert_eq!(bmx.measurements[2].value(), Some(&101_325.0));
+
+    let scd = &sensors.sensors[1];
+    assert_eq!(scd.name.as_str(), "scd4x");
+    assert_eq!(scd.error(), Some(&pb::SensorError::Crc));
+    assert_eq!(scd.measurements[0].r#type, pb::MeasurementType::Co2);
+    assert_eq!(scd.measurements[0].value(), Some(&640.0));
+}
+
+#[test]
+fn never_measured_values_are_absent() {
+    let mut store = MeasurementStore::new();
+    store.apply(SensorEvent::StateChanged {
+        sensor: SensorKind::Scd4x,
+        state: SensorState::WarmingUp,
+        timestamp: ts(1),
+    });
+    let snapshot = store.snapshot(ts(10));
+    let sensors = crate::mapping::sensors(&snapshot);
+    // A detected sensor without data keeps its status but has no values.
+    assert_eq!(sensors.sensors.len(), 1);
+    for sensor in &sensors.sensors {
+        for measurement in &sensor.measurements {
+            assert_eq!(measurement.value(), None);
+            assert_eq!(measurement.age_ms(), None);
+        }
+    }
+}
+
+#[test]
+fn config_never_returns_the_password() {
+    let fake = Fake::new();
+    *fake.config.borrow_mut() = Some(WifiConfig::new(
+        ssid("office"),
+        Some(password("s3cretpass")),
+    ));
+    let controller = Controller::new(&fake, OpenPolicy);
+    let response = send(
+        &controller,
+        &PLAIN,
+        &request(1, Call::GetConfig(pb::GetConfigRequest {})),
+    );
+
+    let mut out = [0u8; limits::MAX_RESPONSE_LEN];
+    let len = encode(&response, &mut out).unwrap();
+    assert!(!out[..len].windows(10).any(|w| w == b"s3cretpass"));
+
+    let Some(Reply::GetConfig(config)) = response.response else {
+        panic!("not config");
+    };
+    let wifi = config.wifi().unwrap();
+    assert_eq!(wifi.ssid.as_slice(), b"office");
+    assert!(wifi.password_configured);
+}
+
+#[test]
+fn config_without_wifi_has_no_wifi_section() {
+    let fake = Fake::new();
+    let controller = Controller::new(&fake, OpenPolicy);
+    let response = send(
+        &controller,
+        &PLAIN,
+        &request(1, Call::GetConfig(pb::GetConfigRequest {})),
+    );
+    let Some(Reply::GetConfig(config)) = response.response else {
+        panic!("not config");
+    };
+    assert!(config.wifi().is_none());
+}
+
+#[test]
+fn first_update_persists_then_applies() {
+    let fake = Fake::new();
+    let controller = Controller::new(&fake, OpenPolicy);
+    let response = send(
+        &controller,
+        &SECURE,
+        &update(Some("office"), Some(Some("hunter2hunter2"))),
+    );
+    assert!(matches!(response.response, Some(Reply::UpdateConfig(_))));
+    assert_eq!(response.request_id, 9);
+    assert_eq!(fake.log.borrow().as_slice(), ["store", "apply"]);
+    let stored = fake.config.borrow().unwrap();
+    assert_eq!(stored.ssid.as_bytes(), b"office");
+    assert!(stored.password.is_some());
+    assert_eq!(fake.applied.borrow().as_slice(), [Some(stored)]);
+}
+
+#[test]
+fn omitted_fields_are_preserved() {
+    let fake = Fake::new();
+    *fake.config.borrow_mut() = Some(WifiConfig::new(ssid("old"), Some(password("old-password"))));
+    let controller = Controller::new(&fake, OpenPolicy);
+
+    // Only the SSID changes: the password stays.
+    let response = send(&controller, &SECURE, &update(Some("new"), None));
+    assert!(matches!(response.response, Some(Reply::UpdateConfig(_))));
+    let stored = fake.config.borrow().unwrap();
+    assert_eq!(stored.ssid.as_bytes(), b"new");
+    assert_eq!(stored.password, Some(password("old-password")));
+
+    // Only the password changes: the SSID stays.
+    send(
+        &controller,
+        &SECURE,
+        &update(None, Some(Some("another-password"))),
+    );
+    let stored = fake.config.borrow().unwrap();
+    assert_eq!(stored.ssid.as_bytes(), b"new");
+    assert_eq!(stored.password, Some(password("another-password")));
+}
+
+#[test]
+fn explicit_clear_removes_only_the_password() {
+    let fake = Fake::new();
+    *fake.config.borrow_mut() = Some(WifiConfig::new(
+        ssid("cafe"),
+        Some(password("old-password")),
+    ));
+    let controller = Controller::new(&fake, OpenPolicy);
+    send(&controller, &SECURE, &update(None, Some(None)));
+    let stored = fake.config.borrow().unwrap();
+    assert_eq!(stored.ssid.as_bytes(), b"cafe");
+    assert_eq!(stored.password, None);
+}
+
+#[test]
+fn clear_wifi_removes_the_section_and_stops_the_runtime() {
+    let fake = Fake::new();
+    *fake.config.borrow_mut() = Some(WifiConfig::new(ssid("cafe"), None));
+    let controller = Controller::new(&fake, OpenPolicy);
+    let response = send(
+        &controller,
+        &SECURE,
+        &request(
+            2,
+            Call::UpdateConfig(pb::UpdateConfigRequest {
+                wifi_update: Some(pb::UpdateConfigRequest_::WifiUpdate::ClearWifi(
+                    pb::Empty {},
+                )),
+            }),
+        ),
+    );
+    assert!(matches!(response.response, Some(Reply::UpdateConfig(_))));
+    assert_eq!(*fake.config.borrow(), None);
+    assert_eq!(fake.applied.borrow().as_slice(), [None]);
+}
+
+#[test]
+fn invalid_updates_store_nothing() {
+    let fake = Fake::new();
+    let controller = Controller::new(&fake, OpenPolicy);
+
+    // No stored configuration and no SSID.
+    let response = send(
+        &controller,
+        &SECURE,
+        &update(None, Some(Some("hunter2hunter2"))),
+    );
+    assert_eq!(error_code(&response), pb::ErrorCode::InvalidArgument);
+    // Too short for WPA.
+    let response = send(
+        &controller,
+        &SECURE,
+        &update(Some("office"), Some(Some("short"))),
+    );
+    assert_eq!(error_code(&response), pb::ErrorCode::InvalidArgument);
+    // Empty SSID.
+    let response = send(&controller, &SECURE, &update(Some(""), Some(None)));
+    assert_eq!(error_code(&response), pb::ErrorCode::InvalidArgument);
+
+    assert!(fake.log.borrow().is_empty());
+    assert_eq!(*fake.config.borrow(), None);
+}
+
+#[test]
+fn failed_apply_is_reported_after_the_config_is_stored() {
+    let mut fake = Fake::new();
+    fake.apply_fails = true;
+    let controller = Controller::new(&fake, OpenPolicy);
+    let response = send(&controller, &SECURE, &update(Some("office"), Some(None)));
+    assert_eq!(error_code(&response), pb::ErrorCode::Internal);
+    assert_eq!(fake.log.borrow().as_slice(), ["store", "apply"]);
+}
+
+#[test]
+fn wifi_status_reports_connection_details() {
+    let mut fake = Fake::new();
+    fake.status = WifiStatus::new(WifiState::Connected);
+    fake.info = Some(NetworkInfo {
+        ssid: ssid("office"),
+        rssi_dbm: -61,
+        ipv4: Ipv4Addr::new(192, 168, 1, 20),
+        gateway: Some(Ipv4Addr::new(192, 168, 1, 1)),
+        dns: None,
+    });
+    let controller = Controller::new(&fake, OpenPolicy);
+    let response = send(
+        &controller,
+        &PLAIN,
+        &request(1, Call::GetWifiStatus(pb::GetWifiStatusRequest {})),
+    );
+    let Some(Reply::GetWifiStatus(status)) = response.response else {
+        panic!("not status");
+    };
+    assert_eq!(status.state, pb::WifiState::Connected);
+    assert_eq!(status.failure(), None);
+    let connection = status.connection().unwrap();
+    assert_eq!(connection.rssi_dbm, -61);
+    assert_eq!(connection.ipv4, 0xc0a8_0114);
+    assert_eq!(connection.gateway(), Some(&0xc0a8_0101));
+    assert_eq!(connection.dns(), None);
+}
+
+#[test]
+fn wifi_status_reports_the_failure() {
+    let mut fake = Fake::new();
+    fake.status = WifiStatus::failed(WifiState::Error, rohi_net::WifiError::AuthenticationFailed);
+    let controller = Controller::new(&fake, OpenPolicy);
+    let response = send(
+        &controller,
+        &PLAIN,
+        &request(1, Call::GetWifiStatus(pb::GetWifiStatusRequest {})),
+    );
+    let Some(Reply::GetWifiStatus(status)) = response.response else {
+        panic!("not status");
+    };
+    assert_eq!(status.state, pb::WifiState::Error);
+    assert_eq!(
+        status.failure(),
+        Some(&pb::WifiFailure::AuthenticationFailed)
+    );
+    assert!(status.connection().is_none());
+}
+
+#[test]
+fn full_scan_fits_the_response_limit() {
+    let mut fake = Fake::new();
+    for i in 0..rohi_net::MAX_WIFI_SCAN_RESULTS {
+        let name = std::format!("network-with-a-long-name-{i:02}-xxxx");
+        fake.scan
+            .push(WifiNetwork {
+                ssid: WifiSsid::from_bytes(&name.as_bytes()[..32]).unwrap(),
+                rssi_dbm: -90 + i as i8,
+                security: WifiSecurity::Wpa2Wpa3,
+                channel: 11,
+            })
+            .unwrap();
+    }
+    let controller = Controller::new(&fake, OpenPolicy);
+    let response = send(
+        &controller,
+        &PLAIN,
+        &request(1, Call::ScanWifi(pb::ScanWifiRequest {})),
+    );
+    let Some(Reply::ScanWifi(scan)) = response.response else {
+        panic!("not scan");
+    };
+    assert_eq!(scan.networks.len(), rohi_net::MAX_WIFI_SCAN_RESULTS);
+    assert_eq!(scan.networks[0].security, pb::WifiSecurity::Wpa2Wpa3);
+}
+
+#[test]
+fn every_sensor_fits_the_response_limit() {
+    use rohi_hal::{
+        Ags3871Measurements, Bmx280Measurements, Measurement, Measurements, NoiseMeasurements,
+        RadSensMeasurements, Scd4xMeasurements, Sds011Measurements, SensorStatuses,
+        Zmod4510Measurements,
+    };
+    let snapshot = MeasurementsSnapshot {
+        measurements: Measurements {
+            bmx280: Some(Bmx280Measurements {
+                humidity: Some(Measurement::unavailable()),
+                ..Default::default()
+            }),
+            scd4x: Some(Scd4xMeasurements::default()),
+            sds011: Some(Sds011Measurements::default()),
+            microphone: Some(NoiseMeasurements::default()),
+            zmod4510: Some(Zmod4510Measurements::default()),
+            ags3871: Some(Ags3871Measurements::default()),
+            radsens: Some(RadSensMeasurements::default()),
+        },
+        sensor_statuses: SensorStatuses::new(),
+        generated_at: ts(u64::MAX),
+    };
+    let mut fake = Fake::new();
+    fake.snapshot = snapshot;
+    let controller = Controller::new(&fake, OpenPolicy);
+    let response = send(
+        &controller,
+        &PLAIN,
+        &request(1, Call::GetSensors(pb::GetSensorsRequest {})),
+    );
+    let Some(Reply::GetSensors(sensors)) = response.response else {
+        panic!("not sensors");
+    };
+    assert_eq!(sensors.sensors.len(), SensorKind::COUNT);
+}
+
+#[test]
+fn policy_gates_mutations_only() {
+    let fake = Fake::new();
+    let controller = Controller::new(&fake, RequireEncryption);
+
+    let read = send(
+        &controller,
+        &PLAIN,
+        &request(1, Call::GetConfig(pb::GetConfigRequest {})),
+    );
+    assert!(matches!(read.response, Some(Reply::GetConfig(_))));
+    let scan = send(
+        &controller,
+        &PLAIN,
+        &request(1, Call::ScanWifi(pb::ScanWifiRequest {})),
+    );
+    assert!(matches!(scan.response, Some(Reply::ScanWifi(_))));
+
+    for call in [
+        Call::ReconnectWifi(pb::ReconnectWifiRequest {}),
+        Call::DisconnectWifi(pb::DisconnectWifiRequest {}),
+    ] {
+        let denied = send(&controller, &PLAIN, &request(7, call));
+        assert_eq!(error_code(&denied), pb::ErrorCode::PermissionDenied);
+        assert_eq!(denied.request_id, 7);
+    }
+    let denied = send(&controller, &PLAIN, &update(Some("office"), Some(None)));
+    assert_eq!(error_code(&denied), pb::ErrorCode::PermissionDenied);
+    assert!(fake.log.borrow().is_empty());
+
+    let encrypted = LinkSecurity {
+        encrypted: true,
+        authenticated: false,
+    };
+    let allowed = send(
+        &controller,
+        &encrypted,
+        &request(7, Call::ReconnectWifi(pb::ReconnectWifiRequest {})),
+    );
+    assert!(matches!(allowed.response, Some(Reply::ReconnectWifi(_))));
+    assert_eq!(fake.log.borrow().as_slice(), ["reconnect"]);
+}
+
+#[test]
+fn authenticated_policy_needs_an_authenticated_link() {
+    let fake = Fake::new();
+    let controller = Controller::new(&fake, RequireAuthenticated);
+    let encrypted = LinkSecurity {
+        encrypted: true,
+        authenticated: false,
+    };
+    let denied = send(&controller, &encrypted, &update(Some("office"), Some(None)));
+    assert_eq!(error_code(&denied), pb::ErrorCode::PermissionDenied);
+    let allowed = send(&controller, &SECURE, &update(Some("office"), Some(None)));
+    assert!(matches!(allowed.response, Some(Reply::UpdateConfig(_))));
+}
+
+#[test]
+fn service_errors_map_to_protocol_errors() {
+    let fake = Fake::new();
+    let controller = Controller::new(&fake, OpenPolicy);
+    // The fake refuses `disconnect` with `Busy`.
+    let response = send(
+        &controller,
+        &SECURE,
+        &request(4, Call::DisconnectWifi(pb::DisconnectWifiRequest {})),
+    );
+    assert_eq!(error_code(&response), pb::ErrorCode::Busy);
+    assert_eq!(response.request_id, 4);
+}
+
+#[test]
+fn undersized_response_buffer_gets_an_error_not_a_panic() {
+    let fake = Fake::new();
+    let controller = Controller::new(&fake, OpenPolicy);
+    let mut wire = [0u8; 32];
+    let len = encode(
+        &request(8, Call::GetSensors(pb::GetSensorsRequest {})),
+        &mut wire,
+    )
+    .unwrap();
+
+    let mut small = [0u8; 16];
+    let n = block_on(controller.handle(&PLAIN, &wire[..len], &mut small));
+    let response: pb::Response = decode(&small[..n]).unwrap();
+    assert_eq!(error_code(&response), pb::ErrorCode::Internal);
+    assert_eq!(response.request_id, 8);
+
+    let mut tiny = [0u8; 2];
+    assert_eq!(
+        block_on(controller.handle(&PLAIN, &wire[..len], &mut tiny)),
+        0
+    );
+}
