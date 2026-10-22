@@ -5,35 +5,47 @@
 the store persists it without knowing anything about it.
 
 ```text
- your type ── #[derive(ConfigSection)] ── section ID / version
-     │
- ConfigStore ── postcard payload ── container / A-B / CRC ── ConfigStorage
-                                                              ├─ MemoryStorage      (host tests)
-                                                              └─ EspConfigStorage   (ESP32-C3 flash)
+feature crate
+    ↓
+typed ConfigSection ── #[derive(ConfigSection)] ── section ID / version
+    ↓
+minicbor payload
+    ↓
+CBOR SectionRecord
+    ↓
+CBOR ConfigPayload
+    ↓
+CBOR SlotEnvelope (+ CRC-32) ── commit word
+    ↓
+A/B flash transaction ── ConfigStorage
+                          ├─ MemoryStorage      (host tests)
+                          └─ EspConfigStorage   (ESP32-C3 flash)
 ```
 
 Crates:
 
 | Crate                 | Responsibility                                                                    |
 |-----------------------|-----------------------------------------------------------------------------------|
-| `rohi-config`         | `ConfigSection`, `ConfigStorage`, `ConfigStore`, container format, `MemoryStorage` |
-| `rohi-config-derive`  | `#[derive(ConfigSection)]`, stable section IDs                                      |
-| `rohi-config-esp`     | ESP32-C3 flash backend, bounded flash region, partition lookup                      |
+| `rohi-config`         | `ConfigSection`, `ConfigStorage`, `ConfigStore`, CBOR slot format, `MemoryStorage` |
+| `rohi-config-derive`  | `#[derive(ConfigSection)]`, section IDs from struct names                          |
+| `rohi-config-esp`     | ESP32-C3 flash backend, bounded flash region, partition lookup                     |
+
+Each feature crate owns its own schema (for example `rohi-net` owns `WifiConfig`); `rohi-config` never learns
+the set of application sections.
 
 ## Defining a section
 
 ```rust
-use postcard::experimental::max_size::MaxSize;
+use minicbor::{CborLen, Decode, Encode};
 use rohi_config::ConfigSection;
-use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, MaxSize, ConfigSection)]
-#[config(name = "wifi", version = 1)]
+#[derive(Encode, Decode, CborLen, ConfigSection)]
+#[config(version = 1)]
 pub struct WifiConfig {
-    pub ssid_len: u8,
-    pub ssid: [u8; 32],
-    pub password_len: u8,
-    pub password: [u8; 64],
+    #[n(0)]
+    pub ssid: WifiSsid,
+    #[n(1)]
+    pub password: Option<WifiPassword>,
 }
 
 store.set(&wifi)?;
@@ -41,13 +53,17 @@ let wifi = store.get::<WifiConfig>()?; // Option<WifiConfig>
 ```
 
 `store.remove::<T>()` deletes one section, `store.clear()` all of them. The caller never handles section IDs,
-headers, payload framing, CRCs, slots or generations.
+record framing, CRCs, slots or generations.
 
-> **Codec.** Section payloads use [postcard](https://docs.rs/postcard) (`serde`), not SCALE or JSON.
-> Types must implement `Serialize`, `Deserialize` and postcard's `MaxSize`. Prefer bounded types (fixed arrays,
-> bounded strings/vectors) over `String`/`Vec`. Every payload must be at most `MaxSize::POSTCARD_MAX_SIZE` and
-> `MAX_SECTION_PAYLOAD` bytes; larger values are rejected before anything is written.
-> Decoding rejects trailing bytes.
+> **Codec.** Section payloads are CBOR encoded with [`minicbor`](https://docs.rs/minicbor). Types derive
+> `Encode`, `Decode` and `CborLen`. Field numbers are explicit (`#[n(0)]`, `#[n(1)]`...) and are the persistent
+> schema: never reuse or renumber a field, only append new ones. There is no per-section size attribute: the
+> encoded size is calculated from the actual value (`minicbor::len`) and checked against `MAX_SECTION_PAYLOAD`
+> (1024 bytes) and the slot capacity before anything is written. Prefer bounded types (fixed arrays, bounded
+> byte strings) over unbounded ones; the store itself never allocates.
+>
+> **Strict decode.** `get` requires the decoder to consume the whole payload. A valid value followed by extra
+> bytes fails with `SectionError::TrailingBytes`, never with an unrelated error.
 >
 > **Secrets.** Do not derive `Debug` for secret-bearing sections (Wi-Fi passwords, private keys); implement it by
 > hand with redaction so secrets never reach logs or panic output.
@@ -57,87 +73,139 @@ headers, payload framing, CRCs, slots or generations.
 | Attribute                        | Meaning                                                                         |
 |----------------------------------|---------------------------------------------------------------------------------|
 | `version = N`                    | **Required.** Schema version of this section (`u16`).                           |
-| `name = "wifi"`                  | Stable logical name; hashed into the section ID.                                |
-| `id = 0xAABB…`                   | Explicit 64-bit ID. Mutually exclusive with `name`.                             |
+| `id = 0xAABB…`                   | Explicit 64-bit ID, replacing the one derived from the struct name.             |
 | `decode_versioned = "path::fn"`  | Migration hook `fn(version: u16, payload: &[u8]) -> Result<Self, SectionError>`. |
 
-Without `name` and `id` the Rust type name is hashed; renaming the type then changes the persistent ID, so
-production sections should set `name`. There are no global migrations: each section versions itself, and the
-default decoder accepts only `stored version == T::VERSION` (`SectionError::UnsupportedVersion` otherwise).
+There is no `name` attribute. There are no global migrations: each section versions itself, and the default
+decoder accepts only `stored version == T::VERSION` (`SectionError::UnsupportedSectionVersion` otherwise). CBOR's
+tolerance of unknown fields never replaces this explicit version policy. A migration hook can use
+`rohi_config::decode_exact` to decode older payload layouts strictly.
 
 ### Section ID ABI
 
 `SectionId(u64)` is the **FNV-1a 64-bit** hash (offset basis `0xcbf29ce484222325`, prime `0x100000001b3`) of the
-UTF-8 bytes of the name. Priority: explicit `id`, then `name`, then the Rust type name. The algorithm is part of
-the persistent storage ABI and must never change. Golden values:
+UTF-8 bytes of the Rust **struct name**. The module path and crate name are not hashed, so moving a type between
+modules does not change its identity. The algorithm is part of the persistent storage ABI and must never change.
+Golden values:
 
-| Name              | `SectionId`            |
-|-------------------|------------------------|
-| `wifi`            | `0xa63b01f6557796a8`   |
-| `device-identity` | `0xa629f5606897ad50`   |
-| `telemetry`       | `0xa042ab53f67e07c0`   |
+| Struct name          | `SectionId`            |
+|----------------------|------------------------|
+| `Identity`           | `0x94d63573d312fe9b`   |
+| `WifiConfig`         | `0x335246ad20248b26`   |
+| `ConnectivityConfig` | `0x9c57015a40662d0c`   |
+
+> **Renaming a persisted `ConfigSection` type is a storage ABI change.** `WifiConfig` renamed to `WirelessConfig`
+> gets a different ID and the stored data is no longer found.
+
+The explicit `id` is the escape hatch for the cases where the ID must stay fixed or be chosen:
+
+```rust
+#[derive(Encode, Decode, CborLen, ConfigSection)]
+#[config(id = 0x335246ad20248b26, version = 2)] // formerly named `WifiConfig`
+pub struct WirelessConfig { /* ... */ }
+```
+
+Use it only to keep an existing ID across a rename, to resolve a (very unlikely) hash collision or to import a
+legacy ID.
 
 ## Container format
 
-The region is split into two equal slots, **A** and **B**. All integers are little-endian; fields are encoded
-explicitly, never as Rust memory layout.
+Everything inside a slot is CBOR. The region is split into two equal slots, **A** and **B**.
 
 ```text
-slot:    SlotHeader (24 B) | section | section | ...        (rest of the slot stays erased)
-section: SectionHeader (16 B) | postcard payload | zero padding to 4 bytes
+slot  = SlotEnvelope | 0xFF padding | commit word (last 4 bytes of the slot)
+
+SlotEnvelope  = { 0: bstr(ConfigPayload), 1: crc32 }
+ConfigPayload = { 0: format_version, 1: generation, 2: [ bstr(SectionRecord)* ] }
+SectionRecord = [ section_id (u64), section_version (u16), bstr(typed section CBOR) ]
 ```
 
-| SlotHeader offset | Size | Field                                                           |
-|-------------------|------|-----------------------------------------------------------------|
-| 0                 | 4    | magic `"ROHC"`                                                  |
-| 4                 | 2    | format version (`1`)                                            |
-| 6                 | 2    | reserved (0)                                                    |
-| 8                 | 4    | generation                                                      |
-| 12                | 4    | payload length (multiple of 4, section area only)               |
-| 16                | 4    | CRC-32 (IEEE) over the payload bytes, then header bytes `4..16` |
-| 20                | 4    | commit marker `"COMT"`, written **last**                        |
+`ConfigPayload` is stored as an opaque byte string inside the envelope, so the **CRC-32 (IEEE) covers the exact
+encoded payload bytes** and validation never needs to decode and re-encode anything. Likewise every
+`SectionRecord` is an opaque byte string, which lets the store copy records it does not understand verbatim.
+Fields are written in the order shown, with minimal-length CBOR heads, so the encoder is deterministic. CRC-32
+detects accidental corruption; it is not authentication.
 
-| SectionHeader offset | Size | Field                                    |
-|----------------------|------|------------------------------------------|
-| 0                    | 8    | section ID                               |
-| 8                    | 2    | section version                          |
-| 10                   | 2    | reserved (0)                             |
-| 12                   | 4    | actual payload length (without padding)  |
+Golden example (`Golden { value: 42, flag: true }` with explicit ID `0x1122334455667788`, generation 1):
 
-A slot is valid only if magic, format version, commit marker, length bounds, CRC and section structure all check
-out, there are at most `MAX_SECTIONS` sections and **no duplicate section ID**. CRC-32 detects accidental
-corruption; it is not authentication.
+```text
+typed section   82 18 2A F5                                   [42, true]
+SectionRecord   83 1B 1122334455667788 01 44 82182AF5
+ConfigPayload   A3 00 01 01 01 02 81 50 <record, 16 B>
+SlotEnvelope    A2 00 58 18 <payload, 24 B> 01 1A E47B3143
+```
 
-Limits: `MAX_SECTIONS = 16`, `MAX_SECTION_PAYLOAD = 1024` bytes, slot size at most `MAX_SLOT_SIZE = 64 KiB`
-(half of the region, rounded down to the erase size). All length arithmetic is checked.
+### Commit word
+
+The only non-CBOR bytes are a single 4-byte word (`"COMT"`) in the **last word of each slot**. It is flash
+transaction metadata, not schema: it holds no fields, lives outside the CBOR document and is written last, which is
+what makes NOR flash programming (one-way, word by word) atomic from the store's point of view. A slot without the
+commit word is ignored.
+
+### Limits
+
+`MAX_SECTIONS = 16`, `MAX_SECTION_PAYLOAD = 1024` bytes (typed payload), slot size at most `MAX_SLOT_SIZE = 64 KiB`
+(half of the region, rounded down to the erase size). All length arithmetic is checked. A slot is valid only if the
+commit word, the envelope, the CRC, the payload structure and all records check out, the format version is
+supported, there are at most `MAX_SECTIONS` records and **no duplicate section ID** (a duplicate is an error, never
+first-wins or last-wins).
 
 ## Transactions
 
-Every update streams the complete new container into the **inactive** slot; the active slot is never modified:
+Every update streams the complete new document into the **inactive** slot; the active slot is never modified:
 
 ```text
-plan (size / section count, nothing written)
- -> erase inactive slot
- -> stream sections: replaced one re-serialized, all others copied byte-for-byte
- -> write slot header (without commit marker)
+plan (exact CBOR sizes, nothing written; StorageFull / SectionTooLarge / TooManySections)
+ -> erase inactive slot (last sector first, so the commit word goes before the document)
+ -> stream envelope, payload and records: the replaced section is encoded, all others copied byte-for-byte
+ -> write CRC
  -> read back and verify the whole slot
- -> write commit marker LAST
+ -> write commit word LAST
 ```
-
-`ConfigStore::open` picks the valid slot with the newest generation (wrap-safe serial comparison, so
-`u32::MAX -> 0` is handled). A corrupt or uncommitted newest slot falls back to the previous generation.
 
 > After interruption at any point during an update, the previous valid configuration or the completely
 > committed new configuration remains loadable.
 
-The host tests prove it by failing the storage after every possible number of programmed bytes (torn writes) and
-erased bytes, then reopening the store.
+The host tests prove it by failing the storage after every possible number of programmed bytes (torn writes,
+including a torn commit word) and erased bytes, then reopening the store.
+
+Generation is a `u32` inside `ConfigPayload`. `ConfigStore::open` picks the committed, valid slot with the newest
+generation using wrap-safe serial arithmetic, so `u32::MAX -> 0` is handled.
 
 ### Unknown sections
 
-Sections whose ID the running firmware does not know are never decoded; they are copied unchanged (header,
-payload and padding) on every update, so older firmware preserves a newer firmware's sections. They can be listed
-(`for_each_section`), read raw (`read_raw`) and explicitly removed (`remove_raw`).
+Sections whose ID the running firmware does not know are never decoded; their `SectionRecord` bytes are copied
+unchanged on every update, so older firmware preserves a newer firmware's sections. Updating one known section
+never alters the encoded bytes of unrelated records. They can be listed (`for_each_section`), read raw
+(`read_raw`) and explicitly removed (`remove_raw`).
+
+## Open states: empty versus corrupt
+
+`ConfigStore::open` distinguishes a fresh device from damaged configuration:
+
+| Flash                                                            | Result                                  |
+|------------------------------------------------------------------|-----------------------------------------|
+| Neither slot has a commit word (erased, or first write interrupted before the commit) | `ConfigOpenState::Empty`  |
+| Newest committed slot validates                                  | `ConfigOpenState::Valid`                |
+| A committed slot is invalid, an older committed slot validates   | `ConfigOpenState::Recovered` (older generation is used, the next update repairs the damaged slot) |
+| Committed slot(s) exist but none validates                       | `Err(ConfigError::CorruptStorage(reason))` |
+
+Corruption is never reported as an empty store, so a corrupted `Identity` cannot look like "not provisioned".
+Only genuinely erased storage reads as absent. The store also exposes `generation()`, `active_slot()` and
+`section_count()` for diagnostics.
+
+## Errors
+
+| Error                                       | Meaning                                                            |
+|---------------------------------------------|--------------------------------------------------------------------|
+| `SectionError::Decode(DecodeFailure)`       | Payload is not a valid CBOR encoding of the type                   |
+| `SectionError::TrailingBytes`               | Valid value followed by extra bytes                                |
+| `SectionError::UnsupportedSectionVersion`   | Stored version unknown to this firmware                            |
+| `ConfigError::SectionTooLarge`              | Encoded section above `MAX_SECTION_PAYLOAD`                        |
+| `ConfigError::StorageFull`                  | Resulting document does not fit a slot (nothing was written)       |
+| `ConfigError::TooManySections`              | More than `MAX_SECTIONS` sections                                  |
+| `ConfigError::CorruptStorage(Corruption)`   | Committed configuration unreadable (`Envelope`, `Crc`, `Payload`, `Record`, `DuplicateSection`, `TooManySections`, `UnsupportedFormatVersion`) |
+| `ConfigError::Storage(E)`                   | The storage backend failed                                         |
 
 ## Storage backends
 
@@ -161,7 +229,20 @@ pub trait ConfigStorage {
   (`EspStorageError::InvalidAlignment`), unaligned reads are served through a small bounce buffer. Errors are the
   typed `OutOfBounds`, `InvalidAlignment`, `InvalidRegion`, `ReadFailed`, `WriteFailed`, `EraseFailed`.
   With the `esp` feature, `rohi_config_esp::esp::config_storage` builds it on the `esp-storage` driver and the
-  `rohi-cfg` partition.
+  `rohi-cfg` partition. It knows nothing about CBOR, sections or any feature's configuration.
+
+## Runtime ownership (Altruist Urban)
+
+The firmware opens the store once at boot and hands it to a **configuration task**, the single logical owner. Other
+code (Wi-Fi at boot, the future control layer) uses a cloneable `ConfigHandle`:
+
+```text
+ConfigStore ← config task ← bounded request channel ← ConfigHandle::{get, set, remove, status}
+```
+
+Nothing outside `altruist_urban::config` touches the configuration flash and there is no global mutable store. If
+the partition is missing or committed configuration is corrupt the firmware keeps running, and every request fails
+with `ServiceError::Unavailable` (`status()` tells why) instead of behaving as if the configuration were empty.
 
 ## Flash layout (Altruist Urban, ESP32-C3, 4 MB)
 
@@ -185,16 +266,15 @@ partition is missing the firmware logs an error and keeps running the sensors wi
 | Item                               | Size                                                            |
 |------------------------------------|-----------------------------------------------------------------|
 | Configuration flash region         | 16 KiB (`rohi-cfg`)                                             |
-| Slot size                          | 8 KiB                                                           |
-| Slot header / section header       | 24 B / 16 B                                                     |
-| Maximum container payload          | 8 168 B (slot minus header)                                     |
-| Maximum section payload            | 1 024 B, at most `MaxSize::POSTCARD_MAX_SIZE`                   |
+| Slot size                          | 8 KiB (commit word included)                                    |
+| Envelope / payload overhead        | about 10 B + 8 B plus 2-4 B per record                          |
+| Maximum section payload            | 1 024 B                                                         |
 | Maximum sections                   | 16                                                              |
 | `ConfigStore` RAM                  | ~1 KiB read workspace plus a few words of state                 |
-| Commit stack workspace             | < 0.5 KiB (64 B write buffer, 64 B copy chunk, 128 B ID set)    |
+| Commit stack workspace             | < 0.5 KiB (64 B write buffer, 64 B copy chunk, 128 B ID set)     |
 
-Commit streams postcard output straight into flash and copies unrelated sections in 64 byte chunks, so there is
-never a second copy of the configuration in RAM.
+Commit streams CBOR straight into flash and copies unrelated records in 64 byte chunks, so there is never a second
+copy of the configuration in RAM, and no heap or dynamic CBOR tree is used.
 
 ## Hardware self-test
 
@@ -207,8 +287,10 @@ cargo run --release -p rohi-examples --bin example-config
 
 Every boot checks what the previous boot stored (typed write + reboot + read, several sections, replacement
 preserving unrelated sections, repeated write cycles) and logs `SELFTEST PASS` or `SELFTEST FAIL`. On the third
-boot it corrupts the newest slot on purpose and checks the fallback to the previous generation.
+boot it corrupts the newest slot on purpose and checks that the store reports `Recovered` and falls back to the
+previous generation.
 
 ## Not in this layer
 
-Device identity (WP4.1), BLE/Wi-Fi control, OTA, flash encryption and JSON configuration are out of scope.
+Device identity (WP4.1), BLE/Wi-Fi control, OTA, flash encryption and JSON configuration are out of scope. The
+format is CBOR only; there is no migration from the earlier development-only binary header format.

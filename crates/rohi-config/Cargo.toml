@@ -7,15 +7,15 @@ edition.workspace = true
 homepage.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Robonomics Open Hardware SCALE-based transactional configuration store"
+description = "Robonomics Open Hardware CBOR-based transactional configuration store"
 
 [badges]
 maintenance = { status = "actively-developed" }
 
 [dependencies]
 rohi-config-derive.workspace = true
-postcard.workspace = true
-serde.workspace = true
+minicbor.workspace = true
 
 [dev-dependencies]
+minicbor = { workspace = true, features = ["std"] }
 proptest.workspace = true

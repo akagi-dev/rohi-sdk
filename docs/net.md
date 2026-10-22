@@ -21,7 +21,7 @@ by the board firmware.
 
 | Type | Role |
 |------|------|
-| `WifiConfig` | Persistent section `wifi` (`ssid`, optional `password`); open network = `password: None` |
+| `WifiConfig` | Persistent CBOR section `WifiConfig` (`ssid`, optional `password`); open network = `password: None` |
 | `WifiState` / `WifiStatus` | `NotConfigured`, `Idle`, `Scanning`, `Connecting`, `Connected`, `Disconnected`, `Error` (+ last `WifiError`) |
 | `NetworkInfo` | SSID, RSSI, IPv4, gateway, DNS. Never contains credentials |
 | `WifiNetwork` / `WifiScanResults` | Bounded scan result (`heapless::Vec`), strongest first |

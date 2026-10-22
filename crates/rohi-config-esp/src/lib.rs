@@ -23,7 +23,7 @@
 //! on top of an `embedded-storage` NOR flash restricted to an explicit
 //! [`FlashRegion`]. It handles bounds checking, erase-sector and write-word
 //! alignment and maps platform failures to [`EspStorageError`]; it knows
-//! nothing about sections, SCALE/postcard payloads, CRCs or generations.
+//! nothing about sections, CBOR documents, CRCs or generations.
 //!
 //! With the `esp` feature the [`esp`] module resolves the region from the
 //! `rohi-cfg` data partition of the device partition table and provides the

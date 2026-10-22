@@ -14,8 +14,7 @@ maintenance = { status = "actively-developed" }
 
 [dependencies]
 rohi-config.workspace = true
-postcard.workspace = true
-serde.workspace = true
+minicbor.workspace = true
 heapless.workspace = true
 log.workspace = true
 embassy-sync.workspace = true

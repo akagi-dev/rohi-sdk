@@ -16,23 +16,20 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-use postcard::experimental::max_size::MaxSize;
-use serde::{Serialize, de::DeserializeOwned};
+use minicbor::{CborLen, Decode, Encode};
 
-use crate::{SectionError, SectionId};
+use crate::{SectionError, SectionId, codec};
 
-/// An independent, typed, persistently stored configuration section.
+/// A typed configuration section owned by one feature crate.
 ///
-/// Sections are serialized with [postcard](https://docs.rs/postcard). Implement
-/// the trait with `#[derive(ConfigSection)]` rather than by hand: the derive
-/// generates [`NAME`](Self::NAME), [`ID`](Self::ID) and
-/// [`VERSION`](Self::VERSION) from `#[config(...)]` attributes.
+/// Implement it with `#[derive(ConfigSection)]` on a type that also derives
+/// `minicbor::Encode`, `Decode` and `CborLen` with explicit `#[n(..)]` field
+/// numbers. The encoded size comes from [`CborLen`]; there is no per-section
+/// size attribute.
 ///
-/// Sections must be bounded: [`MaxSize`] limits the stored payload, so prefer
-/// fixed arrays and bounded string/vector types over `String` and `Vec`.
-pub trait ConfigSection: Serialize + DeserializeOwned + MaxSize + Sized {
-    /// Logical section name (the hashed name, or the Rust type name).
-    const NAME: &'static str;
+/// The default section ID is derived from the Rust struct name, so renaming a
+/// persisted section type is a storage ABI change.
+pub trait ConfigSection: Encode<()> + CborLen<()> + for<'b> Decode<'b, ()> + Sized {
     /// Stable persistent section identifier.
     const ID: SectionId;
     /// Version of this section's schema.
@@ -46,11 +43,11 @@ pub trait ConfigSection: Serialize + DeserializeOwned + MaxSize + Sized {
     /// this section only.
     fn decode_versioned(version: u16, payload: &[u8]) -> Result<Self, SectionError> {
         if version != Self::VERSION {
-            return Err(SectionError::UnsupportedVersion {
+            return Err(SectionError::UnsupportedSectionVersion {
                 id: Self::ID,
                 version,
             });
         }
-        crate::output::decode_all(payload)
+        codec::decode_exact(payload)
     }
 }

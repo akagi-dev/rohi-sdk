@@ -26,7 +26,7 @@
 //! Sensor tasks never touch the `MeasurementStore`; the store task is its
 //! only owner.
 
-/// Persistent configuration store.
+/// Persistent configuration service (single owner task and handle).
 pub mod config;
 pub mod net;
 

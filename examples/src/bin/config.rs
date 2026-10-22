@@ -25,9 +25,9 @@
 //! `SELFTEST FAIL`:
 //!
 //! - first boot on an empty region;
-//! - typed section write, reboot, read (`selftest-boot` counter);
-//! - multiple sections persisted (`selftest-a`, `selftest-b`);
-//! - replacement of `selftest-a` preserves the unrelated `selftest-b`;
+//! - typed section write, reboot, read (`BootCounter`);
+//! - multiple sections persisted (`PatternA`, `PatternB`);
+//! - replacement of `PatternA` preserves the unrelated `PatternB`;
 //! - repeated write/read cycles on every boot;
 //! - third boot: the newest slot is corrupted on purpose and the store must
 //!   fall back to the previous generation, then repair it with the next commit.
@@ -37,33 +37,36 @@
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
 use log::{error, info};
-use postcard::experimental::max_size::MaxSize;
-use rohi_config::{ConfigSection, ConfigStorage, ConfigStore};
+use minicbor::{CborLen, Decode, Encode};
+use rohi_config::{ConfigOpenState, ConfigSection, ConfigStorage, ConfigStore};
 use rohi_config_esp::esp::{config_storage, esp_storage::FlashStorage};
 use rohi_config_esp::layout::SLOT_SIZE;
-use serde::{Deserialize, Serialize};
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
 const CORRUPTION_BOOT: u32 = 3;
 const REPEATED_WRITES: u32 = 32;
 
-#[derive(Debug, PartialEq, Serialize, Deserialize, MaxSize, ConfigSection)]
-#[config(name = "selftest-boot", version = 1)]
+#[derive(Debug, PartialEq, Encode, Decode, CborLen, ConfigSection)]
+#[config(version = 1)]
 struct BootCounter {
+    #[n(0)]
     boots: u32,
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize, MaxSize, ConfigSection)]
-#[config(name = "selftest-a", version = 1)]
+#[derive(Debug, PartialEq, Encode, Decode, CborLen, ConfigSection)]
+#[config(version = 1)]
 struct PatternA {
+    #[n(0)]
     seed: u32,
+    #[cbor(n(1), with = "minicbor::bytes")]
     data: [u8; 32],
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize, MaxSize, ConfigSection)]
-#[config(name = "selftest-b", version = 1)]
+#[derive(Debug, PartialEq, Encode, Decode, CborLen, ConfigSection)]
+#[config(version = 1)]
 struct PatternB {
+    #[cbor(n(0), with = "minicbor::bytes")]
     data: [u8; 32],
 }
 
@@ -114,18 +117,22 @@ fn main() -> ! {
             info!("Previous boot: {}", previous.boots);
             report.check(
                 store.get::<PatternA>().ok().flatten() == Some(pattern_a(previous.boots)),
-                "selftest-a persisted across reboot",
+                "PatternA persisted across reboot",
             );
             report.check(
                 store.get::<PatternB>().ok().flatten() == Some(pattern_b()),
-                "selftest-b untouched by replacements",
+                "PatternB untouched by replacements",
             );
             report.check(store.section_count() == 3, "exactly three sections stored");
             previous.boots + 1
         }
         Ok(None) => {
             info!("First boot on an empty region");
-            report.check(store.generation().is_none(), "region starts empty");
+            report.check(
+                store.open_state() == ConfigOpenState::Empty,
+                "region starts empty",
+            );
+            report.check(store.generation().is_none(), "no generation yet");
             report.check(
                 store.get::<PatternA>().ok().flatten().is_none(),
                 "no stale data",
@@ -145,7 +152,7 @@ fn main() -> ! {
         "write boot counter",
     );
     if store.get::<PatternB>().ok().flatten().is_none() {
-        report.check(store.set(&pattern_b()).is_ok(), "write selftest-b");
+        report.check(store.set(&pattern_b()).is_ok(), "write PatternB");
     }
 
     let mut cycles_ok = true;
@@ -158,20 +165,20 @@ fn main() -> ! {
 
     if boot == CORRUPTION_BOOT {
         let generation = store.generation().unwrap_or(0);
+        let newest = store.active_slot().unwrap_or(0);
         let mut storage = store.into_storage();
-        let mut header = [0u8; 4];
-        let mut generations = [0u32; 2];
-        for (slot, generation) in generations.iter_mut().enumerate() {
-            let ok = storage.read(slot * SLOT_SIZE + 8, &mut header).is_ok();
-            *generation = if ok { u32::from_le_bytes(header) } else { 0 };
-        }
-        let newest = usize::from(generations[1] > generations[0]);
         info!("Corrupting slot {} (generation {})", newest, generation);
+        // Programming zeros into the CBOR payload breaks its CRC; the commit
+        // word stays, so the slot is committed but invalid.
         report.check(
-            storage.write(newest * SLOT_SIZE + 24, &[0; 4]).is_ok(),
+            storage.write(newest * SLOT_SIZE + 8, &[0; 4]).is_ok(),
             "corrupt newest slot",
         );
         store = ConfigStore::open(storage).expect("reopen after corruption");
+        report.check(
+            store.open_state() == ConfigOpenState::Recovered,
+            "recovery is reported",
+        );
         report.check(
             store.generation() == Some(generation.wrapping_sub(1)),
             "fell back to the previous generation",
@@ -185,11 +192,11 @@ fn main() -> ! {
     // The final commit also repairs the corrupted slot.
     report.check(
         store.set(&pattern_a(boot)).is_ok(),
-        "final write of selftest-a",
+        "final write of PatternA",
     );
     report.check(
         store.get::<PatternA>().ok().flatten() == Some(pattern_a(boot)),
-        "final read of selftest-a",
+        "final read of PatternA",
     );
 
     if report.failures == 0 {

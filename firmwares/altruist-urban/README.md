@@ -45,6 +45,6 @@ See [Sensor Core](../../docs/sensor-core.md), [Sensors](../../docs/sensors.md) a
 
 ## Wi-Fi
 
-The firmware starts a Wi-Fi station through [`rohi-net`](../../docs/net.md). If a `wifi` configuration section is
+The firmware starts a Wi-Fi station through [`rohi-net`](../../docs/net.md). If a `WifiConfig` configuration section is
 stored it connects automatically (and reconnects with bounded backoff); otherwise the state stays `NotConfigured`.
 Provisioning over BLE arrives with the control plane (WP4).

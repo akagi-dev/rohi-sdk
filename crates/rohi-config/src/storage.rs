@@ -19,7 +19,7 @@
 /// Byte-addressable, flash-like storage region.
 ///
 /// Offsets are relative to the start of the region. The trait knows nothing
-/// about SCALE, sections, CRCs or generations. Implementations must behave
+/// about CBOR, sections, CRCs or generations. Implementations must behave
 /// like NOR flash:
 ///
 /// - `erase` sets bytes to `0xFF` and works in [`ERASE_SIZE`](Self::ERASE_SIZE)

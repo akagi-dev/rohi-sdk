@@ -26,7 +26,7 @@ use log::{error, info, warn};
 use rohi_net::backend::esp::{EspWifi, NetRunner};
 use rohi_net::{ManagerConfig, WifiConfig, WifiHandle, WifiManager, WifiShared};
 
-use crate::config::SharedConfig;
+use crate::config::ConfigHandle;
 use crate::tasks::RawMutex;
 
 static WIFI: WifiShared<RawMutex> = WifiShared::new();
@@ -50,8 +50,8 @@ pub async fn wifi_task(backend: EspWifi) {
 }
 
 /// Reads the persisted Wi-Fi configuration, if any.
-pub async fn load_config(config: &SharedConfig) -> Option<WifiConfig> {
-    match config.lock().await.get::<WifiConfig>() {
+pub async fn load_config(config: ConfigHandle) -> Option<WifiConfig> {
+    match config.get::<WifiConfig>().await {
         Ok(config) => config,
         Err(error) => {
             warn!("Wi-Fi configuration unreadable: {}", error);
@@ -62,12 +62,8 @@ pub async fn load_config(config: &SharedConfig) -> Option<WifiConfig> {
 
 /// Applies the persisted configuration at boot. Without one the manager
 /// stays `NotConfigured` and does not attempt anything.
-pub async fn apply_stored_config(config: Option<&'static SharedConfig>) {
-    let stored = match config {
-        Some(config) => load_config(config).await,
-        None => None,
-    };
-    let Some(stored) = stored else {
+pub async fn apply_stored_config(config: ConfigHandle) {
+    let Some(stored) = load_config(config).await else {
         info!("Wi-Fi: not configured");
         return;
     };
