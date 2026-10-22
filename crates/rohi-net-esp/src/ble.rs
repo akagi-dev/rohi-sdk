@@ -195,6 +195,32 @@ pub(crate) fn new(
     Ok((EspBle { _private: () }, BleRunner { connector, config }))
 }
 
+/// Longest device name: the whole scan response minus its 2-byte header.
+const NAME_MAX: usize = 29;
+
+/// `<prefix>-<last two MAC bytes>`, for example `ALTRUIST-URBAN-A1B2`.
+fn device_name(prefix: &str) -> heapless::String<NAME_MAX> {
+    use core::fmt::Write;
+
+    let mac = base_mac_address();
+    let mac = mac.as_bytes();
+    let suffix = if mac.len() >= 2 {
+        [mac[mac.len() - 2], mac[mac.len() - 1]]
+    } else {
+        [0; 2]
+    };
+    let mut name = heapless::String::new();
+    // Room for "-XXXX"; a longer prefix is cut on a character boundary.
+    for c in prefix.chars() {
+        if name.len() + c.len_utf8() > NAME_MAX - 5 {
+            break;
+        }
+        let _ = name.push(c);
+    }
+    let _ = write!(name, "-{:02X}{:02X}", suffix[0], suffix[1]);
+    name
+}
+
 /// Static random address derived from the factory MAC.
 fn address() -> Address {
     let mut bytes: [u8; 6] = base_mac_address().as_bytes().try_into().unwrap_or([0; 6]);
@@ -221,14 +247,13 @@ impl BleRunner {
         let mut peripheral = stack.peripheral();
         let mut runner = stack.runner();
 
+        let name = device_name(self.config.name_prefix);
+        info!("BLE: device name {}", name.as_str());
         let mut rx_store = [0u8; MAX_BLE_PAYLOAD];
         let mut tx_store = [0u8; MAX_BLE_PAYLOAD];
         let mut table: AttributeTable<'_, CriticalSectionRawMutex, ATTRIBUTES_MAX> =
             AttributeTable::new();
-        if GapConfig::default(self.config.name)
-            .build(&mut table)
-            .is_err()
-        {
+        if GapConfig::default(name.as_str()).build(&mut table).is_err() {
             warn!("BLE: GAP service not created");
         }
         let (rx_handle, tx_handle) = {
@@ -275,7 +300,7 @@ impl BleRunner {
 
         let serve = async {
             loop {
-                match advertise(&self.config, &mut peripheral, &server).await {
+                match advertise(&self.config, name.as_str(), &mut peripheral, &server).await {
                     Ok(connection) => {
                         serve_connection(&connection, rx_handle.handle, &tx_handle).await;
                         end_connection().await;
@@ -296,6 +321,7 @@ impl BleRunner {
 
 async fn advertise<'values, 'server, C: Controller>(
     config: &BleConfig,
+    name: &str,
     peripheral: &mut Peripheral<'values, C, DefaultPacketPool>,
     server: &'server AttributeServer<
         'values,
@@ -316,8 +342,7 @@ async fn advertise<'values, 'server, C: Controller>(
     )?;
     // The name goes into the scan response, which has the whole 31 bytes.
     let mut scan_response = [0u8; 31];
-    let name = config.name.as_bytes();
-    let name = &name[..name.len().min(29)];
+    let name = name.as_bytes();
     let scan_len = AdStructure::encode_slice(
         &[AdStructure::CompleteLocalName(name)],
         &mut scan_response[..],

@@ -111,7 +111,7 @@ One GATT service with two characteristics:
 | RX | `726f6869-0002-4d00-8000-636f6e74726f` | central writes a chunk (write / write without response) |
 | TX | `726f6869-0003-4d00-8000-636f6e74726f` | peripheral notifies a chunk |
 
-The device advertises the service UUID and the name `ROHI Altruist Urban` (scan response).
+The device advertises the service UUID and the name `ALTRUIST-URBAN-XXXX` (scan response), where `XXXX` are the last two bytes of the device MAC in hex.
 
 A message is split into frames of at most one ATT payload (MTU − 3, between 20 and 244 bytes). The framing does not
 know protobuf:

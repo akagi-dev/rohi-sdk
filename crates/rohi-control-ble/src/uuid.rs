@@ -31,6 +31,3 @@ pub const RX_CHARACTERISTIC_UUID: u128 = 0x726f6869_0002_4d00_8000_636f6e74726f;
 
 /// TX characteristic (peripheral -> central, notify): `726f6869-0003-4d00-8000-636f6e74726f`.
 pub const TX_CHARACTERISTIC_UUID: u128 = 0x726f6869_0003_4d00_8000_636f6e74726f;
-
-/// Advertised local name prefix; the full name is `"ROHI <board>"`.
-pub const ADVERTISED_NAME_PREFIX: &str = "ROHI";

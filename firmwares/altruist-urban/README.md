@@ -58,7 +58,7 @@ Wi-Fi can be provisioned over BLE with the `rohi` tool, see below.
 
 ## Control plane (BLE)
 
-The firmware advertises the ROHI Control Service (device name `ROHI Altruist Urban`) and serves a bounded protobuf
+The firmware advertises the ROHI Control Service (device name `ALTRUIST-URBAN-XXXX`, the last two MAC bytes) and serves a bounded protobuf
 control protocol over BLE: device information, capabilities, sensors, typed configuration and Wi-Fi scan / status /
 reconnect / disconnect. Wi-Fi and BLE share one radio runtime (`rohi_net_esp::EspWireless`). Use the desktop client:
 

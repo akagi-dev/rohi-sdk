@@ -153,7 +153,7 @@ pub const GATT: rohi_net::BleGattSpec = rohi_net::BleGattSpec {
 
 /// BLE configuration of the Altruist Urban.
 pub const BLE_CONFIG: rohi_net::BleConfig = rohi_net::BleConfig {
-    name: "ROHI Altruist Urban",
+    name_prefix: "URBAN",
     gatt: GATT,
 };
 

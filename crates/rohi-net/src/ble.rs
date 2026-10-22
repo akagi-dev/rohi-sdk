@@ -51,9 +51,11 @@ pub struct BleGattSpec {
 /// BLE peripheral configuration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BleConfig {
-    /// Advertised and GAP device name; long names are cut by the backend to
+    /// Prefix of the advertised and GAP device name. The backend appends `-`
+    /// and the last two bytes of the device MAC in upper-case hex, for example
+    /// `ALTRUIST-URBAN` becomes `ALTRUIST-URBAN-A1B2`. Long prefixes are cut to
     /// fit the advertising data.
-    pub name: &'static str,
+    pub name_prefix: &'static str,
     /// GATT layout of the byte pipe.
     pub gatt: BleGattSpec,
 }
