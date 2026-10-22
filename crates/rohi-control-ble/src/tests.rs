@@ -386,10 +386,8 @@ struct Services<'a> {
 impl ControlServices for Services<'_> {
     fn device_info(&self) -> DeviceInfo {
         DeviceInfo {
-            firmware: "fake",
-            firmware_version: "0",
-            board: "bench",
-            chip: "esp32c3",
+            firmware: "fake-0",
+            board: "bench-esp32c3",
         }
     }
 

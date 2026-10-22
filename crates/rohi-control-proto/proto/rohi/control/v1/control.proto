@@ -88,14 +88,10 @@ message Error {
 message GetInfoRequest {}
 
 message GetInfoResponse {
-  // Firmware name, for example "altruist-urban".
+  // Firmware name and version in one string, for example "altruist-urban-0.1.0".
   string firmware = 1;
-  // Firmware version, for example "0.1.0".
-  string firmware_version = 2;
-  // Board, for example "altruist-urban".
-  string board = 3;
-  // Chip, for example "esp32c3".
-  string chip = 4;
+  // Board and chip in one string, for example "urban-esp32c3".
+  string board = 2;
 }
 
 enum Capability {

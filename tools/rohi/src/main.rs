@@ -70,7 +70,7 @@ enum Command {
         #[arg(long, default_value_t = 5, value_name = "SECONDS")]
         duration: u64,
     },
-    /// Show firmware, board, chip and supported features.
+    /// Show firmware, board and supported features.
     Info,
     /// Show the overall device status.
     Status,

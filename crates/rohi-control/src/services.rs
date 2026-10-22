@@ -22,14 +22,10 @@ use crate::Capabilities;
 /// Static description of the device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeviceInfo {
-    /// Firmware name.
+    /// Firmware name and version, for example `altruist-urban-0.1.0`.
     pub firmware: &'static str,
-    /// Firmware version.
-    pub firmware_version: &'static str,
-    /// Board name.
+    /// Board and chip, for example `urban-esp32c3`.
     pub board: &'static str,
-    /// Chip name.
-    pub chip: &'static str,
 }
 
 /// Failure of a service call, mapped one-to-one to a protocol error.

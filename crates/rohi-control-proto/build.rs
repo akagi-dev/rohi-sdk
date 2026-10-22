@@ -90,12 +90,7 @@ fn main() {
 
     let bounded = [
         (".rohi.control.v1.GetInfoResponse.firmware", "MAX_TEXT_LEN"),
-        (
-            ".rohi.control.v1.GetInfoResponse.firmware_version",
-            "MAX_TEXT_LEN",
-        ),
         (".rohi.control.v1.GetInfoResponse.board", "MAX_TEXT_LEN"),
-        (".rohi.control.v1.GetInfoResponse.chip", "MAX_TEXT_LEN"),
         (
             ".rohi.control.v1.GetCapabilitiesResponse.capabilities",
             "MAX_CAPABILITIES",

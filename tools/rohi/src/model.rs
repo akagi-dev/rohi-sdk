@@ -216,14 +216,10 @@ open_enum! {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct DeviceInfo {
-    /// Firmware name.
+    /// Firmware name and version, for example `altruist-urban-0.1.0`.
     pub firmware: String,
-    /// Firmware version.
-    pub firmware_version: String,
-    /// Board.
+    /// Board and chip, for example `urban-esp32c3`.
     pub board: String,
-    /// Chip.
-    pub chip: String,
 }
 
 /// One measurement in the canonical unit of its type.

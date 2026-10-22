@@ -83,9 +83,7 @@ fn text<const N: usize>(value: &str) -> String<N> {
 pub(crate) fn device_info(info: &DeviceInfo) -> pb::GetInfoResponse {
     pb::GetInfoResponse {
         firmware: text(info.firmware),
-        firmware_version: text(info.firmware_version),
         board: text(info.board),
-        chip: text(info.chip),
     }
 }
 

@@ -42,10 +42,14 @@ use crate::tasks::RawMutex;
 /// Upper bound of a Wi-Fi scan requested over the control link.
 const WIFI_SCAN_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// Firmware name and version.
+const FIRMWARE: &str = concat!(env!("CARGO_PKG_NAME"), "-", env!("CARGO_PKG_VERSION"));
+
+/// Board and chip.
 #[cfg(feature = "esp32c3")]
-const CHIP: &str = "esp32c3";
+const BOARD: &str = "urban-esp32c3";
 #[cfg(feature = "esp32c6")]
-const CHIP: &str = "esp32c6";
+const BOARD: &str = "urban-esp32c6";
 
 /// [`ControlServices`] over the runtime handles of the firmware.
 pub struct UrbanControlServices {
@@ -84,10 +88,8 @@ fn config_error(error: ConfigError) -> ServiceError {
 impl ControlServices for UrbanControlServices {
     fn device_info(&self) -> DeviceInfo {
         DeviceInfo {
-            firmware: env!("CARGO_PKG_NAME"),
-            firmware_version: env!("CARGO_PKG_VERSION"),
-            board: "altruist-urban",
-            chip: CHIP,
+            firmware: FIRMWARE,
+            board: BOARD,
         }
     }
 

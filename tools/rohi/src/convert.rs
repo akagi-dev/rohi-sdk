@@ -25,9 +25,7 @@ use crate::model::*;
 pub(crate) fn info(info: pb::GetInfoResponse) -> DeviceInfo {
     DeviceInfo {
         firmware: info.firmware.as_str().to_owned(),
-        firmware_version: info.firmware_version.as_str().to_owned(),
         board: info.board.as_str().to_owned(),
-        chip: info.chip.as_str().to_owned(),
     }
 }
 

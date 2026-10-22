@@ -93,10 +93,8 @@ impl Fake {
 impl ControlServices for &Fake {
     fn device_info(&self) -> DeviceInfo {
         DeviceInfo {
-            firmware: "fake",
-            firmware_version: "1.2.3",
-            board: "bench",
-            chip: "esp32c3",
+            firmware: "fake-1.2.3",
+            board: "bench-esp32c3",
         }
     }
 
@@ -235,10 +233,8 @@ fn get_info_echoes_request_id_and_version() {
     let Some(Reply::GetInfo(info)) = response.response else {
         panic!("not info");
     };
-    assert_eq!(info.firmware.as_str(), "fake");
-    assert_eq!(info.firmware_version.as_str(), "1.2.3");
-    assert_eq!(info.board.as_str(), "bench");
-    assert_eq!(info.chip.as_str(), "esp32c3");
+    assert_eq!(info.firmware.as_str(), "fake-1.2.3");
+    assert_eq!(info.board.as_str(), "bench-esp32c3");
 }
 
 #[test]

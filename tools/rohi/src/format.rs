@@ -50,9 +50,8 @@ fn age(age_ms: Option<u64>) -> String {
 /// Device information.
 pub fn info(info: &DeviceInfo, capabilities: &[Capability]) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "Firmware: {} {}", info.firmware, info.firmware_version);
+    let _ = writeln!(out, "Firmware: {}", info.firmware);
     let _ = writeln!(out, "Board:    {}", info.board);
-    let _ = writeln!(out, "Chip:     {}", info.chip);
     let names: Vec<_> = capabilities.iter().map(Capability::as_str).collect();
     let _ = writeln!(out, "Features: {}", names.join(", "));
     out

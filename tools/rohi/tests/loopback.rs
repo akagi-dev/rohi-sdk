@@ -111,10 +111,8 @@ impl Services {
 impl ControlServices for Services {
     fn device_info(&self) -> ServiceInfo {
         ServiceInfo {
-            firmware: "fake",
-            firmware_version: "1.0.0",
-            board: "bench",
-            chip: "esp32c3",
+            firmware: "fake-1.0.0",
+            board: "bench-esp32c3",
         }
     }
 
@@ -260,9 +258,8 @@ fn controller_into_services(controller: Controller<Services, OpenPolicy>) -> Ser
 async fn info_and_capabilities() {
     with_device(20, Services::new(), |mut device| async move {
         let info = device.info().await.unwrap();
-        assert_eq!(info.firmware, "fake");
-        assert_eq!(info.firmware_version, "1.0.0");
-        assert_eq!(info.chip, "esp32c3");
+        assert_eq!(info.firmware, "fake-1.0.0");
+        assert_eq!(info.board, "bench-esp32c3");
 
         let capabilities = device.capabilities().await.unwrap();
         assert_eq!(
@@ -514,7 +511,7 @@ async fn stale_responses_are_skipped() {
         () = async { server.run().await } => unreachable!(),
         () = async {
             let mut device = Device::new(transport);
-            assert_eq!(device.info().await.unwrap().firmware, "fake");
+            assert_eq!(device.info().await.unwrap().firmware, "fake-1.0.0");
         } => {}
     }
 }

@@ -188,7 +188,7 @@ rohi library
 
 ```bash
 rohi scan                       # find ROHI devices
-rohi info                       # firmware, board, chip, features
+rohi info                       # firmware, board, features
 rohi status                     # info + Wi-Fi status
 rohi sensors                    # current measurements
 rohi config                     # stored configuration (never the password)
