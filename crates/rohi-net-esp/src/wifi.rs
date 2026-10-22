@@ -105,7 +105,7 @@ impl EspWifi {
     }
 
     fn current_info(&mut self) -> Option<NetworkInfo> {
-        let ssid = self.ssid?;
+        let ssid = self.ssid.clone()?;
         let config = self.stack.config_v4()?;
         let rssi_dbm = self
             .controller
@@ -159,7 +159,7 @@ impl EspWifi {
             .await
             .map_err(|_| WifiError::DhcpFailed)?;
 
-        self.ssid = Some(config.ssid);
+        self.ssid = Some(config.ssid.clone());
         self.current_info().ok_or(WifiError::DhcpFailed)
     }
 }

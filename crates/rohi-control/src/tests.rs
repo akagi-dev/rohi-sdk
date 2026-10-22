@@ -109,12 +109,12 @@ impl ControlServices for &Fake {
     }
 
     async fn wifi_config(&self) -> Result<Option<WifiConfig>, ServiceError> {
-        Ok(*self.config.borrow())
+        Ok(self.config.borrow().clone())
     }
 
     async fn store_wifi_config(&self, config: Option<&WifiConfig>) -> Result<(), ServiceError> {
         self.log.borrow_mut().push("store");
-        *self.config.borrow_mut() = config.copied();
+        *self.config.borrow_mut() = config.cloned();
         Ok(())
     }
 
@@ -136,7 +136,7 @@ impl ControlServices for &Fake {
     }
 
     fn wifi_network_info(&self) -> Option<NetworkInfo> {
-        self.info
+        self.info.clone()
     }
 
     fn wifi_reconnect(&self) -> Result<(), ServiceError> {
@@ -428,7 +428,7 @@ fn first_update_persists_then_applies() {
     assert!(matches!(response.response, Some(Reply::UpdateConfig(_))));
     assert_eq!(response.request_id, 9);
     assert_eq!(fake.log.borrow().as_slice(), ["store", "apply"]);
-    let stored = fake.config.borrow().unwrap();
+    let stored = fake.config.borrow().clone().unwrap();
     assert_eq!(stored.ssid.as_bytes(), b"office");
     assert!(stored.password.is_some());
     assert_eq!(fake.applied.borrow().as_slice(), [Some(stored)]);
@@ -443,7 +443,7 @@ fn omitted_fields_are_preserved() {
     // Only the SSID changes: the password stays.
     let response = send(&controller, &SECURE, &update(Some("new"), None));
     assert!(matches!(response.response, Some(Reply::UpdateConfig(_))));
-    let stored = fake.config.borrow().unwrap();
+    let stored = fake.config.borrow().clone().unwrap();
     assert_eq!(stored.ssid.as_bytes(), b"new");
     assert_eq!(stored.password, Some(password("old-password")));
 
@@ -453,7 +453,7 @@ fn omitted_fields_are_preserved() {
         &SECURE,
         &update(None, Some(Some("another-password"))),
     );
-    let stored = fake.config.borrow().unwrap();
+    let stored = fake.config.borrow().clone().unwrap();
     assert_eq!(stored.ssid.as_bytes(), b"new");
     assert_eq!(stored.password, Some(password("another-password")));
 }
@@ -467,7 +467,7 @@ fn explicit_clear_removes_only_the_password() {
     ));
     let controller = Controller::new(&fake, OpenPolicy);
     send(&controller, &SECURE, &update(None, Some(None)));
-    let stored = fake.config.borrow().unwrap();
+    let stored = fake.config.borrow().clone().unwrap();
     assert_eq!(stored.ssid.as_bytes(), b"cafe");
     assert_eq!(stored.password, None);
 }

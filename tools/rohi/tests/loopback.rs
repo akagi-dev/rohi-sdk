@@ -128,12 +128,12 @@ impl ControlServices for Services {
     }
 
     async fn wifi_config(&self) -> Result<Option<NetConfig>, ServiceError> {
-        Ok(*self.config.borrow())
+        Ok(self.config.borrow().clone())
     }
 
     async fn store_wifi_config(&self, config: Option<&NetConfig>) -> Result<(), ServiceError> {
         self.requests.borrow_mut().push("store");
-        *self.config.borrow_mut() = config.copied();
+        *self.config.borrow_mut() = config.cloned();
         Ok(())
     }
 
@@ -251,7 +251,7 @@ fn controller_into_services(controller: Controller<Services, OpenPolicy>) -> Ser
     Services {
         capabilities: services.capabilities,
         snapshot: services.snapshot,
-        config: RefCell::new(*services.config.borrow()),
+        config: RefCell::new(services.config.borrow().clone()),
         requests: RefCell::new(services.requests.borrow().clone()),
     }
 }

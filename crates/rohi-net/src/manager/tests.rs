@@ -69,7 +69,7 @@ impl Mock {
 
 fn info_for(config: &WifiConfig) -> NetworkInfo {
     NetworkInfo {
-        ssid: config.ssid,
+        ssid: config.ssid.clone(),
         rssi_dbm: -50,
         ipv4: Ipv4Addr::new(192, 168, 1, 41),
         gateway: Some(Ipv4Addr::new(192, 168, 1, 1)),
@@ -89,7 +89,7 @@ impl WifiBackend for Mock {
     async fn connect(&mut self, config: &WifiConfig) -> Result<NetworkInfo, WifiError> {
         let next = {
             let mut state = self.0.borrow_mut();
-            state.connect_configs.push(*config);
+            state.connect_configs.push(config.clone());
             state.connects.pop_front()
         };
         match next {
@@ -205,7 +205,7 @@ fn configured_connects_after_dhcp() {
     f.mock.script([Connect::Ok]);
     let cfg = config("office");
 
-    block_on(f.handle.apply_config(Some(cfg))).unwrap();
+    block_on(f.handle.apply_config(Some(cfg.clone()))).unwrap();
     f.steps(2);
 
     assert_eq!(f.state(), WifiState::Connected);

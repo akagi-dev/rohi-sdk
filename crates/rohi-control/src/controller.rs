@@ -165,7 +165,11 @@ fn merge_wifi(
 ) -> Result<WifiConfig, ServiceError> {
     let ssid = match update.ssid() {
         Some(bytes) => WifiSsid::from_bytes(bytes).ok_or(ServiceError::InvalidArgument)?,
-        None => current.ok_or(ServiceError::InvalidArgument)?.ssid,
+        None => current
+            .as_ref()
+            .ok_or(ServiceError::InvalidArgument)?
+            .ssid
+            .clone(),
     };
     let password = match &update.password_update {
         Some(WifiConfigUpdate_::PasswordUpdate::Password(bytes)) => {

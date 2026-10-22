@@ -17,6 +17,7 @@
 
 use core::fmt;
 
+use heapless::Vec;
 use minicbor::bytes::ByteSlice;
 use minicbor::decode::{self, Decoder};
 use minicbor::encode::{self, Encoder, Write};
@@ -25,78 +26,58 @@ use rohi_config::ConfigSection;
 
 use crate::{MAX_SSID_LEN, MAX_WIFI_PASSWORD_LEN, MIN_WIFI_PASSWORD_LEN, WifiError};
 
-/// Fixed-capacity byte string, encoded as a CBOR byte string.
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct Bounded<const N: usize> {
-    len: u8,
-    bytes: [u8; N],
-}
+/// CBOR codec of a bounded byte vector: a CBOR byte string.
+mod bytes_codec {
+    use super::*;
 
-impl<const N: usize> Bounded<N> {
-    const fn empty() -> Self {
-        Self {
-            len: 0,
-            bytes: [0; N],
-        }
-    }
-
-    fn from_bytes(value: &[u8]) -> Option<Self> {
-        if value.len() > N {
-            return None;
-        }
-        let mut out = Self::empty();
-        out.bytes[..value.len()].copy_from_slice(value);
-        out.len = value.len() as u8;
-        Some(out)
-    }
-
-    fn as_bytes(&self) -> &[u8] {
-        &self.bytes[..usize::from(self.len)]
-    }
-}
-
-impl<C, const N: usize> Encode<C> for Bounded<N> {
-    fn encode<W: Write>(
-        &self,
+    pub fn encode<C, W: Write, const N: usize>(
+        value: &Vec<u8, N>,
         e: &mut Encoder<W>,
         _: &mut C,
     ) -> Result<(), encode::Error<W::Error>> {
-        e.bytes(self.as_bytes())?;
+        e.bytes(value)?;
         Ok(())
     }
-}
 
-impl<'b, C, const N: usize> Decode<'b, C> for Bounded<N> {
-    fn decode(d: &mut Decoder<'b>, _: &mut C) -> Result<Self, decode::Error> {
+    pub fn decode<C, const N: usize>(
+        d: &mut Decoder<'_>,
+        _: &mut C,
+    ) -> Result<Vec<u8, N>, decode::Error> {
         let position = d.position();
-        Bounded::from_bytes(d.bytes()?)
-            .ok_or_else(|| decode::Error::message("byte string too long").at(position))
+        Vec::from_slice(d.bytes()?)
+            .map_err(|_| decode::Error::message("byte string too long").at(position))
     }
-}
 
-impl<C, const N: usize> CborLen<C> for Bounded<N> {
-    fn cbor_len(&self, ctx: &mut C) -> usize {
-        <&ByteSlice>::from(self.as_bytes()).cbor_len(ctx)
+    pub fn cbor_len<C, const N: usize>(value: &Vec<u8, N>, ctx: &mut C) -> usize {
+        <&ByteSlice>::from(value.as_slice()).cbor_len(ctx)
     }
 }
 
 /// Wi-Fi network name: 0..=[`MAX_SSID_LEN`] arbitrary bytes.
-#[derive(Clone, Copy, PartialEq, Eq, Encode, Decode, CborLen)]
+#[derive(Clone, PartialEq, Eq, Encode, Decode, CborLen)]
 #[cbor(transparent)]
-pub struct WifiSsid(#[n(0)] Bounded<MAX_SSID_LEN>);
+pub struct WifiSsid(
+    #[n(0)]
+    #[cbor(
+        encode_with = "bytes_codec::encode",
+        decode_with = "bytes_codec::decode",
+        cbor_len = "bytes_codec::cbor_len"
+    )]
+    Vec<u8, MAX_SSID_LEN>,
+);
 
 impl WifiSsid {
     pub const fn empty() -> Self {
-        Self(Bounded::empty())
+        Self(Vec::new())
     }
 
     /// Returns `None` when `value` is longer than [`MAX_SSID_LEN`].
     pub fn from_bytes(value: &[u8]) -> Option<Self> {
-        Bounded::from_bytes(value).map(Self)
+        Vec::from_slice(value).ok().map(Self)
     }
 
     pub fn as_bytes(&self) -> &[u8] {
-        self.0.as_bytes()
+        self.0.as_slice()
     }
 
     /// The SSID as text, if it is valid UTF-8.
@@ -105,7 +86,7 @@ impl WifiSsid {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.0.len == 0
+        self.0.is_empty()
     }
 }
 
@@ -128,27 +109,35 @@ impl fmt::Display for WifiSsid {
 }
 
 /// Wi-Fi password. Secret: its `Debug` output never reveals the value.
-#[derive(Clone, Copy, PartialEq, Eq, Encode, Decode, CborLen)]
+#[derive(Clone, PartialEq, Eq, Encode, Decode, CborLen)]
 #[cbor(transparent)]
-pub struct WifiPassword(#[n(0)] Bounded<MAX_WIFI_PASSWORD_LEN>);
+pub struct WifiPassword(
+    #[n(0)]
+    #[cbor(
+        encode_with = "bytes_codec::encode",
+        decode_with = "bytes_codec::decode",
+        cbor_len = "bytes_codec::cbor_len"
+    )]
+    Vec<u8, MAX_WIFI_PASSWORD_LEN>,
+);
 
 impl WifiPassword {
     /// Returns `None` when `value` is longer than [`MAX_WIFI_PASSWORD_LEN`].
     pub fn from_bytes(value: &[u8]) -> Option<Self> {
-        Bounded::from_bytes(value).map(Self)
+        Vec::from_slice(value).ok().map(Self)
     }
 
     /// The raw secret. Only the platform backend should call this.
     pub fn expose_secret(&self) -> &[u8] {
-        self.0.as_bytes()
+        self.0.as_slice()
     }
 
     pub fn len(&self) -> usize {
-        usize::from(self.0.len)
+        self.0.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.0.len == 0
+        self.0.is_empty()
     }
 }
 
@@ -165,7 +154,7 @@ impl fmt::Debug for WifiPassword {
 ///
 /// The CBOR representation is persistent ABI and declared explicitly
 /// (`#[cbor(array)]`); see `cbor_encoding_is_stable`.
-#[derive(Clone, Copy, PartialEq, Eq, Encode, Decode, CborLen, ConfigSection)]
+#[derive(Clone, PartialEq, Eq, Encode, Decode, CborLen, ConfigSection)]
 #[cbor(array)]
 #[config(version = 1)]
 pub struct WifiConfig {
@@ -265,7 +254,7 @@ mod tests {
     #[test]
     fn roundtrip_with_password() {
         let config = WifiConfig::new(ssid("office"), Some(password("hunter2hunter2")));
-        assert_eq!(roundtrip(config), config);
+        assert_eq!(roundtrip(config.clone()), config);
     }
 
     #[test]
@@ -283,7 +272,7 @@ mod tests {
         let used = rohi_config::encode_to_slice(&config, &mut buffer).unwrap();
         // array(2), ssid (2 byte head + 32), password (2 byte head + 64).
         assert_eq!(used, 1 + 2 + MAX_SSID_LEN + 2 + MAX_WIFI_PASSWORD_LEN);
-        assert_eq!(roundtrip(config), config);
+        assert_eq!(roundtrip(config.clone()), config);
     }
 
     #[test]
@@ -328,7 +317,7 @@ mod tests {
     #[test]
     fn partial_update_preserves_password() {
         let config = WifiConfig::new(ssid("old"), Some(password("hunter2hunter2")));
-        let updated = config.with_ssid(ssid("new"));
+        let updated = config.clone().with_ssid(ssid("new"));
         assert_eq!(updated.ssid, ssid("new"));
         assert_eq!(updated.password, config.password);
 
