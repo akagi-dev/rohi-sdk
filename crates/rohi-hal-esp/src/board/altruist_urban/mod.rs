@@ -51,8 +51,9 @@ pub use chip::Hardware;
 /// SDS011 UART baud rate.
 pub const SDS011_BAUD_RATE: u32 = 9_600;
 
-/// I2S DMA ring buffer size in bytes.
-const I2S_DMA_BUFFER_BYTES: usize = I2S_DMA_CHUNK_BYTES * 8;
+/// I2S DMA ring buffer size in bytes: 4 KiB, 64 ms of 16 kHz 32-bit mono.
+/// The noise task must drain it within that time or the DMA stops.
+const I2S_DMA_BUFFER_BYTES: usize = I2S_DMA_CHUNK_BYTES * 16;
 /// I2S DMA descriptor chunk size in bytes.
 const I2S_DMA_CHUNK_BYTES: usize = 256;
 

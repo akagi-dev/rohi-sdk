@@ -28,7 +28,7 @@
 //!   (1 - 2^-8)`, about 10 Hz corner), in integer arithmetic.
 //! * **Sub-window**: every [`SUB_WINDOW_MS`] (125 ms, "fast" time interval)
 //!   the mean square of the filtered samples gives one sound level.
-//! * **Measurement window**: [`WINDOW_MS`] (10 s, 80 sub-windows).
+//! * **Measurement window**: [`WINDOW_MS`] (5 s, 40 sub-windows), back to back.
 //!   *Average* is the energy average of the window (equivalent continuous
 //!   level, `Leq`), *maximum* is the highest sub-window level.
 //! * **Units**: dB SPL, unweighted (no A-weighting):
@@ -44,7 +44,7 @@
 //! |----------|-------|
 //! | Metric | sound pressure level, dB SPL, re 20 µPa |
 //! | Weighting | **none**: flat response, **not dBA** and not dBC |
-//! | Time weighting | 125 ms mean-square sub-windows ("fast"); `average` is `Leq` over the 10 s window, `maximum` the loudest sub-window |
+//! | Time weighting | 125 ms mean-square sub-windows ("fast"); `average` is `Leq` over the 5 s window, `maximum` the loudest sub-window |
 //! | Microphone | ICS-43434 assumed: −26 dBFS at 94 dB SPL (1 kHz) |
 //! | Sample rate | 16 kHz, so content above 8 kHz is not captured |
 //! | Reference | 24-bit full scale = 120 dB SPL; offset [`CALIBRATION_OFFSET_DB`] |
@@ -72,7 +72,7 @@ pub const SAMPLE_RATE_HZ: u32 = 16_000;
 /// Level calculation interval.
 pub const SUB_WINDOW_MS: u32 = 125;
 /// Measurement window.
-pub const WINDOW_MS: u32 = 10_000;
+pub const WINDOW_MS: u32 = 5_000;
 /// Samples processed per read; the only audio buffer (1 KiB of stack).
 pub const CHUNK_SAMPLES: usize = 256;
 /// Bound of a single read of the audio source.

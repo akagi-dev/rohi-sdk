@@ -99,13 +99,19 @@ impl AudioSource for I2sMicrophone {
 
         loop {
             let transfer = self.start()?;
-            if let Err(e) = transfer.wait_for_available_async().await {
-                self.stop();
-                return Err(Error::Dma(e));
-            }
-            let available = transfer.available_bytes() & !3;
+            // Drain the backlog before waiting: completed chunks coalesce into
+            // a single pending interrupt, so waiting first would pop one chunk
+            // per chunk received and never catch up after a scheduling delay.
+            let mut available = transfer.available_bytes() & !3;
             if available == 0 {
-                continue;
+                if let Err(e) = transfer.wait_for_available_async().await {
+                    self.stop();
+                    return Err(Error::Dma(e));
+                }
+                available = transfer.available_bytes() & !3;
+                if available == 0 {
+                    continue;
+                }
             }
             let n = transfer.pop(&mut bytes[..available.min(wanted * 4)]) / 4;
             for (sample, word) in out.iter_mut().zip(bytes.as_chunks::<4>().0).take(n) {

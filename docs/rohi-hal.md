@@ -99,7 +99,7 @@ default exceeds the worst healthy cadence of its sensor by at least 1.5×:
 | BMx280 | 10 s | 60 s |
 | SCD4x | 15 s | 30 s |
 | SDS011 | 150 s (warm-up + sampling window + sleep) | 300 s |
-| Noise | 10 s | 30 s |
+| Noise | 5 s | 30 s |
 
 Errors do not make a value stale; they mark it `Error` while the last valid value is preserved.
 

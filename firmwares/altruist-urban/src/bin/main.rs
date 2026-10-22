@@ -24,6 +24,7 @@
 
 use embassy_executor::Spawner;
 use embassy_sync::mutex::Mutex;
+use embassy_time::Duration;
 use esp_hal::clock::CpuClock;
 use esp_hal::timer::timg::TimerGroup;
 use log::{error, info};
@@ -45,6 +46,9 @@ use esp_backtrace as _;
 esp_bootloader_esp_idf::esp_app_desc!();
 
 static I2C_BUS: StaticCell<SharedI2cBus> = StaticCell::new();
+
+/// Longest wait for the first Wi-Fi connection attempt before sensing starts.
+const WIFI_FIRST_ATTEMPT_WAIT: Duration = Duration::from_secs(30);
 
 #[esp_rtos::main]
 async fn main(spawner: Spawner) -> ! {
@@ -76,19 +80,15 @@ async fn main(spawner: Spawner) -> ! {
 
     let i2c_bus = I2C_BUS.init(Mutex::new(i2c));
     spawner.spawn(store_task().unwrap());
-    spawner.spawn(bmx280_task(i2c_handle(i2c_bus)).unwrap());
-    spawner.spawn(scd4x_task(i2c_handle(i2c_bus)).unwrap());
-    spawner.spawn(sds011_task(sds011_uart).unwrap());
-    spawner.spawn(noise_task(microphone).unwrap());
-    info!("Sensor tasks started");
 
     // A Wi-Fi or BLE failure must never stop the sensors: log and carry on.
     let mut capabilities = Capabilities::SENSORS | Capabilities::CONFIG;
+    let mut wifi_configured = false;
     match wireless.wifi() {
         Ok((backend, runner)) => {
             spawner.spawn(net_runner_task(runner).unwrap());
             spawner.spawn(wifi_task(backend).unwrap());
-            net::apply_stored_config(config).await;
+            wifi_configured = net::apply_stored_config(config).await;
             capabilities = capabilities
                 | Capabilities::WIFI_SCAN
                 | Capabilities::WIFI_STATUS
@@ -114,6 +114,18 @@ async fn main(spawner: Spawner) -> ! {
         }
         Err(error) => error!("BLE unavailable: {}", error),
     }
+
+    // Sensing starts last: bringing up the radio, and the first Wi-Fi
+    // association in particular, keeps the core busy long enough to overrun
+    // the microphone DMA ring.
+    if wifi_configured {
+        net::wait_first_attempt(WIFI_FIRST_ATTEMPT_WAIT).await;
+    }
+    spawner.spawn(bmx280_task(i2c_handle(i2c_bus)).unwrap());
+    spawner.spawn(scd4x_task(i2c_handle(i2c_bus)).unwrap());
+    spawner.spawn(sds011_task(sds011_uart).unwrap());
+    spawner.spawn(noise_task(microphone).unwrap());
+    info!("Sensor tasks started");
 
     core::future::pending().await
 }

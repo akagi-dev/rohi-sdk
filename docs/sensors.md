@@ -8,7 +8,7 @@ Supported by the Altruist Urban firmware (ESP32-C3 and ESP32-C6). Each driver is
 | BMP280 / BME280 | I²C `0x76` / `0x77` | 10 s | Temperature, pressure, humidity (BME280 only) |
 | SCD40 / SCD41 | I²C `0x62` | 5 s | CO₂, temperature, humidity |
 | SDS011 | UART, 9600 baud | 125–150 s duty cycle | PM2.5, PM10, fan off between cycles |
-| I²S microphone | I²S | 10 s window | Noise level, dB SPL |
+| I²S microphone | I²S | 5 s window | Noise level, dB SPL |
 
 ## BMP280 / BME280
 
@@ -72,7 +72,7 @@ Metric: **sound pressure level in dB SPL (re 20 µPa), unweighted**. It is *not*
 | Sample rate | 16 kHz mono, 24-bit samples |
 | Filtering | ≈10 Hz integer DC blocker only, otherwise flat |
 | Sub-window | 125 ms mean square gives one level |
-| Measurement window | 10 s (80 sub-windows); *average* is the energy average (`Leq`), *maximum* the loudest sub-window |
+| Measurement window | 5 s (40 sub-windows), continuous; *average* is the energy average (`Leq`), *maximum* the loudest sub-window |
 | Calibration | factory sensitivity only (`CALIBRATION_OFFSET_DB`), no per-device calibration |
 
 Levels include the microphone's frequency response and the device's own noise (e.g. the SDS011 fan). They compare

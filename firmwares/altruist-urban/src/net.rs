@@ -21,9 +21,11 @@
 //! (the control plane) only use the [`WifiHandle`] returned by [`handle`]; they
 //! never touch the radio driver.
 
-use embassy_time::Delay;
+use embassy_time::{Delay, Duration, with_timeout};
 use log::{error, info, warn};
-use rohi_net::{ManagerConfig, WifiConfig, WifiHandle, WifiManager, WifiShared};
+use rohi_net::{
+    ManagerConfig, WifiConfig, WifiHandle, WifiManager, WifiShared, WifiState, WifiStatus,
+};
 use rohi_net_esp::{EspWifi, NetRunner};
 
 use crate::config::ConfigHandle;
@@ -61,13 +63,38 @@ pub async fn load_config(config: ConfigHandle) -> Option<WifiConfig> {
 }
 
 /// Applies the persisted configuration at boot. Without one the manager
-/// stays `NotConfigured` and does not attempt anything.
-pub async fn apply_stored_config(config: ConfigHandle) {
+/// stays `NotConfigured` and does not attempt anything. Returns whether a
+/// configuration was applied.
+pub async fn apply_stored_config(config: ConfigHandle) -> bool {
     let Some(stored) = load_config(config).await else {
         info!("Wi-Fi: not configured");
-        return;
+        return false;
     };
     if let Err(err) = handle().apply_config(Some(stored)).await {
         error!("Wi-Fi: cannot apply stored configuration: {}", err);
+        return false;
+    }
+    true
+}
+
+/// Waits, at most `timeout`, until the first connection attempt has finished
+/// (connected or failed).
+pub async fn wait_first_attempt(timeout: Duration) {
+    let wifi = handle();
+    let Some(mut status) = wifi.status_receiver() else {
+        return;
+    };
+    let settled = |status: &WifiStatus| {
+        matches!(
+            status.state,
+            WifiState::Connected | WifiState::Disconnected | WifiState::Error | WifiState::Idle
+        )
+    };
+    match with_timeout(timeout, status.get_and(settled)).await {
+        Ok(status) => info!("Wi-Fi: first attempt finished: {:?}", status.state),
+        Err(_) => warn!(
+            "Wi-Fi: first attempt still running after {} s",
+            timeout.as_secs()
+        ),
     }
 }
