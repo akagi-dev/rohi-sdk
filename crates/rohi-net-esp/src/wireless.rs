@@ -35,7 +35,7 @@ use crate::wifi::{EspWifi, NetRunner};
 /// heapless. Wi-Fi and BLE draw from the same heap. Verify
 /// [`WirelessHeap::min_free`] on hardware with both radios active before
 /// changing it.
-pub const WIRELESS_HEAP_SIZE: usize = 96 * 1024;
+pub const WIRELESS_HEAP_SIZE: usize = 128 * 1024;
 
 /// Usage of the wireless heap, for diagnostics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

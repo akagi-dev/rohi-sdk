@@ -54,7 +54,7 @@ firmware: it owns the radio heap and the radio peripherals shared with BLE and c
 | `MAX_WIFI_PASSWORD_LEN` | 64 (WPA passphrases are at least 8) |
 | `MAX_WIFI_SCAN_RESULTS` | 16 |
 | `WIFI_COMMAND_QUEUE_DEPTH` | 4 |
-| `WIRELESS_HEAP_SIZE` | 96 KiB, shared by Wi-Fi and BLE (was 72 KiB for Wi-Fi only; to be tuned from hardware measurements) |
+| `WIRELESS_HEAP_SIZE` | 128 KiB, shared by Wi-Fi and BLE (was 72 KiB for Wi-Fi only; see the control plane doc for the measurements) |
 | IP stack sockets | 6 (DHCP, DNS, headroom) |
 
 ## Memory policy

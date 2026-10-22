@@ -167,8 +167,8 @@ let (wifi, net_runner) = wireless.wifi()?;
 let (ble, ble_runner) = wireless.ble(BLE_CONFIG)?;
 ```
 
-Neither driver initializes radio state or an allocator on its own. `WIRELESS_HEAP_SIZE` is 96 KiB (was 72 KiB for
-Wi-Fi only) and has to be confirmed with `wireless_heap()` (free and, with the `heap-stats` feature, minimum free)
+Neither driver initializes radio state or an allocator on its own. `WIRELESS_HEAP_SIZE` is 128 KiB (was 72 KiB for
+Wi-Fi only; 96 KiB left only 11 KB minimum free on hardware with Wi-Fi and BLE running) and has to be confirmed with `wireless_heap()` (free and, with the `heap-stats` feature, minimum free)
 while both radios are busy, see [Validation](#validation).
 
 ## `rohi` desktop client
@@ -231,11 +231,11 @@ before WP4:
 
 | | ESP32-C3 before | ESP32-C3 after | ESP32-C6 before | ESP32-C6 after |
 |---|---:|---:|---:|---:|
-| `.text` (flash) | 970 092 | 1 183 010 | 1 012 322 | 1 368 196 |
-| `.data` | 10 024 | 15 504 | 12 876 | 18 260 |
-| `.bss` | 106 984 | 148 304 | 111 288 | 152 112 |
-| wireless heap (in `.bss`) | 73 728 | 98 304 | 73 728 | 98 304 |
-| `.bss` without heap | 33 256 | 50 000 | 37 560 | 53 808 |
+| `.text` (flash) | 970 092 | 1 149 952 | 1 012 322 | 1 335 452 |
+| `.data` | 10 024 | 15 640 | 12 876 | 18 396 |
+| `.bss` | 106 984 | 181 248 | 111 288 | 185 056 |
+| wireless heap (in `.bss`) | 73 728 | 131 072 | 73 728 | 131 072 |
+| `.bss` without heap | 33 256 | 50 176 | 37 560 | 53 984 |
 
 Statically allocated control buffers: reassembly 256 B + response 2 048 B + chunk 244 B (control task), BLE RX/TX
 queues 4 × ~250 B each, TrouBLE host resources, and the task futures. The application code stays heapless; only
@@ -248,6 +248,8 @@ authorization, partial updates, persist-before-apply, secrets), the framing (eve
 multiple fragments, maximum size, one byte oversized, truncated, invalid index, duplicate, missing, disconnect in the
 middle of a request, reset after disconnect, exact protobuf byte preservation) and the `rohi` client end to end
 against the real dispatcher.
+
+**First hardware data point** (96 KiB heap, Wi-Fi + BLE running, chip not recorded): `14 656 B` free, `11 120 B` minimum free, i.e. about 87 KB peak use, too little margin, hence 128 KiB. Re-measure the minimum free with the larger heap during BLE connected + Wi-Fi scan/reconnect.
 
 **Not yet measured on hardware** (needs a device; record results here): BLE advertising with Wi-Fi disconnected and
 connected, BLE connected with Wi-Fi connected / scanning / reconnecting, minimum free wireless heap for each, MTU
