@@ -38,6 +38,12 @@ pub const FORMAT_VERSION: u16 = 1;
 /// Flash commit word, written last. It is transaction metadata, not schema.
 pub const COMMIT_WORD: u32 = u32::from_le_bytes(*b"COMT");
 
+/// Commit word of an erased slot.
+pub(crate) const ERASED_WORD: u32 = u32::MAX;
+
+/// Commit word programmed to zero before a committed slot is erased.
+pub(crate) const INVALIDATED_WORD: u32 = 0;
+
 /// Size of the commit word at the end of every slot.
 pub const COMMIT_WORD_SIZE: usize = 4;
 

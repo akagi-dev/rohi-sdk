@@ -97,6 +97,9 @@ Golden values:
 > **Renaming a persisted `ConfigSection` type is a storage ABI change.** `WifiConfig` renamed to `WirelessConfig`
 > gets a different ID and the stored data is no longer found.
 
+A raw identifier (`r#Type`) hashes as `Type`. Types with type or const parameters are rejected unless they give an
+explicit `id`: the name-derived ID would be shared by every instantiation (`Foo<A>`, `Foo<B>`).
+
 The explicit `id` is the escape hatch for the cases where the ID must stay fixed or be chosen:
 
 ```rust
@@ -142,6 +145,11 @@ transaction metadata, not schema: it holds no fields, lives outside the CBOR doc
 what makes NOR flash programming (one-way, word by word) atomic from the store's point of view. A slot without the
 commit word is ignored.
 
+Before a committed slot is erased its commit word is programmed to `0x00000000`. NOR programming only clears bits, so
+this needs no erase, and the slot is uncommitted *before* any cell of it is erased. Flash erases are not atomic and
+make no promise about the order in which cells are cleared, so erasing alone could leave a commit word in front of
+a half-erased document.
+
 ### Limits
 
 `MAX_SECTIONS = 16`, `MAX_SECTION_PAYLOAD = 1024` bytes (typed payload), slot size at most `MAX_SLOT_SIZE = 64 KiB`
@@ -156,7 +164,7 @@ Every update streams the complete new document into the **inactive** slot; the a
 
 ```text
 plan (exact CBOR sizes, nothing written; StorageFull / SectionTooLarge / TooManySections)
- -> erase inactive slot (last sector first, so the commit word goes before the document)
+ -> clear the inactive slot's commit word (program it to 0), then erase the slot
  -> stream envelope, payload and records: the replaced section is encoded, all others copied byte-for-byte
  -> write CRC
  -> read back and verify the whole slot
@@ -167,7 +175,8 @@ plan (exact CBOR sizes, nothing written; StorageFull / SectionTooLarge / TooMany
 > committed new configuration remains loadable.
 
 The host tests prove it by failing the storage after every possible number of programmed bytes (torn writes,
-including a torn commit word) and erased bytes, then reopening the store.
+including a torn commit word) and erased bytes, then reopening the store; the erase faults include documents that
+reach into the sector holding the commit word.
 
 Generation is a `u32` inside `ConfigPayload`. `ConfigStore::open` picks the committed, valid slot with the newest
 generation using wrap-safe serial arithmetic, so `u32::MAX -> 0` is handled.
@@ -186,13 +195,26 @@ never alters the encoded bytes of unrelated records. They can be listed (`for_ea
 | Flash                                                            | Result                                  |
 |------------------------------------------------------------------|-----------------------------------------|
 | Neither slot has a commit word (erased, or first write interrupted before the commit) | `ConfigOpenState::Empty`  |
-| Newest committed slot validates                                  | `ConfigOpenState::Valid`                |
-| A committed slot is invalid, an older committed slot validates   | `ConfigOpenState::Recovered` (older generation is used, the next update repairs the damaged slot) |
+| Every committed slot validates                                   | `ConfigOpenState::Valid` (newest generation is used) |
+| One committed slot is invalid, the other validates               | `ConfigOpenState::Recovered` (the valid slot is used) |
 | Committed slot(s) exist but none validates                       | `Err(ConfigError::CorruptStorage(reason))` |
+
+`Recovered` does not say which slot was newer: the generation of the damaged slot cannot be read, so the active
+configuration may be older than an update that was lost, or the damage may have hit the older, inactive copy. The
+next successful update overwrites the damaged slot. `open_state()` keeps reporting how the flash looked at open;
+`state()` is the current health and turns `Valid` after that update (and after the first update of an empty store).
 
 Corruption is never reported as an empty store, so a corrupted `Identity` cannot look like "not provisioned".
 Only genuinely erased storage reads as absent. The store also exposes `generation()`, `active_slot()` and
 `section_count()` for diagnostics.
+
+### Recovering corrupt storage
+
+`ConfigStore::open` drops the storage on failure. `ConfigStore::try_open` returns an `OpenFailure { storage, error }`
+instead, so the caller can decide what to do with the flash. `ConfigStore::format(storage)` is the explicit way out of
+`CorruptStorage`: it clears both commit words, erases both slots and returns an empty store, discarding every section
+(known, unknown or corrupted). An interrupted format never leaves a committed, half-erased slot: each slot is either
+untouched or uncommitted, and running `format` again completes it.
 
 ## Errors
 
@@ -221,10 +243,16 @@ pub trait ConfigStorage {
 }
 ```
 
-* `MemoryStorage<N, ERASE>` emulates flash (erase to `0xFF`, writes only to erased words) and offers
-  deterministic fault injection: `fail_write_after(bytes)` tears the write at that byte,
+`write` follows NOR programming: it may only clear bits. The store writes erased bytes, except that it programs an
+already written commit word to zero before erasing its slot, so a backend must allow re-programming a word with a
+value that only clears bits.
+
+* `MemoryStorage<N, ERASE>` emulates flash (erase to `0xFF`, writes may only clear bits, `MemoryError::NotErased`
+  otherwise) and offers deterministic fault injection: `fail_write_after(bytes)` tears the write at that byte,
   `fail_erase_after(bytes)` leaves a partially erased sector.
-* `EspConfigStorage<F: NorFlash>` restricts an `embedded-storage` NOR flash to a `FlashRegion { offset, length }`.
+* `EspConfigStorage<F: MultiwriteNorFlash>` restricts an `embedded-storage` NOR flash to a
+  `FlashRegion { offset, length }`. `MultiwriteNorFlash` is the `embedded-storage` marker for flash that can program
+  a word more than once (`esp-storage`'s `FlashStorage` implements it; encrypted flash would not qualify).
   Every offset is region-relative and checked; writes and erases must be word/sector aligned
   (`EspStorageError::InvalidAlignment`), unaligned reads are served through a small bounce buffer. Errors are the
   typed `OutOfBounds`, `InvalidAlignment`, `InvalidRegion`, `ReadFailed`, `WriteFailed`, `EraseFailed`.
@@ -237,12 +265,23 @@ The firmware opens the store once at boot and hands it to a **configuration task
 code (Wi-Fi at boot, the future control layer) uses a cloneable `ConfigHandle`:
 
 ```text
-ConfigStore ← config task ← bounded request channel ← ConfigHandle::{get, set, remove, status}
+ConfigStore ← config task ← bounded request channel ← ConfigHandle::{get, set, remove, reset, status}
 ```
 
 Nothing outside `altruist_urban::config` touches the configuration flash and there is no global mutable store. If
 the partition is missing or committed configuration is corrupt the firmware keeps running, and every request fails
 with `ServiceError::Unavailable` (`status()` tells why) instead of behaving as if the configuration were empty.
+`status()` reports the store's current `state()`, so `Recovered` becomes `Valid` once an update repaired the slot.
+
+`ConfigHandle::reset()` is the factory reset and the way out of corruption without reflashing. A ready store is
+cleared with a normal transactional update; an unavailable one (corrupt or unreadable, partition present) is
+formatted with `ConfigStore::format` and the service becomes ready with an empty store. Only a missing partition
+cannot be reset.
+
+Flash erase and programming are synchronous, and `esp-storage` runs them in a critical section with the flash cache
+disabled. An update therefore stalls the whole CPU, not just the configuration task (each 4 KiB sector erase takes
+tens of milliseconds), and moving the task to another executor would not change that. Configuration updates are
+rare and must not be issued from timing-critical paths.
 
 ## Flash layout (Altruist Urban, ESP32-C3, 4 MB)
 
@@ -270,7 +309,8 @@ partition is missing the firmware logs an error and keeps running the sensors wi
 | Envelope / payload overhead        | about 10 B + 8 B plus 2-4 B per record                          |
 | Maximum section payload            | 1 024 B                                                         |
 | Maximum sections                   | 16                                                              |
-| `ConfigStore` RAM                  | ~1 KiB read workspace plus a few words of state                 |
+| `ConfigStore` RAM                  | a few words of state                                            |
+| `get` stack workspace              | 1 KiB (one `MAX_SECTION_PAYLOAD` buffer, only during the call)  |
 | Commit stack workspace             | < 0.5 KiB (64 B write buffer, 64 B copy chunk, 128 B ID set)     |
 
 Commit streams CBOR straight into flash and copies unrelated records in 64 byte chunks, so there is never a second

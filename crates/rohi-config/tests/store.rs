@@ -21,8 +21,8 @@
 use minicbor::{CborLen, Decode, Encode, Encoder};
 use rohi_config::{
     COMMIT_WORD, ConfigError, ConfigOpenState, ConfigSection, ConfigStore, Corruption, Crc32,
-    DecodeKind, FORMAT_VERSION, MAX_SECTIONS, MemoryError, MemoryStorage, SectionError, SectionId,
-    SectionInfo,
+    DecodeKind, FORMAT_VERSION, MAX_SECTIONS, MemoryError, MemoryStorage, OpenFailure,
+    SectionError, SectionId, SectionInfo,
 };
 
 type Mem = MemoryStorage<16384, 4096>;
@@ -794,6 +794,7 @@ fn corrupt_committed_slot_falls_back_to_an_older_valid_one() {
             install(&mut mem, bad, &image);
             let mut store = open(mem);
             assert_eq!(store.open_state(), ConfigOpenState::Recovered, "{name}");
+            assert_eq!(store.state(), ConfigOpenState::Recovered, "{name}");
             assert_eq!(store.generation(), Some(4), "{name}");
             assert_eq!(store.active_slot(), Some(1 - bad), "{name}");
             assert_eq!(
@@ -804,6 +805,8 @@ fn corrupt_committed_slot_falls_back_to_an_older_valid_one() {
             // The next update repairs the damaged slot.
             store.set(&connectivity(31)).unwrap();
             assert_eq!(store.active_slot(), Some(bad), "{name}");
+            assert_eq!(store.open_state(), ConfigOpenState::Recovered, "{name}");
+            assert_eq!(store.state(), ConfigOpenState::Valid, "{name}");
             assert_connectivity(store.into_storage(), 31, ConfigOpenState::Valid);
         }
     }
@@ -818,6 +821,134 @@ fn newest_committed_slot_wins_even_if_corrupt_falls_back() {
     let mut mem = store.into_storage();
     mem.as_bytes_mut()[SLOT + 12] ^= 0xFF;
     assert_connectivity(mem, 1, ConfigOpenState::Recovered);
+}
+
+#[test]
+fn damaged_older_slot_is_also_reported_as_recovered() {
+    // The newest generation is intact; only the older, inactive slot is bad.
+    let mut store = open(Mem::new());
+    store.set(&connectivity(1)).unwrap();
+    store.set(&connectivity(2)).unwrap();
+    let mut mem = store.into_storage();
+    mem.as_bytes_mut()[12] ^= 0xFF;
+    let store = open(mem);
+    assert_eq!(store.state(), ConfigOpenState::Recovered);
+    assert_eq!(store.generation(), Some(2));
+    assert_connectivity(store.into_storage(), 2, ConfigOpenState::Recovered);
+}
+
+#[test]
+fn state_tracks_the_first_commit() {
+    let mut store = open(Mem::new());
+    assert_eq!(store.state(), ConfigOpenState::Empty);
+    store.set(&connectivity(1)).unwrap();
+    assert_eq!(store.open_state(), ConfigOpenState::Empty);
+    assert_eq!(store.state(), ConfigOpenState::Valid);
+}
+
+fn open_failure<S: rohi_config::ConfigStorage>(
+    result: Result<ConfigStore<S>, OpenFailure<S>>,
+) -> OpenFailure<S> {
+    match result {
+        Ok(store) => panic!("unexpectedly opened as {:?}", store.open_state()),
+        Err(failure) => failure,
+    }
+}
+
+fn corrupt_both_slots() -> Mem {
+    let mut store = open(Mem::new());
+    store.set(&Identity { serial: 1 }).unwrap();
+    store.set(&Identity { serial: 2 }).unwrap();
+    let mut mem = store.into_storage();
+    mem.as_bytes_mut()[8] ^= 0xFF;
+    mem.as_bytes_mut()[SLOT + 8] ^= 0xFF;
+    mem
+}
+
+#[test]
+fn try_open_hands_the_storage_back() {
+    let mem = corrupt_both_slots();
+    let image = mem.as_bytes().to_vec();
+    let failure = open_failure(ConfigStore::try_open(mem));
+    assert!(matches!(failure.error, ConfigError::CorruptStorage(_)));
+    assert_eq!(failure.storage.as_bytes(), image.as_slice());
+
+    let failure = open_failure(ConfigStore::try_open(MemoryStorage::<64, 64>::new()));
+    assert!(matches!(failure.error, ConfigError::InvalidStorage(_)));
+}
+
+#[test]
+fn format_recovers_corrupt_storage() {
+    let failure = open_failure(ConfigStore::try_open(corrupt_both_slots()));
+    let mut store = ConfigStore::format(failure.storage).unwrap();
+    assert_eq!(store.open_state(), ConfigOpenState::Empty);
+    assert_eq!(store.state(), ConfigOpenState::Empty);
+    assert_eq!(store.get::<Identity>().unwrap(), None);
+    assert!(store.storage().as_bytes().iter().all(|b| *b == 0xFF));
+    store.set(&Identity { serial: 3 }).unwrap();
+    let mut store = open(store.into_storage());
+    assert_eq!(store.open_state(), ConfigOpenState::Valid);
+    assert_eq!(
+        store.get::<Identity>().unwrap(),
+        Some(Identity { serial: 3 })
+    );
+}
+
+#[test]
+fn format_discards_valid_and_unknown_sections() {
+    let mut store = open(base_config());
+    store.set_raw(SectionId(0xDEAD), 1, &[1, 2, 3]).unwrap();
+    let store = ConfigStore::format(store.into_storage()).unwrap();
+    let mut store = open(store.into_storage());
+    assert_eq!(store.open_state(), ConfigOpenState::Empty);
+    assert_eq!(store.section_count(), 0);
+    assert_eq!(store.get::<WifiConfig>().unwrap(), None);
+}
+
+#[test]
+fn format_rejects_invalid_geometry() {
+    let failure = open_failure(ConfigStore::format(MemoryStorage::<64, 64>::new()));
+    assert!(matches!(failure.error, ConfigError::InvalidStorage(_)));
+}
+
+#[test]
+fn interrupted_format_is_corrupt_or_empty_and_can_be_repeated() {
+    let corrupt = corrupt_both_slots();
+    let mut faults: Vec<Box<dyn Fn(&mut Mem)>> = Vec::new();
+    for budget in 0..8 {
+        faults.push(Box::new(move |mem: &mut Mem| mem.fail_write_after(budget)));
+    }
+    for budget in (0..2 * SLOT).step_by(512) {
+        faults.push(Box::new(move |mem: &mut Mem| mem.fail_erase_after(budget)));
+    }
+    for (case, fault) in faults.iter().enumerate() {
+        let mut mem = clone(&corrupt);
+        fault(&mut mem);
+        let mut mem = match ConfigStore::format(mem) {
+            Ok(store) => store.into_storage(),
+            Err(failure) => failure.storage,
+        };
+        mem.clear_faults();
+        let mem = match ConfigStore::try_open(mem) {
+            Ok(store) => {
+                assert_eq!(store.open_state(), ConfigOpenState::Empty, "case {case}");
+                store.into_storage()
+            }
+            Err(failure) => {
+                assert!(
+                    matches!(failure.error, ConfigError::CorruptStorage(_)),
+                    "case {case}: {:?}",
+                    failure.error
+                );
+                failure.storage
+            }
+        };
+        let store = ConfigStore::format(mem).unwrap();
+        assert_eq!(
+            open(store.into_storage()).open_state(),
+            ConfigOpenState::Empty
+        );
+    }
 }
 
 #[test]
@@ -1172,23 +1303,75 @@ fn interrupted_erase_never_loses_the_previous_configuration() {
     }
 }
 
+/// Base configuration plus raw sections large enough for the document to
+/// reach into the last erase sector of its slot.
+fn large_base_config() -> Mem {
+    let mut store = open(base_config());
+    for id in 0..5u64 {
+        store
+            .set_raw(SectionId(0x7000 + id), 1, &[id as u8; 1000])
+            .unwrap();
+    }
+    // Rewrite once more so both slots hold a large committed document.
+    store.set(&connectivity(60)).unwrap();
+    let mem = store.into_storage();
+    for slot in 0..2 {
+        let last_sector = &mem.as_bytes()[slot * SLOT + 4096..(slot + 1) * SLOT - 4];
+        assert!(last_sector.iter().any(|b| *b != 0xFF), "slot {slot}");
+    }
+    mem
+}
+
 #[test]
 fn interrupted_erase_of_a_committed_slot_is_not_corruption() {
-    // The inactive slot holds an older committed configuration. Erasing it
-    // goes from the last sector down, so the commit word goes first.
-    let base = base_config();
-    let mut seen_states = std::collections::HashSet::new();
-    for budget in (0..=SLOT).step_by(64) {
-        let mut mem = clone(&base);
-        mem.fail_erase_after(budget);
-        let mut store = open(mem);
-        let _ = store.set(&wifi(2));
-        let mut mem = store.into_storage();
-        mem.clear_faults();
-        let store = open(mem);
-        seen_states.insert(format!("{:?}", store.open_state()));
+    // The inactive slot holds an older committed configuration. Its commit
+    // word is cleared before the erase, so a partially erased slot is never
+    // committed, even when the document spans the sector holding the word.
+    for base in [base_config(), large_base_config()] {
+        let active = open(clone(&base)).active_slot();
+        for budget in (0..=SLOT).step_by(64) {
+            let mut mem = clone(&base);
+            mem.fail_erase_after(budget);
+            let mut store = open(mem);
+            let result = store.set(&wifi(2));
+            let mut mem = store.into_storage();
+            mem.clear_faults();
+            let store = open(mem);
+            assert_eq!(
+                store.open_state(),
+                ConfigOpenState::Valid,
+                "budget {budget}"
+            );
+            if result.is_err() {
+                assert_eq!(store.active_slot(), active, "budget {budget}");
+            }
+        }
     }
-    assert!(!seen_states.is_empty());
+}
+
+#[test]
+fn inactive_commit_word_is_cleared_before_erasing() {
+    let base = base_config();
+    let inactive = 1 - open(clone(&base)).active_slot().unwrap();
+    let word = (inactive + 1) * SLOT - 4;
+    assert_eq!(&base.as_bytes()[word..word + 4], &COMMIT_WORD.to_le_bytes());
+
+    let mut mem = clone(&base);
+    mem.fail_erase_after(0);
+    let mut store = open(mem);
+    assert!(store.set(&wifi(2)).is_err());
+    let mem = store.into_storage();
+    // Nothing was erased, but the old document is no longer committed.
+    assert_eq!(&mem.as_bytes()[word..word + 4], &[0; 4]);
+    assert_eq!(
+        &mem.as_bytes()[inactive * SLOT..inactive * SLOT + 32],
+        &base.as_bytes()[inactive * SLOT..inactive * SLOT + 32]
+    );
+    let mut mem = mem;
+    mem.clear_faults();
+    let mut store = open(mem);
+    assert_eq!(store.open_state(), ConfigOpenState::Valid);
+    assert_eq!(store.get::<WifiConfig>().unwrap(), Some(wifi(1)));
 }
 
 #[test]

@@ -16,11 +16,13 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 
+use core::fmt;
+
 use minicbor::Encoder;
 
 use crate::format::{
-    COMMIT_WORD, COMMIT_WORD_SIZE, FORMAT_VERSION, MAX_SECTION_PAYLOAD, MAX_SECTIONS,
-    MAX_SLOT_SIZE, bytes_head, head_len,
+    COMMIT_WORD, COMMIT_WORD_SIZE, ERASED_WORD, FORMAT_VERSION, INVALIDATED_WORD,
+    MAX_SECTION_PAYLOAD, MAX_SECTIONS, MAX_SLOT_SIZE, bytes_head, head_len,
 };
 use crate::slot::{CHUNK, Entry, Fault, SlotInfo, SlotState, inspect, is_newer};
 use crate::writer::{SlotWriter, WriteAbort};
@@ -48,17 +50,38 @@ impl From<Entry> for SectionInfo {
     }
 }
 
-/// How the store found the flash when it was opened.
+/// Health of the configuration storage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConfigOpenState {
     /// Neither slot holds a committed configuration: a fresh (erased) device,
     /// or a first write interrupted before its commit word was programmed.
     Empty,
-    /// The newest committed slot validated completely.
+    /// Every committed slot validated; the newest one is active.
     Valid,
-    /// A committed slot was invalid and an older committed slot was used.
-    /// The next successful update rewrites the damaged slot.
+    /// One committed slot is invalid and the other, valid, slot is active.
+    /// The damaged slot's generation cannot be read, so the active
+    /// configuration may be older than the one that was lost. The next
+    /// successful update overwrites the damaged slot.
     Recovered,
+}
+
+/// A failed [`ConfigStore::try_open`] or [`ConfigStore::format`], handing the
+/// storage back so that the caller can still recover it (for example format
+/// corrupted configuration).
+pub struct OpenFailure<S: ConfigStorage> {
+    pub storage: S,
+    pub error: ConfigError<S::Error>,
+}
+
+impl<S: ConfigStorage> fmt::Debug for OpenFailure<S>
+where
+    S::Error: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OpenFailure")
+            .field("error", &self.error)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -112,7 +135,63 @@ pub struct ConfigStore<S: ConfigStorage> {
     slot_size: usize,
     active: Option<Active>,
     open_state: ConfigOpenState,
-    workspace: [u8; MAX_SECTION_PAYLOAD],
+    /// The inactive slot is committed but invalid.
+    damaged: bool,
+}
+
+/// Validates the storage geometry and returns the slot size.
+fn slot_size<S: ConfigStorage>(storage: &S) -> Result<usize, ConfigError<S::Error>> {
+    if !S::ERASE_SIZE.is_power_of_two() {
+        return Err(ConfigError::InvalidStorage(
+            "erase size is not a power of two",
+        ));
+    }
+    if !matches!(S::WRITE_SIZE, 1 | 2 | 4) {
+        return Err(ConfigError::InvalidStorage("write size must be 1, 2 or 4"));
+    }
+    let mut slot_size = (storage.capacity() / 2).min(MAX_SLOT_SIZE);
+    slot_size -= slot_size % S::ERASE_SIZE;
+    if slot_size < MIN_SLOT_SIZE {
+        return Err(ConfigError::InvalidStorage(
+            "storage too small for two slots",
+        ));
+    }
+    if !slot_size.is_multiple_of(COMMIT_WORD_SIZE) {
+        return Err(ConfigError::InvalidStorage(
+            "slot size is not a multiple of the commit word",
+        ));
+    }
+    Ok(slot_size)
+}
+
+/// Makes the slot at `base` uncommitted by programming its commit word to
+/// [`INVALIDATED_WORD`]. NOR programming only clears bits, so this works on a
+/// committed or torn word and does not depend on how an erase proceeds.
+fn invalidate<S: ConfigStorage>(
+    storage: &mut S,
+    base: usize,
+    slot_size: usize,
+) -> Result<(), S::Error> {
+    let offset = base + slot_size - COMMIT_WORD_SIZE;
+    let mut word = [0u8; COMMIT_WORD_SIZE];
+    storage.read(offset, &mut word)?;
+    match u32::from_le_bytes(word) {
+        ERASED_WORD | INVALIDATED_WORD => Ok(()),
+        _ => storage.write(offset, &INVALIDATED_WORD.to_le_bytes()),
+    }
+}
+
+fn erase_slot<S: ConfigStorage>(
+    storage: &mut S,
+    base: usize,
+    slot_size: usize,
+) -> Result<(), S::Error> {
+    let mut offset = 0;
+    while offset < slot_size {
+        storage.erase(base + offset, S::ERASE_SIZE)?;
+        offset += S::ERASE_SIZE;
+    }
+    Ok(())
 }
 
 impl<S: ConfigStorage> ConfigStore<S> {
@@ -121,32 +200,35 @@ impl<S: ConfigStorage> ConfigStore<S> {
     /// Erased storage opens as [`ConfigOpenState::Empty`]. If committed
     /// configuration exists but no committed slot validates this fails with
     /// [`ConfigError::CorruptStorage`] instead of pretending to be empty.
-    pub fn open(mut storage: S) -> Result<Self, ConfigError<S::Error>> {
-        if !S::ERASE_SIZE.is_power_of_two() {
-            return Err(ConfigError::InvalidStorage(
-                "erase size is not a power of two",
-            ));
-        }
-        if !matches!(S::WRITE_SIZE, 1 | 2 | 4) {
-            return Err(ConfigError::InvalidStorage("write size must be 1, 2 or 4"));
-        }
-        let mut slot_size = (storage.capacity() / 2).min(MAX_SLOT_SIZE);
-        slot_size -= slot_size % S::ERASE_SIZE;
-        if slot_size < MIN_SLOT_SIZE {
-            return Err(ConfigError::InvalidStorage(
-                "storage too small for two slots",
-            ));
-        }
-        if !slot_size.is_multiple_of(COMMIT_WORD_SIZE) {
-            return Err(ConfigError::InvalidStorage(
-                "slot size is not a multiple of the commit word",
-            ));
-        }
+    ///
+    /// The storage is dropped on failure; use [`try_open`](Self::try_open) to
+    /// get it back, for example to [`format`](Self::format) it.
+    pub fn open(storage: S) -> Result<Self, ConfigError<S::Error>> {
+        Self::try_open(storage).map_err(|failure| failure.error)
+    }
 
+    /// Like [`open`](Self::open), but returns the storage with the error.
+    pub fn try_open(mut storage: S) -> Result<Self, OpenFailure<S>> {
+        match Self::scan(&mut storage) {
+            Ok((slot_size, active, open_state)) => Ok(Self {
+                storage,
+                slot_size,
+                active,
+                open_state,
+                damaged: open_state == ConfigOpenState::Recovered,
+            }),
+            Err(error) => Err(OpenFailure { storage, error }),
+        }
+    }
+
+    fn scan(
+        storage: &mut S,
+    ) -> Result<(usize, Option<Active>, ConfigOpenState), ConfigError<S::Error>> {
+        let slot_size = slot_size(storage)?;
         let mut best: Option<Active> = None;
         let mut damaged: Option<Corruption> = None;
         for slot in 0..2 {
-            match inspect(&mut storage, slot * slot_size, slot_size, true)
+            match inspect(storage, slot * slot_size, slot_size, true)
                 .map_err(ConfigError::Storage)?
             {
                 SlotState::Uncommitted => {}
@@ -164,18 +246,55 @@ impl<S: ConfigStorage> ConfigStore<S> {
             (None, None) => ConfigOpenState::Empty,
             (None, Some(reason)) => return Err(ConfigError::CorruptStorage(reason)),
         };
-        Ok(Self {
-            storage,
-            slot_size,
-            active: best,
-            open_state,
-            workspace: [0; MAX_SECTION_PAYLOAD],
-        })
+        Ok((slot_size, best, open_state))
     }
 
-    /// How the storage looked when the store was opened.
+    /// Erases the whole configuration region, valid, unknown or corrupted,
+    /// and returns an empty store. This is the explicit way out of
+    /// [`ConfigError::CorruptStorage`]; it discards every section.
+    ///
+    /// Both commit words are invalidated before anything is erased, so after
+    /// an interruption the storage opens as empty, or as it was if not even
+    /// the first commit word was invalidated. Repeating `format` completes it.
+    pub fn format(mut storage: S) -> Result<Self, OpenFailure<S>> {
+        let result = slot_size(&storage).and_then(|slot_size| {
+            for slot in 0..2 {
+                invalidate(&mut storage, slot * slot_size, slot_size)
+                    .map_err(ConfigError::Storage)?;
+            }
+            for slot in 0..2 {
+                erase_slot(&mut storage, slot * slot_size, slot_size)
+                    .map_err(ConfigError::Storage)?;
+            }
+            Ok(slot_size)
+        });
+        match result {
+            Ok(slot_size) => Ok(Self {
+                storage,
+                slot_size,
+                active: None,
+                open_state: ConfigOpenState::Empty,
+                damaged: false,
+            }),
+            Err(error) => Err(OpenFailure { storage, error }),
+        }
+    }
+
+    /// How the storage looked when the store was opened (or formatted).
     pub fn open_state(&self) -> ConfigOpenState {
         self.open_state
+    }
+
+    /// Current health: like [`open_state`](Self::open_state), but a
+    /// [`Recovered`](ConfigOpenState::Recovered) store becomes
+    /// [`Valid`](ConfigOpenState::Valid) once an update overwrote the damaged
+    /// slot, and an empty store becomes valid after its first update.
+    pub fn state(&self) -> ConfigOpenState {
+        match (self.active, self.damaged) {
+            (None, _) => ConfigOpenState::Empty,
+            (Some(_), true) => ConfigOpenState::Recovered,
+            (Some(_), false) => ConfigOpenState::Valid,
+        }
     }
 
     /// Generation of the active configuration, `None` if the store is empty.
@@ -219,7 +338,8 @@ impl<S: ConfigStorage> ConfigStore<S> {
         let Some(entry) = self.find(T::ID)? else {
             return Ok(None);
         };
-        let payload = &mut self.workspace[..entry.payload_len];
+        let mut workspace = [0u8; MAX_SECTION_PAYLOAD];
+        let payload = &mut workspace[..entry.payload_len];
         self.storage
             .read(entry.payload_offset, payload)
             .map_err(ConfigError::Storage)?;
@@ -396,16 +516,12 @@ impl<S: ConfigStorage> ConfigStore<S> {
             return Err(ConfigError::StorageFull);
         }
 
-        // Erase the inactive slot from its last sector down: an interrupted
-        // erase then destroys the commit word before the document it commits.
+        // Make the inactive slot uncommitted before erasing it: an interrupted
+        // erase then never leaves a committed but half-erased slot behind,
+        // whatever order the flash erases its cells in.
         let target_base = target * slot_size;
-        let mut offset = slot_size;
-        while offset > 0 {
-            offset -= S::ERASE_SIZE;
-            self.storage
-                .erase(target_base + offset, S::ERASE_SIZE)
-                .map_err(ConfigError::Storage)?;
-        }
+        invalidate(&mut self.storage, target_base, slot_size).map_err(ConfigError::Storage)?;
+        erase_slot(&mut self.storage, target_base, slot_size).map_err(ConfigError::Storage)?;
 
         let mut fill = Some(fill);
         let mut writer = SlotWriter::new(&mut self.storage, target_base, limit);
@@ -487,6 +603,8 @@ impl<S: ConfigStorage> ConfigStore<S> {
             _ => return Err(ConfigError::VerifyFailed),
         };
         self.active = Some(Active { slot: target, info });
+        // The damaged slot, if any, was the inactive one and is now replaced.
+        self.damaged = false;
         Ok(())
     }
 }

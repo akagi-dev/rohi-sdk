@@ -80,7 +80,7 @@ pub use id::SectionId;
 pub use memory::{MemoryError, MemoryStorage};
 pub use section::ConfigSection;
 pub use storage::ConfigStorage;
-pub use store::{ConfigOpenState, ConfigStore, SectionInfo};
+pub use store::{ConfigOpenState, ConfigStore, OpenFailure, SectionInfo};
 
 /// Derive macro generating the [`ConfigSection`] implementation.
 pub use rohi_config_derive::ConfigSection;

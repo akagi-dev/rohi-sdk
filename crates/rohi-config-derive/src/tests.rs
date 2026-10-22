@@ -77,9 +77,25 @@ fn hook_is_forwarded() {
 
 #[test]
 fn generics_are_preserved() {
-    let out = expand_str("#[config(version = 1)] struct Wrapper<T: Clone>(T);").unwrap();
+    let out = expand_str("#[config(id = 7, version = 1)] struct Wrapper<T: Clone>(T);").unwrap();
     assert!(out.contains("Wrapper < T >"));
     assert!(out.contains("T : Clone"));
+    let out = expand_str("#[config(version = 1)] struct Borrowed<'a>(&'a u8);").unwrap();
+    assert!(out.contains(&id_literal(fnv1a64(b"Borrowed"))));
+}
+
+#[test]
+fn generic_types_need_an_explicit_id() {
+    let error = expand_str("#[config(version = 1)] struct Wrapper<T>(T);").unwrap_err();
+    assert!(error.contains("explicit `id"), "{error}");
+    let error = expand_str("#[config(version = 1)] struct Buf<const N: usize>;").unwrap_err();
+    assert!(error.contains("explicit `id"), "{error}");
+}
+
+#[test]
+fn raw_identifiers_hash_without_prefix() {
+    let out = expand_str("#[config(version = 1)] struct r#WifiConfig;").unwrap();
+    assert!(out.contains(&id_literal(0x3352_46ad_2024_8b26)));
 }
 
 #[test]

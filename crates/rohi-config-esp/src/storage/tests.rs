@@ -16,7 +16,9 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-use embedded_storage::nor_flash::{ErrorType, NorFlashError, NorFlashErrorKind, ReadNorFlash};
+use embedded_storage::nor_flash::{
+    ErrorType, MultiwriteNorFlash, NorFlashError, NorFlashErrorKind, ReadNorFlash,
+};
 use minicbor::{CborLen, Decode, Encode};
 use rohi_config::{ConfigSection, ConfigStore};
 
@@ -69,6 +71,8 @@ impl ReadNorFlash for MockFlash {
         FLASH_SIZE
     }
 }
+
+impl MultiwriteNorFlash for MockFlash {}
 
 impl NorFlash for MockFlash {
     const WRITE_SIZE: usize = 4;

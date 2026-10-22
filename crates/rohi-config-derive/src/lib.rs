@@ -36,15 +36,18 @@
 //!   `fn(version: u16, payload: &[u8]) -> Result<Self, SectionError>`.
 //!
 //! Unless `id` is given, the section ID is the FNV-1a 64-bit hash of the UTF-8
-//! bytes of the Rust struct name (no module or crate path). The algorithm and
-//! the struct name are part of the persistent storage ABI: renaming a persisted
-//! `ConfigSection` type changes its ID. The derive only generates metadata; it
-//! never inspects fields, encoding belongs to `minicbor`.
+//! bytes of the Rust struct name (no module or crate path, no `r#` prefix).
+//! The algorithm and the struct name are part of the persistent storage ABI:
+//! renaming a persisted `ConfigSection` type changes its ID. Types with type
+//! or const parameters must give an explicit `id`, since all instantiations
+//! would otherwise share the name-derived one. The derive only generates
+//! metadata; it never inspects fields, encoding belongs to `minicbor`.
 
 use proc_macro::TokenStream;
 use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{format_ident, quote};
+use syn::ext::IdentExt;
 use syn::{DeriveInput, LitInt, LitStr, Path, parse_macro_input, spanned::Spanned};
 
 const FNV64_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
@@ -161,10 +164,26 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     };
 
     // Only the struct identifier is hashed, never the module path: moving a type
-    // between modules must not change its persistent identity.
-    let id = attrs
-        .id
-        .map_or_else(|| fnv1a64(input.ident.to_string().as_bytes()), |(id, _)| id);
+    // between modules must not change its persistent identity. A raw
+    // identifier (`r#Type`) names the same type as `Type`.
+    let id = match attrs.id {
+        Some((id, _)) => id,
+        None => {
+            if let Some(param) = input
+                .generics
+                .params
+                .iter()
+                .find(|param| !matches!(param, syn::GenericParam::Lifetime(_)))
+            {
+                return Err(syn::Error::new(
+                    param.span(),
+                    "generic section types need an explicit `id = 0x...`: the default ID \
+                     hashes only the type name, so every instantiation would share it",
+                ));
+            }
+            fnv1a64(input.ident.unraw().to_string().as_bytes())
+        }
+    };
 
     let krate = crate_path();
     let ident = &input.ident;

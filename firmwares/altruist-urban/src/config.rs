@@ -34,7 +34,14 @@
 //! [`ConfigHandle::get`], [`ConfigHandle::set`] and [`ConfigHandle::remove`].
 //! Committed-but-corrupted configuration never looks like an empty one: the
 //! service then reports [`Unavailable`] for every request instead of pretending
-//! nothing was provisioned.
+//! nothing was provisioned. [`ConfigHandle::reset`] is the explicit way out: it
+//! formats the region and the service becomes ready with an empty store.
+//!
+//! Flash erase and programming are synchronous and `esp-storage` runs them in
+//! a critical section with the flash cache disabled, so an update stalls the
+//! whole CPU (each 4 KiB sector erase takes tens of milliseconds), not only
+//! this task. Another executor or priority would not help; configuration
+//! updates are rare and must not be issued from timing-critical paths.
 
 use core::fmt;
 
@@ -92,9 +99,10 @@ impl fmt::Display for Unavailable {
 /// State of the configuration store as seen by the runtime.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConfigStatus {
-    /// The store is open and serving requests.
+    /// The store is serving requests; the current [`ConfigStore::state`].
     Ready(ConfigOpenState),
-    /// Every request fails with [`ServiceError::Unavailable`].
+    /// Every request but [`ConfigHandle::reset`] fails with
+    /// [`ServiceError::Unavailable`].
     Unavailable(Unavailable),
 }
 
@@ -149,6 +157,7 @@ enum Command {
     Get(SectionId),
     Set { id: SectionId, blob: Blob },
     Remove(SectionId),
+    Reset,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -256,24 +265,47 @@ impl ConfigHandle {
             _ => unreachable!("remove request answered with another outcome"),
         }
     }
+
+    /// Factory reset: deletes every section, including unknown ones.
+    ///
+    /// A ready store is cleared with a normal transactional update. If the
+    /// configuration is unavailable because it is corrupt (or could not be
+    /// read) the whole region is formatted and the service becomes ready
+    /// with an empty store. Fails only if the partition is missing or the
+    /// flash itself fails.
+    pub async fn reset(&self) -> Result<(), ServiceError> {
+        match self.call(Command::Reset).await {
+            Outcome::Done => Ok(()),
+            Outcome::Failed(error) => Err(error),
+            _ => unreachable!("reset request answered with another outcome"),
+        }
+    }
 }
 
 /// What the owner task holds.
 #[allow(clippy::large_enum_variant)]
 enum Owner {
     Ready(ConfigStore<Storage>),
-    Unavailable(Unavailable),
+    /// The storage is kept whenever the partition exists, so that
+    /// [`Command::Reset`] can format it.
+    Unavailable {
+        reason: Unavailable,
+        storage: Option<Storage>,
+    },
 }
 
 impl Owner {
     fn handle(&mut self, command: Command) -> Outcome {
+        if let Command::Reset = command {
+            return self.reset();
+        }
         match self {
-            Self::Unavailable(reason) => match command {
+            Self::Unavailable { reason, .. } => match command {
                 Command::Status => Outcome::Status(ConfigStatus::Unavailable(reason.clone())),
                 _ => Outcome::Failed(ServiceError::Unavailable(reason.clone())),
             },
             Self::Ready(store) => match command {
-                Command::Status => Outcome::Status(ConfigStatus::Ready(store.open_state())),
+                Command::Status => Outcome::Status(ConfigStatus::Ready(store.state())),
                 Command::Get(id) => {
                     let mut blob = Blob::empty();
                     match store.read_raw(id, &mut blob.bytes) {
@@ -296,16 +328,71 @@ impl Owner {
                     Ok(()) => Outcome::Done,
                     Err(error) => Outcome::Failed(ServiceError::Store(error)),
                 },
+                Command::Reset => unreachable!("handled above"),
             },
+        }
+    }
+
+    fn reset(&mut self) -> Outcome {
+        match self {
+            Self::Ready(store) => match store.clear() {
+                Ok(()) => {
+                    warn!("Configuration: reset, all sections removed");
+                    Outcome::Done
+                }
+                Err(error) => Outcome::Failed(ServiceError::Store(error)),
+            },
+            Self::Unavailable { reason, storage } => {
+                let Some(raw) = storage.take() else {
+                    return Outcome::Failed(ServiceError::Unavailable(reason.clone()));
+                };
+                match ConfigStore::format(raw) {
+                    Ok(store) => {
+                        warn!("Configuration: region formatted, previous configuration discarded");
+                        *self = Self::Ready(store);
+                        Outcome::Done
+                    }
+                    Err(failure) => {
+                        error!("Configuration: format failed: {}", failure.error);
+                        *storage = Some(failure.storage);
+                        Outcome::Failed(ServiceError::Store(failure.error))
+                    }
+                }
+            }
         }
     }
 }
 
-fn open(flash: FLASH<'static>) -> Result<ConfigStore<Storage>, Unavailable> {
-    let storage = config_storage(FlashStorage::new(flash)).map_err(Unavailable::Partition)?;
+fn open(flash: FLASH<'static>) -> Owner {
+    let storage = match config_storage(FlashStorage::new(flash)) {
+        Ok(storage) => storage,
+        Err(error) => {
+            error!("Configuration partition unavailable: {:?}", error);
+            return Owner::Unavailable {
+                reason: Unavailable::Partition(error),
+                storage: None,
+            };
+        }
+    };
     let region = storage.region();
-    let store = ConfigStore::open(storage).map_err(Unavailable::Open)?;
     let location = (region.offset, region.length);
+    let store = match ConfigStore::try_open(storage) {
+        Ok(store) => store,
+        Err(failure) => {
+            match failure.error {
+                ConfigError::CorruptStorage(reason) => error!(
+                    "Configuration is CORRUPT ({}): committed data exists but is unreadable, \
+                     not treating it as empty (reset formats it)",
+                    reason
+                ),
+                ref error => error!("Configuration store unavailable: {}", error),
+            }
+            return Owner::Unavailable {
+                reason: Unavailable::Open(failure.error),
+                storage: Some(failure.storage),
+            };
+        }
+    };
     match store.open_state() {
         ConfigOpenState::Empty => {
             warn!("Configuration: empty @ {:#x}+{:#x}", location.0, location.1)
@@ -318,7 +405,8 @@ fn open(flash: FLASH<'static>) -> Result<ConfigStore<Storage>, Unavailable> {
             location.1
         ),
         ConfigOpenState::Recovered => warn!(
-            "Configuration: recovered an older generation {} (slot {}) @ {:#x}+{:#x}, {} section(s)",
+            "Configuration: ignored a damaged slot, using generation {} (slot {}) @ {:#x}+{:#x}, \
+             {} section(s); a lost newer update cannot be ruled out",
             store.generation().unwrap_or(0),
             store.active_slot().unwrap_or(0),
             location.0,
@@ -326,7 +414,7 @@ fn open(flash: FLASH<'static>) -> Result<ConfigStore<Storage>, Unavailable> {
             store.section_count()
         ),
     }
-    Ok(store)
+    Owner::Ready(store)
 }
 
 /// Owns the [`ConfigStore`] and answers requests, one at a time.
@@ -345,21 +433,9 @@ async fn config_task(service: &'static ConfigService, mut owner: Owner) {
 /// A missing partition or corrupted committed configuration does not stop the
 /// firmware: the service keeps running and answers every request with
 /// [`ServiceError::Unavailable`], so corruption is never mistaken for an empty
-/// (unprovisioned) configuration.
+/// (unprovisioned) configuration. [`ConfigHandle::reset`] can format it.
 pub fn start(spawner: Spawner, flash: FLASH<'static>) -> ConfigHandle {
-    let owner = match open(flash) {
-        Ok(store) => Owner::Ready(store),
-        Err(unavailable) => {
-            match unavailable.corruption() {
-                Some(reason) => error!(
-                    "Configuration is CORRUPT ({}): committed data exists but is unreadable, not treating it as empty",
-                    reason
-                ),
-                None => error!("Configuration store unavailable: {}", unavailable),
-            }
-            Owner::Unavailable(unavailable)
-        }
-    };
+    let owner = open(flash);
     spawner.spawn(config_task(&SERVICE, owner).unwrap());
     ConfigHandle { service: &SERVICE }
 }

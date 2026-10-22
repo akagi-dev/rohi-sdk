@@ -198,6 +198,10 @@ fn main() -> ! {
         store.get::<PatternA>().ok().flatten() == Some(pattern_a(boot)),
         "final read of PatternA",
     );
+    report.check(
+        store.state() == ConfigOpenState::Valid,
+        "no damaged slot left after the final commit",
+    );
 
     if report.failures == 0 {
         info!(
