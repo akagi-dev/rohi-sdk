@@ -140,6 +140,15 @@ impl<S: ControlServices, P: AuthorizationPolicy> Controller<S, P> {
     /// Validate, persist, then hand to the runtime. Nothing is stored when
     /// validation fails, and success does not mean the network was reached.
     async fn update_config(&self, update: pb::UpdateConfigRequest) -> Result<(), ServiceError> {
+        if update.wifi_update.is_some()
+            && !self
+                .services
+                .capabilities()
+                .contains(Capabilities::WIFI_CONTROL)
+        {
+            // Without a Wi-Fi runtime nothing would ever take the update.
+            return Err(ServiceError::NotSupported);
+        }
         match update.wifi_update {
             // Nothing to update.
             None => Ok(()),

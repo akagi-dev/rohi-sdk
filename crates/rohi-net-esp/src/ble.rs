@@ -268,6 +268,7 @@ impl BleRunner {
                 if let Err(error) = runner.run().await {
                     warn!("BLE host stopped: {:?}", error);
                     update_link(|link| link.state = BleState::Error(BleError::DriverError));
+                    embassy_time::Timer::after_secs(1).await;
                 }
             }
         };

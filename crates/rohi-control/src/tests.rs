@@ -739,3 +739,13 @@ fn undersized_response_buffer_gets_an_error_not_a_panic() {
         0
     );
 }
+
+#[test]
+fn wifi_updates_need_the_wifi_control_capability() {
+    let mut fake = Fake::new();
+    fake.capabilities = Capabilities::CONFIG;
+    let controller = Controller::new(&fake, OpenPolicy);
+    let response = send(&controller, &SECURE, &update(Some("office"), Some(None)));
+    assert_eq!(error_code(&response), pb::ErrorCode::NotSupported);
+    assert!(fake.log.borrow().is_empty());
+}

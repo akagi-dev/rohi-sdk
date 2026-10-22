@@ -117,7 +117,8 @@ impl<T: ClientTransport> Session<T> {
         let mut response = Reassembler::<MAX_RESPONSE_LEN>::new();
         loop {
             let frame = self.transport.recv().await?;
-            let Some(message) = response.push(&frame)? else {
+            // Tail frames of an abandoned response are not errors of this call.
+            let Ok(Some(message)) = response.push(&frame) else {
                 continue;
             };
             if message.id != message_id {
