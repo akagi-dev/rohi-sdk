@@ -43,7 +43,7 @@ See the [Embassy Docs](https://embassy.dev/book/#_task_declaration) for details.
 about networks or serialization: they publish typed `SensorEvent`s (measurements, state changes, errors) into a
 bounded queue; a successful measurement alone marks the sensor `Ready`. `print_events_task` consumes them and
 prints to the terminal. The production firmware has a single task that applies the events to a `MeasurementStore`
-instead. See [Sensor Core](sensor-core.md).
+instead. See [Sensor HAL (rohi-hal)](rohi-hal.md).
 
 <div class="warning">
 

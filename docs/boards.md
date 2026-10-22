@@ -17,7 +17,8 @@ SDS011 UART and the I²S microphone, ready to be handed to the sensor drivers.
 The ESP32-C3 map is verified against the Altruist Urban pinout. The ESP32-C6 map comes from the Altruist Urban main
 board schematic (ESP32-C6-WROOM-1-N8, "GPIO Map" sheet) in the hardware repository; it is **not yet verified on
 hardware**. The schematic names the SDS011 nets `PM_TX` (GPIO5) and `PM_RX` (GPIO4) without a viewpoint; they are taken
-from the ESP32-C6 side, so swap them if the sensor stays silent. GPIO4 and GPIO5 are strapping pins. The C6 board also
+from the ESP32-C6 side, so swap them if the sensor stays silent. GPIO4 and GPIO5 are strapping pins, but they
+only select the JTAG source when the `JTAG_SEL_ENABLE` eFuse is burned, so the SDS011 does not affect booting. The C6 board also
 wires a button (GPIO7), a data-logging LED (GPIO0) and the CN4 expansion connector that the firmware does not drive.
 The firmware drives no sensor power or control pins. A board revision with a different pin map must get its own module
 instead of an edit of these tables. Hardware production documentation:

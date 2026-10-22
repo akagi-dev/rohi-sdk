@@ -35,7 +35,6 @@ embassy-sync = { workspace = true }
 embassy-futures = { workspace = true }
 embassy-embedded-hal = { workspace = true }
 static_cell = { workspace = true }
-critical-section = { workspace = true }
 log = { workspace = true }
 
 [features]

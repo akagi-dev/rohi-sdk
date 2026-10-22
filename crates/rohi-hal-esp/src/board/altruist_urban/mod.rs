@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! Altruist Urban board support.
 //!
 //! The board is exposed by a chip independent API; the Cargo feature

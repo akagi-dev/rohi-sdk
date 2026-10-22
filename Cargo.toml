@@ -71,7 +71,6 @@ libm = { version = "0.2.16", default-features = false }
 log = "0.4.34"
 heapless = "0.9.3"
 static_cell = "2.1.1"
-critical-section = "1.2.0"
 
 [profile.dev]
 # Rust debug is too slow.

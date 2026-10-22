@@ -18,8 +18,9 @@
 
 //! Platform-level source of truth for the configuration flash layout.
 //!
-//! `firmwares/altruist-urban/partitions.csv` must agree with these constants;
-//! a test of the firmware crate enforces it.
+//! `firmwares/altruist-urban/partitions-esp32c3.csv` and
+//! `partitions-esp32c6.csv` must agree with these constants; a host test of
+//! this module enforces it.
 
 /// Label of the data partition holding the configuration region.
 pub const PARTITION_LABEL: &str = "rohi-cfg";

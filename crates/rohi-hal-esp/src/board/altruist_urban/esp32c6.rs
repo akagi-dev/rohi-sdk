@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! Altruist Urban (ESP32-C6) pin map and peripheral bundle.
 //!
 //! All GPIO assignments of the board live in this file; drivers never name
@@ -36,8 +37,9 @@
 //! The schematic names the SDS011 nets `PM_TX` (GPIO5) and `PM_RX` (GPIO4)
 //! without stating the viewpoint; they are taken from the ESP32-C6 side.
 //! **Unverified on hardware**: swap `uart_tx` / `uart_rx` if the SDS011 stays
-//! silent. GPIO4 and GPIO5 are strapping pins, so the sensor must not drive
-//! them while the chip boots.
+//! silent. GPIO4 (MTMS) and GPIO5 (MTDI) are strapping pins, but they only
+//! select the JTAG signal source and are sampled only when the
+//! `JTAG_SEL_ENABLE` eFuse is burned, so the SDS011 does not affect booting.
 //!
 //! Not driven by the firmware: BUTTON (GPIO7), DATALOG LED (GPIO0), USB
 //! D-/D+ (GPIO12/GPIO13) and the CN4 expansion connector (GPIO6, 15, 18, 19,

@@ -22,7 +22,7 @@ jobs:
           - command: fmt
             args: --all -- --check --color always
           - command: clippy
-            args: -- -D warnings
+            args: --all-targets -- -D warnings
           - command: test
             args: ""
     steps:
@@ -59,7 +59,7 @@ jobs:
       - name: Check examples
         run: cargo check -p rohi-examples --no-default-features --features esp32c3 --target riscv32imc-unknown-none-elf
       - name: Clippy
-        run: cargo clippy -p altruist-urban -p rohi-examples --no-default-features --features esp32c3 --target riscv32imc-unknown-none-elf -- -D warnings
+        run: cargo clippy -p altruist-urban -p rohi-examples -p rohi-hal-esp -p rohi-net-esp -p rohi-config-esp --no-default-features --features esp32c3 --target riscv32imc-unknown-none-elf -- -D warnings
       - name: Build
         run: cargo build-esp32c3
 
@@ -84,6 +84,6 @@ jobs:
       - name: Check examples
         run: cargo check -p rohi-examples --no-default-features --features esp32c6 --target riscv32imac-unknown-none-elf
       - name: Clippy
-        run: cargo clippy -p altruist-urban -p rohi-examples --no-default-features --features esp32c6 --target riscv32imac-unknown-none-elf -- -D warnings
+        run: cargo clippy -p altruist-urban -p rohi-examples -p rohi-hal-esp -p rohi-net-esp -p rohi-config-esp --no-default-features --features esp32c6 --target riscv32imac-unknown-none-elf -- -D warnings
       - name: Build
         run: cargo build-esp32c6

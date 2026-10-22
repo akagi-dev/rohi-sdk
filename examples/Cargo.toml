@@ -49,9 +49,7 @@ esp-alloc = { workspace = true }
 esp-bootloader-esp-idf = { workspace = true }
 embassy-executor = { workspace = true }
 embassy-sync = { workspace = true }
-embassy-time = { workspace = true }
 static_cell = { workspace = true }
-critical-section = { workspace = true }
 log = { workspace = true }
 
 [features]

@@ -1,4 +1,4 @@
-# Sensor Core (`rohi-hal`)
+# Sensor HAL (`rohi-hal`)
 
 The Altruist Urban firmware turns physical sensors into immutable `MeasurementsSnapshot` values:
 

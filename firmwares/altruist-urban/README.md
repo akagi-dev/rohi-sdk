@@ -29,8 +29,8 @@ cargo run --release -p altruist-urban --features esp32c3 --target riscv32imc-unk
 cargo run --release -p altruist-urban --features esp32c6 --target riscv32imac-unknown-none-elf
 ```
 
-The chip is selected by exactly one of the features `esp32c3` / `esp32c6`; without a feature, or with both, the build
-fails with a clear error. `cargo check-esp32c3`, `cargo check-esp32c6`, `cargo build-esp32c3` and
+The chip is selected by exactly one of the features `esp32c3` / `esp32c6`; without a feature, or with both, the
+`esp-hal` build script rejects the build. `cargo check-esp32c3`, `cargo check-esp32c6`, `cargo build-esp32c3` and
 `cargo build-esp32c6` are shortcuts for checking and building.
 
 The runner flashes the per-chip partition table (`partitions-esp32c3.csv` or `partitions-esp32c6.csv`), which reserves the `rohi-cfg` region used by the
@@ -48,7 +48,7 @@ The firmware detects and runs BMP280/BME280, SCD40/SCD41, SDS011 and the I²S no
 | SDS011 (multi-sample duty cycle) | UART | ≈2 min |
 | Noise microphone (unweighted dB SPL) | I²S | 10 s window |
 
-See [Sensor Core](../../docs/sensor-core.md), [Sensors](../../docs/sensors.md) and [Boards](../../docs/boards.md).
+See [HAL](../../docs/rohi-hal.md), [Sensors](../../docs/sensors.md) and [Boards](../../docs/boards.md).
 
 ## Wi-Fi
 
