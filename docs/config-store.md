@@ -19,7 +19,7 @@ CBOR SlotEnvelope (+ CRC-32) ── commit word
     ↓
 A/B flash transaction ── ConfigStorage
                           ├─ MemoryStorage      (host tests)
-                          └─ EspConfigStorage   (ESP32-C3 flash)
+                          └─ EspConfigStorage   (ESP32 flash)
 ```
 
 Crates:
@@ -28,7 +28,7 @@ Crates:
 |-----------------------|-----------------------------------------------------------------------------------|
 | `rohi-config`         | `ConfigSection`, `ConfigStorage`, `ConfigStore`, CBOR slot format, `MemoryStorage` |
 | `rohi-config-derive`  | `#[derive(ConfigSection)]`, section IDs from struct names                          |
-| `rohi-config-esp`     | ESP32-C3 flash backend, bounded flash region, partition lookup                     |
+| `rohi-config-esp`     | ESP32-C3 / ESP32-C6 flash backend, bounded flash region, partition lookup          |
 
 Each feature crate owns its own schema (for example `rohi-net` owns `WifiConfig`); `rohi-config` never learns
 the set of application sections.
@@ -256,7 +256,7 @@ value that only clears bits.
   Every offset is region-relative and checked; writes and erases must be word/sector aligned
   (`EspStorageError::InvalidAlignment`), unaligned reads are served through a small bounce buffer. Errors are the
   typed `OutOfBounds`, `InvalidAlignment`, `InvalidRegion`, `ReadFailed`, `WriteFailed`, `EraseFailed`.
-  With the `esp` feature, `rohi_config_esp::esp::config_storage` builds it on the `esp-storage` driver and the
+  With a chip feature (`esp32c3` or `esp32c6`), `rohi_config_esp::esp::config_storage` builds it on the `esp-storage` driver and the
   `rohi-cfg` partition. It knows nothing about CBOR, sections or any feature's configuration.
 
 ## Runtime ownership (Altruist Urban)
@@ -283,10 +283,11 @@ disabled. An update therefore stalls the whole CPU, not just the configuration t
 tens of milliseconds), and moving the task to another executor would not change that. Configuration updates are
 rare and must not be issued from timing-critical paths.
 
-## Flash layout (Altruist Urban, ESP32-C3, 4 MB)
+## Flash layout (Altruist Urban, ESP32-C3 4 MB / ESP32-C6 8 MB)
 
-The single source of truth is `firmwares/altruist-urban/partitions.csv`, mirrored by the constants in
-`rohi_config_esp::layout` (a host test keeps both in sync):
+The single source of truth is the per-chip `firmwares/altruist-urban/partitions-esp32c3.csv` (4 MB flash) and
+`partitions-esp32c6.csv` (8 MB flash), mirrored by the constants in `rohi_config_esp::layout` (a host test keeps both in
+sync). Both tables differ only in the size of the `factory` partition (`0x3E0000` on ESP32-C3, `0x7E0000` on ESP32-C6):
 
 ```text
 0x09000  nvs        24 KiB
@@ -294,10 +295,10 @@ The single source of truth is `firmwares/altruist-urban/partitions.csv`, mirrore
 0x10000  rohi-cfg   16 KiB   <- configuration region
            ├─ slot A  8 KiB (2 sectors)
            └─ slot B  8 KiB (2 sectors)
-0x20000  factory    app
+0x20000  factory    app (3.9 MB on ESP32-C3, 7.9 MB on ESP32-C6)
 ```
 
-`cargo run` passes the table to `espflash` (see `.cargo/config.toml`); run it from the repository root. If the
+`cargo run` passes the table of the selected target to `espflash` (see `.cargo/config.toml`); run it from the repository root. If the
 partition is missing the firmware logs an error and keeps running the sensors without persistent configuration.
 
 ## Resource baseline
@@ -318,11 +319,11 @@ copy of the configuration in RAM, and no heap or dynamic CBOR tree is used.
 
 ## Hardware self-test
 
-`examples/src/bin/config.rs` verifies persistence on a real ESP32-C3. Flash it and reset or power-cycle the board
+`examples/src/bin/config.rs` verifies persistence on a real ESP32-C3 or ESP32-C6. Flash it and reset or power-cycle the board
 repeatedly:
 
 ```bash
-cargo run --release -p rohi-examples --bin example-config
+cargo run --release -p rohi-examples --features esp32c3 --target riscv32imc-unknown-none-elf --bin example-config
 ```
 
 Every boot checks what the previous boot stored (typed write + reboot + read, several sections, replacement

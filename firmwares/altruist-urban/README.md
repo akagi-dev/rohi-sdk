@@ -23,10 +23,17 @@ cd rohi-sdk && nix develop
 4. Build & upload firmware
 
 ```bash
-cargo run --release -p altruist-urban
+# ESP32-C3
+cargo run --release -p altruist-urban --features esp32c3 --target riscv32imc-unknown-none-elf
+# ESP32-C6
+cargo run --release -p altruist-urban --features esp32c6 --target riscv32imac-unknown-none-elf
 ```
 
-The runner flashes the partition table `partitions.csv`, which reserves the `rohi-cfg` region used by the
+The chip is selected by exactly one of the features `esp32c3` / `esp32c6`; without a feature, or with both, the build
+fails with a clear error. `cargo check-esp32c3`, `cargo check-esp32c6`, `cargo build-esp32c3` and
+`cargo build-esp32c6` are shortcuts for checking and building.
+
+The runner flashes the per-chip partition table (`partitions-esp32c3.csv` or `partitions-esp32c6.csv`), which reserves the `rohi-cfg` region used by the
 [configuration store](../../docs/config-store.md). Run the command from the repository root.
 
 ## Sensors

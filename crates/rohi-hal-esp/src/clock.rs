@@ -15,8 +15,18 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-//! Robonomics Open Hardware development board collection.
-//! Device list available on https://robonomics.network/devices/
+//! Monotonic clock backed by `embassy-time`.
 
-/// Altruist Urban (ESP32-C3) pin assignments and peripheral bundle.
-pub mod altruist_c3;
+use embassy_time::Instant;
+use rohi_hal::MonotonicTimestamp;
+use rohi_hal::runtime::Clock;
+
+/// Time since boot, from the Embassy time driver.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EmbassyClock;
+
+impl Clock for EmbassyClock {
+    fn now(&self) -> MonotonicTimestamp {
+        MonotonicTimestamp::from_millis(Instant::now().as_millis())
+    }
+}

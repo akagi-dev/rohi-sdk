@@ -31,9 +31,9 @@ use esp_hal::timer::timg::TimerGroup;
 use esp_hal::uart::Uart;
 use esp_rtos::embassy::Executor;
 use log::info;
-use rohi_hal::board::altruist_c3::{AltruistC3, Hardware};
-use rohi_hal::esp::I2sMicrophone;
-use rohi_sensor_core::SensorEvent;
+use rohi_hal::SensorEvent;
+use rohi_hal_esp::I2sMicrophone;
+use rohi_hal_esp::board::altruist_urban::{AltruistUrban, Hardware};
 use static_cell::StaticCell;
 
 static EXECUTOR: StaticCell<Executor> = StaticCell::new();
@@ -64,7 +64,7 @@ pub fn run(init: impl FnOnce(Spawner, Board)) -> ! {
     esp_rtos::start(TimerGroup::new(runtime.timg0).timer0, runtime.sw_interrupt);
     info!("Embassy execution engine ready");
 
-    let board = AltruistC3::new(hardware).expect("board initialization failed");
+    let board = AltruistUrban::new(hardware).expect("board initialization failed");
     let board = Board {
         i2c: board.i2c,
         sds011_uart: board.sds011_uart,

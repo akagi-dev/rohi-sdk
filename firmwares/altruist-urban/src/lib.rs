@@ -26,6 +26,16 @@
 //! Sensor tasks never touch the `MeasurementStore`; the store task is its
 //! only owner.
 
+#[cfg(all(feature = "esp32c3", feature = "esp32c6"))]
+compile_error!(
+    "select exactly one ESP target: features `esp32c3` and `esp32c6` are mutually exclusive"
+);
+
+#[cfg(not(any(feature = "esp32c3", feature = "esp32c6")))]
+compile_error!(
+    "select an ESP target: use `cargo check-esp32c3` / `cargo check-esp32c6` or enable feature `esp32c3` / `esp32c6`"
+);
+
 /// Persistent configuration service (single owner task and handle).
 pub mod config;
 pub mod net;

@@ -1,21 +1,21 @@
 # Network (Wi-Fi)
 
 `rohi-net` is the single network abstraction of the SDK. It provides a platform-independent Wi-Fi *station* API and
-hides the ESP32-C3 radio stack behind a private backend.
+keeps the ESP32 radio stack in the separate platform crate `rohi-net-esp`.
 
 ```text
  firmware / control plane / future uplink
                  │   WifiHandle  (ROHI types only)
             WifiManager  ── state machine, backoff, commands
                  │   WifiBackend  (trait)
-      ESP32-C3 backend  (feature `esp`, private)
+      rohi-net-esp  (ESP32-C3 / ESP32-C6, features `esp32c3` / `esp32c6`)
                  │
    esp-radio · esp-rtos · embassy-net (DHCPv4, DNS) · radio heap
 ```
 
 No `esp-radio`, `esp-hal` or `embassy-net` type appears in the public API; vendor types and errors are converted in
-`backend/esp.rs`. The only platform-specific entry points are `init_radio_heap()` and `EspWifi::new()`, called once
-by the board firmware.
+`rohi-net-esp`. The only platform-specific entry points are `init_radio_heap()` and `EspWifi::new()`, called once
+by the board firmware. `rohi-net` itself has no ESP dependency and builds and tests on the host.
 
 ## Public types
 

@@ -17,7 +17,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 //! Generic sensor lifecycle runner.
 //!
-//! Translates driver results into the `rohi-sensor-core` lifecycle:
+//! Translates driver results into the `rohi-hal` lifecycle:
 //!
 //! ```text
 //! NotDetected / Initializing -> WarmingUp -> Ready
@@ -52,9 +52,9 @@
 
 use core::fmt::Debug;
 
+use crate::{MeasurementUpdate, SensorErrorCode, SensorKind, SensorState};
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embedded_hal_async::delay::DelayNs;
-use rohi_sensor_core::{MeasurementUpdate, SensorErrorCode, SensorKind, SensorState};
 
 use super::backoff::Backoff;
 use super::clock::Clock;
@@ -283,8 +283,8 @@ mod tests {
     use super::*;
     use crate::runtime::bus::EventBus;
     use crate::testutil::{FixedClock, NoDelay, RecordingDelay, block_on};
+    use crate::{Bmx280Update, Celsius, MonotonicTimestamp, Pascal, SensorEvent};
     use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-    use rohi_sensor_core::{Bmx280Update, Celsius, MonotonicTimestamp, Pascal, SensorEvent};
 
     // Different from every backoff step, so waits are attributable.
     const POLL_INTERVAL_MS: u32 = 90_000;

@@ -49,8 +49,16 @@ mod tests {
     }
 
     #[test]
-    fn partition_table_matches_the_layout() {
-        let csv = include_str!("../../../firmwares/altruist-urban/partitions.csv");
+    fn partition_tables_match_the_layout() {
+        for csv in [
+            include_str!("../../../firmwares/altruist-urban/partitions-esp32c3.csv"),
+            include_str!("../../../firmwares/altruist-urban/partitions-esp32c6.csv"),
+        ] {
+            assert_partition_matches_layout(csv);
+        }
+    }
+
+    fn assert_partition_matches_layout(csv: &str) {
         let row: std::vec::Vec<&str> = csv
             .lines()
             .filter(|line| !line.trim_start().starts_with('#'))

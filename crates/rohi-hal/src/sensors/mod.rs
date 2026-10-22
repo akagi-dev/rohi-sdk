@@ -15,7 +15,7 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-//! Sensor drivers publishing typed `rohi-sensor-core` observations.
+//! Sensor drivers publishing typed `rohi-hal` observations.
 
 /// BMP280 / BME280 temperature, pressure and humidity sensor.
 pub mod bmx280;
@@ -28,12 +28,12 @@ pub mod sds011;
 
 #[cfg(test)]
 mod freshness {
-    //! The default freshness policy of `rohi-sensor-core` must outlast the
+    //! The default freshness policy of `rohi-hal` must outlast the
     //! measurement cadence of every sensor, or normal operation would show
     //! `Stale` values.
 
-    use rohi_sensor_core::{Decibels, MicrogramsPerCubicMeter};
-    use rohi_sensor_core::{
+    use crate::{Decibels, MicrogramsPerCubicMeter};
+    use crate::{
         FreshnessPolicy, MeasurementState, MeasurementStore, MeasurementUpdate, MonotonicTimestamp,
         NoiseUpdate, Sds011Update, SensorEvent, SensorKind,
     };

@@ -14,49 +14,38 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
-///////////////////////////////////////////////////////////////////////////////
-//! Altruist Urban (ESP32-C3) board support.
+//! Altruist Urban board support.
 //!
-//! All GPIO assignments of the board live in this file; drivers never name
-//! pins. Hardware production documentation:
+//! The board is exposed by a chip independent API; the Cargo feature
+//! `esp32c3` or `esp32c6` selects the backend module that owns the pin map and
+//! the chip specific peripheral types. Drivers never name pins.
+//! Hardware production documentation:
 //! * https://github.com/airalab/hardware/tree/main/Altruist
 //!
 //! Device: <https://robonomics.network/devices/altruist/>
-//!
-//! # Pin map
-//!
-//! | Function          | Pin    |
-//! |-------------------|--------|
-//! | I2C0 SDA          | GPIO3  |
-//! | I2C0 SCL          | GPIO0  |
-//! | SDS011 UART1 TX   | GPIO10 |
-//! | SDS011 UART1 RX   | GPIO1  |
-//! | I2S BCLK          | GPIO7  |
-//! | I2S WS            | GPIO6  |
-//! | I2S DIN           | GPIO8  |
-//!
-//! Altruist Urban C3 board revision: the Urban board built around the
-//! ESP32-C3 module this firmware targets (`riscv32imc-unknown-none-elf`).
-//!
-//! Verified against: the Altruist Urban pinout, checked by the maintainer
-//! (WP2.1, akagi-dev/rohi-sdk#9) against the hardware design published in the
-//! production documentation linked above. The firmware drives no sensor power
-//! or control pin, so none is part of this map. A different board revision
-//! with another pin map must get its own module, not an edit of this table.
+
+#[cfg(feature = "esp32c3")]
+mod esp32c3;
+#[cfg(feature = "esp32c6")]
+mod esp32c6;
+
+#[cfg(feature = "esp32c3")]
+use esp32c3 as chip;
+#[cfg(feature = "esp32c6")]
+use esp32c6 as chip;
 
 use esp_hal::Async;
 use esp_hal::dma_rx_stream_buffer;
 use esp_hal::i2c::master::{BusTimeout, Config as I2cConfig, I2c};
 use esp_hal::i2s::master::{Channels, DataFormat, I2s, TdmConfig};
-use esp_hal::peripherals::{
-    DMA_CH0, FLASH, FROM_CPU_INTR0, GPIO0, GPIO1, GPIO3, GPIO6, GPIO7, GPIO8, GPIO10, I2C0, I2S0,
-    Peripherals, TIMG0, UART1, WIFI,
-};
+use esp_hal::peripherals::{FLASH, FROM_CPU_INTR0, TIMG0, WIFI};
 use esp_hal::time::Rate;
 use esp_hal::uart::{self, RxConfig, Uart};
+use rohi_hal::sensors::noise::SAMPLE_RATE_HZ;
 
-use crate::esp::I2sMicrophone;
-use crate::sensors::noise::SAMPLE_RATE_HZ;
+use crate::I2sMicrophone;
+
+pub use chip::Hardware;
 
 /// SDS011 UART baud rate.
 pub const SDS011_BAUD_RATE: u32 = 9_600;
@@ -65,21 +54,6 @@ pub const SDS011_BAUD_RATE: u32 = 9_600;
 const I2S_DMA_BUFFER_BYTES: usize = I2S_DMA_CHUNK_BYTES * 8;
 /// I2S DMA descriptor chunk size in bytes.
 const I2S_DMA_CHUNK_BYTES: usize = 256;
-
-/// Peripherals used by the board, with the pins assigned by this file.
-pub struct Hardware {
-    i2c: I2C0<'static>,
-    i2c_sda: GPIO3<'static>,
-    i2c_scl: GPIO0<'static>,
-    uart: UART1<'static>,
-    uart_tx: GPIO10<'static>,
-    uart_rx: GPIO1<'static>,
-    i2s: I2S0<'static>,
-    i2s_dma: DMA_CH0<'static>,
-    i2s_bclk: GPIO7<'static>,
-    i2s_ws: GPIO6<'static>,
-    i2s_din: GPIO8<'static>,
-}
 
 /// Peripherals left for the runtime after the board took its share.
 pub struct Runtime {
@@ -93,33 +67,6 @@ pub struct Runtime {
     pub flash: FLASH<'static>,
 }
 
-impl Hardware {
-    /// Split the chip peripherals into board hardware and runtime peripherals.
-    pub fn split(peripherals: Peripherals) -> (Self, Runtime) {
-        (
-            Self {
-                i2c: peripherals.I2C0,
-                i2c_sda: peripherals.GPIO3,
-                i2c_scl: peripherals.GPIO0,
-                uart: peripherals.UART1,
-                uart_tx: peripherals.GPIO10,
-                uart_rx: peripherals.GPIO1,
-                i2s: peripherals.I2S0,
-                i2s_dma: peripherals.DMA_CH0,
-                i2s_bclk: peripherals.GPIO7,
-                i2s_ws: peripherals.GPIO6,
-                i2s_din: peripherals.GPIO8,
-            },
-            Runtime {
-                timg0: peripherals.TIMG0,
-                sw_interrupt: peripherals.FROM_CPU_INTR0,
-                wifi: peripherals.WIFI,
-                flash: peripherals.FLASH,
-            },
-        )
-    }
-}
-
 /// Board initialization failure.
 #[derive(Debug)]
 pub enum Error {
@@ -130,11 +77,11 @@ pub enum Error {
     /// I2S configuration is invalid.
     I2s(esp_hal::i2s::master::ConfigError),
     /// The I2S DMA transfer could not be started.
-    Microphone(crate::esp::audio::Error),
+    Microphone(crate::audio::Error),
 }
 
 /// Board peripherals, ready to be handed to sensor drivers.
-pub struct AltruistC3 {
+pub struct AltruistUrban {
     /// I2C bus of BMx280 and SCD4x.
     pub i2c: I2c<'static, Async>,
     /// UART of the SDS011.
@@ -143,7 +90,7 @@ pub struct AltruistC3 {
     pub microphone: I2sMicrophone,
 }
 
-impl AltruistC3 {
+impl AltruistUrban {
     /// Configure buses and peripherals. Does not talk to any sensor.
     pub fn new(hardware: Hardware) -> Result<Self, Error> {
         let i2c = I2c::new(

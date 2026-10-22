@@ -25,7 +25,7 @@ use esp_hal::Async;
 use esp_hal::dma::{DmaError, DmaRxStreamBuf};
 use esp_hal::i2s::master::{I2sRx, I2sRxDmaTransfer};
 
-use crate::sensors::noise::AudioSource;
+use rohi_hal::sensors::noise::AudioSource;
 
 /// Samples converted per read. Bounds the stack buffer and the time between
 /// two awaits.

@@ -22,8 +22,8 @@
 //! The public API of this crate is expressed only in ROHI types
 //! ([`WifiConfig`], [`WifiState`], [`WifiNetwork`], [`NetworkInfo`],
 //! [`WifiError`]) and is fully bounded: nothing here allocates. Platform
-//! details (radio drivers, IP stack, radio heap) live behind the private
-//! backends and never appear in a public signature.
+//! details (radio drivers, IP stack, radio heap) live in platform crates such as
+//! `rohi-net-esp` behind [`WifiBackend`] and never appear in a public signature.
 
 #[cfg(test)]
 extern crate std;

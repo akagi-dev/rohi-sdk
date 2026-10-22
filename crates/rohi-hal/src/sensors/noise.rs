@@ -62,8 +62,8 @@
 
 use core::fmt::Debug;
 
+use crate::{Decibels, MeasurementUpdate, NoiseUpdate, SensorErrorCode, SensorKind};
 use embedded_hal_async::delay::DelayNs;
-use rohi_sensor_core::{Decibels, MeasurementUpdate, NoiseUpdate, SensorErrorCode, SensorKind};
 
 use crate::runtime::{Clock, DriverError, SensorDriver, with_timeout};
 
@@ -313,8 +313,8 @@ impl<S: AudioSource, D: DelayNs> SensorDriver for Noise<S, D> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MonotonicTimestamp;
     use crate::testutil::{FixedClock, NoDelay, block_on};
-    use rohi_sensor_core::MonotonicTimestamp;
     use std::vec::Vec;
 
     fn small_config() -> Config {

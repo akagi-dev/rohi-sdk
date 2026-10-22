@@ -67,11 +67,11 @@ pub mod protocol;
 
 use core::fmt::{self, Debug, Display};
 
-use embedded_hal_async::delay::DelayNs;
-use embedded_io_async::{ErrorKind, ErrorType, Read, ReadExactError, Write};
-use rohi_sensor_core::{
+use crate::{
     MeasurementUpdate, MicrogramsPerCubicMeter, Sds011Update, SensorErrorCode, SensorKind,
 };
+use embedded_hal_async::delay::DelayNs;
+use embedded_io_async::{ErrorKind, ErrorType, Read, ReadExactError, Write};
 
 use self::aggregate::{MAX_SAMPLES, Samples};
 use self::protocol::{Command, Frame, HEAD, REPLY_LEN, Reply};

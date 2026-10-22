@@ -15,12 +15,8 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-//! ESP32 peripheral glue for the hardware-independent drivers.
+//! Robonomics Open Hardware development board collection.
+//! Device list available on https://robonomics.network/devices/
 
-/// I2S microphone audio source.
-pub mod audio;
-/// Embassy based monotonic clock.
-pub mod clock;
-
-pub use audio::I2sMicrophone;
-pub use clock::EmbassyClock;
+/// Altruist Urban pin assignments and peripheral bundle, selected by chip feature.
+pub mod altruist_urban;

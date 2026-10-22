@@ -36,10 +36,10 @@ path = "./src/bin/all-sensors.rs"
 
 [dependencies]
 altruist-urban = { path = "../firmwares/altruist-urban" }
-rohi-hal = { workspace = true, features = ["esp"] }
-rohi-sensor-core = { workspace = true }
+rohi-hal = { workspace = true }
 rohi-config = { workspace = true }
-rohi-config-esp = { workspace = true, features = ["esp"] }
+rohi-hal-esp = { workspace = true }
+rohi-config-esp = { workspace = true }
 minicbor = { workspace = true }
 esp-backtrace = { workspace = true }
 esp-hal = { workspace = true }
@@ -53,3 +53,27 @@ embassy-time = { workspace = true }
 static_cell = { workspace = true }
 critical-section = { workspace = true }
 log = { workspace = true }
+
+[features]
+# Exactly one chip feature must be selected, see the firmware package.
+default = []
+esp32c3 = [
+  "altruist-urban/esp32c3",
+  "esp-hal/esp32c3",
+  "esp-println/esp32c3",
+  "esp-backtrace/esp32c3",
+  "esp-bootloader-esp-idf/esp32c3",
+  "esp-rtos/esp32c3",
+  "rohi-hal-esp/esp32c3",
+  "rohi-config-esp/esp32c3",
+]
+esp32c6 = [
+  "altruist-urban/esp32c6",
+  "esp-hal/esp32c6",
+  "esp-println/esp32c6",
+  "esp-backtrace/esp32c6",
+  "esp-bootloader-esp-idf/esp32c6",
+  "esp-rtos/esp32c6",
+  "rohi-hal-esp/esp32c6",
+  "rohi-config-esp/esp32c6",
+]

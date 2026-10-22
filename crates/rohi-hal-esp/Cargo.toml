@@ -1,0 +1,28 @@
+[package]
+name = "rohi-hal-esp"
+version = "0.1.0"
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Robonomics Open Hardware abstraction layer: ESP32 platform backend"
+
+[package.metadata.docs.rs]
+targets = ["riscv32imc-unknown-none-elf"]
+features = ["esp32c3"]
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[dependencies]
+rohi-hal.workspace = true
+esp-hal = { workspace = true, optional = true }
+embassy-time = { workspace = true, optional = true }
+
+[features]
+default = []
+# Exactly one chip feature must be enabled by the final firmware build.
+esp32c3 = ["dep:esp-hal", "dep:embassy-time", "esp-hal/esp32c3"]
+esp32c6 = ["dep:esp-hal", "dep:embassy-time", "esp-hal/esp32c6"]

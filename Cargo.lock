@@ -36,8 +36,9 @@ dependencies = [
  "rohi-config",
  "rohi-config-esp",
  "rohi-hal",
+ "rohi-hal-esp",
  "rohi-net",
- "rohi-sensor-core",
+ "rohi-net-esp",
  "static_cell",
 ]
 
@@ -834,7 +835,7 @@ dependencies = [
  "esp32c2",
  "esp32c3 0.33.0",
  "esp32c5",
- "esp32c6",
+ "esp32c6 0.24.0",
  "esp32c61",
  "esp32h2",
  "esp32p4",
@@ -865,6 +866,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1a8733fdeadc349ba1e4a345c7bfb74d195d8c98fd3be9d2c15bfd78601cbc44"
 dependencies = [
  "document-features",
+ "object",
  "proc-macro-crate",
  "proc-macro2",
  "quote",
@@ -891,7 +893,9 @@ dependencies = [
  "esp-metadata-generated",
  "esp-sync",
  "esp-wifi-sys-esp32c3",
+ "esp-wifi-sys-esp32c6",
  "esp32c3 0.34.0",
+ "esp32c6 0.25.0",
 ]
 
 [[package]]
@@ -933,7 +937,9 @@ dependencies = [
  "esp-rom-sys",
  "esp-sync",
  "esp-wifi-sys-esp32c3",
+ "esp-wifi-sys-esp32c6",
  "esp32c3 0.34.0",
+ "esp32c6 0.25.0",
  "heapless 0.9.3",
  "instability",
  "num-derive",
@@ -973,6 +979,7 @@ dependencies = [
  "document-features",
  "esp-metadata-generated",
  "esp32c3 0.33.0",
+ "esp32c6 0.24.0",
 ]
 
 [[package]]
@@ -1015,6 +1022,7 @@ dependencies = [
  "esp-rom-sys",
  "esp-sync",
  "esp32c3 0.33.0",
+ "esp32c6 0.24.0",
 ]
 
 [[package]]
@@ -1037,6 +1045,12 @@ name = "esp-wifi-sys-esp32c3"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c1345555a7856033077e8ca26572e4739a1b43f8d52daaa0fdf6a1497fe88845"
+
+[[package]]
+name = "esp-wifi-sys-esp32c6"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5bb01c06a3dbd75121146f619513ee610505b2d80ce3c421ed0c840a19e12f67"
 
 [[package]]
 name = "esp32"
@@ -1088,6 +1102,15 @@ name = "esp32c6"
 version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a207a5d6886ca89b4f220606dcf3779ca869803df192508314939186ae8de1ee"
+dependencies = [
+ "vcell",
+]
+
+[[package]]
+name = "esp32c6"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f90472d3e6a752e5d20533796f649760103ea449319f14d2a26b2fdff95633bb"
 dependencies = [
  "vcell",
 ]
@@ -1519,6 +1542,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "object"
+version = "0.37.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1806,7 +1838,7 @@ dependencies = [
  "rohi-config",
  "rohi-config-esp",
  "rohi-hal",
- "rohi-sensor-core",
+ "rohi-hal-esp",
  "static_cell",
 ]
 
@@ -1816,14 +1848,20 @@ version = "0.3.0"
 dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",
- "embassy-time",
  "embedded-hal 1.0.0",
  "embedded-hal-async",
  "embedded-io-async 0.7.0",
- "esp-hal",
  "libm",
  "log",
- "rohi-sensor-core",
+]
+
+[[package]]
+name = "rohi-hal-esp"
+version = "0.1.0"
+dependencies = [
+ "embassy-time",
+ "esp-hal",
+ "rohi-hal",
 ]
 
 [[package]]
@@ -1831,23 +1869,27 @@ name = "rohi-net"
 version = "0.3.0"
 dependencies = [
  "embassy-futures",
- "embassy-net",
  "embassy-sync 0.8.0",
- "embassy-time",
  "embedded-hal-async",
- "esp-alloc",
- "esp-hal",
- "esp-radio",
  "heapless 0.9.3",
  "log",
  "minicbor",
  "rohi-config",
- "static_cell",
 ]
 
 [[package]]
-name = "rohi-sensor-core"
+name = "rohi-net-esp"
 version = "0.1.0"
+dependencies = [
+ "embassy-net",
+ "embassy-time",
+ "esp-alloc",
+ "esp-hal",
+ "esp-radio",
+ "log",
+ "rohi-net",
+ "static_cell",
+]
 
 [[package]]
 name = "rustix"

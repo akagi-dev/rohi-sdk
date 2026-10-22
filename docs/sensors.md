@@ -1,7 +1,7 @@
 # Sensors
 
 Supported by the Altruist Urban C3 firmware. Each driver is hardware independent and publishes typed
-`rohi-sensor-core` observations; see [Sensor Core](sensor-core.md) for lifecycle, timing and events.
+`rohi-hal` observations; see [Sensor Core](sensor-core.md) for lifecycle, timing and events.
 
 | Sensor | Bus | Cadence | Notes |
 |--------|-----|---------|-------|

@@ -1,4 +1,4 @@
-# Sensor Core
+# Sensor Core (`rohi-hal`)
 
 The Altruist Urban firmware turns physical sensors into immutable `MeasurementsSnapshot` values:
 
@@ -7,7 +7,8 @@ physical sensor -> rohi-hal driver -> Runner (one Embassy task per sensor) -> Se
   -> bounded event queue -> store task -> MeasurementStore -> MeasurementsSnapshot
 ```
 
-Dependency direction: `altruist-urban` → `rohi-hal` → `rohi-sensor-core`. Drivers know nothing about Wi-Fi, BLE,
+Dependency direction: `altruist-urban` → `rohi-hal-esp` → `rohi-hal`. `rohi-hal` holds the typed measurements, the
+store, the runtime and the drivers, and is platform independent. Drivers know nothing about Wi-Fi, BLE,
 serialization or any other transport, and nothing is averaged or fused across sensors: `bmx280.temperature` and
 `scd4x.temperature` are separate observations. Per-sensor details are in [Sensors](sensors.md), pins in [Boards](boards.md).
 
@@ -23,7 +24,8 @@ and application code is heapless. All waits use monotonic async timers; nothing 
 |-----------|----------|------|
 | Drivers | `crates/rohi-hal/src/sensors/` | BMx280, SCD4x, SDS011, noise. Hardware independent (`embedded-hal-async`, `embedded-io-async`), unit tested on a host |
 | Runtime | `crates/rohi-hal/src/runtime/` | `Runner` lifecycle, `Reporter`, `EventBus`, backoff, bounded I²C |
-| Board | `crates/rohi-hal/src/board/altruist_c3.rs` | All pin assignments, bus configuration (feature `esp`) |
+| Types, store | `crates/rohi-hal/src/` (`measurements`, `sensor`, `store`, ...) | Typed units, `SensorEvent`, `MeasurementStore`, `MeasurementsSnapshot` |
+| Board | `crates/rohi-hal-esp/src/board/altruist_urban/` | All pin assignments, bus configuration (features `esp32c3` / `esp32c6`) |
 | Tasks | `firmwares/altruist-urban/src/tasks/` | One Embassy task per sensor, single `MeasurementStore` owner |
 
 Every sensor runs in its own task, so a failing or slow sensor never delays another one. Lightweight I²C sensors share
@@ -85,7 +87,7 @@ producers never block. The store task is the only component mutating the `Measur
 ## Freshness
 
 A valid measurement becomes `Stale` when it is older than the sensor's `FreshnessPolicy` (defaults in
-`rohi-sensor-core`, tunable with `MeasurementStore::set_freshness_policy`). A host test in `rohi-hal` asserts that every
+`rohi-hal`, tunable with `MeasurementStore::set_freshness_policy`). A host test in `rohi-hal` asserts that every
 default exceeds the worst healthy cadence of its sensor by at least 1.5×:
 
 | Sensor | Worst healthy cadence | Stale after |
@@ -108,22 +110,26 @@ policy can react to the SDS011 state (e.g. flag windows while it is in `WarmingU
 Host tests (no hardware needed):
 
 ```bash
-cargo test-host        # alias for: cargo test -p rohi-sensor-core -p rohi-hal --target x86_64-unknown-linux-gnu
-cargo check --workspace
-cargo build --release -p altruist-urban
+cargo test              # portable crates on the host, no ESP target involved
+cargo check-esp32c3
+cargo check-esp32c6
+cargo build-esp32c3
+cargo build-esp32c6
 ```
 
 The host tests cover the runner timing and recovery, event consistency, the store, SDS011 sampling and aggregation,
 BMx280 address probing and the freshness thresholds.
 
-Hardware examples (each prints typed measurements, states and errors):
+Hardware examples (each prints typed measurements, states and errors). The chip is always selected explicitly:
+`esp32c3` with `riscv32imc-unknown-none-elf`, or `esp32c6` with `riscv32imac-unknown-none-elf`.
 
 ```bash
-cargo run --release --bin example-bmx280
-cargo run --release --bin example-scd4x
-cargo run --release --bin example-sds011
-cargo run --release --bin example-noise
-cargo run --release --bin example-all-sensors   # combined test
+EXAMPLE="cargo run --release -p rohi-examples --features esp32c3 --target riscv32imc-unknown-none-elf"
+$EXAMPLE --bin example-bmx280
+$EXAMPLE --bin example-scd4x
+$EXAMPLE --bin example-sds011
+$EXAMPLE --bin example-noise
+$EXAMPLE --bin example-all-sensors   # combined test
 ```
 
 Combined test checklist: BMx280 keeps updating; SCD4x keeps updating; SDS011 completes its duty cycle and sleeps;
@@ -132,7 +138,7 @@ confirm `Error → Initializing → Ready` without a reboot; repeat for the SDS0
 
 ## Resource baseline
 
-`cargo build --release -p altruist-urban`, ESP32-C3 (before Wi-Fi/BLE/TLS):
+`cargo build-esp32c3`, ESP32-C3 (before Wi-Fi/BLE/TLS):
 
 | Item | Size |
 |------|------|

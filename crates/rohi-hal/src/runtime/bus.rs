@@ -30,10 +30,10 @@
 
 use core::cell::Cell;
 
+use crate::SensorEvent;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embassy_sync::channel::{Channel, TrySendError};
-use rohi_sensor_core::SensorEvent;
 
 /// Recommended queue capacity, in events.
 pub const EVENT_QUEUE_CAPACITY: usize = 16;
@@ -97,8 +97,8 @@ impl<M: RawMutex, const N: usize> Default for EventBus<M, N> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{MonotonicTimestamp, SensorErrorCode, SensorKind};
     use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-    use rohi_sensor_core::{MonotonicTimestamp, SensorErrorCode, SensorKind};
 
     fn error_at(ms: u64) -> SensorEvent {
         SensorEvent::Error {

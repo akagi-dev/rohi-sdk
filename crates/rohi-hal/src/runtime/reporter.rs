@@ -17,8 +17,8 @@
 ///////////////////////////////////////////////////////////////////////////////
 //! Per-sensor event reporter.
 
+use crate::{MeasurementUpdate, SensorErrorCode, SensorEvent, SensorKind, SensorState};
 use embassy_sync::blocking_mutex::raw::RawMutex;
-use rohi_sensor_core::{MeasurementUpdate, SensorErrorCode, SensorEvent, SensorKind, SensorState};
 
 use super::bus::EventBus;
 use super::clock::Clock;

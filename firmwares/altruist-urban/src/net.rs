@@ -23,8 +23,8 @@
 
 use embassy_time::Delay;
 use log::{error, info, warn};
-use rohi_net::backend::esp::{EspWifi, NetRunner};
 use rohi_net::{ManagerConfig, WifiConfig, WifiHandle, WifiManager, WifiShared};
+use rohi_net_esp::{EspWifi, NetRunner};
 
 use crate::config::ConfigHandle;
 use crate::tasks::RawMutex;
