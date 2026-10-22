@@ -32,6 +32,32 @@ pub const MAX_BLE_PAYLOAD: usize = 244;
 /// Payload size of an ATT write/notification at the default MTU (23).
 pub const DEFAULT_BLE_PAYLOAD: usize = 20;
 
+/// GATT layout of the byte pipe a BLE backend exposes: one service with a
+/// write characteristic (central to peripheral) and a notify characteristic
+/// (peripheral to central). UUIDs are 128-bit values.
+///
+/// The backend only creates the attributes; their meaning belongs to the
+/// protocol layer that supplies the UUIDs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BleGattSpec {
+    /// Primary service.
+    pub service: u128,
+    /// Characteristic the central writes to; every write is one received chunk.
+    pub rx: u128,
+    /// Characteristic the peripheral notifies; every notification is one sent chunk.
+    pub tx: u128,
+}
+
+/// BLE peripheral configuration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BleConfig {
+    /// Advertised and GAP device name; long names are cut by the backend to
+    /// fit the advertising data.
+    pub name: &'static str,
+    /// GATT layout of the byte pipe.
+    pub gatt: BleGattSpec,
+}
+
 /// Security properties of the current link.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct BleConnectionInfo {

@@ -35,7 +35,9 @@ esp-backtrace = { version = "0.20.0", features = ["panic-handler", "println"] }
 esp-bootloader-esp-idf = "0.6.0"
 esp-rtos = { version = "0.4.0", features = ["embassy", "esp-radio", "esp-alloc"] }
 esp-alloc = "0.11.0"
-esp-radio = { version = "=1.0.0-beta.1", features = ["wifi", "esp-alloc", "unstable"] }
+esp-radio = { version = "=1.0.0-beta.1", features = ["wifi", "ble", "coex", "esp-alloc", "unstable"] }
+trouble-host = { version = "0.7.0", default-features = false, features = ["peripheral", "gatt", "derive", "default-packet-pool-mtu-255"] }
+bt-hci = "0.9.0"
 
 # Embedded
 embedded-io = "0.7.1"

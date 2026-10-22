@@ -39,7 +39,7 @@ use esp_hal::Async;
 use esp_hal::dma_rx_stream_buffer;
 use esp_hal::i2c::master::{BusTimeout, Config as I2cConfig, I2c};
 use esp_hal::i2s::master::{Channels, DataFormat, I2s, TdmConfig};
-use esp_hal::peripherals::{FLASH, FROM_CPU_INTR0, TIMG0, WIFI};
+use esp_hal::peripherals::{BT, FLASH, FROM_CPU_INTR0, TIMG0, WIFI};
 use esp_hal::time::Rate;
 use esp_hal::uart::{self, RxConfig, Uart};
 use rohi_hal::sensors::noise::SAMPLE_RATE_HZ;
@@ -64,6 +64,8 @@ pub struct Runtime {
     pub sw_interrupt: FROM_CPU_INTR0<'static>,
     /// Wi-Fi radio, handed to the network backend.
     pub wifi: WIFI<'static>,
+    /// Bluetooth radio, handed to the BLE backend.
+    pub bt: BT<'static>,
     /// SPI flash, handed to the configuration store.
     pub flash: FLASH<'static>,
 }

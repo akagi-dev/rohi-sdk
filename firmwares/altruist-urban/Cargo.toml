@@ -20,10 +20,12 @@ path = "./src/bin/main.rs"
 rohi-hal = { workspace = true }
 rohi-config = { workspace = true }
 rohi-net = { workspace = true }
+rohi-control = { workspace = true }
+rohi-control-ble = { workspace = true }
 # Hardware specific, the chip is selected by the `esp32c3` / `esp32c6` features
 rohi-hal-esp = { workspace = true }
 rohi-config-esp = { workspace = true }
-rohi-net-esp = { workspace = true }
+rohi-net-esp = { workspace = true, features = ["heap-stats"] }
 esp-hal = { workspace = true }
 esp-println = { workspace = true }
 esp-backtrace = { workspace = true }

@@ -39,6 +39,8 @@ compile_error!(
 
 /// Persistent configuration service (single owner task and handle).
 pub mod config;
+/// Local control plane over BLE.
+pub mod control;
 pub mod net;
 
 /// Embassy tasks.

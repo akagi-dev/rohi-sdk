@@ -7,7 +7,7 @@ edition.workspace = true
 homepage.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Robonomics Open Hardware Wi-Fi: ESP32 backend for rohi-net"
+description = "Robonomics Open Hardware wireless (Wi-Fi and BLE): ESP32 backend for rohi-net"
 
 [package.metadata.docs.rs]
 targets = ["riscv32imc-unknown-none-elf"]
@@ -25,9 +25,15 @@ esp-alloc = { workspace = true, optional = true }
 embassy-net = { workspace = true, optional = true }
 embassy-time = { workspace = true, optional = true }
 static_cell = { workspace = true, optional = true }
+embassy-sync = { workspace = true, optional = true }
+embassy-futures = { workspace = true, optional = true }
+heapless = { workspace = true, optional = true }
+trouble-host = { workspace = true, optional = true }
 
 [features]
 default = []
+# Track the minimum free wireless heap (small runtime overhead).
+heap-stats = ["esp-alloc/internal-heap-stats"]
 # Exactly one chip feature must be enabled by the final firmware build.
 esp32c3 = ["_esp", "esp-hal/esp32c3", "esp-radio/esp32c3"]
 esp32c6 = ["_esp", "esp-hal/esp32c6", "esp-radio/esp32c6"]
@@ -38,4 +44,8 @@ _esp = [
   "dep:embassy-net",
   "dep:embassy-time",
   "dep:static_cell",
+  "dep:embassy-sync",
+  "dep:embassy-futures",
+  "dep:heapless",
+  "dep:trouble-host",
 ]

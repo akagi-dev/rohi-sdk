@@ -43,7 +43,8 @@ mod state;
 pub use backend::WifiBackend;
 pub use backoff::Backoff;
 pub use ble::{
-    BleConnectionInfo, BleError, BleState, BleTransport, DEFAULT_BLE_PAYLOAD, MAX_BLE_PAYLOAD,
+    BleConfig, BleConnectionInfo, BleError, BleGattSpec, BleState, BleTransport,
+    DEFAULT_BLE_PAYLOAD, MAX_BLE_PAYLOAD,
 };
 pub use config::{WifiConfig, WifiPassword, WifiSsid};
 pub use error::WifiError;

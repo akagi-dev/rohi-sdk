@@ -23,6 +23,7 @@ use log::info;
 use rohi_hal::runtime::{Clock, MeasurementHandle, MeasurementService};
 use rohi_hal::{MeasurementStore, MeasurementsSnapshot};
 use rohi_hal_esp::EmbassyClock;
+use rohi_net_esp::wireless_heap;
 
 use super::{EVENTS, RawMutex};
 
@@ -76,6 +77,11 @@ fn log_snapshot(snapshot: &MeasurementsSnapshot) {
         );
     }
     info!("dropped events: {}", EVENTS.dropped());
+    let heap = wireless_heap();
+    info!(
+        "wireless heap: {} B free of {} B, minimum free {:?} B",
+        heap.free, heap.size, heap.min_free
+    );
 }
 
 /// Apply sensor events to the store, answer snapshot requests and periodically
