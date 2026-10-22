@@ -17,10 +17,17 @@
 ///////////////////////////////////////////////////////////////////////////////
 #![no_std]
 
-//! ESP32 Wi-Fi backend of [`rohi-net`](rohi_net).
+//! ESP32 wireless backends of [`rohi-net`](rohi_net).
 //!
-//! Implements [`WifiBackend`](rohi_net::WifiBackend) on top of `esp-radio` and
-//! `embassy-net`; vendor types never leave this crate. The chip is selected by
+//! [`EspWireless`] owns the shared wireless runtime (radio peripherals and the
+//! single wireless heap) and creates both drivers:
+//!
+//! - Wi-Fi: [`EspWifi`] implements [`WifiBackend`](rohi_net::WifiBackend) on top
+//!   of `esp-radio` and `embassy-net`;
+//! - BLE: [`EspBle`] implements [`BleTransport`](rohi_net::BleTransport) on top
+//!   of `esp-radio` and the TrouBLE host stack.
+//!
+//! Vendor types never leave this crate. The chip is selected by
 //! exactly one Cargo feature, `esp32c3` or `esp32c6`, forwarded by the final
 //! firmware. Without a chip feature the crate is empty, so it stays buildable
 //! on a regular host.
@@ -31,7 +38,15 @@ compile_error!(
 );
 
 #[cfg(any(feature = "esp32c3", feature = "esp32c6"))]
+mod ble;
+#[cfg(any(feature = "esp32c3", feature = "esp32c6"))]
 mod wifi;
+#[cfg(any(feature = "esp32c3", feature = "esp32c6"))]
+mod wireless;
 
 #[cfg(any(feature = "esp32c3", feature = "esp32c6"))]
-pub use wifi::{EspWifi, NetRunner, RADIO_HEAP_SIZE, init_radio_heap, radio_heap_free};
+pub use ble::{BleRunner, EspBle};
+#[cfg(any(feature = "esp32c3", feature = "esp32c6"))]
+pub use wifi::{EspWifi, NetRunner};
+#[cfg(any(feature = "esp32c3", feature = "esp32c6"))]
+pub use wireless::{EspWireless, WIRELESS_HEAP_SIZE, WirelessError, WirelessHeap, wireless_heap};

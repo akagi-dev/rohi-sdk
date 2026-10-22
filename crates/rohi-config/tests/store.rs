@@ -133,6 +133,10 @@ struct TooLarge {
     data: [u8; 1021],
 }
 
+fn identity(serial: u64) -> Identity {
+    Identity { serial }
+}
+
 fn wifi(tag: u8) -> WifiConfig {
     WifiConfig {
         tag,
@@ -1533,4 +1537,38 @@ mod fuzz {
             }
         }
     }
+}
+
+#[test]
+fn remove_touches_only_its_section_and_keeps_unknown_ones() {
+    const PROTECTED: SectionId = SectionId(0xDEAD_BEEF_0000_0002);
+    const PAYLOAD: [u8; 4] = [0xDE, 0xAD, 0xBE, 0xEF];
+
+    let mut store = open(Mem::new());
+    store.set(&wifi(1)).unwrap();
+    store.set(&identity(7)).unwrap();
+    store.set_raw(PROTECTED, 3, &PAYLOAD).unwrap();
+
+    store.remove::<WifiConfig>().unwrap();
+
+    assert_eq!(store.get::<WifiConfig>().unwrap(), None);
+    assert_eq!(store.get::<Identity>().unwrap(), Some(identity(7)));
+    let mut raw = [0u8; 8];
+    let info = store.read_raw(PROTECTED, &mut raw).unwrap().unwrap();
+    assert_eq!((info.version, &raw[..info.length]), (3, &PAYLOAD[..]));
+}
+
+#[test]
+fn format_is_a_separate_low_level_operation() {
+    let mut store = open(Mem::new());
+    store.set(&wifi(1)).unwrap();
+    store.set(&identity(7)).unwrap();
+
+    // Formatting is a storage operation, not a section mutation: it discards
+    // every section, which `remove` never does.
+    let store = match ConfigStore::format(store.into_storage()) {
+        Ok(store) => store,
+        Err(_) => panic!("format failed"),
+    };
+    assert_eq!(store.section_count(), 0);
 }

@@ -1,0 +1,723 @@
+use core::cell::RefCell;
+use std::collections::VecDeque;
+use std::vec;
+use std::vec::Vec;
+
+use embassy_futures::block_on;
+use rohi_control::{
+    AuthorizationPolicy, Capabilities, ControlServices, Controller, DeviceInfo, OpenPolicy,
+    RequireEncryption, ServiceError,
+};
+use rohi_control_proto::control::{
+    self as pb, Request_::Request as Call, Response_::Response as Reply,
+};
+use rohi_control_proto::limits::{MAX_REQUEST_LEN, MAX_RESPONSE_LEN};
+use rohi_control_proto::{PROTOCOL_VERSION, decode, encode};
+use rohi_hal::units::{Celsius, Pascal, RelativeHumidity};
+use rohi_hal::{
+    Bmx280Update, MeasurementStore, MeasurementUpdate, MeasurementsSnapshot, MonotonicTimestamp,
+    SensorEvent,
+};
+use rohi_net::{
+    BleConnectionInfo, BleError, BleState, BleTransport, MAX_BLE_PAYLOAD, NetworkInfo, WifiConfig,
+    WifiScanResults, WifiState, WifiStatus,
+};
+
+use crate::ControlBle;
+use crate::frame::{FRAME_VERSION, Fragmenter, FrameError, HEADER_LEN, Reassembler};
+
+// ---------------------------------------------------------------------------
+// Framing
+// ---------------------------------------------------------------------------
+
+fn frames(id: u8, message: &[u8], max_payload: usize) -> Vec<Vec<u8>> {
+    let mut fragmenter = Fragmenter::new(id, message, max_payload).unwrap();
+    let mut out = Vec::new();
+    let mut buf = [0u8; MAX_BLE_PAYLOAD];
+    while let Some(len) = fragmenter.next_frame(&mut buf) {
+        assert!(len <= max_payload);
+        out.push(buf[..len].to_vec());
+    }
+    assert_eq!(out.len(), fragmenter.count());
+    out
+}
+
+fn reassemble<const N: usize>(frames: &[Vec<u8>]) -> Result<Option<(u8, Vec<u8>)>, FrameError> {
+    let mut reassembler = Reassembler::<N>::new();
+    let mut result = None;
+    for frame in frames {
+        if let Some(message) = reassembler.push(frame)? {
+            result = Some((message.id, message.bytes.to_vec()));
+        }
+    }
+    Ok(result)
+}
+
+fn pattern(len: usize) -> Vec<u8> {
+    (0..len).map(|i| (i * 7 + 3) as u8).collect()
+}
+
+#[test]
+fn single_fragment() {
+    let message = pattern(10);
+    let frames = frames(5, &message, 20);
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0].len(), HEADER_LEN + 10);
+    assert_eq!(reassemble::<64>(&frames), Ok(Some((5, message))));
+}
+
+#[test]
+fn multiple_fragments() {
+    let message = pattern(100);
+    let frames = frames(9, &message, 20);
+    assert_eq!(frames.len(), 100usize.div_ceil(20 - HEADER_LEN));
+    assert!(frames.iter().all(|frame| frame[1] == 9));
+    assert_eq!(reassemble::<128>(&frames), Ok(Some((9, message))));
+}
+
+#[test]
+fn every_length_and_payload_size_round_trips() {
+    for max_payload in [HEADER_LEN + 1, 20, 23, 100, MAX_BLE_PAYLOAD] {
+        for len in [1usize, 2, 13, 14, 15, 28, 255, 256] {
+            if len.div_ceil(max_payload - HEADER_LEN) > crate::frame::MAX_FRAGMENTS {
+                continue;
+            }
+            let message = pattern(len);
+            let frames = frames(1, &message, max_payload);
+            assert_eq!(
+                reassemble::<MAX_REQUEST_LEN>(&frames),
+                Ok(Some((1, message))),
+                "payload {max_payload}, length {len}"
+            );
+        }
+    }
+}
+
+#[test]
+fn maximum_size_message_is_accepted() {
+    let message = pattern(MAX_REQUEST_LEN);
+    let frames = frames(1, &message, MAX_BLE_PAYLOAD);
+    assert_eq!(
+        reassemble::<MAX_REQUEST_LEN>(&frames),
+        Ok(Some((1, message)))
+    );
+}
+
+#[test]
+fn one_byte_oversized_message_is_rejected() {
+    let message = pattern(MAX_REQUEST_LEN + 1);
+    let frames = frames(1, &message, MAX_BLE_PAYLOAD);
+    assert_eq!(
+        reassemble::<MAX_REQUEST_LEN>(&frames),
+        Err(FrameError::TooLarge)
+    );
+}
+
+#[test]
+fn truncated_frames_are_rejected() {
+    let mut reassembler = Reassembler::<64>::new();
+    assert_eq!(reassembler.push(&[]).err(), Some(FrameError::Truncated));
+    assert_eq!(
+        reassembler.push(&[FRAME_VERSION, 1, 0]).err(),
+        Some(FrameError::Truncated)
+    );
+    // Header without payload.
+    assert_eq!(
+        reassembler.push(&[FRAME_VERSION, 1, 0, 1, 4, 0]).err(),
+        Some(FrameError::Truncated)
+    );
+}
+
+#[test]
+fn shorter_last_fragment_than_announced_is_a_length_mismatch() {
+    let message = pattern(30);
+    let mut frames = frames(1, &message, 20);
+    let last = frames.last_mut().unwrap();
+    last.pop();
+    assert_eq!(reassemble::<64>(&frames), Err(FrameError::LengthMismatch));
+}
+
+#[test]
+fn unknown_version_is_rejected() {
+    let mut frame = frames(1, &pattern(4), 20).remove(0);
+    frame[0] = FRAME_VERSION + 1;
+    let mut reassembler = Reassembler::<64>::new();
+    assert_eq!(reassembler.push(&frame).err(), Some(FrameError::Version));
+}
+
+#[test]
+fn invalid_fragment_index_is_rejected() {
+    let mut reassembler = Reassembler::<64>::new();
+    // index 2 of 2
+    assert_eq!(
+        reassembler.push(&[FRAME_VERSION, 1, 2, 2, 4, 0, 1]).err(),
+        Some(FrameError::InvalidIndex)
+    );
+    // count 0
+    assert_eq!(
+        reassembler.push(&[FRAME_VERSION, 1, 0, 0, 4, 0, 1]).err(),
+        Some(FrameError::InvalidIndex)
+    );
+}
+
+#[test]
+fn duplicate_fragment_is_rejected_and_the_rest_is_skipped() {
+    let message = pattern(60);
+    let frames = frames(3, &message, 20);
+    assert!(frames.len() >= 4);
+    let mut reassembler = Reassembler::<64>::new();
+    assert!(reassembler.push(&frames[0]).unwrap().is_none());
+    assert!(reassembler.push(&frames[1]).unwrap().is_none());
+    assert_eq!(
+        reassembler.push(&frames[1]).err(),
+        Some(FrameError::OutOfOrder)
+    );
+    // The tail of the broken message is skipped without further errors.
+    for frame in &frames[2..] {
+        assert!(reassembler.push(frame).unwrap().is_none());
+    }
+    // And a fresh message works.
+    let fresh = pattern(5);
+    let frames = super::tests::frames(4, &fresh, 20);
+    let message = reassembler.push(&frames[0]).unwrap().unwrap();
+    assert_eq!((message.id, message.bytes), (4, fresh.as_slice()));
+}
+
+#[test]
+fn missing_fragment_is_rejected() {
+    let message = pattern(60);
+    let frames = frames(3, &message, 20);
+    let mut reassembler = Reassembler::<64>::new();
+    assert!(reassembler.push(&frames[0]).unwrap().is_none());
+    assert_eq!(
+        reassembler.push(&frames[2]).err(),
+        Some(FrameError::OutOfOrder)
+    );
+}
+
+#[test]
+fn changing_the_header_mid_message_is_rejected() {
+    let frames = frames(3, &pattern(60), 20);
+    let mut reassembler = Reassembler::<64>::new();
+    assert!(reassembler.push(&frames[0]).unwrap().is_none());
+    let mut other_id = frames[1].clone();
+    other_id[1] = 4;
+    assert_eq!(
+        reassembler.push(&other_id).err(),
+        Some(FrameError::Inconsistent)
+    );
+
+    let mut reassembler = Reassembler::<64>::new();
+    assert!(reassembler.push(&frames[0]).unwrap().is_none());
+    let mut other_total = frames[1].clone();
+    other_total[4] = 59;
+    assert_eq!(
+        reassembler.push(&other_total).err(),
+        Some(FrameError::Inconsistent)
+    );
+}
+
+#[test]
+fn continuation_without_a_first_fragment_is_rejected() {
+    let frames = frames(3, &pattern(60), 20);
+    let mut reassembler = Reassembler::<64>::new();
+    assert_eq!(
+        reassembler.push(&frames[1]).err(),
+        Some(FrameError::OutOfOrder)
+    );
+}
+
+#[test]
+fn a_new_first_fragment_replaces_a_partial_message() {
+    let first = frames(1, &pattern(60), 20);
+    let second = pattern(8);
+    let second_frames = frames(2, &second, 20);
+    let mut reassembler = Reassembler::<64>::new();
+    assert!(reassembler.push(&first[0]).unwrap().is_none());
+    assert!(reassembler.is_receiving());
+    let message = reassembler.push(&second_frames[0]).unwrap().unwrap();
+    assert_eq!((message.id, message.bytes), (2, second.as_slice()));
+}
+
+#[test]
+fn reset_drops_the_partial_message() {
+    let frames = frames(1, &pattern(60), 20);
+    let mut reassembler = Reassembler::<64>::new();
+    assert!(reassembler.push(&frames[0]).unwrap().is_none());
+    reassembler.reset();
+    assert!(!reassembler.is_receiving());
+    assert_eq!(
+        reassembler.push(&frames[1]).err(),
+        Some(FrameError::OutOfOrder)
+    );
+}
+
+#[test]
+fn fragmenter_limits() {
+    assert_eq!(
+        Fragmenter::new(0, &[1], HEADER_LEN).err(),
+        Some(FrameError::PayloadTooSmall)
+    );
+    assert_eq!(
+        Fragmenter::new(0, &[], 20).err(),
+        Some(FrameError::TooLarge)
+    );
+    // 256 fragments of one byte each do not fit the count field.
+    let message = pattern(256);
+    assert_eq!(
+        Fragmenter::new(0, &message, HEADER_LEN + 1).err(),
+        Some(FrameError::TooLarge)
+    );
+    assert!(Fragmenter::new(0, &message[..255], HEADER_LEN + 1).is_ok());
+}
+
+#[test]
+fn the_largest_response_fits_the_default_mtu() {
+    let message = pattern(MAX_RESPONSE_LEN);
+    let fragmenter = Fragmenter::new(0, &message, rohi_net::DEFAULT_BLE_PAYLOAD).unwrap();
+    assert!(fragmenter.count() <= crate::frame::MAX_FRAGMENTS);
+}
+
+// ---------------------------------------------------------------------------
+// Control loop
+// ---------------------------------------------------------------------------
+
+enum Event {
+    Frame(Vec<u8>),
+    Disconnect,
+    Connect,
+}
+
+struct Shared {
+    events: RefCell<VecDeque<Event>>,
+    sent: RefCell<Vec<Vec<u8>>>,
+    connected: RefCell<bool>,
+    epoch: RefCell<u32>,
+    info: RefCell<BleConnectionInfo>,
+    payload: usize,
+    fail_send: RefCell<bool>,
+}
+
+impl Shared {
+    fn new(payload: usize) -> Self {
+        Self {
+            events: RefCell::new(VecDeque::new()),
+            sent: RefCell::new(Vec::new()),
+            connected: RefCell::new(true),
+            epoch: RefCell::new(1),
+            info: RefCell::new(BleConnectionInfo::default()),
+            payload,
+            fail_send: RefCell::new(false),
+        }
+    }
+
+    fn push_frames(&self, frames: Vec<Vec<u8>>) {
+        for frame in frames {
+            self.events.borrow_mut().push_back(Event::Frame(frame));
+        }
+    }
+
+    fn push(&self, event: Event) {
+        self.events.borrow_mut().push_back(event);
+    }
+
+    fn drop_link_and_reconnect(&self) {
+        *self.epoch.borrow_mut() += 1;
+    }
+
+    fn take_sent(&self) -> Vec<Vec<u8>> {
+        core::mem::take(&mut *self.sent.borrow_mut())
+    }
+}
+
+impl BleTransport for &Shared {
+    async fn recv(&mut self, out: &mut [u8]) -> Result<usize, BleError> {
+        loop {
+            let event = self.events.borrow_mut().pop_front().expect("script ended");
+            match event {
+                Event::Frame(frame) => {
+                    out[..frame.len()].copy_from_slice(&frame);
+                    return Ok(frame.len());
+                }
+                Event::Disconnect => {
+                    *self.connected.borrow_mut() = false;
+                    return Err(BleError::Disconnected);
+                }
+                Event::Connect => {
+                    *self.connected.borrow_mut() = true;
+                    *self.epoch.borrow_mut() += 1;
+                }
+            }
+        }
+    }
+
+    async fn send(&mut self, data: &[u8]) -> Result<(), BleError> {
+        assert!(data.len() <= self.payload, "frame exceeds the ATT payload");
+        if *self.fail_send.borrow() {
+            return Err(BleError::Busy);
+        }
+        self.sent.borrow_mut().push(data.to_vec());
+        Ok(())
+    }
+
+    fn connection_info(&self) -> Option<BleConnectionInfo> {
+        (*self.connected.borrow()).then(|| *self.info.borrow())
+    }
+
+    fn max_payload(&self) -> usize {
+        self.payload
+    }
+
+    fn state(&self) -> BleState {
+        BleState::Advertising
+    }
+
+    fn connection_epoch(&self) -> u32 {
+        *self.epoch.borrow()
+    }
+}
+
+struct Services<'a> {
+    snapshot: MeasurementsSnapshot,
+    shared: &'a Shared,
+    calls: RefCell<Vec<&'static str>>,
+}
+
+impl ControlServices for Services<'_> {
+    fn device_info(&self) -> DeviceInfo {
+        DeviceInfo {
+            firmware: "fake-0",
+            board: "bench-esp32c3",
+        }
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::ALL
+    }
+
+    async fn measurements(&self) -> Result<MeasurementsSnapshot, ServiceError> {
+        Ok(self.snapshot)
+    }
+
+    async fn wifi_config(&self) -> Result<Option<WifiConfig>, ServiceError> {
+        Ok(None)
+    }
+
+    async fn store_wifi_config(&self, _: Option<&WifiConfig>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    async fn apply_wifi_config(&self, _: Option<WifiConfig>) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    async fn wifi_scan(&self) -> Result<WifiScanResults, ServiceError> {
+        Ok(WifiScanResults::new())
+    }
+
+    fn wifi_status(&self) -> WifiStatus {
+        WifiStatus::new(WifiState::Idle)
+    }
+
+    fn wifi_network_info(&self) -> Option<NetworkInfo> {
+        None
+    }
+
+    fn wifi_reconnect(&self) -> Result<(), ServiceError> {
+        self.calls.borrow_mut().push("reconnect");
+        // The central drops and reconnects while the request is handled.
+        self.shared.drop_link_and_reconnect();
+        Ok(())
+    }
+
+    fn wifi_disconnect(&self) -> Result<(), ServiceError> {
+        self.calls.borrow_mut().push("disconnect");
+        Ok(())
+    }
+}
+
+fn services(shared: &Shared) -> Services<'_> {
+    let mut store = MeasurementStore::new();
+    store.apply(SensorEvent::Measurements(MeasurementUpdate::Bmx280(
+        Bmx280Update::bme280(
+            Celsius(21.5),
+            RelativeHumidity(45.0),
+            Pascal(100_800.0),
+            MonotonicTimestamp::from_millis(100),
+        ),
+    )));
+    Services {
+        snapshot: store.snapshot(MonotonicTimestamp::from_millis(600)),
+        shared,
+        calls: RefCell::new(Vec::new()),
+    }
+}
+
+fn request_bytes(id: u32, call: Call) -> Vec<u8> {
+    let mut buf = [0u8; MAX_REQUEST_LEN];
+    let len = encode(
+        &pb::Request {
+            protocol_version: PROTOCOL_VERSION,
+            request_id: id,
+            request: Some(call),
+        },
+        &mut buf,
+    )
+    .unwrap();
+    buf[..len].to_vec()
+}
+
+fn run<P: AuthorizationPolicy>(
+    shared: &Shared,
+    controller: &Controller<Services<'_>, P>,
+    steps: usize,
+) {
+    let mut service = ControlBle::new(shared, controller);
+    for _ in 0..steps {
+        block_on(service.step());
+    }
+}
+
+fn response_bytes(frames: &[Vec<u8>]) -> (u8, Vec<u8>) {
+    reassemble::<MAX_RESPONSE_LEN>(frames).unwrap().unwrap()
+}
+
+#[test]
+fn single_frame_request_gets_a_single_frame_response() {
+    let shared = Shared::new(MAX_BLE_PAYLOAD);
+    let controller = Controller::new(services(&shared), OpenPolicy);
+    shared.push_frames(frames(
+        7,
+        &request_bytes(11, Call::GetInfo(pb::GetInfoRequest {})),
+        MAX_BLE_PAYLOAD,
+    ));
+    run(&shared, &controller, 1);
+
+    let sent = shared.take_sent();
+    assert_eq!(sent.len(), 1);
+    let (id, bytes) = response_bytes(&sent);
+    assert_eq!(id, 7);
+    let response: pb::Response = decode(&bytes).unwrap();
+    assert_eq!(response.request_id, 11);
+    assert!(matches!(response.response, Some(Reply::GetInfo(_))));
+}
+
+#[test]
+fn multi_fragment_response_preserves_the_protobuf_bytes() {
+    let shared = Shared::new(20);
+    let controller = Controller::new(services(&shared), OpenPolicy);
+    let request = request_bytes(2, Call::GetSensors(pb::GetSensorsRequest {}));
+    let request_frames = frames(1, &request, 20);
+    let count = request_frames.len();
+    shared.push_frames(request_frames);
+    run(&shared, &controller, count);
+
+    let sent = shared.take_sent();
+    assert!(sent.len() > 1, "the response must need several fragments");
+    assert!(sent.iter().all(|frame| frame.len() <= 20));
+    let (id, bytes) = response_bytes(&sent);
+    assert_eq!(id, 1);
+
+    // The bytes equal what the dispatcher produces directly.
+    let mut direct = [0u8; MAX_RESPONSE_LEN];
+    let len = block_on(controller.handle(&Default::default(), &request, &mut direct));
+    assert_eq!(bytes, direct[..len]);
+
+    let response: pb::Response = decode(&bytes).unwrap();
+    let Some(Reply::GetSensors(sensors)) = response.response else {
+        panic!("not sensors");
+    };
+    assert_eq!(sensors.sensors[0].name.as_str(), "bmx280");
+    assert_eq!(sensors.sensors[0].measurements[0].value(), Some(&21.5));
+}
+
+fn long_request() -> Vec<u8> {
+    let mut update = pb::WifiConfigUpdate::default();
+    update.set_ssid(heapless::Vec::from_slice(b"a-rather-long-network-name").unwrap());
+    request_bytes(
+        3,
+        Call::UpdateConfig(pb::UpdateConfigRequest {
+            wifi_update: Some(pb::UpdateConfigRequest_::WifiUpdate::UpdateWifi(update)),
+        }),
+    )
+}
+
+#[test]
+fn multi_fragment_request_is_reassembled() {
+    let shared = Shared::new(20);
+    let controller = Controller::new(services(&shared), OpenPolicy);
+    let request = long_request();
+    let request_frames = frames(8, &request, 20);
+    assert!(request_frames.len() > 1);
+    let count = request_frames.len();
+    shared.push_frames(request_frames);
+    run(&shared, &controller, count);
+
+    let sent = shared.take_sent();
+    let (id, bytes) = response_bytes(&sent);
+    assert_eq!(id, 8);
+    let response: pb::Response = decode(&bytes).unwrap();
+    assert_eq!(response.request_id, 3);
+    assert!(matches!(response.response, Some(Reply::UpdateConfig(_))));
+}
+
+#[test]
+fn rejected_frames_get_a_typed_error_once() {
+    let shared = Shared::new(20);
+    let controller = Controller::new(services(&shared), OpenPolicy);
+    let request = long_request();
+    let mut broken = frames(6, &request, 20);
+    broken.insert(2, broken[1].clone());
+    let count = broken.len();
+    shared.push_frames(broken);
+    run(&shared, &controller, count);
+
+    let sent = shared.take_sent();
+    let (id, bytes) = response_bytes(&sent);
+    assert_eq!(id, 6);
+    let response: pb::Response = decode(&bytes).unwrap();
+    assert!(matches!(
+        response.response,
+        Some(Reply::Error(pb::Error {
+            code: pb::ErrorCode::InvalidArgument
+        }))
+    ));
+
+    // The next request works.
+    let good = frames(
+        7,
+        &request_bytes(3, Call::GetInfo(pb::GetInfoRequest {})),
+        20,
+    );
+    let count = good.len();
+    shared.push_frames(good);
+    run(&shared, &controller, count);
+    let (id, _) = response_bytes(&shared.take_sent());
+    assert_eq!(id, 7);
+}
+
+#[test]
+fn oversized_request_is_rejected_with_an_error() {
+    let shared = Shared::new(MAX_BLE_PAYLOAD);
+    let controller = Controller::new(services(&shared), OpenPolicy);
+    let message = pattern(MAX_REQUEST_LEN + 1);
+    let oversized = frames(5, &message, MAX_BLE_PAYLOAD);
+    let count = oversized.len();
+    shared.push_frames(oversized);
+    run(&shared, &controller, count);
+
+    let (id, bytes) = response_bytes(&shared.take_sent());
+    assert_eq!(id, 5);
+    let response: pb::Response = decode(&bytes).unwrap();
+    assert!(matches!(response.response, Some(Reply::Error(_))));
+}
+
+#[test]
+fn disconnect_discards_the_partial_request() {
+    let shared = Shared::new(20);
+    let controller = Controller::new(services(&shared), OpenPolicy);
+    let request = long_request();
+    let request_frames = frames(4, &request, 20);
+    assert!(request_frames.len() > 2);
+
+    // First fragment, then the link drops and a new central continues with
+    // what would have been the second fragment.
+    shared.push(Event::Frame(request_frames[0].clone()));
+    shared.push(Event::Disconnect);
+    shared.push(Event::Connect);
+    shared.push(Event::Frame(request_frames[1].clone()));
+    run(&shared, &controller, 3);
+
+    // No response to the stale tail except a typed error.
+    let (_, bytes) = response_bytes(&shared.take_sent());
+    let response: pb::Response = decode(&bytes).unwrap();
+    assert!(matches!(response.response, Some(Reply::Error(_))));
+    assert!(controller.services().calls.borrow().is_empty());
+
+    // The state is clean: a complete request on the new link works.
+    let count = request_frames.len();
+    shared.push_frames(request_frames);
+    run(&shared, &controller, count);
+    let (_, bytes) = response_bytes(&shared.take_sent());
+    let response: pb::Response = decode(&bytes).unwrap();
+    assert!(matches!(response.response, Some(Reply::UpdateConfig(_))));
+}
+
+#[test]
+fn response_is_dropped_when_the_link_changed_during_the_request() {
+    let shared = Shared::new(MAX_BLE_PAYLOAD);
+    let controller = Controller::new(services(&shared), OpenPolicy);
+    shared.push_frames(frames(
+        1,
+        &request_bytes(1, Call::ReconnectWifi(pb::ReconnectWifiRequest {})),
+        MAX_BLE_PAYLOAD,
+    ));
+    run(&shared, &controller, 1);
+
+    assert_eq!(
+        controller.services().calls.borrow().as_slice(),
+        ["reconnect"]
+    );
+    assert!(shared.take_sent().is_empty());
+}
+
+#[test]
+fn send_failure_resets_the_state() {
+    let shared = Shared::new(20);
+    let controller = Controller::new(services(&shared), OpenPolicy);
+    *shared.fail_send.borrow_mut() = true;
+    let request = request_bytes(2, Call::GetSensors(pb::GetSensorsRequest {}));
+    let request_frames = frames(1, &request, 20);
+    let count = request_frames.len();
+    shared.push_frames(request_frames.clone());
+    run(&shared, &controller, count);
+    assert!(shared.take_sent().is_empty());
+
+    *shared.fail_send.borrow_mut() = false;
+    shared.push_frames(request_frames);
+    run(&shared, &controller, count);
+    assert!(!shared.take_sent().is_empty());
+}
+
+#[test]
+fn link_security_reaches_the_policy() {
+    let shared = Shared::new(MAX_BLE_PAYLOAD);
+    let controller = Controller::new(services(&shared), RequireEncryption);
+    let request = request_bytes(1, Call::DisconnectWifi(pb::DisconnectWifiRequest {}));
+
+    shared.push_frames(frames(1, &request, MAX_BLE_PAYLOAD));
+    run(&shared, &controller, 1);
+    let (_, bytes) = response_bytes(&shared.take_sent());
+    let response: pb::Response = decode(&bytes).unwrap();
+    assert!(matches!(
+        response.response,
+        Some(Reply::Error(pb::Error {
+            code: pb::ErrorCode::PermissionDenied
+        }))
+    ));
+    assert!(controller.services().calls.borrow().is_empty());
+
+    *shared.info.borrow_mut() = BleConnectionInfo {
+        encrypted: true,
+        authenticated: false,
+    };
+    shared.push_frames(frames(2, &request, MAX_BLE_PAYLOAD));
+    run(&shared, &controller, 1);
+    let (_, bytes) = response_bytes(&shared.take_sent());
+    let response: pb::Response = decode(&bytes).unwrap();
+    assert!(matches!(response.response, Some(Reply::DisconnectWifi(_))));
+    assert_eq!(
+        controller.services().calls.borrow().as_slice(),
+        ["disconnect"]
+    );
+}
+
+#[test]
+fn stray_frames_are_answered_without_panicking() {
+    let shared = Shared::new(20);
+    let controller = Controller::new(services(&shared), OpenPolicy);
+    shared.push(Event::Frame(vec![]));
+    shared.push(Event::Frame(vec![0xff; 20]));
+    run(&shared, &controller, 2);
+    assert_eq!(shared.take_sent().len(), 2);
+}

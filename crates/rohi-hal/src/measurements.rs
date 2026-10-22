@@ -149,7 +149,7 @@ impl FreshnessPolicy {
             SensorKind::Scd4x => Self::new(30_000),
             // Every ~2.5 min: 30 s warm-up, sampling window, 90 s sleep.
             SensorKind::Sds011 => Self::new(300_000),
-            // A result every 10 s window.
+            // A result every 5 s window.
             SensorKind::Microphone => Self::new(30_000),
             SensorKind::Zmod4510 => Self::new(120_000),
             SensorKind::Ags3871 => Self::new(120_000),

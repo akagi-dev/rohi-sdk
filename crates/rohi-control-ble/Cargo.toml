@@ -1,0 +1,24 @@
+[package]
+name = "rohi-control-ble"
+version = "0.1.0"
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Robonomics Open Hardware control protocol over BLE: GATT binding, framing and fragmentation"
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[dependencies]
+rohi-control-proto.workspace = true
+rohi-control.workspace = true
+rohi-net.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+rohi-hal.workspace = true
+embassy-futures.workspace = true
+heapless.workspace = true

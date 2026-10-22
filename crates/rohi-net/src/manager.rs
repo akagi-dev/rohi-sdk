@@ -15,7 +15,7 @@
 //  limitations under the License.
 //
 
-use core::cell::Cell;
+use core::cell::{Cell, RefCell};
 use core::pin::pin;
 
 use embassy_futures::select::{Either, Either3, select, select3};
@@ -36,7 +36,7 @@ use crate::{
 /// Number of tasks that can wait for status changes at the same time.
 pub const STATUS_RECEIVERS: usize = 3;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Command {
     ApplyConfig(Option<WifiConfig>),
     Reconnect,
@@ -50,7 +50,7 @@ enum Command {
 pub struct WifiShared<M: RawMutex> {
     commands: Channel<M, Command, WIFI_COMMAND_QUEUE_DEPTH>,
     status: Watch<M, WifiStatus, STATUS_RECEIVERS>,
-    info: BlockingMutex<M, Cell<Option<NetworkInfo>>>,
+    info: BlockingMutex<M, RefCell<Option<NetworkInfo>>>,
     scan: Signal<M, Result<WifiScanResults, WifiError>>,
     scan_pending: BlockingMutex<M, Cell<bool>>,
 }
@@ -60,7 +60,7 @@ impl<M: RawMutex> WifiShared<M> {
         Self {
             commands: Channel::new(),
             status: Watch::new_with(WifiStatus::new(WifiState::NotConfigured)),
-            info: BlockingMutex::new(Cell::new(None)),
+            info: BlockingMutex::new(RefCell::new(None)),
             scan: Signal::new(),
             scan_pending: BlockingMutex::new(Cell::new(false)),
         }
@@ -104,9 +104,19 @@ impl<M: RawMutex> WifiHandle<'_, M> {
 
     /// Applies a new configuration (`Some`) or forgets the network (`None`).
     /// The configuration must already be persisted by the caller; it is
-    /// validated again here.
-    pub fn apply_config(&self, config: Option<WifiConfig>) -> Result<(), WifiError> {
-        self.send(Command::ApplyConfig(config))
+    /// validated again by the manager.
+    ///
+    /// Unlike the transient commands this never fails with
+    /// [`WifiError::Busy`]: it waits for room in the bounded command queue so
+    /// that a persisted configuration always reaches the manager. Completion
+    /// only means the manager accepted the update, not that the access point
+    /// was reached; follow [`WifiHandle::status`] for that.
+    pub async fn apply_config(&self, config: Option<WifiConfig>) -> Result<(), WifiError> {
+        self.shared
+            .commands
+            .send(Command::ApplyConfig(config))
+            .await;
+        Ok(())
     }
 
     /// Drops the current connection and connects again immediately.
@@ -147,7 +157,7 @@ impl<M: RawMutex> WifiHandle<'_, M> {
 
     /// Current connection details; `None` unless the network is ready.
     pub fn network_info(&self) -> Option<NetworkInfo> {
-        self.shared.info.lock(Cell::get)
+        self.shared.info.lock(|info| info.borrow().clone())
     }
 
     /// Receiver for status changes, `None` if all [`STATUS_RECEIVERS`] are taken.
@@ -258,7 +268,7 @@ impl<'a, B: WifiBackend, D: DelayNs, M: RawMutex> WifiManager<'a, B, D, M> {
     }
 
     async fn attempt(&mut self) {
-        let Some(config) = self.config else {
+        let Some(config) = self.config.clone() else {
             self.phase = Phase::NoConfig;
             return;
         };
@@ -441,7 +451,7 @@ fn publish<M: RawMutex>(shared: &WifiShared<M>, current: &mut WifiStatus, status
 }
 
 fn set_info<M: RawMutex>(shared: &WifiShared<M>, info: Option<NetworkInfo>) {
-    shared.info.lock(|cell| cell.set(info));
+    shared.info.lock(|cell| *cell.borrow_mut() = info);
 }
 
 async fn scan<B: WifiBackend, M: RawMutex>(

@@ -31,6 +31,11 @@ SDK also contains firmwares for [Robonomics Devices](https://robonomics.network/
 
 * [Altruist Urban](https://github.com/akagi-dev/rohi-sdk/tree/master/firmwares/altruist-urban)
 
+## 🖥️ Desktop tools
+
+* [`rohi`](tools/rohi) — BLE client library and command line tool to inspect and configure devices, see the
+  [control plane](docs/control.md).
+
 ## 📚 Documentation
 
 * [ROHI Book](https://rohi.akagi.dev).

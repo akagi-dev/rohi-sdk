@@ -18,7 +18,7 @@
 #![no_std]
 #![no_main]
 
-//! I2S microphone example: prints average and maximum noise level every 10 s window.
+//! I2S microphone example: prints average and maximum noise level every 5 s window.
 
 use altruist_urban::tasks::sensors::noise_task;
 use esp_backtrace as _;

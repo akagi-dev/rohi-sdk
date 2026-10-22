@@ -23,8 +23,8 @@
 //! and error into the ROHI types before returning. Heap-backed vendor
 //! collections (scan results) are converted and dropped inside this module.
 //!
-//! The only platform-specific entry points are [`init_radio_heap`] and
-//! [`EspWifi::new`], called once by the board firmware. Higher layers use
+//! The driver is created through [`EspWireless::wifi`](crate::EspWireless::wifi),
+//! which owns the shared radio heap and peripherals. Higher layers use
 //! [`WifiHandle`](rohi_net::WifiHandle) only.
 
 use core::net::Ipv4Addr;
@@ -47,12 +47,6 @@ use rohi_net::{
     WifiSecurity, WifiSsid,
 };
 
-/// Size of the dedicated heap used by the wireless stack, in bytes.
-///
-/// Only the radio drivers allocate from it; ROHI application code stays
-/// heapless. Verify the minimum free value on hardware before changing it.
-pub const RADIO_HEAP_SIZE: usize = 72 * 1024;
-
 /// Sockets reserved in the IP stack: DHCP, DNS and headroom for later clients.
 const NET_SOCKETS: usize = 6;
 /// Upper bound of raw scan entries converted per scan (bounds the vendor `Vec`).
@@ -64,18 +58,6 @@ const STALE_CONFIG_POLL: Duration = Duration::from_millis(50);
 const STALE_CONFIG_LIMIT: u32 = 40;
 
 static RESOURCES: StaticCell<StackResources<NET_SOCKETS>> = StaticCell::new();
-
-/// Adds the fixed-size radio heap to the global allocator.
-///
-/// Call exactly once, before `esp_rtos::start` and before any radio use.
-pub fn init_radio_heap() {
-    esp_alloc::heap_allocator!(size: RADIO_HEAP_SIZE);
-}
-
-/// Currently free bytes of the radio heap, for diagnostics.
-pub fn radio_heap_free() -> usize {
-    esp_alloc::HEAP.free()
-}
 
 /// Background driver of the IP stack. Run it on its own task:
 /// `runner.run().await`.
@@ -97,9 +79,9 @@ pub struct EspWifi {
 impl EspWifi {
     /// Brings up the Wi-Fi driver in station mode and the IP stack (DHCPv4).
     ///
-    /// Requires the radio heap and the `esp-rtos` scheduler to be running and
-    /// must be called once.
-    pub fn new(wifi: WIFI<'static>) -> Result<(Self, NetRunner), WifiError> {
+    /// Requires the wireless heap and the `esp-rtos` scheduler to be running
+    /// and must be called once; see [`EspWireless`](crate::EspWireless).
+    pub(crate) fn new(wifi: WIFI<'static>) -> Result<(Self, NetRunner), WifiError> {
         let controller = WifiController::new(wifi, ControllerConfig::default())
             .map_err(|error| map_driver_error(&error))?;
         let interface = Interface::station();
@@ -123,7 +105,7 @@ impl EspWifi {
     }
 
     fn current_info(&mut self) -> Option<NetworkInfo> {
-        let ssid = self.ssid?;
+        let ssid = self.ssid.clone()?;
         let config = self.stack.config_v4()?;
         let rssi_dbm = self
             .controller
@@ -177,7 +159,7 @@ impl EspWifi {
             .await
             .map_err(|_| WifiError::DhcpFailed)?;
 
-        self.ssid = Some(config.ssid);
+        self.ssid = Some(config.ssid.clone());
         self.current_info().ok_or(WifiError::DhcpFailed)
     }
 }

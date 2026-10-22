@@ -24,25 +24,31 @@
 
 use embassy_executor::Spawner;
 use embassy_sync::mutex::Mutex;
+use embassy_time::Duration;
 use esp_hal::clock::CpuClock;
 use esp_hal::timer::timg::TimerGroup;
 use log::{error, info};
 use static_cell::StaticCell;
 
 use altruist_urban::config;
+use altruist_urban::control::{self, UrbanControlServices, ble_task, control_task};
 use altruist_urban::net::{self, net_runner_task, wifi_task};
 use altruist_urban::tasks::sensors::{
     SharedI2cBus, bmx280_task, i2c_handle, noise_task, scd4x_task, sds011_task,
 };
-use altruist_urban::tasks::store::store_task;
+use altruist_urban::tasks::store::{self, store_task};
+use rohi_control::Capabilities;
 use rohi_hal_esp::board::altruist_urban::{AltruistUrban, Hardware};
-use rohi_net_esp::{EspWifi, init_radio_heap, radio_heap_free};
+use rohi_net_esp::EspWireless;
 
 use esp_backtrace as _;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
 static I2C_BUS: StaticCell<SharedI2cBus> = StaticCell::new();
+
+/// Longest wait for the first Wi-Fi connection attempt before sensing starts.
+const WIFI_FIRST_ATTEMPT_WAIT: Duration = Duration::from_secs(30);
 
 #[esp_rtos::main]
 async fn main(spawner: Spawner) -> ! {
@@ -51,12 +57,13 @@ async fn main(spawner: Spawner) -> ! {
     let peripherals = esp_hal::init(config);
     let (hardware, runtime) = Hardware::split(peripherals);
 
-    // The radio drivers are the only users of the heap; see `rohi_net_esp`.
-    init_radio_heap();
+    // One owner for the radio: it adds the wireless heap and creates the Wi-Fi
+    // and BLE drivers, see `rohi_net_esp`.
+    let mut wireless = EspWireless::new(runtime.wifi, runtime.bt);
     esp_rtos::start(TimerGroup::new(runtime.timg0).timer0, runtime.sw_interrupt);
     info!(
-        "Embassy execution engine ready, radio heap free {} B",
-        radio_heap_free()
+        "Embassy execution engine ready, wireless heap free {} B",
+        wireless.heap().free
     );
 
     // The configuration task is the single owner of the store; everything else
@@ -73,22 +80,52 @@ async fn main(spawner: Spawner) -> ! {
 
     let i2c_bus = I2C_BUS.init(Mutex::new(i2c));
     spawner.spawn(store_task().unwrap());
+
+    // A Wi-Fi or BLE failure must never stop the sensors: log and carry on.
+    let mut capabilities = Capabilities::SENSORS | Capabilities::CONFIG;
+    let mut wifi_configured = false;
+    match wireless.wifi() {
+        Ok((backend, runner)) => {
+            spawner.spawn(net_runner_task(runner).unwrap());
+            spawner.spawn(wifi_task(backend).unwrap());
+            wifi_configured = net::apply_stored_config(config).await;
+            capabilities = capabilities
+                | Capabilities::WIFI_SCAN
+                | Capabilities::WIFI_STATUS
+                | Capabilities::WIFI_CONTROL;
+            info!(
+                "Wi-Fi started, wireless heap free {} B",
+                wireless.heap().free
+            );
+        }
+        Err(error) => error!("Wi-Fi unavailable: {}", error),
+    }
+
+    match wireless.ble(control::BLE_CONFIG) {
+        Ok((transport, runner)) => {
+            let services =
+                UrbanControlServices::new(store::handle(), config, net::handle(), capabilities);
+            spawner.spawn(ble_task(runner).unwrap());
+            spawner.spawn(control_task(transport, services).unwrap());
+            info!(
+                "BLE control started, wireless heap free {} B",
+                wireless.heap().free
+            );
+        }
+        Err(error) => error!("BLE unavailable: {}", error),
+    }
+
+    // Sensing starts last: bringing up the radio, and the first Wi-Fi
+    // association in particular, keeps the core busy long enough to overrun
+    // the microphone DMA ring.
+    if wifi_configured {
+        net::wait_first_attempt(WIFI_FIRST_ATTEMPT_WAIT).await;
+    }
     spawner.spawn(bmx280_task(i2c_handle(i2c_bus)).unwrap());
     spawner.spawn(scd4x_task(i2c_handle(i2c_bus)).unwrap());
     spawner.spawn(sds011_task(sds011_uart).unwrap());
     spawner.spawn(noise_task(microphone).unwrap());
     info!("Sensor tasks started");
-
-    // A Wi-Fi failure must never stop the sensors: log and carry on.
-    match EspWifi::new(runtime.wifi) {
-        Ok((backend, runner)) => {
-            spawner.spawn(net_runner_task(runner).unwrap());
-            spawner.spawn(wifi_task(backend).unwrap());
-            net::apply_stored_config(config).await;
-            info!("Wi-Fi started, radio heap free {} B", radio_heap_free());
-        }
-        Err(error) => error!("Wi-Fi unavailable: {}", error),
-    }
 
     core::future::pending().await
 }

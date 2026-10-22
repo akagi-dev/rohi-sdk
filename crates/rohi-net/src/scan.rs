@@ -37,7 +37,7 @@ pub enum WifiSecurity {
 }
 
 /// One network found by a scan.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WifiNetwork {
     pub ssid: WifiSsid,
     pub rssi_dbm: i8,
@@ -94,7 +94,7 @@ impl ScanCollector {
             return;
         }
 
-        if self.results.push(network).is_err() {
+        if let Err(network) = self.results.push(network) {
             // Full: replace the weakest entry if the new one is stronger.
             let weakest = self
                 .results
@@ -133,7 +133,7 @@ mod tests {
     fn collect(networks: &[WifiNetwork]) -> WifiScanResults {
         let mut collector = ScanCollector::new();
         for network in networks {
-            collector.insert(*network);
+            collector.insert(network.clone());
         }
         collector.finish()
     }

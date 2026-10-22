@@ -39,7 +39,7 @@ use esp_hal::Async;
 use esp_hal::dma_rx_stream_buffer;
 use esp_hal::i2c::master::{BusTimeout, Config as I2cConfig, I2c};
 use esp_hal::i2s::master::{Channels, DataFormat, I2s, TdmConfig};
-use esp_hal::peripherals::{FLASH, FROM_CPU_INTR0, TIMG0, WIFI};
+use esp_hal::peripherals::{BT, FLASH, FROM_CPU_INTR0, TIMG0, WIFI};
 use esp_hal::time::Rate;
 use esp_hal::uart::{self, RxConfig, Uart};
 use rohi_hal::sensors::noise::SAMPLE_RATE_HZ;
@@ -51,8 +51,9 @@ pub use chip::Hardware;
 /// SDS011 UART baud rate.
 pub const SDS011_BAUD_RATE: u32 = 9_600;
 
-/// I2S DMA ring buffer size in bytes.
-const I2S_DMA_BUFFER_BYTES: usize = I2S_DMA_CHUNK_BYTES * 8;
+/// I2S DMA ring buffer size in bytes: 4 KiB, 64 ms of 16 kHz 32-bit mono.
+/// The noise task must drain it within that time or the DMA stops.
+const I2S_DMA_BUFFER_BYTES: usize = I2S_DMA_CHUNK_BYTES * 16;
 /// I2S DMA descriptor chunk size in bytes.
 const I2S_DMA_CHUNK_BYTES: usize = 256;
 
@@ -64,6 +65,8 @@ pub struct Runtime {
     pub sw_interrupt: FROM_CPU_INTR0<'static>,
     /// Wi-Fi radio, handed to the network backend.
     pub wifi: WIFI<'static>,
+    /// Bluetooth radio, handed to the BLE backend.
+    pub bt: BT<'static>,
     /// SPI flash, handed to the configuration store.
     pub flash: FLASH<'static>,
 }

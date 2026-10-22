@@ -87,6 +87,7 @@ impl Hardware {
                 timg0: peripherals.TIMG0,
                 sw_interrupt: peripherals.FROM_CPU_INTR0,
                 wifi: peripherals.WIFI,
+                bt: peripherals.BT,
                 flash: peripherals.FLASH,
             },
         )

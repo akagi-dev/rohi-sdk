@@ -20,7 +20,7 @@ use core::net::Ipv4Addr;
 use crate::WifiSsid;
 
 /// Snapshot of the current network connection. Never contains credentials.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NetworkInfo {
     pub ssid: WifiSsid,
     pub rssi_dbm: i8,
