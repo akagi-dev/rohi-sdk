@@ -20,12 +20,18 @@
 //!
 //! ```ignore
 //! #[derive(minicbor::Encode, minicbor::Decode, minicbor::CborLen, ConfigSection)]
+//! #[cbor(array)]
 //! #[config(version = 1)]
 //! pub struct WifiConfig {
 //!     #[n(0)]
 //!     pub ssid: WifiSsid,
 //! }
 //! ```
+//!
+//! Every production section must declare its CBOR representation explicitly
+//! (`#[cbor(array)]` or `#[cbor(map)]`) instead of relying on the `minicbor`
+//! derive default, because the encoding is persistent ABI. Pin it with a
+//! golden byte test.
 //!
 //! Supported `#[config(...)]` keys:
 //!

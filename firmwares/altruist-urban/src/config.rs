@@ -34,8 +34,15 @@
 //! [`ConfigHandle::get`], [`ConfigHandle::set`] and [`ConfigHandle::remove`].
 //! Committed-but-corrupted configuration never looks like an empty one: the
 //! service then reports [`Unavailable`] for every request instead of pretending
-//! nothing was provisioned. [`ConfigHandle::reset`] is the explicit way out: it
-//! formats the region and the service becomes ready with an empty store.
+//! nothing was provisioned. The only way out is the explicit, separate
+//! [`StorageMaintenance::format_storage`]: it formats the region and the service
+//! becomes ready with an empty store.
+//!
+//! There is deliberately no generic "erase every section" operation on
+//! [`ConfigHandle`]: ordinary configuration maintenance (`remove` of one
+//! section) must never touch unrelated or future protected sections such as an
+//! identity. A full factory reset, if ever needed, has to be an explicit,
+//! privileged operation of its own.
 //!
 //! Flash erase and programming are synchronous and `esp-storage` runs them in
 //! a critical section with the flash cache disabled, so an update stalls the
@@ -101,7 +108,7 @@ impl fmt::Display for Unavailable {
 pub enum ConfigStatus {
     /// The store is serving requests; the current [`ConfigStore::state`].
     Ready(ConfigOpenState),
-    /// Every request but [`ConfigHandle::reset`] fails with
+    /// Every request but [`StorageMaintenance::format_storage`] fails with
     /// [`ServiceError::Unavailable`].
     Unavailable(Unavailable),
 }
@@ -110,6 +117,8 @@ pub enum ConfigStatus {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ServiceError {
     Unavailable(Unavailable),
+    /// [`StorageMaintenance::format_storage`] refused: the store is healthy.
+    StorageHealthy,
     Store(ConfigError<EspStorageError>),
     /// The stored section could not be decoded into the requested type.
     Section(SectionError),
@@ -121,6 +130,7 @@ impl fmt::Display for ServiceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Unavailable(reason) => write!(f, "configuration unavailable: {reason}"),
+            Self::StorageHealthy => f.write_str("configuration storage is healthy, not formatting"),
             Self::Store(error) => write!(f, "{error}"),
             Self::Section(error) => write!(f, "{error}"),
             Self::Encode(error) => write!(f, "{error}"),
@@ -157,7 +167,7 @@ enum Command {
     Get(SectionId),
     Set { id: SectionId, blob: Blob },
     Remove(SectionId),
-    Reset,
+    FormatStorage,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -265,19 +275,33 @@ impl ConfigHandle {
             _ => unreachable!("remove request answered with another outcome"),
         }
     }
+}
 
-    /// Factory reset: deletes every section, including unknown ones.
+/// Low-level recovery of unusable storage.
+///
+/// Kept apart from [`ConfigHandle`] on purpose: it is not a configuration
+/// mutation and must never be reachable from the normal (future control) API.
+#[derive(Clone, Copy)]
+pub struct StorageMaintenance {
+    service: &'static ConfigService,
+}
+
+impl StorageMaintenance {
+    /// Formats the configuration region of an unavailable (corrupt or
+    /// unreadable) store, discarding everything in it; the service then becomes
+    /// ready with an empty store.
     ///
-    /// A ready store is cleared with a normal transactional update. If the
-    /// configuration is unavailable because it is corrupt (or could not be
-    /// read) the whole region is formatted and the service becomes ready
-    /// with an empty store. Fails only if the partition is missing or the
-    /// flash itself fails.
-    pub async fn reset(&self) -> Result<(), ServiceError> {
-        match self.call(Command::Reset).await {
+    /// A ready store is never touched: this fails with
+    /// [`ServiceError::StorageHealthy`]. A missing partition cannot be
+    /// formatted and fails with [`ServiceError::Unavailable`].
+    pub async fn format_storage(&self) -> Result<(), ServiceError> {
+        let handle = ConfigHandle {
+            service: self.service,
+        };
+        match handle.call(Command::FormatStorage).await {
             Outcome::Done => Ok(()),
             Outcome::Failed(error) => Err(error),
-            _ => unreachable!("reset request answered with another outcome"),
+            _ => unreachable!("format request answered with another outcome"),
         }
     }
 }
@@ -287,7 +311,7 @@ impl ConfigHandle {
 enum Owner {
     Ready(ConfigStore<Storage>),
     /// The storage is kept whenever the partition exists, so that
-    /// [`Command::Reset`] can format it.
+    /// [`Command::FormatStorage`] can format it.
     Unavailable {
         reason: Unavailable,
         storage: Option<Storage>,
@@ -296,8 +320,8 @@ enum Owner {
 
 impl Owner {
     fn handle(&mut self, command: Command) -> Outcome {
-        if let Command::Reset = command {
-            return self.reset();
+        if let Command::FormatStorage = command {
+            return self.format_storage();
         }
         match self {
             Self::Unavailable { reason, .. } => match command {
@@ -328,20 +352,14 @@ impl Owner {
                     Ok(()) => Outcome::Done,
                     Err(error) => Outcome::Failed(ServiceError::Store(error)),
                 },
-                Command::Reset => unreachable!("handled above"),
+                Command::FormatStorage => unreachable!("handled above"),
             },
         }
     }
 
-    fn reset(&mut self) -> Outcome {
+    fn format_storage(&mut self) -> Outcome {
         match self {
-            Self::Ready(store) => match store.clear() {
-                Ok(()) => {
-                    warn!("Configuration: reset, all sections removed");
-                    Outcome::Done
-                }
-                Err(error) => Outcome::Failed(ServiceError::Store(error)),
-            },
+            Self::Ready(_) => Outcome::Failed(ServiceError::StorageHealthy),
             Self::Unavailable { reason, storage } => {
                 let Some(raw) = storage.take() else {
                     return Outcome::Failed(ServiceError::Unavailable(reason.clone()));
@@ -382,7 +400,7 @@ fn open(flash: FLASH<'static>) -> Owner {
             match failure.error {
                 ConfigError::CorruptStorage(reason) => error!(
                     "Configuration is CORRUPT ({}): committed data exists but is unreadable, \
-                     not treating it as empty (reset formats it)",
+                     not treating it as empty (format_storage recovers it)",
                     reason
                 ),
                 ref error => error!("Configuration store unavailable: {}", error),
@@ -433,9 +451,15 @@ async fn config_task(service: &'static ConfigService, mut owner: Owner) {
 /// A missing partition or corrupted committed configuration does not stop the
 /// firmware: the service keeps running and answers every request with
 /// [`ServiceError::Unavailable`], so corruption is never mistaken for an empty
-/// (unprovisioned) configuration. [`ConfigHandle::reset`] can format it.
+/// (unprovisioned) configuration. [`maintenance`] can format it.
 pub fn start(spawner: Spawner, flash: FLASH<'static>) -> ConfigHandle {
     let owner = open(flash);
     spawner.spawn(config_task(&SERVICE, owner).unwrap());
     ConfigHandle { service: &SERVICE }
+}
+
+/// Handle for recovering unusable configuration storage, see
+/// [`StorageMaintenance`]. Not part of the normal runtime API.
+pub fn maintenance() -> StorageMaintenance {
+    StorageMaintenance { service: &SERVICE }
 }

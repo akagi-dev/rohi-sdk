@@ -24,7 +24,18 @@
 //! ```
 //!
 //! Sensor tasks never touch the `MeasurementStore`; the store task is its
-//! only owner.
+//! only owner. Other tasks read measurements on demand through
+//! [`tasks::store::handle`], a bounded snapshot request to that owner.
+
+#[cfg(all(feature = "esp32c3", feature = "esp32c6"))]
+compile_error!(
+    "select exactly one ESP target: enable only one of the `esp32c3` and `esp32c6` features"
+);
+
+#[cfg(not(any(feature = "esp32c3", feature = "esp32c6")))]
+compile_error!(
+    "select an ESP target: enable the `esp32c3` or `esp32c6` feature (use `cargo check-esp32c3` / `cargo check-esp32c6`)"
+);
 
 /// Persistent configuration service (single owner task and handle).
 pub mod config;

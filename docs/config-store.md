@@ -62,6 +62,10 @@ record framing, CRCs, slots or generations.
 > (1024 bytes) and the slot capacity before anything is written. Prefer bounded types (fixed arrays, bounded
 > byte strings) over unbounded ones; the store itself never allocates.
 >
+> **Explicit representation.** Every production `ConfigSection` must declare its CBOR representation with
+> `#[cbor(array)]` or `#[cbor(map)]` instead of relying on the `minicbor` derive default, and pin the encoded bytes
+> with a golden test (see `WifiConfig` in `rohi-net`). The encoding is persistent ABI.
+>
 > **Strict decode.** `get` requires the decoder to consume the whole payload. A valid value followed by extra
 > bytes fails with `SectionError::TrailingBytes`, never with an unrelated error.
 >
@@ -265,7 +269,7 @@ The firmware opens the store once at boot and hands it to a **configuration task
 code (Wi-Fi at boot, the future control layer) uses a cloneable `ConfigHandle`:
 
 ```text
-ConfigStore ← config task ← bounded request channel ← ConfigHandle::{get, set, remove, reset, status}
+ConfigStore ← config task ← bounded request channel ← ConfigHandle::{get, set, remove, status}
 ```
 
 Nothing outside `altruist_urban::config` touches the configuration flash and there is no global mutable store. If
@@ -273,10 +277,13 @@ the partition is missing or committed configuration is corrupt the firmware keep
 with `ServiceError::Unavailable` (`status()` tells why) instead of behaving as if the configuration were empty.
 `status()` reports the store's current `state()`, so `Recovered` becomes `Valid` once an update repaired the slot.
 
-`ConfigHandle::reset()` is the factory reset and the way out of corruption without reflashing. A ready store is
-cleared with a normal transactional update; an unavailable one (corrupt or unreadable, partition present) is
-formatted with `ConfigStore::format` and the service becomes ready with an empty store. Only a missing partition
-cannot be reset.
+`ConfigHandle` is section-oriented only: there is deliberately no "erase everything" operation, so ordinary
+maintenance such as removing `WifiConfig` never touches unrelated or future protected sections (for example an
+identity). The way out of corruption without reflashing is the separate `config::maintenance()` handle:
+`StorageMaintenance::format_storage()` formats an unavailable store (corrupt or unreadable, partition present) with
+`ConfigStore::format` and the service becomes ready with an empty store. It refuses a ready store
+(`ServiceError::StorageHealthy`) and cannot help a missing partition. A full factory reset, if it ever exists, must
+be its own explicit, privileged operation.
 
 Flash erase and programming are synchronous, and `esp-storage` runs them in a critical section with the flash cache
 disabled. An update therefore stalls the whole CPU, not just the configuration task (each 4 KiB sector erase takes

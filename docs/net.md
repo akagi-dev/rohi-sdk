@@ -38,7 +38,11 @@ by the board firmware. `rohi-net` itself has no ESP dependency and builds and te
   link stayed up for one info refresh interval (10 s), so a flapping link keeps backing off. Failures never panic or
   reboot; sensors keep running.
 - A new configuration, `reconnect`, `disconnect` and `forget` (`apply_config(None)`) are applied without a reboot.
-- Only one scan can be in flight; the command queue is bounded and returns `Busy` when full.
+- Only one scan can be in flight; the command queue is bounded and `reconnect`, `disconnect` and scan requests return
+  `Busy` when it is full.
+- `apply_config` is different: it is `async` and waits for queue space, so a configuration that was already persisted
+  always reaches the manager. Completion means the manager accepted it, not that the access point was reached;
+  follow `status()` (`Connecting` / `Connected` / error) for that.
 - Scans never abort or delay reconnection: a scan requested while connecting is served after the attempt, and a
   scan during the backoff wait or while connected does not restart the backoff or refresh timer.
 

@@ -84,6 +84,10 @@ costs one queue slot.
 and counted (`EVENTS.dropped()`, logged with every snapshot): the newest state is more useful than a backlog and
 producers never block. The store task is the only component mutating the `MeasurementStore`.
 
+Other tasks never see the store. They call `tasks::store::handle().snapshot().await` (a `MeasurementHandle`, from
+`rohi_hal::runtime::service`): a bounded request/response to the store task, which generates the snapshot at request
+time with the current monotonic clock, so `Valid`/`Stale` are correct when asked. `try_snapshot()` returns `Busy`
+instead of waiting for another request in flight.
 ## Freshness
 
 A valid measurement becomes `Stale` when it is older than the sensor's `FreshnessPolicy` (defaults in

@@ -162,7 +162,11 @@ impl fmt::Debug for WifiPassword {
 ///
 /// An open network is represented by `password == None`, never by an empty
 /// password.
+///
+/// The CBOR representation is persistent ABI and declared explicitly
+/// (`#[cbor(array)]`); see `cbor_encoding_is_stable`.
 #[derive(Clone, Copy, PartialEq, Eq, Encode, Decode, CborLen, ConfigSection)]
+#[cbor(array)]
 #[config(version = 1)]
 pub struct WifiConfig {
     #[n(0)]

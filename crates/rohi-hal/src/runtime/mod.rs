@@ -30,6 +30,8 @@ pub mod i2c;
 pub mod reporter;
 /// Generic sensor lifecycle runner.
 pub mod runner;
+/// On-demand snapshot access to the measurement owner task.
+pub mod service;
 /// Shared view of sensor runtime states.
 pub mod states;
 
@@ -39,4 +41,7 @@ pub use clock::Clock;
 pub use i2c::{TimeoutError, TimeoutI2c};
 pub use reporter::Reporter;
 pub use runner::{DriverError, Runner, RunnerConfig, SensorDriver};
+pub use service::{
+    MeasurementHandle, MeasurementService, MeasurementServiceError, SnapshotRequest,
+};
 pub use states::SensorStates;

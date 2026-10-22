@@ -67,7 +67,7 @@ pub async fn apply_stored_config(config: ConfigHandle) {
         info!("Wi-Fi: not configured");
         return;
     };
-    if let Err(err) = handle().apply_config(Some(stored)) {
+    if let Err(err) = handle().apply_config(Some(stored)).await {
         error!("Wi-Fi: cannot apply stored configuration: {}", err);
     }
 }

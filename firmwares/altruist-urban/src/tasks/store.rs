@@ -17,14 +17,22 @@
 ///////////////////////////////////////////////////////////////////////////////
 //! The single owner of the `MeasurementStore`.
 
-use embassy_futures::select::{Either, select};
+use embassy_futures::select::{Either3, select3};
 use embassy_time::{Duration, Ticker};
 use log::info;
-use rohi_hal::runtime::Clock;
+use rohi_hal::runtime::{Clock, MeasurementHandle, MeasurementService};
 use rohi_hal::{MeasurementStore, MeasurementsSnapshot};
 use rohi_hal_esp::EmbassyClock;
 
-use super::EVENTS;
+use super::{EVENTS, RawMutex};
+
+/// Snapshot requests to the store task, see [`handle`].
+static SNAPSHOTS: MeasurementService<RawMutex> = MeasurementService::new();
+
+/// Handle for on-demand snapshots; the store itself is never shared.
+pub fn handle() -> MeasurementHandle<'static, RawMutex> {
+    SNAPSHOTS.handle()
+}
 
 /// Interval between logged snapshots.
 const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(30);
@@ -70,7 +78,8 @@ fn log_snapshot(snapshot: &MeasurementsSnapshot) {
     info!("dropped events: {}", EVENTS.dropped());
 }
 
-/// Apply sensor events to the store and periodically log a snapshot.
+/// Apply sensor events to the store, answer snapshot requests and periodically
+/// log a snapshot. Every snapshot is generated with the time of its request.
 #[embassy_executor::task]
 pub async fn store_task() {
     let mut store = MeasurementStore::new();
@@ -78,9 +87,10 @@ pub async fn store_task() {
     let mut ticker = Ticker::every(SNAPSHOT_INTERVAL);
 
     loop {
-        match select(EVENTS.receive(), ticker.next()).await {
-            Either::First(event) => store.apply(event),
-            Either::Second(()) => log_snapshot(&store.snapshot(clock.now())),
+        match select3(EVENTS.receive(), SNAPSHOTS.accept(), ticker.next()).await {
+            Either3::First(event) => store.apply(event),
+            Either3::Second(request) => request.respond(store.snapshot(clock.now())),
+            Either3::Third(()) => log_snapshot(&store.snapshot(clock.now())),
         }
     }
 }

@@ -104,9 +104,19 @@ impl<M: RawMutex> WifiHandle<'_, M> {
 
     /// Applies a new configuration (`Some`) or forgets the network (`None`).
     /// The configuration must already be persisted by the caller; it is
-    /// validated again here.
-    pub fn apply_config(&self, config: Option<WifiConfig>) -> Result<(), WifiError> {
-        self.send(Command::ApplyConfig(config))
+    /// validated again by the manager.
+    ///
+    /// Unlike the transient commands this never fails with
+    /// [`WifiError::Busy`]: it waits for room in the bounded command queue so
+    /// that a persisted configuration always reaches the manager. Completion
+    /// only means the manager accepted the update, not that the access point
+    /// was reached; follow [`WifiHandle::status`] for that.
+    pub async fn apply_config(&self, config: Option<WifiConfig>) -> Result<(), WifiError> {
+        self.shared
+            .commands
+            .send(Command::ApplyConfig(config))
+            .await;
+        Ok(())
     }
 
     /// Drops the current connection and connects again immediately.

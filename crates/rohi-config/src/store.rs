@@ -445,6 +445,9 @@ impl<S: ConfigStorage> ConfigStore<S> {
     }
 
     /// Removes every section, including unknown ones.
+    ///
+    /// Low-level: runtime APIs must not expose this as a generic reset, since
+    /// it also erases sections the firmware does not know about.
     pub fn clear(&mut self) -> Result<(), ConfigError<S::Error>> {
         self.commit(Edit::Clear, |_| Ok(()))
     }
