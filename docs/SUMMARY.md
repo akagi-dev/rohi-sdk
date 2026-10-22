@@ -8,6 +8,7 @@
 - [Air Quality Terminal](air-quality-terminal.md)
 - [Sensor runtime](sensor-runtime.md)
 - [Configuration store](config-store.md)
+- [Network (Wi-Fi)](net.md)
 
 # Deep Dive
 

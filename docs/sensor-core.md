@@ -13,9 +13,9 @@ serialization or any other transport, and nothing is averaged or fused across se
 
 ## Runtime
 
-The firmware runs on native Embassy, without an RTOS: `embassy-executor` in thread mode (`wfi` when idle) and a
-SYSTIMER based `embassy-time` driver (1 MHz ticks, `rohi_hal::esp::time_driver`). Nothing allocates, so the firmware has
-no heap. All waits use monotonic async timers; nothing depends on wall-clock time.
+The firmware runs Embassy on top of `esp-rtos` (thread-mode executor and the 1 MHz `embassy-time` driver),
+which the Wi-Fi radio driver requires. The only heap is the fixed radio heap owned by [`rohi-net`](net.md); sensor
+and application code is heapless. All waits use monotonic async timers; nothing depends on wall-clock time.
 
 ## Components
 
@@ -140,7 +140,7 @@ confirm `Error → Initializing → Ready` without a reboot; repeat for the SDS0
 | `.rodata` (flash) | 24 096 B |
 | `.rwtext` + `.data` (RAM) | 1 700 B + 2 132 B |
 | `.bss` (RAM, includes task futures) | 9 160 B |
-| Heap | none (no allocator) |
+| Heap | fixed radio heap only (see [Network](net.md)); application code does not allocate |
 | Event queue | 16 events |
 | Noise buffers | 256 samples (1 KiB) stack + 8 KiB DMA ring |
 

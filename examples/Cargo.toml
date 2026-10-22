@@ -45,6 +45,8 @@ serde = { workspace = true }
 esp-backtrace = { workspace = true }
 esp-hal = { workspace = true }
 esp-println = { workspace = true }
+esp-rtos = { workspace = true }
+esp-alloc = { workspace = true }
 esp-bootloader-esp-idf = { workspace = true }
 embassy-executor = { workspace = true }
 embassy-sync = { workspace = true }

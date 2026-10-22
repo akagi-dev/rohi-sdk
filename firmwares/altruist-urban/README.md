@@ -42,3 +42,9 @@ The firmware detects and runs BMP280/BME280, SCD40/SCD41, SDS011 and the I²S no
 | Noise microphone (unweighted dB SPL) | I²S | 10 s window |
 
 See [Sensor Core](../../docs/sensor-core.md), [Sensors](../../docs/sensors.md) and [Boards](../../docs/boards.md).
+
+## Wi-Fi
+
+The firmware starts a Wi-Fi station through [`rohi-net`](../../docs/net.md). If a `wifi` configuration section is
+stored it connects automatically (and reconnects with bounded backoff); otherwise the state stays `NotConfigured`.
+Provisioning over BLE arrives with the control plane (WP4).
