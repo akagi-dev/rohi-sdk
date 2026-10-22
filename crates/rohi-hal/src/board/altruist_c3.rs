@@ -49,8 +49,8 @@ use esp_hal::dma_rx_stream_buffer;
 use esp_hal::i2c::master::{BusTimeout, Config as I2cConfig, I2c};
 use esp_hal::i2s::master::{Channels, DataFormat, I2s, TdmConfig};
 use esp_hal::peripherals::{
-    DMA_CH0, FLASH, GPIO0, GPIO1, GPIO3, GPIO6, GPIO7, GPIO8, GPIO10, I2C0, I2S0, Peripherals,
-    SYSTIMER, UART1,
+    DMA_CH0, FLASH, FROM_CPU_INTR0, GPIO0, GPIO1, GPIO3, GPIO6, GPIO7, GPIO8, GPIO10, I2C0, I2S0,
+    Peripherals, TIMG0, UART1, WIFI,
 };
 use esp_hal::time::Rate;
 use esp_hal::uart::{self, RxConfig, Uart};
@@ -83,8 +83,12 @@ pub struct Hardware {
 
 /// Peripherals left for the runtime after the board took its share.
 pub struct Runtime {
-    /// System timer used as the Embassy time base, see [`crate::esp::time_driver`].
-    pub systimer: SYSTIMER<'static>,
+    /// Timer group 0, the scheduler time base of `esp-rtos` (also the Embassy time base).
+    pub timg0: TIMG0<'static>,
+    /// Software interrupt used by the `esp-rtos` scheduler.
+    pub sw_interrupt: FROM_CPU_INTR0<'static>,
+    /// Wi-Fi radio, handed to the network backend.
+    pub wifi: WIFI<'static>,
     /// SPI flash, handed to the configuration store.
     pub flash: FLASH<'static>,
 }
@@ -107,7 +111,9 @@ impl Hardware {
                 i2s_din: peripherals.GPIO8,
             },
             Runtime {
-                systimer: peripherals.SYSTIMER,
+                timg0: peripherals.TIMG0,
+                sw_interrupt: peripherals.FROM_CPU_INTR0,
+                wifi: peripherals.WIFI,
                 flash: peripherals.FLASH,
             },
         )

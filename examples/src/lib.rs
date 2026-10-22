@@ -23,18 +23,22 @@
 //! demonstrates and prints the typed [`SensorEvent`]s they publish.
 
 use altruist_urban::tasks::EVENTS;
-use embassy_executor::{Executor, Spawner};
+use embassy_executor::Spawner;
 use esp_hal::Async;
 use esp_hal::clock::CpuClock;
 use esp_hal::i2c::master::I2c;
+use esp_hal::timer::timg::TimerGroup;
 use esp_hal::uart::Uart;
+use esp_rtos::embassy::Executor;
 use log::info;
 use rohi_hal::board::altruist_c3::{AltruistC3, Hardware};
-use rohi_hal::esp::{I2sMicrophone, time_driver};
+use rohi_hal::esp::I2sMicrophone;
 use rohi_sensor_core::SensorEvent;
 use static_cell::StaticCell;
 
 static EXECUTOR: StaticCell<Executor> = StaticCell::new();
+
+const RTOS_HEAP_SIZE: usize = 16 * 1024;
 
 /// Board peripherals handed to an example.
 pub struct Board {
@@ -55,7 +59,9 @@ pub fn run(init: impl FnOnce(Spawner, Board)) -> ! {
     let peripherals = esp_hal::init(config);
     let (hardware, runtime) = Hardware::split(peripherals);
 
-    time_driver::init(runtime.systimer);
+    // `esp-rtos` provides the Embassy time base and needs a small heap for its task stacks.
+    esp_alloc::heap_allocator!(size: RTOS_HEAP_SIZE);
+    esp_rtos::start(TimerGroup::new(runtime.timg0).timer0, runtime.sw_interrupt);
     info!("Embassy execution engine ready");
 
     let board = AltruistC3::new(hardware).expect("board initialization failed");

@@ -28,6 +28,7 @@
 
 /// Persistent configuration store.
 pub mod config;
+pub mod net;
 
 /// Embassy tasks.
 pub mod tasks;

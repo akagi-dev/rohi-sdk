@@ -1,0 +1,48 @@
+[package]
+name = "rohi-net"
+version = "0.3.0"
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Robonomics Open Hardware platform-independent network (Wi-Fi) abstraction"
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[dependencies]
+rohi-config.workspace = true
+postcard.workspace = true
+serde.workspace = true
+heapless.workspace = true
+log.workspace = true
+embassy-sync.workspace = true
+embassy-futures.workspace = true
+embedded-hal-async.workspace = true
+
+
+# Private ESP32-C3 backend, see `backend::esp`.
+esp-hal = { workspace = true, optional = true }
+esp-radio = { workspace = true, optional = true }
+esp-alloc = { workspace = true, optional = true }
+embassy-net = { workspace = true, optional = true }
+embassy-time = { workspace = true, optional = true }
+static_cell = { workspace = true, optional = true }
+
+[package.metadata.docs.rs]
+targets = ["riscv32imc-unknown-none-elf"]
+features = ["esp"]
+
+[features]
+default = []
+# ESP32-C3 Wi-Fi backend: esp-radio, embassy-net and the fixed radio heap.
+esp = [
+  "dep:esp-hal",
+  "dep:esp-radio",
+  "dep:esp-alloc",
+  "dep:embassy-net",
+  "dep:embassy-time",
+  "dep:static_cell",
+]

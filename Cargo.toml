@@ -17,6 +17,7 @@ rohi-sensor-core = { path = "crates/rohi-sensor-core" }
 rohi-config = { path = "crates/rohi-config" }
 rohi-config-derive = { path = "crates/rohi-config-derive" }
 rohi-config-esp = { path = "crates/rohi-config-esp" }
+rohi-net = { path = "crates/rohi-net" }
 
 # ESP
 esp-hal = { version = "1.2.2", features = ["unstable", "esp32c3"] }
@@ -27,6 +28,19 @@ esp-backtrace = { version = "0.20.0", features = [
   "esp32c3",
 ] }
 esp-bootloader-esp-idf = { version = "0.6.0", features = ["esp32c3"] }
+esp-rtos = { version = "0.4.0", features = [
+  "embassy",
+  "esp-radio",
+  "esp-alloc",
+  "esp32c3",
+] }
+esp-alloc = "0.11.0"
+esp-radio = { version = "=1.0.0-beta.1", features = [
+  "wifi",
+  "esp-alloc",
+  "unstable",
+  "esp32c3",
+] }
 
 # Embedded
 embedded-io = "0.7.1"
@@ -35,16 +49,12 @@ embedded-hal = "1.0.0"
 embedded-hal-async = "1.0.0"
 
 # Embassy
-embassy-executor = { version = "0.10.0", features = [
-  "platform-riscv32",
-  "executor-thread",
-] }
+embassy-executor = "0.10.0"
 embassy-time = { version = "0.5.1", features = ["tick-hz-1_000_000"] }
-embassy-time-driver = { version = "0.2.2", features = ["tick-hz-1_000_000"] }
-embassy-time-queue-utils = "0.3.2"
 embassy-sync = "0.8.0"
 embassy-futures = "0.1.2"
 embassy-embedded-hal = "0.6.0"
+embassy-net = { version = "0.9.1", features = ["tcp", "udp", "dns", "dhcpv4", "medium-ethernet"] }
 
 # Storage
 embedded-storage = "0.3.1"

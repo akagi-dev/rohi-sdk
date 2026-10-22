@@ -21,8 +21,6 @@
 pub mod audio;
 /// Embassy based monotonic clock.
 pub mod clock;
-/// Embassy time driver on the SYSTIMER.
-pub mod time_driver;
 
 pub use audio::I2sMicrophone;
 pub use clock::EmbassyClock;

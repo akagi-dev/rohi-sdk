@@ -19,4 +19,4 @@ build-std = ["alloc", "core"]
 
 [alias]
 # Run host-side unit tests of hardware independent crates.
-test-host = "test -p rohi-sensor-core -p rohi-hal -p rohi-config -p rohi-config-derive -p rohi-config-esp --target x86_64-unknown-linux-gnu"
+test-host = "test -p rohi-sensor-core -p rohi-hal -p rohi-config -p rohi-config-derive -p rohi-config-esp -p rohi-net --target x86_64-unknown-linux-gnu"
