@@ -23,7 +23,7 @@
 //! add heap regions for the radio.
 //!
 //! The firmware decides how much RAM the wireless stack may use: it sizes the
-//! heap with [`wireless_heap!`](crate::wireless_heap) and the static IP and BLE
+//! heap with [`wireless_heap!`](crate::wireless_heap!) and the static IP and BLE
 //! buffers with [`NetResources`] and [`BleResources`].
 
 use esp_hal::peripherals::{BT, WIFI};
@@ -35,7 +35,7 @@ use crate::ip::{EspIp, NetResources};
 use crate::wifi::{EspWifi, NetRunner};
 
 /// Proof that the wireless heap was added to the allocator; created only by
-/// [`wireless_heap!`](crate::wireless_heap).
+/// [`wireless_heap!`](crate::wireless_heap!).
 ///
 /// The heap is a fixed region: only the radio drivers allocate from it, ROHI
 /// application code stays heapless, and Wi-Fi and BLE draw from the same
@@ -112,7 +112,7 @@ pub struct EspWireless {
 
 impl EspWireless {
     /// Creates the shared wireless runtime on the heap created by
-    /// [`wireless_heap!`](crate::wireless_heap).
+    /// [`wireless_heap!`](crate::wireless_heap!).
     ///
     /// Call exactly once, before `esp_rtos::start` and before any radio use;
     /// the peripherals and the heap region are moved in, so a second call

@@ -2521,6 +2521,7 @@ dependencies = [
  "log",
  "minicbor",
  "rohi-config",
+ "rohi-net",
 ]
 
 [[package]]

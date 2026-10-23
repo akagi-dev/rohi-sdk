@@ -48,7 +48,7 @@
         system: pkgs: rec {
           default = self.lib.${system}.mkDevShell {
             packages = with pkgs; [
-              taplo actionlint cargo-machete espflash mdbook protobuf pkg-config dbus
+              taplo actionlint cargo-machete espflash mdbook lychee protobuf pkg-config dbus
             ];
             env.RUSTC_WRAPPER = pkgs.lib.getExe pkgs.sccache;
           }; 

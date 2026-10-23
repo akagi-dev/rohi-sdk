@@ -10,12 +10,12 @@ physical sensor -> rohi-hal driver -> Runner (one Embassy task per sensor) -> Se
 Dependency direction: `altruist-urban` → `rohi-hal-esp` → `rohi-hal`. `rohi-hal` holds the typed measurements, the
 store, the runtime and the drivers, and is platform independent. Drivers know nothing about Wi-Fi, BLE,
 serialization or any other transport, and nothing is averaged or fused across sensors: `bmx280.temperature` and
-`scd4x.temperature` are separate observations. Per-sensor details are in [Sensors](sensors.md), pins in [Boards](boards.md).
+`scd4x.temperature` are separate observations. Per-sensor details are in [Sensors](sensors.md), pins in [Boards](../platform/boards.md).
 
 ## Runtime
 
 The firmware runs Embassy on top of `esp-rtos` (thread-mode executor and the 1 MHz `embassy-time` driver),
-which the Wi-Fi radio driver requires. The only heap is the fixed radio heap owned by [`rohi-net`](net.md); sensor
+which the Wi-Fi radio driver requires. The only heap is the fixed radio heap owned by the ESP wireless runtime ([Wireless runtime](../platform/wireless.md)); sensor
 and application code is heapless. All waits use monotonic async timers; nothing depends on wall-clock time.
 
 ## Components
@@ -109,65 +109,16 @@ The legacy firmware coordinated SDS011 activity with noise measurement (the fan 
 implemented. The runtime exposes `STATES` (`SensorStates`), a read-only view of every sensor state, so a future noise
 policy can react to the SDS011 state (e.g. flag windows while it is in `WarmingUp`) without coupling the drivers.
 
-## Testing
+## Testing and resources
 
-Host tests (no hardware needed):
+The runner timing and recovery, event consistency, the store, SDS011 sampling and aggregation, BMx280 address probing
+and the freshness thresholds are covered by host tests ([Host testing](../validation/host-testing.md)). Hardware
+examples, the combined sensor checklist and the stability run are in [Hardware testing](../validation/hardware-testing.md);
+flash and RAM measurements are in [Resource budget](../validation/resource-budget.md#sensor-runtime-rohi-hal).
 
-```bash
-cargo test              # portable crates on the host, no ESP target involved
-cargo check-esp32c3
-cargo check-esp32c6
-cargo build-esp32c3
-cargo build-esp32c6
-```
+## Cancellation
 
-The host tests cover the runner timing and recovery, event consistency, the store, SDS011 sampling and aggregation,
-BMx280 address probing and the freshness thresholds.
-
-Hardware examples (each prints typed measurements, states and errors). The chip is always selected explicitly:
-`esp32c3` with `riscv32imc-unknown-none-elf`, or `esp32c6` with `riscv32imac-unknown-none-elf`.
-
-```bash
-EXAMPLE="cargo run --release -p rohi-examples --features esp32c3 --target riscv32imc-unknown-none-elf"
-$EXAMPLE --bin example-bmx280
-$EXAMPLE --bin example-scd4x
-$EXAMPLE --bin example-sds011
-$EXAMPLE --bin example-noise
-$EXAMPLE --bin example-all-sensors   # combined test
-```
-
-Combined test checklist: BMx280 keeps updating; SCD4x keeps updating; SDS011 completes its duty cycle and sleeps;
-noise windows keep arriving; no sensor starves another. Hot-reconnect check: unplug and replug an I²C sensor and
-confirm `Error → Initializing → Ready` without a reboot; repeat for the SDS011 UART.
-
-## Resource baseline
-
-`cargo build-esp32c3`, ESP32-C3 (before Wi-Fi/BLE/TLS):
-
-| Item | Size |
-|------|------|
-| `.text` (flash) | 114 370 B |
-| `.rodata` (flash) | 24 096 B |
-| `.rwtext` + `.data` (RAM) | 1 700 B + 2 132 B |
-| `.bss` (RAM, includes task futures) | 9 160 B |
-| Heap | fixed radio heap only (see [Network](net.md)); application code does not allocate |
-| Event queue | 16 events |
-| Noise buffers | 256 samples (1 KiB) stack + 8 KiB DMA ring |
-
-Task stack usage is not measured yet.
-
-## Stability test
-
-Run `altruist-urban` without networking for at least 24 h (preferably 72 h) with all sensors attached and record the
-following. The table is filled in after each hardware run:
-
-| Item | Result |
-|------|--------|
-| Duration | |
-| Unexpected reboots / panics | |
-| Sensor errors per sensor | |
-| Successful recoveries | |
-| `dropped events` (log) | |
-| Task stalls (snapshots stop updating) | |
-| Stale measurements | |
-| Memory stability | |
+The sensor runner is meant to run to completion: `Runner::step` may be dropped (for example at shutdown) but a sensor
+transaction in flight is then cut short, and the next step repeats the interrupted attempt. The warm-up wait is not lost
+when a step is dropped. `EventBus::receive` and the owner side `MeasurementService::accept` are cancel-safe;
+`MeasurementHandle::snapshot` can be dropped at any point. Details: [Async and cancellation](../concepts/async-and-cancellation.md).

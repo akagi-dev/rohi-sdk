@@ -20,25 +20,42 @@
 * Fully async code powered by [Embassy Framework](https://embassy.dev/)
 * Secure & decentralized infrastructure on [Robonomics Network](https://robonomics.network/)
 
+## 🔌 Supported hardware
+
+* Altruist Urban on **ESP32-C3** and **ESP32-C6** (the C6 pin map is not yet verified on hardware).
+
+## 🧰 Main capabilities
+
+* Sensors: BMP280/BME280, SCD40/SCD41, SDS011, I²S noise microphone, typed measurements.
+* Power-fail-safe configuration store of typed sections.
+* Wi-Fi station and portable DNS/TCP networking.
+* Local BLE control plane and the `rohi` desktop client.
+
 ## ⚡ Quickstart
 
-* Check out usage [examples](examples/src/bin).
-* Look into Quickstart section of [ROHI Book](https://rohi.akagi.dev).
+```bash
+nix develop                  # or install the toolchain from rust-toolchain.toml
+cargo test                   # host tests, no hardware needed
+cargo check-esp32c3 && cargo check-esp32c6
+cargo run --release -p altruist-urban --features esp32c3 --target riscv32imc-unknown-none-elf   # flash a board
+```
 
-## 🛠️ Firmware
-
-SDK also contains firmwares for [Robonomics Devices](https://robonomics.network/devices/).
-
-* [Altruist Urban](https://github.com/akagi-dev/rohi-sdk/tree/master/firmwares/altruist-urban)
-
-## 🖥️ Desktop tools
-
-* [`rohi`](tools/rohi) — BLE client library and command line tool to inspect and configure devices, see the
-  [control plane](docs/control.md).
+More: [usage examples](examples/src/bin) and the **[ROHI SDK Book](https://rohi.akagi.dev)**.
 
 ## 📚 Documentation
 
-* [ROHI Book](https://rohi.akagi.dev).
-* [Robonomics Wiki](https://wiki.robonomics.network/)
-* [Espressif Rust](https://docs.esp-rs.org/book/)
-* [Embassy Framework](https://embassy.dev/book/)
+* **[ROHI SDK Book](https://rohi.akagi.dev)** — architecture, concepts, guides, reference and validation
+  (sources in [`docs/`](docs/README.md)).
+* [API documentation](https://docs.rs/rohi-hal) (`cargo doc --no-deps` for the whole workspace).
+* [Robonomics Wiki](https://wiki.robonomics.network/), [Espressif Rust](https://docs.esp-rs.org/book/),
+  [Embassy Framework](https://embassy.dev/book/)
+
+## 🗺️ Repository map
+
+| Path | Content |
+|------|---------|
+| [`crates/`](crates) | SDK libraries: `rohi-hal`, `rohi-config`, `rohi-net`, `rohi-control*` and their ESP platform crates |
+| [`firmwares/altruist-urban`](firmwares/altruist-urban) | [Altruist Urban](https://robonomics.network/devices/altruist/) firmware |
+| [`examples/`](examples/src/bin) | one hardware example per sensor and a configuration self-test |
+| [`tools/rohi`](tools/rohi) | BLE client library and command line tool |
+| [`docs/`](docs) | the SDK book (mdBook) |

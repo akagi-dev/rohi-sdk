@@ -29,3 +29,7 @@ default = []
 # In-memory IP backend (`rohi_net::testing`) for host tests of code using
 # `NetworkHandle`. Not for firmware.
 testing = []
+
+[dev-dependencies]
+# Integration tests use the in-memory IP backend.
+rohi-net = { path = ".", features = ["testing"] }

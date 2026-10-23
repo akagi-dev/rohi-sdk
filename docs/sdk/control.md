@@ -1,8 +1,7 @@
 # Control plane (BLE)
 
 The control plane lets a desktop (or any BLE central) inspect and configure an Altruist Urban locally: device
-information, capabilities, sensors, typed configuration and Wi-Fi. It is **local control only**: identity provisioning
-(WP4.1), uplink telemetry, HTTP and SoftAP are out of scope.
+information, capabilities, sensors, typed configuration and Wi-Fi. It is **local control only**: identity provisioning, uplink telemetry, HTTP and SoftAP are out of scope.
 
 ```text
  BLE radio
@@ -21,7 +20,8 @@ information, capabilities, sensors, typed configuration and Wi-Fi. It is **local
  rohi (library + CLI)      desktop client, btleplug
 ```
 
-Dependency direction: `rohi-control-proto ← rohi-control ← rohi-control-ble → rohi-net ← rohi-net-esp ← altruist-urban`.
+Dependency direction: `rohi-control-proto ← rohi-control ← rohi-control-ble → rohi-net ← rohi-net-esp ← altruist-urban`
+(see [Crate map](../concepts/crate-map.md)).
 `rohi-net*` never depends on `rohi-control*`, and there is no ESP specific control crate: the ESP part only exposes a
 generic byte pipe.
 
@@ -30,7 +30,7 @@ generic byte pipe.
 | Crate | Role |
 |-------|------|
 | `rohi-net` (`ble`) | `BleTransport`, `BleState`, `BleConnectionInfo`, `BleConfig`: portable BLE API, no vendor types |
-| `rohi-net-esp` | `EspWireless` (shared radio runtime), `EspWifi`, `EspBle` |
+| `rohi-net-esp` | `EspWireless` (shared radio runtime), `EspWifi`, `EspIp`, `EspBle` |
 | `rohi-control-proto` | `control.proto`, bounded generated types (`micropb`), `PROTOCOL_VERSION`, `limits` |
 | `rohi-control` | `Controller`, `ControlServices`, `Capabilities`, `AuthorizationPolicy` |
 | `rohi-control-ble` | Service/characteristic UUIDs, `frame` (fragmenter, reassembler), `ControlBle` control loop |
@@ -96,8 +96,10 @@ response only says `password_configured`. There is no generic reset: configurati
 they can never erase the future device identity. A destructive reset, if ever added, has to be a separate privileged
 operation.
 
-Wi-Fi update sequence: validate (SSID 1–32 bytes, password 8–64 bytes or open) → persist with `ConfigHandle` →
-`WifiHandle::apply_config` (waits for queue room, never fails with `BUSY`) → success. **Success means the
+Wi-Fi update sequence: validate (SSID 1–32 bytes, password 8–64 bytes or open) → `ControlServices::set_wifi_config`,
+which persists the section **and** publishes it to the Wi-Fi runtime as the desired configuration (the firmware's
+configuration owner task does both in one step, so there is no cancellable gap between commit and publication, see
+[Async and cancellation](../concepts/async-and-cancellation.md#durable-mutation)) → success. **Success means the
 configuration is stored and handed to the Wi-Fi runtime, not that the access point was reached**; observe
 `GetWifiStatus` (`NOT_CONFIGURED`, `IDLE`, `SCANNING`, `CONNECTING`, `CONNECTED`, `DISCONNECTED`, `ERROR`).
 
@@ -140,10 +142,10 @@ dispatches, and responses leave through a bounded TX queue.
 | `MAX_SENSORS` / `MAX_MEASUREMENTS_PER_SENSOR` | 8 / 4 |
 | `MAX_WIFI_SCAN_RESULTS` | 16 |
 | `MAX_SSID_LEN` / `MAX_WIFI_PASSWORD_LEN` | 32 / 64 |
-| BLE RX / TX queue | 4 / 4 chunks |
 
 The limits are defined once (`rohi-control-proto/build.rs`), applied to the generated types and checked by tests
-against the worst-case encoded size.
+against the worst-case encoded size. This table is the canonical list of protocol limits; the BLE queue depths belong to
+the product and are in [Resource limits](../reference/resource-limits.md#ble).
 
 ### Security
 
@@ -151,25 +153,9 @@ against the worst-case encoded size.
 with an `AuthorizationPolicy` (`Privilege::Read` or `Privilege::Mutate`): `OpenPolicy`, `RequireEncryption`,
 `RequireAuthenticated`. The Altruist Urban firmware currently runs `OpenPolicy`, and the BLE backend does not pair yet
 (TrouBLE's `security` feature is not enabled), so every link reports unencrypted. Anyone in radio range can use the
-control plane until a policy is configured; identity provisioning (WP4.1) will switch to `RequireEncryption` or
+control plane until a policy is configured; identity provisioning will switch to `RequireEncryption` or
 `RequireAuthenticated` through the same hook. The Wi-Fi password still crosses the air in clear text until pairing is
 enabled.
-
-## Shared wireless runtime
-
-Wi-Fi and BLE share one radio, the PHY, the coexistence arbiter and one allocator. `rohi_net_esp::EspWireless` is the
-only way to create the drivers:
-
-```rust
-let mut wireless = EspWireless::new(peripherals.WIFI, peripherals.BT); // adds the single wireless heap
-esp_rtos::start(...);
-let (wifi, net_runner) = wireless.wifi()?;
-let (ble, ble_runner) = wireless.ble(BLE_CONFIG)?;
-```
-
-Neither driver initializes radio state or an allocator on its own. `WIRELESS_HEAP_SIZE` is 128 KiB (was 72 KiB for
-Wi-Fi only; 96 KiB left only 11 KB minimum free on hardware with Wi-Fi and BLE running) and has to be confirmed with `wireless_heap()` (free and, with the `heap-stats` feature, minimum free)
-while both radios are busy, see [Validation](#validation).
 
 ## `rohi` desktop client
 
@@ -214,45 +200,11 @@ network name. Use `--open` to remove the password.
 The password is never printed. On Linux the build needs `libdbus` and `pkg-config` (provided by `nix develop`); the
 protobuf compiler `protoc` is needed to build `rohi-control-proto`.
 
-## Build and test
+## Build, test and measurements
 
-```bash
-cargo test                      # host: all portable crates, framing, dispatcher, rohi library e2e
-cargo check-esp32c3 && cargo check-esp32c6
-cargo build-esp32c3 && cargo build-esp32c6
-```
-
-Never validate several chips with `--all-features`.
-
-## Resource budget
-
-Measured with `size` on the release build (`cargo build-esp32c3` / `cargo build-esp32c6`), baseline = Wi-Fi only,
-before WP4:
-
-| | ESP32-C3 before | ESP32-C3 after | ESP32-C6 before | ESP32-C6 after |
-|---|---:|---:|---:|---:|
-| `.text` (flash) | 970 092 | 1 149 952 | 1 012 322 | 1 335 452 |
-| `.data` | 10 024 | 15 640 | 12 876 | 18 396 |
-| `.bss` | 106 984 | 181 248 | 111 288 | 185 056 |
-| wireless heap (in `.bss`) | 73 728 | 131 072 | 73 728 | 131 072 |
-| `.bss` without heap | 33 256 | 50 176 | 37 560 | 53 984 |
-
-Statically allocated control buffers: reassembly 256 B + response 2 048 B + chunk 244 B (control task), BLE RX/TX
-queues 4 × ~250 B each, TrouBLE host resources, and the task futures. The application code stays heapless; only
-the radio drivers use the wireless heap.
-
-## Validation
-
-Host tests cover the protocol (golden bytes, bounds, unknown fields/requests), the dispatcher (capabilities,
-authorization, partial updates, persist-before-apply, secrets), the framing (every case of the checklist: single and
-multiple fragments, maximum size, one byte oversized, truncated, invalid index, duplicate, missing, disconnect in the
-middle of a request, reset after disconnect, exact protobuf byte preservation) and the `rohi` client end to end
-against the real dispatcher.
-
-**First hardware data point** (96 KiB heap, Wi-Fi + BLE running, chip not recorded): `14 656 B` free, `11 120 B` minimum free, i.e. about 87 KB peak use, too little margin, hence 128 KiB. Re-measure the minimum free with the larger heap during BLE connected + Wi-Fi scan/reconnect.
-
-**Not yet measured on hardware** (needs a device; record results here): BLE advertising with Wi-Fi disconnected and
-connected, BLE connected with Wi-Fi connected / scanning / reconnecting, minimum free wireless heap for each, MTU
-negotiation, and a 24 h (preferably 72 h) stability run exercising BLE connect/disconnect, sensor reads, config
-reads and updates, Wi-Fi status, scan and reconnect. Expected outcome: no panic, no allocator exhaustion, no
-deadlock, no permanent BLE or Wi-Fi failure.
+Commands are listed once in [Build and test](../getting-started/build-and-test.md) and
+[Targets and features](../reference/targets-and-features.md). The control plane is covered by host tests (protocol,
+dispatcher, framing, `rohi` client end to end); flash, RAM and heap measurements are in
+[Resource budget](../validation/resource-budget.md) and the open hardware checks in
+[Hardware testing](../validation/hardware-testing.md). The shared radio runtime that serves BLE and Wi-Fi is described in
+[Wireless runtime](../platform/wireless.md).

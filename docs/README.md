@@ -11,6 +11,17 @@ IoT devices powered by [Robonomics](https://robonomics.network/) network - a Web
 - Fully async code powered by [Embassy Framework](https://embassy.dev/)
 - Secure & decentralized infrastructure on [Robonomics Network](https://robonomics.network/)
 
+## Where to start
+
+- New to ROHI: [What is the ROHI SDK?](getting-started/overview.md), then [Installation](getting-started/installation.md) and
+  [First device](getting-started/first-device.md).
+- Understand the design: [Architecture](concepts/architecture.md) and [Crate map](concepts/crate-map.md).
+- Extend it: the [guides](guides/add-sensor.md).
+- Look something up: [Reference](reference/resource-limits.md) and [Validation](validation/host-testing.md).
+
+The book explains architecture, contracts and workflows; exact Rust APIs are in the generated rustdoc
+(`cargo doc --no-deps`).
+
 > The following sections assume basic Rust knowledge. If you're unsure about any language aspects, please refer to the [Rust book](https://doc.rust-lang.org/book/).
 
 # Contributing
