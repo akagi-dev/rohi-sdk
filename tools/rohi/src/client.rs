@@ -25,6 +25,7 @@ use rohi_control_proto::control::{
 use crate::convert;
 use crate::error::{Error, Result};
 use crate::model::*;
+use crate::provision::DerivedIdentity;
 use crate::session::{ClientTransport, Session};
 
 /// Wi-Fi scans run on the device and take a while.
@@ -189,6 +190,58 @@ impl<T: ClientTransport> Device<T> {
         }
     }
 
+    /// Identity state and public key of the device. The secret is never
+    /// available.
+    pub async fn identity(&mut self) -> Result<IdentityInfo> {
+        self.require(Capability::Identity).await?;
+        match self
+            .call(Call::GetIdentity(pb::GetIdentityRequest {}))
+            .await?
+        {
+            Reply::GetIdentity(response) => convert::identity(&response),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Installs the derived identity on a device that has none.
+    ///
+    /// Only the derived secret is sent. The device refuses to replace an
+    /// existing identity ([`ErrorCode::IdentityAlreadyProvisioned`]), and the
+    /// public key it reports must equal the one derived on the host, otherwise
+    /// [`Error::PublicKeyMismatch`] is returned.
+    pub async fn provision_identity(&mut self, identity: &DerivedIdentity) -> Result<PublicKey> {
+        self.require(Capability::Identity).await?;
+        let request = pb::ProvisionIdentityRequest {
+            ed25519_secret: heapless::Vec::from_slice(identity.secret().expose_secret())
+                .map_err(|_| Error::InvalidInput("identity secret is not 32 bytes".into()))?,
+        };
+        let reply = self.call(Call::ProvisionIdentity(request)).await;
+        let reported = match reply? {
+            Reply::ProvisionIdentity(response) => convert::public_key(&response.public_key)?,
+            other => return Err(unexpected(&other)),
+        };
+        if reported != identity.public_key() {
+            return Err(Error::PublicKeyMismatch {
+                expected: identity.public_key(),
+                reported,
+            });
+        }
+        Ok(reported)
+    }
+
+    /// Removes the identity of the device; the device can then be provisioned
+    /// again. Succeeds when there is no identity.
+    pub async fn erase_identity(&mut self) -> Result<()> {
+        self.require(Capability::Identity).await?;
+        match self
+            .call(Call::EraseIdentity(pb::EraseIdentityRequest {}))
+            .await?
+        {
+            Reply::EraseIdentity(_) => Ok(()),
+            other => Err(unexpected(&other)),
+        }
+    }
+
     /// Asks the device to disconnect and stay idle.
     pub async fn wifi_disconnect(&mut self) -> Result<()> {
         self.require(Capability::WifiControl).await?;
@@ -216,6 +269,9 @@ fn unexpected(reply: &Reply) -> Error {
             Reply::GetWifiStatus(_) => "get_wifi_status",
             Reply::ReconnectWifi(_) => "reconnect_wifi",
             Reply::DisconnectWifi(_) => "disconnect_wifi",
+            Reply::GetIdentity(_) => "get_identity",
+            Reply::ProvisionIdentity(_) => "provision_identity",
+            Reply::EraseIdentity(_) => "erase_identity",
         }
     ))
 }

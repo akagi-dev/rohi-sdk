@@ -26,12 +26,16 @@ default = ["cli", "serde"]
 # Machine readable (JSON) output of the model types.
 serde = ["dep:serde"]
 # The `rohi` command line tool.
-cli = ["serde", "dep:clap", "dep:rpassword", "dep:serde_json"]
+cli = ["serde", "dep:clap", "dep:rpassword", "dep:serde_json", "provision"]
+# Derivation of a device identity from a master SURI (`rohi identity provision`).
+provision = ["dep:sp-core"]
 
 [dependencies]
 rohi-control-proto.workspace = true
 rohi-control-ble.workspace = true
 rohi-net.workspace = true
+rohi-identity = { workspace = true, features = ["std"] }
+zeroize = { workspace = true, features = ["std"] }
 heapless.workspace = true
 btleplug.workspace = true
 tokio.workspace = true
@@ -39,6 +43,7 @@ futures.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 serde = { workspace = true, optional = true }
+sp-core = { workspace = true, optional = true }
 clap = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 rpassword = { workspace = true, optional = true }
@@ -47,3 +52,7 @@ rpassword = { workspace = true, optional = true }
 rohi-control.workspace = true
 rohi-hal.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "time", "sync"] }
+
+[[test]]
+name = "loopback"
+required-features = ["cli"]

@@ -32,6 +32,8 @@ use rohi_net::{
     WifiStatus,
 };
 
+use rohi_identity::PublicKey;
+
 use crate::DeviceInfo;
 
 // The generic response must be able to carry everything the typed model can
@@ -342,5 +344,27 @@ pub(crate) fn wifi_status(
     if let Some(info) = info {
         out.set_connection(connection(info));
     }
+    out
+}
+
+const _: () = assert!(rohi_identity::PUBLIC_KEY_LEN == limits::ED25519_KEY_LEN);
+const _: () = assert!(rohi_identity::SECRET_LEN == limits::ED25519_KEY_LEN);
+
+pub(crate) fn public_key(key: &PublicKey) -> heapless::Vec<u8, { limits::ED25519_KEY_LEN }> {
+    // Same size on both sides, see the checks above.
+    heapless::Vec::from_slice(key.as_bytes()).unwrap_or_default()
+}
+
+pub(crate) fn identity(key: Option<PublicKey>) -> pb::GetIdentityResponse {
+    let mut info = pb::IdentityInfo::default();
+    match key {
+        Some(key) => {
+            info.state = pb::IdentityState::Provisioned;
+            info.set_public_key(public_key(&key));
+        }
+        None => info.state = pb::IdentityState::NotProvisioned,
+    }
+    let mut out = pb::GetIdentityResponse::default();
+    out.set_identity(info);
     out
 }

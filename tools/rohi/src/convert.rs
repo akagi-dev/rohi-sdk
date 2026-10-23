@@ -73,6 +73,20 @@ pub(crate) fn config(response: &pb::GetConfigResponse) -> Config {
     }
 }
 
+pub(crate) fn identity(response: &pb::GetIdentityResponse) -> Result<IdentityInfo, crate::Error> {
+    let Some(info) = response.identity() else {
+        return Err(crate::Error::Protocol("identity info is missing".into()));
+    };
+    let state = IdentityState::from_proto(info.state);
+    let public_key = info.public_key().map(|key| public_key(key)).transpose()?;
+    Ok(IdentityInfo { state, public_key })
+}
+
+pub(crate) fn public_key(bytes: &[u8]) -> Result<PublicKey, crate::Error> {
+    PublicKey::from_slice(bytes)
+        .ok_or_else(|| crate::Error::Protocol("public key is not 32 bytes".into()))
+}
+
 pub(crate) fn scan(response: &pb::ScanWifiResponse) -> Vec<WifiNetwork> {
     response
         .networks

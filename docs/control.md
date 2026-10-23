@@ -1,8 +1,8 @@
 # Control plane (BLE)
 
 The control plane lets a desktop (or any BLE central) inspect and configure an Altruist Urban locally: device
-information, capabilities, sensors, typed configuration and Wi-Fi. It is **local control only**: identity provisioning
-(WP4.1), uplink telemetry, HTTP and SoftAP are out of scope.
+information, capabilities, sensors, typed configuration, Wi-Fi and the device identity ([provisioning](identity.md)). It is **local control only**:
+uplink telemetry, HTTP and SoftAP are out of scope.
 
 ```text
  BLE radio
@@ -16,6 +16,7 @@ information, capabilities, sensors, typed configuration and Wi-Fi. It is **local
  ControlServices           firmware adapter (UrbanControlServices)
      ├── MeasurementHandle   on-demand MeasurementsSnapshot
      ├── ConfigHandle        typed config section store
+     ├── IdentityHandle      Ed25519 identity (Identity config section)
      └── WifiHandle          Wi-Fi manager
 
  rohi (library + CLI)      desktop client, btleplug
@@ -33,6 +34,7 @@ generic byte pipe.
 | `rohi-net-esp` | `EspWireless` (shared radio runtime), `EspWifi`, `EspBle` |
 | `rohi-control-proto` | `control.proto`, bounded generated types (`micropb`), `PROTOCOL_VERSION`, `limits` |
 | `rohi-control` | `Controller`, `ControlServices`, `Capabilities`, `AuthorizationPolicy` |
+| `rohi-identity` | `Identity` config section, `Secret`, `Signer`, `IdentitySigner`; see [Device identity](identity.md) |
 | `rohi-control-ble` | Service/characteristic UUIDs, `frame` (fragmenter, reassembler), `ControlBle` control loop |
 | `rohi` (`tools/rohi`) | Desktop library (`Device`, `Session`, `BleLink`, model) and the `rohi` command line tool |
 
@@ -54,8 +56,10 @@ return a typed error; the link is never dropped because of a bad request.
 | `ScanWifi` | `WIFI_SCAN` | no |
 | `GetWifiStatus` | `WIFI_STATUS` | no |
 | `ReconnectWifi`, `DisconnectWifi` | `WIFI_CONTROL` | **yes** |
+| `GetIdentity` | `IDENTITY` | no |
+| `ProvisionIdentity`, `EraseIdentity` | `IDENTITY` | **yes** (`Privilege::Provision`) |
 
-Errors: `INVALID_ARGUMENT`, `NOT_FOUND`, `NOT_SUPPORTED`, `BUSY`, `UNAVAILABLE`, `PERMISSION_DENIED`, `INTERNAL`.
+Errors: `INVALID_ARGUMENT`, `NOT_FOUND`, `NOT_SUPPORTED`, `BUSY`, `UNAVAILABLE`, `PERMISSION_DENIED`, `INTERNAL`, `IDENTITY_NOT_PROVISIONED`, `IDENTITY_ALREADY_PROVISIONED`.
 A response with `request_id = 0` means the device could not parse the request at all.
 
 Clients must read `GetCapabilities` and must not infer features from the firmware version.
@@ -93,7 +97,7 @@ wire. Updates are partial:
 
 A client never needs to read a secret to change something else. The Wi-Fi password is never returned or logged; the
 response only says `password_configured`. There is no generic reset: configuration operations are per section, so
-they can never erase the future device identity. A destructive reset, if ever added, has to be a separate privileged
+they can never touch the device identity (see [Device identity](identity.md)). A destructive reset, if ever added, has to be a separate privileged
 operation.
 
 Wi-Fi update sequence: validate (SSID 1–32 bytes, password 8–64 bytes or open) → persist with `ConfigHandle` →
@@ -151,8 +155,8 @@ against the worst-case encoded size.
 with an `AuthorizationPolicy` (`Privilege::Read` or `Privilege::Mutate`): `OpenPolicy`, `RequireEncryption`,
 `RequireAuthenticated`. The Altruist Urban firmware currently runs `OpenPolicy`, and the BLE backend does not pair yet
 (TrouBLE's `security` feature is not enabled), so every link reports unencrypted. Anyone in radio range can use the
-control plane until a policy is configured; identity provisioning (WP4.1) will switch to `RequireEncryption` or
-`RequireAuthenticated` through the same hook. The Wi-Fi password still crosses the air in clear text until pairing is
+control plane until a policy is configured, **including identity provisioning and erase**, which use their own
+`Privilege::Provision` so that a stricter policy can protect them through the same hook. The Wi-Fi password still crosses the air in clear text until pairing is
 enabled.
 
 ## Shared wireless runtime
@@ -179,7 +183,8 @@ command line layer.
 ```text
 rohi library
   Device         typed async API: info, capabilities, sensors, config, update_wifi, forget_wifi,
-                 wifi_scan, wifi_status, wifi_reconnect, wifi_disconnect  (checks capabilities first)
+                 wifi_scan, wifi_status, wifi_reconnect, wifi_disconnect,
+                 identity, provision_identity, erase_identity  (checks capabilities first)
   Session        framing, request ids, timeouts, typed error mapping   (reuses rohi-control-ble::frame)
   ClientTransport  chunk link trait; BleLink (btleplug) implements it, tests use an in-memory one
   model          plain Rust types (no protobuf), optional serde, canonical units
@@ -200,6 +205,9 @@ rohi wifi configure --ssid <SSID> --password <PASSWORD>
 rohi wifi reconnect
 rohi wifi disconnect
 rohi wifi forget [--yes]
+rohi identity                  # = rohi id: identity state and public key
+rohi identity provision -n <NUMBER> --seed <PATH>
+rohi identity erase [--yes]
 ```
 
 Global options: `--json` (desktop only, the firmware never speaks JSON), `--device <ID>` (identifier from

@@ -1,0 +1,29 @@
+[package]
+name = "rohi-identity"
+version = "0.1.0"
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Robonomics Open Hardware device identity: persistent Ed25519 key and signer"
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[features]
+default = []
+# Host tools.
+std = ["ed25519-zebra/std", "zeroize/std"]
+# `MockSigner` for tests of signer consumers.
+mock = []
+
+[dependencies]
+rohi-config.workspace = true
+minicbor.workspace = true
+ed25519-zebra.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+minicbor = { workspace = true, features = ["std"] }

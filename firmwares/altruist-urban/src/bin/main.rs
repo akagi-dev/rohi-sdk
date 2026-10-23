@@ -32,6 +32,7 @@ use static_cell::StaticCell;
 
 use altruist_urban::config;
 use altruist_urban::control::{self, UrbanControlServices, ble_task, control_task};
+use altruist_urban::identity;
 use altruist_urban::net::{self, net_runner_task, wifi_task};
 use altruist_urban::tasks::sensors::{
     SharedI2cBus, bmx280_task, i2c_handle, noise_task, scd4x_task, sds011_task,
@@ -70,6 +71,9 @@ async fn main(spawner: Spawner) -> ! {
     // uses the handle. A missing partition (old partition table) or corrupted
     // configuration must not stop the sensors.
     let config = config::start(spawner, runtime.flash);
+    // Identity is provisioned from the host, never generated; a fresh device
+    // simply has none and keeps sensing.
+    let identity = identity::start(config).await;
 
     let board = AltruistUrban::new(hardware).expect("board initialization failed");
     let AltruistUrban {
@@ -82,7 +86,7 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(store_task().unwrap());
 
     // A Wi-Fi or BLE failure must never stop the sensors: log and carry on.
-    let mut capabilities = Capabilities::SENSORS | Capabilities::CONFIG;
+    let mut capabilities = Capabilities::SENSORS | Capabilities::CONFIG | Capabilities::IDENTITY;
     let mut wifi_configured = false;
     match wireless.wifi() {
         Ok((backend, runner)) => {
@@ -103,8 +107,13 @@ async fn main(spawner: Spawner) -> ! {
 
     match wireless.ble(control::BLE_CONFIG) {
         Ok((transport, runner)) => {
-            let services =
-                UrbanControlServices::new(store::handle(), config, net::handle(), capabilities);
+            let services = UrbanControlServices::new(
+                store::handle(),
+                config,
+                net::handle(),
+                identity,
+                capabilities,
+            );
             spawner.spawn(ble_task(runner).unwrap());
             spawner.spawn(control_task(transport, services).unwrap());
             info!(

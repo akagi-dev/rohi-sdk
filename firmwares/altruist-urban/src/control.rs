@@ -33,10 +33,12 @@ use rohi_control::{
 use rohi_control_ble::ControlBle;
 use rohi_hal::MeasurementsSnapshot;
 use rohi_hal::runtime::MeasurementHandle;
+use rohi_identity::{Identity, PublicKey};
 use rohi_net::{NetworkInfo, WifiConfig, WifiHandle, WifiScanResults, WifiStatus};
 use rohi_net_esp::{BleRunner, EspBle};
 
 use crate::config::{ConfigHandle, ServiceError as ConfigError};
+use crate::identity::IdentityHandle;
 use crate::tasks::RawMutex;
 
 /// Upper bound of a Wi-Fi scan requested over the control link.
@@ -56,6 +58,7 @@ pub struct UrbanControlServices {
     measurements: MeasurementHandle<'static, RawMutex>,
     config: ConfigHandle,
     wifi: WifiHandle<'static, RawMutex>,
+    identity: IdentityHandle,
     capabilities: Capabilities,
 }
 
@@ -67,12 +70,14 @@ impl UrbanControlServices {
         measurements: MeasurementHandle<'static, RawMutex>,
         config: ConfigHandle,
         wifi: WifiHandle<'static, RawMutex>,
+        identity: IdentityHandle,
         capabilities: Capabilities,
     ) -> Self {
         Self {
             measurements,
             config,
             wifi,
+            identity,
             capabilities,
         }
     }
@@ -142,6 +147,18 @@ impl ControlServices for UrbanControlServices {
     fn wifi_disconnect(&self) -> Result<(), ServiceError> {
         self.wifi.disconnect().map_err(Into::into)
     }
+
+    async fn identity(&self) -> Result<Option<PublicKey>, ServiceError> {
+        self.identity.public_key().await.map_err(config_error)
+    }
+
+    async fn store_identity(&self, identity: &Identity) -> Result<(), ServiceError> {
+        self.identity.store(identity).await.map_err(config_error)
+    }
+
+    async fn erase_identity(&self) -> Result<(), ServiceError> {
+        self.identity.erase().await.map_err(config_error)
+    }
 }
 
 /// GATT layout of the ROHI Control Service.
@@ -165,9 +182,10 @@ pub async fn ble_task(runner: BleRunner) {
 
 /// Serves control requests received over BLE.
 ///
-/// There is no link security policy in this version: the transport reports
-/// the link security and the policy hook is in place, [`OpenPolicy`] allows
-/// everything until identity provisioning arrives.
+/// There is no link security policy yet: the transport reports the link
+/// security and the policy hook is in place, but [`OpenPolicy`] allows
+/// everything, including identity provisioning and erase. Switch to a
+/// stricter policy once BLE pairing is enabled.
 #[embassy_executor::task]
 pub async fn control_task(transport: EspBle, services: UrbanControlServices) {
     let controller = Controller::new(services, OpenPolicy);

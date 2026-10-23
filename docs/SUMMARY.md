@@ -9,6 +9,7 @@
 - [Configuration store](config-store.md)
 - [Network (Wi-Fi)](net.md)
 - [Control plane (BLE)](control.md)
+- [Device identity](identity.md)
 
 # Deep Dive
 

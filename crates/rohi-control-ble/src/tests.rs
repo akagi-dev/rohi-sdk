@@ -18,6 +18,7 @@ use rohi_hal::{
     Bmx280Update, MeasurementStore, MeasurementUpdate, MeasurementsSnapshot, MonotonicTimestamp,
     SensorEvent,
 };
+use rohi_identity::{Identity, PublicKey};
 use rohi_net::{
     BleConnectionInfo, BleError, BleState, BleTransport, MAX_BLE_PAYLOAD, NetworkInfo, WifiConfig,
     WifiScanResults, WifiState, WifiStatus,
@@ -432,6 +433,18 @@ impl ControlServices for Services<'_> {
 
     fn wifi_disconnect(&self) -> Result<(), ServiceError> {
         self.calls.borrow_mut().push("disconnect");
+        Ok(())
+    }
+
+    async fn identity(&self) -> Result<Option<PublicKey>, ServiceError> {
+        Ok(None)
+    }
+
+    async fn store_identity(&self, _: &Identity) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    async fn erase_identity(&self) -> Result<(), ServiceError> {
         Ok(())
     }
 }
