@@ -30,6 +30,7 @@
 use core::cell::{Cell, UnsafeCell};
 use core::net::{IpAddr, Ipv4Addr, SocketAddr};
 
+use embassy_futures::select::{Either, select};
 use embassy_net::dns::DnsQueryType;
 use embassy_net::tcp::{ConnectError, TcpSocket};
 use embassy_net::udp::{PacketMetadata, RecvError, SendError, UdpSocket as EmbassyUdpSocket};
@@ -376,6 +377,7 @@ impl<const TCP: usize, const RX: usize, const TX: usize, const UDP: usize, const
         socket.bind(0).map_err(|_| NetError::Backend)?;
         Ok(EspUdpSocket {
             socket,
+            stack: self.stack,
             _entry: entry,
         })
     }
@@ -447,7 +449,12 @@ pub struct EspUdpSocket<'a, const UDP: usize, const UDP_BUF: usize> {
     // Field order matters: the socket must be gone before its buffers are
     // handed back to the pool.
     socket: EmbassyUdpSocket<'a>,
+    stack: Stack<'static>,
     _entry: UdpEntry<'a, UDP, UDP_BUF>,
+}
+
+async fn wait_for_network_down(stack: Stack<'static>) {
+    let _ = select(stack.wait_link_down(), stack.wait_config_down()).await;
 }
 
 impl<const UDP: usize, const UDP_BUF: usize> UdpSocket for EspUdpSocket<'_, UDP, UDP_BUF> {
@@ -467,7 +474,19 @@ impl<const UDP: usize, const UDP_BUF: usize> UdpSocket for EspUdpSocket<'_, UDP,
 
     async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr), NetError> {
         loop {
-            match self.socket.recv_from(buf).await {
+            let result = match select(
+                self.socket.recv_from(buf),
+                wait_for_network_down(self.stack),
+            )
+            .await
+            {
+                Either::First(result) => result,
+                Either::Second(()) => return Err(NetError::NetworkUnavailable),
+            };
+            if !self.stack.is_link_up() || !self.stack.is_config_up() {
+                return Err(NetError::NetworkUnavailable);
+            }
+            match result {
                 Ok((len, meta)) => {
                     let IpAddress::Ipv4(address) = meta.endpoint.addr;
                     let from = SocketAddr::new(
