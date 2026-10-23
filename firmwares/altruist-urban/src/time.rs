@@ -52,10 +52,10 @@ pub type Time = TimeService<EmbassyClock, CriticalSectionRawMutex>;
 /// serve, the next attempt goes to the other.
 const NTP_SERVERS: &[&str] = &["pool.ntp.org", "time.cloudflare.com"];
 
-/// Build time in Unix seconds, from `build.rs`. A device cannot be running
+/// `BUILD_TIMESTAMP` (Unix seconds), set by `build.rs`. A device cannot be running
 /// before its firmware was built, so no earlier time is plausible; it is also
 /// the NTP era pivot until the first synchronization.
-const BUILD_TIME: UnixTime = UnixTime::from_secs(parse_secs(env!("ROHI_BUILD_UNIX_TIME")));
+const BUILD_TIME: UnixTime = UnixTime::from_secs(parse_secs(env!("BUILD_TIMESTAMP")));
 
 // A host without a clock yields 0 in `build.rs`; refuse to build a firmware whose
 // plausibility window would exclude the present.
