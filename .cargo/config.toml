@@ -25,3 +25,6 @@ check-esp32c6 = "check -p altruist-urban --no-default-features --features esp32c
 
 build-esp32c3 = "build --release -p altruist-urban --no-default-features --features esp32c3 --target riscv32imc-unknown-none-elf"
 build-esp32c6 = "build --release -p altruist-urban --no-default-features --features esp32c6 --target riscv32imac-unknown-none-elf"
+
+flash-esp32c3 = "run --release -p altruist-urban --features esp32c3 --target riscv32imc-unknown-none-elf"
+flash-esp32c6 = "run --release -p altruist-urban --features esp32c6 --target riscv32imac-unknown-none-elf"
