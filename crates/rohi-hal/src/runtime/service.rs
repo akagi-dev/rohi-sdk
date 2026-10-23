@@ -123,6 +123,11 @@ impl<M: RawMutex> MeasurementHandle<'_, M> {
     ///
     /// Waits while other requests are being served. The caller should bound
     /// the wait with its own timeout.
+    ///
+    /// Cancellation: safe at any point. The request only reads state, so a
+    /// dropped call mutates nothing; the owner may still answer it, the stale
+    /// answer is discarded and never reaches a later caller, and neither the
+    /// request slot nor the call lock stays occupied.
     pub async fn snapshot(&self) -> Result<MeasurementsSnapshot, MeasurementServiceError> {
         let mut seq = self.service.call.lock().await;
         Ok(self.call(&mut seq).await)
@@ -131,6 +136,8 @@ impl<M: RawMutex> MeasurementHandle<'_, M> {
     /// Like [`snapshot`](Self::snapshot) but fails with
     /// [`MeasurementServiceError::Busy`] instead of waiting for another
     /// request in flight.
+    ///
+    /// Cancellation: as for [`snapshot`](Self::snapshot).
     pub async fn try_snapshot(&self) -> Result<MeasurementsSnapshot, MeasurementServiceError> {
         let mut seq = self
             .service
@@ -312,6 +319,31 @@ mod tests {
             serve_one(&service, &store, &clock),
         ));
         assert!(second.is_ok());
+    }
+
+    #[test]
+    fn cancelled_waiter_releases_the_call_lock() {
+        let service = Service::new();
+        let clock = Clk(core::cell::Cell::new(10));
+        let store = MeasurementStore::new();
+        let handle = service.handle();
+
+        let mut first = pin!(handle.snapshot());
+        assert!(poll_once(first.as_mut()).is_pending());
+        {
+            // Queued behind the first request, then given up.
+            let mut second = pin!(handle.snapshot());
+            assert!(poll_once(second.as_mut()).is_pending());
+        }
+        block_on(serve_one(&service, &store, &clock));
+        assert!(block_on(first).is_ok());
+
+        // Nothing is locked or occupied: a non-blocking call succeeds.
+        let (third, ()) = block_on(join(
+            handle.try_snapshot(),
+            serve_one(&service, &store, &clock),
+        ));
+        assert!(third.is_ok());
     }
 
     #[test]

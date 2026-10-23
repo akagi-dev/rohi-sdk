@@ -381,6 +381,8 @@ struct Services<'a> {
     snapshot: MeasurementsSnapshot,
     shared: &'a Shared,
     calls: RefCell<Vec<&'static str>>,
+    /// Scans never complete while set.
+    hold_scan: RefCell<bool>,
 }
 
 impl ControlServices for Services<'_> {
@@ -408,6 +410,9 @@ impl ControlServices for Services<'_> {
     }
 
     async fn wifi_scan(&self) -> Result<WifiScanResults, ServiceError> {
+        if *self.hold_scan.borrow() {
+            core::future::pending::<()>().await;
+        }
         Ok(WifiScanResults::new())
     }
 
@@ -446,6 +451,7 @@ fn services(shared: &Shared) -> Services<'_> {
         snapshot: store.snapshot(MonotonicTimestamp::from_millis(600)),
         shared,
         calls: RefCell::new(Vec::new()),
+        hold_scan: RefCell::new(false),
     }
 }
 
@@ -655,6 +661,43 @@ fn response_is_dropped_when_the_link_changed_during_the_request() {
         ["reconnect"]
     );
     assert!(shared.take_sent().is_empty());
+}
+
+#[test]
+fn cancelled_step_abandons_the_request_and_the_next_one_works() {
+    let shared = Shared::new(MAX_BLE_PAYLOAD);
+    let controller = Controller::new(services(&shared), OpenPolicy);
+    *controller.services().hold_scan.borrow_mut() = true;
+    let mut service = ControlBle::new(&shared, &controller);
+
+    shared.push_frames(frames(
+        1,
+        &request_bytes(1, Call::ScanWifi(pb::ScanWifiRequest {})),
+        MAX_BLE_PAYLOAD,
+    ));
+    {
+        // The scan never finishes: the caller gives up and drops the step.
+        let mut step = core::pin::pin!(service.step());
+        assert!(embassy_futures::poll_once(step.as_mut()).is_pending());
+    }
+    assert!(shared.take_sent().is_empty());
+
+    // The abandoned request leaves no partial state behind and no response is
+    // ever sent for it.
+    *controller.services().hold_scan.borrow_mut() = false;
+    shared.push_frames(frames(
+        2,
+        &request_bytes(2, Call::GetInfo(pb::GetInfoRequest {})),
+        MAX_BLE_PAYLOAD,
+    ));
+    block_on(service.step());
+    let sent = shared.take_sent();
+    assert_eq!(sent.len(), 1);
+    let (id, bytes) = response_bytes(&sent);
+    assert_eq!(id, 2);
+    let response: pb::Response = decode(&bytes).unwrap();
+    assert_eq!(response.request_id, 2);
+    assert!(matches!(response.response, Some(Reply::GetInfo(_))));
 }
 
 #[test]

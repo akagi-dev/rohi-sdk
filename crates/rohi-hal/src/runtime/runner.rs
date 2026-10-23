@@ -199,6 +199,12 @@ where
 
     /// Perform one probe attempt or one sampling attempt, including the wait
     /// that follows it (poll interval after success, backoff after failure).
+    ///
+    /// Cancellation: dropping the future abandons the current driver
+    /// operation and wait; the runner keeps its phase and the next step
+    /// repeats the interrupted attempt. A sensor transaction in flight may be
+    /// cut short, so sensor tasks run `step` to completion and are not
+    /// cancelled other than at shutdown.
     pub async fn step(&mut self) {
         match self.phase {
             Phase::Detect => self.detect().await,
@@ -241,11 +247,14 @@ where
     }
 
     async fn poll(&mut self) {
-        if core::mem::take(&mut self.initial_delay_pending) {
+        // Cleared only after the wait: a step dropped during the warm-up wait
+        // must not skip it on the next step.
+        if self.initial_delay_pending {
             let initial_delay = self.driver.initial_delay_ms();
             if initial_delay > 0 {
                 self.delay.delay_ms(initial_delay).await;
             }
+            self.initial_delay_pending = false;
         }
 
         match self.driver.sample(self.reporter.clock()).await {
@@ -531,6 +540,73 @@ mod tests {
             block_on(r.step());
         }
         assert_eq!(delay.waits(), [7_000, POLL_INTERVAL_MS, POLL_INTERVAL_MS]);
+    }
+
+    #[test]
+    fn cancelled_initial_delay_is_not_skipped() {
+        use core::cell::{Cell, RefCell};
+        use core::future::poll_fn;
+        use core::task::Poll;
+        use std::rc::Rc;
+
+        struct HoldDelay {
+            hold: Rc<Cell<bool>>,
+            waits: Rc<RefCell<std::vec::Vec<u32>>>,
+        }
+
+        impl embedded_hal_async::delay::DelayNs for HoldDelay {
+            async fn delay_ns(&mut self, _ns: u32) {}
+
+            async fn delay_ms(&mut self, ms: u32) {
+                self.waits.borrow_mut().push(ms);
+                let hold = self.hold.clone();
+                poll_fn(|_| {
+                    if hold.get() {
+                        Poll::Pending
+                    } else {
+                        Poll::Ready(())
+                    }
+                })
+                .await;
+            }
+        }
+
+        let hold = Rc::new(Cell::new(false));
+        let waits = Rc::new(RefCell::new(std::vec::Vec::new()));
+        let bus = Bus::new();
+        let mut d = driver([Ok(())], [Ok(Some(20.0)), Ok(Some(21.0))]);
+        d.initial_delay_ms = 7_000;
+        let reporter = Reporter::new(
+            SensorKind::Bmx280,
+            &bus,
+            FixedClock(MonotonicTimestamp::from_millis(5)),
+        );
+        let mut r = Runner::new(
+            d,
+            reporter,
+            HoldDelay {
+                hold: hold.clone(),
+                waits: waits.clone(),
+            },
+            RunnerConfig::DEFAULT,
+        );
+        block_on(r.step()); // detect
+
+        hold.set(true);
+        {
+            let mut step = core::pin::pin!(r.step());
+            assert!(embassy_futures::poll_once(step.as_mut()).is_pending());
+        }
+        hold.set(false);
+        block_on(r.step());
+        block_on(r.step());
+
+        // The warm-up wait was repeated after the cancelled attempt and
+        // still applies only once.
+        assert_eq!(
+            *waits.borrow(),
+            [7_000, 7_000, POLL_INTERVAL_MS, POLL_INTERVAL_MS]
+        );
     }
 
     #[test]

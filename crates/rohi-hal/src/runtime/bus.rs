@@ -73,6 +73,8 @@ impl<M: RawMutex, const N: usize> EventBus<M, N> {
     }
 
     /// Wait for the next event.
+    ///
+    /// Cancel-safe: an event is taken from the queue only when it is returned.
     pub async fn receive(&self) -> SensorEvent {
         self.channel.receive().await
     }
