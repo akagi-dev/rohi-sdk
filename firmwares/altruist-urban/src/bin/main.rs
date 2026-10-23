@@ -31,16 +31,17 @@ use log::{error, info};
 use static_cell::StaticCell;
 
 use altruist_urban::config;
-use altruist_urban::control::{self, UrbanControlServices, ble_task, control_task};
+use altruist_urban::control::{self, BLE_RESOURCES, UrbanControlServices, ble_task, control_task};
 use altruist_urban::identity;
 use altruist_urban::net::{self, net_runner_task, wifi_task};
+use altruist_urban::resources::WIRELESS_HEAP_SIZE;
 use altruist_urban::tasks::sensors::{
     SharedI2cBus, bmx280_task, i2c_handle, noise_task, scd4x_task, sds011_task,
 };
 use altruist_urban::tasks::store::{self, store_task};
 use rohi_control::Capabilities;
 use rohi_hal_esp::board::altruist_urban::{AltruistUrban, Hardware};
-use rohi_net_esp::EspWireless;
+use rohi_net_esp::{EspWireless, wireless_heap};
 
 use esp_backtrace as _;
 
@@ -58,9 +59,11 @@ async fn main(spawner: Spawner) -> ! {
     let peripherals = esp_hal::init(config);
     let (hardware, runtime) = Hardware::split(peripherals);
 
-    // One owner for the radio: it adds the wireless heap and creates the Wi-Fi
-    // and BLE drivers, see `rohi_net_esp`.
-    let mut wireless = EspWireless::new(runtime.wifi, runtime.bt);
+    // One owner for the radio: it takes the wireless heap and creates the Wi-Fi
+    // and BLE drivers, see `rohi_net_esp`. All sizes come from
+    // `altruist_urban::resources`.
+    let heap = wireless_heap!(WIRELESS_HEAP_SIZE);
+    let mut wireless = EspWireless::new(runtime.wifi, runtime.bt, heap);
     esp_rtos::start(TimerGroup::new(runtime.timg0).timer0, runtime.sw_interrupt);
     info!(
         "Embassy execution engine ready, wireless heap free {} B",
@@ -70,7 +73,7 @@ async fn main(spawner: Spawner) -> ! {
     // The configuration task is the single owner of the store; everything else
     // uses the handle. A missing partition (old partition table) or corrupted
     // configuration must not stop the sensors.
-    let config = config::start(spawner, runtime.flash);
+    let config = config::start(spawner, runtime.flash, net::handle());
     // Identity is provisioned from the host, never generated; a fresh device
     // simply has none and keeps sensing.
     let identity = identity::start(config).await;
@@ -88,11 +91,13 @@ async fn main(spawner: Spawner) -> ! {
     // A Wi-Fi or BLE failure must never stop the sensors: log and carry on.
     let mut capabilities = Capabilities::SENSORS | Capabilities::CONFIG | Capabilities::IDENTITY;
     let mut wifi_configured = false;
-    match wireless.wifi() {
-        Ok((backend, runner)) => {
+    match net::start(&mut wireless) {
+        Ok((backend, runner, _network)) => {
+            // `_network` is the IP data plane (DNS, TCP) for the uplink layer
+            // once one exists; nothing opens connections yet.
             spawner.spawn(net_runner_task(runner).unwrap());
             spawner.spawn(wifi_task(backend).unwrap());
-            wifi_configured = net::apply_stored_config(config).await;
+            wifi_configured = net::handle().is_configured();
             capabilities = capabilities
                 | Capabilities::WIFI_SCAN
                 | Capabilities::WIFI_STATUS
@@ -105,7 +110,7 @@ async fn main(spawner: Spawner) -> ! {
         Err(error) => error!("Wi-Fi unavailable: {}", error),
     }
 
-    match wireless.ble(control::BLE_CONFIG) {
+    match wireless.ble(control::BLE_CONFIG, BLE_RESOURCES.init(Default::default())) {
         Ok((transport, runner)) => {
             let services = UrbanControlServices::new(
                 store::handle(),

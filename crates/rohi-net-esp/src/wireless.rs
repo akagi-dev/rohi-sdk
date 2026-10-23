@@ -18,24 +18,55 @@
 //!
 //! Wi-Fi and BLE share one radio, one PHY, the coexistence arbiter and one
 //! allocator. [`EspWireless`] is the only way to create the drivers: it takes
-//! the `WIFI` and `BT` peripherals, adds the single wireless heap to the
-//! global allocator and hands out each driver once. Nothing else in the
-//! firmware may initialize radio state or add heap regions for the radio.
+//! the `WIFI` and `BT` peripherals and the single wireless heap and hands out
+//! each driver once. Nothing else in the firmware may initialize radio state or
+//! add heap regions for the radio.
+//!
+//! The firmware decides how much RAM the wireless stack may use: it sizes the
+//! heap with [`wireless_heap!`](crate::wireless_heap!) and the static IP and BLE
+//! buffers with [`NetResources`] and [`BleResources`].
 
 use esp_hal::peripherals::{BT, WIFI};
 use log::info;
 use rohi_net::{BleConfig, WifiError};
 
-use crate::ble::{BleRunner, EspBle};
+use crate::ble::{BleResources, BleRunner, EspBle};
+use crate::ip::{EspIp, NetResources};
 use crate::wifi::{EspWifi, NetRunner};
 
-/// Size of the dedicated heap used by the wireless stack, in bytes.
+/// Proof that the wireless heap was added to the allocator; created only by
+/// [`wireless_heap!`](crate::wireless_heap!).
 ///
-/// Only the radio drivers allocate from it; ROHI application code stays
-/// heapless. Wi-Fi and BLE draw from the same heap. Verify
-/// [`WirelessHeap::min_free`] on hardware with both radios active before
-/// changing it.
-pub const WIRELESS_HEAP_SIZE: usize = 128 * 1024;
+/// The heap is a fixed region: only the radio drivers allocate from it, ROHI
+/// application code stays heapless, and Wi-Fi and BLE draw from the same
+/// heap. Verify [`WirelessHeap::min_free`] on hardware with both radios
+/// active before changing its size.
+pub struct WirelessHeapRegion {
+    size: usize,
+}
+
+impl WirelessHeapRegion {
+    #[doc(hidden)]
+    pub const fn __new(size: usize) -> Self {
+        Self { size }
+    }
+}
+
+/// Adds a wireless heap of `` bytes (a constant expression) to the
+/// global allocator and returns the [`WirelessHeapRegion`] that
+/// [`EspWireless::new`] needs. Call it once, before `esp_rtos::start`.
+///
+/// ```ignore
+/// let heap = rohi_net_esp::wireless_heap!(WIRELESS_HEAP_SIZE);
+/// let mut wireless = EspWireless::new(peripherals.WIFI, peripherals.BT, heap);
+/// ```
+#[macro_export]
+macro_rules! wireless_heap {
+    ($size:expr) => {{
+        $crate::__private::esp_alloc::heap_allocator!(size: $size);
+        $crate::WirelessHeapRegion::__new($size)
+    }};
+}
 
 /// Usage of the wireless heap, for diagnostics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,14 +111,14 @@ pub struct EspWireless {
 }
 
 impl EspWireless {
-    /// Creates the shared wireless runtime.
+    /// Creates the shared wireless runtime on the heap created by
+    /// [`wireless_heap!`](crate::wireless_heap!).
     ///
-    /// Adds the wireless heap to the global allocator. Call exactly once,
-    /// before `esp_rtos::start` and before any radio use; the peripherals are
-    /// moved in, so a second call cannot compile.
-    pub fn new(wifi: WIFI<'static>, bt: BT<'static>) -> Self {
-        esp_alloc::heap_allocator!(size: WIRELESS_HEAP_SIZE);
-        info!("Wireless heap: {} B", WIRELESS_HEAP_SIZE);
+    /// Call exactly once, before `esp_rtos::start` and before any radio use;
+    /// the peripherals and the heap region are moved in, so a second call
+    /// cannot compile.
+    pub fn new(wifi: WIFI<'static>, bt: BT<'static>, heap: WirelessHeapRegion) -> Self {
+        info!("Wireless heap: {} B", heap.size);
         Self {
             wifi: Some(wifi),
             bt: Some(bt),
@@ -96,20 +127,63 @@ impl EspWireless {
 
     /// Brings up Wi-Fi in station mode and the IP stack (DHCPv4).
     ///
+    /// `resources` is the static storage of the IP stack, sized by the
+    /// firmware. Returns the Wi-Fi driver for the `WifiManager`, the runner
+    /// of the IP stack and the IP backend behind
+    /// [`NetworkHandle`](rohi_net::NetworkHandle).
+    ///
     /// The `esp-rtos` scheduler must be running. May be called once.
-    pub fn wifi(&mut self) -> Result<(EspWifi, NetRunner), WifiError> {
+    pub fn wifi<const SOCKETS: usize, const TCP: usize, const RX: usize, const TX: usize>(
+        &mut self,
+        resources: &'static mut NetResources<SOCKETS, TCP, RX, TX>,
+    ) -> Result<(EspWifi, NetRunner, EspIp<TCP, RX, TX>), WifiError> {
         let wifi = self.wifi.take().ok_or(WifiError::DriverError)?;
-        EspWifi::new(wifi)
+        let (stack_resources, pool) = resources.split();
+        let (wifi, runner, stack) = EspWifi::new(wifi, stack_resources)?;
+        Ok((wifi, runner, EspIp::new(stack, pool)))
     }
 
     /// Brings up the BLE controller and host stack as a GATT peripheral
-    /// exposing the byte pipe described by `config`.
+    /// exposing the byte pipe described by `config`, with the static storage
+    /// and bounds of `resources`.
     ///
     /// The `esp-rtos` scheduler must be running. May be called once. The
     /// returned runner must be polled for the transport to work.
-    pub fn ble(&mut self, config: BleConfig) -> Result<(EspBle, BleRunner), WirelessError> {
+    #[allow(clippy::type_complexity)]
+    pub fn ble<
+        const RX_DEPTH: usize,
+        const TX_DEPTH: usize,
+        const CONNECTIONS: usize,
+        const L2CAP_CHANNELS: usize,
+        const ATTRIBUTES: usize,
+        const CONTROLLER_SLOTS: usize,
+    >(
+        &mut self,
+        config: BleConfig,
+        resources: &'static mut BleResources<
+            RX_DEPTH,
+            TX_DEPTH,
+            CONNECTIONS,
+            L2CAP_CHANNELS,
+            ATTRIBUTES,
+            CONTROLLER_SLOTS,
+        >,
+    ) -> Result<
+        (
+            EspBle<RX_DEPTH, TX_DEPTH>,
+            BleRunner<
+                RX_DEPTH,
+                TX_DEPTH,
+                CONNECTIONS,
+                L2CAP_CHANNELS,
+                ATTRIBUTES,
+                CONTROLLER_SLOTS,
+            >,
+        ),
+        WirelessError,
+    > {
         let bt = self.bt.take().ok_or(WirelessError::AlreadyTaken)?;
-        crate::ble::new(bt, config)
+        crate::ble::new(bt, config, resources)
     }
 
     /// Current usage of the shared wireless heap.

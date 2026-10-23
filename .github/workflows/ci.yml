@@ -93,3 +93,45 @@ jobs:
         run: cargo clippy -p altruist-urban -p rohi-examples -p rohi-hal-esp -p rohi-net-esp -p rohi-config-esp --no-default-features --features esp32c6 --target riscv32imac-unknown-none-elf -- -D warnings
       - name: Build
         run: cargo build-esp32c6
+
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libdbus-1-dev pkg-config
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          target: riscv32imc-unknown-none-elf
+          toolchain: 1.99.1
+          components: rust-src
+      - name: Enable caching
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: docs
+      - name: Setup mdBook
+        uses: peaceiris/actions-mdbook@v2
+        with:
+          mdbook-version: '0.5.4'
+      - name: Build the book
+        run: mdbook build docs
+      - name: Test the book snippets
+        run: mdbook test docs
+      - name: Check book links
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: --offline --include-fragments --exclude-path docs/book/404.html docs/book
+          fail: true
+      - name: Rustdoc (host crates)
+        run: cargo doc --no-deps
+      - name: Rustdoc (crates of the SDK contracts, warnings are errors)
+        run: cargo doc --no-deps -p rohi-net -p rohi-config -p rohi-control -p rohi-control-ble
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: Rustdoc (ESP backend)
+        run: cargo doc --no-deps -p rohi-net-esp --no-default-features --features esp32c3 --target riscv32imc-unknown-none-elf
+        env:
+          RUSTDOCFLAGS: -D warnings

@@ -73,6 +73,12 @@ where
 
     /// Waits for one transport event and handles it: a frame, which may
     /// complete a request and send its response, or a disconnect.
+    ///
+    /// Cancellation: dropping the future abandons the request being handled
+    /// (no response is sent for it) and leaves no partial state: a new first
+    /// fragment always starts a new request. Operations that were already
+    /// committed by the services (for example a stored configuration) stay
+    /// committed.
     pub async fn step(&mut self) {
         let received = self.transport.recv(&mut self.chunk).await;
         let len = match received {

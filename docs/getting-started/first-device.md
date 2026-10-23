@@ -1,4 +1,4 @@
-# Air Quality Terminal
+# First device: Air Quality Terminal
 
 > This section assumes you are using the Nix package manager (`nix develop`).
 > If you have a different environment, don't worry—most commands will be the same,
@@ -21,8 +21,8 @@ up, takes several samples, and the aggregated PM2.5 / PM10 is printed before the
 
 ## Explore the code
 
-```rust,no_run,noplayground
-{{#include ../examples/src/bin/sds011.rs:17:}}
+```rust,ignore,noplayground
+{{#include ../../examples/src/bin/sds011.rs:17:}}
 ```
 
 ### no_std
@@ -43,7 +43,7 @@ See the [Embassy Docs](https://embassy.dev/book/#_task_declaration) for details.
 about networks or serialization: they publish typed `SensorEvent`s (measurements, state changes, errors) into a
 bounded queue; a successful measurement alone marks the sensor `Ready`. `print_events_task` consumes them and
 prints to the terminal. The production firmware has a single task that applies the events to a `MeasurementStore`
-instead. See [Sensor HAL (rohi-hal)](rohi-hal.md).
+instead. See [Sensor HAL (rohi-hal)](../sdk/hal.md).
 
 <div class="warning">
 
@@ -68,4 +68,3 @@ Behind the scenes, several processes occur:
 2. `espflash` detects the ESP board and flashes the firmware;
 3. `espflash` connects to the serial interface and displays logs.
 
-<script src="https://asciinema.org/a/TD4TphAuoOyL7njcRor7Vg0dj.js" id="asciicast-TD4TphAuoOyL7njcRor7Vg0dj" async="true"></script>

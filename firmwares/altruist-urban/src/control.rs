@@ -35,10 +35,11 @@ use rohi_hal::MeasurementsSnapshot;
 use rohi_hal::runtime::MeasurementHandle;
 use rohi_identity::{Identity, PublicKey};
 use rohi_net::{NetworkInfo, WifiConfig, WifiHandle, WifiScanResults, WifiStatus};
-use rohi_net_esp::{BleRunner, EspBle};
+use static_cell::StaticCell;
 
 use crate::config::{ConfigHandle, ServiceError as ConfigError};
 use crate::identity::IdentityHandle;
+use crate::resources::{BleResources, BleRunner, BleTransport};
 use crate::tasks::RawMutex;
 
 /// Upper bound of a Wi-Fi scan requested over the control link.
@@ -113,16 +114,15 @@ impl ControlServices for UrbanControlServices {
         self.config.get::<WifiConfig>().await.map_err(config_error)
     }
 
-    async fn store_wifi_config(&self, config: Option<&WifiConfig>) -> Result<(), ServiceError> {
+    /// The configuration owner task publishes the committed value to the
+    /// Wi-Fi manager itself, see [`crate::config`]; cancelling this call can
+    /// therefore never leave a stored configuration unknown to the runtime.
+    async fn set_wifi_config(&self, config: Option<&WifiConfig>) -> Result<(), ServiceError> {
         match config {
             Some(config) => self.config.set(config).await,
             None => self.config.remove::<WifiConfig>().await,
         }
         .map_err(config_error)
-    }
-
-    async fn apply_wifi_config(&self, config: Option<WifiConfig>) -> Result<(), ServiceError> {
-        self.wifi.apply_config(config).await.map_err(Into::into)
     }
 
     async fn wifi_scan(&self) -> Result<WifiScanResults, ServiceError> {
@@ -174,6 +174,9 @@ pub const BLE_CONFIG: rohi_net::BleConfig = rohi_net::BleConfig {
     gatt: GATT,
 };
 
+/// Static storage of the BLE peripheral, sized by [`crate::resources`].
+pub static BLE_RESOURCES: StaticCell<BleResources> = StaticCell::new();
+
 /// Runs the BLE controller and host stack.
 #[embassy_executor::task]
 pub async fn ble_task(runner: BleRunner) {
@@ -187,7 +190,7 @@ pub async fn ble_task(runner: BleRunner) {
 /// everything, including identity provisioning and erase. Switch to a
 /// stricter policy once BLE pairing is enabled.
 #[embassy_executor::task]
-pub async fn control_task(transport: EspBle, services: UrbanControlServices) {
+pub async fn control_task(transport: BleTransport, services: UrbanControlServices) {
     let controller = Controller::new(services, OpenPolicy);
     let mut control = ControlBle::new(transport, &controller);
     control.run().await

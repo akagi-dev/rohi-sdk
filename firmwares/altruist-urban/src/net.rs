@@ -19,19 +19,38 @@
 //!
 //! [`WifiManager`] is the single owner of the ESP Wi-Fi backend. Other tasks
 //! (the control plane) only use the [`WifiHandle`] returned by [`handle`]; they
-//! never touch the radio driver.
+//! never touch the radio driver. The persisted configuration reaches the
+//! manager as desired state, published by the configuration owner task, see
+//! [`crate::config`].
 
 use embassy_time::{Delay, Duration, with_timeout};
-use log::{error, info, warn};
+use log::{info, warn};
 use rohi_net::{
-    ManagerConfig, WifiConfig, WifiHandle, WifiManager, WifiShared, WifiState, WifiStatus,
+    ManagerConfig, NetworkHandle, WifiError, WifiHandle, WifiManager, WifiShared, WifiState,
+    WifiStatus,
 };
-use rohi_net_esp::{EspWifi, NetRunner};
+use rohi_net_esp::{EspWifi, EspWireless, NetRunner};
+use static_cell::StaticCell;
 
-use crate::config::ConfigHandle;
+use crate::resources::{Ip, NetResources};
 use crate::tasks::RawMutex;
 
 static WIFI: WifiShared<RawMutex> = WifiShared::new();
+static NET_RESOURCES: StaticCell<NetResources> = StaticCell::new();
+static IP: StaticCell<Ip> = StaticCell::new();
+
+/// Brings up Wi-Fi and the IP stack with the sizes of [`crate::resources`].
+///
+/// Returns the Wi-Fi driver for [`wifi_task`], the IP stack runner for
+/// [`net_runner_task`] and the [`NetworkHandle`] of the IP data plane
+/// (DNS and TCP). Call once.
+pub fn start(
+    wireless: &mut EspWireless,
+) -> Result<(EspWifi, NetRunner, NetworkHandle<'static, Ip>), WifiError> {
+    let (backend, runner, ip) = wireless.wifi(NET_RESOURCES.init(NetResources::new()))?;
+    let ip: &'static Ip = IP.init(ip);
+    Ok((backend, runner, NetworkHandle::new(ip)))
+}
 
 /// Handle to command the Wi-Fi manager and read its published state.
 pub fn handle() -> WifiHandle<'static, RawMutex> {
@@ -49,32 +68,6 @@ pub async fn net_runner_task(runner: NetRunner) {
 pub async fn wifi_task(backend: EspWifi) {
     let mut manager = WifiManager::new(backend, Delay, &WIFI, ManagerConfig::DEFAULT);
     manager.run().await
-}
-
-/// Reads the persisted Wi-Fi configuration, if any.
-pub async fn load_config(config: ConfigHandle) -> Option<WifiConfig> {
-    match config.get::<WifiConfig>().await {
-        Ok(config) => config,
-        Err(error) => {
-            warn!("Wi-Fi configuration unreadable: {}", error);
-            None
-        }
-    }
-}
-
-/// Applies the persisted configuration at boot. Without one the manager
-/// stays `NotConfigured` and does not attempt anything. Returns whether a
-/// configuration was applied.
-pub async fn apply_stored_config(config: ConfigHandle) -> bool {
-    let Some(stored) = load_config(config).await else {
-        info!("Wi-Fi: not configured");
-        return false;
-    };
-    if let Err(err) = handle().apply_config(Some(stored)).await {
-        error!("Wi-Fi: cannot apply stored configuration: {}", err);
-        return false;
-    }
-    true
 }
 
 /// Waits, at most `timeout`, until the first connection attempt has finished

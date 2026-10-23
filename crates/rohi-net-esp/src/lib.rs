@@ -20,10 +20,13 @@
 //! ESP32 wireless backends of [`rohi-net`](rohi_net).
 //!
 //! [`EspWireless`] owns the shared wireless runtime (radio peripherals and the
-//! single wireless heap) and creates both drivers:
+//! single wireless heap) and creates both drivers. The firmware sizes every
+//! static resource: the heap ([`wireless_heap!`]), the IP stack
+//! ([`NetResources`]) and BLE ([`BleResources`]):
 //!
 //! - Wi-Fi: [`EspWifi`] implements [`WifiBackend`](rohi_net::WifiBackend) on top
-//!   of `esp-radio` and `embassy-net`;
+//!   of `esp-radio` and `embassy-net`, with [`EspIp`] implementing
+//!   [`IpBackend`](rohi_net::IpBackend) (DNS and TCP) on the same stack;
 //! - BLE: [`EspBle`] implements [`BleTransport`](rohi_net::BleTransport) on top
 //!   of `esp-radio` and the TrouBLE host stack.
 //!
@@ -40,13 +43,24 @@ compile_error!(
 #[cfg(any(feature = "esp32c3", feature = "esp32c6"))]
 mod ble;
 #[cfg(any(feature = "esp32c3", feature = "esp32c6"))]
+mod ip;
+#[cfg(any(feature = "esp32c3", feature = "esp32c6"))]
 mod wifi;
 #[cfg(any(feature = "esp32c3", feature = "esp32c6"))]
 mod wireless;
 
 #[cfg(any(feature = "esp32c3", feature = "esp32c6"))]
-pub use ble::{BleRunner, EspBle};
+pub use ble::{BleResources, BleRunner, EspBle};
+#[cfg(any(feature = "esp32c3", feature = "esp32c6"))]
+pub use ip::{EspIp, EspTcpConnection, NetResources, STACK_INTERNAL_SOCKETS};
 #[cfg(any(feature = "esp32c3", feature = "esp32c6"))]
 pub use wifi::{EspWifi, NetRunner};
 #[cfg(any(feature = "esp32c3", feature = "esp32c6"))]
-pub use wireless::{EspWireless, WIRELESS_HEAP_SIZE, WirelessError, WirelessHeap, wireless_heap};
+pub use wireless::{EspWireless, WirelessError, WirelessHeap, WirelessHeapRegion, wireless_heap};
+
+/// Implementation detail of [`wireless_heap!`].
+#[cfg(any(feature = "esp32c3", feature = "esp32c6"))]
+#[doc(hidden)]
+pub mod __private {
+    pub use esp_alloc;
+}

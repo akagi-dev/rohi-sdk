@@ -50,20 +50,8 @@ use trouble_host::prelude::*;
 
 use crate::wireless::WirelessError;
 
-/// Chunks buffered from the central before the writer is held back.
-const RX_DEPTH: usize = 4;
-/// Chunks buffered for notification.
-const TX_DEPTH: usize = 4;
 /// ATT header of a write or notification.
 const ATT_OVERHEAD: u16 = 3;
-
-const CONNECTIONS_MAX: usize = 1;
-/// Signalling, ATT.
-const L2CAP_CHANNELS_MAX: usize = 2;
-/// GAP, GATT and the ROHI service with their characteristics and descriptors.
-const ATTRIBUTES_MAX: usize = 24;
-/// HCI command slots of the external controller.
-const CONTROLLER_SLOTS: usize = 4;
 
 #[derive(Clone, Copy)]
 struct Chunk {
@@ -102,36 +90,117 @@ struct Link {
     info: Option<BleConnectionInfo>,
 }
 
-static RX: Channel<CriticalSectionRawMutex, RxEvent, RX_DEPTH> = Channel::new();
-static TX: Channel<CriticalSectionRawMutex, Chunk, TX_DEPTH> = Channel::new();
-static LINK: Mutex<CriticalSectionRawMutex, Cell<Link>> = Mutex::new(Cell::new(Link {
-    state: BleState::Disabled,
-    epoch: 0,
-    payload: DEFAULT_BLE_PAYLOAD,
-    info: None,
-}));
-static TAKEN: Mutex<CriticalSectionRawMutex, Cell<bool>> = Mutex::new(Cell::new(false));
-
-fn link() -> Link {
-    LINK.lock(Cell::get)
+/// State shared by [`EspBle`] and [`BleRunner`]: the bounded RX and TX queues
+/// and the published link properties.
+struct Shared<const RX_DEPTH: usize, const TX_DEPTH: usize> {
+    rx: Channel<CriticalSectionRawMutex, RxEvent, RX_DEPTH>,
+    tx: Channel<CriticalSectionRawMutex, Chunk, TX_DEPTH>,
+    link: Mutex<CriticalSectionRawMutex, Cell<Link>>,
 }
 
-fn update_link(f: impl FnOnce(&mut Link)) {
-    LINK.lock(|cell| {
-        let mut value = cell.get();
-        f(&mut value);
-        cell.set(value);
-    });
+impl<const RX_DEPTH: usize, const TX_DEPTH: usize> Shared<RX_DEPTH, TX_DEPTH> {
+    const fn new() -> Self {
+        Self {
+            rx: Channel::new(),
+            tx: Channel::new(),
+            link: Mutex::new(Cell::new(Link {
+                state: BleState::Disabled,
+                epoch: 0,
+                payload: DEFAULT_BLE_PAYLOAD,
+                info: None,
+            })),
+        }
+    }
+
+    fn link(&self) -> Link {
+        self.link.lock(Cell::get)
+    }
+
+    fn update_link(&self, f: impl FnOnce(&mut Link)) {
+        self.link.lock(|cell| {
+            let mut value = cell.get();
+            f(&mut value);
+            cell.set(value);
+        });
+    }
+}
+
+/// Statically allocated storage and bounds of the BLE peripheral. Place it in
+/// a `static` (for example with `static_cell::StaticCell`) and pass it to
+/// [`EspWireless::ble`](crate::EspWireless::ble). Every bound is a const
+/// generic so the firmware states its own RAM budget:
+///
+/// - `RX_DEPTH`: chunks buffered from the central before its write is held
+///   back (the ATT response is delayed, which is the backpressure).
+/// - `TX_DEPTH`: chunks buffered for notification; `send` waits when full.
+/// - `CONNECTIONS`: simultaneous connections of the host stack.
+/// - `L2CAP_CHANNELS`: L2CAP channels of the host stack (signalling and ATT
+///   per connection).
+/// - `ATTRIBUTES`: entries of the GATT attribute table: GAP, GATT and the
+///   ROHI service with its characteristics and descriptors. TrouBLE panics
+///   when the BLE task starts if the table is too small.
+/// - `CONTROLLER_SLOTS`: HCI command slots of the controller.
+pub struct BleResources<
+    const RX_DEPTH: usize,
+    const TX_DEPTH: usize,
+    const CONNECTIONS: usize,
+    const L2CAP_CHANNELS: usize,
+    const ATTRIBUTES: usize,
+    const CONTROLLER_SLOTS: usize,
+> {
+    shared: Shared<RX_DEPTH, TX_DEPTH>,
+}
+
+impl<
+    const RX_DEPTH: usize,
+    const TX_DEPTH: usize,
+    const CONNECTIONS: usize,
+    const L2CAP_CHANNELS: usize,
+    const ATTRIBUTES: usize,
+    const CONTROLLER_SLOTS: usize,
+> BleResources<RX_DEPTH, TX_DEPTH, CONNECTIONS, L2CAP_CHANNELS, ATTRIBUTES, CONTROLLER_SLOTS>
+{
+    const BUDGET_OK: () = assert!(
+        RX_DEPTH > 0
+            && TX_DEPTH > 0
+            && CONNECTIONS > 0
+            && L2CAP_CHANNELS >= 2
+            && CONTROLLER_SLOTS > 0,
+        "BLE queues need room, at least one connection, two L2CAP channels and one controller slot"
+    );
+
+    pub const fn new() -> Self {
+        let () = Self::BUDGET_OK;
+        Self {
+            shared: Shared::new(),
+        }
+    }
+}
+
+impl<
+    const RX_DEPTH: usize,
+    const TX_DEPTH: usize,
+    const CONNECTIONS: usize,
+    const L2CAP_CHANNELS: usize,
+    const ATTRIBUTES: usize,
+    const CONTROLLER_SLOTS: usize,
+> Default
+    for BleResources<RX_DEPTH, TX_DEPTH, CONNECTIONS, L2CAP_CHANNELS, ATTRIBUTES, CONTROLLER_SLOTS>
+{
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// The connected central as a [`BleTransport`].
-pub struct EspBle {
-    _private: (),
+pub struct EspBle<const RX_DEPTH: usize, const TX_DEPTH: usize> {
+    shared: &'static Shared<RX_DEPTH, TX_DEPTH>,
 }
 
-impl BleTransport for EspBle {
+impl<const RX_DEPTH: usize, const TX_DEPTH: usize> BleTransport for EspBle<RX_DEPTH, TX_DEPTH> {
+    /// Cancel-safe: a chunk is taken from the queue only when it is returned.
     async fn recv(&mut self, out: &mut [u8]) -> Result<usize, BleError> {
-        match RX.receive().await {
+        match self.shared.rx.receive().await {
             RxEvent::Disconnected => Err(BleError::Disconnected),
             RxEvent::Data(chunk) => {
                 let data = chunk.bytes();
@@ -144,55 +213,90 @@ impl BleTransport for EspBle {
         }
     }
 
+    /// Cancel-safe: the chunk is queued entirely or not at all.
     async fn send(&mut self, data: &[u8]) -> Result<(), BleError> {
-        let current = link();
+        let current = self.shared.link();
         if current.info.is_none() {
             return Err(BleError::Disconnected);
         }
         if data.len() > current.payload {
             return Err(BleError::BufferTooSmall);
         }
-        TX.send(Chunk::new(current.epoch, data)).await;
+        self.shared.tx.send(Chunk::new(current.epoch, data)).await;
         Ok(())
     }
 
     fn connection_info(&self) -> Option<BleConnectionInfo> {
-        link().info
+        self.shared.link().info
     }
 
     fn max_payload(&self) -> usize {
-        link().payload
+        self.shared.link().payload
     }
 
     fn state(&self) -> BleState {
-        link().state
+        self.shared.link().state
     }
 
     fn connection_epoch(&self) -> u32 {
-        link().epoch
+        self.shared.link().epoch
     }
 }
 
 /// Drives the BLE controller, host stack, advertising and GATT server.
 /// Run it on its own task: `runner.run().await`.
-pub struct BleRunner {
+pub struct BleRunner<
+    const RX_DEPTH: usize,
+    const TX_DEPTH: usize,
+    const CONNECTIONS: usize,
+    const L2CAP_CHANNELS: usize,
+    const ATTRIBUTES: usize,
+    const CONTROLLER_SLOTS: usize,
+> {
     connector: BleConnector<'static>,
     config: BleConfig,
+    shared: &'static Shared<RX_DEPTH, TX_DEPTH>,
 }
 
-pub(crate) fn new(
+pub(crate) fn new<
+    const RX_DEPTH: usize,
+    const TX_DEPTH: usize,
+    const CONNECTIONS: usize,
+    const L2CAP_CHANNELS: usize,
+    const ATTRIBUTES: usize,
+    const CONTROLLER_SLOTS: usize,
+>(
     bt: esp_hal::peripherals::BT<'static>,
     config: BleConfig,
-) -> Result<(EspBle, BleRunner), WirelessError> {
-    if TAKEN.lock(|taken| taken.replace(true)) {
-        return Err(WirelessError::AlreadyTaken);
-    }
+    resources: &'static mut BleResources<
+        RX_DEPTH,
+        TX_DEPTH,
+        CONNECTIONS,
+        L2CAP_CHANNELS,
+        ATTRIBUTES,
+        CONTROLLER_SLOTS,
+    >,
+) -> Result<
+    (
+        EspBle<RX_DEPTH, TX_DEPTH>,
+        BleRunner<RX_DEPTH, TX_DEPTH, CONNECTIONS, L2CAP_CHANNELS, ATTRIBUTES, CONTROLLER_SLOTS>,
+    ),
+    WirelessError,
+> {
     let connector = BleConnector::new(bt, Default::default()).map_err(|error| {
         warn!("BLE controller init failed: {:?}", error);
         WirelessError::BleInit
     })?;
-    update_link(|link| link.state = BleState::Advertising);
-    Ok((EspBle { _private: () }, BleRunner { connector, config }))
+    let shared: &'static Shared<RX_DEPTH, TX_DEPTH> = &resources.shared;
+    shared.update_link(|link| link.state = BleState::Advertising);
+    Ok((
+        EspBle { shared },
+        BleRunner {
+            connector,
+            config,
+            shared,
+        },
+    ))
 }
 
 /// Longest device name: the whole scan response minus its 2-byte header.
@@ -229,18 +333,23 @@ fn address() -> Address {
     Address::random(bytes)
 }
 
-impl BleRunner {
+impl<
+    const RX_DEPTH: usize,
+    const TX_DEPTH: usize,
+    const CONNECTIONS: usize,
+    const L2CAP_CHANNELS: usize,
+    const ATTRIBUTES: usize,
+    const CONTROLLER_SLOTS: usize,
+> BleRunner<RX_DEPTH, TX_DEPTH, CONNECTIONS, L2CAP_CHANNELS, ATTRIBUTES, CONTROLLER_SLOTS>
+{
     /// Runs the BLE stack forever. Errors restart advertising; they never
     /// stop the rest of the firmware.
     pub async fn run(self) -> ! {
         let controller: ExternalController<_, CONTROLLER_SLOTS> =
             ExternalController::new(self.connector);
-        let mut resources: HostResources<
-            _,
-            DefaultPacketPool,
-            CONNECTIONS_MAX,
-            L2CAP_CHANNELS_MAX,
-        > = HostResources::new();
+        let shared = self.shared;
+        let mut resources: HostResources<_, DefaultPacketPool, CONNECTIONS, L2CAP_CHANNELS> =
+            HostResources::new();
         let stack = trouble_host::new(controller, &mut resources)
             .set_random_address(address())
             .build();
@@ -251,7 +360,7 @@ impl BleRunner {
         info!("BLE: device name {}", name.as_str());
         let mut rx_store = [0u8; MAX_BLE_PAYLOAD];
         let mut tx_store = [0u8; MAX_BLE_PAYLOAD];
-        let mut table: AttributeTable<'_, CriticalSectionRawMutex, ATTRIBUTES_MAX> =
+        let mut table: AttributeTable<'_, CriticalSectionRawMutex, ATTRIBUTES> =
             AttributeTable::new();
         if GapConfig::default(name.as_str()).build(&mut table).is_err() {
             warn!("BLE: GAP service not created");
@@ -284,15 +393,15 @@ impl BleRunner {
             '_,
             CriticalSectionRawMutex,
             DefaultPacketPool,
-            ATTRIBUTES_MAX,
-            CONNECTIONS_MAX,
+            ATTRIBUTES,
+            CONNECTIONS,
         > = AttributeServer::new(table);
 
         let host = async {
             loop {
                 if let Err(error) = runner.run().await {
                     warn!("BLE host stopped: {:?}", error);
-                    update_link(|link| link.state = BleState::Error(BleError::DriverError));
+                    shared.update_link(|link| link.state = BleState::Error(BleError::DriverError));
                     embassy_time::Timer::after_secs(1).await;
                 }
             }
@@ -300,14 +409,24 @@ impl BleRunner {
 
         let serve = async {
             loop {
-                match advertise(&self.config, name.as_str(), &mut peripheral, &server).await {
+                match advertise(
+                    shared,
+                    &self.config,
+                    name.as_str(),
+                    &mut peripheral,
+                    &server,
+                )
+                .await
+                {
                     Ok(connection) => {
-                        serve_connection(&connection, rx_handle.handle, &tx_handle).await;
-                        end_connection().await;
+                        serve_connection(shared, &connection, rx_handle.handle, &tx_handle).await;
+                        end_connection(shared).await;
                     }
                     Err(error) => {
                         warn!("BLE advertising failed: {:?}", error);
-                        update_link(|link| link.state = BleState::Error(BleError::DriverError));
+                        shared.update_link(|link| {
+                            link.state = BleState::Error(BleError::DriverError)
+                        });
                         embassy_time::Timer::after_secs(1).await;
                     }
                 }
@@ -319,7 +438,16 @@ impl BleRunner {
     }
 }
 
-async fn advertise<'values, 'server, C: Controller>(
+async fn advertise<
+    'values,
+    'server,
+    C: Controller,
+    const RX_DEPTH: usize,
+    const TX_DEPTH: usize,
+    const ATTRIBUTES: usize,
+    const CONNECTIONS: usize,
+>(
+    shared: &Shared<RX_DEPTH, TX_DEPTH>,
     config: &BleConfig,
     name: &str,
     peripheral: &mut Peripheral<'values, C, DefaultPacketPool>,
@@ -327,8 +455,8 @@ async fn advertise<'values, 'server, C: Controller>(
         'values,
         CriticalSectionRawMutex,
         DefaultPacketPool,
-        ATTRIBUTES_MAX,
-        CONNECTIONS_MAX,
+        ATTRIBUTES,
+        CONNECTIONS,
     >,
 ) -> Result<GattConnection<'values, 'server, DefaultPacketPool>, BleHostError<C::Error>> {
     let service = config.gatt.service.to_le_bytes();
@@ -348,7 +476,7 @@ async fn advertise<'values, 'server, C: Controller>(
         &mut scan_response[..],
     )?;
 
-    update_link(|link| {
+    shared.update_link(|link| {
         link.state = BleState::Advertising;
         link.info = None;
     });
@@ -380,11 +508,14 @@ fn connection_info(connection: &GattConnection<'_, '_, DefaultPacketPool>) -> Bl
     }
 }
 
-fn refresh_link(connection: &GattConnection<'_, '_, DefaultPacketPool>) {
+fn refresh_link<const RX_DEPTH: usize, const TX_DEPTH: usize>(
+    shared: &Shared<RX_DEPTH, TX_DEPTH>,
+    connection: &GattConnection<'_, '_, DefaultPacketPool>,
+) {
     let info = connection_info(connection);
     let mtu = connection.raw().att_mtu().saturating_sub(ATT_OVERHEAD);
     let payload = usize::from(mtu).clamp(DEFAULT_BLE_PAYLOAD, MAX_BLE_PAYLOAD);
-    update_link(|link| {
+    shared.update_link(|link| {
         link.info = Some(info);
         link.payload = payload;
         link.state = BleState::Connected(info);
@@ -393,21 +524,22 @@ fn refresh_link(connection: &GattConnection<'_, '_, DefaultPacketPool>) {
 
 /// Serves one connection until it ends: receives writes and notifies
 /// responses.
-async fn serve_connection(
+async fn serve_connection<const RX_DEPTH: usize, const TX_DEPTH: usize>(
+    shared: &Shared<RX_DEPTH, TX_DEPTH>,
     connection: &GattConnection<'_, '_, DefaultPacketPool>,
     rx_handle: u16,
     tx: &Characteristic<Vec<u8, MAX_BLE_PAYLOAD>>,
 ) {
     // A new connection starts clean: nothing of the previous one survives.
-    while RX.try_receive().is_ok() {}
-    while TX.try_receive().is_ok() {}
-    update_link(|link| {
+    while shared.rx.try_receive().is_ok() {}
+    while shared.tx.try_receive().is_ok() {}
+    shared.update_link(|link| {
         link.epoch = link.epoch.wrapping_add(1);
         link.payload = DEFAULT_BLE_PAYLOAD;
     });
-    refresh_link(connection);
+    refresh_link(shared, connection);
     info!("BLE: central connected");
-    let epoch = link().epoch;
+    let epoch = shared.link().epoch;
 
     let events = async {
         loop {
@@ -433,7 +565,9 @@ async fn serve_connection(
                             if ok {
                                 // Waits for room: the central is not answered
                                 // before the chunk is queued.
-                                RX.send(RxEvent::Data(Chunk::new(epoch, &data[..len])))
+                                shared
+                                    .rx
+                                    .send(RxEvent::Data(Chunk::new(epoch, &data[..len])))
                                     .await;
                                 write.accept_unprocessed()
                             } else {
@@ -446,16 +580,16 @@ async fn serve_connection(
                         Ok(reply) => reply.send().await,
                         Err(error) => warn!("BLE: GATT reply failed: {:?}", error),
                     }
-                    refresh_link(connection);
+                    refresh_link(shared, connection);
                 }
-                _ => refresh_link(connection),
+                _ => refresh_link(shared, connection),
             }
         }
     };
 
     let notifier = async {
         loop {
-            let chunk = TX.receive().await;
+            let chunk = shared.tx.receive().await;
             if chunk.epoch != epoch {
                 continue;
             }
@@ -471,13 +605,15 @@ async fn serve_connection(
     }
 }
 
-async fn end_connection() {
-    update_link(|link| {
+async fn end_connection<const RX_DEPTH: usize, const TX_DEPTH: usize>(
+    shared: &Shared<RX_DEPTH, TX_DEPTH>,
+) {
+    shared.update_link(|link| {
         link.info = None;
         link.state = BleState::Advertising;
     });
-    while TX.try_receive().is_ok() {}
+    while shared.tx.try_receive().is_ok() {}
     // Never dropped: the consumer needs this marker to reset its state.
-    RX.send(RxEvent::Disconnected).await;
+    shared.rx.send(RxEvent::Disconnected).await;
     info!("BLE: central disconnected");
 }

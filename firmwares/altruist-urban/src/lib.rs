@@ -44,6 +44,8 @@ pub mod control;
 /// Device identity runtime.
 pub mod identity;
 pub mod net;
+/// Static resource budget of the wireless stack.
+pub mod resources;
 
 /// Embassy tasks.
 pub mod tasks;

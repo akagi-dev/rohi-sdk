@@ -35,7 +35,7 @@ payload bytes never decoded or re-encoded after signing.
 
 ## Storage
 
-The identity lives in the normal [configuration store](config-store.md), so it inherits A/B transactional writes,
+The identity lives in the normal [configuration store](config.md), so it inherits A/B transactional writes,
 generation tracking, CRC validation and power-loss recovery. There is no separate identity storage or partition.
 
 * Section type `Identity`, ID `0x94d63573d312fe9b` (FNV-1a of the struct name), version 1.
@@ -136,8 +136,13 @@ Public key: 0x8743…f2f3
 ## Firmware
 
 `altruist_urban::identity` owns access to the identity: it loads it at boot, serves the control requests through
-`ConfigHandle`, keeps an `IdentitySigner` for future signed telemetry (`IdentityHandle::sign`, which returns
-`NotProvisioned` when erased) and updates it on provision and erase.
+`ConfigHandle` and keeps an `IdentitySigner` for future signed telemetry (`IdentityHandle::sign`, which returns
+`NotProvisioned` when erased).
+
+The signer is updated by the **configuration owner task** in the same step as the commit or removal of the `Identity`
+section, with no `.await` in between. Provision and erase therefore follow the durable-mutation rule: cancelled before
+the request was queued, nothing changed; cancelled afterwards, the operation is logically completed and the signer
+agrees with the stored identity ([Async and cancellation](../concepts/async-and-cancellation.md#durable-mutation)).
 
 The secret passes through fixed-size buffers of the configuration channel and the BLE request path, which are not
 scrubbed after use.
