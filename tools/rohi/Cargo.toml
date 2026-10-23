@@ -26,7 +26,14 @@ default = ["cli", "serde"]
 # Machine readable (JSON) output of the model types.
 serde = ["dep:serde"]
 # The `rohi` command line tool.
-cli = ["serde", "dep:clap", "dep:rpassword", "dep:serde_json", "provision"]
+cli = [
+  "serde",
+  "dep:chrono",
+  "dep:clap",
+  "dep:rpassword",
+  "dep:serde_json",
+  "provision",
+]
 # Derivation of a device identity from a master SURI (`rohi identity provision`).
 provision = ["dep:sp-core"]
 
@@ -47,6 +54,7 @@ sp-core = { workspace = true, optional = true }
 clap = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 rpassword = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true }
 
 [dev-dependencies]
 rohi-control.workspace = true

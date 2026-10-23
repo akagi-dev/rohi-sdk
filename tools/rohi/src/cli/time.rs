@@ -20,16 +20,16 @@ use super::diagnostic::CliError;
 use super::{Ctx, dto, status};
 use crate::model::TimeStatus;
 use crate::{ClientTransport, Device};
+use chrono::{Local, TimeZone};
 
 /// Lines of the time status for the human output. The wall-clock time is
 /// shown only when the device has one.
 pub fn lines(status: &TimeStatus) -> Vec<(&'static str, String)> {
     let mut lines = vec![("State", status.state.to_string())];
-    if let Some(millis) = status.unix_time_ms {
-        lines.push((
-            "Unix time",
-            format!("{}.{:03}", millis / 1_000, millis % 1_000),
-        ));
+    if let Some(Ok(millis)) = status.unix_time_ms.map(TryInto::<i64>::try_into) {
+        if let Some(datetime) = Local.timestamp_millis_opt(millis).single() {
+            lines.push(("Date Time", datetime.to_rfc3339()));
+        }
     }
     if let Some(source) = status.source {
         lines.push(("Source", source.to_string()));
