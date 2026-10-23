@@ -128,7 +128,7 @@ jobs:
       - name: Rustdoc (host crates)
         run: cargo doc --no-deps
       - name: Rustdoc (crates of the SDK contracts, warnings are errors)
-        run: cargo doc --no-deps -p rohi-net -p rohi-config -p rohi-control -p rohi-control-ble
+        run: cargo doc --no-deps -p rohi-net -p rohi-config -p rohi-control -p rohi-control-ble -p rohi-time -p rohi-time-ntp
         env:
           RUSTDOCFLAGS: -D warnings
       - name: Rustdoc (ESP backend)

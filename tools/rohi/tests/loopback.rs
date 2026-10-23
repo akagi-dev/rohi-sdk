@@ -8,7 +8,8 @@ use std::time::Duration;
 use rohi::model::*;
 use rohi::{ClientTransport, Device, Error, Session};
 use rohi_control::{
-    Capabilities, ControlServices, Controller, DeviceInfo as ServiceInfo, OpenPolicy, ServiceError,
+    Capabilities, ControlServices, Controller, DeviceInfo as ServiceInfo, DeviceTime, OpenPolicy,
+    ServiceError,
 };
 use rohi_control_ble::ControlBle;
 use rohi_control_proto::control as pb;
@@ -80,6 +81,7 @@ struct Services {
     config: RefCell<Option<NetConfig>>,
     requests: RefCell<Vec<&'static str>>,
     identity: RefCell<Option<Identity>>,
+    time: DeviceTime,
 }
 
 impl Services {
@@ -107,6 +109,7 @@ impl Services {
             config: RefCell::new(None),
             requests: RefCell::new(Vec::new()),
             identity: RefCell::new(None),
+            time: DeviceTime::UNSYNCHRONIZED,
         }
     }
 }
@@ -121,6 +124,10 @@ impl ControlServices for Services {
 
     fn capabilities(&self) -> Capabilities {
         self.capabilities
+    }
+
+    fn time_status(&self) -> DeviceTime {
+        self.time
     }
 
     async fn measurements(&self) -> Result<MeasurementsSnapshot, ServiceError> {
@@ -266,6 +273,7 @@ fn controller_into_services(controller: Controller<Services, OpenPolicy>) -> Ser
         config: RefCell::new(services.config.borrow().clone()),
         requests: RefCell::new(services.requests.borrow().clone()),
         identity: RefCell::new(services.identity.borrow().clone()),
+        time: services.time,
     }
 }
 
@@ -285,7 +293,8 @@ async fn info_and_capabilities() {
                 Capability::WifiScan,
                 Capability::WifiStatus,
                 Capability::WifiControl,
-                Capability::Identity
+                Capability::Identity,
+                Capability::Time
             ]
         );
     })
@@ -849,4 +858,47 @@ mod cli {
         assert!(!error.to_string().contains("definitely"));
         assert!(services.requests.borrow().is_empty());
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn time_status_is_unavailable_until_synchronized() {
+    use rohi_time::{SyncFailure, TimeSourceKind, TimeStatus, TimeSyncState as Sync, UnixTime};
+
+    with_device(20, Services::new(), |mut device| async move {
+        let status = device.time_status().await.unwrap();
+        assert_eq!(status.state, rohi::model::TimeSyncState::Unsynchronized);
+        assert_eq!(status.unix_time_ms, None);
+        assert_eq!(status.source, None);
+        let text = rohi::format::time_status(&status);
+        assert!(text.contains("unsynchronized"), "{text}");
+        assert!(!text.contains("unix time"), "{text}");
+    })
+    .await;
+
+    let mut services = Services::new();
+    services.time = DeviceTime {
+        unix_time: Some(UnixTime::from_millis(1_780_000_000_250)),
+        status: TimeStatus {
+            state: Sync::Synchronized,
+            source: Some(TimeSourceKind::Ntp),
+            last_sync_age: Some(Duration::from_secs(90)),
+            uncertainty: Some(Duration::from_millis(40)),
+            consecutive_failures: 2,
+            last_failure: Some(SyncFailure::Timeout),
+        },
+    };
+    with_device(20, services, |mut device| async move {
+        let status = device.time_status().await.unwrap();
+        assert_eq!(status.state, rohi::model::TimeSyncState::Synchronized);
+        assert_eq!(status.unix_time_ms, Some(1_780_000_000_250));
+        assert_eq!(status.source, Some(rohi::model::TimeSource::Ntp));
+        assert_eq!(status.sync_age_ms, Some(90_000));
+        assert_eq!(status.uncertainty_ms, Some(40));
+        assert_eq!(status.consecutive_failures, 2);
+        assert_eq!(status.last_failure, Some(TimeSyncFailure::Timeout));
+        let text = rohi::format::time_status(&status);
+        assert!(text.contains("1780000000.250"), "{text}");
+        assert!(text.contains("ntp"), "{text}");
+    })
+    .await;
 }

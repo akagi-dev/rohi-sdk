@@ -75,6 +75,8 @@ dependencies = [
  "rohi-identity",
  "rohi-net",
  "rohi-net-esp",
+ "rohi-time",
+ "rohi-time-ntp",
  "static_cell",
 ]
 
@@ -3752,6 +3754,7 @@ dependencies = [
  "rohi-hal",
  "rohi-identity",
  "rohi-net",
+ "rohi-time",
  "rpassword",
  "serde",
  "serde_json",
@@ -3802,6 +3805,7 @@ dependencies = [
  "rohi-hal",
  "rohi-identity",
  "rohi-net",
+ "rohi-time",
  "zeroize",
 ]
 
@@ -3915,6 +3919,32 @@ dependencies = [
  "log",
  "rohi-net",
  "trouble-host",
+]
+
+[[package]]
+name = "rohi-time"
+version = "0.1.0"
+dependencies = [
+ "embassy-futures",
+ "embassy-sync 0.8.0",
+ "embedded-hal-async",
+ "log",
+ "rohi-hal",
+]
+
+[[package]]
+name = "rohi-time-ntp"
+version = "0.1.0"
+dependencies = [
+ "embassy-futures",
+ "embassy-sync 0.8.0",
+ "embedded-hal-async",
+ "embedded-nal-async",
+ "log",
+ "rohi-hal",
+ "rohi-net",
+ "rohi-time",
+ "sntpc",
 ]
 
 [[package]]
@@ -4354,6 +4384,15 @@ dependencies = [
  "cfg-if",
  "heapless 0.9.3",
  "managed",
+]
+
+[[package]]
+name = "sntpc"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "294278b134cd7d06d7f22eca970aebe38707864c080f66547f9ad26327534af3"
+dependencies = [
+ "cfg-if",
 ]
 
 [[package]]

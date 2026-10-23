@@ -50,6 +50,7 @@ rpassword = { workspace = true, optional = true }
 
 [dev-dependencies]
 rohi-control.workspace = true
+rohi-time.workspace = true
 rohi-hal.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "time", "sync"] }
 

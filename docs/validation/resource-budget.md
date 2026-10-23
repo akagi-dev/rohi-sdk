@@ -45,9 +45,11 @@ Task stack usage is not measured yet.
 The store uses no heap; see [Resource limits](../reference/resource-limits.md#configuration-store) for its bounds. Its
 RAM cost is a few words of state plus the stack workspace during a call.
 
-## IP stack and TCP pool
+## IP stack, TCP and UDP pools
 
-Not measured: no SDK component opens TCP connections yet. Measure the `.bss` contribution of `NetResources` and the
+Not measured: no SDK component opens TCP connections yet, and the UDP pool (one socket, 2 x 128 B plus packet metadata)
+used by the NTP time source has not been measured on hardware either; the `ntp_task` stack and the time service state
+are small and also *not measured*. Measure the `.bss` contribution of `NetResources` and the
 minimum free wireless heap with an open connection when the first uplink component lands, and record it here.
 
 ## How to measure

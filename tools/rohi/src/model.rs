@@ -94,6 +94,38 @@ open_enum! {
         WifiStatus = WifiStatus => "wifi status",
         WifiControl = WifiControl => "wifi control",
         Identity = Identity => "identity",
+        Time = Time => "time",
+    }
+}
+
+open_enum! {
+    /// Whether the device has wall-clock time and how fresh it is.
+    TimeSyncState: pb::TimeSyncState {
+        Unsynchronized = Unsynchronized => "unsynchronized",
+        Synchronized = Synchronized => "synchronized",
+        Stale = Stale => "stale",
+    }
+}
+
+open_enum! {
+    /// Where the device got its time from.
+    TimeSource: pb::TimeSource {
+        Ntp = Ntp => "ntp",
+        Rtc = Rtc => "rtc",
+        External = External => "external",
+    }
+}
+
+open_enum! {
+    /// Why the last time synchronization attempt failed.
+    TimeSyncFailure: pb::TimeSyncFailure {
+        NetworkUnavailable = NetworkUnavailable => "network unavailable",
+        Resolve = Resolve => "name resolution failed",
+        Timeout = Timeout => "timeout",
+        InvalidResponse = InvalidResponse => "invalid response",
+        Rejected = Rejected => "rejected by the server",
+        Implausible = Implausible => "implausible time",
+        Source = Source => "source error",
     }
 }
 
@@ -386,6 +418,30 @@ pub struct WifiStatus {
     pub failure: Option<WifiFailure>,
     /// Connection details while connected.
     pub connection: Option<WifiConnection>,
+}
+
+/// Wall-clock time and synchronization state of the device.
+///
+/// The time is absent until a source delivered a plausible sample, it is
+/// never invented, and it may step when a later sample corrects it. It is not
+/// authenticated.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub struct TimeStatus {
+    /// Synchronization state.
+    pub state: TimeSyncState,
+    /// Milliseconds since the Unix epoch, `None` while unsynchronized.
+    pub unix_time_ms: Option<u64>,
+    /// Where the time came from.
+    pub source: Option<TimeSource>,
+    /// Milliseconds since the time was last accepted.
+    pub sync_age_ms: Option<u64>,
+    /// Uncertainty of the time when it was accepted, in milliseconds.
+    pub uncertainty_ms: Option<u32>,
+    /// Failed attempts since the last accepted sample.
+    pub consecutive_failures: u32,
+    /// Most recent failure.
+    pub last_failure: Option<TimeSyncFailure>,
 }
 
 /// Change of the Wi-Fi password in a [`WifiUpdate`].

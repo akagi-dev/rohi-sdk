@@ -178,6 +178,21 @@ impl<T: ClientTransport> Device<T> {
         }
     }
 
+    /// Wall-clock time and synchronization state of the device.
+    ///
+    /// `unix_time_ms` is `None` while the device has no time; the device never
+    /// reports uptime or a placeholder date instead.
+    pub async fn time_status(&mut self) -> Result<TimeStatus> {
+        self.require(Capability::Time).await?;
+        match self
+            .call(Call::GetTimeStatus(pb::GetTimeStatusRequest {}))
+            .await?
+        {
+            Reply::GetTimeStatus(response) => Ok(convert::time_status(&response)),
+            other => Err(unexpected(&other)),
+        }
+    }
+
     /// Asks the device to reconnect now.
     pub async fn wifi_reconnect(&mut self) -> Result<()> {
         self.require(Capability::WifiControl).await?;
@@ -272,6 +287,7 @@ fn unexpected(reply: &Reply) -> Error {
             Reply::GetIdentity(_) => "get_identity",
             Reply::ProvisionIdentity(_) => "provision_identity",
             Reply::EraseIdentity(_) => "erase_identity",
+            Reply::GetTimeStatus(_) => "get_time_status",
         }
     ))
 }

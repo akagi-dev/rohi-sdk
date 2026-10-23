@@ -35,8 +35,8 @@ pub enum NetError {
     /// The TCP connection could not be established while the network was up
     /// (refused, unreachable, timed out by the peer).
     ConnectFailed,
-    /// Every statically allocated TCP connection is in use. Close a
-    /// connection and retry; nothing waits for a free slot.
+    /// Every statically allocated TCP connection or UDP socket is in use.
+    /// Close one and retry; nothing waits for a free slot.
     NoSocketAvailable,
     /// The established connection was reset or closed by the peer or the
     /// stack.

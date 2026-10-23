@@ -17,6 +17,7 @@ rohi-control-proto.workspace = true
 rohi-hal.workspace = true
 rohi-net.workspace = true
 rohi-identity.workspace = true
+rohi-time.workspace = true
 zeroize.workspace = true
 heapless.workspace = true
 

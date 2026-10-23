@@ -48,11 +48,11 @@ chip only.
 
 ## Network stack features
 
-`embassy-net` is built with **`tcp`, `dns`, `dhcpv4`, `medium-ethernet`** (the Ethernet medium is what `esp-radio` uses).
-UDP is not enabled: no current component uses it.
+`embassy-net` is built with **`tcp`, `udp`, `dns`, `dhcpv4`, `medium-ethernet`** (the Ethernet medium is what `esp-radio`
+uses). `udp` was added with the NTP time source (`rohi-time-ntp`), the first component that needs it.
 
 > **Policy.** Platform and network protocol features are enabled only when a current SDK component uses them. A work item
-> that needs another feature (UDP, IPv6, mDNS, ...) enables it together with the component and documents why.
+> that needs another feature (IPv6, mDNS, ...) enables it together with the component and documents why.
 
 ## Toolchain
 

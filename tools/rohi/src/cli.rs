@@ -82,6 +82,8 @@ pub enum Command {
         #[command(subcommand)]
         section: Option<ConfigSection>,
     },
+    /// Show the wall-clock time and its synchronization state.
+    Time,
     /// Wi-Fi status and control.
     Wifi {
         #[command(subcommand)]
@@ -424,6 +426,10 @@ pub async fn execute<T: ClientTransport>(
                     emit(json, &config, || format::config(&config));
                 }
             }
+        }
+        Command::Time => {
+            let status = device.time_status().await?;
+            emit(json, &status, || format::time_status(&status));
         }
         Command::Wifi { action } => {
             wifi(device, action.unwrap_or(WifiAction::Status), json).await?;

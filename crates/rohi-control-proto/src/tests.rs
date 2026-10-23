@@ -253,3 +253,41 @@ fn identity_info_round_trips() {
         None
     );
 }
+
+#[test]
+fn get_time_status_request_golden_bytes() {
+    let request = Request {
+        protocol_version: PROTOCOL_VERSION,
+        request_id: 7,
+        request: Some(Request_::Request::GetTimeStatus(
+            GetTimeStatusRequest::default(),
+        )),
+    };
+    let mut buf = [0u8; 16];
+    let len = encode(&request, &mut buf).unwrap();
+    // field 40 (time status), length-delimited and empty.
+    assert_eq!(&buf[..len], &[0x08, 0x01, 0x10, 0x07, 0xc2, 0x02, 0x00]);
+    assert!(decode::<Request>(&buf[..len]).unwrap() == request);
+}
+
+#[test]
+fn full_time_status_response_fits_the_limit() {
+    let mut time = GetTimeStatusResponse {
+        state: TimeSyncState::Synchronized,
+        consecutive_failures: u32::MAX,
+        ..Default::default()
+    };
+    time.set_unix_time_ms(u64::MAX);
+    time.set_source(TimeSource::Ntp);
+    time.set_sync_age_ms(u64::MAX);
+    time.set_uncertainty_ms(u32::MAX);
+    time.set_last_failure(TimeSyncFailure::Source);
+    let response = Response {
+        protocol_version: PROTOCOL_VERSION,
+        request_id: u32::MAX,
+        response: Some(Response_::Response::GetTimeStatus(time)),
+    };
+    let mut buf = [0u8; limits::MAX_RESPONSE_LEN];
+    let len = encode(&response, &mut buf).unwrap();
+    assert!(decode::<Response>(&buf[..len]).unwrap() == response);
+}

@@ -20,7 +20,7 @@ use core::net::{IpAddr, SocketAddr};
 use embedded_io_async::{Read, Write};
 use embedded_nal_async::AddrType;
 
-use super::NetError;
+use super::{NetError, UdpSocket};
 
 /// Platform IP stack seen by a [`NetworkHandle`](crate::NetworkHandle).
 ///
@@ -32,13 +32,19 @@ use super::NetError;
 /// keeps its bounded connection pool behind interior mutability.
 ///
 /// Cancellation: every future must be cancel-safe. Dropping `resolve` or
-/// `connect` leaves no resource allocated; dropping a connection releases its
-/// slot.
+/// `connect` leaves no resource allocated; dropping a connection or a UDP
+/// socket releases its slot.
 #[allow(async_fn_in_trait)]
 pub trait IpBackend {
     /// An established TCP connection. Dropping it closes the connection
     /// (abort if needed) and releases its statically allocated slot.
     type Connection<'a>: Read<Error = NetError> + Write<Error = NetError>
+    where
+        Self: 'a;
+
+    /// A UDP socket bound to an ephemeral local port. Dropping it closes the
+    /// socket and releases its statically allocated slot.
+    type Udp<'a>: UdpSocket
     where
         Self: 'a;
 
@@ -54,4 +60,10 @@ pub trait IpBackend {
     /// Fails with [`NetError::NoSocketAvailable`] immediately when all
     /// connection slots are in use.
     async fn connect(&self, remote: SocketAddr) -> Result<Self::Connection<'_>, NetError>;
+
+    /// Opens a UDP socket bound to an ephemeral local port.
+    ///
+    /// Fails with [`NetError::NoSocketAvailable`] immediately when all UDP
+    /// slots are in use.
+    fn udp_socket(&self) -> Result<Self::Udp<'_>, NetError>;
 }

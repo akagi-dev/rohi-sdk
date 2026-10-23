@@ -13,7 +13,9 @@ sizes are in [Resource budget](../validation/resource-budget.md); the approach i
 | `WIRELESS_HEAP_SIZE` | 128 KiB | Wi-Fi and BLE controllers (one shared fixed heap) | radio driver allocation fails; the driver reports an error, the sensors keep running |
 | `TCP_CONNECTIONS` | 2 | `NetworkHandle::connect` | `NetError::NoSocketAvailable` immediately (no waiting) |
 | `TCP_RX_BUFFER` / `TCP_TX_BUFFER` | 1024 B / 1024 B per connection | TCP connections | TCP flow control; nothing is lost |
-| `NETWORK_SOCKETS` | `TCP_CONNECTIONS + 2` (DHCP, DNS) = 4 | `embassy-net` socket table | cannot happen: checked at compile time |
+| `UDP_SOCKETS` | 1 | `NetworkHandle::udp_socket` (NTP time source, one exchange at a time) | `NetError::NoSocketAvailable` immediately; the time source records a failed attempt and retries with backoff |
+| `UDP_BUFFER` | 128 B per direction, `UDP_PACKETS` = 2 datagrams | each UDP socket | an oversized datagram is dropped by the stack |
+| `NETWORK_SOCKETS` | `TCP_CONNECTIONS + UDP_SOCKETS + 2` (DHCP, DNS) = 5 | `embassy-net` socket table | cannot happen: checked at compile time |
 | `BLE_RX_DEPTH` / `BLE_TX_DEPTH` | 4 / 4 chunks of ≤ 244 B | BLE RX / TX queues | RX: the ATT response is delayed (backpressure); TX: `send` waits |
 | `BLE_CONNECTIONS` | 1 | BLE host stack | further centrals cannot connect |
 | `BLE_L2CAP_CHANNELS` | 2 | BLE host stack | connection setup fails, advertising restarts |
@@ -40,7 +42,7 @@ The desired-configuration cell holds one value (latest wins); it is not a queue.
 ## IP data plane
 
 Capacity is the product's `TCP_CONNECTIONS` above. `rohi-net` itself imposes no socket limit; the backend's pool is
-bounded (at most 32 connections) and `NetResources` checks `SOCKETS ≥ TCP + 2` at compile time. DNS returns IPv4 only.
+bounded (at most 32 connections and 32 UDP sockets) and `NetResources` checks `SOCKETS ≥ TCP + UDP + 2` at compile time. DNS returns IPv4 only.
 
 ## BLE
 

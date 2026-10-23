@@ -35,6 +35,7 @@ message Request {
     GetIdentityRequest get_identity = 30;
     ProvisionIdentityRequest provision_identity = 31;
     EraseIdentityRequest erase_identity = 32;
+    GetTimeStatusRequest get_time_status = 40;
   }
 }
 
@@ -58,6 +59,7 @@ message Response {
     GetIdentityResponse get_identity = 30;
     ProvisionIdentityResponse provision_identity = 31;
     EraseIdentityResponse erase_identity = 32;
+    GetTimeStatusResponse get_time_status = 40;
   }
 }
 
@@ -112,6 +114,7 @@ enum Capability {
   CAPABILITY_WIFI_STATUS = 4;
   CAPABILITY_WIFI_CONTROL = 5;
   CAPABILITY_IDENTITY = 6;
+  CAPABILITY_TIME = 7;
 }
 
 message GetCapabilitiesRequest {}
@@ -387,3 +390,60 @@ message ProvisionIdentityResponse {
 // Removes the identity; a no-op when none is provisioned.
 message EraseIdentityRequest {}
 message EraseIdentityResponse {}
+
+// ---------------------------------------------------------------------------
+// Time
+// ---------------------------------------------------------------------------
+//
+// Wall-clock time is optional: the device has none until a time source (for
+// example NTP) delivered a plausible sample. It is never invented and uptime
+// is never reported as Unix time. The time may step when a later sample
+// corrects it; durations must be measured with the device's monotonic clock.
+// The time is not authenticated.
+
+enum TimeSyncState {
+  TIME_SYNC_STATE_UNSPECIFIED = 0;
+  // No valid sample yet: `unix_time_ms` is not set.
+  TIME_SYNC_STATE_UNSYNCHRONIZED = 1;
+  TIME_SYNC_STATE_SYNCHRONIZED = 2;
+  // The last sample is older than the stale threshold; `unix_time_ms` is
+  // still calculated from it.
+  TIME_SYNC_STATE_STALE = 3;
+}
+
+enum TimeSource {
+  TIME_SOURCE_UNSPECIFIED = 0;
+  TIME_SOURCE_NTP = 1;
+  TIME_SOURCE_RTC = 2;
+  TIME_SOURCE_EXTERNAL = 3;
+}
+
+// Category of the most recent failed synchronization attempt.
+enum TimeSyncFailure {
+  TIME_SYNC_FAILURE_UNSPECIFIED = 0;
+  TIME_SYNC_FAILURE_NETWORK_UNAVAILABLE = 1;
+  TIME_SYNC_FAILURE_RESOLVE = 2;
+  TIME_SYNC_FAILURE_TIMEOUT = 3;
+  TIME_SYNC_FAILURE_INVALID_RESPONSE = 4;
+  TIME_SYNC_FAILURE_REJECTED = 5;
+  TIME_SYNC_FAILURE_IMPLAUSIBLE = 6;
+  TIME_SYNC_FAILURE_SOURCE = 7;
+}
+
+message GetTimeStatusRequest {}
+
+message GetTimeStatusResponse {
+  TimeSyncState state = 1;
+  // Milliseconds since the Unix epoch; unset while unsynchronized.
+  optional uint64 unix_time_ms = 2;
+  // Source of the current time; unset while unsynchronized.
+  optional TimeSource source = 3;
+  // Milliseconds since the current time was accepted.
+  optional uint64 sync_age_ms = 4;
+  // Uncertainty of the current time when it was accepted, in milliseconds.
+  optional uint32 uncertainty_ms = 5;
+  // Failed attempts since the last accepted sample.
+  uint32 consecutive_failures = 6;
+  // Most recent failure, cleared by the next accepted sample.
+  optional TimeSyncFailure last_failure = 7;
+}

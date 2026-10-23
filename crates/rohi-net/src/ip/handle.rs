@@ -21,7 +21,7 @@ use embedded_nal_async::{AddrType, Dns, TcpConnect};
 
 use super::{IpBackend, NetError};
 
-/// Cheap, copyable handle to the IP data plane: DNS and TCP.
+/// Cheap, copyable handle to the IP data plane: DNS, TCP and UDP.
 ///
 /// Implements the standard [`embedded_nal_async::Dns`] and
 /// [`embedded_nal_async::TcpConnect`] traits; connections implement
@@ -40,6 +40,7 @@ use super::{IpBackend, NetError};
 /// TCP connections are statically bounded by the backend. When all are in
 /// use, [`connect`](Self::connect) fails immediately with
 /// [`NetError::NoSocketAvailable`]; it never waits for a free slot.
+/// UDP sockets ([`udp_socket`](Self::udp_socket)) are bounded the same way.
 pub struct NetworkHandle<'a, B> {
     backend: &'a B,
 }
@@ -105,6 +106,18 @@ impl<'a, B: IpBackend> NetworkHandle<'a, B> {
         self.backend
             .connect(remote)
             .await
+            .map_err(|error| self.classify(error))
+    }
+
+    /// Opens a UDP socket bound to an ephemeral local port.
+    ///
+    /// Fails with [`NetError::NetworkUnavailable`] while the network cannot
+    /// carry traffic and with [`NetError::NoSocketAvailable`] when every UDP
+    /// slot is in use. Dropping the socket releases its slot.
+    pub fn udp_socket(&self) -> Result<B::Udp<'a>, NetError> {
+        self.ensure_ready()?;
+        self.backend
+            .udp_socket()
             .map_err(|error| self.classify(error))
     }
 }
