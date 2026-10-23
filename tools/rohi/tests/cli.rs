@@ -441,15 +441,21 @@ async fn time_shows_the_wall_clock_only_when_the_device_has_one() {
     outcome.result.as_ref().unwrap();
     assert_eq!(
         outcome.stdout,
-        "\
+        format!(
+            "\
 Time
   State       stale
-  Unix time   1780000000.250
+  Date Time   {}
   Source      ntp
   Last sync   7200 s ago
   Accuracy    +-40 ms
   Failures    2 (last: timeout)
-"
+",
+            chrono::DateTime::<chrono::Utc>::from_timestamp_millis(1_780_000_000_250)
+                .unwrap()
+                .with_timezone(&chrono::Local)
+                .to_rfc3339()
+        )
     );
 
     let json = run(outcome.services, &["-o", "json", "time"]).await.json();
