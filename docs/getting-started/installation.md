@@ -42,8 +42,6 @@ linker, nothing else has to be installed.
 nix develop
 ```
 
-<script src="https://asciinema.org/a/9VksaqQ2h0pln6posA04IxCrL.js" id="asciicast-9VksaqQ2h0pln6posA04IxCrL" async="true"></script>
-
 ## Verify the installation
 
 Build and test the SDK as described in [Build and test](build-and-test.md): `cargo test` on the host, and

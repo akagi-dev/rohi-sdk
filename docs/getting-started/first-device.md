@@ -68,4 +68,3 @@ Behind the scenes, several processes occur:
 2. `espflash` detects the ESP board and flashes the firmware;
 3. `espflash` connects to the serial interface and displays logs.
 
-<script src="https://asciinema.org/a/TD4TphAuoOyL7njcRor7Vg0dj.js" id="asciicast-TD4TphAuoOyL7njcRor7Vg0dj" async="true"></script>
