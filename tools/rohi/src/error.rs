@@ -28,8 +28,8 @@ pub enum Error {
     /// The BLE link failed (adapter, discovery, connection, GATT).
     #[error("BLE transport: {0}")]
     Transport(String),
-    /// No ROHI device was found.
-    #[error("no ROHI device found")]
+    /// No device was found.
+    #[error("no device found")]
     DeviceNotFound,
     /// The device did not answer in time.
     #[error("timed out waiting for the device")]

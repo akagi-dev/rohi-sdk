@@ -68,3 +68,7 @@ Behind the scenes, several processes occur:
 2. `espflash` detects the ESP board and flashes the firmware;
 3. `espflash` connects to the serial interface and displays logs.
 
+## Talk to the device
+
+Once the firmware runs, the [`rohi` tool](rohi-tool.md) finds it over Bluetooth LE and shows its status, sensors and
+Wi-Fi.

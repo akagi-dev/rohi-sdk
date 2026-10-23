@@ -20,7 +20,9 @@ maintenance = { status = "actively-developed" }
 rohi-config.workspace = true
 embedded-storage.workspace = true
 
-esp-storage = { workspace = true, features = ["embedded-storage"], optional = true }
+esp-storage = { workspace = true, features = [
+  "embedded-storage",
+], optional = true }
 esp-bootloader-esp-idf = { workspace = true, optional = true }
 
 [dev-dependencies]

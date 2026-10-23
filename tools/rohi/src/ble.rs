@@ -16,7 +16,7 @@
 //
 //! BLE central over `btleplug`.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use btleplug::api::{
     Central, CharPropFlags, Characteristic, Manager as _, Peripheral as _, ScanFilter, WriteType,
@@ -72,17 +72,37 @@ async fn describe(peripheral: &Peripheral) -> Result<DiscoveredDevice> {
 
 /// Scans for devices advertising the ROHI Control Service.
 pub async fn scan(duration: Duration) -> Result<Vec<DiscoveredDevice>> {
+    scan_until(duration, |_, _| false).await
+}
+
+/// Scans for at most `max`, stopping earlier as soon as `done` returns `true`.
+///
+/// `done` sees the devices found so far and the time elapsed since the scan
+/// started; it is evaluated about four times per second. Returns the devices
+/// found when the scan ended.
+pub async fn scan_until(
+    max: Duration,
+    mut done: impl FnMut(&[DiscoveredDevice], Duration) -> bool,
+) -> Result<Vec<DiscoveredDevice>> {
+    const POLL: Duration = Duration::from_millis(250);
     let adapter = adapter().await?;
     adapter
         .start_scan(ScanFilter {
             services: vec![uuid(SERVICE_UUID)],
         })
         .await?;
-    sleep(duration).await;
-    let mut found = Vec::new();
-    for peripheral in adapter.peripherals().await? {
-        found.push(describe(&peripheral).await?);
-    }
+    let started = Instant::now();
+    let found = loop {
+        sleep(POLL.min(max.saturating_sub(started.elapsed()))).await;
+        let mut found = Vec::new();
+        for peripheral in adapter.peripherals().await? {
+            found.push(describe(&peripheral).await?);
+        }
+        let elapsed = started.elapsed();
+        if elapsed >= max || done(&found, elapsed) {
+            break found;
+        }
+    };
     adapter.stop_scan().await?;
     Ok(found)
 }

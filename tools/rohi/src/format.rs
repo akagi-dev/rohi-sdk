@@ -155,15 +155,15 @@ pub fn wifi_scan(networks: &[WifiNetwork]) -> String {
 /// Devices found by a scan.
 pub fn devices(devices: &[crate::DiscoveredDevice]) -> String {
     if devices.is_empty() {
-        return "No ROHI devices found\n".to_owned();
+        return "No devices found\n".to_owned();
     }
     let mut out = String::new();
     for device in devices {
         let _ = writeln!(
             out,
             "{}  {}{}",
-            device.id,
             device.name.as_deref().unwrap_or("(no name)"),
+            device.id,
             device
                 .rssi
                 .map(|rssi| format!("  {rssi} dBm"))

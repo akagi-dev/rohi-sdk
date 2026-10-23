@@ -1,0 +1,46 @@
+Discover nearby ROHI devices.
+
+Lists the devices advertising the ROHI control service with the platform ID and advertised name that `--device` accepts, and the signal strength.
+
+Usage: rohi scan [OPTIONS]
+
+Options:
+      --duration <SECONDS>
+          How long to scan
+          
+          [default: 5]
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Target:
+  -d, --device <DEVICE>
+          Target device: advertised name, ID, or a unique prefix or suffix of either; or a URI such as ble://NAME or tcp://HOST:PORT. Without it the only device found is used, or you choose among several
+          
+          [env: ROHI_DEVICE=]
+
+Output:
+  -o, --output <FORMAT>
+          Output format
+
+          Possible values:
+          - human: Text for people
+          - json:  JSON with a stable, versioned schema, for scripts
+          
+          [default: human]
+
+Connection:
+      --scan-timeout <SECONDS>
+          How long to search for the target device
+          
+          [default: 10]
+
+      --timeout <SECONDS>
+          How long to wait for a device response
+          
+          [default: 10]
+
+Examples:
+  rohi scan
+  rohi scan --duration 10
+  rohi -o json scan

@@ -38,7 +38,7 @@ rohi-identity = { workspace = true, features = ["std"] }
 zeroize = { workspace = true, features = ["std"] }
 heapless.workspace = true
 btleplug.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["signal"] }
 futures.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
@@ -55,4 +55,8 @@ tokio = { workspace = true, features = ["rt", "macros", "time", "sync"] }
 
 [[test]]
 name = "loopback"
+required-features = ["cli"]
+
+[[test]]
+name = "cli"
 required-features = ["cli"]

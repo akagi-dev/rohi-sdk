@@ -9,6 +9,7 @@
 - [Workspace layout](getting-started/workspace.md)
 - [Build and test](getting-started/build-and-test.md)
 - [First device: Air Quality Terminal](getting-started/first-device.md)
+- [The rohi tool](getting-started/rohi-tool.md)
 
 # Concepts
 
