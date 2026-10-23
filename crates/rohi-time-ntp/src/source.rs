@@ -131,9 +131,7 @@ where
 
     async fn sample(&mut self) -> Result<TimeSample, NtpError> {
         let result = self.exchange().await;
-        if result.is_err() {
-            self.next_server = (self.next_server + 1) % self.config.servers().len();
-        }
+        self.next_server = (self.next_server + 1) % self.config.servers().len();
         result
     }
 }
