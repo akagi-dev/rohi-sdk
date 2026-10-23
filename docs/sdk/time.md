@@ -109,7 +109,7 @@ the plausibility window and is rejected.
 
 | Rule | Default |
 |------|---------|
-| `not_before` (plausibility floor) | firmware build time (`ROHI_BUILD_UNIX_TIME`, or `SOURCE_DATE_EPOCH` for reproducible builds) |
+| `not_before` (plausibility floor) | firmware build time (`build.rs`; `SOURCE_DATE_EPOCH` is honored for reproducible builds unless it is before 2026, as in Nix shells, which set it to 1980) |
 | `not_after` | floor + `DEFAULT_HORIZON` (40 years) |
 | `max_uncertainty` | `DEFAULT_MAX_UNCERTAINTY` (5 s) |
 | `stale_after` | `DEFAULT_STALE_AFTER` (6 h) |

@@ -57,6 +57,13 @@ const NTP_SERVERS: &[&str] = &["pool.ntp.org", "time.cloudflare.com"];
 /// the NTP era pivot until the first synchronization.
 const BUILD_TIME: UnixTime = UnixTime::from_secs(parse_secs(env!("ROHI_BUILD_UNIX_TIME")));
 
+// A host without a clock yields 0 in `build.rs`; refuse to build a firmware whose
+// plausibility window would exclude the present.
+const _: () = assert!(
+    BUILD_TIME.as_secs() >= 1_767_225_600,
+    "the build time must be 2026-01-01 or later"
+);
+
 const fn parse_secs(text: &str) -> u64 {
     let bytes = text.as_bytes();
     let mut value = 0u64;
