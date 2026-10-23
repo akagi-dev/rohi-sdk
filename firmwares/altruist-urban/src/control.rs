@@ -34,9 +34,10 @@ use rohi_control_ble::ControlBle;
 use rohi_hal::MeasurementsSnapshot;
 use rohi_hal::runtime::MeasurementHandle;
 use rohi_net::{NetworkInfo, WifiConfig, WifiHandle, WifiScanResults, WifiStatus};
-use rohi_net_esp::{BleRunner, EspBle};
+use static_cell::StaticCell;
 
 use crate::config::{ConfigHandle, ServiceError as ConfigError};
+use crate::resources::{BleResources, BleRunner, BleTransport};
 use crate::tasks::RawMutex;
 
 /// Upper bound of a Wi-Fi scan requested over the control link.
@@ -156,6 +157,9 @@ pub const BLE_CONFIG: rohi_net::BleConfig = rohi_net::BleConfig {
     gatt: GATT,
 };
 
+/// Static storage of the BLE peripheral, sized by [`crate::resources`].
+pub static BLE_RESOURCES: StaticCell<BleResources> = StaticCell::new();
+
 /// Runs the BLE controller and host stack.
 #[embassy_executor::task]
 pub async fn ble_task(runner: BleRunner) {
@@ -168,7 +172,7 @@ pub async fn ble_task(runner: BleRunner) {
 /// the link security and the policy hook is in place, [`OpenPolicy`] allows
 /// everything until identity provisioning arrives.
 #[embassy_executor::task]
-pub async fn control_task(transport: EspBle, services: UrbanControlServices) {
+pub async fn control_task(transport: BleTransport, services: UrbanControlServices) {
     let controller = Controller::new(services, OpenPolicy);
     let mut control = ControlBle::new(transport, &controller);
     control.run().await

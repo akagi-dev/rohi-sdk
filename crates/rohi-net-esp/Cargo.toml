@@ -23,8 +23,9 @@ esp-hal = { workspace = true, optional = true }
 esp-radio = { workspace = true, optional = true }
 esp-alloc = { workspace = true, optional = true }
 embassy-net = { workspace = true, optional = true }
+embedded-io-async = { workspace = true, optional = true }
+embedded-nal-async = { workspace = true, optional = true }
 embassy-time = { workspace = true, optional = true }
-static_cell = { workspace = true, optional = true }
 embassy-sync = { workspace = true, optional = true }
 embassy-futures = { workspace = true, optional = true }
 heapless = { workspace = true, optional = true }
@@ -42,8 +43,9 @@ _esp = [
   "dep:esp-radio",
   "dep:esp-alloc",
   "dep:embassy-net",
+  "dep:embedded-io-async",
+  "dep:embedded-nal-async",
   "dep:embassy-time",
-  "dep:static_cell",
   "dep:embassy-sync",
   "dep:embassy-futures",
   "dep:heapless",

@@ -25,12 +25,32 @@
 
 use embassy_time::{Delay, Duration, with_timeout};
 use log::{info, warn};
-use rohi_net::{ManagerConfig, WifiHandle, WifiManager, WifiShared, WifiState, WifiStatus};
-use rohi_net_esp::{EspWifi, NetRunner};
+use rohi_net::{
+    ManagerConfig, NetworkHandle, WifiError, WifiHandle, WifiManager, WifiShared, WifiState,
+    WifiStatus,
+};
+use rohi_net_esp::{EspWifi, EspWireless, NetRunner};
+use static_cell::StaticCell;
 
+use crate::resources::{Ip, NetResources};
 use crate::tasks::RawMutex;
 
 static WIFI: WifiShared<RawMutex> = WifiShared::new();
+static NET_RESOURCES: StaticCell<NetResources> = StaticCell::new();
+static IP: StaticCell<Ip> = StaticCell::new();
+
+/// Brings up Wi-Fi and the IP stack with the sizes of [`crate::resources`].
+///
+/// Returns the Wi-Fi driver for [`wifi_task`], the IP stack runner for
+/// [`net_runner_task`] and the [`NetworkHandle`] of the IP data plane
+/// (DNS and TCP). Call once.
+pub fn start(
+    wireless: &mut EspWireless,
+) -> Result<(EspWifi, NetRunner, NetworkHandle<'static, Ip>), WifiError> {
+    let (backend, runner, ip) = wireless.wifi(NET_RESOURCES.init(NetResources::new()))?;
+    let ip: &'static Ip = IP.init(ip);
+    Ok((backend, runner, NetworkHandle::new(ip)))
+}
 
 /// Handle to command the Wi-Fi manager and read its published state.
 pub fn handle() -> WifiHandle<'static, RawMutex> {

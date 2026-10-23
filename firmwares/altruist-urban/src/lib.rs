@@ -42,6 +42,8 @@ pub mod config;
 /// Local control plane over BLE.
 pub mod control;
 pub mod net;
+/// Static resource budget of the wireless stack.
+pub mod resources;
 
 /// Embassy tasks.
 pub mod tasks;

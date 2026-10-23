@@ -40,15 +40,12 @@ use esp_radio::wifi::{
     DisconnectReason, Interface, Password, Ssid, WifiController, WifiError as VendorError,
 };
 use log::{debug, warn};
-use static_cell::StaticCell;
 
 use rohi_net::{
     NetworkInfo, ScanCollector, WifiBackend, WifiConfig, WifiError, WifiNetwork, WifiScanResults,
     WifiSecurity, WifiSsid,
 };
 
-/// Sockets reserved in the IP stack: DHCP, DNS and headroom for later clients.
-const NET_SOCKETS: usize = 6;
 /// Upper bound of raw scan entries converted per scan (bounds the vendor `Vec`).
 const MAX_RAW_SCAN_RESULTS: usize = 48;
 
@@ -56,8 +53,6 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const DHCP_TIMEOUT: Duration = Duration::from_secs(20);
 const STALE_CONFIG_POLL: Duration = Duration::from_millis(50);
 const STALE_CONFIG_LIMIT: u32 = 40;
-
-static RESOURCES: StaticCell<StackResources<NET_SOCKETS>> = StaticCell::new();
 
 /// Background driver of the IP stack. Run it on its own task:
 /// `runner.run().await`.
@@ -81,7 +76,10 @@ impl EspWifi {
     ///
     /// Requires the wireless heap and the `esp-rtos` scheduler to be running
     /// and must be called once; see [`EspWireless`](crate::EspWireless).
-    pub(crate) fn new(wifi: WIFI<'static>) -> Result<(Self, NetRunner), WifiError> {
+    pub(crate) fn new<const SOCKETS: usize>(
+        wifi: WIFI<'static>,
+        resources: &'static mut StackResources<SOCKETS>,
+    ) -> Result<(Self, NetRunner, Stack<'static>), WifiError> {
         let controller = WifiController::new(wifi, ControllerConfig::default())
             .map_err(|error| map_driver_error(&error))?;
         let interface = Interface::station();
@@ -90,7 +88,7 @@ impl EspWifi {
         let (stack, runner) = embassy_net::new(
             interface,
             IpConfig::dhcpv4(Default::default()),
-            RESOURCES.init(StackResources::new()),
+            resources,
             seed,
         );
 
@@ -101,6 +99,7 @@ impl EspWifi {
                 ssid: None,
             },
             NetRunner(runner),
+            stack,
         ))
     }
 

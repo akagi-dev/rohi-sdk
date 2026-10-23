@@ -53,7 +53,7 @@ embassy-time = { version = "0.5.1", features = ["tick-hz-1_000_000"] }
 embassy-sync = "0.8.0"
 embassy-futures = "0.1.2"
 embassy-embedded-hal = "0.6.0"
-embassy-net = { version = "0.9.1", features = ["tcp", "udp", "dns", "dhcpv4", "medium-ethernet"] }
+embassy-net = { version = "0.9.1", features = ["tcp", "dns", "dhcpv4", "medium-ethernet"] }
 
 # Storage
 embedded-storage = "0.3.1"
