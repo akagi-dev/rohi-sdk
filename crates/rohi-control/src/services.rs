@@ -79,13 +79,16 @@ pub trait ControlServices {
     /// Stored Wi-Fi configuration, `None` when not configured.
     async fn wifi_config(&self) -> Result<Option<WifiConfig>, ServiceError>;
 
-    /// Persists the Wi-Fi configuration (`None` removes it). Only this
-    /// section may be touched.
-    async fn store_wifi_config(&self, config: Option<&WifiConfig>) -> Result<(), ServiceError>;
-
-    /// Hands a persisted configuration to the Wi-Fi runtime. Completes when
-    /// the runtime accepted it, not when the network is reached.
-    async fn apply_wifi_config(&self, config: Option<WifiConfig>) -> Result<(), ServiceError>;
+    /// Persists the Wi-Fi configuration (`None` removes it) and publishes it
+    /// to the Wi-Fi runtime as the desired configuration. Only this section
+    /// may be touched. Completes when the configuration is committed, not
+    /// when the network is reached.
+    ///
+    /// Cancellation: before the commit the state is unchanged; once the
+    /// commit happened the runtime is guaranteed to learn the new
+    /// configuration even if the caller is dropped, because publication is
+    /// done by the owner of the store, with no cancellable gap in between.
+    async fn set_wifi_config(&self, config: Option<&WifiConfig>) -> Result<(), ServiceError>;
 
     /// Scans for networks.
     async fn wifi_scan(&self) -> Result<WifiScanResults, ServiceError>;

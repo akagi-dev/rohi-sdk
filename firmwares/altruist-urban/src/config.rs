@@ -44,6 +44,13 @@
 //! identity. A full factory reset, if ever needed, has to be an explicit,
 //! privileged operation of its own.
 //!
+//! Persistent Wi-Fi configuration is *state*: after the owner task committed a
+//! `WifiConfig` section (and once at boot, from the stored value) it publishes
+//! the value to the Wi-Fi manager as the desired configuration, synchronously,
+//! in the same task step as the commit. There is no `.await` between commit and
+//! publication, so a caller that is cancelled while waiting for the response
+//! cannot leave a stored configuration unknown to the runtime.
+//!
 //! Flash erase and programming are synchronous and `esp-storage` runs them in
 //! a critical section with the flash cache disabled, so an update stalls the
 //! whole CPU (each 4 KiB sector erase takes tens of milliseconds), not only
@@ -63,6 +70,8 @@ use rohi_config::{
 };
 use rohi_config_esp::esp::{PartitionError, config_storage, esp_storage::FlashStorage};
 use rohi_config_esp::{EspConfigStorage, EspStorageError};
+
+use rohi_net::{WifiConfig, WifiHandle};
 
 use crate::tasks::RawMutex;
 
@@ -254,6 +263,11 @@ impl ConfigHandle {
     }
 
     /// Stores `value`, replacing the previous section `T`.
+    ///
+    /// Cancellation: dropping the future before the request is queued leaves
+    /// the store unchanged; afterwards the owner task still commits it (and
+    /// publishes a `WifiConfig` to the Wi-Fi runtime), so the operation is
+    /// logically completed and the caller only misses the result.
     pub async fn set<T: ConfigSection>(&self, value: &T) -> Result<(), ServiceError> {
         let mut blob = Blob::empty();
         blob.version = T::VERSION;
@@ -268,6 +282,8 @@ impl ConfigHandle {
     }
 
     /// Removes section `T`; a no-op if it is absent.
+    ///
+    /// Cancellation: same as [`ConfigHandle::set`].
     pub async fn remove<T: ConfigSection>(&self) -> Result<(), ServiceError> {
         match self.call(Command::Remove(T::ID)).await {
             Outcome::Done => Ok(()),
@@ -319,7 +335,7 @@ enum Owner {
 }
 
 impl Owner {
-    fn handle(&mut self, command: Command) -> Outcome {
+    fn handle(&mut self, command: Command, wifi: WifiHandle<'static, RawMutex>) -> Outcome {
         if let Command::FormatStorage = command {
             return self.format_storage();
         }
@@ -344,12 +360,18 @@ impl Owner {
                 }
                 Command::Set { id, blob } => {
                     match store.set_raw(id, blob.version, blob.payload()) {
-                        Ok(()) => Outcome::Done,
+                        Ok(()) => {
+                            publish_wifi(wifi, id, Some(&blob));
+                            Outcome::Done
+                        }
                         Err(error) => Outcome::Failed(ServiceError::Store(error)),
                     }
                 }
                 Command::Remove(id) => match store.remove_raw(id) {
-                    Ok(()) => Outcome::Done,
+                    Ok(()) => {
+                        publish_wifi(wifi, id, None);
+                        Outcome::Done
+                    }
                     Err(error) => Outcome::Failed(ServiceError::Store(error)),
                 },
                 Command::FormatStorage => unreachable!("handled above"),
@@ -437,10 +459,14 @@ fn open(flash: FLASH<'static>) -> Owner {
 
 /// Owns the [`ConfigStore`] and answers requests, one at a time.
 #[embassy_executor::task]
-async fn config_task(service: &'static ConfigService, mut owner: Owner) {
+async fn config_task(
+    service: &'static ConfigService,
+    mut owner: Owner,
+    wifi: WifiHandle<'static, RawMutex>,
+) {
     loop {
         let Request { seq, command } = service.requests.receive().await;
-        let outcome = owner.handle(command);
+        let outcome = owner.handle(command, wifi);
         service.responses.send(Response { seq, outcome }).await;
     }
 }
@@ -452,9 +478,17 @@ async fn config_task(service: &'static ConfigService, mut owner: Owner) {
 /// firmware: the service keeps running and answers every request with
 /// [`ServiceError::Unavailable`], so corruption is never mistaken for an empty
 /// (unprovisioned) configuration. [`maintenance`] can format it.
-pub fn start(spawner: Spawner, flash: FLASH<'static>) -> ConfigHandle {
-    let owner = open(flash);
-    spawner.spawn(config_task(&SERVICE, owner).unwrap());
+///
+/// `wifi` receives the desired Wi-Fi configuration: the stored one now, and
+/// every later commit of the `WifiConfig` section, see the module documentation.
+pub fn start(
+    spawner: Spawner,
+    flash: FLASH<'static>,
+    wifi: WifiHandle<'static, RawMutex>,
+) -> ConfigHandle {
+    let mut owner = open(flash);
+    publish_stored_wifi(&mut owner, wifi);
+    spawner.spawn(config_task(&SERVICE, owner, wifi).unwrap());
     ConfigHandle { service: &SERVICE }
 }
 
@@ -462,4 +496,41 @@ pub fn start(spawner: Spawner, flash: FLASH<'static>) -> ConfigHandle {
 /// [`StorageMaintenance`]. Not part of the normal runtime API.
 pub fn maintenance() -> StorageMaintenance {
     StorageMaintenance { service: &SERVICE }
+}
+
+/// Publishes a just committed `WifiConfig` change as the desired Wi-Fi
+/// configuration. Synchronous on purpose, see the module documentation.
+fn publish_wifi(wifi: WifiHandle<'static, RawMutex>, id: SectionId, blob: Option<&Blob>) {
+    if id != WifiConfig::ID {
+        return;
+    }
+    match blob {
+        None => wifi.set_desired_config(None),
+        Some(blob) => match WifiConfig::decode_versioned(blob.version, blob.payload()) {
+            Ok(config) => wifi.set_desired_config(Some(config)),
+            Err(error) => warn!(
+                "Wi-Fi: committed configuration cannot be decoded: {}",
+                error
+            ),
+        },
+    }
+}
+
+/// Publishes the stored Wi-Fi configuration at boot. Without one the Wi-Fi
+/// manager stays `NotConfigured` and attempts nothing.
+fn publish_stored_wifi(owner: &mut Owner, wifi: WifiHandle<'static, RawMutex>) {
+    let Owner::Ready(store) = owner else {
+        warn!("Wi-Fi: configuration unavailable, not configured");
+        return;
+    };
+    let mut blob = Blob::empty();
+    match store.read_raw(WifiConfig::ID, &mut blob.bytes) {
+        Ok(Some(info)) => {
+            blob.version = info.version;
+            blob.len = info.length;
+            publish_wifi(wifi, WifiConfig::ID, Some(&blob));
+        }
+        Ok(None) => info!("Wi-Fi: not configured"),
+        Err(error) => warn!("Wi-Fi configuration unreadable: {}", error),
+    }
 }

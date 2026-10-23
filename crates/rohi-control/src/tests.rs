@@ -39,12 +39,11 @@ struct Fake {
     capabilities: Capabilities,
     snapshot: MeasurementsSnapshot,
     config: RefCell<Option<WifiConfig>>,
-    applied: RefCell<Vec<Option<WifiConfig>>>,
     log: RefCell<Vec<&'static str>>,
     status: WifiStatus,
     info: Option<NetworkInfo>,
     scan: WifiScanResults,
-    apply_fails: bool,
+    set_fails: bool,
 }
 
 impl Fake {
@@ -80,12 +79,11 @@ impl Fake {
             capabilities: Capabilities::ALL,
             snapshot: store.snapshot(ts(4_000)),
             config: RefCell::new(None),
-            applied: RefCell::new(Vec::new()),
             log: RefCell::new(Vec::new()),
             status: WifiStatus::new(WifiState::NotConfigured),
             info: None,
             scan: WifiScanResults::new(),
-            apply_fails: false,
+            set_fails: false,
         }
     }
 }
@@ -110,18 +108,12 @@ impl ControlServices for &Fake {
         Ok(self.config.borrow().clone())
     }
 
-    async fn store_wifi_config(&self, config: Option<&WifiConfig>) -> Result<(), ServiceError> {
-        self.log.borrow_mut().push("store");
-        *self.config.borrow_mut() = config.cloned();
-        Ok(())
-    }
-
-    async fn apply_wifi_config(&self, config: Option<WifiConfig>) -> Result<(), ServiceError> {
-        self.log.borrow_mut().push("apply");
-        if self.apply_fails {
+    async fn set_wifi_config(&self, config: Option<&WifiConfig>) -> Result<(), ServiceError> {
+        self.log.borrow_mut().push("set");
+        if self.set_fails {
             return Err(ServiceError::Internal);
         }
-        self.applied.borrow_mut().push(config);
+        *self.config.borrow_mut() = config.cloned();
         Ok(())
     }
 
@@ -413,7 +405,7 @@ fn config_without_wifi_has_no_wifi_section() {
 }
 
 #[test]
-fn first_update_persists_then_applies() {
+fn first_update_sets_the_config() {
     let fake = Fake::new();
     let controller = Controller::new(&fake, OpenPolicy);
     let response = send(
@@ -423,11 +415,10 @@ fn first_update_persists_then_applies() {
     );
     assert!(matches!(response.response, Some(Reply::UpdateConfig(_))));
     assert_eq!(response.request_id, 9);
-    assert_eq!(fake.log.borrow().as_slice(), ["store", "apply"]);
+    assert_eq!(fake.log.borrow().as_slice(), ["set"]);
     let stored = fake.config.borrow().clone().unwrap();
     assert_eq!(stored.ssid.as_bytes(), b"office");
     assert!(stored.password.is_some());
-    assert_eq!(fake.applied.borrow().as_slice(), [Some(stored)]);
 }
 
 #[test]
@@ -487,7 +478,6 @@ fn clear_wifi_removes_the_section_and_stops_the_runtime() {
     );
     assert!(matches!(response.response, Some(Reply::UpdateConfig(_))));
     assert_eq!(*fake.config.borrow(), None);
-    assert_eq!(fake.applied.borrow().as_slice(), [None]);
 }
 
 #[test]
@@ -518,13 +508,13 @@ fn invalid_updates_store_nothing() {
 }
 
 #[test]
-fn failed_apply_is_reported_after_the_config_is_stored() {
+fn failed_set_is_reported() {
     let mut fake = Fake::new();
-    fake.apply_fails = true;
+    fake.set_fails = true;
     let controller = Controller::new(&fake, OpenPolicy);
     let response = send(&controller, &SECURE, &update(Some("office"), Some(None)));
     assert_eq!(error_code(&response), pb::ErrorCode::Internal);
-    assert_eq!(fake.log.borrow().as_slice(), ["store", "apply"]);
+    assert_eq!(fake.log.borrow().as_slice(), ["set"]);
 }
 
 #[test]

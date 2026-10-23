@@ -403,11 +403,7 @@ impl ControlServices for Services<'_> {
         Ok(None)
     }
 
-    async fn store_wifi_config(&self, _: Option<&WifiConfig>) -> Result<(), ServiceError> {
-        Ok(())
-    }
-
-    async fn apply_wifi_config(&self, _: Option<WifiConfig>) -> Result<(), ServiceError> {
+    async fn set_wifi_config(&self, _: Option<&WifiConfig>) -> Result<(), ServiceError> {
         Ok(())
     }
 

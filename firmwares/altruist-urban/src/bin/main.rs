@@ -69,7 +69,7 @@ async fn main(spawner: Spawner) -> ! {
     // The configuration task is the single owner of the store; everything else
     // uses the handle. A missing partition (old partition table) or corrupted
     // configuration must not stop the sensors.
-    let config = config::start(spawner, runtime.flash);
+    let config = config::start(spawner, runtime.flash, net::handle());
 
     let board = AltruistUrban::new(hardware).expect("board initialization failed");
     let AltruistUrban {
@@ -88,7 +88,7 @@ async fn main(spawner: Spawner) -> ! {
         Ok((backend, runner)) => {
             spawner.spawn(net_runner_task(runner).unwrap());
             spawner.spawn(wifi_task(backend).unwrap());
-            wifi_configured = net::apply_stored_config(config).await;
+            wifi_configured = net::handle().is_configured();
             capabilities = capabilities
                 | Capabilities::WIFI_SCAN
                 | Capabilities::WIFI_STATUS

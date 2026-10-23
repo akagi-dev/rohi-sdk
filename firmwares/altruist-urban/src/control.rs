@@ -108,16 +108,15 @@ impl ControlServices for UrbanControlServices {
         self.config.get::<WifiConfig>().await.map_err(config_error)
     }
 
-    async fn store_wifi_config(&self, config: Option<&WifiConfig>) -> Result<(), ServiceError> {
+    /// The configuration owner task publishes the committed value to the
+    /// Wi-Fi manager itself, see [`crate::config`]; cancelling this call can
+    /// therefore never leave a stored configuration unknown to the runtime.
+    async fn set_wifi_config(&self, config: Option<&WifiConfig>) -> Result<(), ServiceError> {
         match config {
             Some(config) => self.config.set(config).await,
             None => self.config.remove::<WifiConfig>().await,
         }
         .map_err(config_error)
-    }
-
-    async fn apply_wifi_config(&self, config: Option<WifiConfig>) -> Result<(), ServiceError> {
-        self.wifi.apply_config(config).await.map_err(Into::into)
     }
 
     async fn wifi_scan(&self) -> Result<WifiScanResults, ServiceError> {

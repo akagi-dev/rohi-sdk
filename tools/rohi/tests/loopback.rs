@@ -129,14 +129,9 @@ impl ControlServices for Services {
         Ok(self.config.borrow().clone())
     }
 
-    async fn store_wifi_config(&self, config: Option<&NetConfig>) -> Result<(), ServiceError> {
-        self.requests.borrow_mut().push("store");
+    async fn set_wifi_config(&self, config: Option<&NetConfig>) -> Result<(), ServiceError> {
+        self.requests.borrow_mut().push("set");
         *self.config.borrow_mut() = config.cloned();
-        Ok(())
-    }
-
-    async fn apply_wifi_config(&self, _: Option<NetConfig>) -> Result<(), ServiceError> {
-        self.requests.borrow_mut().push("apply");
         Ok(())
     }
 
@@ -380,12 +375,7 @@ async fn wifi_configuration_round_trip_never_exposes_the_password() {
     .await;
     // Each accepted update was persisted before it was applied.
     let requests = services.requests.borrow().clone();
-    assert_eq!(
-        requests,
-        [
-            "store", "apply", "store", "apply", "store", "apply", "store", "apply"
-        ]
-    );
+    assert_eq!(requests, ["set", "set", "set", "set"]);
 }
 
 #[tokio::test(flavor = "current_thread")]

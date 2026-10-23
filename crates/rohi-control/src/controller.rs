@@ -137,8 +137,9 @@ impl<S: ControlServices, P: AuthorizationPolicy> Controller<S, P> {
         }
     }
 
-    /// Validate, persist, then hand to the runtime. Nothing is stored when
-    /// validation fails, and success does not mean the network was reached.
+    /// Validate, then persist and publish as one service call. Nothing is
+    /// stored when validation fails, and success does not mean the network
+    /// was reached.
     async fn update_config(&self, update: pb::UpdateConfigRequest) -> Result<(), ServiceError> {
         if update.wifi_update.is_some()
             && !self
@@ -153,14 +154,12 @@ impl<S: ControlServices, P: AuthorizationPolicy> Controller<S, P> {
             // Nothing to update.
             None => Ok(()),
             Some(UpdateConfigRequest_::WifiUpdate::ClearWifi(_)) => {
-                self.services.store_wifi_config(None).await?;
-                self.services.apply_wifi_config(None).await
+                self.services.set_wifi_config(None).await
             }
             Some(UpdateConfigRequest_::WifiUpdate::UpdateWifi(update)) => {
                 let current = self.services.wifi_config().await?;
                 let merged = merge_wifi(current, &update)?;
-                self.services.store_wifi_config(Some(&merged)).await?;
-                self.services.apply_wifi_config(Some(merged)).await
+                self.services.set_wifi_config(Some(&merged)).await
             }
         }
     }
