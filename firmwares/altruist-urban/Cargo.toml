@@ -19,6 +19,7 @@ path = "./src/bin/main.rs"
 # Hardware independent
 rohi-hal = { workspace = true }
 rohi-config = { workspace = true }
+rohi-identity = { workspace = true }
 rohi-net = { workspace = true }
 rohi-control = { workspace = true }
 rohi-control-ble = { workspace = true }

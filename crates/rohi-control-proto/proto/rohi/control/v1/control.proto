@@ -32,6 +32,9 @@ message Request {
     GetWifiStatusRequest get_wifi_status = 21;
     ReconnectWifiRequest reconnect_wifi = 22;
     DisconnectWifiRequest disconnect_wifi = 23;
+    GetIdentityRequest get_identity = 30;
+    ProvisionIdentityRequest provision_identity = 31;
+    EraseIdentityRequest erase_identity = 32;
   }
 }
 
@@ -52,6 +55,9 @@ message Response {
     GetWifiStatusResponse get_wifi_status = 21;
     ReconnectWifiResponse reconnect_wifi = 22;
     DisconnectWifiResponse disconnect_wifi = 23;
+    GetIdentityResponse get_identity = 30;
+    ProvisionIdentityResponse provision_identity = 31;
+    EraseIdentityResponse erase_identity = 32;
   }
 }
 
@@ -75,6 +81,10 @@ enum ErrorCode {
   ERROR_CODE_PERMISSION_DENIED = 6;
   // Unexpected device failure.
   ERROR_CODE_INTERNAL = 7;
+  // The operation needs a device identity, but none is provisioned.
+  ERROR_CODE_IDENTITY_NOT_PROVISIONED = 8;
+  // The device already has an identity; erase it explicitly first.
+  ERROR_CODE_IDENTITY_ALREADY_PROVISIONED = 9;
 }
 
 message Error {
@@ -101,6 +111,7 @@ enum Capability {
   CAPABILITY_WIFI_SCAN = 3;
   CAPABILITY_WIFI_STATUS = 4;
   CAPABILITY_WIFI_CONTROL = 5;
+  CAPABILITY_IDENTITY = 6;
 }
 
 message GetCapabilitiesRequest {}
@@ -334,3 +345,45 @@ message ReconnectWifiRequest {}
 message ReconnectWifiResponse {}
 message DisconnectWifiRequest {}
 message DisconnectWifiResponse {}
+
+// ---------------------------------------------------------------------------
+// Identity
+// ---------------------------------------------------------------------------
+//
+// The device holds at most one Ed25519 identity. It is provisioned from the
+// host, which derives the secret; the device never generates one. The secret
+// is write-only: no response ever contains it.
+
+enum IdentityState {
+  IDENTITY_STATE_UNSPECIFIED = 0;
+  IDENTITY_STATE_NOT_PROVISIONED = 1;
+  IDENTITY_STATE_PROVISIONED = 2;
+}
+
+message IdentityInfo {
+  IdentityState state = 1;
+  // 32-byte Ed25519 public key; set only when provisioned.
+  optional bytes public_key = 2;
+}
+
+message GetIdentityRequest {}
+
+message GetIdentityResponse {
+  IdentityInfo identity = 1;
+}
+
+// Succeeds only when no identity is provisioned, otherwise fails with
+// `ERROR_CODE_IDENTITY_ALREADY_PROVISIONED`.
+message ProvisionIdentityRequest {
+  // The derived 32-byte Ed25519 secret key (RFC 8032 seed).
+  bytes ed25519_secret = 1;
+}
+
+message ProvisionIdentityResponse {
+  // 32-byte Ed25519 public key of the stored identity.
+  bytes public_key = 1;
+}
+
+// Removes the identity; a no-op when none is provisioned.
+message EraseIdentityRequest {}
+message EraseIdentityResponse {}

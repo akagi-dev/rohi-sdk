@@ -17,6 +17,7 @@ use rohi_hal::{
     Bmx280Update, MeasurementStore, MeasurementUpdate, MeasurementsSnapshot, MonotonicTimestamp,
     Scd4xUpdate, SensorEvent,
 };
+use rohi_identity::{Identity, PublicKey};
 use rohi_net::{
     BleConnectionInfo, BleError, BleState, BleTransport, NetworkInfo, WifiConfig as NetConfig,
     WifiNetwork as NetNetwork, WifiScanResults, WifiSecurity as NetSecurity, WifiSsid,
@@ -78,6 +79,7 @@ struct Services {
     snapshot: MeasurementsSnapshot,
     config: RefCell<Option<NetConfig>>,
     requests: RefCell<Vec<&'static str>>,
+    identity: RefCell<Option<Identity>>,
 }
 
 impl Services {
@@ -104,6 +106,7 @@ impl Services {
             snapshot: store.snapshot(ts(5_000)),
             config: RefCell::new(None),
             requests: RefCell::new(Vec::new()),
+            identity: RefCell::new(None),
         }
     }
 }
@@ -178,6 +181,22 @@ impl ControlServices for Services {
     fn wifi_disconnect(&self) -> Result<(), ServiceError> {
         Err(ServiceError::Busy)
     }
+
+    async fn identity(&self) -> Result<Option<PublicKey>, ServiceError> {
+        Ok(self.identity.borrow().as_ref().map(Identity::public_key))
+    }
+
+    async fn store_identity(&self, identity: &Identity) -> Result<(), ServiceError> {
+        self.requests.borrow_mut().push("store_identity");
+        *self.identity.borrow_mut() = Some(identity.clone());
+        Ok(())
+    }
+
+    async fn erase_identity(&self) -> Result<(), ServiceError> {
+        self.requests.borrow_mut().push("erase_identity");
+        *self.identity.borrow_mut() = None;
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -251,6 +270,7 @@ fn controller_into_services(controller: Controller<Services, OpenPolicy>) -> Ser
         snapshot: services.snapshot,
         config: RefCell::new(services.config.borrow().clone()),
         requests: RefCell::new(services.requests.borrow().clone()),
+        identity: RefCell::new(services.identity.borrow().clone()),
     }
 }
 
@@ -269,7 +289,8 @@ async fn info_and_capabilities() {
                 Capability::Config,
                 Capability::WifiScan,
                 Capability::WifiStatus,
-                Capability::WifiControl
+                Capability::WifiControl,
+                Capability::Identity
             ]
         );
     })
@@ -513,5 +534,329 @@ async fn stale_responses_are_skipped() {
             let mut device = Device::new(transport);
             assert_eq!(device.info().await.unwrap().firmware, "fake-1.0.0");
         } => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Identity
+// ---------------------------------------------------------------------------
+
+/// The public Substrate development phrase. Never a production master.
+const DEV_PHRASE: &str = "bottom drive obey lake curtain smoke basket hold race lonely fit walk";
+
+fn dev_identity(number: u64) -> rohi::DerivedIdentity {
+    rohi::derive_identity(DEV_PHRASE, number).unwrap()
+}
+
+fn stored_key(services: &Services) -> Option<[u8; 32]> {
+    services
+        .identity
+        .borrow()
+        .as_ref()
+        .map(|identity| identity.public_key().to_bytes())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn fresh_device_is_not_provisioned() {
+    with_device(244, Services::new(), |mut device| async move {
+        let identity = device.identity().await.unwrap();
+        assert_eq!(identity.state, IdentityState::NotProvisioned);
+        assert_eq!(identity.public_key, None);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn identity_lifecycle() {
+    let derived = dev_identity(42);
+    let expected = derived.public_key();
+    let services = with_device(20, Services::new(), |mut device| async move {
+        let key = device.provision_identity(&derived).await.unwrap();
+        assert_eq!(key, expected);
+
+        let identity = device.identity().await.unwrap();
+        assert_eq!(identity.state, IdentityState::Provisioned);
+        assert_eq!(identity.public_key, Some(expected));
+
+        // Never silently replaced, not even by the same identity.
+        for number in [42, 43] {
+            let error = device
+                .provision_identity(&dev_identity(number))
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(error, Error::Device(ErrorCode::IdentityAlreadyProvisioned)),
+                "{error}"
+            );
+        }
+        assert_eq!(device.identity().await.unwrap().public_key, Some(expected));
+
+        device.erase_identity().await.unwrap();
+        assert_eq!(
+            device.identity().await.unwrap().state,
+            IdentityState::NotProvisioned
+        );
+        // Erasing nothing is fine.
+        device.erase_identity().await.unwrap();
+
+        // The same master and number restore the same identity.
+        let again = device.provision_identity(&dev_identity(42)).await.unwrap();
+        assert_eq!(again, expected);
+    })
+    .await;
+    assert_eq!(
+        stored_key(&services),
+        Some(dev_identity(42).public_key().to_bytes())
+    );
+    assert_eq!(
+        services.requests.borrow().as_slice(),
+        [
+            "store_identity",
+            "erase_identity",
+            "erase_identity",
+            "store_identity"
+        ]
+    );
+}
+
+/// Corrupts the 32 bytes `needle` in chunks coming from the device.
+struct Tamper {
+    inner: ClientEnd,
+    needle: [u8; 32],
+}
+
+impl ClientTransport for Tamper {
+    fn max_payload(&self) -> usize {
+        self.inner.max_payload()
+    }
+
+    async fn send(&mut self, chunk: &[u8]) -> rohi::Result<()> {
+        self.inner.send(chunk).await
+    }
+
+    async fn recv(&mut self) -> rohi::Result<Vec<u8>> {
+        let mut chunk = self.inner.recv().await?;
+        if let Some(at) = chunk.windows(32).position(|window| window == self.needle) {
+            chunk[at] ^= 0x01;
+        }
+        Ok(chunk)
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_different_public_key_from_the_device_is_an_error() {
+    let derived = dev_identity(42);
+    let (client, device) = link(244);
+    let controller = Controller::new(Services::new(), OpenPolicy);
+    let mut server = ControlBle::new(device, &controller);
+    let transport = Tamper {
+        inner: client,
+        needle: derived.public_key().to_bytes(),
+    };
+    tokio::select! {
+        () = async { server.run().await } => unreachable!(),
+        () = async {
+            let mut device = Device::new(transport);
+            let error = device.provision_identity(&derived).await.unwrap_err();
+            assert!(matches!(error, Error::PublicKeyMismatch { .. }), "{error}");
+            assert!(!error.to_string().contains("secret"));
+        } => {}
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_device_without_identity_support_is_reported() {
+    let mut services = Services::new();
+    services.capabilities = Capabilities::SENSORS | Capabilities::CONFIG;
+    with_device(244, services, |mut device| async move {
+        assert!(matches!(
+            device.identity().await,
+            Err(Error::Unsupported(Capability::Identity))
+        ));
+        assert!(matches!(
+            device.provision_identity(&dev_identity(1)).await,
+            Err(Error::Unsupported(Capability::Identity))
+        ));
+        assert!(matches!(
+            device.erase_identity().await,
+            Err(Error::Unsupported(Capability::Identity))
+        ));
+    })
+    .await;
+}
+
+// ---------------------------------------------------------------------------
+// `rohi identity` command line
+// ---------------------------------------------------------------------------
+
+mod cli {
+    use clap::Parser;
+    use rohi::cli::{Cli, Command, IdentityAction, execute, prepare};
+
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
+        Cli::try_parse_from(std::iter::once("rohi").chain(args.iter().copied()))
+    }
+
+    struct SeedFile(std::path::PathBuf);
+
+    impl SeedFile {
+        fn new(name: &str, contents: &str) -> Self {
+            let path = std::env::temp_dir().join(format!("rohi-{}-{name}", std::process::id()));
+            std::fs::write(&path, contents).unwrap();
+            Self(path)
+        }
+
+        fn path(&self) -> &str {
+            self.0.to_str().unwrap()
+        }
+    }
+
+    impl Drop for SeedFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    async fn run(services: Services, args: &[&str]) -> (Services, rohi::Result<()>) {
+        let cli = parse(args).unwrap();
+        let identity = match prepare(&cli.command) {
+            Ok(identity) => identity,
+            Err(error) => return (services, Err(error)),
+        };
+        let json = cli.json;
+        let command = cli.command;
+        let (client, device) = link(244);
+        let controller = Controller::new(services, OpenPolicy);
+        let mut server = ControlBle::new(device, &controller);
+        let result = tokio::select! {
+            () = async { server.run().await } => unreachable!(),
+            result = async {
+                let mut device = Device::new(client);
+                execute(&mut device, command, identity, json).await
+            } => result,
+        };
+        drop(server);
+        (controller_into_services(controller), result)
+    }
+
+    fn is_identity(command: &Command, check: impl Fn(&Option<IdentityAction>) -> bool) -> bool {
+        matches!(command, Command::Identity { action } if check(action))
+    }
+
+    #[test]
+    fn id_is_an_alias_of_identity() {
+        for name in ["identity", "id"] {
+            let cli = parse(&[name]).unwrap();
+            assert!(is_identity(&cli.command, Option::is_none), "{name}");
+
+            let cli = parse(&[name, "provision", "-n", "42", "--seed", "master.suri"]).unwrap();
+            assert!(
+                is_identity(&cli.command, |action| matches!(
+                    action,
+                    Some(IdentityAction::Provision(p)) if p.number == 42
+                )),
+                "{name}"
+            );
+
+            let cli = parse(&[name, "erase", "--yes"]).unwrap();
+            assert!(
+                is_identity(&cli.command, |action| matches!(
+                    action,
+                    Some(IdentityAction::Erase { yes: true })
+                )),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn number_has_a_long_and_a_short_form() {
+        for flag in ["-n", "--number"] {
+            let cli = parse(&["id", "provision", flag, "7", "--seed", "s"]).unwrap();
+            assert!(is_identity(&cli.command, |action| matches!(
+                action,
+                Some(IdentityAction::Provision(p)) if p.number == 7
+            )));
+        }
+    }
+
+    #[test]
+    fn number_and_seed_are_required() {
+        assert!(parse(&["id", "provision", "--seed", "s"]).is_err());
+        assert!(parse(&["id", "provision", "-n", "1"]).is_err());
+        assert!(parse(&["id", "provision"]).is_err());
+    }
+
+    #[test]
+    fn invalid_numbers_are_rejected() {
+        for number in ["abc", "-1", "1.5", "", "18446744073709551616"] {
+            assert!(
+                parse(&["id", "provision", "-n", number, "--seed", "s"]).is_err(),
+                "{number:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_other_identity_subcommands() {
+        for name in ["show", "status", "generate", "get-public-key"] {
+            assert!(parse(&["identity", name]).is_err(), "{name}");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn show_provision_and_erase_through_both_names() {
+        let seed = SeedFile::new("lifecycle.suri", &format!("{DEV_PHRASE}\n"));
+        let expected = dev_identity(42).public_key();
+        for name in ["identity", "id"] {
+            let (services, result) = run(Services::new(), &[name]).await;
+            result.unwrap();
+
+            let args = [name, "provision", "-n", "42", "--seed", seed.path()];
+            let (services, result) = run(services, &args).await;
+            result.unwrap();
+            assert_eq!(stored_key(&services), Some(expected.to_bytes()), "{name}");
+
+            let (services, result) = run(services, &[name]).await;
+            result.unwrap();
+
+            let (services, result) = run(services, &args).await;
+            assert!(
+                matches!(
+                    result,
+                    Err(Error::Device(ErrorCode::IdentityAlreadyProvisioned))
+                ),
+                "{name}"
+            );
+            assert_eq!(stored_key(&services), Some(expected.to_bytes()));
+
+            let (services, result) = run(services, &[name, "erase", "--yes"]).await;
+            result.unwrap();
+            assert_eq!(stored_key(&services), None, "{name}");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn unreadable_or_invalid_seed_never_reaches_the_device() {
+        let (services, result) = run(
+            Services::new(),
+            &["id", "provision", "-n", "1", "--seed", "/nonexistent/x"],
+        )
+        .await;
+        assert!(matches!(result, Err(Error::InvalidInput(_))));
+        assert!(services.requests.borrow().is_empty());
+
+        let seed = SeedFile::new("bad.suri", "definitely not a secret uri");
+        let (services, result) = run(
+            Services::new(),
+            &["id", "provision", "-n", "1", "--seed", seed.path()],
+        )
+        .await;
+        let error = result.unwrap_err();
+        assert!(matches!(error, Error::InvalidInput(_)));
+        assert!(!error.to_string().contains("definitely"));
+        assert!(services.requests.borrow().is_empty());
     }
 }

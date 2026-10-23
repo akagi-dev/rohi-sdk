@@ -23,6 +23,9 @@ pub enum Privilege {
     Read,
     /// Changes configuration or controls a subsystem.
     Mutate,
+    /// Installs or removes the device identity. It carries private key
+    /// material, so a link policy may demand more than for [`Mutate`](Self::Mutate).
+    Provision,
 }
 
 /// Security properties of the link a request arrived on, as reported by the

@@ -182,3 +182,74 @@ fn sensor_with_absent_value_has_no_value_field() {
     assert_eq!(decoded.age_ms(), None);
     assert_eq!(decoded.state, MeasurementState::WarmingUp);
 }
+
+#[test]
+fn provision_identity_request_golden_bytes() {
+    let request = Request {
+        protocol_version: PROTOCOL_VERSION,
+        request_id: 2,
+        request: Some(Request_::Request::ProvisionIdentity(
+            ProvisionIdentityRequest {
+                ed25519_secret: bytes(&[0x5a; limits::ED25519_KEY_LEN]),
+            },
+        )),
+    };
+    let mut buf = [0u8; limits::MAX_REQUEST_LEN];
+    let len = encode(&request, &mut buf).unwrap();
+    // field 31 (provision_identity, tag 0xfa 0x01) holds field 1 = 32 bytes.
+    let mut expected = std::vec![0x08, 0x01, 0x10, 0x02, 0xfa, 0x01, 0x22, 0x0a, 0x20];
+    expected.extend_from_slice(&[0x5a; 32]);
+    assert_eq!(&buf[..len], expected.as_slice());
+    assert!(decode::<Request>(&buf[..len]).unwrap() == request);
+}
+
+#[test]
+fn identity_secret_stays_out_of_debug() {
+    let request = ProvisionIdentityRequest {
+        ed25519_secret: bytes(&[0x5a; limits::ED25519_KEY_LEN]),
+    };
+    let debug = std::format!("{request:?}");
+    assert!(!debug.contains("90"), "{debug}");
+    assert!(debug.contains("<redacted>"), "{debug}");
+}
+
+#[test]
+fn oversized_identity_secret_is_rejected_with_capacity() {
+    let mut wire = [0x5a; 35];
+    wire[0] = 0x0a;
+    wire[1] = 33;
+    assert_eq!(
+        decode::<ProvisionIdentityRequest>(&wire).err(),
+        Some(DecodeError::Capacity)
+    );
+}
+
+#[test]
+fn identity_info_round_trips() {
+    let mut info = IdentityInfo {
+        state: IdentityState::Provisioned,
+        ..Default::default()
+    };
+    info.set_public_key(bytes(&[0x01; limits::ED25519_KEY_LEN]));
+    let mut out = GetIdentityResponse::default();
+    out.set_identity(info);
+    let response = Response {
+        protocol_version: PROTOCOL_VERSION,
+        request_id: 3,
+        response: Some(Response_::Response::GetIdentity(out)),
+    };
+    let mut buf = [0u8; 64];
+    let len = encode(&response, &mut buf).unwrap();
+    assert_eq!(decode::<Response>(&buf[..len]).unwrap(), response);
+
+    let absent = IdentityInfo {
+        state: IdentityState::NotProvisioned,
+        ..Default::default()
+    };
+    let len = encode(&absent, &mut buf).unwrap();
+    assert_eq!(&buf[..len], &[0x08, 0x01]);
+    assert_eq!(
+        decode::<IdentityInfo>(&buf[..len]).unwrap().public_key(),
+        None
+    );
+}

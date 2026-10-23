@@ -16,6 +16,8 @@ maintenance = { status = "actively-developed" }
 rohi-control-proto.workspace = true
 rohi-hal.workspace = true
 rohi-net.workspace = true
+rohi-identity.workspace = true
+zeroize.workspace = true
 heapless.workspace = true
 
 [dev-dependencies]

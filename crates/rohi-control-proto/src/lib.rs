@@ -127,6 +127,14 @@ impl fmt::Debug for control::WifiConfigUpdate {
     }
 }
 
+impl fmt::Debug for control::ProvisionIdentityRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProvisionIdentityRequest")
+            .field("ed25519_secret", &"<redacted>")
+            .finish()
+    }
+}
+
 #[cfg(test)]
 extern crate std;
 

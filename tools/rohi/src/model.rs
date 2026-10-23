@@ -23,6 +23,8 @@
 use core::fmt;
 use std::net::Ipv4Addr;
 
+pub use rohi_identity::PublicKey;
+
 #[cfg(feature = "serde")]
 use serde::Serialize;
 
@@ -78,6 +80,8 @@ open_enum! {
         Unavailable = Unavailable => "unavailable",
         PermissionDenied = PermissionDenied => "permission denied",
         Internal = Internal => "internal error",
+        IdentityNotProvisioned = IdentityNotProvisioned => "identity not provisioned",
+        IdentityAlreadyProvisioned = IdentityAlreadyProvisioned => "identity already provisioned",
     }
 }
 
@@ -89,6 +93,15 @@ open_enum! {
         WifiScan = WifiScan => "wifi scan",
         WifiStatus = WifiStatus => "wifi status",
         WifiControl = WifiControl => "wifi control",
+        Identity = Identity => "identity",
+    }
+}
+
+open_enum! {
+    /// Whether the device holds a cryptographic identity.
+    IdentityState: pb::IdentityState {
+        NotProvisioned = NotProvisioned => "not provisioned",
+        Provisioned = Provisioned => "provisioned",
     }
 }
 
@@ -290,6 +303,28 @@ impl fmt::Display for Ssid {
 impl Serialize for Ssid {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&self.to_text())
+    }
+}
+
+/// Cryptographic identity of a device. Only the public key is ever available.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub struct IdentityInfo {
+    /// Whether the device is provisioned.
+    pub state: IdentityState,
+    /// Ed25519 public key, set only when provisioned.
+    #[cfg_attr(feature = "serde", serde(serialize_with = "serialize_public_key"))]
+    pub public_key: Option<PublicKey>,
+}
+
+#[cfg(feature = "serde")]
+fn serialize_public_key<S: serde::Serializer>(
+    key: &Option<PublicKey>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match key {
+        Some(key) => serializer.serialize_str(&key.to_string()),
+        None => serializer.serialize_none(),
     }
 }
 

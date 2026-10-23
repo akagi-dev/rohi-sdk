@@ -31,14 +31,20 @@
 //! a different link and keep everything above it.
 
 mod ble;
+#[cfg(feature = "cli")]
+pub mod cli;
 mod client;
 mod convert;
 mod error;
 pub mod format;
 pub mod model;
+mod provision;
 mod session;
 
 pub use ble::{BleLink, DiscoveredDevice, scan};
 pub use client::Device;
 pub use error::{Error, Result};
+pub use provision::DerivedIdentity;
+#[cfg(feature = "provision")]
+pub use provision::derive_identity;
 pub use session::{ClientTransport, DEFAULT_TIMEOUT, Session};
