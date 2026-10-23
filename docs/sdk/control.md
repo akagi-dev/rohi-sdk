@@ -179,37 +179,16 @@ rohi library
   format         human readable rendering
 ```
 
-```bash
-rohi scan                       # find ROHI devices
-rohi info                       # firmware, board, features
-rohi status                     # info + Wi-Fi status
-rohi sensors                    # current measurements
-rohi config                     # stored configuration (never the password)
-rohi wifi                       # = rohi wifi status
-rohi wifi scan
-rohi wifi configure --ssid <SSID>                      # asks for the password (hidden; empty keeps the stored one)
-rohi wifi configure --ssid <SSID> --open               # open network, no prompt
-rohi wifi configure --ssid <SSID> --password <PASSWORD>
-rohi wifi reconnect
-rohi wifi disconnect
-rohi wifi forget [--yes]
-rohi time                      # wall-clock time and synchronization state
-rohi identity                  # = rohi id: identity state and public key
-rohi identity provision -n <NUMBER> --seed <PATH>
-rohi identity erase [--yes]
-```
+The command line has one authoritative page, [The rohi tool](../getting-started/rohi-tool.md): commands, device selection
+(`--device`, `ROHI_DEVICE`, `ble://` and `tcp://` URIs), the output contract (results on stdout, prompts and
+diagnostics on stderr, `-o json`, exit codes), Wi-Fi workflows and configuration backup and restore. It is a layer over
+`Device`: parsing, device choice, prompts, output and backup files live in `tools/rohi/src/cli`, protocol behaviour stays
+in `Device` and below, and the command dispatch (`rohi::cli::execute`) is generic over `ClientTransport`, so it runs
+unchanged against the in-memory transport of the tests.
 
-Global options: `--json` (desktop only, the firmware never speaks JSON), `--device <ID>` (identifier from
-`rohi scan`), `--scan-timeout`, `--timeout`, `--payload` (chunk size if the link negotiated a larger MTU; `btleplug`
-does not report the MTU, so the safe default is 20 bytes).
-
-**`--password` is risky**: command line arguments stay in the shell history and are visible to other users in the
-process list. Prefer the hidden prompt, or the `ROHI_WIFI_PASSWORD` environment variable. Without `--password`/`--open`,
-`configure` prompts; an empty answer keeps the stored password, so `rohi wifi configure --ssid X` can change only the
-network name. Use `--open` to remove the password.
-
-The password is never printed. On Linux the build needs `libdbus` and `pkg-config` (provided by `nix develop`); the
-protobuf compiler `protoc` is needed to build `rohi-control-proto`.
+The Wi-Fi password is never printed, and a normal configuration backup never contains it. On Linux the build needs
+`libdbus` and `pkg-config` (provided by `nix develop`); the protobuf compiler `protoc` is needed to build
+`rohi-control-proto`.
 
 ## Build, test and measurements
 

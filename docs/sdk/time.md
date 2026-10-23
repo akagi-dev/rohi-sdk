@@ -135,15 +135,16 @@ The intervals are `SyncSchedule` fields; `SyncSchedule::DEFAULT` holds the value
 
 `GetTimeStatus` (capability `TIME`, read-only, no secure link needed) returns the state, `unix_time_ms` (absent while
 unsynchronized), source, age since the last sync, uncertainty, consecutive failures and the category of the last
-failure. `rohi time` shows it:
+failure. `rohi time` shows it, and `rohi status` includes it as a `Time` section ([The rohi tool](../getting-started/rohi-tool.md#time)):
 
 ```text
 $ rohi time
-Time: synchronized
-  unix time: 1780000000.250
-  source:    ntp
-  last sync: 90 s ago
-  accuracy:  +-40 ms
+Time
+  State       synchronized
+  Unix time   1780000000.250
+  Source      ntp
+  Last sync   90 s ago
+  Accuracy    +-40 ms
 ```
 
 Manual resynchronization is not offered: periodic automatic synchronization is authoritative.

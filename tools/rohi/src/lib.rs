@@ -41,7 +41,7 @@ pub mod model;
 mod provision;
 mod session;
 
-pub use ble::{BleLink, DiscoveredDevice, scan};
+pub use ble::{BleLink, DiscoveredDevice, scan, scan_until};
 pub use client::Device;
 pub use error::{Error, Result};
 pub use provision::DerivedIdentity;

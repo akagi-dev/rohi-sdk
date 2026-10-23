@@ -1,0 +1,53 @@
+Change the Wi-Fi configuration; omitted settings are kept.
+
+Only stores the configuration; use `rohi wifi status` to follow the connection, or `rohi wifi connect` to wait for it.
+
+Usage: rohi wifi configure [OPTIONS]
+
+Options:
+      --ssid <SSID>
+          Network name
+
+      --password <PASSWORD>
+          Network password. Without it (and without `--open`) the password is asked for; an empty answer keeps the stored one.
+          
+          Prefer the prompt or the environment variable: a password on the command line stays in the shell history and is visible to other users in the process list.
+          
+          [env: ROHI_WIFI_PASSWORD]
+
+      --open
+          The network has no password; remove a stored one
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Target:
+  -d, --device <DEVICE>
+          Target device: advertised name, ID, or a unique prefix or suffix of either; or a URI such as ble://NAME or tcp://HOST:PORT. Without it the only device found is used, or you choose among several
+          
+          [env: ROHI_DEVICE=]
+
+Output:
+  -o, --output <FORMAT>
+          Output format
+
+          Possible values:
+          - human: Text for people
+          - json:  JSON with a stable, versioned schema, for scripts
+          
+          [default: human]
+
+Connection:
+      --scan-timeout <SECONDS>
+          How long to search for the target device
+          
+          [default: 10]
+
+      --timeout <SECONDS>
+          How long to wait for a device response
+          
+          [default: 10]
+
+Examples:
+  rohi wifi configure --ssid office
+  rohi wifi configure --ssid guests --open

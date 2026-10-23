@@ -132,31 +132,6 @@ pub fn wifi_status(status: &WifiStatus) -> String {
     out
 }
 
-/// Time status.
-pub fn time_status(status: &TimeStatus) -> String {
-    let mut out = format!("Time: {}\n", status.state);
-    if let Some(millis) = status.unix_time_ms {
-        let _ = writeln!(out, "  unix time: {}.{:03}", millis / 1_000, millis % 1_000);
-    }
-    if let Some(source) = status.source {
-        let _ = writeln!(out, "  source:    {source}");
-    }
-    if let Some(age) = status.sync_age_ms {
-        let _ = writeln!(out, "  last sync: {} s ago", age / 1_000);
-    }
-    if let Some(uncertainty) = status.uncertainty_ms {
-        let _ = writeln!(out, "  accuracy:  +-{uncertainty} ms");
-    }
-    if status.consecutive_failures > 0 {
-        let _ = write!(out, "  failures:  {}", status.consecutive_failures);
-        if let Some(failure) = status.last_failure {
-            let _ = write!(out, " (last: {failure})");
-        }
-        out.push('\n');
-    }
-    out
-}
-
 /// Scan results.
 pub fn wifi_scan(networks: &[WifiNetwork]) -> String {
     if networks.is_empty() {
@@ -180,15 +155,15 @@ pub fn wifi_scan(networks: &[WifiNetwork]) -> String {
 /// Devices found by a scan.
 pub fn devices(devices: &[crate::DiscoveredDevice]) -> String {
     if devices.is_empty() {
-        return "No ROHI devices found\n".to_owned();
+        return "No devices found\n".to_owned();
     }
     let mut out = String::new();
     for device in devices {
         let _ = writeln!(
             out,
             "{}  {}{}",
-            device.id,
             device.name.as_deref().unwrap_or("(no name)"),
+            device.id,
             device
                 .rssi
                 .map(|rssi| format!("  {rssi} dBm"))

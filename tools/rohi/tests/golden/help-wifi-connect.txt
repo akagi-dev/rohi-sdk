@@ -1,0 +1,62 @@
+Join a network and wait until the device is connected.
+
+Stores the network on the device, then follows the Wi-Fi status until the device is connected, reports a failure, or --wait expires. A stored configuration does not mean the network was reached.
+
+The password is read from a hidden prompt, from stdin with --password-stdin, or from the ROHI_WIFI_PASSWORD environment variable; an empty answer keeps the stored password. Use --open for a network without a password.
+
+Usage: rohi wifi connect [OPTIONS] <SSID>
+
+Arguments:
+  <SSID>
+          Network name
+
+Options:
+      --open
+          The network has no password; remove a stored one
+
+      --password-stdin
+          Read the password from the first line of stdin
+
+      --no-wait
+          Return once the configuration is stored, without waiting for the connection
+
+      --wait <SECONDS>
+          How long to wait for the connection
+          
+          [default: 30]
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Target:
+  -d, --device <DEVICE>
+          Target device: advertised name, ID, or a unique prefix or suffix of either; or a URI such as ble://NAME or tcp://HOST:PORT. Without it the only device found is used, or you choose among several
+          
+          [env: ROHI_DEVICE=]
+
+Output:
+  -o, --output <FORMAT>
+          Output format
+
+          Possible values:
+          - human: Text for people
+          - json:  JSON with a stable, versioned schema, for scripts
+          
+          [default: human]
+
+Connection:
+      --scan-timeout <SECONDS>
+          How long to search for the target device
+          
+          [default: 10]
+
+      --timeout <SECONDS>
+          How long to wait for a device response
+          
+          [default: 10]
+
+Examples:
+  rohi wifi connect office
+  rohi wifi connect guests --open
+  rohi wifi connect office --password-stdin
+  rohi wifi connect office --no-wait
