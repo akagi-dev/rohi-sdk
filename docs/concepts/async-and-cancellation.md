@@ -69,7 +69,8 @@ validate ─► ConfigHandle::set(WifiConfig)         ┐ request is queued: fro
 - Cancelled **after**: the owner still commits *and* publishes, so the durable state and the runtime agree; the caller
   only misses the result.
 
-The same logic is applied at boot (stored configuration is published once after opening the store).
+The same logic applies to the device identity (the owner task updates the signing identity in the commit step) and at
+boot (stored configuration is published once after opening the store).
 
 ## What each public async API guarantees
 
@@ -83,6 +84,7 @@ The same logic is applied at boot (stored configuration is published once after 
 | `MeasurementHandle::snapshot` / `try_snapshot` | cancellation-safe: reads only; a stale answer is discarded; request slot and call lock are released |
 | `MeasurementService::accept` (owner side) | cancel-safe; usable in a `select` next to the event queue |
 | `ConfigHandle::set` / `remove` | before the request is queued: unchanged; after: logically completed (the owner commits and publishes) |
+| `IdentityHandle::store` / `erase` | as `ConfigHandle::set` / `remove`: the owner task updates the signer in the commit step, so the stored identity and the signer cannot diverge |
 | `ConfigHandle::get` / `status` | read only; abandoned requests are answered and discarded (numbered responses) |
 | `BleTransport::recv` / `send` | cancel-safe: a chunk is taken or queued entirely or not at all |
 | `ControlBle::step` | dropping abandons the request being handled; no partial state; committed operations stay committed |

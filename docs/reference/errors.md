@@ -10,11 +10,12 @@ never reach higher layers. Messages never contain secrets.
 | BLE | `BleError` | `rohi-net` | `Disconnected` (returned once per connection end), `BufferTooSmall`, `Busy`, `DriverError` |
 | Wireless runtime | `WirelessError` | `rohi-net-esp` | `AlreadyTaken`, `BleInit` |
 | Configuration store | `ConfigError<E>`, `SectionError` | `rohi-config` | see [Configuration store › Errors](../sdk/config.md#errors) |
+| Identity | `IdentityError` | `rohi-identity` | `NotProvisioned` and key/signature errors, see [Device identity](../sdk/identity.md) |
 | Configuration service | `ServiceError` | firmware `config` | `Unavailable`, `StorageHealthy`, `Store`, `Section`, `Encode` |
 | Measurements | `MeasurementServiceError` | `rohi-hal` | `Busy` (only `try_snapshot`) |
 | Sensors | `SensorErrorCode`, `DriverError` | `rohi-hal` | domain error codes reported in `SensorEvent::Error` |
-| Control services | `ServiceError` | `rohi-control` | `InvalidArgument`, `NotFound`, `NotSupported`, `Busy`, `Unavailable`, `Internal` |
-| Control protocol | `ErrorCode` | `rohi-control-proto` | `INVALID_ARGUMENT`, `NOT_FOUND`, `NOT_SUPPORTED`, `BUSY`, `UNAVAILABLE`, `PERMISSION_DENIED`, `INTERNAL` |
+| Control services | `ServiceError` | `rohi-control` | `InvalidArgument`, `NotFound`, `NotSupported`, `Busy`, `Unavailable`, `Internal`, `IdentityNotProvisioned`, `IdentityAlreadyProvisioned` |
+| Control protocol | `ErrorCode` | `rohi-control-proto` | `INVALID_ARGUMENT`, `NOT_FOUND`, `NOT_SUPPORTED`, `BUSY`, `UNAVAILABLE`, `PERMISSION_DENIED`, `INTERNAL`, `IDENTITY_NOT_PROVISIONED`, `IDENTITY_ALREADY_PROVISIONED` |
 | Framing | `FrameError` | `rohi-control-ble` | bad version, invalid/duplicate/missing fragment, changed header, oversize, length mismatch |
 
 ## Distinguishing "network unavailable" from other failures

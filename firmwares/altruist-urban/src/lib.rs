@@ -41,6 +41,8 @@ compile_error!(
 pub mod config;
 /// Local control plane over BLE.
 pub mod control;
+/// Device identity runtime.
+pub mod identity;
 pub mod net;
 /// Static resource budget of the wireless stack.
 pub mod resources;

@@ -14,6 +14,7 @@
 | **EspWireless** | The single owner of the ESP radio peripherals and the wireless heap; creates the Wi-Fi and BLE drivers |
 | **Golden test** | A test pinning exact encoded bytes or IDs so accidental ABI changes fail |
 | **Handle** | A small copyable value giving other tasks bounded access to a service owned by one task |
+| **Identity** | The device's single Ed25519 key, provisioned from the host (never generated on the device) and stored as the `Identity` config section. See [Device identity](../sdk/identity.md) |
 | **IP data plane** | `NetworkHandle`: DNS and TCP through `embedded-nal-async` / `embedded-io-async` |
 | **MeasurementStore / MeasurementHandle / snapshot** | Owner-side store of typed observations / handle for on-demand requests / immutable `MeasurementsSnapshot` generated at request time |
 | **Owner** | The one task (or runtime object) that holds the mutable state of a service |

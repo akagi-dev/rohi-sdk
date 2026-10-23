@@ -27,6 +27,7 @@ rohi-net-esp = { path = "crates/rohi-net-esp" }
 rohi-control-proto = { path = "crates/rohi-control-proto" }
 rohi-control = { path = "crates/rohi-control" }
 rohi-control-ble = { path = "crates/rohi-control-ble" }
+rohi-identity = { path = "crates/rohi-identity" }
 
 # ESP. Versions are pinned here; the chip (esp32c3 / esp32c6) is selected by
 # the firmware features, never globally.
@@ -65,6 +66,13 @@ minicbor = { version = "2.3.1", default-features = false, features = ["derive"] 
 # Protobuf
 micropb = { version = "0.6.0", default-features = false, features = ["encode", "decode", "enable-64bit"] }
 micropb-gen = "0.6.0"
+
+# Cryptography
+ed25519-zebra = { version = "4.0.3", default-features = false }
+zeroize = { version = "1.8", default-features = false }
+
+# Host-only: master SURI loading and hard derivation for identity provisioning
+sp-core = { version = "43", default-features = false, features = ["std"] }
 
 # Proc-macro
 syn = { version = "2.0", features = ["full"] }

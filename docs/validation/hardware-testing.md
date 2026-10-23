@@ -44,6 +44,10 @@ configuration change while connecting/backing off/connected, DNS and TCP through
 yet), BLE + Wi-Fi coexistence, minimum free wireless heap (idle, scanning, connected), 24 h stability. Record results
 here together with the final `WIRELESS_HEAP_SIZE`.
 
+## Device identity
+
+The hardware checklist (provision, reboot, erase, re-provision) is in [Device identity](../sdk/identity.md#validation-checklist-hardware); its results are not yet recorded.
+
 ## BLE control
 
 **First hardware data point** (96 KiB heap, Wi-Fi + BLE running, chip not recorded): 14 656 B free, 11 120 B minimum

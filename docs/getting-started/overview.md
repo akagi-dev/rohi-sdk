@@ -24,6 +24,7 @@ protocol, and the rules that make them safe to combine.
 | Configuration | CBOR, A/B-slot, power-fail-safe store of independent typed sections | [Configuration store](../sdk/config.md) |
 | Networking | Wi-Fi control plane, DNS/TCP data plane, ESP backend | [Networking](../sdk/net.md) |
 | Control | Local BLE control protocol, `rohi` desktop client | [Control plane](../sdk/control.md) |
+| Identity | Provisioned Ed25519 device identity and signer | [Device identity](../sdk/identity.md) |
 | Firmware | Altruist Urban, a complete product built from the above | [Boards](../platform/boards.md) |
 
 ## Design principles

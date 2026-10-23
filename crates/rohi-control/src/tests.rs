@@ -12,6 +12,7 @@ use rohi_hal::{
     Bmx280Update, MeasurementStore, MeasurementUpdate, MeasurementsSnapshot, MonotonicTimestamp,
     Scd4xUpdate, SensorErrorCode, SensorEvent, SensorKind, SensorState,
 };
+use rohi_identity::{Identity, PublicKey};
 use rohi_net::{
     NetworkInfo, WifiConfig, WifiNetwork, WifiPassword, WifiScanResults, WifiSecurity, WifiSsid,
     WifiState, WifiStatus,
@@ -44,6 +45,8 @@ struct Fake {
     info: Option<NetworkInfo>,
     scan: WifiScanResults,
     set_fails: bool,
+    identity: RefCell<Option<Identity>>,
+    store_identity_fails: bool,
 }
 
 impl Fake {
@@ -84,6 +87,8 @@ impl Fake {
             info: None,
             scan: WifiScanResults::new(),
             set_fails: false,
+            identity: RefCell::new(None),
+            store_identity_fails: false,
         }
     }
 }
@@ -137,6 +142,25 @@ impl ControlServices for &Fake {
     fn wifi_disconnect(&self) -> Result<(), ServiceError> {
         self.log.borrow_mut().push("disconnect");
         Err(ServiceError::Busy)
+    }
+
+    async fn identity(&self) -> Result<Option<PublicKey>, ServiceError> {
+        Ok(self.identity.borrow().as_ref().map(Identity::public_key))
+    }
+
+    async fn store_identity(&self, identity: &Identity) -> Result<(), ServiceError> {
+        self.log.borrow_mut().push("store_identity");
+        if self.store_identity_fails {
+            return Err(ServiceError::Unavailable);
+        }
+        *self.identity.borrow_mut() = Some(identity.clone());
+        Ok(())
+    }
+
+    async fn erase_identity(&self) -> Result<(), ServiceError> {
+        self.log.borrow_mut().push("erase_identity");
+        *self.identity.borrow_mut() = None;
+        Ok(())
     }
 }
 
@@ -734,4 +758,236 @@ fn wifi_updates_need_the_wifi_control_capability() {
     let response = send(&controller, &SECURE, &update(Some("office"), Some(None)));
     assert_eq!(error_code(&response), pb::ErrorCode::NotSupported);
     assert!(fake.log.borrow().is_empty());
+}
+
+const SECRET: [u8; 32] = [0x42; 32];
+
+fn secret_key() -> Identity {
+    Identity::from_secret(&SECRET).unwrap()
+}
+
+fn provision(secret: &[u8]) -> pb::Request {
+    request(
+        5,
+        Call::ProvisionIdentity(pb::ProvisionIdentityRequest {
+            ed25519_secret: heapless::Vec::from_slice(secret).unwrap(),
+        }),
+    )
+}
+
+fn get_identity() -> pb::Request {
+    request(6, Call::GetIdentity(pb::GetIdentityRequest {}))
+}
+
+fn erase_identity() -> pb::Request {
+    request(8, Call::EraseIdentity(pb::EraseIdentityRequest {}))
+}
+
+fn identity_info(response: pb::Response) -> (pb::IdentityState, Option<[u8; 32]>) {
+    let Some(Reply::GetIdentity(out)) = response.response else {
+        panic!("not an identity response");
+    };
+    let info = out.identity().expect("identity info");
+    (
+        info.state,
+        info.public_key()
+            .map(|key| key.as_slice().try_into().unwrap()),
+    )
+}
+
+#[test]
+fn identity_is_not_provisioned_by_default() {
+    let fake = Fake::new();
+    let controller = Controller::new(&fake, OpenPolicy);
+    let response = send(&controller, &PLAIN, &get_identity());
+    assert_eq!(
+        identity_info(response),
+        (pb::IdentityState::NotProvisioned, None)
+    );
+}
+
+#[test]
+fn provisioning_stores_the_identity_and_returns_the_public_key() {
+    let fake = Fake::new();
+    let controller = Controller::new(&fake, OpenPolicy);
+    let response = send(&controller, &PLAIN, &provision(&SECRET));
+    assert_eq!(response.request_id, 5);
+    let Some(Reply::ProvisionIdentity(out)) = response.response else {
+        panic!("not a provision response");
+    };
+    let expected = secret_key().public_key().to_bytes();
+    assert_eq!(out.public_key.as_slice(), expected);
+    assert_eq!(fake.log.borrow().as_slice(), ["store_identity"]);
+
+    let state = identity_info(send(&controller, &PLAIN, &get_identity()));
+    assert_eq!(state, (pb::IdentityState::Provisioned, Some(expected)));
+}
+
+#[test]
+fn provisioning_twice_never_replaces_the_identity() {
+    let fake = Fake::new();
+    let controller = Controller::new(&fake, OpenPolicy);
+    send(&controller, &PLAIN, &provision(&SECRET));
+    let other = [0x07; 32];
+    let response = send(&controller, &PLAIN, &provision(&other));
+    assert_eq!(
+        error_code(&response),
+        pb::ErrorCode::IdentityAlreadyProvisioned
+    );
+    assert_eq!(fake.log.borrow().as_slice(), ["store_identity"]);
+    let (_, key) = identity_info(send(&controller, &PLAIN, &get_identity()));
+    assert_eq!(key, Some(secret_key().public_key().to_bytes()));
+}
+
+#[test]
+fn invalid_secret_length_stores_nothing() {
+    let fake = Fake::new();
+    let controller = Controller::new(&fake, OpenPolicy);
+    for secret in [&[][..], &[1; 16][..], &[1; 31][..]] {
+        let response = send(&controller, &PLAIN, &provision(secret));
+        assert_eq!(error_code(&response), pb::ErrorCode::InvalidArgument);
+    }
+    assert!(fake.log.borrow().is_empty());
+    assert!(fake.identity.borrow().is_none());
+
+    // 33 bytes do not even fit the protocol bound.
+    let mut wire = [0x5a; 35];
+    wire[0] = 0x08;
+    wire[1] = 0x01;
+    wire[2] = 0xfa;
+    wire[3] = 0x01;
+    wire[4] = 31;
+    wire[5] = 0x0a;
+    wire[6] = 33;
+    let response = call_raw(&controller, &PLAIN, &wire);
+    assert_eq!(error_code(&response), pb::ErrorCode::InvalidArgument);
+    assert!(fake.identity.borrow().is_none());
+}
+
+#[test]
+fn storage_failure_is_reported_and_leaves_the_device_unprovisioned() {
+    let mut fake = Fake::new();
+    fake.store_identity_fails = true;
+    let controller = Controller::new(&fake, OpenPolicy);
+    let response = send(&controller, &PLAIN, &provision(&SECRET));
+    assert_eq!(error_code(&response), pb::ErrorCode::Unavailable);
+    let (state, key) = identity_info(send(&controller, &PLAIN, &get_identity()));
+    assert_eq!((state, key), (pb::IdentityState::NotProvisioned, None));
+}
+
+#[test]
+fn erase_then_provision_again() {
+    let fake = Fake::new();
+    let controller = Controller::new(&fake, OpenPolicy);
+    send(&controller, &PLAIN, &provision(&SECRET));
+    let erased = send(&controller, &PLAIN, &erase_identity());
+    assert!(matches!(erased.response, Some(Reply::EraseIdentity(_))));
+    assert_eq!(
+        identity_info(send(&controller, &PLAIN, &get_identity())),
+        (pb::IdentityState::NotProvisioned, None)
+    );
+    // Erasing nothing is fine.
+    let again = send(&controller, &PLAIN, &erase_identity());
+    assert!(matches!(again.response, Some(Reply::EraseIdentity(_))));
+
+    let other = [0x07; 32];
+    let response = send(&controller, &PLAIN, &provision(&other));
+    let Some(Reply::ProvisionIdentity(out)) = response.response else {
+        panic!("not a provision response");
+    };
+    let expected = Identity::from_secret(&other)
+        .unwrap()
+        .public_key()
+        .to_bytes();
+    assert_eq!(out.public_key.as_slice(), expected);
+}
+
+#[test]
+fn identity_operations_need_the_identity_capability() {
+    let mut fake = Fake::new();
+    fake.capabilities = Capabilities::SENSORS | Capabilities::CONFIG | Capabilities::WIFI_CONTROL;
+    let controller = Controller::new(&fake, OpenPolicy);
+    for call in [get_identity(), provision(&SECRET), erase_identity()] {
+        let response = send(&controller, &SECURE, &call);
+        assert_eq!(error_code(&response), pb::ErrorCode::NotSupported);
+    }
+    assert!(fake.log.borrow().is_empty());
+}
+
+#[test]
+fn provisioning_and_erase_are_gated_by_the_link_policy_reads_are_not() {
+    let fake = Fake::new();
+    let controller = Controller::new(&fake, RequireEncryption);
+    for call in [provision(&SECRET), erase_identity()] {
+        let denied = send(&controller, &PLAIN, &call);
+        assert_eq!(error_code(&denied), pb::ErrorCode::PermissionDenied);
+    }
+    assert!(fake.log.borrow().is_empty());
+    assert!(matches!(
+        send(&controller, &PLAIN, &get_identity()).response,
+        Some(Reply::GetIdentity(_))
+    ));
+
+    let controller = Controller::new(&fake, RequireAuthenticated);
+    let encrypted = LinkSecurity {
+        encrypted: true,
+        authenticated: false,
+    };
+    let denied = send(&controller, &encrypted, &provision(&SECRET));
+    assert_eq!(error_code(&denied), pb::ErrorCode::PermissionDenied);
+    let allowed = send(&controller, &SECURE, &provision(&SECRET));
+    assert!(matches!(
+        allowed.response,
+        Some(Reply::ProvisionIdentity(_))
+    ));
+}
+
+#[test]
+fn no_response_contains_the_secret() {
+    let fake = Fake::new();
+    let controller = Controller::new(&fake, OpenPolicy);
+    for call in [
+        provision(&SECRET),
+        get_identity(),
+        request(1, Call::GetConfig(pb::GetConfigRequest {})),
+        erase_identity(),
+        provision(&SECRET),
+    ] {
+        let mut wire = [0u8; limits::MAX_REQUEST_LEN];
+        let len = encode(&call, &mut wire).unwrap();
+        let mut out = [0u8; limits::MAX_RESPONSE_LEN];
+        let n = block_on(controller.handle(&PLAIN, &wire[..len], &mut out));
+        assert!(!out[..n].windows(8).any(|w| w == &SECRET[..8]));
+    }
+}
+
+#[test]
+fn generic_config_cannot_reach_the_identity() {
+    let fake = Fake::new();
+    let controller = Controller::new(&fake, OpenPolicy);
+    send(&controller, &PLAIN, &provision(&SECRET));
+    let response = send(
+        &controller,
+        &PLAIN,
+        &request(1, Call::GetConfig(pb::GetConfigRequest {})),
+    );
+    let Some(Reply::GetConfig(config)) = response.response else {
+        panic!("not config");
+    };
+    assert!(config.wifi().is_none());
+
+    let cleared = send(
+        &controller,
+        &PLAIN,
+        &request(
+            2,
+            Call::UpdateConfig(pb::UpdateConfigRequest {
+                wifi_update: Some(pb::UpdateConfigRequest_::WifiUpdate::ClearWifi(
+                    pb::Empty {},
+                )),
+            }),
+        ),
+    );
+    assert!(matches!(cleared.response, Some(Reply::UpdateConfig(_))));
+    assert!(fake.identity.borrow().is_some());
 }

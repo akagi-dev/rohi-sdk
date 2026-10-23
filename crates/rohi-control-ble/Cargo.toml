@@ -20,5 +20,6 @@ log.workspace = true
 
 [dev-dependencies]
 rohi-hal.workspace = true
+rohi-identity.workspace = true
 embassy-futures.workspace = true
 heapless.workspace = true

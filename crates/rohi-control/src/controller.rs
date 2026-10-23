@@ -19,7 +19,9 @@ use rohi_control_proto::control::{
     WifiConfigUpdate_,
 };
 use rohi_control_proto::{PROTOCOL_VERSION, decode, encode, limits};
+use rohi_identity::{Identity, PublicKey};
 use rohi_net::{WifiConfig, WifiPassword, WifiSsid};
+use zeroize::Zeroize;
 
 use crate::mapping;
 use crate::{
@@ -134,6 +136,43 @@ impl<S: ControlServices, P: AuthorizationPolicy> Controller<S, P> {
                 Ok(()) => Reply::DisconnectWifi(pb::DisconnectWifiResponse {}),
                 Err(e) => service_error(e),
             },
+            Call::GetIdentity(_) => match services.identity().await {
+                Ok(key) => Reply::GetIdentity(mapping::identity(key)),
+                Err(e) => service_error(e),
+            },
+            Call::ProvisionIdentity(request) => match self.provision_identity(request).await {
+                Ok(key) => Reply::ProvisionIdentity(pb::ProvisionIdentityResponse {
+                    public_key: mapping::public_key(&key),
+                }),
+                Err(e) => service_error(e),
+            },
+            Call::EraseIdentity(_) => match services.erase_identity().await {
+                Ok(()) => Reply::EraseIdentity(pb::EraseIdentityResponse {}),
+                Err(e) => service_error(e),
+            },
+        }
+    }
+
+    /// Installs the received secret as the device identity.
+    ///
+    /// Never replaces an existing identity: that needs an explicit erase
+    /// first. The stored identity is read back and its public key compared
+    /// before success is reported.
+    async fn provision_identity(
+        &self,
+        mut request: pb::ProvisionIdentityRequest,
+    ) -> Result<PublicKey, ServiceError> {
+        let identity = Identity::from_secret(&request.ed25519_secret);
+        request.ed25519_secret.as_mut_slice().zeroize();
+        let identity = identity.map_err(|_| ServiceError::InvalidArgument)?;
+        if self.services.identity().await?.is_some() {
+            return Err(ServiceError::IdentityAlreadyProvisioned);
+        }
+        self.services.store_identity(&identity).await?;
+        let expected = identity.public_key();
+        match self.services.identity().await? {
+            Some(stored) if stored == expected => Ok(expected),
+            _ => Err(ServiceError::Internal),
         }
     }
 
@@ -204,6 +243,10 @@ fn requirements(call: &Call) -> (Capabilities, Privilege) {
         Call::ReconnectWifi(_) | Call::DisconnectWifi(_) => {
             (Capabilities::WIFI_CONTROL, Privilege::Mutate)
         }
+        Call::GetIdentity(_) => (Capabilities::IDENTITY, Privilege::Read),
+        Call::ProvisionIdentity(_) | Call::EraseIdentity(_) => {
+            (Capabilities::IDENTITY, Privilege::Provision)
+        }
     }
 }
 
@@ -219,5 +262,7 @@ fn service_error(error: ServiceError) -> Reply {
         ServiceError::Busy => pb::ErrorCode::Busy,
         ServiceError::Unavailable => pb::ErrorCode::Unavailable,
         ServiceError::Internal => pb::ErrorCode::Internal,
+        ServiceError::IdentityNotProvisioned => pb::ErrorCode::IdentityNotProvisioned,
+        ServiceError::IdentityAlreadyProvisioned => pb::ErrorCode::IdentityAlreadyProvisioned,
     })
 }

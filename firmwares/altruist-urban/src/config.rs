@@ -47,7 +47,8 @@
 //! Persistent Wi-Fi configuration is *state*: after the owner task committed a
 //! `WifiConfig` section (and once at boot, from the stored value) it publishes
 //! the value to the Wi-Fi manager as the desired configuration, synchronously,
-//! in the same task step as the commit. There is no `.await` between commit and
+//! in the same task step as the commit. The `Identity` section works the same
+//! way: the owner updates the signer in the commit step. There is no `.await` between commit and
 //! publication, so a caller that is cancelled while waiting for the response
 //! cannot leave a stored configuration unknown to the runtime.
 //!
@@ -71,8 +72,10 @@ use rohi_config::{
 use rohi_config_esp::esp::{PartitionError, config_storage, esp_storage::FlashStorage};
 use rohi_config_esp::{EspConfigStorage, EspStorageError};
 
+use rohi_identity::Identity;
 use rohi_net::{WifiConfig, WifiHandle};
 
+use crate::identity;
 use crate::tasks::RawMutex;
 
 /// Configuration storage of the Altruist Urban.
@@ -361,7 +364,7 @@ impl Owner {
                 Command::Set { id, blob } => {
                     match store.set_raw(id, blob.version, blob.payload()) {
                         Ok(()) => {
-                            publish_wifi(wifi, id, Some(&blob));
+                            publish_committed(wifi, id, Some(&blob));
                             Outcome::Done
                         }
                         Err(error) => Outcome::Failed(ServiceError::Store(error)),
@@ -369,7 +372,7 @@ impl Owner {
                 }
                 Command::Remove(id) => match store.remove_raw(id) {
                     Ok(()) => {
-                        publish_wifi(wifi, id, None);
+                        publish_committed(wifi, id, None);
                         Outcome::Done
                     }
                     Err(error) => Outcome::Failed(ServiceError::Store(error)),
@@ -498,9 +501,21 @@ pub fn maintenance() -> StorageMaintenance {
     StorageMaintenance { service: &SERVICE }
 }
 
-/// Publishes a just committed `WifiConfig` change as the desired Wi-Fi
-/// configuration. Synchronous on purpose, see the module documentation.
-fn publish_wifi(wifi: WifiHandle<'static, RawMutex>, id: SectionId, blob: Option<&Blob>) {
+/// Publishes a just committed (or removed) section to the runtime that
+/// depends on it: `WifiConfig` becomes the desired Wi-Fi configuration,
+/// `Identity` becomes the signing identity. Synchronous on purpose, see the
+/// module documentation. Other sections have no runtime consumer.
+fn publish_committed(wifi: WifiHandle<'static, RawMutex>, id: SectionId, blob: Option<&Blob>) {
+    if id == Identity::ID {
+        match blob {
+            None => identity::set_signer(None),
+            Some(blob) => match Identity::decode_versioned(blob.version, blob.payload()) {
+                Ok(identity) => identity::set_signer(Some(identity.signer())),
+                Err(error) => warn!("Identity: committed section cannot be decoded: {}", error),
+            },
+        }
+        return;
+    }
     if id != WifiConfig::ID {
         return;
     }
@@ -528,7 +543,7 @@ fn publish_stored_wifi(owner: &mut Owner, wifi: WifiHandle<'static, RawMutex>) {
         Ok(Some(info)) => {
             blob.version = info.version;
             blob.len = info.length;
-            publish_wifi(wifi, WifiConfig::ID, Some(&blob));
+            publish_committed(wifi, WifiConfig::ID, Some(&blob));
         }
         Ok(None) => info!("Wi-Fi: not configured"),
         Err(error) => warn!("Wi-Fi configuration unreadable: {}", error),

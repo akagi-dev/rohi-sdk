@@ -6,6 +6,7 @@ rohi-sdk/
 │   ├── rohi-hal, rohi-hal-esp                 sensors, measurements, runtime / ESP board backend
 │   ├── rohi-config, -derive, -esp             configuration store / derive macro / ESP flash backend
 │   ├── rohi-net, rohi-net-esp                 Wi-Fi control plane, IP data plane, BLE transport / ESP backend
+│   ├── rohi-identity                          device identity: Ed25519 section and signer
 │   └── rohi-control-proto, -control, -ble     control protocol: schema / dispatcher / BLE binding
 ├── firmwares/altruist-urban                   product firmware
 ├── examples                                   one hardware example per sensor, config self-test

@@ -20,7 +20,7 @@ use rohi_control_ble::frame::FrameError;
 use rohi_control_proto::{DecodeError, EncodeError};
 use thiserror::Error;
 
-use crate::model::{Capability, ErrorCode};
+use crate::model::{Capability, ErrorCode, PublicKey};
 
 /// Everything that can go wrong talking to a device.
 #[derive(Debug, Error)]
@@ -52,6 +52,18 @@ pub enum Error {
     /// A value given by the caller is invalid.
     #[error("invalid input: {0}")]
     InvalidInput(String),
+    /// The device reported a public key other than the locally derived one, so the
+    /// provisioned identity is not the intended one.
+    #[error(
+        "public key mismatch: derived {expected}, the device reports {reported}; \
+         erase the identity and provision again"
+    )]
+    PublicKeyMismatch {
+        /// Derived on the host.
+        expected: PublicKey,
+        /// Returned by the device.
+        reported: PublicKey,
+    },
 }
 
 impl From<FrameError> for Error {

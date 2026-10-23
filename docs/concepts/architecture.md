@@ -12,7 +12,7 @@ features run). This page shows the complete dependency model; [Crate map](crate-
  ─────────────────        ─────────────                  ────────────────────
  rohi-hal                 rohi-config                    rohi-control-ble ─► rohi-control ─► rohi-control-proto
    drivers, Runner          ConfigStore                    (BLE binding)      (dispatcher)      (protobuf schema)
-   MeasurementStore         ConfigSection                        │                  │
+   MeasurementStore         ConfigSection, rohi-identity         │                  │
    MeasurementHandle        (derive: rohi-config-derive)         ▼                  ▼
        │                         │                          rohi-net ◄────── rohi-hal (measurement types)
        ▼                         ▼                            WifiHandle / WifiManager     (Wi-Fi control plane)
@@ -31,7 +31,7 @@ Rules that keep this picture true:
    `rohi-net-esp` or on `rohi-control*`; `rohi-hal` never depends on `rohi-net`; portable crates never depend on
    `esp-*` crates. See [Portability](portability.md).
 2. **Feature crates own their own `ConfigSection`.** `rohi-config` never learns the set of application sections:
-   `rohi-net` owns `WifiConfig`, a future identity crate owns its section. A section type lives next to the code that
+   `rohi-net` owns `WifiConfig`, `rohi-identity` owns the `Identity` section. A section type lives next to the code that
    interprets it, and the firmware only wires the section to its runtime. See
    [Add a ConfigSection](../guides/add-config-section.md).
 3. **Stateful services have one owner task** and are reached through bounded handles:

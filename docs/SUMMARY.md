@@ -27,6 +27,7 @@
 - [Configuration store](sdk/config.md)
 - [Networking (rohi-net)](sdk/net.md)
 - [Control plane (BLE)](sdk/control.md)
+- [Device identity](sdk/identity.md)
 
 # Guides
 

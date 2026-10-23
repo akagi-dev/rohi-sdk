@@ -55,6 +55,11 @@ const LIMITS: &[(&str, usize, &str)] = &[
         16,
         "Maximum number of advertised capabilities.",
     ),
+    (
+        "ED25519_KEY_LEN",
+        32,
+        "Size of an Ed25519 secret or public key, in bytes.",
+    ),
 ];
 
 /// Repeated fields are bounded in elements; strings and bytes in bytes.
@@ -113,6 +118,18 @@ fn main() {
             ".rohi.control.v1.ScanWifiResponse.networks",
             "MAX_WIFI_SCAN_RESULTS",
         ),
+        (
+            ".rohi.control.v1.IdentityInfo.public_key",
+            "ED25519_KEY_LEN",
+        ),
+        (
+            ".rohi.control.v1.ProvisionIdentityRequest.ed25519_secret",
+            "ED25519_KEY_LEN",
+        ),
+        (
+            ".rohi.control.v1.ProvisionIdentityResponse.public_key",
+            "ED25519_KEY_LEN",
+        ),
     ];
     for (path, name) in bounded {
         let size = limit(name) as u32;
@@ -128,6 +145,11 @@ fn main() {
     // message carrying it (the generator drops it for everything containing it).
     generator.configure(
         ".rohi.control.v1.WifiConfigUpdate",
+        Config::new().no_debug_impl(true),
+    );
+    // Same for the identity secret.
+    generator.configure(
+        ".rohi.control.v1.ProvisionIdentityRequest",
         Config::new().no_debug_impl(true),
     );
 

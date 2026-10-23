@@ -143,7 +143,7 @@ fails the test suite instead of silently orphaning stored data:
 
 - `rohi-config` tests pin the container (envelope, payload, record bytes, CRC) and the section ID hash values listed
   above.
-- Every production section pins its encoded bytes; `WifiConfig` in `rohi-net` is the reference example.
+- Every production section pins its encoded bytes; `WifiConfig` in `rohi-net` and `Identity` in `rohi-identity` (`[bytes(32)]`) are the reference examples. The section ID golden values above include both.
 - A new section must add its own golden test before it is persisted by a release, see
   [Add a ConfigSection](../guides/add-config-section.md).
 

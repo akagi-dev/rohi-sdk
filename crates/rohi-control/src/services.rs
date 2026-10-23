@@ -15,6 +15,7 @@
 //  limitations under the License.
 //
 use rohi_hal::MeasurementsSnapshot;
+use rohi_identity::{Identity, PublicKey};
 use rohi_net::{NetworkInfo, WifiConfig, WifiError, WifiScanResults, WifiStatus};
 
 use crate::Capabilities;
@@ -43,6 +44,10 @@ pub enum ServiceError {
     Unavailable,
     /// Unexpected failure.
     Internal,
+    /// The operation needs a device identity, but none is provisioned.
+    IdentityNotProvisioned,
+    /// The device already has an identity.
+    IdentityAlreadyProvisioned,
 }
 
 impl From<WifiError> for ServiceError {
@@ -104,4 +109,15 @@ pub trait ControlServices {
 
     /// Disconnects and stays idle.
     fn wifi_disconnect(&self) -> Result<(), ServiceError>;
+
+    /// Public key of the stored identity, `None` when not provisioned.
+    /// The secret is never returned.
+    async fn identity(&self) -> Result<Option<PublicKey>, ServiceError>;
+
+    /// Persists `identity`. Only the identity section may be touched, and
+    /// only the controller decides whether replacing is allowed.
+    async fn store_identity(&self, identity: &Identity) -> Result<(), ServiceError>;
+
+    /// Removes the identity section; a no-op when absent.
+    async fn erase_identity(&self) -> Result<(), ServiceError>;
 }

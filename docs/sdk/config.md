@@ -104,7 +104,7 @@ configuration may be older than an update that was lost, or the damage may have 
 next successful update overwrites the damaged slot. `open_state()` keeps reporting how the flash looked at open;
 `state()` is the current health and turns `Valid` after that update (and after the first update of an empty store).
 
-Corruption is never reported as an empty store, so a corrupted `Identity` cannot look like "not provisioned".
+Corruption is never reported as an empty store, so a corrupted `Identity` cannot look like "not provisioned". The `Identity` section is described in [Device identity](identity.md).
 Only genuinely erased storage reads as absent. The store also exposes `generation()`, `active_slot()` and
 `section_count()` for diagnostics.
 
@@ -233,5 +233,5 @@ previous generation.
 
 ## Not in this layer
 
-Device identity, BLE/Wi-Fi control, OTA, flash encryption and JSON configuration are out of scope. The
+Device identity is a section of this store and is described in [Device identity](identity.md); BLE/Wi-Fi control, OTA, flash encryption and JSON configuration are out of scope. The
 format is CBOR only; there is no migration from the earlier development-only binary header format.

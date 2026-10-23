@@ -100,6 +100,14 @@ pub fn config(config: &Config) -> String {
     }
 }
 
+/// Identity state.
+pub fn identity(identity: &IdentityInfo) -> String {
+    match identity.public_key {
+        Some(key) => format!("State:      {}\nPublic key: {key}\n", identity.state),
+        None => format!("State: {}\n", identity.state),
+    }
+}
+
 /// Wi-Fi status.
 pub fn wifi_status(status: &WifiStatus) -> String {
     let mut out = format!("Wi-Fi: {}", status.state);
