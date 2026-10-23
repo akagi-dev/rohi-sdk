@@ -26,5 +26,6 @@ pub const MAX_WIFI_PASSWORD_LEN: usize = 64;
 pub const MIN_WIFI_PASSWORD_LEN: usize = 8;
 /// Maximum number of networks returned by one scan.
 pub const MAX_WIFI_SCAN_RESULTS: usize = 16;
-/// Depth of the [`WifiManager`](crate::WifiManager) command queue.
+/// Depth of the [`WifiManager`](crate::WifiManager) command queue (transient
+/// commands only: scan, reconnect, disconnect).
 pub const WIFI_COMMAND_QUEUE_DEPTH: usize = 4;

@@ -7,7 +7,7 @@ edition.workspace = true
 homepage.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Robonomics Open Hardware platform-independent network (Wi-Fi) abstraction"
+description = "Robonomics Open Hardware platform-independent networking: Wi-Fi control plane, IP data plane, BLE transport"
 
 [badges]
 maintenance = { status = "actively-developed" }
@@ -21,3 +21,11 @@ embassy-sync.workspace = true
 embassy-futures.workspace = true
 embedded-hal-async.workspace = true
 
+embedded-io-async.workspace = true
+embedded-nal-async.workspace = true
+
+[features]
+default = []
+# In-memory IP backend (`rohi_net::testing`) for host tests of code using
+# `NetworkHandle`. Not for firmware.
+testing = []

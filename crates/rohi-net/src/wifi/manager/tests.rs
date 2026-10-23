@@ -56,6 +56,8 @@ struct MockState {
     /// Delays pend while set; every started delay is still recorded once.
     hold_delays: bool,
     connect_released: bool,
+    /// Scans pend while set.
+    hold_scan: bool,
 }
 
 #[derive(Clone, Default)]
@@ -79,6 +81,15 @@ fn info_for(config: &WifiConfig) -> NetworkInfo {
 
 impl WifiBackend for Mock {
     async fn scan(&mut self) -> Result<WifiScanResults, WifiError> {
+        let state = self.0.clone();
+        poll_fn(|_| {
+            if state.borrow().hold_scan {
+                Poll::Pending
+            } else {
+                Poll::Ready(())
+            }
+        })
+        .await;
         self.0
             .borrow_mut()
             .scan_results
@@ -205,7 +216,7 @@ fn configured_connects_after_dhcp() {
     f.mock.script([Connect::Ok]);
     let cfg = config("office");
 
-    block_on(f.handle.apply_config(Some(cfg.clone()))).unwrap();
+    f.handle.set_desired_config(Some(cfg.clone()));
     f.steps(2);
 
     assert_eq!(f.state(), WifiState::Connected);
@@ -220,7 +231,7 @@ fn connecting_is_not_network_ready() {
     let shared = Shared::new();
     let mut f = fixture(&shared);
     f.mock.script([Connect::Hang]);
-    block_on(f.handle.apply_config(Some(config("office")))).unwrap();
+    f.handle.set_desired_config(Some(config("office")));
     f.steps(1);
     // The attempt hangs (association without DHCP): never Connected.
     assert!(poll_once(f.manager.step()).is_pending());
@@ -238,7 +249,7 @@ fn failures_back_off_and_success_resets() {
         Connect::Err(WifiError::NetworkNotFound),
         Connect::Ok,
     ]);
-    block_on(f.handle.apply_config(Some(config("office")))).unwrap();
+    f.handle.set_desired_config(Some(config("office")));
 
     f.steps(2); // command, first attempt
     assert_eq!(
@@ -286,7 +297,7 @@ fn flapping_link_keeps_backing_off() {
         .borrow_mut()
         .link_lost
         .extend([WifiError::Disconnected, WifiError::Disconnected]);
-    block_on(f.handle.apply_config(Some(config("office")))).unwrap();
+    f.handle.set_desired_config(Some(config("office")));
 
     f.steps(2); // command, connect
     f.steps(1); // link lost immediately
@@ -304,7 +315,7 @@ fn scan_during_connect_does_not_abort_attempt() {
     let mut f = fixture(&shared);
     f.mock.script([Connect::Held]);
     f.mock.0.borrow_mut().scan_results = Some(Ok(scan_result()));
-    block_on(f.handle.apply_config(Some(config("office")))).unwrap();
+    f.handle.set_desired_config(Some(config("office")));
     f.steps(1);
     let disconnects = f.mock.0.borrow().disconnects;
     let handle = f.handle;
@@ -337,7 +348,7 @@ fn scan_during_backoff_keeps_the_timer() {
     f.mock
         .script([Connect::Err(WifiError::NetworkNotFound), Connect::Ok]);
     f.mock.0.borrow_mut().scan_results = Some(Ok(scan_result()));
-    block_on(f.handle.apply_config(Some(config("office")))).unwrap();
+    f.handle.set_desired_config(Some(config("office")));
     f.steps(2);
     assert_eq!(f.state(), WifiState::Error);
     f.mock.0.borrow_mut().hold_delays = true;
@@ -372,7 +383,7 @@ fn backoff_is_bounded() {
     let mut f = fixture(&shared);
     f.mock
         .script((0..12).map(|_| Connect::Err(WifiError::NetworkNotFound)));
-    block_on(f.handle.apply_config(Some(config("office")))).unwrap();
+    f.handle.set_desired_config(Some(config("office")));
     f.steps(1 + 2 * 11);
     let max = ManagerConfig::DEFAULT.backoff_max_ms;
     let delays = f.mock.0.borrow().delays.clone();
@@ -386,12 +397,12 @@ fn config_change_reconnects_with_new_config() {
     let shared = Shared::new();
     let mut f = fixture(&shared);
     f.mock.script([Connect::Ok, Connect::Ok]);
-    block_on(f.handle.apply_config(Some(config("old")))).unwrap();
+    f.handle.set_desired_config(Some(config("old")));
     f.steps(2);
     assert_eq!(f.state(), WifiState::Connected);
     let disconnects = f.mock.0.borrow().disconnects;
 
-    block_on(f.handle.apply_config(Some(config("new")))).unwrap();
+    f.handle.set_desired_config(Some(config("new")));
     f.steps(2);
 
     assert!(f.mock.0.borrow().disconnects > disconnects);
@@ -408,10 +419,11 @@ fn config_change_interrupts_pending_attempt() {
     let shared = Shared::new();
     let mut f = fixture(&shared);
     f.mock.script([Connect::Hang, Connect::Ok]);
-    block_on(f.handle.apply_config(Some(config("old")))).unwrap();
+    f.handle.set_desired_config(Some(config("old")));
     f.steps(1);
-    block_on(f.handle.apply_config(Some(config("new")))).unwrap();
-    f.steps(2); // interrupted attempt handles the command, then reconnects
+    assert!(poll_once(f.manager.step()).is_pending()); // attempt hangs
+    f.handle.set_desired_config(Some(config("new")));
+    f.steps(2); // interrupted attempt reconciles, then reconnects
     assert_eq!(
         f.mock.0.borrow().connect_configs.last(),
         Some(&config("new"))
@@ -424,10 +436,10 @@ fn config_removed_disconnects_and_is_not_configured() {
     let shared = Shared::new();
     let mut f = fixture(&shared);
     f.mock.script([Connect::Ok]);
-    block_on(f.handle.apply_config(Some(config("office")))).unwrap();
+    f.handle.set_desired_config(Some(config("office")));
     f.steps(2);
 
-    block_on(f.handle.apply_config(None)).unwrap();
+    f.handle.set_desired_config(None);
     f.steps(1);
 
     assert_eq!(f.state(), WifiState::NotConfigured);
@@ -440,7 +452,7 @@ fn invalid_config_is_rejected_without_connecting() {
     let shared = Shared::new();
     let mut f = fixture(&shared);
     let invalid = WifiConfig::new(WifiSsid::empty(), None);
-    block_on(f.handle.apply_config(Some(invalid))).unwrap();
+    f.handle.set_desired_config(Some(invalid));
     f.steps(1);
     assert_eq!(
         f.handle.status(),
@@ -454,7 +466,7 @@ fn disconnect_goes_idle_and_reconnect_resumes() {
     let shared = Shared::new();
     let mut f = fixture(&shared);
     f.mock.script([Connect::Ok, Connect::Ok]);
-    block_on(f.handle.apply_config(Some(config("office")))).unwrap();
+    f.handle.set_desired_config(Some(config("office")));
     f.steps(2);
 
     f.handle.disconnect().unwrap();
@@ -492,7 +504,7 @@ fn command_queue_is_bounded() {
 }
 
 #[test]
-fn apply_config_waits_for_queue_space_and_is_delivered() {
+fn desired_config_is_published_even_with_a_full_command_queue() {
     let shared = Shared::new();
     let mut f = fixture(&shared);
     f.mock.script([Connect::Ok]);
@@ -501,25 +513,21 @@ fn apply_config_waits_for_queue_space_and_is_delivered() {
     }
     assert_eq!(f.handle.reconnect(), Err(WifiError::Busy));
 
-    let handle = f.handle;
-    let apply = handle.apply_config(Some(config("office")));
-    let mut apply = pin!(apply);
-    assert!(poll_once(apply.as_mut()).is_pending());
+    // Synchronous: no queue room is needed.
+    f.handle.set_desired_config(Some(config("office")));
+    assert!(f.handle.is_configured());
 
-    // Draining one queued command makes room; the config is then accepted.
-    f.steps(1);
-    assert_eq!(block_on(apply), Ok(()));
-
-    // Queued reconnects are served first, then the config, in order.
-    f.steps(WIFI_COMMAND_QUEUE_DEPTH + 2);
+    // The desired configuration is reconciled before queued commands.
+    f.steps(2);
+    assert_eq!(f.state(), WifiState::Connected);
     assert_eq!(f.mock.0.borrow().connect_configs, [config("office")]);
 }
 
 #[test]
-fn apply_config_accepts_without_association() {
+fn desired_config_accepts_without_association() {
     let shared = Shared::new();
     let mut f = fixture(&shared);
-    block_on(f.handle.apply_config(Some(config("office")))).unwrap();
+    f.handle.set_desired_config(Some(config("office")));
     assert_eq!(f.state(), WifiState::NotConfigured);
     assert!(f.mock.0.borrow().connect_configs.is_empty());
     f.steps(1);
@@ -528,18 +536,238 @@ fn apply_config_accepts_without_association() {
 }
 
 #[test]
-fn config_updates_apply_in_order() {
+fn rapid_updates_coalesce_to_the_latest() {
+    let shared = Shared::new();
+    let mut f = fixture(&shared);
+    f.mock.script([Connect::Ok, Connect::Ok, Connect::Ok]);
+    f.handle.set_desired_config(Some(config("a")));
+    f.handle.set_desired_config(Some(config("b")));
+    f.handle.set_desired_config(Some(config("c")));
+    f.steps(2);
+    assert_eq!(f.state(), WifiState::Connected);
+    // A and B never reached the radio: no connect/disconnect cycle for them.
+    assert_eq!(f.mock.0.borrow().connect_configs, [config("c")]);
+}
+
+#[test]
+fn updates_while_connecting_coalesce_to_the_latest() {
+    let shared = Shared::new();
+    let mut f = fixture(&shared);
+    f.mock.script([Connect::Hang, Connect::Ok]);
+    f.handle.set_desired_config(Some(config("a")));
+    f.steps(1);
+    assert!(poll_once(f.manager.step()).is_pending());
+    f.handle.set_desired_config(Some(config("b")));
+    f.handle.set_desired_config(Some(config("c")));
+    f.steps(2);
+    assert_eq!(f.state(), WifiState::Connected);
+    assert_eq!(
+        f.mock.0.borrow().connect_configs,
+        [config("a"), config("c")]
+    );
+}
+
+#[test]
+fn same_config_while_connected_keeps_the_link() {
+    let shared = Shared::new();
+    let mut f = fixture(&shared);
+    f.mock.script([Connect::Ok]);
+    f.handle.set_desired_config(Some(config("office")));
+    f.steps(2);
+    let disconnects = f.mock.0.borrow().disconnects;
+
+    f.handle.set_desired_config(Some(config("office")));
+    // Only the refresh timer completes the step: the link is untouched.
+    f.steps(1);
+    assert_eq!(f.state(), WifiState::Connected);
+    assert_eq!(f.mock.0.borrow().disconnects, disconnects);
+    assert_eq!(f.mock.0.borrow().connect_configs.len(), 1);
+}
+
+#[test]
+fn same_config_while_connecting_keeps_the_attempt() {
+    let shared = Shared::new();
+    let mut f = fixture(&shared);
+    f.mock.script([Connect::Held]);
+    f.handle.set_desired_config(Some(config("office")));
+    f.steps(1);
+    let disconnects = f.mock.0.borrow().disconnects;
+    let mock = f.mock.clone();
+    let handle = f.handle;
+    block_on(async {
+        let mut step = pin!(f.manager.step());
+        assert!(poll_once(step.as_mut()).is_pending());
+        handle.set_desired_config(Some(config("office")));
+        assert!(poll_once(step.as_mut()).is_pending());
+        mock.0.borrow_mut().connect_released = true;
+        step.await;
+    });
+    assert_eq!(f.state(), WifiState::Connected);
+    assert_eq!(f.mock.0.borrow().connect_configs.len(), 1);
+    assert_eq!(f.mock.0.borrow().disconnects, disconnects);
+}
+
+#[test]
+fn same_config_during_backoff_keeps_the_timer() {
+    let shared = Shared::new();
+    let mut f = fixture(&shared);
+    f.mock
+        .script([Connect::Err(WifiError::NetworkNotFound), Connect::Ok]);
+    f.handle.set_desired_config(Some(config("office")));
+    f.steps(2);
+    f.mock.0.borrow_mut().hold_delays = true;
+    let mock = f.mock.clone();
+    let handle = f.handle;
+    block_on(async {
+        let mut step = pin!(f.manager.step());
+        assert!(poll_once(step.as_mut()).is_pending());
+        handle.set_desired_config(Some(config("office")));
+        assert!(poll_once(step.as_mut()).is_pending());
+        mock.0.borrow_mut().hold_delays = false;
+        step.await;
+    });
+    f.steps(1);
+    assert_eq!(f.state(), WifiState::Connected);
+    assert_eq!(f.mock.0.borrow().delays, [1_000]);
+}
+
+#[test]
+fn same_config_while_idle_stays_idle() {
+    let shared = Shared::new();
+    let mut f = fixture(&shared);
+    f.mock.script([Connect::Ok]);
+    f.handle.set_desired_config(Some(config("office")));
+    f.steps(2);
+    f.handle.disconnect().unwrap();
+    f.steps(1);
+    assert_eq!(f.state(), WifiState::Idle);
+
+    f.handle.set_desired_config(Some(config("office")));
+    assert!(poll_once(f.manager.step()).is_pending());
+    assert_eq!(f.state(), WifiState::Idle);
+    assert_eq!(f.mock.0.borrow().connect_configs.len(), 1);
+}
+
+#[test]
+fn new_config_does_not_inherit_backoff() {
+    let shared = Shared::new();
+    let mut f = fixture(&shared);
+    // AP A: wrong password, backing off further and further.
+    f.mock.script([
+        Connect::Err(WifiError::AuthenticationFailed),
+        Connect::Err(WifiError::AuthenticationFailed),
+        Connect::Err(WifiError::AuthenticationFailed),
+        Connect::Err(WifiError::AuthenticationFailed),
+    ]);
+    f.handle.set_desired_config(Some(config("a")));
+    f.steps(1 + 2 * 3 + 1);
+    assert_eq!(f.state(), WifiState::Error);
+    assert_eq!(f.mock.0.borrow().delays, [1_000, 2_000, 4_000]);
+
+    // Switch to AP B in the middle of A's 8 s backoff wait.
+    f.mock.0.borrow_mut().hold_delays = true;
+    f.mock
+        .script([Connect::Err(WifiError::NetworkNotFound), Connect::Ok]);
+    let handle = f.handle;
+    let mock = f.mock.clone();
+    block_on(async {
+        let mut step = pin!(f.manager.step());
+        assert!(poll_once(step.as_mut()).is_pending());
+        handle.set_desired_config(Some(config("b")));
+        // The backoff wait is abandoned right away.
+        assert!(poll_once(step.as_mut()).is_ready());
+        mock.0.borrow_mut().hold_delays = false;
+    });
+    f.steps(1); // B, first attempt, no delay in between
+    assert_eq!(f.mock.0.borrow().connect_configs.last(), Some(&config("b")));
+    f.steps(2); // B's own backoff starts from the initial delay
+    assert_eq!(f.state(), WifiState::Connected);
+    assert_eq!(
+        f.mock.0.borrow().delays,
+        [1_000, 2_000, 4_000, 8_000, 1_000]
+    );
+}
+
+#[test]
+fn forget_during_backoff_stops_retrying() {
+    let shared = Shared::new();
+    let mut f = fixture(&shared);
+    f.mock.script([Connect::Err(WifiError::NetworkNotFound)]);
+    f.handle.set_desired_config(Some(config("office")));
+    f.steps(2);
+    f.mock.0.borrow_mut().hold_delays = true;
+    let handle = f.handle;
+    block_on(async {
+        let mut step = pin!(f.manager.step());
+        assert!(poll_once(step.as_mut()).is_pending());
+        handle.set_desired_config(None);
+        assert!(poll_once(step.as_mut()).is_ready());
+    });
+    assert_eq!(f.state(), WifiState::NotConfigured);
+    assert!(!f.handle.is_configured());
+    f.mock.0.borrow_mut().hold_delays = false;
+    // No automatic reconnect: the manager waits for a new configuration.
+    assert!(poll_once(f.manager.step()).is_pending());
+    assert_eq!(f.mock.0.borrow().connect_configs.len(), 1);
+}
+
+#[test]
+fn config_change_during_scan_applies_after_the_scan() {
     let shared = Shared::new();
     let mut f = fixture(&shared);
     f.mock.script([Connect::Ok, Connect::Ok]);
-    block_on(f.handle.apply_config(Some(config("first")))).unwrap();
-    block_on(f.handle.apply_config(Some(config("second")))).unwrap();
-    f.steps(4);
-    assert_eq!(f.state(), WifiState::Connected);
+    f.mock.0.borrow_mut().scan_results = Some(Ok(scan_result()));
+    f.handle.set_desired_config(Some(config("old")));
+    f.steps(2);
+    f.mock.0.borrow_mut().hold_scan = true;
+    f.mock.0.borrow_mut().hold_delays = true;
+    let handle = f.handle;
+    let mock = f.mock.clone();
+
+    let result = block_on(async {
+        let mut step = pin!(f.manager.step());
+        assert!(poll_once(step.as_mut()).is_pending());
+        let mut scan = pin!(handle.scan());
+        assert!(poll_once(scan.as_mut()).is_pending());
+        // The manager is scanning now; the update waits for the scan.
+        assert!(poll_once(step.as_mut()).is_pending());
+        handle.set_desired_config(Some(config("new")));
+        assert!(poll_once(step.as_mut()).is_pending());
+        assert_eq!(mock.0.borrow().connect_configs.len(), 1);
+
+        mock.0.borrow_mut().hold_scan = false;
+        mock.0.borrow_mut().hold_delays = false;
+        let (result, ()) = join(scan, step).await;
+        result
+    });
+    assert!(result.is_ok());
+    f.steps(1);
     assert_eq!(
         f.mock.0.borrow().connect_configs.last(),
-        Some(&config("second"))
+        Some(&config("new"))
     );
+    assert_eq!(f.state(), WifiState::Connected);
+}
+
+#[test]
+fn dropped_scan_does_not_leak_into_the_next_one() {
+    let shared = Shared::new();
+    let mut f = fixture(&shared);
+    f.mock.0.borrow_mut().scan_results = Some(Err(WifiError::ScanFailed));
+    let handle = f.handle;
+    {
+        let mut abandoned = pin!(handle.scan());
+        assert!(poll_once(abandoned.as_mut()).is_pending());
+    }
+    // The manager still serves the abandoned request; its result is dropped.
+    f.steps(1);
+    f.mock.0.borrow_mut().scan_results = Some(Ok(scan_result()));
+    let (result, ()) = block_on(join(handle.scan(), f.manager.step()));
+    assert_eq!(result.unwrap().len(), 1);
+    // The command queue capacity is intact.
+    for _ in 0..WIFI_COMMAND_QUEUE_DEPTH {
+        handle.reconnect().unwrap();
+    }
 }
 
 fn scan_result() -> WifiScanResults {
@@ -571,7 +799,7 @@ fn scan_while_connected_keeps_connected() {
     let mut f = fixture(&shared);
     f.mock.script([Connect::Ok]);
     f.mock.0.borrow_mut().scan_results = Some(Ok(scan_result()));
-    block_on(f.handle.apply_config(Some(config("office")))).unwrap();
+    f.handle.set_desired_config(Some(config("office")));
     f.steps(2);
 
     let (result, ()) = block_on(join(f.handle.scan(), f.manager.step()));

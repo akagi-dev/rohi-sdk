@@ -16,43 +16,43 @@
 //
 #![no_std]
 
-//! Platform-independent network (Wi-Fi and BLE) abstraction for Robonomics Open
-//! Hardware.
+//! Platform-independent networking for Robonomics Open Hardware.
 //!
-//! The public API of this crate is expressed only in ROHI types
-//! ([`WifiConfig`], [`WifiState`], [`WifiNetwork`], [`NetworkInfo`],
-//! [`WifiError`]) and is fully bounded: nothing here allocates. Platform
-//! details (radio drivers, IP stack, radio heap) live in platform crates such as
-//! `rohi-net-esp` behind [`WifiBackend`] and [`BleTransport`] and never appear in
-//! a public signature.
+//! Two planes, both expressed only in ROHI and standard embedded Rust types:
+//!
+//! - [Wi-Fi control plane](wifi): [`WifiManager`] owns the radio and reconciles
+//!   it towards the desired [`WifiConfig`]; other tasks use [`WifiHandle`]
+//!   (status, scan, reconnect, disconnect).
+//! - [IP data plane](ip): [`NetworkHandle`] offers DNS and TCP through the
+//!   standard `embedded-nal-async` and `embedded-io-async` traits.
+//!
+//! The BLE peripheral transport ([`BleTransport`]) lives here too. Platform
+//! details (radio drivers, IP stack, radio heap) live in platform crates such
+//! as `rohi-net-esp` behind [`WifiBackend`], [`IpBackend`] and
+//! [`BleTransport`] and never appear in a public signature. Nothing here
+//! allocates.
 
 #[cfg(test)]
 extern crate std;
 
-pub mod backend;
-mod backoff;
 mod ble;
-mod config;
-mod error;
+pub mod ip;
 mod limits;
-mod manager;
-mod network;
-mod scan;
-mod state;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+pub mod wifi;
 
-pub use backend::WifiBackend;
-pub use backoff::Backoff;
 pub use ble::{
     BleConfig, BleConnectionInfo, BleError, BleGattSpec, BleState, BleTransport,
     DEFAULT_BLE_PAYLOAD, MAX_BLE_PAYLOAD,
 };
-pub use config::{WifiConfig, WifiPassword, WifiSsid};
-pub use error::WifiError;
+pub use ip::{IpBackend, NetError, NetworkHandle};
 pub use limits::{
     MAX_SSID_LEN, MAX_WIFI_PASSWORD_LEN, MAX_WIFI_SCAN_RESULTS, MIN_WIFI_PASSWORD_LEN,
     WIFI_COMMAND_QUEUE_DEPTH,
 };
-pub use manager::{ManagerConfig, STATUS_RECEIVERS, WifiHandle, WifiManager, WifiShared};
-pub use network::NetworkInfo;
-pub use scan::{ScanCollector, WifiNetwork, WifiScanResults, WifiSecurity};
-pub use state::{WifiState, WifiStatus};
+pub use wifi::{
+    Backoff, ManagerConfig, NetworkInfo, STATUS_RECEIVERS, ScanCollector, WifiBackend, WifiConfig,
+    WifiError, WifiHandle, WifiManager, WifiNetwork, WifiPassword, WifiScanResults, WifiSecurity,
+    WifiShared, WifiSsid, WifiState, WifiStatus,
+};
