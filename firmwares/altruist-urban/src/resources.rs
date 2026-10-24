@@ -191,3 +191,8 @@ pub type BleRunner = rohi_net_esp::BleRunner<
     BLE_ATTRIBUTES,
     BLE_CONTROLLER_SLOTS,
 >;
+
+/// Frames the telemetry outbox holds while the uplink is down. Each frame is
+/// up to `rohi_connectivity_proto::limits::MAX_ENVELOPE_LEN` bytes; when the
+/// outbox is full new frames are skipped, never queued over old ones.
+pub const CONNECTIVITY_OUTBOX_DEPTH: usize = 4;
