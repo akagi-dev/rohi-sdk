@@ -26,10 +26,10 @@ use chrono::{Local, TimeZone};
 /// shown only when the device has one.
 pub fn lines(status: &TimeStatus) -> Vec<(&'static str, String)> {
     let mut lines = vec![("State", status.state.to_string())];
-    if let Some(Ok(millis)) = status.unix_time_ms.map(TryInto::<i64>::try_into) {
-        if let Some(datetime) = Local.timestamp_millis_opt(millis).single() {
-            lines.push(("Date Time", datetime.to_rfc3339()));
-        }
+    if let Some(Ok(millis)) = status.unix_time_ms.map(TryInto::<i64>::try_into)
+        && let Some(datetime) = Local.timestamp_millis_opt(millis).single()
+    {
+        lines.push(("Date Time", datetime.to_rfc3339()));
     }
     if let Some(source) = status.source {
         lines.push(("Source", source.to_string()));
