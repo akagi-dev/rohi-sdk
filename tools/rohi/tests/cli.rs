@@ -247,6 +247,7 @@ fn help_texts_are_snapshots() {
         &["wifi", "connect"],
         &["wifi", "configure"],
         &["wifi", "forget"],
+        &["time"],
         &["backup"],
         &["backup", "export"],
         &["backup", "import"],
@@ -366,6 +367,9 @@ Wi-Fi
   Address     10.0.0.7
   Gateway     10.0.0.1
 
+Time
+  State       unsynchronized
+
 Identity
   State       not provisioned
 "
@@ -384,7 +388,8 @@ async fn status_json_is_the_same_snapshot() {
             "connection": {"uri": "ble://BENCH-1234"},
             "device": {"firmware": "fake-1.0.0", "board": "bench-esp32c3"},
             "capabilities": [
-                "sensors", "config", "wifi_scan", "wifi_status", "wifi_control", "identity"
+                "sensors", "config", "wifi_scan", "wifi_status", "wifi_control", "identity",
+                "time"
             ],
             "wifi": {
                 "state": "connected",
@@ -395,10 +400,68 @@ async fn status_json_is_the_same_snapshot() {
                 "gateway": "10.0.0.1",
                 "dns": null
             },
+            "time": {
+                "state": "unsynchronized",
+                "unix_time_ms": null,
+                "source": null,
+                "sync_age_ms": null,
+                "uncertainty_ms": null,
+                "consecutive_failures": 0,
+                "last_failure": null
+            },
             "identity": {"state": "not provisioned", "address": null, "public_key": null}
         })
     );
     assert!(outcome.stderr.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn time_shows_the_wall_clock_only_when_the_device_has_one() {
+    use core::time::Duration;
+    use rohi_control::DeviceTime;
+    use rohi_time::{SyncFailure, TimeSourceKind, TimeStatus, TimeSyncState, UnixTime};
+
+    let outcome = run(Services::new(), &["time"]).await;
+    outcome.result.as_ref().unwrap();
+    assert_eq!(outcome.stdout, "Time\n  State       unsynchronized\n");
+
+    let mut services = Services::new();
+    services.time = DeviceTime {
+        unix_time: Some(UnixTime::from_millis(1_780_000_000_250)),
+        status: TimeStatus {
+            state: TimeSyncState::Stale,
+            source: Some(TimeSourceKind::Ntp),
+            last_sync_age: Some(Duration::from_secs(7_200)),
+            uncertainty: Some(Duration::from_millis(40)),
+            consecutive_failures: 2,
+            last_failure: Some(SyncFailure::Timeout),
+        },
+    };
+    let outcome = run(services, &["time"]).await;
+    outcome.result.as_ref().unwrap();
+    assert_eq!(
+        outcome.stdout,
+        format!(
+            "\
+Time
+  State       stale
+  Date Time   {}
+  Source      ntp
+  Last sync   7200 s ago
+  Accuracy    +-40 ms
+  Failures    2 (last: timeout)
+",
+            chrono::DateTime::<chrono::Utc>::from_timestamp_millis(1_780_000_000_250)
+                .unwrap()
+                .with_timezone(&chrono::Local)
+                .to_rfc3339()
+        )
+    );
+
+    let json = run(outcome.services, &["-o", "json", "time"]).await.json();
+    assert_eq!(json["unix_time_ms"], 1_780_000_000_250_u64);
+    assert_eq!(json["source"], "ntp");
+    assert_eq!(json["last_failure"], "timeout");
 }
 
 #[tokio::test(flavor = "current_thread")]

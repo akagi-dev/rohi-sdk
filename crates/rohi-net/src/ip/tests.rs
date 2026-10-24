@@ -274,3 +274,78 @@ fn errors_map_to_io_error_kinds() {
     assert_eq!(NetError::ConnectionReset.kind(), ErrorKind::ConnectionReset);
     assert_eq!(NetError::Timeout.kind(), ErrorKind::TimedOut);
 }
+
+#[test]
+fn udp_requires_a_ready_network() {
+    let ip = FakeIp::<2, 64>::new();
+    let net = NetworkHandle::new(&ip);
+    assert_eq!(net.udp_socket().err(), Some(NetError::NetworkUnavailable));
+    assert_eq!(ip.open_udp_sockets(), 0);
+}
+
+#[test]
+fn udp_round_trip() {
+    let ip = ready();
+    let net = NetworkHandle::new(&ip);
+    let socket = net.udp_socket().unwrap();
+    let remote = SocketAddr::new(SERVER, 123);
+    block_on(socket.send_to(b"ping", remote)).unwrap();
+    let (to, data) = ip.udp_peer_received().unwrap();
+    assert_eq!((to, data.as_slice()), (remote, b"ping".as_slice()));
+    assert!(ip.udp_peer_received().is_none());
+
+    assert!(ip.udp_peer_send(remote, b"pong"));
+    let mut buf = [0u8; 16];
+    let (len, from) = block_on(socket.recv_from(&mut buf)).unwrap();
+    assert_eq!((&buf[..len], from), (b"pong".as_slice(), remote));
+}
+
+#[test]
+fn udp_slots_are_bounded_and_released() {
+    let ip = ready();
+    let net = NetworkHandle::new(&ip);
+    let first = net.udp_socket().unwrap();
+    let second = net.udp_socket().unwrap();
+    assert_eq!(net.udp_socket().err(), Some(NetError::NoSocketAvailable));
+    drop(first);
+    assert_eq!(ip.open_udp_sockets(), 1);
+    let third = net.udp_socket().unwrap();
+    drop((second, third));
+    assert_eq!(ip.open_udp_sockets(), 0);
+}
+
+#[test]
+fn udp_receive_is_cancel_safe_and_fails_when_the_link_is_lost() {
+    let ip = ready();
+    let net = NetworkHandle::new(&ip);
+    let socket = net.udp_socket().unwrap();
+    let mut buf = [0u8; 16];
+    {
+        let mut receive = pin!(socket.recv_from(&mut buf));
+        assert!(poll_once(receive.as_mut()).is_pending());
+    }
+    // A datagram arriving after the cancelled receive is not lost.
+    assert!(ip.udp_peer_send(SocketAddr::new(SERVER, 123), b"late"));
+    assert_eq!(block_on(socket.recv_from(&mut buf)).unwrap().0, 4);
+
+    let mut receive = pin!(socket.recv_from(&mut buf));
+    assert!(poll_once(receive.as_mut()).is_pending());
+    ip.set_ready(false);
+    assert_eq!(block_on(receive), Err(NetError::NetworkUnavailable));
+    assert_eq!(
+        block_on(socket.send_to(b"x", SocketAddr::new(SERVER, 123))),
+        Err(NetError::NetworkUnavailable)
+    );
+}
+
+#[test]
+fn udp_oversized_datagrams_are_discarded() {
+    let ip = ready();
+    let net = NetworkHandle::new(&ip);
+    let socket = net.udp_socket().unwrap();
+    let remote = SocketAddr::new(SERVER, 123);
+    assert!(ip.udp_peer_send(remote, &[0u8; 32]));
+    assert!(ip.udp_peer_send(remote, b"ok"));
+    let mut buf = [0u8; 8];
+    assert_eq!(block_on(socket.recv_from(&mut buf)), Ok((2, remote)));
+}

@@ -136,6 +136,9 @@ impl<S: ControlServices, P: AuthorizationPolicy> Controller<S, P> {
                 Ok(()) => Reply::DisconnectWifi(pb::DisconnectWifiResponse {}),
                 Err(e) => service_error(e),
             },
+            Call::GetTimeStatus(_) => {
+                Reply::GetTimeStatus(mapping::time_status(&services.time_status()))
+            }
             Call::GetIdentity(_) => match services.identity().await {
                 Ok(key) => Reply::GetIdentity(mapping::identity(key)),
                 Err(e) => service_error(e),
@@ -244,6 +247,7 @@ fn requirements(call: &Call) -> (Capabilities, Privilege) {
             (Capabilities::WIFI_CONTROL, Privilege::Mutate)
         }
         Call::GetIdentity(_) => (Capabilities::IDENTITY, Privilege::Read),
+        Call::GetTimeStatus(_) => (Capabilities::TIME, Privilege::Read),
         Call::ProvisionIdentity(_) | Call::EraseIdentity(_) => {
             (Capabilities::IDENTITY, Privilege::Provision)
         }

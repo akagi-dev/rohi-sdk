@@ -128,6 +128,31 @@ impl Wifi {
 }
 
 #[derive(Serialize)]
+pub struct Time {
+    pub state: &'static str,
+    pub unix_time_ms: Option<u64>,
+    pub source: Option<&'static str>,
+    pub sync_age_ms: Option<u64>,
+    pub uncertainty_ms: Option<u32>,
+    pub consecutive_failures: u32,
+    pub last_failure: Option<&'static str>,
+}
+
+impl Time {
+    pub fn new(status: &TimeStatus) -> Self {
+        Self {
+            state: status.state.as_str(),
+            unix_time_ms: status.unix_time_ms,
+            source: status.source.map(|source| source.as_str()),
+            sync_age_ms: status.sync_age_ms,
+            uncertainty_ms: status.uncertainty_ms,
+            consecutive_failures: status.consecutive_failures,
+            last_failure: status.last_failure.map(|failure| failure.as_str()),
+        }
+    }
+}
+
+#[derive(Serialize)]
 pub struct Identity {
     pub state: &'static str,
     /// The public key as a Robonomics (SS58) address.
@@ -154,6 +179,8 @@ pub struct Status {
     pub capabilities: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wifi: Option<Wifi>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time: Option<Time>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub identity: Option<Identity>,
 }

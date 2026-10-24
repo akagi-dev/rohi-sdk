@@ -50,4 +50,4 @@ pub use policy::{
     AuthorizationPolicy, LinkSecurity, OpenPolicy, Privilege, RequireAuthenticated,
     RequireEncryption,
 };
-pub use services::{ControlServices, DeviceInfo, ServiceError};
+pub use services::{ControlServices, DeviceInfo, DeviceTime, ServiceError};

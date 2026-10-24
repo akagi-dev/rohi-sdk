@@ -133,14 +133,21 @@ impl EspWireless {
     /// [`NetworkHandle`](rohi_net::NetworkHandle).
     ///
     /// The `esp-rtos` scheduler must be running. May be called once.
-    pub fn wifi<const SOCKETS: usize, const TCP: usize, const RX: usize, const TX: usize>(
+    pub fn wifi<
+        const SOCKETS: usize,
+        const TCP: usize,
+        const RX: usize,
+        const TX: usize,
+        const UDP: usize,
+        const UDP_BUF: usize,
+    >(
         &mut self,
-        resources: &'static mut NetResources<SOCKETS, TCP, RX, TX>,
-    ) -> Result<(EspWifi, NetRunner, EspIp<TCP, RX, TX>), WifiError> {
+        resources: &'static mut NetResources<SOCKETS, TCP, RX, TX, UDP, UDP_BUF>,
+    ) -> Result<(EspWifi, NetRunner, EspIp<TCP, RX, TX, UDP, UDP_BUF>), WifiError> {
         let wifi = self.wifi.take().ok_or(WifiError::DriverError)?;
-        let (stack_resources, pool) = resources.split();
+        let (stack_resources, tcp, udp) = resources.split();
         let (wifi, runner, stack) = EspWifi::new(wifi, stack_resources)?;
-        Ok((wifi, runner, EspIp::new(stack, pool)))
+        Ok((wifi, runner, EspIp::new(stack, tcp, udp)))
     }
 
     /// Brings up the BLE controller and host stack as a GATT peripheral

@@ -28,7 +28,7 @@
 
 use embassy_time::{Duration, with_timeout};
 use rohi_control::{
-    Capabilities, ControlServices, Controller, DeviceInfo, OpenPolicy, ServiceError,
+    Capabilities, ControlServices, Controller, DeviceInfo, DeviceTime, OpenPolicy, ServiceError,
 };
 use rohi_control_ble::ControlBle;
 use rohi_hal::MeasurementsSnapshot;
@@ -134,6 +134,10 @@ impl ControlServices for UrbanControlServices {
 
     fn wifi_status(&self) -> WifiStatus {
         self.wifi.status()
+    }
+
+    fn time_status(&self) -> DeviceTime {
+        crate::time::device_time()
     }
 
     fn wifi_network_info(&self) -> Option<NetworkInfo> {

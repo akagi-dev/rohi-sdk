@@ -5,8 +5,8 @@ use std::vec::Vec;
 
 use embassy_futures::block_on;
 use rohi_control::{
-    AuthorizationPolicy, Capabilities, ControlServices, Controller, DeviceInfo, OpenPolicy,
-    RequireEncryption, ServiceError,
+    AuthorizationPolicy, Capabilities, ControlServices, Controller, DeviceInfo, DeviceTime,
+    OpenPolicy, RequireEncryption, ServiceError,
 };
 use rohi_control_proto::control::{
     self as pb, Request_::Request as Call, Response_::Response as Reply,
@@ -435,6 +435,10 @@ impl ControlServices for Services<'_> {
     fn wifi_disconnect(&self) -> Result<(), ServiceError> {
         self.calls.borrow_mut().push("disconnect");
         Ok(())
+    }
+
+    fn time_status(&self) -> DeviceTime {
+        DeviceTime::UNSYNCHRONIZED
     }
 
     async fn identity(&self) -> Result<Option<PublicKey>, ServiceError> {

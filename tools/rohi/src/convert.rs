@@ -116,6 +116,22 @@ pub(crate) fn wifi_status(response: &pb::GetWifiStatusResponse) -> WifiStatus {
     }
 }
 
+pub(crate) fn time_status(response: &pb::GetTimeStatusResponse) -> TimeStatus {
+    TimeStatus {
+        state: TimeSyncState::from_proto(response.state),
+        unix_time_ms: response.unix_time_ms().copied(),
+        source: response
+            .source()
+            .map(|source| TimeSource::from_proto(*source)),
+        sync_age_ms: response.sync_age_ms().copied(),
+        uncertainty_ms: response.uncertainty_ms().copied(),
+        consecutive_failures: response.consecutive_failures,
+        last_failure: response
+            .last_failure()
+            .map(|failure| TimeSyncFailure::from_proto(*failure)),
+    }
+}
+
 /// Builds the wire form of a partial Wi-Fi update.
 pub(crate) fn wifi_update(update: &WifiUpdate) -> Result<pb::WifiConfigUpdate, crate::Error> {
     use pb::WifiConfigUpdate_::PasswordUpdate;

@@ -38,6 +38,7 @@ mod identity;
 mod status;
 mod target;
 mod terminal;
+mod time;
 mod wifi;
 
 use std::future::Future;
@@ -132,6 +133,7 @@ pub async fn execute<T: ClientTransport>(
                 || format::sensors(&sensors),
             )
         }
+        Command::Time => time::run(device, ctx).await,
         Command::Config { section } => match section {
             None | Some(ConfigSection::Wifi) => wifi::config(device, ctx).await,
         },

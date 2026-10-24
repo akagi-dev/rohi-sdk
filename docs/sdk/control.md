@@ -58,6 +58,7 @@ return a typed error; the link is never dropped because of a bad request.
 | `GetWifiStatus` | `WIFI_STATUS` | no |
 | `ReconnectWifi`, `DisconnectWifi` | `WIFI_CONTROL` | **yes** |
 | `GetIdentity` | `IDENTITY` | no |
+| `GetTimeStatus` | `TIME` | no |
 | `ProvisionIdentity`, `EraseIdentity` | `IDENTITY` | **yes** (`Privilege::Provision`) |
 
 Errors: `INVALID_ARGUMENT`, `NOT_FOUND`, `NOT_SUPPORTED`, `BUSY`, `UNAVAILABLE`, `PERMISSION_DENIED`, `INTERNAL`, `IDENTITY_NOT_PROVISIONED`, `IDENTITY_ALREADY_PROVISIONED`.

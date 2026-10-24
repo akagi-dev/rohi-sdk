@@ -8,7 +8,7 @@ entry point:
         │                              │
    WifiHandle                    NetworkHandle
    Wi-Fi control plane           IP data plane
-   configure · scan · status     DNS · TCP
+   configure · scan · status     DNS · TCP · UDP
    reconnect · disconnect        embedded-nal-async + embedded-io-async
         │                              │
    WifiManager  ── WifiBackend    IpBackend
@@ -21,7 +21,7 @@ entry point:
 | Layer | Question it answers | Owner |
 |-------|---------------------|-------|
 | **Wi-Fi control plane** (`WifiHandle`) | Which network should the radio use, and is it connected? | `WifiManager` (one task) |
-| **IP data plane** (`NetworkHandle`) | Can I resolve a name and open a TCP connection? | the platform IP stack (`EspIp`) |
+| **IP data plane** (`NetworkHandle`) | Can I resolve a name, open a TCP connection or send a UDP datagram? | the platform IP stack (`EspIp`) |
 | **ESP backend** (`rohi-net-esp`) | How are the radio and the IP stack driven on ESP32-C3 / C6? | `EspWireless` |
 
 *Wi-Fi connected* is **not** the same as *a TCP connection can be opened*. The control plane reports link state; the
@@ -119,7 +119,7 @@ network is up.
 | `NetworkUnavailable` | Wi-Fi not configured/connecting, DHCP incomplete, link lost |
 | `DnsFailed` | Resolution failed while the network was up |
 | `ConnectFailed` | Connection refused or unreachable while the network was up |
-| `NoSocketAvailable` | All statically allocated TCP connections are in use |
+| `NoSocketAvailable` | All statically allocated TCP connections (or UDP sockets) are in use |
 | `ConnectionReset` | An established connection was reset or closed |
 | `Timeout` | A timeout expired |
 | `Backend` | Unexpected stack failure |
@@ -128,21 +128,30 @@ network is up.
 
 ### Socket resources
 
-TCP connections are **statically bounded**; nothing allocates. Opening more simultaneous connections than the product
-configured fails **immediately** with `NetError::NoSocketAvailable`: `connect` never waits for a free slot. A slot is
-released when the connection is dropped. The capacity is a product decision, see
+TCP connections and UDP sockets are **statically bounded**; nothing allocates. Opening more simultaneous connections or
+sockets than the product configured fails **immediately** with `NetError::NoSocketAvailable`: `connect` and `udp_socket`
+never wait for a free slot. A slot is released when the connection or socket is dropped. The capacity is a product decision, see
 [Resource limits](../reference/resource-limits.md#ip-data-plane).
+
+### UDP
+
+`NetworkHandle::udp_socket()` opens a `UdpSocket` bound to an ephemeral port (it fails with `NetworkUnavailable` while the
+network is not ready). `send_to` and `recv_from` take `&self`; a datagram larger than the receive buffer is discarded and
+the wait continues. There is no built-in receive timeout: callers bound the wait themselves (the NTP source does, see
+[Time service](time.md)).
 
 ### Cancellation
 
 All `NetworkHandle` operations are cancel-safe: dropping `get_host_by_name` allocates nothing; dropping a pending
-`connect` aborts the attempt and frees its slot; dropping a read or write future transfers nothing that was not
+`connect` aborts the attempt and frees its slot; dropping a UDP socket frees its slot, and a datagram arriving after a
+cancelled `recv_from` is delivered to the next call; dropping a read or write future transfers nothing that was not
 reported. See [Async and cancellation](../concepts/async-and-cancellation.md).
 
 ### Testing without hardware
 
 `rohi_net::testing::FakeIp` (feature `testing`) is an in-memory `IpBackend`: scripted DNS answers, refused connections,
-readiness changes, slot exhaustion, held operations for cancellation tests and the peer side of every connection. See
+readiness changes, slot exhaustion, held operations for cancellation tests and the peer side of every connection and
+UDP socket (`udp_peer_send`, `udp_peer_received`). See
 [Host testing](../validation/host-testing.md).
 
 ## ESP backend (`rohi-net-esp`)
@@ -151,13 +160,13 @@ The only platform-specific entry point is `EspWireless` (see [Wireless runtime](
 the board firmware. It owns the radio peripherals and the single radio heap shared with BLE and creates:
 
 - `EspWifi` (implements `WifiBackend`) and its `NetRunner` (the background task of the IP stack),
-- `EspIp` (implements `IpBackend`): DNS and TCP on the same `embassy-net` stack.
+- `EspIp` (implements `IpBackend`): DNS, TCP and UDP on the same `embassy-net` stack.
 
 The firmware, not the backend, decides how much RAM this takes: it passes a `NetResources` value (stack sockets, TCP
-connections, buffer sizes) and the heap size. See [Memory model](../concepts/memory-model.md).
+connections, UDP sockets, buffer sizes) and the heap size. See [Memory model](../concepts/memory-model.md).
 
-The `embassy-net` features are limited to what a current component uses: **DHCPv4, DNS, TCP** and the Ethernet medium
-used by `esp-radio`. UDP is not enabled. Policy: platform and network protocol features are enabled only when a current
+The `embassy-net` features are limited to what a current component uses: **DHCPv4, DNS, TCP, UDP** (for the NTP time
+source) and the Ethernet medium used by `esp-radio`. Policy: platform and network protocol features are enabled only when a current
 SDK component uses them; later work adds features together with the component that needs them
 ([Targets and features](../reference/targets-and-features.md#network-stack-features)).
 

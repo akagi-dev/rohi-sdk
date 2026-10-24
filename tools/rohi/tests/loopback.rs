@@ -29,7 +29,8 @@ async fn info_and_capabilities() {
                 Capability::WifiScan,
                 Capability::WifiStatus,
                 Capability::WifiControl,
-                Capability::Identity
+                Capability::Identity,
+                Capability::Time
             ]
         );
     })

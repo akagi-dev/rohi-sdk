@@ -34,7 +34,9 @@ use rohi_net::{
 
 use rohi_identity::PublicKey;
 
-use crate::DeviceInfo;
+use rohi_time::{SyncFailure, TimeSourceKind, TimeSyncState};
+
+use crate::{DeviceInfo, DeviceTime};
 
 // The generic response must be able to carry everything the typed model can
 // produce.
@@ -366,5 +368,58 @@ pub(crate) fn identity(key: Option<PublicKey>) -> pb::GetIdentityResponse {
     }
     let mut out = pb::GetIdentityResponse::default();
     out.set_identity(info);
+    out
+}
+
+fn time_sync_state(state: TimeSyncState) -> pb::TimeSyncState {
+    match state {
+        TimeSyncState::Unsynchronized => pb::TimeSyncState::Unsynchronized,
+        TimeSyncState::Synchronized => pb::TimeSyncState::Synchronized,
+        TimeSyncState::Stale => pb::TimeSyncState::Stale,
+    }
+}
+
+fn time_source(source: TimeSourceKind) -> pb::TimeSource {
+    match source {
+        TimeSourceKind::Ntp => pb::TimeSource::Ntp,
+        TimeSourceKind::Rtc => pb::TimeSource::Rtc,
+        TimeSourceKind::External => pb::TimeSource::External,
+    }
+}
+
+fn time_sync_failure(failure: SyncFailure) -> pb::TimeSyncFailure {
+    match failure {
+        SyncFailure::NetworkUnavailable => pb::TimeSyncFailure::NetworkUnavailable,
+        SyncFailure::Resolve => pb::TimeSyncFailure::Resolve,
+        SyncFailure::Timeout => pb::TimeSyncFailure::Timeout,
+        SyncFailure::InvalidResponse => pb::TimeSyncFailure::InvalidResponse,
+        SyncFailure::Rejected => pb::TimeSyncFailure::Rejected,
+        SyncFailure::Implausible => pb::TimeSyncFailure::Implausible,
+        SyncFailure::Source => pb::TimeSyncFailure::Source,
+    }
+}
+
+pub(crate) fn time_status(time: &DeviceTime) -> pb::GetTimeStatusResponse {
+    let status = &time.status;
+    let mut out = pb::GetTimeStatusResponse {
+        state: time_sync_state(status.state),
+        consecutive_failures: status.consecutive_failures,
+        ..Default::default()
+    };
+    if let Some(unix_time) = time.unix_time {
+        out.set_unix_time_ms(unix_time.as_millis());
+    }
+    if let Some(source) = status.source {
+        out.set_source(time_source(source));
+    }
+    if let Some(age) = status.last_sync_age {
+        out.set_sync_age_ms(u64::try_from(age.as_millis()).unwrap_or(u64::MAX));
+    }
+    if let Some(uncertainty) = status.uncertainty {
+        out.set_uncertainty_ms(u32::try_from(uncertainty.as_millis()).unwrap_or(u32::MAX));
+    }
+    if let Some(failure) = status.last_failure {
+        out.set_last_failure(time_sync_failure(failure));
+    }
     out
 }

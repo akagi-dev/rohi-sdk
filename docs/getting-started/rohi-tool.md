@@ -30,7 +30,7 @@ advertising and not connected to another client: a device accepts a single conne
 
 ```bash
 rohi scan                  # find nearby ROHI devices
-rohi status                # connection, firmware, board, capabilities, Wi-Fi, identity
+rohi status                # connection, firmware, board, capabilities, Wi-Fi, time, identity
 rohi sensors               # current measurements
 ```
 
@@ -52,12 +52,20 @@ Capabilities
   wifi status
   wifi control
   identity
+  time
 
 Wi-Fi
   State       connected
   Network     office
   Signal      -51 dBm
   Address     192.168.1.42
+
+Time
+  State       synchronized
+  Unix time   1780000000.250
+  Source      ntp
+  Last sync   90 s ago
+  Accuracy    +-40 ms
 
 Identity
   State       provisioned
@@ -144,6 +152,17 @@ of stdin with `--password-stdin`, or from the `ROHI_WIFI_PASSWORD` environment v
 keeps the stored password. `wifi configure` is the lower-level operation that only stores values: omitted settings are
 kept, and `--open` removes the password.
 
+## Time
+
+```bash
+rohi time                  # wall-clock time and synchronization state
+```
+
+The device has wall-clock time only after a source such as NTP delivered a plausible sample: until then the section shows
+`State unsynchronized` and **no time**; the device never reports its uptime or a placeholder date instead. `Last sync`,
+`Accuracy`, `Source` and the last failure (`Failures`) are shown when known. The time may step when a later sample
+corrects it, and NTP time is not authenticated. See [Time service](../sdk/time.md).
+
 ## Back up and restore the configuration
 
 ```bash
@@ -195,6 +214,7 @@ secret is sent to the device. See [Device identity](../sdk/identity.md) for the 
 | `config [wifi]` | stored configuration (never secrets) |
 | `wifi` and its subcommands `status`, `scan`, `connect`, `configure`, `reconnect`, `disconnect`, `forget` | Wi-Fi |
 | `backup export [FILE]`, `backup import FILE` | configuration backup and restore |
+| `time` | wall-clock time and synchronization state |
 | `identity` and its subcommands `provision`, `erase` | device identity |
 
 ## Troubleshooting

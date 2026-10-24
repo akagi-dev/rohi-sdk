@@ -18,6 +18,8 @@ resolver = "2"
 [workspace.dependencies]
 # Local
 rohi-hal = { path = "crates/rohi-hal" }
+rohi-time = { path = "crates/rohi-time" }
+rohi-time-ntp = { path = "crates/rohi-time-ntp" }
 rohi-hal-esp = { path = "crates/rohi-hal-esp" }
 rohi-config = { path = "crates/rohi-config" }
 rohi-config-derive = { path = "crates/rohi-config-derive" }
@@ -71,6 +73,7 @@ embassy-futures = "0.1.2"
 embassy-embedded-hal = "0.6.0"
 embassy-net = { version = "0.9.1", features = [
   "tcp",
+  "udp",
   "dns",
   "dhcpv4",
   "medium-ethernet",
@@ -84,6 +87,9 @@ esp-storage = "0.10.0"
 minicbor = { version = "2.3.1", default-features = false, features = [
   "derive",
 ] }
+
+# Time
+sntpc = { version = "0.11.0", default-features = false }
 
 # Protobuf
 micropb = { version = "0.6.0", default-features = false, features = [
@@ -115,6 +121,7 @@ tokio = { version = "1", default-features = false, features = [
   "sync",
 ] }
 futures = "0.3"
+chrono = "0.4"
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -131,8 +131,9 @@ Examples:
     /// Show device information, capabilities, and current status.
     ///
     /// Displays the connection, firmware and board information, supported
-    /// capabilities, and available runtime status such as Wi-Fi connectivity
-    /// and identity. Sections the device does not support are omitted.
+    /// capabilities, and available runtime status such as Wi-Fi connectivity,
+    /// the wall-clock time and identity. Sections the device does not support
+    /// are omitted.
     #[command(after_help = "\
 Examples:
   rohi status
@@ -169,6 +170,17 @@ Examples:
         #[command(subcommand)]
         action: Option<WifiAction>,
     },
+    /// Show the wall-clock time of the device and its synchronization state.
+    ///
+    /// The device has no time until a source, such as NTP, delivered a
+    /// plausible sample; it never reports its uptime or a placeholder date
+    /// instead. The time may step when a later sample corrects it, and it is
+    /// not authenticated.
+    #[command(after_help = "\
+Examples:
+  rohi time
+  rohi -d A12F -o json time")]
+    Time,
     /// Export or restore device configuration.
     ///
     /// Backups contain persistent device settings that can be restored later

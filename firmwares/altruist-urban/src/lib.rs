@@ -47,5 +47,8 @@ pub mod net;
 /// Static resource budget of the wireless stack.
 pub mod resources;
 
+/// Synchronized wall-clock time.
+pub mod time;
+
 /// Embassy tasks.
 pub mod tasks;

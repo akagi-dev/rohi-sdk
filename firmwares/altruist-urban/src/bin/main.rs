@@ -39,6 +39,7 @@ use altruist_urban::tasks::sensors::{
     SharedI2cBus, bmx280_task, i2c_handle, noise_task, scd4x_task, sds011_task,
 };
 use altruist_urban::tasks::store::{self, store_task};
+use altruist_urban::time::ntp_task;
 use rohi_control::Capabilities;
 use rohi_hal_esp::board::altruist_urban::{AltruistUrban, Hardware};
 use rohi_net_esp::{EspWireless, wireless_heap};
@@ -89,14 +90,16 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(store_task().unwrap());
 
     // A Wi-Fi or BLE failure must never stop the sensors: log and carry on.
-    let mut capabilities = Capabilities::SENSORS | Capabilities::CONFIG | Capabilities::IDENTITY;
+    let mut capabilities =
+        Capabilities::SENSORS | Capabilities::CONFIG | Capabilities::IDENTITY | Capabilities::TIME;
     let mut wifi_configured = false;
     match net::start(&mut wireless) {
-        Ok((backend, runner, _network)) => {
-            // `_network` is the IP data plane (DNS, TCP) for the uplink layer
-            // once one exists; nothing opens connections yet.
+        Ok((backend, runner, network)) => {
+            // `network` is the IP data plane (DNS, TCP, UDP): the time service
+            // uses it for NTP; no uplink opens connections yet.
             spawner.spawn(net_runner_task(runner).unwrap());
             spawner.spawn(wifi_task(backend).unwrap());
+            spawner.spawn(ntp_task(network).unwrap());
             wifi_configured = net::handle().is_configured();
             capabilities = capabilities
                 | Capabilities::WIFI_SCAN

@@ -15,7 +15,7 @@
 | **Golden test** | A test pinning exact encoded bytes or IDs so accidental ABI changes fail |
 | **Handle** | A small copyable value giving other tasks bounded access to a service owned by one task |
 | **Identity** | The device's single Ed25519 key, provisioned from the host (never generated on the device) and stored as the `Identity` config section. See [Device identity](../sdk/identity.md) |
-| **IP data plane** | `NetworkHandle`: DNS and TCP through `embedded-nal-async` / `embedded-io-async` |
+| **IP data plane** | `NetworkHandle`: DNS and TCP through `embedded-nal-async` / `embedded-io-async`, and bounded UDP sockets |
 | **MeasurementStore / MeasurementHandle / snapshot** | Owner-side store of typed observations / handle for on-demand requests / immutable `MeasurementsSnapshot` generated at request time |
 | **Owner** | The one task (or runtime object) that holds the mutable state of a service |
 | **Product** | A firmware (Altruist Urban) that composes the SDK and owns its resource budget |
@@ -23,4 +23,7 @@
 | **Section ID** | FNV-1a 64-bit hash of the Rust struct name identifying a `ConfigSection` |
 | **SensorDriver / Runner** | Driver trait for one sensor / the generic task loop handling probing, polling, backoff and recovery |
 | **Slot (A/B)** | One of the two flash slots of the configuration region; updates go to the inactive one and commit last |
+| **Time anchor** | The accepted absolute time together with the monotonic instant it was accepted at; wall-clock time is `anchor + monotonic elapsed`. See [Time service](../sdk/time.md) |
+| **TimeService / TimeSource** | The single source of optional wall-clock time / an abstract producer of absolute-time samples (NTP, future RTC) |
+| **Wall-clock time** | `UnixTime`: absolute time, available only after a valid sample and allowed to step; never used for durations (those use monotonic time) |
 | **Wireless heap** | The fixed heap shared by the Wi-Fi and BLE controllers; the only heap in the firmware |

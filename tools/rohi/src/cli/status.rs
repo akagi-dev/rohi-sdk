@@ -30,6 +30,7 @@ pub struct Snapshot {
     pub info: DeviceInfo,
     pub capabilities: Vec<Capability>,
     pub wifi: Option<WifiStatus>,
+    pub time: Option<TimeStatus>,
     pub identity: Option<IdentityInfo>,
 }
 
@@ -55,6 +56,11 @@ pub async fn collect<T: ClientTransport>(
     } else {
         None
     };
+    let time = if capabilities.contains(&Capability::Time) {
+        optional(device.time_status().await)?
+    } else {
+        None
+    };
     let identity = if capabilities.contains(&Capability::Identity) {
         optional(device.identity().await)?
     } else {
@@ -65,6 +71,7 @@ pub async fn collect<T: ClientTransport>(
         info,
         capabilities,
         wifi,
+        time,
         identity,
     })
 }
@@ -113,6 +120,9 @@ pub fn human(snapshot: &Snapshot) -> String {
     if let Some(wifi) = &snapshot.wifi {
         section(&mut out, "Wi-Fi", &wifi_lines(wifi));
     }
+    if let Some(time) = &snapshot.time {
+        section(&mut out, "Time", &super::time::lines(time));
+    }
     if let Some(identity) = &snapshot.identity {
         let lines = identity::lines(identity);
         section(&mut out, "Identity", &lines);
@@ -133,6 +143,7 @@ pub fn json(snapshot: &Snapshot) -> dto::Versioned<dto::Status> {
             .map(dto::capability_id)
             .collect(),
         wifi: snapshot.wifi.as_ref().map(dto::Wifi::new),
+        time: snapshot.time.as_ref().map(dto::Time::new),
         identity: snapshot.identity.as_ref().map(dto::Identity::new),
     })
 }
@@ -144,6 +155,13 @@ pub async fn run<T: ClientTransport>(
     let snapshot = collect(device, ctx.uri.clone()).await?;
     ctx.io
         .emit(ctx.format, &json(&snapshot), || human(&snapshot))
+}
+
+/// One titled section as a complete text.
+pub fn section_text(title: &str, lines: &[(&str, String)]) -> String {
+    let mut out = String::new();
+    section(&mut out, title, lines);
+    out
 }
 
 /// The `Wi-Fi` section alone, for `rohi wifi status`.

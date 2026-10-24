@@ -19,7 +19,7 @@ use rohi_net::{
 };
 
 use crate::{
-    Capabilities, ControlServices, Controller, DeviceInfo, LinkSecurity, OpenPolicy,
+    Capabilities, ControlServices, Controller, DeviceInfo, DeviceTime, LinkSecurity, OpenPolicy,
     RequireAuthenticated, RequireEncryption, ServiceError,
 };
 
@@ -46,6 +46,7 @@ struct Fake {
     scan: WifiScanResults,
     set_fails: bool,
     identity: RefCell<Option<Identity>>,
+    time: DeviceTime,
     store_identity_fails: bool,
 }
 
@@ -88,6 +89,7 @@ impl Fake {
             scan: WifiScanResults::new(),
             set_fails: false,
             identity: RefCell::new(None),
+            time: DeviceTime::UNSYNCHRONIZED,
             store_identity_fails: false,
         }
     }
@@ -142,6 +144,10 @@ impl ControlServices for &Fake {
     fn wifi_disconnect(&self) -> Result<(), ServiceError> {
         self.log.borrow_mut().push("disconnect");
         Err(ServiceError::Busy)
+    }
+
+    fn time_status(&self) -> DeviceTime {
+        self.time
     }
 
     async fn identity(&self) -> Result<Option<PublicKey>, ServiceError> {
@@ -990,4 +996,65 @@ fn generic_config_cannot_reach_the_identity() {
     );
     assert!(matches!(cleared.response, Some(Reply::UpdateConfig(_))));
     assert!(fake.identity.borrow().is_some());
+}
+
+fn get_time_status() -> pb::Request {
+    request(1, Call::GetTimeStatus(pb::GetTimeStatusRequest {}))
+}
+
+#[test]
+fn time_status_of_an_unsynchronized_device_has_no_time() {
+    let fake = Fake::new();
+    let controller = Controller::new(&fake, OpenPolicy);
+    let response = send(&controller, &PLAIN, &get_time_status());
+    let Some(Reply::GetTimeStatus(time)) = response.response else {
+        panic!("not time status");
+    };
+    assert_eq!(time.state, pb::TimeSyncState::Unsynchronized);
+    assert_eq!(time.unix_time_ms(), None);
+    assert_eq!(time.source(), None);
+    assert_eq!(time.sync_age_ms(), None);
+    assert_eq!(time.uncertainty_ms(), None);
+    assert_eq!(time.last_failure(), None);
+    assert_eq!(time.consecutive_failures, 0);
+}
+
+#[test]
+fn time_status_reports_time_source_age_and_failure() {
+    use core::time::Duration;
+    use rohi_time::{SyncFailure, TimeSourceKind, TimeStatus, TimeSyncState, UnixTime};
+
+    let mut fake = Fake::new();
+    fake.time = DeviceTime {
+        unix_time: Some(UnixTime::from_millis(1_780_000_000_250)),
+        status: TimeStatus {
+            state: TimeSyncState::Stale,
+            source: Some(TimeSourceKind::Ntp),
+            last_sync_age: Some(Duration::from_secs(7_200)),
+            uncertainty: Some(Duration::from_millis(45)),
+            consecutive_failures: 3,
+            last_failure: Some(SyncFailure::Timeout),
+        },
+    };
+    let controller = Controller::new(&fake, OpenPolicy);
+    let response = send(&controller, &PLAIN, &get_time_status());
+    let Some(Reply::GetTimeStatus(time)) = response.response else {
+        panic!("not time status");
+    };
+    assert_eq!(time.state, pb::TimeSyncState::Stale);
+    assert_eq!(time.unix_time_ms(), Some(&1_780_000_000_250));
+    assert_eq!(time.source(), Some(&pb::TimeSource::Ntp));
+    assert_eq!(time.sync_age_ms(), Some(&7_200_000));
+    assert_eq!(time.uncertainty_ms(), Some(&45));
+    assert_eq!(time.consecutive_failures, 3);
+    assert_eq!(time.last_failure(), Some(&pb::TimeSyncFailure::Timeout));
+}
+
+#[test]
+fn time_status_needs_the_time_capability() {
+    let mut fake = Fake::new();
+    fake.capabilities = Capabilities::SENSORS | Capabilities::WIFI_STATUS;
+    let controller = Controller::new(&fake, OpenPolicy);
+    let response = send(&controller, &PLAIN, &get_time_status());
+    assert_eq!(error_code(&response), pb::ErrorCode::NotSupported);
 }

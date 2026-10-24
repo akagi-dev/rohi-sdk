@@ -35,12 +35,34 @@ use embedded_io_async::{ErrorType, Read, Write};
 use embedded_nal_async::AddrType;
 use heapless::{Deque, String, Vec};
 
-use crate::{IpBackend, NetError};
+use crate::{IpBackend, NetError, UdpSocket};
 
 const MAX_HOSTS: usize = 8;
 const MAX_HOST_LEN: usize = 64;
 const MAX_REFUSED: usize = 8;
 const MAX_WAITERS: usize = 8;
+/// UDP sockets of [`FakeIp`].
+pub const UDP_SOCKETS: usize = 2;
+/// Largest datagram of [`FakeIp`] UDP sockets.
+pub const MAX_DATAGRAM: usize = 128;
+const MAX_QUEUED_DATAGRAMS: usize = 4;
+
+type Datagram = (SocketAddr, Vec<u8, MAX_DATAGRAM>);
+
+#[derive(Default)]
+struct UdpSlot {
+    /// Peer to device.
+    inbox: Deque<Datagram, MAX_QUEUED_DATAGRAMS>,
+    waker: Option<Waker>,
+}
+
+impl UdpSlot {
+    fn wake(&mut self) {
+        if let Some(waker) = self.waker.take() {
+            waker.wake();
+        }
+    }
+}
 
 struct Slot<const BUF: usize> {
     remote: SocketAddr,
@@ -69,6 +91,9 @@ struct State<const SLOTS: usize, const BUF: usize> {
     hold_dns: bool,
     waiters: Vec<Waker, MAX_WAITERS>,
     slots: [Option<Slot<BUF>>; SLOTS],
+    udp: [Option<UdpSlot>; UDP_SOCKETS],
+    /// Datagrams sent by the device, kept after its socket is closed.
+    udp_sent: Deque<Datagram, MAX_QUEUED_DATAGRAMS>,
     connects: usize,
     dns_queries: usize,
 }
@@ -89,10 +114,12 @@ impl<const SLOTS: usize, const BUF: usize> State<SLOTS, BUF> {
 }
 
 /// In-memory IP stack with `SLOTS` TCP connections of `BUF` bytes per
-/// direction.
+/// direction and [`UDP_SOCKETS`] UDP sockets of [`MAX_DATAGRAM`]-byte
+/// datagrams.
 ///
-/// It starts *not ready*. Making it not ready resets every open connection,
-/// like a lost link does on a real stack.
+/// It starts *not ready*. Making it not ready resets every open connection and
+/// makes pending UDP receives fail with `NetworkUnavailable`, like a lost link
+/// does on a real stack.
 pub struct FakeIp<const SLOTS: usize = 2, const BUF: usize = 512> {
     state: RefCell<State<SLOTS, BUF>>,
 }
@@ -114,6 +141,8 @@ impl<const SLOTS: usize, const BUF: usize> FakeIp<SLOTS, BUF> {
                 hold_dns: false,
                 waiters: Vec::new(),
                 slots: [const { None }; SLOTS],
+                udp: [const { None }; UDP_SOCKETS],
+                udp_sent: Deque::new(),
                 connects: 0,
                 dns_queries: 0,
             }),
@@ -128,6 +157,9 @@ impl<const SLOTS: usize, const BUF: usize> FakeIp<SLOTS, BUF> {
             for slot in state.slots.iter_mut().flatten() {
                 slot.reset = true;
                 slot.wake();
+            }
+            for socket in state.udp.iter_mut().flatten() {
+                socket.wake();
             }
         }
         state.wake_waiters();
@@ -172,6 +204,33 @@ impl<const SLOTS: usize, const BUF: usize> FakeIp<SLOTS, BUF> {
         let mut state = self.state.borrow_mut();
         state.hold_dns = hold;
         state.wake_waiters();
+    }
+
+    /// Number of open UDP sockets.
+    pub fn open_udp_sockets(&self) -> usize {
+        self.state.borrow().udp.iter().flatten().count()
+    }
+
+    /// A peer at `from` sends one datagram to the first open UDP socket.
+    /// Returns `false` when no socket is open, the queue is full or the
+    /// datagram exceeds [`MAX_DATAGRAM`].
+    pub fn udp_peer_send(&self, from: SocketAddr, data: &[u8]) -> bool {
+        let mut state = self.state.borrow_mut();
+        let Some(socket) = state.udp.iter_mut().flatten().next() else {
+            return false;
+        };
+        let Ok(data) = Vec::from_slice(data) else {
+            return false;
+        };
+        let queued = socket.inbox.push_back((from, data)).is_ok();
+        socket.wake();
+        queued
+    }
+
+    /// Takes the oldest datagram the device sent from any UDP socket, with
+    /// its destination. Datagrams outlive the socket that sent them.
+    pub fn udp_peer_received(&self) -> Option<(SocketAddr, Vec<u8, MAX_DATAGRAM>)> {
+        self.state.borrow_mut().udp_sent.pop_front()
     }
 
     /// Number of open (or opening) connections.
@@ -259,6 +318,11 @@ impl<const SLOTS: usize, const BUF: usize> IpBackend for FakeIp<SLOTS, BUF> {
     where
         Self: 'a;
 
+    type Udp<'a>
+        = FakeUdpSocket<'a, SLOTS, BUF>
+    where
+        Self: 'a;
+
     fn is_ready(&self) -> bool {
         self.state.borrow().ready
     }
@@ -321,6 +385,20 @@ impl<const SLOTS: usize, const BUF: usize> IpBackend for FakeIp<SLOTS, BUF> {
         }
         drop(state);
         Ok(connection)
+    }
+
+    fn udp_socket(&self) -> Result<FakeUdpSocket<'_, SLOTS, BUF>, NetError> {
+        let mut state = self.state.borrow_mut();
+        let index = state
+            .udp
+            .iter()
+            .position(Option::is_none)
+            .ok_or(NetError::NoSocketAvailable)?;
+        state.udp[index] = Some(UdpSlot::default());
+        Ok(FakeUdpSocket {
+            ip: self,
+            slot: index,
+        })
     }
 }
 
@@ -403,5 +481,55 @@ impl<const SLOTS: usize, const BUF: usize> Write for FakeConnection<'_, SLOTS, B
 
     async fn flush(&mut self) -> Result<(), NetError> {
         Ok(())
+    }
+}
+
+/// A UDP socket of [`FakeIp`]; dropping it frees its slot.
+pub struct FakeUdpSocket<'a, const SLOTS: usize, const BUF: usize> {
+    ip: &'a FakeIp<SLOTS, BUF>,
+    slot: usize,
+}
+
+impl<const SLOTS: usize, const BUF: usize> Drop for FakeUdpSocket<'_, SLOTS, BUF> {
+    fn drop(&mut self) {
+        self.ip.state.borrow_mut().udp[self.slot] = None;
+    }
+}
+
+impl<const SLOTS: usize, const BUF: usize> UdpSocket for FakeUdpSocket<'_, SLOTS, BUF> {
+    async fn send_to(&self, data: &[u8], remote: SocketAddr) -> Result<(), NetError> {
+        let mut state = self.ip.state.borrow_mut();
+        if !state.ready {
+            return Err(NetError::NetworkUnavailable);
+        }
+        let data = Vec::from_slice(data).map_err(|_| NetError::Backend)?;
+        if state.udp[self.slot].is_none() {
+            return Err(NetError::Backend);
+        }
+        // Like a real stack, a full transmit queue drops the datagram.
+        let _ = state.udp_sent.push_back((remote, data));
+        Ok(())
+    }
+
+    async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr), NetError> {
+        poll_fn(|cx| {
+            let mut state = self.ip.state.borrow_mut();
+            if !state.ready {
+                return Poll::Ready(Err(NetError::NetworkUnavailable));
+            }
+            let Some(socket) = state.udp[self.slot].as_mut() else {
+                return Poll::Ready(Err(NetError::Backend));
+            };
+            // Oversized datagrams are discarded.
+            while let Some((from, data)) = socket.inbox.pop_front() {
+                if data.len() <= buf.len() {
+                    buf[..data.len()].copy_from_slice(&data);
+                    return Poll::Ready(Ok((data.len(), from)));
+                }
+            }
+            socket.waker = Some(cx.waker().clone());
+            Poll::Pending
+        })
+        .await
     }
 }

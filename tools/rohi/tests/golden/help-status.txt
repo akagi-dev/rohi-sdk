@@ -1,6 +1,6 @@
 Show device information, capabilities, and current status.
 
-Displays the connection, firmware and board information, supported capabilities, and available runtime status such as Wi-Fi connectivity and identity. Sections the device does not support are omitted.
+Displays the connection, firmware and board information, supported capabilities, and available runtime status such as Wi-Fi connectivity, the wall-clock time and identity. Sections the device does not support are omitted.
 
 Usage: rohi status [OPTIONS]
 

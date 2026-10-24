@@ -8,7 +8,8 @@ use std::net::Ipv4Addr;
 
 use rohi::{ClientTransport, Device, Error};
 use rohi_control::{
-    Capabilities, ControlServices, Controller, DeviceInfo as ServiceInfo, OpenPolicy, ServiceError,
+    Capabilities, ControlServices, Controller, DeviceInfo as ServiceInfo, DeviceTime, OpenPolicy,
+    ServiceError,
 };
 use rohi_control_ble::ControlBle;
 use rohi_hal::units::{Celsius, Pascal, Ppm, RelativeHumidity};
@@ -79,6 +80,7 @@ pub struct Services {
     pub config: RefCell<Option<NetConfig>>,
     pub requests: RefCell<Vec<&'static str>>,
     pub identity: RefCell<Option<Identity>>,
+    pub time: DeviceTime,
     pub wifi: RefCell<WifiScript>,
 }
 
@@ -124,6 +126,7 @@ impl Services {
             config: RefCell::new(None),
             requests: RefCell::new(Vec::new()),
             identity: RefCell::new(None),
+            time: DeviceTime::UNSYNCHRONIZED,
             wifi: RefCell::new(WifiScript {
                 script: VecDeque::new(),
                 current: (NetStatus::new(NetState::Connected), Some(network("office"))),
@@ -194,6 +197,10 @@ impl ControlServices for Services {
 
     fn wifi_disconnect(&self) -> Result<(), ServiceError> {
         Err(ServiceError::Busy)
+    }
+
+    fn time_status(&self) -> DeviceTime {
+        self.time
     }
 
     async fn identity(&self) -> Result<Option<PublicKey>, ServiceError> {
@@ -285,6 +292,7 @@ pub fn controller_into_services(controller: Controller<Services, OpenPolicy>) ->
         config: RefCell::new(services.config.borrow().clone()),
         requests: RefCell::new(services.requests.borrow().clone()),
         identity: RefCell::new(services.identity.borrow().clone()),
+        time: services.time,
         wifi: RefCell::new(WifiScript {
             script: services.wifi.borrow().script.clone(),
             current: services.wifi.borrow().current.clone(),

@@ -25,6 +25,7 @@ Commands:
   sensors   Read current sensor measurements
   config    Inspect device configuration
   wifi      Inspect and configure Wi-Fi
+  time      Show the wall-clock time of the device and its synchronization state
   backup    Export or restore device configuration
   identity  Cryptographic identity of the device: show, provision or erase [alias: id]
   help      Print this message or the help of the given subcommand(s)

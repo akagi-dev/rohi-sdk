@@ -30,7 +30,8 @@ Everything in the portable crates, behind its seam trait:
 - sensor drivers and the runner (mock I²C/UART, recording delay);
 - the configuration store, including power-fail safety (`MemoryStorage` fault injection: every torn write and erase);
 - the Wi-Fi manager and reconciliation (mock `WifiBackend` with scripted outcomes, held connects/scans/delays);
-- the IP data plane (`rohi_net::testing::FakeIp`: readiness, DNS, refused connections, slot exhaustion, read/write);
+- the IP data plane (`rohi_net::testing::FakeIp`: readiness, DNS, refused connections, slot exhaustion, read/write, UDP);
+- the time service (`rohi-time`: fake clock and fake sources) and the NTP source (`rohi-time-ntp`: a scripted NTP server over `FakeIp`, no Internet);
 - the control protocol, dispatcher, framing and the `rohi` client (in-memory transport);
 - cancellation of all of the above.
 

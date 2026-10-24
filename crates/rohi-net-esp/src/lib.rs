@@ -26,7 +26,7 @@
 //!
 //! - Wi-Fi: [`EspWifi`] implements [`WifiBackend`](rohi_net::WifiBackend) on top
 //!   of `esp-radio` and `embassy-net`, with [`EspIp`] implementing
-//!   [`IpBackend`](rohi_net::IpBackend) (DNS and TCP) on the same stack;
+//!   [`IpBackend`](rohi_net::IpBackend) (DNS, TCP and UDP) on the same stack;
 //! - BLE: [`EspBle`] implements [`BleTransport`](rohi_net::BleTransport) on top
 //!   of `esp-radio` and the TrouBLE host stack.
 //!
@@ -52,7 +52,9 @@ mod wireless;
 #[cfg(any(feature = "esp32c3", feature = "esp32c6"))]
 pub use ble::{BleResources, BleRunner, EspBle};
 #[cfg(any(feature = "esp32c3", feature = "esp32c6"))]
-pub use ip::{EspIp, EspTcpConnection, NetResources, STACK_INTERNAL_SOCKETS};
+pub use ip::{
+    EspIp, EspTcpConnection, EspUdpSocket, NetResources, STACK_INTERNAL_SOCKETS, UDP_PACKETS,
+};
 #[cfg(any(feature = "esp32c3", feature = "esp32c6"))]
 pub use wifi::{EspWifi, NetRunner};
 #[cfg(any(feature = "esp32c3", feature = "esp32c6"))]

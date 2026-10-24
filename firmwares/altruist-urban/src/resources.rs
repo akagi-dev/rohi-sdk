@@ -53,6 +53,26 @@ pub const WIRELESS_HEAP_SIZE: usize = 128 * 1024;
 /// - Measured: not measured (no component opens connections yet).
 pub const TCP_CONNECTIONS: usize = 2;
 
+/// Simultaneous UDP sockets of the IP data plane.
+///
+/// - Consumer: `NetworkHandle::udp_socket`, used by the NTP time source, which
+///   holds one socket only for the duration of one exchange.
+/// - Why: one exchange at a time; sockets are not kept between synchronizations.
+/// - Exhausted: `udp_socket` fails immediately with
+///   `NetError::NoSocketAvailable`; the time source reports a failed attempt
+///   and retries with backoff.
+/// - Measured: not measured.
+pub const UDP_SOCKETS: usize = 1;
+
+/// Receive and transmit buffer of one UDP socket, in bytes.
+///
+/// - Consumer: each UDP socket, see [`UDP_SOCKETS`]; each direction queues at
+///   most `rohi_net_esp::UDP_PACKETS` datagrams.
+/// - Why: an SNTP packet is 48 bytes; 128 holds one with headroom.
+/// - Exhausted: a larger datagram is dropped by the stack.
+/// - Measured: not measured.
+pub const UDP_BUFFER: usize = 128;
+
 /// Receive buffer of one TCP connection, in bytes.
 ///
 /// - Consumer: each TCP connection, see [`TCP_CONNECTIONS`].
@@ -72,13 +92,13 @@ pub const TCP_TX_BUFFER: usize = 1024;
 /// Socket slots of the IP stack.
 ///
 /// - Consumer: DHCPv4 and DNS (`STACK_INTERNAL_SOCKETS`) plus every TCP
-///   connection.
-/// - Why: derived, so the stack can never have fewer slots than the TCP pool
-///   plus its own sockets; the stack aborts when it runs out of slots, which
+///   connection and UDP socket.
+/// - Why: derived, so the stack can never have fewer slots than the TCP and UDP
+///   pools plus its own sockets; the stack aborts when it runs out of slots, which
 ///   `NetResources` rules out at compile time.
 /// - Exhausted: cannot happen by construction; see [`TCP_CONNECTIONS`] for
 ///   the user-visible limit.
-pub const NETWORK_SOCKETS: usize = TCP_CONNECTIONS + STACK_INTERNAL_SOCKETS;
+pub const NETWORK_SOCKETS: usize = TCP_CONNECTIONS + UDP_SOCKETS + STACK_INTERNAL_SOCKETS;
 
 /// Chunks buffered from the BLE central before its write is held back.
 ///
@@ -135,12 +155,19 @@ pub const BLE_ATTRIBUTES: usize = 24;
 /// - Measured: n/a.
 pub const BLE_CONTROLLER_SLOTS: usize = 4;
 
-/// Storage of the IP stack and its TCP pool.
-pub type NetResources =
-    rohi_net_esp::NetResources<NETWORK_SOCKETS, TCP_CONNECTIONS, TCP_RX_BUFFER, TCP_TX_BUFFER>;
+/// Storage of the IP stack and its TCP and UDP pools.
+pub type NetResources = rohi_net_esp::NetResources<
+    NETWORK_SOCKETS,
+    TCP_CONNECTIONS,
+    TCP_RX_BUFFER,
+    TCP_TX_BUFFER,
+    UDP_SOCKETS,
+    UDP_BUFFER,
+>;
 
 /// IP data-plane backend of the product.
-pub type Ip = rohi_net_esp::EspIp<TCP_CONNECTIONS, TCP_RX_BUFFER, TCP_TX_BUFFER>;
+pub type Ip =
+    rohi_net_esp::EspIp<TCP_CONNECTIONS, TCP_RX_BUFFER, TCP_TX_BUFFER, UDP_SOCKETS, UDP_BUFFER>;
 
 /// Storage and bounds of the BLE peripheral.
 pub type BleResources = rohi_net_esp::BleResources<

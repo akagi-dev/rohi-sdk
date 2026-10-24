@@ -24,7 +24,8 @@
 //!   it towards the desired [`WifiConfig`]; other tasks use [`WifiHandle`]
 //!   (status, scan, reconnect, disconnect).
 //! - [IP data plane](ip): [`NetworkHandle`] offers DNS and TCP through the
-//!   standard `embedded-nal-async` and `embedded-io-async` traits.
+//!   standard `embedded-nal-async` and `embedded-io-async` traits, and bounded
+//!   UDP sockets ([`UdpSocket`]).
 //!
 //! The BLE peripheral transport ([`BleTransport`]) lives here too. Platform
 //! details (radio drivers, IP stack, radio heap) live in platform crates such
@@ -46,7 +47,7 @@ pub use ble::{
     BleConfig, BleConnectionInfo, BleError, BleGattSpec, BleState, BleTransport,
     DEFAULT_BLE_PAYLOAD, MAX_BLE_PAYLOAD,
 };
-pub use ip::{IpBackend, NetError, NetworkHandle};
+pub use ip::{IpBackend, NetError, NetworkHandle, UdpSocket};
 pub use limits::{
     MAX_SSID_LEN, MAX_WIFI_PASSWORD_LEN, MAX_WIFI_SCAN_RESULTS, MIN_WIFI_PASSWORD_LEN,
     WIFI_COMMAND_QUEUE_DEPTH,

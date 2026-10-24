@@ -15,7 +15,7 @@
 //  limitations under the License.
 //
 
-//! ESP32 IP data plane: DNS and TCP on the `embassy-net` stack.
+//! ESP32 IP data plane: DNS, TCP and UDP on the `embassy-net` stack.
 //!
 //! Implements the portable [`IpBackend`]. The stack and its bounded socket
 //! storage are owned by [`NetResources`], which the firmware places in a
@@ -24,19 +24,22 @@
 //! TCP connections use a fixed pool of buffers inside [`NetResources`]. A
 //! connection holds one pool entry from `connect` until it is dropped; when
 //! all entries are in use `connect` fails at once with
-//! [`NetError::NoSocketAvailable`]. No `embassy-net` type is public.
+//! [`NetError::NoSocketAvailable`]. UDP sockets use a second fixed pool the
+//! same way, see [`IpBackend::udp_socket`]. No `embassy-net` type is public.
 
 use core::cell::{Cell, UnsafeCell};
 use core::net::{IpAddr, Ipv4Addr, SocketAddr};
 
+use embassy_futures::select::{Either, select};
 use embassy_net::dns::DnsQueryType;
 use embassy_net::tcp::{ConnectError, TcpSocket};
+use embassy_net::udp::{PacketMetadata, RecvError, SendError, UdpSocket as EmbassyUdpSocket};
 use embassy_net::{IpAddress, IpEndpoint, Stack, StackResources};
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embedded_io_async::{ErrorType, Read, Write};
 use embedded_nal_async::AddrType;
-use rohi_net::{IpBackend, NetError};
+use rohi_net::{IpBackend, NetError, UdpSocket};
 
 /// Sockets the stack itself needs: DHCPv4 and DNS.
 pub const STACK_INTERNAL_SOCKETS: usize = 2;
@@ -46,19 +49,45 @@ struct TcpBuffers<const RX: usize, const TX: usize> {
     tx: [u8; TX],
 }
 
-/// Fixed pool of TCP buffers; entry `i` is in use while bit `i` is set.
-pub(crate) struct TcpPool<const N: usize, const RX: usize, const TX: usize> {
+/// Occupancy of a fixed pool: slot `i` is in use while bit `i` is set.
+struct SlotMask<const N: usize> {
     used: Mutex<CriticalSectionRawMutex, Cell<u32>>,
-    buffers: [UnsafeCell<TcpBuffers<RX, TX>>; N],
 }
 
-impl<const N: usize, const RX: usize, const TX: usize> TcpPool<N, RX, TX> {
-    const CAPACITY_OK: () = assert!(N <= 32, "at most 32 TCP connections are supported");
+impl<const N: usize> SlotMask<N> {
+    const CAPACITY_OK: () = assert!(N <= 32, "at most 32 sockets per pool are supported");
 
     const fn new() -> Self {
         let () = Self::CAPACITY_OK;
         Self {
             used: Mutex::new(Cell::new(0)),
+        }
+    }
+
+    fn acquire(&self) -> Option<usize> {
+        self.used.lock(|used| {
+            let mask = used.get();
+            let index = (0..N).find(|i| mask & (1 << i) == 0)?;
+            used.set(mask | (1 << index));
+            Some(index)
+        })
+    }
+
+    fn release(&self, index: usize) {
+        self.used.lock(|used| used.set(used.get() & !(1 << index)));
+    }
+}
+
+/// Fixed pool of TCP buffers; entry `i` is in use while bit `i` is set.
+pub(crate) struct TcpPool<const N: usize, const RX: usize, const TX: usize> {
+    slots: SlotMask<N>,
+    buffers: [UnsafeCell<TcpBuffers<RX, TX>>; N],
+}
+
+impl<const N: usize, const RX: usize, const TX: usize> TcpPool<N, RX, TX> {
+    const fn new() -> Self {
+        Self {
+            slots: SlotMask::new(),
             buffers: [const {
                 UnsafeCell::new(TcpBuffers {
                     rx: [0; RX],
@@ -69,12 +98,7 @@ impl<const N: usize, const RX: usize, const TX: usize> TcpPool<N, RX, TX> {
     }
 
     fn alloc(&self) -> Option<PoolEntry<'_, N, RX, TX>> {
-        let index = self.used.lock(|used| {
-            let mask = used.get();
-            let index = (0..N).find(|i| mask & (1 << i) == 0)?;
-            used.set(mask | (1 << index));
-            Some(index)
-        })?;
+        let index = self.slots.acquire()?;
         Some(PoolEntry { pool: self, index })
     }
 }
@@ -101,9 +125,81 @@ impl<'a, const N: usize, const RX: usize, const TX: usize> PoolEntry<'a, N, RX, 
 
 impl<const N: usize, const RX: usize, const TX: usize> Drop for PoolEntry<'_, N, RX, TX> {
     fn drop(&mut self) {
-        self.pool
-            .used
-            .lock(|used| used.set(used.get() & !(1 << self.index)));
+        self.pool.slots.release(self.index);
+    }
+}
+
+/// Datagrams each UDP socket can queue per direction.
+pub const UDP_PACKETS: usize = 2;
+
+struct UdpBuffers<const BUF: usize> {
+    rx_meta: [PacketMetadata; UDP_PACKETS],
+    tx_meta: [PacketMetadata; UDP_PACKETS],
+    rx: [u8; BUF],
+    tx: [u8; BUF],
+}
+
+/// Fixed pool of UDP socket buffers, allocated like [`TcpPool`].
+pub(crate) struct UdpPool<const N: usize, const BUF: usize> {
+    slots: SlotMask<N>,
+    buffers: [UnsafeCell<UdpBuffers<BUF>>; N],
+}
+
+impl<const N: usize, const BUF: usize> UdpPool<N, BUF> {
+    const fn new() -> Self {
+        Self {
+            slots: SlotMask::new(),
+            buffers: [const {
+                UnsafeCell::new(UdpBuffers {
+                    rx_meta: [PacketMetadata::EMPTY; UDP_PACKETS],
+                    tx_meta: [PacketMetadata::EMPTY; UDP_PACKETS],
+                    rx: [0; BUF],
+                    tx: [0; BUF],
+                })
+            }; N],
+        }
+    }
+
+    fn alloc(&self) -> Option<UdpEntry<'_, N, BUF>> {
+        let index = self.slots.acquire()?;
+        Some(UdpEntry { pool: self, index })
+    }
+}
+
+/// An allocated UDP pool entry; released on drop.
+struct UdpEntry<'a, const N: usize, const BUF: usize> {
+    pool: &'a UdpPool<N, BUF>,
+    index: usize,
+}
+
+/// The four buffers of one UDP socket.
+type UdpParts<'a> = (
+    &'a mut [PacketMetadata],
+    &'a mut [u8],
+    &'a mut [PacketMetadata],
+    &'a mut [u8],
+);
+
+impl<'a, const N: usize, const BUF: usize> UdpEntry<'a, N, BUF> {
+    /// Receive and transmit metadata and buffers of this entry.
+    ///
+    /// # Safety
+    ///
+    /// As [`PoolEntry::buffers`]: call once per entry.
+    unsafe fn buffers(&self) -> UdpParts<'a> {
+        let buffers = unsafe { &mut *self.pool.buffers[self.index].get() };
+        (
+            &mut buffers.rx_meta,
+            &mut buffers.rx,
+            &mut buffers.tx_meta,
+            &mut buffers.tx,
+        )
+    }
+}
+
+impl<const N: usize, const BUF: usize> Drop for UdpEntry<'_, N, BUF> {
+    fn drop(&mut self) {
+        self.pool.slots.release(self.index);
     }
 }
 
@@ -112,51 +208,74 @@ impl<const N: usize, const RX: usize, const TX: usize> Drop for PoolEntry<'_, N,
 /// [`EspWireless::wifi`](crate::EspWireless::wifi).
 ///
 /// - `SOCKETS`: socket slots of the stack, shared by everything that opens a
-///   socket: DHCPv4 and DNS ([`STACK_INTERNAL_SOCKETS`]) plus `TCP`.
+///   socket: DHCPv4 and DNS ([`STACK_INTERNAL_SOCKETS`]) plus `TCP` and
+///   `UDP`.
 /// - `TCP`: simultaneous TCP connections.
 /// - `RX` / `TX`: receive and transmit buffer of each connection, in bytes.
+/// - `UDP`: simultaneous UDP sockets, none by default.
+/// - `UDP_BUF`: receive and transmit buffer of each UDP socket, in bytes;
+///   each direction queues at most [`UDP_PACKETS`] datagrams.
 ///
-/// RAM use is about `TCP * (RX + TX)` plus the stack's socket table.
+/// RAM use is about `TCP * (RX + TX) + UDP * 2 * UDP_BUF` plus the stack's
+/// socket table.
 pub struct NetResources<
     const SOCKETS: usize,
     const TCP: usize,
     const RX: usize = 1024,
     const TX: usize = 1024,
+    const UDP: usize = 0,
+    const UDP_BUF: usize = 512,
 > {
     stack: StackResources<SOCKETS>,
-    pool: TcpPool<TCP, RX, TX>,
+    tcp: TcpPool<TCP, RX, TX>,
+    udp: UdpPool<UDP, UDP_BUF>,
 }
 
-impl<const SOCKETS: usize, const TCP: usize, const RX: usize, const TX: usize>
-    NetResources<SOCKETS, TCP, RX, TX>
+impl<
+    const SOCKETS: usize,
+    const TCP: usize,
+    const RX: usize,
+    const TX: usize,
+    const UDP: usize,
+    const UDP_BUF: usize,
+> NetResources<SOCKETS, TCP, RX, TX, UDP, UDP_BUF>
 {
     /// The stack aborts when it runs out of socket slots, so the budget is
     /// checked when the value is built.
     const BUDGET_OK: () = assert!(
-        SOCKETS >= TCP + STACK_INTERNAL_SOCKETS,
-        "SOCKETS must cover DHCP and DNS plus every TCP connection"
+        SOCKETS >= TCP + UDP + STACK_INTERNAL_SOCKETS,
+        "SOCKETS must cover DHCP and DNS plus every TCP connection and UDP socket"
     );
 
     pub const fn new() -> Self {
         let () = Self::BUDGET_OK;
         Self {
             stack: StackResources::new(),
-            pool: TcpPool::new(),
+            tcp: TcpPool::new(),
+            udp: UdpPool::new(),
         }
     }
 
+    #[allow(clippy::type_complexity)]
     pub(crate) fn split(
         &'static mut self,
     ) -> (
         &'static mut StackResources<SOCKETS>,
         &'static TcpPool<TCP, RX, TX>,
+        &'static UdpPool<UDP, UDP_BUF>,
     ) {
-        (&mut self.stack, &self.pool)
+        (&mut self.stack, &self.tcp, &self.udp)
     }
 }
 
-impl<const SOCKETS: usize, const TCP: usize, const RX: usize, const TX: usize> Default
-    for NetResources<SOCKETS, TCP, RX, TX>
+impl<
+    const SOCKETS: usize,
+    const TCP: usize,
+    const RX: usize,
+    const TX: usize,
+    const UDP: usize,
+    const UDP_BUF: usize,
+> Default for NetResources<SOCKETS, TCP, RX, TX, UDP, UDP_BUF>
 {
     fn default() -> Self {
         Self::new()
@@ -168,20 +287,40 @@ impl<const SOCKETS: usize, const TCP: usize, const RX: usize, const TX: usize> D
 ///
 /// Place it in a `static` and hand out
 /// [`NetworkHandle`](rohi_net::NetworkHandle)s to it.
-pub struct EspIp<const TCP: usize, const RX: usize = 1024, const TX: usize = 1024> {
+pub struct EspIp<
+    const TCP: usize,
+    const RX: usize = 1024,
+    const TX: usize = 1024,
+    const UDP: usize = 0,
+    const UDP_BUF: usize = 512,
+> {
     stack: Stack<'static>,
-    pool: &'static TcpPool<TCP, RX, TX>,
+    tcp: &'static TcpPool<TCP, RX, TX>,
+    udp: &'static UdpPool<UDP, UDP_BUF>,
 }
 
-impl<const TCP: usize, const RX: usize, const TX: usize> EspIp<TCP, RX, TX> {
-    pub(crate) fn new(stack: Stack<'static>, pool: &'static TcpPool<TCP, RX, TX>) -> Self {
-        Self { stack, pool }
+impl<const TCP: usize, const RX: usize, const TX: usize, const UDP: usize, const UDP_BUF: usize>
+    EspIp<TCP, RX, TX, UDP, UDP_BUF>
+{
+    pub(crate) fn new(
+        stack: Stack<'static>,
+        tcp: &'static TcpPool<TCP, RX, TX>,
+        udp: &'static UdpPool<UDP, UDP_BUF>,
+    ) -> Self {
+        Self { stack, tcp, udp }
     }
 }
 
-impl<const TCP: usize, const RX: usize, const TX: usize> IpBackend for EspIp<TCP, RX, TX> {
+impl<const TCP: usize, const RX: usize, const TX: usize, const UDP: usize, const UDP_BUF: usize>
+    IpBackend for EspIp<TCP, RX, TX, UDP, UDP_BUF>
+{
     type Connection<'a>
         = EspTcpConnection<'a, TCP, RX, TX>
+    where
+        Self: 'a;
+
+    type Udp<'a>
+        = EspUdpSocket<'a, UDP, UDP_BUF>
     where
         Self: 'a;
 
@@ -210,7 +349,7 @@ impl<const TCP: usize, const RX: usize, const TX: usize> IpBackend for EspIp<TCP
         let IpAddr::V4(address) = remote.ip() else {
             return Err(NetError::ConnectFailed);
         };
-        let entry = self.pool.alloc().ok_or(NetError::NoSocketAvailable)?;
+        let entry = self.tcp.alloc().ok_or(NetError::NoSocketAvailable)?;
         // SAFETY: first and only use of this entry, see `PoolEntry::buffers`.
         let (rx, tx) = unsafe { entry.buffers() };
         let socket = TcpSocket::new(self.stack, rx, tx);
@@ -227,6 +366,20 @@ impl<const TCP: usize, const RX: usize, const TX: usize> IpBackend for EspIp<TCP
             .await
             .map_err(map_connect_error)?;
         Ok(connection)
+    }
+
+    fn udp_socket(&self) -> Result<EspUdpSocket<'_, UDP, UDP_BUF>, NetError> {
+        let entry = self.udp.alloc().ok_or(NetError::NoSocketAvailable)?;
+        // SAFETY: first and only use of this entry, see `UdpEntry::buffers`.
+        let (rx_meta, rx, tx_meta, tx) = unsafe { entry.buffers() };
+        let mut socket = EmbassyUdpSocket::new(self.stack, rx_meta, rx, tx_meta, tx);
+        // Port 0: the stack picks an ephemeral port.
+        socket.bind(0).map_err(|_| NetError::Backend)?;
+        Ok(EspUdpSocket {
+            socket,
+            stack: self.stack,
+            _entry: entry,
+        })
     }
 }
 
@@ -287,5 +440,64 @@ impl<const TCP: usize, const RX: usize, const TX: usize> Write
             .flush()
             .await
             .map_err(|_| NetError::ConnectionReset)
+    }
+}
+
+/// A UDP socket of [`EspIp`]. Dropping it closes the socket and releases its
+/// pool entry.
+pub struct EspUdpSocket<'a, const UDP: usize, const UDP_BUF: usize> {
+    // Field order matters: the socket must be gone before its buffers are
+    // handed back to the pool.
+    socket: EmbassyUdpSocket<'a>,
+    stack: Stack<'static>,
+    _entry: UdpEntry<'a, UDP, UDP_BUF>,
+}
+
+async fn wait_for_network_down(stack: Stack<'static>) {
+    let _ = select(stack.wait_link_down(), stack.wait_config_down()).await;
+}
+
+impl<const UDP: usize, const UDP_BUF: usize> UdpSocket for EspUdpSocket<'_, UDP, UDP_BUF> {
+    async fn send_to(&self, data: &[u8], remote: SocketAddr) -> Result<(), NetError> {
+        let IpAddr::V4(address) = remote.ip() else {
+            return Err(NetError::Backend);
+        };
+        let endpoint = IpEndpoint::new(IpAddress::Ipv4(address), remote.port());
+        self.socket
+            .send_to(data, endpoint)
+            .await
+            .map_err(|error| match error {
+                SendError::NoRoute => NetError::NetworkUnavailable,
+                _ => NetError::Backend,
+            })
+    }
+
+    async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr), NetError> {
+        loop {
+            let result = match select(
+                self.socket.recv_from(buf),
+                wait_for_network_down(self.stack),
+            )
+            .await
+            {
+                Either::First(result) => result,
+                Either::Second(()) => return Err(NetError::NetworkUnavailable),
+            };
+            if !self.stack.is_link_up() || !self.stack.is_config_up() {
+                return Err(NetError::NetworkUnavailable);
+            }
+            match result {
+                Ok((len, meta)) => {
+                    let IpAddress::Ipv4(address) = meta.endpoint.addr;
+                    let from = SocketAddr::new(
+                        IpAddr::V4(Ipv4Addr::from(address.octets())),
+                        meta.endpoint.port,
+                    );
+                    return Ok((len, from));
+                }
+                // The stack already dropped the oversized datagram.
+                Err(RecvError::Truncated) => {}
+            }
+        }
     }
 }

@@ -17,6 +17,7 @@
 use rohi_hal::MeasurementsSnapshot;
 use rohi_identity::{Identity, PublicKey};
 use rohi_net::{NetworkInfo, WifiConfig, WifiError, WifiScanResults, WifiStatus};
+use rohi_time::{TimeStatus, UnixTime};
 
 use crate::Capabilities;
 
@@ -27,6 +28,30 @@ pub struct DeviceInfo {
     pub firmware: &'static str,
     /// Board and chip, for example `urban-esp32c3`.
     pub board: &'static str,
+}
+
+/// Wall-clock time and synchronization state of the device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeviceTime {
+    /// Current wall-clock time, `None` while unsynchronized.
+    pub unix_time: Option<UnixTime>,
+    /// Synchronization diagnostics.
+    pub status: TimeStatus,
+}
+
+impl DeviceTime {
+    /// A device that has no wall-clock time yet and has not tried to get any.
+    pub const UNSYNCHRONIZED: Self = Self {
+        unix_time: None,
+        status: TimeStatus {
+            state: rohi_time::TimeSyncState::Unsynchronized,
+            source: None,
+            last_sync_age: None,
+            uncertainty: None,
+            consecutive_failures: 0,
+            last_failure: None,
+        },
+    };
 }
 
 /// Failure of a service call, mapped one-to-one to a protocol error.
@@ -109,6 +134,10 @@ pub trait ControlServices {
 
     /// Disconnects and stays idle.
     fn wifi_disconnect(&self) -> Result<(), ServiceError>;
+
+    /// Wall-clock time and synchronization state. Reads local state only: no
+    /// network or hardware access.
+    fn time_status(&self) -> DeviceTime;
 
     /// Public key of the stored identity, `None` when not provisioned.
     /// The secret is never returned.
