@@ -68,6 +68,7 @@ dependencies = [
  "log",
  "rohi-config",
  "rohi-config-esp",
+ "rohi-connectivity",
  "rohi-control",
  "rohi-control-ble",
  "rohi-hal",
@@ -3796,6 +3797,36 @@ dependencies = [
  "esp-storage",
  "minicbor",
  "rohi-config",
+]
+
+[[package]]
+name = "rohi-connectivity"
+version = "0.1.0"
+dependencies = [
+ "embassy-futures",
+ "embassy-sync 0.8.0",
+ "embedded-hal-async",
+ "embedded-io-async 0.7.0",
+ "embedded-nal-async",
+ "heapless 0.9.3",
+ "libm",
+ "log",
+ "minicbor",
+ "rohi-config",
+ "rohi-connectivity-proto",
+ "rohi-hal",
+ "rohi-identity",
+ "rohi-net",
+ "rohi-time",
+]
+
+[[package]]
+name = "rohi-connectivity-proto"
+version = "0.1.0"
+dependencies = [
+ "heapless 0.9.3",
+ "micropb",
+ "micropb-gen",
 ]
 
 [[package]]

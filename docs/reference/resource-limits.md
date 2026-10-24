@@ -21,6 +21,7 @@ sizes are in [Resource budget](../validation/resource-budget.md); the approach i
 | `BLE_L2CAP_CHANNELS` | 2 | BLE host stack | connection setup fails, advertising restarts |
 | `BLE_ATTRIBUTES` | 24 | GATT attribute table | panics once when the BLE task starts |
 | `BLE_CONTROLLER_SLOTS` | 4 | HCI command slots | commands wait for a slot |
+| `CONNECTIVITY_OUTBOX_DEPTH` | 4 frames of ≤ 544 B | telemetry outbox (`rohi-connectivity`) | no new frame is created (`skipped_outbox_full`); queued frames are never evicted. See [Telemetry](../sdk/connectivity.md) |
 
 Heap history: 72 KiB (Wi-Fi only) → 96 KiB left 11 KB minimum free with Wi-Fi + BLE → 128 KiB. The high-water mark with
 the final value is **not yet measured** ([Hardware testing](../validation/hardware-testing.md)).
