@@ -42,6 +42,7 @@ pub trait Signer {
 /// [`Signer`] backed by a provisioned [`Identity`].
 ///
 /// The key is zeroized on drop and never printed.
+#[derive(Clone)]
 pub struct IdentitySigner {
     key: SigningKey,
     public: PublicKey,
