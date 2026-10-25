@@ -20,9 +20,6 @@
 //! become signed `airalab/connectivity-protocol` frames that a pluggable
 //! transport delivers.
 //!
-//! The wire format is pinned to the revision in
-//! [`rohi_connectivity_proto::UPSTREAM_REV`].
-//!
 //! ```text
 //! MeasurementStore ─snapshot─► UrbanEncoder ─► core.v1.Message  (encoded once)
 //!                                                   │

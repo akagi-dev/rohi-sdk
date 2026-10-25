@@ -152,6 +152,21 @@ of stdin with `--password-stdin`, or from the `ROHI_WIFI_PASSWORD` environment v
 keeps the stored password. `wifi configure` is the lower-level operation that only stores values: omitted settings are
 kept, and `--open` removes the password.
 
+## Telemetry
+
+```bash
+rohi config connectivity                                   # stored telemetry configuration
+rohi connectivity set --host ingress.example.org --node-id 42 --enable
+rohi connectivity set --interval 120                       # omitted settings are kept
+rohi connectivity set --disable                            # stop sending, keep the configuration
+```
+
+`connectivity set` takes any combination of `--host`, `--port` (default 80), `--node-id`, `--interval` (10 to 86400
+seconds), `--enable` and `--disable`, and needs at least one. While nothing is stored a host is required. The device
+validates the result and applies it at once, without a restart. Telemetry is signed with the device identity, so
+provision one first (see [Identity](#identity)). A device without the `connectivity` capability answers
+`this device does not support connectivity`. The settings are part of `rohi backup`.
+
 ## Time
 
 ```bash
@@ -177,13 +192,18 @@ A backup is a versioned JSON file of the **stored configuration**, not of the ru
 {
   "schema_version": 1,
   "source": { "firmware": "altruist-urban-0.4.0", "board": "urban-esp32c3" },
-  "config": { "wifi": { "ssid": "office", "credential": "required" } }
+  "config": {
+    "wifi": { "ssid": "office", "credential": "required" },
+    "connectivity": { "enabled": true, "node_id": 42, "interval_s": 60, "host": "ingress.example.org", "port": 80 }
+  }
 }
 ```
 
 - The Wi-Fi password cannot be read back from a device, so it is never in the file. `"credential": "required"` records
   that a password is set, `"none"` an open network, and `"wifi": null` that nothing was configured. Identity keys are not
   part of a backup either.
+- The `connectivity` section is only exported by a device that has the capability. As with Wi-Fi, `null` means nothing was
+  configured and removes a stored section on restore, an absent section is left alone.
 - `import` validates the whole file and compares it with the device before changing anything. A malformed file, an
   unsupported `schema_version`, or a section the device cannot restore fails with no change. It shows what would change,
   asks for the missing password (hidden prompt, `--wifi-password-stdin`, or `ROHI_WIFI_PASSWORD`), and asks for
@@ -211,7 +231,8 @@ secret is sent to the device. See [Device identity](../sdk/identity.md) for the 
 | `scan` | discover nearby devices |
 | `status` | overall device snapshot |
 | `sensors` | current measurements |
-| `config [wifi]` | stored configuration (never secrets) |
+| `config [wifi\|connectivity]` | stored configuration (never secrets) |
+| `connectivity set` | change the telemetry configuration |
 | `wifi` and its subcommands `status`, `scan`, `connect`, `configure`, `reconnect`, `disconnect`, `forget` | Wi-Fi |
 | `backup export [FILE]`, `backup import FILE` | configuration backup and restore |
 | `time` | wall-clock time and synchronization state |

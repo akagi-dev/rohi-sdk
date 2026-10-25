@@ -40,11 +40,13 @@ impl Capabilities {
     pub const IDENTITY: Self = Self(1 << 5);
     /// Time service status ([`Capability::Time`]).
     pub const TIME: Self = Self(1 << 6);
+    /// Telemetry configuration ([`Capability::Connectivity`]).
+    pub const CONNECTIVITY: Self = Self(1 << 7);
 
     /// No capability.
     pub const NONE: Self = Self(0);
     /// Every capability of this protocol version.
-    pub const ALL: Self = Self(0b111_1111);
+    pub const ALL: Self = Self(0b1111_1111);
 
     /// Union of two sets.
     pub const fn union(self, other: Self) -> Self {
@@ -57,7 +59,7 @@ impl Capabilities {
     }
 
     pub(crate) fn to_proto(self) -> Vec<Capability, MAX_CAPABILITIES> {
-        const MAP: [(Capabilities, Capability); 7] = [
+        const MAP: [(Capabilities, Capability); 8] = [
             (Capabilities::SENSORS, Capability::Sensors),
             (Capabilities::CONFIG, Capability::Config),
             (Capabilities::WIFI_SCAN, Capability::WifiScan),
@@ -65,6 +67,7 @@ impl Capabilities {
             (Capabilities::WIFI_CONTROL, Capability::WifiControl),
             (Capabilities::IDENTITY, Capability::Identity),
             (Capabilities::TIME, Capability::Time),
+            (Capabilities::CONNECTIVITY, Capability::Connectivity),
         ];
         let mut out = Vec::new();
         for (flag, capability) in MAP {
@@ -85,4 +88,4 @@ impl core::ops::BitOr for Capabilities {
     }
 }
 
-const _: () = assert!(MAX_CAPABILITIES >= 6);
+const _: () = assert!(MAX_CAPABILITIES >= 8);

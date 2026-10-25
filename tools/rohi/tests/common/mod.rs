@@ -7,6 +7,7 @@ use std::collections::VecDeque;
 use std::net::Ipv4Addr;
 
 use rohi::{ClientTransport, Device, Error};
+use rohi_connectivity::ConnectivityConfig;
 use rohi_control::{
     Capabilities, ControlServices, Controller, DeviceInfo as ServiceInfo, DeviceTime, OpenPolicy,
     ServiceError,
@@ -78,6 +79,7 @@ pub struct Services {
     pub capabilities: Capabilities,
     pub snapshot: MeasurementsSnapshot,
     pub config: RefCell<Option<NetConfig>>,
+    pub connectivity: RefCell<Option<ConnectivityConfig>>,
     pub requests: RefCell<Vec<&'static str>>,
     pub identity: RefCell<Option<Identity>>,
     pub time: DeviceTime,
@@ -124,6 +126,7 @@ impl Services {
             capabilities: Capabilities::ALL,
             snapshot: store.snapshot(ts(5_000)),
             config: RefCell::new(None),
+            connectivity: RefCell::new(None),
             requests: RefCell::new(Vec::new()),
             identity: RefCell::new(None),
             time: DeviceTime::UNSYNCHRONIZED,
@@ -159,6 +162,19 @@ impl ControlServices for Services {
     async fn set_wifi_config(&self, config: Option<&NetConfig>) -> Result<(), ServiceError> {
         self.requests.borrow_mut().push("set");
         *self.config.borrow_mut() = config.cloned();
+        Ok(())
+    }
+
+    async fn connectivity_config(&self) -> Result<Option<ConnectivityConfig>, ServiceError> {
+        Ok(self.connectivity.borrow().clone())
+    }
+
+    async fn set_connectivity_config(
+        &self,
+        config: Option<&ConnectivityConfig>,
+    ) -> Result<(), ServiceError> {
+        self.requests.borrow_mut().push("set_connectivity");
+        *self.connectivity.borrow_mut() = config.cloned();
         Ok(())
     }
 
@@ -290,6 +306,7 @@ pub fn controller_into_services(controller: Controller<Services, OpenPolicy>) ->
         capabilities: services.capabilities,
         snapshot: services.snapshot,
         config: RefCell::new(services.config.borrow().clone()),
+        connectivity: RefCell::new(services.connectivity.borrow().clone()),
         requests: RefCell::new(services.requests.borrow().clone()),
         identity: RefCell::new(services.identity.borrow().clone()),
         time: services.time,

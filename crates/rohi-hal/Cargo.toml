@@ -1,6 +1,6 @@
 [package]
 name = "rohi-hal"
-version = "0.3.0"
+version.workspace = true
 authors.workspace = true
 license.workspace = true
 edition.workspace = true

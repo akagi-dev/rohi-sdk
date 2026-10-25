@@ -3,6 +3,7 @@ use core::net::Ipv4Addr;
 use std::vec::Vec;
 
 use embassy_futures::block_on;
+use rohi_connectivity::{ConnectivityConfig, Host};
 use rohi_control_proto::control::{
     self as pb, Request_::Request as Call, Response_::Response as Reply,
 };
@@ -40,6 +41,7 @@ struct Fake {
     capabilities: Capabilities,
     snapshot: MeasurementsSnapshot,
     config: RefCell<Option<WifiConfig>>,
+    connectivity: RefCell<Option<ConnectivityConfig>>,
     log: RefCell<Vec<&'static str>>,
     status: WifiStatus,
     info: Option<NetworkInfo>,
@@ -83,6 +85,7 @@ impl Fake {
             capabilities: Capabilities::ALL,
             snapshot: store.snapshot(ts(4_000)),
             config: RefCell::new(None),
+            connectivity: RefCell::new(None),
             log: RefCell::new(Vec::new()),
             status: WifiStatus::new(WifiState::NotConfigured),
             info: None,
@@ -121,6 +124,19 @@ impl ControlServices for &Fake {
             return Err(ServiceError::Internal);
         }
         *self.config.borrow_mut() = config.cloned();
+        Ok(())
+    }
+
+    async fn connectivity_config(&self) -> Result<Option<ConnectivityConfig>, ServiceError> {
+        Ok(self.connectivity.borrow().clone())
+    }
+
+    async fn set_connectivity_config(
+        &self,
+        config: Option<&ConnectivityConfig>,
+    ) -> Result<(), ServiceError> {
+        self.log.borrow_mut().push("set connectivity");
+        *self.connectivity.borrow_mut() = config.cloned();
         Ok(())
     }
 
@@ -237,6 +253,7 @@ fn update(ssid_value: Option<&str>, pw: Option<Option<&str>>) -> pb::Request {
         9,
         Call::UpdateConfig(pb::UpdateConfigRequest {
             wifi_update: Some(pb::UpdateConfigRequest_::WifiUpdate::UpdateWifi(update)),
+            ..Default::default()
         }),
     )
 }
@@ -503,6 +520,7 @@ fn clear_wifi_removes_the_section_and_stops_the_runtime() {
                 wifi_update: Some(pb::UpdateConfigRequest_::WifiUpdate::ClearWifi(
                     pb::Empty {},
                 )),
+                ..Default::default()
             }),
         ),
     );
@@ -991,6 +1009,7 @@ fn generic_config_cannot_reach_the_identity() {
                 wifi_update: Some(pb::UpdateConfigRequest_::WifiUpdate::ClearWifi(
                     pb::Empty {},
                 )),
+                ..Default::default()
             }),
         ),
     );
@@ -1057,4 +1076,212 @@ fn time_status_needs_the_time_capability() {
     let controller = Controller::new(&fake, OpenPolicy);
     let response = send(&controller, &PLAIN, &get_time_status());
     assert_eq!(error_code(&response), pb::ErrorCode::NotSupported);
+}
+
+fn connectivity_update<R>(
+    fill: impl FnOnce(&mut pb::ConnectivityConfigUpdate) -> R,
+) -> pb::Request {
+    let mut update = pb::ConnectivityConfigUpdate::default();
+    fill(&mut update);
+    request(
+        3,
+        Call::UpdateConfig(pb::UpdateConfigRequest {
+            connectivity_update: Some(
+                pb::UpdateConfigRequest_::ConnectivityUpdate::UpdateConnectivity(update),
+            ),
+            ..Default::default()
+        }),
+    )
+}
+
+fn host(value: &str) -> heapless::String<{ limits::MAX_HOST_LEN }> {
+    value.try_into().unwrap()
+}
+
+fn is_done(response: &pb::Response) -> bool {
+    matches!(response.response, Some(Reply::UpdateConfig(_)))
+}
+
+#[test]
+fn connectivity_update_creates_and_merges_the_section() {
+    let fake = Fake::new();
+    let controller = Controller::new(&fake, OpenPolicy);
+
+    // Nothing stored: a host is required.
+    let response = send(
+        &controller,
+        &PLAIN,
+        &connectivity_update(|update| {
+            update.set_enabled(true);
+        }),
+    );
+    assert_eq!(error_code(&response), pb::ErrorCode::InvalidArgument);
+    assert!(fake.connectivity.borrow().is_none());
+
+    let response = send(
+        &controller,
+        &PLAIN,
+        &connectivity_update(|update| {
+            update.set_host(host("ingress.example"));
+            update.set_node_id(7);
+            update.set_enabled(true);
+        }),
+    );
+    assert!(is_done(&response));
+    let stored = fake.connectivity.borrow().clone().unwrap();
+    assert!(stored.enabled);
+    assert_eq!(stored.node_id, 7);
+    assert_eq!(stored.host.as_str(), "ingress.example");
+    assert_eq!(stored.port, rohi_connectivity::config::DEFAULT_PORT);
+
+    // Omitted fields are preserved.
+    let response = send(
+        &controller,
+        &PLAIN,
+        &connectivity_update(|update| {
+            update.set_port(8080);
+        }),
+    );
+    assert!(is_done(&response));
+    let stored = fake.connectivity.borrow().clone().unwrap();
+    assert_eq!(
+        (stored.port, stored.node_id, stored.enabled),
+        (8080, 7, true)
+    );
+    assert_eq!(stored.host.as_str(), "ingress.example");
+}
+
+#[test]
+fn invalid_connectivity_update_stores_nothing() {
+    let fake = Fake::new();
+    *fake.connectivity.borrow_mut() = Some(ConnectivityConfig {
+        enabled: true,
+        node_id: 1,
+        interval_s: 60,
+        host: Host::new("a.io").unwrap(),
+        port: 80,
+    });
+    let before = fake.connectivity.borrow().clone();
+    let controller = Controller::new(&fake, OpenPolicy);
+    let bad: [fn(&mut pb::ConnectivityConfigUpdate); 5] = [
+        |update| {
+            update.set_port(0);
+        },
+        |update| {
+            update.set_port(70_000);
+        },
+        |update| {
+            update.set_interval_s(1);
+        },
+        |update| {
+            update.set_interval_s(u32::MAX);
+        },
+        |update| {
+            update.set_host(host("bad host"));
+        },
+    ];
+    for fill in bad {
+        let response = send(&controller, &PLAIN, &connectivity_update(fill));
+        assert_eq!(error_code(&response), pb::ErrorCode::InvalidArgument);
+    }
+    assert_eq!(*fake.connectivity.borrow(), before);
+    assert!(fake.log.borrow().is_empty());
+}
+
+#[test]
+fn connectivity_clear_removes_the_section() {
+    let fake = Fake::new();
+    *fake.connectivity.borrow_mut() = Some(ConnectivityConfig::disabled());
+    let controller = Controller::new(&fake, OpenPolicy);
+    let response = send(
+        &controller,
+        &PLAIN,
+        &request(
+            1,
+            Call::UpdateConfig(pb::UpdateConfigRequest {
+                connectivity_update: Some(
+                    pb::UpdateConfigRequest_::ConnectivityUpdate::ClearConnectivity(pb::Empty {}),
+                ),
+                ..Default::default()
+            }),
+        ),
+    );
+    assert!(is_done(&response));
+    assert!(fake.connectivity.borrow().is_none());
+}
+
+#[test]
+fn connectivity_config_is_reported() {
+    let fake = Fake::new();
+    let controller = Controller::new(&fake, OpenPolicy);
+    let get = request(1, Call::GetConfig(pb::GetConfigRequest {}));
+    let Some(Reply::GetConfig(config)) = send(&controller, &PLAIN, &get).response else {
+        panic!("not config");
+    };
+    assert!(config.connectivity().is_none());
+
+    *fake.connectivity.borrow_mut() = Some(ConnectivityConfig {
+        enabled: true,
+        node_id: 9,
+        interval_s: 120,
+        host: Host::new("a.io").unwrap(),
+        port: 8080,
+    });
+    let Some(Reply::GetConfig(config)) = send(&controller, &PLAIN, &get).response else {
+        panic!("not config");
+    };
+    let connectivity = config.connectivity().unwrap();
+    assert!(connectivity.enabled);
+    assert_eq!(connectivity.node_id, 9);
+    assert_eq!(connectivity.interval_s, 120);
+    assert_eq!(connectivity.host.as_str(), "a.io");
+    assert_eq!(connectivity.port, 8080);
+}
+
+#[test]
+fn connectivity_needs_its_capability() {
+    let mut fake = Fake::new();
+    fake.capabilities = Capabilities::CONFIG | Capabilities::WIFI_CONTROL;
+    *fake.connectivity.borrow_mut() = Some(ConnectivityConfig::disabled());
+    let controller = Controller::new(&fake, OpenPolicy);
+    let response = send(
+        &controller,
+        &PLAIN,
+        &connectivity_update(|update| {
+            update.set_host(host("a.io"));
+        }),
+    );
+    assert_eq!(error_code(&response), pb::ErrorCode::NotSupported);
+
+    let get = request(1, Call::GetConfig(pb::GetConfigRequest {}));
+    let Some(Reply::GetConfig(config)) = send(&controller, &PLAIN, &get).response else {
+        panic!("not config");
+    };
+    assert!(config.connectivity().is_none());
+}
+
+#[test]
+fn a_failing_section_does_not_store_the_other_one() {
+    let fake = Fake::new();
+    let controller = Controller::new(&fake, OpenPolicy);
+    let mut wifi = pb::WifiConfigUpdate::default();
+    wifi.set_ssid(heapless::Vec::from_slice(b"office").unwrap());
+    let mut telemetry = pb::ConnectivityConfigUpdate::default();
+    telemetry.set_port(0);
+    let response = send(
+        &controller,
+        &PLAIN,
+        &request(
+            1,
+            Call::UpdateConfig(pb::UpdateConfigRequest {
+                wifi_update: Some(pb::UpdateConfigRequest_::WifiUpdate::UpdateWifi(wifi)),
+                connectivity_update: Some(
+                    pb::UpdateConfigRequest_::ConnectivityUpdate::UpdateConnectivity(telemetry),
+                ),
+            }),
+        ),
+    );
+    assert_eq!(error_code(&response), pb::ErrorCode::InvalidArgument);
+    assert!(fake.config.borrow().is_none());
+    assert!(fake.log.borrow().is_empty());
 }

@@ -17,6 +17,7 @@
 //! Domain <-> protobuf mapping. The only place that knows both sides.
 
 use heapless::String;
+use rohi_connectivity::ConnectivityConfig;
 use rohi_control_proto::control as pb;
 use rohi_control_proto::limits;
 use rohi_hal::units::{
@@ -44,6 +45,7 @@ const _: () = assert!(SensorKind::COUNT <= limits::MAX_SENSORS);
 const _: () = assert!(rohi_net::MAX_WIFI_SCAN_RESULTS <= limits::MAX_WIFI_SCAN_RESULTS);
 const _: () = assert!(rohi_net::MAX_SSID_LEN <= limits::MAX_SSID_LEN);
 const _: () = assert!(rohi_net::MAX_WIFI_PASSWORD_LEN <= limits::MAX_WIFI_PASSWORD_LEN);
+const _: () = assert!(rohi_connectivity::config::MAX_HOST_LEN <= limits::MAX_HOST_LEN);
 
 /// A typed unit value in the canonical unit of its measurement type.
 trait Canonical: Copy {
@@ -251,6 +253,19 @@ pub(crate) fn wifi_config(config: &WifiConfig) -> pb::WifiConfig {
     // Bounded by the same constant on both sides, see the checks above.
     let _ = out.ssid.extend_from_slice(config.ssid.as_bytes());
     out.password_configured = config.password.is_some();
+    out
+}
+
+pub(crate) fn connectivity_config(config: &ConnectivityConfig) -> pb::ConnectivityConfig {
+    let mut out = pb::ConnectivityConfig {
+        enabled: config.enabled,
+        node_id: config.node_id,
+        interval_s: config.interval_s,
+        port: u32::from(config.port),
+        ..Default::default()
+    };
+    // Bounded by the same constant on both sides, see the check above.
+    let _ = out.host.push_str(config.host.as_str());
     out
 }
 

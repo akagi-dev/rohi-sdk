@@ -19,13 +19,6 @@
 //! Bounded bindings of the `airalab/connectivity-protocol` telemetry wire
 //! format.
 //!
-//! The schema is vendored verbatim under `proto/` from the revision recorded
-//! in `UPSTREAM_REV` ([`UPSTREAM_REV`]); the build never reads it from the
-//! network. The generated `no_std`, allocation-free message types are
-//! [`core_v1`] (`core.v1.Message`) and [`crypto_v1`]
-//! (`crypto.v1.SignedEnvelope`); [`device_v1`] and [`sensor_v1`] hold the
-//! payload types.
-//!
 //! # Wire contract
 //!
 //! At the pinned revision `SignedEnvelope` has exactly four fields:
@@ -43,21 +36,6 @@ use core::fmt;
 pub use micropb::{MessageDecode, MessageEncode};
 
 use micropb::{PbDecoder, PbEncoder};
-
-/// Upstream revision of `airalab/connectivity-protocol` the vendored schema
-/// was copied from.
-pub const UPSTREAM_REV: &str = {
-    let rev = include_str!("../UPSTREAM_REV").as_bytes();
-    // `trim_ascii_end` is not const on every supported toolchain.
-    let mut end = rev.len();
-    while end > 0 && rev[end - 1].is_ascii_whitespace() {
-        end -= 1;
-    }
-    match core::str::from_utf8(rev.split_at(end).0) {
-        Ok(rev) => rev,
-        Err(_) => panic!("UPSTREAM_REV is not UTF-8"),
-    }
-};
 
 /// Compile-time bounds of the telemetry frame.
 pub mod limits {

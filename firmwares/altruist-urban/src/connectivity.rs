@@ -23,7 +23,18 @@
 //! (`ROHI_CONNECTIVITY_HOST`, `ROHI_CONNECTIVITY_PORT`,
 //! `ROHI_CONNECTIVITY_NODE_ID`, `ROHI_CONNECTIVITY_INTERVAL_S`). Without a
 //! host nothing is enabled.
+//!
+//! The task is always running once the network is up and follows the
+//! configuration: every commit or removal of the section is published by the
+//! configuration owner task (see [`publish`]) and the service is stopped,
+//! rebuilt and restarted with the new values, or left stopped when the new
+//! configuration is disabled or invalid. Frames still queued in the outbox of
+//! the replaced service are dropped.
 
+use core::convert::Infallible;
+
+use embassy_futures::select::{Either, select};
+use embassy_sync::signal::Signal;
 use embassy_time::Delay;
 use esp_hal::rng::Rng;
 use log::{info, warn};
@@ -43,6 +54,17 @@ use crate::tasks::RawMutex;
 use crate::time;
 
 static SHARED: ConnectivityShared<RawMutex> = ConnectivityShared::new();
+
+/// The latest stored configuration (`None`: the section is absent), see
+/// [`publish`].
+static UPDATES: Signal<RawMutex, Option<ConnectivityConfig>> = Signal::new();
+
+/// Hands a committed (or removed) `ConnectivityConfig` section to the running
+/// task. Synchronous, so the configuration owner can call it in the commit
+/// step; only the latest value matters.
+pub fn publish(stored: Option<ConnectivityConfig>) {
+    UPDATES.signal(stored);
+}
 
 /// Diagnostics of the telemetry service.
 pub fn status() -> ConnectivityStatus {
@@ -84,7 +106,7 @@ fn build_defaults() -> ConnectivityConfig {
 
 /// The stored configuration, or the build-time defaults. `None` when
 /// telemetry is disabled or the configuration is invalid.
-pub async fn load_config(config: ConfigHandle) -> Option<ConnectivityConfig> {
+async fn load_config(config: ConfigHandle) -> Option<ConnectivityConfig> {
     let loaded = match config.get::<ConnectivityConfig>().await {
         Ok(Some(stored)) => stored,
         Ok(None) => build_defaults(),
@@ -94,6 +116,17 @@ pub async fn load_config(config: ConfigHandle) -> Option<ConnectivityConfig> {
             build_defaults()
         }
     };
+    effective(loaded)
+}
+
+/// The configuration to run for a stored section, the build-time defaults
+/// when there is none.
+fn resolve(stored: Option<ConnectivityConfig>) -> Option<ConnectivityConfig> {
+    effective(stored.unwrap_or_else(build_defaults))
+}
+
+/// `None` when `loaded` is disabled or invalid.
+fn effective(loaded: ConnectivityConfig) -> Option<ConnectivityConfig> {
     if !loaded.enabled {
         info!("Connectivity: disabled");
         return None;
@@ -107,12 +140,12 @@ pub async fn load_config(config: ConfigHandle) -> Option<ConnectivityConfig> {
     }
 }
 
-#[embassy_executor::task]
-pub async fn connectivity_task(
+/// Runs the service for `config` until the task is cancelled.
+async fn serve(
     network: NetworkHandle<'static, Ip>,
     measurements: MeasurementHandle<'static, RawMutex>,
-    config: ConnectivityConfig,
-) {
+    config: &ConnectivityConfig,
+) -> Infallible {
     info!(
         "Connectivity: {}:{} every {} s",
         config.host.as_str(),
@@ -144,4 +177,29 @@ pub async fn connectivity_task(
         Delay,
     );
     service.run().await
+}
+
+/// Runs the telemetry service while it is enabled and restarts it with every
+/// published configuration.
+#[embassy_executor::task]
+pub async fn connectivity_task(
+    network: NetworkHandle<'static, Ip>,
+    measurements: MeasurementHandle<'static, RawMutex>,
+    config: ConfigHandle,
+) {
+    let mut current = load_config(config).await;
+    loop {
+        let stored = match &current {
+            Some(config) => {
+                match select(serve(network, measurements, config), UPDATES.wait()).await {
+                    Either::First(never) => match never {},
+                    Either::Second(stored) => stored,
+                }
+            }
+            None => UPDATES.wait().await,
+        };
+        info!("Connectivity: configuration changed");
+        SHARED.reset();
+        current = resolve(stored);
+    }
 }

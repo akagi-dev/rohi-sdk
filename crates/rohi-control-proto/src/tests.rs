@@ -127,6 +127,7 @@ fn password_update_round_trips_and_stays_out_of_debug() {
         request_id: 1,
         request: Some(Request_::Request::UpdateConfig(UpdateConfigRequest {
             wifi_update: Some(UpdateConfigRequest_::WifiUpdate::UpdateWifi(update.clone())),
+            ..Default::default()
         })),
     };
     let mut buf = [0u8; limits::MAX_REQUEST_LEN];
@@ -290,4 +291,39 @@ fn full_time_status_response_fits_the_limit() {
     let mut buf = [0u8; limits::MAX_RESPONSE_LEN];
     let len = encode(&response, &mut buf).unwrap();
     assert!(decode::<Response>(&buf[..len]).unwrap() == response);
+}
+
+#[test]
+fn connectivity_update_round_trips_and_bounds_the_host() {
+    let mut update = ConnectivityConfigUpdate::default();
+    update.set_host(
+        core::str::from_utf8(&[b'a'; limits::MAX_HOST_LEN])
+            .unwrap()
+            .try_into()
+            .unwrap(),
+    );
+    update.set_port(8080);
+    update.set_enabled(true);
+    let request = Request {
+        protocol_version: PROTOCOL_VERSION,
+        request_id: 1,
+        request: Some(Request_::Request::UpdateConfig(UpdateConfigRequest {
+            wifi_update: Some(UpdateConfigRequest_::WifiUpdate::ClearWifi(Empty {})),
+            connectivity_update: Some(
+                UpdateConfigRequest_::ConnectivityUpdate::UpdateConnectivity(update),
+            ),
+        })),
+    };
+    let mut buf = [0u8; limits::MAX_REQUEST_LEN];
+    let len = encode(&request, &mut buf).unwrap();
+    assert!(decode::<Request>(&buf[..len]).unwrap() == request);
+
+    // 65 bytes: field 4, length 65.
+    let mut wire = [b'a'; 67];
+    wire[0] = 0x22;
+    wire[1] = 65;
+    assert_eq!(
+        decode::<ConnectivityConfigUpdate>(&wire).err(),
+        Some(DecodeError::Capacity)
+    );
 }

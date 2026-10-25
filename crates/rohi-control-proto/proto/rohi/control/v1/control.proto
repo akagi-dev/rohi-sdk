@@ -115,6 +115,7 @@ enum Capability {
   CAPABILITY_WIFI_CONTROL = 5;
   CAPABILITY_IDENTITY = 6;
   CAPABILITY_TIME = 7;
+  CAPABILITY_CONNECTIVITY = 8;
 }
 
 message GetCapabilitiesRequest {}
@@ -231,11 +232,29 @@ message WifiConfig {
   bool password_configured = 2;
 }
 
+// The stored telemetry (connectivity) configuration.
+message ConnectivityConfig {
+  // Telemetry is only produced and sent when enabled.
+  bool enabled = 1;
+  // Robonomics CPS node identifier.
+  uint64 node_id = 2;
+  // Seconds between telemetry frames.
+  uint32 interval_s = 3;
+  // Ingress host name or IPv4 address: 1..=64 bytes of letters, digits, '.'
+  // and '-'.
+  string host = 4;
+  // Ingress TCP port, 1..=65535.
+  uint32 port = 5;
+}
+
 message GetConfigRequest {}
 
 message GetConfigResponse {
   // Absent when Wi-Fi is not configured.
   optional WifiConfig wifi = 1;
+  // Absent when telemetry is not configured or the device does not offer
+  // `CAPABILITY_CONNECTIVITY`.
+  optional ConnectivityConfig connectivity = 2;
 }
 
 message Empty {}
@@ -254,6 +273,16 @@ message WifiConfigUpdate {
   }
 }
 
+// Omitted fields keep their stored value; a host is required when nothing is
+// stored yet.
+message ConnectivityConfigUpdate {
+  optional bool enabled = 1;
+  optional uint64 node_id = 2;
+  optional uint32 interval_s = 3;
+  optional string host = 4;
+  optional uint32 port = 5;
+}
+
 message UpdateConfigRequest {
   // Omitted: the Wi-Fi configuration is not touched.
   oneof wifi_update {
@@ -262,10 +291,21 @@ message UpdateConfigRequest {
     // Removes the Wi-Fi configuration and disconnects.
     Empty clear_wifi = 2;
   }
+
+  // Omitted: the telemetry configuration is not touched. Requires
+  // `CAPABILITY_CONNECTIVITY`.
+  oneof connectivity_update {
+    // Partial update, validated as a whole before anything is stored.
+    ConnectivityConfigUpdate update_connectivity = 3;
+    // Removes the telemetry configuration; the device falls back to its
+    // build-time defaults.
+    Empty clear_connectivity = 4;
+  }
 }
 
 // Success only means that the configuration is stored and handed to the
 // runtime, not that the network was reached; observe `GetWifiStatus`.
+// A telemetry update takes effect without a restart.
 message UpdateConfigResponse {}
 
 // ---------------------------------------------------------------------------

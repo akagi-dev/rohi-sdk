@@ -1,6 +1,6 @@
 [package]
 name = "rohi"
-version = "0.1.0"
+version.workspace = true
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
@@ -40,6 +40,7 @@ provision = ["dep:sp-core"]
 [dependencies]
 rohi-control-proto.workspace = true
 rohi-control-ble.workspace = true
+rohi-connectivity.workspace = true
 rohi-net.workspace = true
 rohi-identity = { workspace = true, features = ["std"] }
 zeroize = { workspace = true, features = ["std"] }

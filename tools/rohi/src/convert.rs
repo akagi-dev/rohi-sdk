@@ -64,13 +64,28 @@ pub(crate) fn sensors(response: &pb::GetSensorsResponse) -> Sensors {
     }
 }
 
-pub(crate) fn config(response: &pb::GetConfigResponse) -> Config {
-    Config {
+pub(crate) fn config(response: &pb::GetConfigResponse) -> Result<Config, crate::Error> {
+    let connectivity = response
+        .connectivity()
+        .map(|config| {
+            let port = u16::try_from(config.port)
+                .map_err(|_| crate::Error::Protocol("port is not a 16-bit number".into()))?;
+            Ok::<_, crate::Error>(ConnectivityConfig {
+                enabled: config.enabled,
+                node_id: config.node_id,
+                interval_s: config.interval_s,
+                host: config.host.as_str().to_owned(),
+                port,
+            })
+        })
+        .transpose()?;
+    Ok(Config {
         wifi: response.wifi().map(|wifi| WifiConfig {
             ssid: Ssid(wifi.ssid.to_vec()),
             password_configured: wifi.password_configured,
         }),
-    }
+        connectivity,
+    })
 }
 
 pub(crate) fn identity(response: &pb::GetIdentityResponse) -> Result<IdentityInfo, crate::Error> {
@@ -130,6 +145,49 @@ pub(crate) fn time_status(response: &pb::GetTimeStatusResponse) -> TimeStatus {
             .last_failure()
             .map(|failure| TimeSyncFailure::from_proto(*failure)),
     }
+}
+
+/// Builds the wire form of a partial telemetry update.
+pub(crate) fn connectivity_update(
+    update: &ConnectivityUpdate,
+) -> Result<pb::ConnectivityConfigUpdate, crate::Error> {
+    let mut out = pb::ConnectivityConfigUpdate::default();
+    if let Some(enabled) = update.enabled {
+        out.set_enabled(enabled);
+    }
+    if let Some(node_id) = update.node_id {
+        out.set_node_id(node_id);
+    }
+    if let Some(interval_s) = update.interval_s {
+        let allowed =
+            rohi_connectivity::config::MIN_INTERVAL_S..=rohi_connectivity::config::MAX_INTERVAL_S;
+        if !allowed.contains(&interval_s) {
+            return Err(crate::Error::InvalidInput(format!(
+                "interval must be {} to {} seconds",
+                allowed.start(),
+                allowed.end()
+            )));
+        }
+        out.set_interval_s(interval_s);
+    }
+    if let Some(host) = &update.host {
+        if rohi_connectivity::Host::new(host).is_none() {
+            return Err(crate::Error::InvalidInput(format!(
+                "host must be 1 to {} letters, digits, '.' or '-'",
+                rohi_connectivity::config::MAX_HOST_LEN
+            )));
+        }
+        // Length checked above.
+        let host = heapless::String::try_from(host.as_str()).map_err(|_| crate::Error::TooLarge)?;
+        out.set_host(host);
+    }
+    if let Some(port) = update.port {
+        if port == 0 {
+            return Err(crate::Error::InvalidInput("port must not be 0".into()));
+        }
+        out.set_port(u32::from(port));
+    }
+    Ok(out)
 }
 
 /// Builds the wire form of a partial Wi-Fi update.

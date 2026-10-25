@@ -18,7 +18,7 @@
 //!
 //! Generated with the reference implementation (`airalab/robins` at
 //! `a6c1d9cb052093192fe886a4a2aa46821679afa1`, `edge` CLI) against the
-//! protocol revision pinned in `rohi-connectivity-proto/UPSTREAM_REV`:
+//! protocol:
 //!
 //! ```text
 //! SEED=0x4242424242424242424242424242424242424242424242424242424242424242

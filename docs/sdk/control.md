@@ -53,7 +53,7 @@ return a typed error; the link is never dropped because of a bad request.
 | `GetInfo`, `GetCapabilities` | – | no |
 | `GetSensors` | `SENSORS` | no |
 | `GetConfig` | `CONFIG` | no |
-| `UpdateConfig` | `CONFIG` | **yes** |
+| `UpdateConfig` | `CONFIG` (`CONNECTIVITY` for the telemetry section) | **yes** |
 | `ScanWifi` | `WIFI_SCAN` | no |
 | `GetWifiStatus` | `WIFI_STATUS` | no |
 | `ReconnectWifi`, `DisconnectWifi` | `WIFI_CONTROL` | **yes** |
@@ -109,6 +109,18 @@ configuration owner task does both in one step, so there is no cancellable gap b
 configuration is stored and handed to the Wi-Fi runtime, not that the access point was reached**; observe
 `GetWifiStatus` (`NOT_CONFIGURED`, `IDLE`, `SCANNING`, `CONNECTING`, `CONNECTED`, `DISCONNECTED`, `ERROR`).
 
+Telemetry configuration (`CAPABILITY_CONNECTIVITY`) is a second, independent section of the same two requests:
+`GetConfigResponse.connectivity` and the `connectivity_update` oneof of `UpdateConfigRequest`
+(`update_connectivity` is a partial update of `enabled`, `node_id`, `interval_s`, `host`, `port`; `clear_connectivity`
+removes the section, so the device falls back to its build-time defaults). Without a stored section an update starts from a
+disabled configuration, so it needs a host. The merged result is validated (`ConnectivityConfig::validate`:
+host 1–64 letters, digits, `.`, `-`; port 1–65535; interval 10 s … 24 h) before anything is stored, and `INVALID_ARGUMENT`
+leaves everything unchanged, also the Wi-Fi section of the same request. The sections are then stored one by one, Wi-Fi
+first, so a failure of the second leaves the first stored. A stored configuration takes effect **without a restart**: the
+configuration owner task hands it to the telemetry task in the commit step, which rebuilds the service (frames still in
+the outbox are dropped), see [Connectivity](connectivity.md#configuration). `GetConfig` reports the *stored* section, not the
+build-time defaults.
+
 ## BLE binding
 
 One GATT service with two characteristics:
@@ -148,6 +160,7 @@ dispatches, and responses leave through a bounded TX queue.
 | `MAX_SENSORS` / `MAX_MEASUREMENTS_PER_SENSOR` | 8 / 4 |
 | `MAX_WIFI_SCAN_RESULTS` | 16 |
 | `MAX_SSID_LEN` / `MAX_WIFI_PASSWORD_LEN` | 32 / 64 |
+| `MAX_HOST_LEN` | 64 |
 
 The limits are defined once (`rohi-control-proto/build.rs`), applied to the generated types and checked by tests
 against the worst-case encoded size. This table is the canonical list of protocol limits; the BLE queue depths belong to
@@ -171,6 +184,7 @@ command line layer.
 ```text
 rohi library
   Device         typed async API: info, capabilities, sensors, config, update_wifi, forget_wifi,
+                 update_connectivity, forget_connectivity,
                  wifi_scan, wifi_status, wifi_reconnect, wifi_disconnect,
                  identity, provision_identity, erase_identity  (checks capabilities first)
   Session        framing, request ids, timeouts, typed error mapping   (reuses rohi-control-ble::frame)

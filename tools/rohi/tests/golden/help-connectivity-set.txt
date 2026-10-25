@@ -1,0 +1,59 @@
+Change the telemetry configuration; omitted settings are kept.
+
+The device stores the configuration and applies it at once, without a restart. While nothing is stored a host is required; the interval is 10 to 86400 seconds and the port defaults to 80. Telemetry is signed with the identity of the device, see `rohi identity`.
+
+Usage: rohi connectivity set [OPTIONS] <--host <HOST>|--port <PORT>|--node-id <ID>|--interval <SECONDS>|--enable|--disable>
+
+Options:
+      --host <HOST>
+          Ingress host name or IPv4 address
+
+      --port <PORT>
+          Ingress TCP port
+
+      --node-id <ID>
+          Robonomics CPS node identifier
+
+      --interval <SECONDS>
+          Seconds between telemetry frames
+
+      --enable
+          Send telemetry
+
+      --disable
+          Stop sending telemetry; the configuration is kept
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Target:
+  -d, --device <DEVICE>
+          Target device: advertised name, ID, or a unique prefix or suffix of either; or a URI such as ble://NAME or tcp://HOST:PORT. Without it the only device found is used, or you choose among several
+          
+          [env: ROHI_DEVICE=]
+
+Output:
+  -o, --output <FORMAT>
+          Output format
+
+          Possible values:
+          - human: Text for people
+          - json:  JSON with a stable, versioned schema, for scripts
+          
+          [default: human]
+
+Connection:
+      --scan-timeout <SECONDS>
+          How long to search for the target device
+          
+          [default: 10]
+
+      --timeout <SECONDS>
+          How long to wait for a device response
+          
+          [default: 10]
+
+Examples:
+  rohi connectivity set --host ingress.example.org --node-id 42 --enable
+  rohi connectivity set --interval 120
+  rohi connectivity set --disable

@@ -21,12 +21,7 @@ use crate::core_v1::{Message, Message_, Meta};
 use crate::crypto_v1::SignedEnvelope;
 use crate::device_v1::{Urban, UrbanSensor, UrbanSensor_};
 use crate::sensor_v1::{BME280, BME280_, Temperature};
-use crate::{DecodeError, EncodeError, UPSTREAM_REV, decode, encode, limits, signing_preimage};
-
-#[test]
-fn upstream_revision_is_pinned() {
-    assert_eq!(UPSTREAM_REV, "33b4e7ec6eaa19a930b91bfb59bd3337c1ec88ac");
-}
+use crate::{DecodeError, EncodeError, decode, encode, limits, signing_preimage};
 
 #[test]
 fn worst_case_sizes_fit_the_limits() {

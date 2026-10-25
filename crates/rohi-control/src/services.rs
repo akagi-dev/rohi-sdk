@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+use rohi_connectivity::ConnectivityConfig;
 use rohi_hal::MeasurementsSnapshot;
 use rohi_identity::{Identity, PublicKey};
 use rohi_net::{NetworkInfo, WifiConfig, WifiError, WifiScanResults, WifiStatus};
@@ -119,6 +120,24 @@ pub trait ControlServices {
     /// configuration even if the caller is dropped, because publication is
     /// done by the owner of the store, with no cancellable gap in between.
     async fn set_wifi_config(&self, config: Option<&WifiConfig>) -> Result<(), ServiceError>;
+
+    /// Stored telemetry configuration, `None` when not configured. Only
+    /// called when the device offers [`Capabilities::CONNECTIVITY`].
+    async fn connectivity_config(&self) -> Result<Option<ConnectivityConfig>, ServiceError> {
+        Err(ServiceError::NotSupported)
+    }
+
+    /// Persists the telemetry configuration (`None` removes it, falling back
+    /// to the build-time defaults) and hands the effective configuration to
+    /// the telemetry runtime, which applies it without a restart. Only this
+    /// section may be touched. The configuration is already validated.
+    /// Cancellation semantics are those of [`Self::set_wifi_config`].
+    async fn set_connectivity_config(
+        &self,
+        _config: Option<&ConnectivityConfig>,
+    ) -> Result<(), ServiceError> {
+        Err(ServiceError::NotSupported)
+    }
 
     /// Scans for networks.
     async fn wifi_scan(&self) -> Result<WifiScanResults, ServiceError>;

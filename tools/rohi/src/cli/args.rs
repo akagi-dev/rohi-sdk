@@ -20,7 +20,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 
 const TARGET: &str = "Target";
 const OUTPUT: &str = "Output";
@@ -153,7 +153,8 @@ Examples:
     #[command(after_help = "\
 Examples:
   rohi config
-  rohi config wifi")]
+  rohi config wifi
+  rohi config connectivity")]
     Config {
         #[command(subcommand)]
         section: Option<ConfigSection>,
@@ -169,6 +170,18 @@ Examples:
     Wifi {
         #[command(subcommand)]
         action: Option<WifiAction>,
+    },
+    /// Configure telemetry delivery to the Robonomics ingress.
+    ///
+    /// Use `rohi config connectivity` to show the stored configuration.
+    #[command(after_help = "\
+Examples:
+  rohi connectivity set --host ingress.example.org --node-id 42 --enable
+  rohi connectivity set --interval 120
+  rohi connectivity set --disable")]
+    Connectivity {
+        #[command(subcommand)]
+        action: ConnectivityAction,
     },
     /// Show the wall-clock time of the device and its synchronization state.
     ///
@@ -258,6 +271,57 @@ pub struct Provision {
 pub enum ConfigSection {
     /// Show the Wi-Fi configuration.
     Wifi,
+    /// Show the telemetry (connectivity) configuration.
+    Connectivity,
+}
+
+#[derive(Subcommand)]
+pub enum ConnectivityAction {
+    /// Change the telemetry configuration; omitted settings are kept.
+    ///
+    /// The device stores the configuration and applies it at once, without a
+    /// restart. While nothing is stored a host is required; the interval is
+    /// 10 to 86400 seconds and the port defaults to 80. Telemetry is signed
+    /// with the identity of the device, see `rohi identity`.
+    #[command(after_help = "\
+Examples:
+  rohi connectivity set --host ingress.example.org --node-id 42 --enable
+  rohi connectivity set --interval 120
+  rohi connectivity set --disable")]
+    Set(SetConnectivity),
+}
+
+#[derive(Args)]
+#[command(group(
+    ArgGroup::new("change")
+        .required(true)
+        .multiple(true)
+        .args(["host", "port", "node_id", "interval", "enable", "disable"])
+))]
+pub struct SetConnectivity {
+    /// Ingress host name or IPv4 address.
+    #[arg(long, value_name = "HOST")]
+    pub host: Option<String>,
+
+    /// Ingress TCP port.
+    #[arg(long, value_name = "PORT", value_parser = clap::value_parser!(u16).range(1..))]
+    pub port: Option<u16>,
+
+    /// Robonomics CPS node identifier.
+    #[arg(long, value_name = "ID")]
+    pub node_id: Option<u64>,
+
+    /// Seconds between telemetry frames.
+    #[arg(long, value_name = "SECONDS")]
+    pub interval: Option<u32>,
+
+    /// Send telemetry.
+    #[arg(long, conflicts_with = "disable")]
+    pub enable: bool,
+
+    /// Stop sending telemetry; the configuration is kept.
+    #[arg(long)]
+    pub disable: bool,
 }
 
 #[derive(Subcommand)]

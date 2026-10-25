@@ -86,6 +86,11 @@ pub fn sensors(sensors: &Sensors) -> String {
 
 /// Stored configuration.
 pub fn config(config: &Config) -> String {
+    wifi_config(config) + &connectivity_config(config)
+}
+
+/// Stored Wi-Fi configuration.
+pub fn wifi_config(config: &Config) -> String {
     match &config.wifi {
         None => "Wi-Fi: not configured\n".to_owned(),
         Some(wifi) => format!(
@@ -96,6 +101,25 @@ pub fn config(config: &Config) -> String {
             } else {
                 "not set"
             }
+        ),
+    }
+}
+
+/// Stored telemetry configuration.
+pub fn connectivity_config(config: &Config) -> String {
+    match &config.connectivity {
+        None => "Connectivity: not configured\n".to_owned(),
+        Some(connectivity) => format!(
+            "Connectivity: {}\n  host:     {}:{}\n  node id:  {}\n  interval: {} s\n",
+            if connectivity.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            },
+            connectivity.host,
+            connectivity.port,
+            connectivity.node_id,
+            connectivity.interval_s
         ),
     }
 }

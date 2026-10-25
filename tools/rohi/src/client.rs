@@ -113,7 +113,7 @@ impl<T: ClientTransport> Device<T> {
     pub async fn config(&mut self) -> Result<Config> {
         self.require(Capability::Config).await?;
         match self.call(Call::GetConfig(pb::GetConfigRequest {})).await? {
-            Reply::GetConfig(response) => Ok(convert::config(&response)),
+            Reply::GetConfig(response) => convert::config(&response),
             other => Err(unexpected(&other)),
         }
     }
@@ -128,6 +128,7 @@ impl<T: ClientTransport> Device<T> {
         let update = convert::wifi_update(update)?;
         let request = pb::UpdateConfigRequest {
             wifi_update: Some(UpdateConfigRequest_::WifiUpdate::UpdateWifi(update)),
+            ..Default::default()
         };
         self.update_config(request).await
     }
@@ -137,6 +138,38 @@ impl<T: ClientTransport> Device<T> {
         self.require(Capability::Config).await?;
         let request = pb::UpdateConfigRequest {
             wifi_update: Some(UpdateConfigRequest_::WifiUpdate::ClearWifi(pb::Empty {})),
+            ..Default::default()
+        };
+        self.update_config(request).await
+    }
+
+    /// Applies a partial telemetry update: omitted fields keep their value, a
+    /// host is required while nothing is stored.
+    ///
+    /// The device applies a stored configuration at once, without a restart.
+    pub async fn update_connectivity(&mut self, update: &ConnectivityUpdate) -> Result<()> {
+        self.require(Capability::Config).await?;
+        self.require(Capability::Connectivity).await?;
+        let update = convert::connectivity_update(update)?;
+        let request = pb::UpdateConfigRequest {
+            connectivity_update: Some(
+                UpdateConfigRequest_::ConnectivityUpdate::UpdateConnectivity(update),
+            ),
+            ..Default::default()
+        };
+        self.update_config(request).await
+    }
+
+    /// Removes the stored telemetry configuration; the device falls back to
+    /// its build-time defaults.
+    pub async fn forget_connectivity(&mut self) -> Result<()> {
+        self.require(Capability::Config).await?;
+        self.require(Capability::Connectivity).await?;
+        let request = pb::UpdateConfigRequest {
+            connectivity_update: Some(UpdateConfigRequest_::ConnectivityUpdate::ClearConnectivity(
+                pb::Empty {},
+            )),
+            ..Default::default()
         };
         self.update_config(request).await
     }
