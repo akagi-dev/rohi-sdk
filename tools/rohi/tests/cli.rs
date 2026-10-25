@@ -89,7 +89,12 @@ impl Outcome {
     fn mutations(&self) -> Vec<&'static str> {
         self.requests()
             .into_iter()
-            .filter(|request| matches!(*request, "set" | "store_identity" | "erase_identity"))
+            .filter(|request| {
+                matches!(
+                    *request,
+                    "set" | "set_connectivity" | "store_identity" | "erase_identity"
+                )
+            })
             .collect()
     }
 
@@ -247,6 +252,8 @@ fn help_texts_are_snapshots() {
         &["wifi", "connect"],
         &["wifi", "configure"],
         &["wifi", "forget"],
+        &["connectivity"],
+        &["connectivity", "set"],
         &["time"],
         &["backup"],
         &["backup", "export"],
@@ -389,7 +396,7 @@ async fn status_json_is_the_same_snapshot() {
             "device": {"firmware": "fake-1.0.0", "board": "bench-esp32c3"},
             "capabilities": [
                 "sensors", "config", "wifi_scan", "wifi_status", "wifi_control", "identity",
-                "time"
+                "time", "connectivity"
             ],
             "wifi": {
                 "state": "connected",
@@ -576,7 +583,11 @@ async fn results_have_cli_owned_json_schemas() {
     outcome.result.as_ref().unwrap();
     assert_eq!(
         outcome.json(),
-        json!({"schema_version": 1, "wifi": {"ssid": "office", "password_configured": true}})
+        json!({
+            "schema_version": 1,
+            "wifi": {"ssid": "office", "password_configured": true},
+            "connectivity": null
+        })
     );
     assert!(!outcome.stdout.contains("\"pw\""));
 
@@ -962,7 +973,10 @@ async fn export_writes_the_backup_to_stdout_without_secrets() {
         json!({
             "schema_version": 1,
             "source": {"firmware": "fake-1.0.0", "board": "bench-esp32c3"},
-            "config": {"wifi": {"ssid": "office", "credential": "required"}}
+            "config": {
+                "wifi": {"ssid": "office", "credential": "required"},
+                "connectivity": null
+            }
         })
     );
     assert!(!outcome.stdout.contains("top-secret"));
@@ -983,10 +997,13 @@ async fn export_distinguishes_open_and_unconfigured() {
     let outcome = run(services_with_wifi("cafe", None), &["backup", "export"]).await;
     assert_eq!(
         outcome.json()["config"],
-        json!({"wifi": {"ssid": "cafe", "credential": "none"}})
+        json!({"wifi": {"ssid": "cafe", "credential": "none"}, "connectivity": null})
     );
     let outcome = run(Services::new(), &["backup", "export"]).await;
-    assert_eq!(outcome.json()["config"], json!({"wifi": null}));
+    assert_eq!(
+        outcome.json()["config"],
+        json!({"wifi": null, "connectivity": null})
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1493,4 +1510,262 @@ mod identity {
         assert!(!outcome.error().to_string().contains("definitely"));
         assert!(outcome.requests().is_empty());
     }
+}
+
+// ---------------------------------------------------------------------------
+// Connectivity
+// ---------------------------------------------------------------------------
+
+fn services_with_telemetry(host: &str, enabled: bool) -> Services {
+    let services = Services::new();
+    *services.connectivity.borrow_mut() = Some(rohi_connectivity::ConnectivityConfig {
+        enabled,
+        node_id: 42,
+        interval_s: 60,
+        host: rohi_connectivity::Host::new(host).unwrap(),
+        port: 8080,
+    });
+    services
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn config_shows_the_telemetry_section() {
+    let outcome = run(
+        services_with_telemetry("ingress.example", true),
+        &["config", "connectivity"],
+    )
+    .await;
+    outcome.result.as_ref().unwrap();
+    assert_eq!(
+        outcome.stdout,
+        "\
+Connectivity: enabled
+  host:     ingress.example:8080
+  node id:  42
+  interval: 60 s
+"
+    );
+    assert!(outcome.stderr.is_empty());
+
+    let outcome = run(Services::new(), &["config", "connectivity"]).await;
+    outcome.result.as_ref().unwrap();
+    assert_eq!(outcome.stdout, "Connectivity: not configured\n");
+
+    // Without a section: everything the device has.
+    let outcome = run(services_with_telemetry("a.io", false), &["config"]).await;
+    outcome.result.as_ref().unwrap();
+    assert!(
+        outcome
+            .stdout
+            .starts_with("Wi-Fi: not configured\nConnectivity: disabled\n")
+    );
+
+    let outcome = run(
+        services_with_telemetry("a.io", true),
+        &["-o", "json", "config", "connectivity"],
+    )
+    .await;
+    assert_eq!(
+        outcome.json()["connectivity"],
+        json!({
+            "enabled": true,
+            "node_id": 42,
+            "interval_s": 60,
+            "host": "a.io",
+            "port": 8080
+        })
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_device_without_telemetry_says_so() {
+    let mut services = Services::new();
+    services.capabilities = Capabilities::SENSORS.union(Capabilities::CONFIG);
+    let outcome = run(services, &["config", "connectivity"]).await;
+    assert!(matches!(
+        outcome.device_error(),
+        Error::Unsupported(rohi::model::Capability::Connectivity)
+    ));
+
+    let mut services = Services::new();
+    services.capabilities = Capabilities::SENSORS.union(Capabilities::CONFIG);
+    let outcome = run(services, &["connectivity", "set", "--disable"]).await;
+    assert!(matches!(
+        outcome.device_error(),
+        Error::Unsupported(rohi::model::Capability::Connectivity)
+    ));
+    assert!(outcome.mutations().is_empty());
+
+    // The plain `config` stays about what the device has.
+    let mut services = Services::new();
+    services.capabilities = Capabilities::SENSORS.union(Capabilities::CONFIG);
+    let outcome = run(services, &["config"]).await;
+    outcome.result.as_ref().unwrap();
+    assert_eq!(outcome.stdout, "Wi-Fi: not configured\n");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn connectivity_set_creates_and_changes_the_configuration() {
+    let outcome = run(
+        Services::new(),
+        &[
+            "connectivity",
+            "set",
+            "--host",
+            "ingress.example",
+            "--node-id",
+            "7",
+            "--interval",
+            "120",
+            "--enable",
+        ],
+    )
+    .await;
+    outcome.result.as_ref().unwrap();
+    assert_eq!(outcome.mutations(), ["set_connectivity"]);
+    assert!(
+        outcome
+            .stdout
+            .starts_with("Connectivity configuration stored")
+    );
+    let stored = outcome.services.connectivity.borrow().clone().unwrap();
+    assert!(stored.enabled);
+    assert_eq!(
+        (stored.node_id, stored.interval_s, stored.port),
+        (7, 120, 80)
+    );
+    assert_eq!(stored.host.as_str(), "ingress.example");
+
+    // Omitted settings are kept.
+    let outcome = run(
+        services_with_telemetry("ingress.example", true),
+        &["connectivity", "set", "--disable"],
+    )
+    .await;
+    outcome.result.as_ref().unwrap();
+    let stored = outcome.services.connectivity.borrow().clone().unwrap();
+    assert!(!stored.enabled);
+    assert_eq!((stored.node_id, stored.port), (42, 8080));
+
+    let outcome = run(
+        Services::new(),
+        &["-o", "json", "connectivity", "set", "--host", "a.io"],
+    )
+    .await;
+    assert_eq!(outcome.json(), json!({"schema_version": 1, "ok": true}));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn connectivity_set_rejects_bad_values_without_asking_the_device() {
+    for args in [
+        &["connectivity", "set", "--host", "bad host"][..],
+        &["connectivity", "set", "--interval", "1"],
+        &["connectivity", "set", "--interval", "86401"],
+    ] {
+        let outcome = run(Services::new(), args).await;
+        assert!(
+            matches!(outcome.device_error(), Error::InvalidInput(_)),
+            "{args:?}"
+        );
+        assert!(outcome.requests().is_empty(), "{args:?}");
+    }
+
+    // The device validates the merged result: nothing stored, no host.
+    let outcome = run(Services::new(), &["connectivity", "set", "--enable"]).await;
+    assert!(matches!(
+        outcome.device_error(),
+        Error::Device(rohi::model::ErrorCode::InvalidArgument)
+    ));
+    assert!(outcome.services.connectivity.borrow().is_none());
+}
+
+#[test]
+fn connectivity_set_needs_something_to_change() {
+    use clap::Parser;
+    assert!(rohi::cli::Cli::try_parse_from(["rohi", "connectivity", "set"]).is_err());
+    assert!(
+        rohi::cli::Cli::try_parse_from(["rohi", "connectivity", "set", "--enable", "--disable"])
+            .is_err()
+    );
+    assert!(
+        rohi::cli::Cli::try_parse_from(["rohi", "connectivity", "set", "--port", "0"]).is_err()
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn backup_carries_the_telemetry_section() {
+    let source = run(
+        services_with_telemetry("ingress.example", true),
+        &["backup", "export"],
+    )
+    .await;
+    assert_eq!(
+        source.json()["config"]["connectivity"],
+        json!({
+            "enabled": true,
+            "node_id": 42,
+            "interval_s": 60,
+            "host": "ingress.example",
+            "port": 8080
+        })
+    );
+    let file = TempFile::new("telemetry.json", Some(&source.stdout));
+
+    let outcome = run(
+        Services::new(),
+        &["-o", "json", "backup", "import", file.path(), "--dry-run"],
+    )
+    .await;
+    assert_eq!(outcome.json()["changes"][0]["section"], "connectivity");
+    assert!(outcome.mutations().is_empty());
+
+    let outcome = run(Services::new(), &["backup", "import", file.path(), "--yes"]).await;
+    outcome.result.as_ref().unwrap();
+    assert_eq!(outcome.mutations(), ["set_connectivity"]);
+    assert!(outcome.stderr.contains("Telemetry"), "{}", outcome.stderr);
+    let stored = outcome.services.connectivity.borrow().clone().unwrap();
+    assert_eq!(stored.host.as_str(), "ingress.example");
+    assert_eq!(stored.node_id, 42);
+
+    // The device already matches.
+    let outcome = run(
+        services_with_telemetry("ingress.example", true),
+        &["backup", "import", file.path(), "--yes"],
+    )
+    .await;
+    outcome.result.as_ref().unwrap();
+    assert!(outcome.mutations().is_empty());
+
+    // A section that is deliberately absent removes the stored one.
+    let absent = TempFile::new(
+        "absent.json",
+        Some(
+            r#"{"schema_version": 1, "source": {"firmware": "a", "board": "b"}, "config": {"connectivity": null}}"#,
+        ),
+    );
+    let outcome = run(
+        services_with_telemetry("ingress.example", true),
+        &["backup", "import", absent.path(), "--yes"],
+    )
+    .await;
+    outcome.result.as_ref().unwrap();
+    assert!(outcome.services.connectivity.borrow().is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_telemetry_backup_does_not_fit_a_device_without_telemetry() {
+    let file = TempFile::new(
+        "unsupported.json",
+        Some(
+            r#"{"schema_version": 1, "source": {"firmware": "a", "board": "b"}, "config": {"connectivity": null}}"#,
+        ),
+    );
+    let mut services = Services::new();
+    services.capabilities = Capabilities::SENSORS.union(Capabilities::CONFIG);
+    let outcome = run(services, &["backup", "import", file.path(), "--yes"]).await;
+    assert!(matches!(
+        outcome.error(),
+        CliError::Incompatible(sections) if sections == &["connectivity"]
+    ));
+    assert!(outcome.mutations().is_empty());
 }

@@ -1,10 +1,11 @@
 [workspace.package]
-rust-version = "1.99.1"
+version = "0.2.0"
 edition = "2024"
 authors = ["Akagi Engineering <admin@akagi.dev>"]
 license = "Apache-2.0"
 homepage = "https://rohi.akagi.dev"
 repository = "https://github.com/akagi-dev/rohi-sdk"
+rust-version = "1.99.1"
 
 [workspace]
 members = ["crates/*", "firmwares/*", "tools/*", "examples"]

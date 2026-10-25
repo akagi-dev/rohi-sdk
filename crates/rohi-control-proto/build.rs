@@ -31,6 +31,11 @@ const LIMITS: &[(&str, usize, &str)] = &[
         "Maximum length of a Wi-Fi SSID, in bytes.",
     ),
     (
+        "MAX_HOST_LEN",
+        64,
+        "Maximum length of the telemetry ingress host, in bytes.",
+    ),
+    (
         "MAX_WIFI_PASSWORD_LEN",
         64,
         "Maximum length of a Wi-Fi password, in bytes.",
@@ -111,6 +116,11 @@ fn main() {
         (
             ".rohi.control.v1.WifiConfigUpdate.password",
             "MAX_WIFI_PASSWORD_LEN",
+        ),
+        (".rohi.control.v1.ConnectivityConfig.host", "MAX_HOST_LEN"),
+        (
+            ".rohi.control.v1.ConnectivityConfigUpdate.host",
+            "MAX_HOST_LEN",
         ),
         (".rohi.control.v1.WifiNetwork.ssid", "MAX_SSID_LEN"),
         (".rohi.control.v1.WifiConnection.ssid", "MAX_SSID_LEN"),

@@ -557,6 +557,7 @@ fn long_request() -> Vec<u8> {
         3,
         Call::UpdateConfig(pb::UpdateConfigRequest {
             wifi_update: Some(pb::UpdateConfigRequest_::WifiUpdate::UpdateWifi(update)),
+            ..Default::default()
         }),
     )
 }

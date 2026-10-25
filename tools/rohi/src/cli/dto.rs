@@ -244,8 +244,18 @@ pub struct WifiConfig {
 }
 
 #[derive(Serialize)]
+pub struct ConnectivityConfig {
+    pub enabled: bool,
+    pub node_id: u64,
+    pub interval_s: u32,
+    pub host: String,
+    pub port: u16,
+}
+
+#[derive(Serialize)]
 pub struct Config {
     pub wifi: Option<WifiConfig>,
+    pub connectivity: Option<ConnectivityConfig>,
 }
 
 impl Config {
@@ -255,6 +265,16 @@ impl Config {
                 ssid: wifi.ssid.to_text(),
                 password_configured: wifi.password_configured,
             }),
+            connectivity: config
+                .connectivity
+                .as_ref()
+                .map(|connectivity| ConnectivityConfig {
+                    enabled: connectivity.enabled,
+                    node_id: connectivity.node_id,
+                    interval_s: connectivity.interval_s,
+                    host: connectivity.host.clone(),
+                    port: connectivity.port,
+                }),
         }
     }
 }

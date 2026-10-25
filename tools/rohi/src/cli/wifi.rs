@@ -14,7 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
-//! `rohi wifi` and `rohi config`.
+//! `rohi wifi`.
 
 use std::time::{Duration, Instant};
 
@@ -76,18 +76,6 @@ pub async fn obtain_password(
     } else {
         PasswordChange::Set(password.as_bytes().to_vec())
     })
-}
-
-pub async fn config<T: ClientTransport>(
-    device: &mut Device<T>,
-    ctx: &mut Ctx,
-) -> Result<(), CliError> {
-    let config = device.config().await?;
-    ctx.io.emit(
-        ctx.format,
-        &dto::Versioned::new(dto::Config::new(&config)),
-        || format::config(&config),
-    )
 }
 
 pub async fn run<T: ClientTransport>(

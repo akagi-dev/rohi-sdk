@@ -23,8 +23,7 @@
 //! ```
 //!
 //! Opt-in: the test needs the `edge` binary of `airalab/robins`, whose
-//! submodule must point at the protocol revision pinned in
-//! `rohi-connectivity-proto/UPSTREAM_REV` (robins `a6c1d9c` does). Build it
+//! submodule must point at the protocol (robins `a6c1d9c` does). Build it
 //! and run:
 //!
 //! ```text

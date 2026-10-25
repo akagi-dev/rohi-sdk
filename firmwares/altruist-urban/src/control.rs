@@ -27,6 +27,7 @@
 //! region or the radio.
 
 use embassy_time::{Duration, with_timeout};
+use rohi_connectivity::ConnectivityConfig;
 use rohi_control::{
     Capabilities, ControlServices, Controller, DeviceInfo, DeviceTime, OpenPolicy, ServiceError,
 };
@@ -121,6 +122,26 @@ impl ControlServices for UrbanControlServices {
         match config {
             Some(config) => self.config.set(config).await,
             None => self.config.remove::<WifiConfig>().await,
+        }
+        .map_err(config_error)
+    }
+
+    async fn connectivity_config(&self) -> Result<Option<ConnectivityConfig>, ServiceError> {
+        self.config
+            .get::<ConnectivityConfig>()
+            .await
+            .map_err(config_error)
+    }
+
+    /// Published to the telemetry task by the configuration owner task, like
+    /// the Wi-Fi configuration; see [`crate::config`].
+    async fn set_connectivity_config(
+        &self,
+        config: Option<&ConnectivityConfig>,
+    ) -> Result<(), ServiceError> {
+        match config {
+            Some(config) => self.config.set(config).await,
+            None => self.config.remove::<ConnectivityConfig>().await,
         }
         .map_err(config_error)
     }

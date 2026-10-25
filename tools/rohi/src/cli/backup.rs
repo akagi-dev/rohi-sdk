@@ -37,7 +37,9 @@ use super::args::Import;
 use super::diagnostic::{CliError, Diagnostic, PartialRestore};
 use super::wifi::obtain_password;
 use super::{Ctx, dto};
-use crate::model::{Capability, Config, PasswordChange, WifiUpdate};
+use crate::model::{
+    Capability, Config, ConnectivityConfig, ConnectivityUpdate, PasswordChange, WifiUpdate,
+};
 use crate::{ClientTransport, Device};
 
 /// The only schema version this `rohi` reads and writes.
@@ -66,6 +68,59 @@ pub struct WifiBackup {
     pub credential: Credential,
 }
 
+/// The telemetry configuration of the device.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectivityBackup {
+    pub enabled: bool,
+    pub node_id: u64,
+    pub interval_s: u32,
+    pub host: String,
+    pub port: u16,
+}
+
+impl From<&ConnectivityConfig> for ConnectivityBackup {
+    fn from(config: &ConnectivityConfig) -> Self {
+        Self {
+            enabled: config.enabled,
+            node_id: config.node_id,
+            interval_s: config.interval_s,
+            host: config.host.clone(),
+            port: config.port,
+        }
+    }
+}
+
+impl ConnectivityBackup {
+    fn update(&self) -> ConnectivityUpdate {
+        ConnectivityUpdate {
+            enabled: Some(self.enabled),
+            node_id: Some(self.node_id),
+            interval_s: Some(self.interval_s),
+            host: Some(self.host.clone()),
+            port: Some(self.port),
+        }
+    }
+
+    fn validate(&self) -> Result<(), BackupError> {
+        use rohi_connectivity::config::{MAX_HOST_LEN, MAX_INTERVAL_S, MIN_INTERVAL_S};
+        if rohi_connectivity::Host::new(&self.host).is_none() {
+            return Err(BackupError::Invalid(format!(
+                "the telemetry host must be 1 to {MAX_HOST_LEN} letters, digits, '.' or '-'"
+            )));
+        }
+        if self.port == 0 {
+            return Err(BackupError::Invalid("the telemetry port is 0".into()));
+        }
+        if !(MIN_INTERVAL_S..=MAX_INTERVAL_S).contains(&self.interval_s) {
+            return Err(BackupError::Invalid(format!(
+                "the telemetry interval must be {MIN_INTERVAL_S} to {MAX_INTERVAL_S} seconds"
+            )));
+        }
+        Ok(())
+    }
+}
+
 /// Configuration sections. A section that is missing was not part of the
 /// backup; `null` says the device had nothing configured there.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,6 +131,12 @@ pub struct Sections {
         skip_serializing_if = "Option::is_none"
     )]
     pub wifi: Option<Option<WifiBackup>>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub connectivity: Option<Option<ConnectivityBackup>>,
     /// Sections this version of `rohi` does not know.
     #[serde(flatten)]
     pub unknown: BTreeMap<String, serde_json::Value>,
@@ -186,6 +247,9 @@ impl Backup {
                 )));
             }
         }
+        if let Some(Some(connectivity)) = &self.config.connectivity {
+            connectivity.validate()?;
+        }
         Ok(())
     }
 
@@ -207,7 +271,8 @@ impl Backup {
     }
 
     /// The backup of `config`, read from a device that reported `source`.
-    pub fn of(source: Source, config: &Config) -> Self {
+    /// The telemetry section is only recorded when the device has it.
+    pub fn of(source: Source, config: &Config, connectivity_supported: bool) -> Self {
         let wifi = config.wifi.as_ref().map(|wifi| WifiBackup {
             ssid: wifi.ssid.to_text(),
             credential: if wifi.password_configured {
@@ -221,6 +286,8 @@ impl Backup {
             source,
             config: Sections {
                 wifi: Some(wifi),
+                connectivity: connectivity_supported
+                    .then(|| config.connectivity.as_ref().map(ConnectivityBackup::from)),
                 unknown: BTreeMap::new(),
             },
         }
@@ -249,6 +316,13 @@ pub enum Change {
     },
     /// Remove the stored network.
     ForgetWifi { from: String },
+    /// Store this telemetry configuration.
+    SetConnectivity {
+        from: Option<ConnectivityBackup>,
+        to: ConnectivityBackup,
+    },
+    /// Remove the stored telemetry configuration.
+    ForgetConnectivity { from: ConnectivityBackup },
 }
 
 impl Change {
@@ -256,6 +330,7 @@ impl Change {
     pub fn section(&self) -> &'static str {
         match self {
             Self::SetWifi { .. } | Self::ForgetWifi { .. } => "wifi",
+            Self::SetConnectivity { .. } | Self::ForgetConnectivity { .. } => "connectivity",
         }
     }
 
@@ -282,8 +357,63 @@ impl Change {
                 lines
             }
             Self::ForgetWifi { from } => vec![("Wi-Fi SSID", format!("{from} → <unset>"))],
+            Self::SetConnectivity { from, to } => connectivity_lines(from.as_ref(), to),
+            Self::ForgetConnectivity { from } => {
+                vec![("Telemetry", format!("{} → <unset>", describe(from)))]
+            }
         }
     }
+}
+
+fn describe(config: &ConnectivityBackup) -> String {
+    format!(
+        "{} {}:{}",
+        if config.enabled {
+            "enabled"
+        } else {
+            "disabled"
+        },
+        config.host,
+        config.port
+    )
+}
+
+/// The settings that differ between the stored telemetry configuration and
+/// the one that is restored.
+fn connectivity_lines(
+    from: Option<&ConnectivityBackup>,
+    to: &ConnectivityBackup,
+) -> Vec<(&'static str, String)> {
+    let Some(from) = from else {
+        return vec![("Telemetry", format!("<unset> → {}", describe(to)))];
+    };
+    let mut lines = Vec::new();
+    if from.enabled != to.enabled {
+        let state = |enabled| if enabled { "enabled" } else { "disabled" };
+        lines.push((
+            "Telemetry",
+            format!("{} → {}", state(from.enabled), state(to.enabled)),
+        ));
+    }
+    if (&from.host, from.port) != (&to.host, to.port) {
+        lines.push((
+            "Telemetry host",
+            format!("{}:{} → {}:{}", from.host, from.port, to.host, to.port),
+        ));
+    }
+    if from.node_id != to.node_id {
+        lines.push((
+            "Telemetry node id",
+            format!("{} → {}", from.node_id, to.node_id),
+        ));
+    }
+    if from.interval_s != to.interval_s {
+        lines.push((
+            "Telemetry interval",
+            format!("{} s → {} s", from.interval_s, to.interval_s),
+        ));
+    }
+    lines
 }
 
 /// What restoring `backup` onto a device with `current` would change.
@@ -317,6 +447,22 @@ pub fn plan(backup: &Backup, current: &Config) -> Vec<Change> {
             }
         }
     }
+    let stored = current.connectivity.as_ref().map(ConnectivityBackup::from);
+    match &backup.config.connectivity {
+        None => {}
+        Some(None) => {
+            if let Some(from) = stored {
+                changes.push(Change::ForgetConnectivity { from });
+            }
+        }
+        Some(Some(to)) if stored.as_ref() != Some(to) => {
+            changes.push(Change::SetConnectivity {
+                from: stored,
+                to: to.clone(),
+            });
+        }
+        Some(Some(_)) => {}
+    }
     changes
 }
 
@@ -337,12 +483,17 @@ pub async fn export<T: ClientTransport>(
 ) -> Result<(), CliError> {
     let info = device.info().await?;
     let config = device.config().await?;
+    let connectivity = device
+        .capabilities()
+        .await?
+        .contains(&Capability::Connectivity);
     let backup = Backup::of(
         Source {
             firmware: info.firmware,
             board: info.board,
         },
         &config,
+        connectivity,
     );
     let json = backup.to_json()?;
     match file {
@@ -366,11 +517,25 @@ pub async fn export<T: ClientTransport>(
 }
 
 #[derive(Serialize)]
-struct ChangeDto {
+struct WifiChangeDto {
     section: &'static str,
     ssid_from: Option<String>,
     ssid_to: Option<String>,
     password: &'static str,
+}
+
+#[derive(Serialize)]
+struct ConnectivityChangeDto {
+    section: &'static str,
+    from: Option<ConnectivityBackup>,
+    to: Option<ConnectivityBackup>,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum ChangeDto {
+    Wifi(WifiChangeDto),
+    Connectivity(ConnectivityChangeDto),
 }
 
 impl ChangeDto {
@@ -380,7 +545,7 @@ impl ChangeDto {
                 from,
                 ssid,
                 password,
-            } => Self {
+            } => Self::Wifi(WifiChangeDto {
                 section: change.section(),
                 ssid_from: from.clone(),
                 ssid_to: Some(ssid.clone()),
@@ -389,13 +554,23 @@ impl ChangeDto {
                     Password::Keep => "unchanged",
                     Password::Remove => "removed",
                 },
-            },
-            Change::ForgetWifi { from } => Self {
+            }),
+            Change::ForgetWifi { from } => Self::Wifi(WifiChangeDto {
                 section: change.section(),
                 ssid_from: Some(from.clone()),
                 ssid_to: None,
                 password: "removed",
-            },
+            }),
+            Change::SetConnectivity { from, to } => Self::Connectivity(ConnectivityChangeDto {
+                section: change.section(),
+                from: from.clone(),
+                to: Some(to.clone()),
+            }),
+            Change::ForgetConnectivity { from } => Self::Connectivity(ConnectivityChangeDto {
+                section: change.section(),
+                from: Some(from.clone()),
+                to: None,
+            }),
         }
     }
 }
@@ -422,8 +597,18 @@ pub async fn import<T: ClientTransport>(
     // Everything that can be checked, before the first request that changes
     // the device.
     let capabilities = device.capabilities().await?;
+    let mut unsupported = Vec::new();
     if backup.config.wifi.is_some() && !capabilities.contains(&Capability::Config) {
-        return Err(CliError::Incompatible(vec!["wifi"]));
+        unsupported.push("wifi");
+    }
+    if backup.config.connectivity.is_some()
+        && !(capabilities.contains(&Capability::Config)
+            && capabilities.contains(&Capability::Connectivity))
+    {
+        unsupported.push("connectivity");
+    }
+    if !unsupported.is_empty() {
+        return Err(CliError::Incompatible(unsupported));
     }
     let info = device.info().await?;
     let current = device.config().await?;
@@ -496,6 +681,8 @@ pub async fn import<T: ClientTransport>(
                     .await
             }
             Change::ForgetWifi { .. } => device.forget_wifi().await,
+            Change::SetConnectivity { to, .. } => device.update_connectivity(&to.update()).await,
+            Change::ForgetConnectivity { .. } => device.forget_connectivity().await,
         };
         match result {
             Ok(()) => applied.push(change.section()),
@@ -536,6 +723,7 @@ mod tests {
                 ssid: Ssid(ssid.as_bytes().to_vec()),
                 password_configured: password,
             }),
+            connectivity: None,
         }
     }
 
@@ -548,6 +736,7 @@ mod tests {
             },
             config: Sections {
                 wifi,
+                connectivity: None,
                 unknown: BTreeMap::new(),
             },
         }
@@ -568,6 +757,7 @@ mod tests {
                 board: "urban-esp32c3".into(),
             },
             &stored("office", true),
+            false,
         )
         .to_json()
         .unwrap();
@@ -593,14 +783,165 @@ mod tests {
 
     #[test]
     fn an_open_network_and_no_network_are_different_things() {
-        let open = Backup::of(backup(None).source, &stored("cafe", false));
+        let open = Backup::of(backup(None).source, &stored("cafe", false), false);
         assert!(open.to_json().unwrap().contains(r#""credential": "none""#));
 
-        let nothing = Backup::of(backup(None).source, &Config { wifi: None });
+        let nothing = Backup::of(
+            backup(None).source,
+            &Config {
+                wifi: None,
+                connectivity: None,
+            },
+            false,
+        );
         let json = nothing.to_json().unwrap();
         assert!(json.contains(r#""wifi": null"#), "{json}");
         let again = Backup::parse(&json).unwrap();
         assert_eq!(again.config.wifi, Some(None));
+    }
+
+    fn telemetry(host: &str, enabled: bool) -> ConnectivityBackup {
+        ConnectivityBackup {
+            enabled,
+            node_id: 42,
+            interval_s: 60,
+            host: host.into(),
+            port: 80,
+        }
+    }
+
+    fn with_telemetry(telemetry: Option<Option<ConnectivityBackup>>) -> Backup {
+        let mut backup = backup(None);
+        backup.config.connectivity = telemetry;
+        backup
+    }
+
+    fn stored_telemetry(telemetry: Option<ConnectivityBackup>) -> Config {
+        Config {
+            wifi: None,
+            connectivity: telemetry.map(|telemetry| ConnectivityConfig {
+                enabled: telemetry.enabled,
+                node_id: telemetry.node_id,
+                interval_s: telemetry.interval_s,
+                host: telemetry.host,
+                port: telemetry.port,
+            }),
+        }
+    }
+
+    #[test]
+    fn telemetry_is_only_exported_when_the_device_has_it() {
+        let config = stored_telemetry(Some(telemetry("ingress.example", true)));
+        let without = Backup::of(backup(None).source, &config, false);
+        assert_eq!(without.config.connectivity, None);
+        assert!(!without.to_json().unwrap().contains("connectivity"));
+
+        let with = Backup::of(backup(None).source, &config, true);
+        let json = with.to_json().unwrap();
+        assert!(json.contains(r#""host": "ingress.example""#), "{json}");
+        assert_eq!(Backup::parse(&json).unwrap(), with);
+
+        let nothing = Backup::of(backup(None).source, &stored_telemetry(None), true);
+        let json = nothing.to_json().unwrap();
+        assert!(json.contains(r#""connectivity": null"#), "{json}");
+        assert_eq!(
+            Backup::parse(&json).unwrap().config.connectivity,
+            Some(None)
+        );
+    }
+
+    #[test]
+    fn an_invalid_telemetry_section_is_rejected() {
+        for bad in [
+            ConnectivityBackup {
+                host: "a b".into(),
+                ..telemetry("x", true)
+            },
+            ConnectivityBackup {
+                host: String::new(),
+                ..telemetry("x", true)
+            },
+            ConnectivityBackup {
+                port: 0,
+                ..telemetry("x", true)
+            },
+            ConnectivityBackup {
+                interval_s: 1,
+                ..telemetry("x", true)
+            },
+        ] {
+            let json = with_telemetry(Some(Some(bad))).to_json().unwrap();
+            assert!(
+                matches!(Backup::parse(&json), Err(BackupError::Invalid(_))),
+                "{json}"
+            );
+        }
+    }
+
+    #[test]
+    fn telemetry_plan_covers_set_forget_and_nothing() {
+        let a = telemetry("a.example", true);
+        let b = telemetry("b.example", true);
+
+        // Absent in the backup: untouched.
+        assert!(plan(&with_telemetry(None), &stored_telemetry(Some(a.clone()))).is_empty());
+        // Already equal.
+        assert!(
+            plan(
+                &with_telemetry(Some(Some(a.clone()))),
+                &stored_telemetry(Some(a.clone()))
+            )
+            .is_empty()
+        );
+        // Differs.
+        assert_eq!(
+            plan(
+                &with_telemetry(Some(Some(b.clone()))),
+                &stored_telemetry(Some(a.clone()))
+            ),
+            vec![Change::SetConnectivity {
+                from: Some(a.clone()),
+                to: b.clone()
+            }]
+        );
+        assert_eq!(
+            plan(
+                &with_telemetry(Some(Some(b.clone()))),
+                &stored_telemetry(None)
+            ),
+            vec![Change::SetConnectivity { from: None, to: b }]
+        );
+        // Deliberately absent.
+        assert_eq!(
+            plan(
+                &with_telemetry(Some(None)),
+                &stored_telemetry(Some(a.clone()))
+            ),
+            vec![Change::ForgetConnectivity { from: a }]
+        );
+        assert!(plan(&with_telemetry(Some(None)), &stored_telemetry(None)).is_empty());
+    }
+
+    #[test]
+    fn telemetry_changes_name_what_differs() {
+        let a = telemetry("a.example", true);
+        let off = ConnectivityBackup {
+            enabled: false,
+            interval_s: 120,
+            ..a.clone()
+        };
+        let lines = Change::SetConnectivity {
+            from: Some(a),
+            to: off,
+        }
+        .lines();
+        assert_eq!(
+            lines,
+            vec![
+                ("Telemetry", "enabled → disabled".to_owned()),
+                ("Telemetry interval", "60 s → 120 s".to_owned()),
+            ]
+        );
     }
 
     #[test]
@@ -699,7 +1040,10 @@ mod tests {
         assert_eq!(
             plan(
                 &backup(office(Credential::Required)),
-                &Config { wifi: None }
+                &Config {
+                    wifi: None,
+                    connectivity: None
+                }
             ),
             [Change::SetWifi {
                 from: None,
@@ -749,6 +1093,15 @@ mod tests {
                 from: "office".into()
             }]
         );
-        assert!(plan(&backup(Some(None)), &Config { wifi: None }).is_empty());
+        assert!(
+            plan(
+                &backup(Some(None)),
+                &Config {
+                    wifi: None,
+                    connectivity: None
+                }
+            )
+            .is_empty()
+        );
     }
 }

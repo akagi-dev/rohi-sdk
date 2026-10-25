@@ -32,6 +32,7 @@
 
 mod args;
 mod backup;
+mod config;
 mod diagnostic;
 mod dto;
 mod identity;
@@ -48,8 +49,8 @@ use std::time::Duration;
 use clap::Parser;
 
 pub use args::{
-    BackupAction, Cli, Command, ConfigSection, Configure, Connect, IdentityAction, Import,
-    OutputFormat, Provision, WifiAction,
+    BackupAction, Cli, Command, ConfigSection, Configure, Connect, ConnectivityAction,
+    IdentityAction, Import, OutputFormat, Provision, SetConnectivity, WifiAction,
 };
 pub use backup::{Backup, BackupError};
 pub use diagnostic::{CliError, Diagnostic, PartialRestore};
@@ -134,9 +135,8 @@ pub async fn execute<T: ClientTransport>(
             )
         }
         Command::Time => time::run(device, ctx).await,
-        Command::Config { section } => match section {
-            None | Some(ConfigSection::Wifi) => wifi::config(device, ctx).await,
-        },
+        Command::Config { section } => config::show(device, section, ctx).await,
+        Command::Connectivity { action } => config::run(device, action, ctx).await,
         Command::Wifi { action } => {
             wifi::run(device, action.unwrap_or(WifiAction::Status), ctx).await
         }

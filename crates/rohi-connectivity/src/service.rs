@@ -195,6 +195,11 @@ impl<M: RawMutex> ConnectivityShared<M> {
         self.status.lock(Cell::get)
     }
 
+    /// Resets to the initial status, for a service that was stopped or replaced.
+    pub fn reset(&self) {
+        self.publish(ConnectivityStatus::default());
+    }
+
     fn publish(&self, status: ConnectivityStatus) {
         self.status.lock(|cell| cell.set(status));
     }

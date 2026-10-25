@@ -31,6 +31,7 @@ the final value is **not yet measured** ([Hardware testing](../validation/hardwa
 | Constant | Value |
 |----------|-------|
 | `MAX_SSID_LEN` | 32 |
+| `MAX_HOST_LEN` (telemetry host, control protocol) | 64 |
 | `MAX_WIFI_PASSWORD_LEN` / `MIN_WIFI_PASSWORD_LEN` | 64 / 8 (open networks have no password) |
 | `MAX_WIFI_SCAN_RESULTS` | 16 (strongest first; the backend converts at most 48 raw entries per scan) |
 | `WIFI_COMMAND_QUEUE_DEPTH` | 4 (scan, reconnect, disconnect only; `Busy` when full) |

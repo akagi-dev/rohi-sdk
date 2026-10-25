@@ -95,6 +95,7 @@ open_enum! {
         WifiControl = WifiControl => "wifi control",
         Identity = Identity => "identity",
         Time = Time => "time",
+        Connectivity = Connectivity => "connectivity",
     }
 }
 
@@ -370,12 +371,30 @@ pub struct WifiConfig {
     pub password_configured: bool,
 }
 
+/// Stored telemetry configuration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub struct ConnectivityConfig {
+    /// Telemetry is only produced and sent when enabled.
+    pub enabled: bool,
+    /// Robonomics CPS node identifier.
+    pub node_id: u64,
+    /// Seconds between telemetry frames.
+    pub interval_s: u32,
+    /// Ingress host name or IPv4 address.
+    pub host: String,
+    /// Ingress TCP port.
+    pub port: u16,
+}
+
 /// Device configuration.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct Config {
     /// Wi-Fi, `None` when not configured.
     pub wifi: Option<WifiConfig>,
+    /// Telemetry, `None` when not configured or not supported by the device.
+    pub connectivity: Option<ConnectivityConfig>,
 }
 
 /// A network found by a Wi-Fi scan.
@@ -473,4 +492,20 @@ pub struct WifiUpdate {
     pub ssid: Option<Vec<u8>>,
     /// Password change.
     pub password: PasswordChange,
+}
+
+/// Partial update of the telemetry configuration: omitted fields are
+/// preserved.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct ConnectivityUpdate {
+    /// Switches telemetry on or off.
+    pub enabled: Option<bool>,
+    /// Robonomics CPS node identifier.
+    pub node_id: Option<u64>,
+    /// Seconds between telemetry frames.
+    pub interval_s: Option<u32>,
+    /// Ingress host; required while nothing is stored.
+    pub host: Option<String>,
+    /// Ingress TCP port.
+    pub port: Option<u16>,
 }

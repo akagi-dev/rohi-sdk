@@ -30,7 +30,8 @@ async fn info_and_capabilities() {
                 Capability::WifiStatus,
                 Capability::WifiControl,
                 Capability::Identity,
-                Capability::Time
+                Capability::Time,
+                Capability::Connectivity
             ]
         );
     })
@@ -142,6 +143,69 @@ async fn wifi_configuration_round_trip_never_exposes_the_password() {
     // Each accepted update was persisted before it was applied.
     let requests = services.requests.borrow().clone();
     assert_eq!(requests, ["set", "set", "set", "set"]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn connectivity_configuration_round_trip() {
+    let services = with_device(20, Services::new(), |mut device| async move {
+        assert_eq!(device.config().await.unwrap().connectivity, None);
+
+        device
+            .update_connectivity(&ConnectivityUpdate {
+                host: Some("ingress.example".into()),
+                node_id: Some(7),
+                enabled: Some(true),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let config = device.config().await.unwrap().connectivity.unwrap();
+        assert!(config.enabled);
+        assert_eq!(config.host, "ingress.example");
+        assert_eq!(
+            (config.node_id, config.port, config.interval_s),
+            (7, 80, 60)
+        );
+
+        // Only the port changes.
+        device
+            .update_connectivity(&ConnectivityUpdate {
+                port: Some(8080),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let config = device.config().await.unwrap().connectivity.unwrap();
+        assert_eq!(
+            (config.port, config.node_id, config.enabled),
+            (8080, 7, true)
+        );
+
+        // Several settings at once.
+        device
+            .update_connectivity(&ConnectivityUpdate {
+                host: Some("ok.example".into()),
+                interval_s: Some(10),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            device
+                .config()
+                .await
+                .unwrap()
+                .connectivity
+                .unwrap()
+                .interval_s,
+            10
+        );
+
+        device.forget_connectivity().await.unwrap();
+        assert_eq!(device.config().await.unwrap().connectivity, None);
+    })
+    .await;
+    assert!(services.connectivity.borrow().is_none());
 }
 
 #[tokio::test(flavor = "current_thread")]

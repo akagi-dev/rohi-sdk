@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+use rohi_connectivity::{ConnectivityConfig, Host};
 use rohi_control_proto::control::{
     self as pb, Request_::Request as Call, Response_::Response as Reply, UpdateConfigRequest_,
     WifiConfigUpdate_,
@@ -106,14 +107,8 @@ impl<S: ControlServices, P: AuthorizationPolicy> Controller<S, P> {
                 Ok(snapshot) => Reply::GetSensors(mapping::sensors(&snapshot)),
                 Err(e) => service_error(e),
             },
-            Call::GetConfig(_) => match services.wifi_config().await {
-                Ok(config) => {
-                    let mut out = pb::GetConfigResponse::default();
-                    if let Some(config) = config {
-                        out.set_wifi(mapping::wifi_config(&config));
-                    }
-                    Reply::GetConfig(out)
-                }
+            Call::GetConfig(_) => match self.get_config().await {
+                Ok(config) => Reply::GetConfig(config),
                 Err(e) => service_error(e),
             },
             Call::UpdateConfig(update) => match self.update_config(update).await {
@@ -179,32 +174,99 @@ impl<S: ControlServices, P: AuthorizationPolicy> Controller<S, P> {
         }
     }
 
-    /// Validate, then persist and publish as one service call. Nothing is
-    /// stored when validation fails, and success does not mean the network
-    /// was reached.
-    async fn update_config(&self, update: pb::UpdateConfigRequest) -> Result<(), ServiceError> {
-        if update.wifi_update.is_some()
-            && !self
-                .services
-                .capabilities()
-                .contains(Capabilities::WIFI_CONTROL)
+    async fn get_config(&self) -> Result<pb::GetConfigResponse, ServiceError> {
+        let mut out = pb::GetConfigResponse::default();
+        if let Some(config) = self.services.wifi_config().await? {
+            out.set_wifi(mapping::wifi_config(&config));
+        }
+        if self
+            .services
+            .capabilities()
+            .contains(Capabilities::CONNECTIVITY)
         {
+            match self.services.connectivity_config().await {
+                Ok(Some(config)) => {
+                    out.set_connectivity(mapping::connectivity_config(&config));
+                }
+                // A device that lists the capability but cannot read the
+                // section has nothing to report.
+                Ok(None) | Err(ServiceError::NotSupported) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(out)
+    }
+
+    /// Validate, then persist and publish as one service call per section.
+    /// Nothing is stored when validation of any section fails, and success
+    /// does not mean the network was reached.
+    async fn update_config(&self, update: pb::UpdateConfigRequest) -> Result<(), ServiceError> {
+        let capabilities = self.services.capabilities();
+        if update.wifi_update.is_some() && !capabilities.contains(Capabilities::WIFI_CONTROL) {
             // Without a Wi-Fi runtime nothing would ever take the update.
             return Err(ServiceError::NotSupported);
         }
-        match update.wifi_update {
-            // Nothing to update.
-            None => Ok(()),
-            Some(UpdateConfigRequest_::WifiUpdate::ClearWifi(_)) => {
-                self.services.set_wifi_config(None).await
-            }
+        if update.connectivity_update.is_some()
+            && !capabilities.contains(Capabilities::CONNECTIVITY)
+        {
+            return Err(ServiceError::NotSupported);
+        }
+        // `None`: the section is not touched; `Some(None)`: it is removed.
+        let wifi = match update.wifi_update {
+            None => None,
+            Some(UpdateConfigRequest_::WifiUpdate::ClearWifi(_)) => Some(None),
             Some(UpdateConfigRequest_::WifiUpdate::UpdateWifi(update)) => {
                 let current = self.services.wifi_config().await?;
-                let merged = merge_wifi(current, &update)?;
-                self.services.set_wifi_config(Some(&merged)).await
+                Some(Some(merge_wifi(current, &update)?))
             }
+        };
+        let connectivity = match update.connectivity_update {
+            None => None,
+            Some(UpdateConfigRequest_::ConnectivityUpdate::ClearConnectivity(_)) => Some(None),
+            Some(UpdateConfigRequest_::ConnectivityUpdate::UpdateConnectivity(update)) => {
+                let current = self.services.connectivity_config().await?;
+                Some(Some(merge_connectivity(current, &update)?))
+            }
+        };
+        if let Some(config) = wifi {
+            self.services.set_wifi_config(config.as_ref()).await?;
         }
+        if let Some(config) = connectivity {
+            self.services
+                .set_connectivity_config(config.as_ref())
+                .await?;
+        }
+        Ok(())
     }
+}
+
+/// Applies a partial update to the stored telemetry configuration: omitted
+/// fields are preserved. Without a stored configuration the update starts
+/// from a disabled one, so a host is required.
+fn merge_connectivity(
+    current: Option<ConnectivityConfig>,
+    update: &pb::ConnectivityConfigUpdate,
+) -> Result<ConnectivityConfig, ServiceError> {
+    let mut config = current.unwrap_or_else(ConnectivityConfig::disabled);
+    if let Some(enabled) = update.enabled() {
+        config.enabled = *enabled;
+    }
+    if let Some(node_id) = update.node_id() {
+        config.node_id = *node_id;
+    }
+    if let Some(interval_s) = update.interval_s() {
+        config.interval_s = *interval_s;
+    }
+    if let Some(host) = update.host() {
+        config.host = Host::new(host).ok_or(ServiceError::InvalidArgument)?;
+    }
+    if let Some(port) = update.port() {
+        config.port = u16::try_from(*port).map_err(|_| ServiceError::InvalidArgument)?;
+    }
+    config
+        .validate()
+        .map_err(|_| ServiceError::InvalidArgument)?;
+    Ok(config)
 }
 
 /// Applies a partial update to the stored configuration: omitted fields are

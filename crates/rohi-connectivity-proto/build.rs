@@ -10,7 +10,6 @@ const PROTO_ROOT: &str = "proto";
 const PROTOS: &[&str] = &[
     "proto/core/v1/message.proto",
     "proto/crypto/v1/envelope.proto",
-    "proto/crypto/v1/encrypted.proto",
     "proto/device/v1/insight.proto",
     "proto/device/v1/urban.proto",
     "proto/sensor/v1/measurement.proto",
@@ -109,7 +108,6 @@ fn main() {
     // Private (encrypted) sections and batches are not produced by this SDK:
     // they are not generated, and decoding skips them as unknown fields.
     for path in [
-        ".crypto.v1.Encrypted",
         ".crypto.v1.SignedEnvelopeBatch",
         ".device.v1.Urban.private",
         ".device.v1.Insight.private",

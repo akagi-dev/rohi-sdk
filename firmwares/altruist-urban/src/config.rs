@@ -48,7 +48,9 @@
 //! `WifiConfig` section (and once at boot, from the stored value) it publishes
 //! the value to the Wi-Fi manager as the desired configuration, synchronously,
 //! in the same task step as the commit. The `Identity` section works the same
-//! way: the owner updates the signer in the commit step. There is no `.await` between commit and
+//! way: the owner updates the signer in the commit step. So does
+//! `ConnectivityConfig`: the telemetry task is signalled and restarts with the
+//! new values. There is no `.await` between commit and
 //! publication, so a caller that is cancelled while waiting for the response
 //! cannot leave a stored configuration unknown to the runtime.
 //!
@@ -72,11 +74,12 @@ use rohi_config::{
 use rohi_config_esp::esp::{PartitionError, config_storage, esp_storage::FlashStorage};
 use rohi_config_esp::{EspConfigStorage, EspStorageError};
 
+use rohi_connectivity::ConnectivityConfig;
 use rohi_identity::Identity;
 use rohi_net::{WifiConfig, WifiHandle};
 
-use crate::identity;
 use crate::tasks::RawMutex;
+use crate::{connectivity, identity};
 
 /// Configuration storage of the Altruist Urban.
 pub type Storage = EspConfigStorage<FlashStorage<'static>>;
@@ -503,7 +506,8 @@ pub fn maintenance() -> StorageMaintenance {
 
 /// Publishes a just committed (or removed) section to the runtime that
 /// depends on it: `WifiConfig` becomes the desired Wi-Fi configuration,
-/// `Identity` becomes the signing identity. Synchronous on purpose, see the
+/// `Identity` becomes the signing identity, `ConnectivityConfig` is handed to
+/// the telemetry task. Synchronous on purpose, see the
 /// module documentation. Other sections have no runtime consumer.
 fn publish_committed(wifi: WifiHandle<'static, RawMutex>, id: SectionId, blob: Option<&Blob>) {
     if id == Identity::ID {
@@ -513,6 +517,21 @@ fn publish_committed(wifi: WifiHandle<'static, RawMutex>, id: SectionId, blob: O
                 Ok(identity) => identity::set_signer(Some(identity.signer())),
                 Err(error) => warn!("Identity: committed section cannot be decoded: {}", error),
             },
+        }
+        return;
+    }
+    if id == ConnectivityConfig::ID {
+        match blob {
+            None => connectivity::publish(None),
+            Some(blob) => {
+                match ConnectivityConfig::decode_versioned(blob.version, blob.payload()) {
+                    Ok(config) => connectivity::publish(Some(config)),
+                    Err(error) => warn!(
+                        "Connectivity: committed configuration cannot be decoded: {}",
+                        error
+                    ),
+                }
+            }
         }
         return;
     }

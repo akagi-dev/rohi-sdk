@@ -5,8 +5,9 @@ Shows the stored configuration. Secrets, such as the Wi-Fi password, are never s
 Usage: rohi config [OPTIONS] [COMMAND]
 
 Commands:
-  wifi  Show the Wi-Fi configuration
-  help  Print this message or the help of the given subcommand(s)
+  wifi          Show the Wi-Fi configuration
+  connectivity  Show the telemetry (connectivity) configuration
+  help          Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help
@@ -42,3 +43,4 @@ Connection:
 Examples:
   rohi config
   rohi config wifi
+  rohi config connectivity
