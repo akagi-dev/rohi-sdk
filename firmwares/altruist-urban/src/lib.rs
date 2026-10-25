@@ -39,6 +39,7 @@ compile_error!(
 
 /// Persistent configuration service (single owner task and handle).
 pub mod config;
+pub mod connectivity;
 /// Local control plane over BLE.
 pub mod control;
 /// Device identity runtime.

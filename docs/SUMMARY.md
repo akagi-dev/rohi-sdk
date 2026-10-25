@@ -30,6 +30,7 @@
 - [Control plane (BLE)](sdk/control.md)
 - [Device identity](sdk/identity.md)
 - [Time service](sdk/time.md)
+- [Telemetry (rohi-connectivity)](sdk/connectivity.md)
 
 # Guides
 

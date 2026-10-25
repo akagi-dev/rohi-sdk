@@ -15,11 +15,13 @@ Every production workspace crate, what it is for, whether it is portable and the
 | `rohi-net` | Wi-Fi control plane, IP data plane (DNS, TCP, UDP), BLE transport traits, `WifiConfig` section | portable | `no_std` | `WifiManager`, `WifiHandle`, `WifiBackend`, `NetworkHandle`, `IpBackend`, `UdpSocket`, `NetError`, `BleTransport` | `rohi-config`, Embassy sync, `embedded-nal-async`, `embedded-io-async` | Radio drivers, the IP stack, control protocol |
 | `rohi-time` | Synchronized wall-clock time: `TimeService`, `TimeSource`, validation, background `Synchronizer` | portable | `no_std` | `TimeService`, `TimeSource`, `TimeSample`, `UnixTime`, `TimeStatus`, `Synchronizer` | `rohi-hal` (monotonic `Clock`, `Backoff`), Embassy sync | Network or clock hardware, any concrete source |
 | `rohi-time-ntp` | NTP/SNTP `TimeSource` over the IP data plane | portable | `no_std` | `NtpTimeSource`, `NtpConfig` | `rohi-time`, `rohi-net`, `sntpc` | The global concept of time, the UDP stack |
+| `rohi-connectivity-proto` | Bounded bindings of `airalab/connectivity-protocol` (vendored, pinned revision) | portable | `no_std` | `core_v1`, `crypto_v1`, `device_v1`, `sensor_v1`, `limits`, `signing_preimage` | `micropb` | Signing, mapping, transports |
+| `rohi-connectivity` | Telemetry: snapshot → signed envelope frame, bounded outbox, retry, HTTP transport, `ConnectivityConfig` section | portable | `no_std` | `UrbanEncoder`, `EnvelopeBuilder`, `EnvelopeFrame`, `EnvelopeTransport`, `HttpTransport`, `ConnectivityService`, `UtcClock`, `NonceSource`, `FrameSigner` | `rohi-connectivity-proto`, `rohi-hal`, `rohi-identity`, `rohi-net`, `rohi-time` | Private keys, Wi-Fi lifecycle, sensors, backend logic |
 | `rohi-net-esp` | ESP backend of `rohi-net` | ESP | `no_std` | `EspWireless`, `EspWifi`, `EspIp`, `EspBle`, `NetResources`, `BleResources`, `wireless_heap!` | `rohi-net`, `esp-radio`, `embassy-net`, TrouBLE | Product resource sizes, control protocol |
 | `rohi-control-proto` | Bounded protobuf schema of the control protocol | portable | `no_std` | generated messages, `PROTOCOL_VERSION`, `limits` | `micropb` | Transport, behaviour |
 | `rohi-control` | Control dispatcher, capabilities, authorization | portable | `no_std` | `Controller`, `ControlServices`, `Capabilities`, `AuthorizationPolicy` | `rohi-control-proto`, `rohi-hal`, `rohi-net`, `rohi-identity`, `rohi-time` | BLE, stores, the radio |
 | `rohi-control-ble` | GATT binding: UUIDs, framing, fragmentation, control loop | portable | `no_std` | `ControlBle`, `frame` | `rohi-control`, `rohi-net` | The BLE stack |
-| `altruist-urban` (firmware) | Product composition, tasks, resource budget | product | `no_std` | `config`, `net`, `control`, `time`, `resources`, `tasks` | everything above | Reusable library code |
+| `altruist-urban` (firmware) | Product composition, tasks, resource budget | product | `no_std` | `config`, `net`, `control`, `time`, `connectivity`, `resources`, `tasks` | everything above | Reusable library code |
 | `rohi-examples` (`examples/`) | One hardware example per sensor and a config self-test | product | `no_std` | binaries | `rohi-hal(-esp)`, `rohi-config(-esp)` | |
 | `rohi` (`tools/rohi`) | Desktop client library and CLI over BLE | desktop | `std` | `Device`, `Session`, `BleLink` | `rohi-control-ble::frame`, `rohi-control-proto`, `rohi-net` (types), `btleplug` | Anything that runs on the device |
 
@@ -33,6 +35,7 @@ rohi-control ──► rohi-net, rohi-hal, rohi-identity   (types only: WifiConf
 rohi-net ──► rohi-config                   (owns the WifiConfig section)
 rohi-identity ──► rohi-config              (owns the Identity section)
 rohi-time-ntp ──► rohi-time, rohi-net      (a source: DNS + UDP samples; rohi-time never depends on it)
+rohi-connectivity ──► rohi-connectivity-proto, rohi-hal, rohi-identity, rohi-net, rohi-time   (snapshots, signing, NetworkHandle, UtcClock)
 rohi-control ──► rohi-time                 (types only: TimeStatus, UnixTime)
 ```
 

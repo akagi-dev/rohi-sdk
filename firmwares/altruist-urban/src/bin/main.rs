@@ -31,6 +31,7 @@ use log::{error, info};
 use static_cell::StaticCell;
 
 use altruist_urban::config;
+use altruist_urban::connectivity::{self, connectivity_task};
 use altruist_urban::control::{self, BLE_RESOURCES, UrbanControlServices, ble_task, control_task};
 use altruist_urban::identity;
 use altruist_urban::net::{self, net_runner_task, wifi_task};
@@ -96,10 +97,15 @@ async fn main(spawner: Spawner) -> ! {
     match net::start(&mut wireless) {
         Ok((backend, runner, network)) => {
             // `network` is the IP data plane (DNS, TCP, UDP): the time service
-            // uses it for NTP; no uplink opens connections yet.
+            // uses it for NTP and the telemetry uplink for HTTP.
             spawner.spawn(net_runner_task(runner).unwrap());
             spawner.spawn(wifi_task(backend).unwrap());
             spawner.spawn(ntp_task(network).unwrap());
+            // Telemetry reads snapshots only: it can neither delay nor stop
+            // the sensors, whatever the uplink does.
+            if let Some(connectivity) = connectivity::load_config(config).await {
+                spawner.spawn(connectivity_task(network, store::handle(), connectivity).unwrap());
+            }
             wifi_configured = net::handle().is_configured();
             capabilities = capabilities
                 | Capabilities::WIFI_SCAN

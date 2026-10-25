@@ -127,9 +127,30 @@ impl IdentityHandle {
     /// Ed25519 signature over exactly `message`, or
     /// [`IdentityError::NotProvisioned`].
     pub async fn sign(&self, message: &[u8]) -> Result<Signature, IdentityError> {
-        SIGNER.lock(|cell| match cell.borrow().as_ref() {
+        match SIGNER.lock(|cell| cell.borrow().clone()) {
             Some(signer) => signer.sign(message),
             None => Err(IdentityError::NotProvisioned),
+        }
+    }
+}
+
+/// The signing identity as seen by the telemetry service: the identity may be
+/// provisioned or erased at any time, and only signatures leave this module.
+#[derive(Clone, Copy, Default)]
+pub struct StaticSigner;
+
+impl rohi_connectivity::FrameSigner for StaticSigner {
+    fn sensor_id(&self) -> Result<PublicKey, rohi_connectivity::SignError> {
+        SIGNER.lock(|cell| match cell.borrow().as_ref() {
+            Some(signer) => Ok(signer.public_key()),
+            None => Err(rohi_connectivity::SignError::NotProvisioned),
         })
+    }
+
+    fn sign_payload(&self, message: &[u8]) -> Result<Signature, rohi_connectivity::SignError> {
+        match SIGNER.lock(|cell| cell.borrow().clone()) {
+            Some(signer) => Signer::sign(&signer, message).map_err(Into::into),
+            None => Err(rohi_connectivity::SignError::NotProvisioned),
+        }
     }
 }
