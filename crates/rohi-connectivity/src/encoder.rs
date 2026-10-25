@@ -305,6 +305,9 @@ fn deci_pascal(pascal: f32) -> Option<u32> {
 }
 
 fn centi_percent(percent: f32) -> Option<u32> {
+    if !percent.is_finite() {
+        return None;
+    }
     let v = scaled(percent.clamp(0.0, 100.0), 100.0)?;
     Some(v as u32)
 }
