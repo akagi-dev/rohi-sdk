@@ -52,7 +52,7 @@ const LIMITS: &[(&str, usize, &str)] = &[
     ),
     (
         "MAX_VARIANT_LEN",
-        10,
+        16,
         "Maximum length of an enum variant, in bytes.",
     ),
     (

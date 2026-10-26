@@ -81,3 +81,41 @@ metric the telemetry schema can rely on; an A-weighted level would be added as a
 name.
 
 Raw audio is never stored: a 256-sample stack chunk plus the 8 KiB DMA ring buffer (≈128 ms) are the only buffers.
+
+## Status and the control plane
+
+The firmware keeps the strongly typed `rohi-hal` model. Only at the control boundary does it become the generic
+`sensors` [service](service.md) (`SensorsService` over a `MeasurementHandle`): every measurement of a present sensor is a
+status field named `<sensor>.<measurement>` in the **canonical unit** of its type, and is absent until the sensor has
+delivered a value. Observations of one quantity from different sensors are never merged. Every request takes a fresh
+snapshot, so values and states are correct at request time.
+
+```console
+$ rohi status sensors
+Service:  sensors
+State:    running
+Health:   ok
+Ready:    yes
+Since:    2h 14m
+
+bmx280.temperature  21.5 C
+bmx280.humidity     45 %
+bmx280.pressure     100800 Pa
+scd4x.co2           640 ppm
+sds011.pm2_5        6.5 ug/m3
+```
+
+| Field | Unit | Field | Unit |
+|-------|------|-------|------|
+| `bmx280.temperature` | °C | `zmod4510.o3`, `zmod4510.no2` | ppb |
+| `bmx280.humidity` | % RH | `zmod4510.aqi_fast`, `zmod4510.aqi_epa` | index |
+| `bmx280.pressure` | Pa | `ags3871.co` | ppm |
+| `scd4x.co2` | ppm | `radsens.radiation` | µSv/h |
+| `scd4x.temperature`, `scd4x.humidity` | °C, % RH | `radsens.pulses` | pulses |
+| `sds011.pm2_5`, `sds011.pm10` | µg/m³ | `microphone.average`, `microphone.maximum` | dB |
+
+Service state: `disabled` when no sensor is detected (not an error), `starting` while every present sensor is
+initializing or warming up, otherwise `running` with health `ok`, `degraded` when some sensor is degraded or failed and
+`error` when all present sensors failed. A sensor in `error` or `degraded` state is an active issue with the code
+`<sensor>_error` or `<sensor>_degraded` (at most four are listed). The service is not essential for the device. The
+status schema has at most 20 fields.

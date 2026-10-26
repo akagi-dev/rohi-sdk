@@ -89,6 +89,25 @@ Other behaviour:
 - Scans never abort or delay reconnection: a scan requested while connecting is served after the attempt, and a scan
   during the backoff wait or while connected does not restart the backoff or refresh timer.
 
+### Wi-Fi in the service pipeline
+
+`rohi-net` exposes Wi-Fi to clients through the generic [service pipeline](service.md), with no protocol of its own:
+
+| Plane | What | `rohi` |
+|-------|------|--------|
+| config section `wifi` | `ssid` (text, 1 to 32 bytes) and `password` (write-only secret, 8 to 64 bytes, optional: unset means an open network) | `rohi config set wifi ssid=office password=-` |
+| service `wifi` | state, `ssid`, `rssi` (dBm), `ip`, `gateway`, `dns` | `rohi status wifi` |
+| action `scan` | one record per network, strongest first: `ssid`, `rssi`, `channel`, `security` | `rohi action run wifi scan` |
+| actions `reconnect`, `disconnect` (privileged) | drop the link and connect again / stay idle | `rohi action run wifi reconnect` |
+
+The service maps `WifiState` to lifecycle and health: `NotConfigured` is `disabled` (not an error), `Idle` is `stopped`,
+`Scanning` and `Connecting` are `starting`, `Connected` is `running`/`ok`/ready, `Disconnected` is `running`/`degraded`
+(not ready) and `Error` is `failed`/`error`. The last error is the active issue (`authentication_failed`,
+`network_not_found`, `dhcp_failed`, `association_failed`, `disconnected`, `driver_error`, ...). A scan is bounded by a
+timeout given to `WifiService` (20 s in the firmware) and lists at most six networks; networks whose name is not UTF-8 are not
+listed. Storing a configuration means it is stored and handed to the manager, not that the access point was reached: watch
+`rohi status wifi`. SSIDs that are not UTF-8 keep working but are not shown by `config get`.
+
 ## IP data plane
 
 `NetworkHandle<'a, B: IpBackend>` is a copyable handle to the IP stack. It implements the standard embedded Rust

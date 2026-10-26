@@ -262,6 +262,7 @@ fn a_rohi_frame_is_accepted_by_the_robins_ingress() {
             ServiceConfig::new(7, 60_000),
             &shared,
             Fixed(snapshot()),
+            &rohi_location::NoLocation,
             &uptime,
             &utc,
             &signer,

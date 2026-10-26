@@ -51,8 +51,8 @@ sensor tasks ─► SensorEvent ─► EVENTS (bounded) ─► store task ─►
 
 BLE write ─► rohi-net-esp (EspBle, bounded RX) ─► rohi-control-ble (reassemble) ─► Controller
           ◄─ bounded TX ◄─ fragment ◄─ response ◄─────────────────────────────────┘
-                                           │ ControlServices (firmware adapter)
-                      MeasurementHandle · ConfigHandle · WifiHandle
+                                           │ ControlBackend (registries of rohi-service)
+                  config sections (ConfigHandle) · services (MeasurementHandle, WifiHandle, ...)
 
 ConfigHandle::set(WifiConfig) ─► config owner task ─ commit ─► publish desired Wi-Fi config ─► WifiManager
                                                                                                  │

@@ -17,6 +17,7 @@ use rohi_connectivity::ConnectivityConfig;
 use rohi_control::{ControlBackend, Controller, Device as BackendDevice, DeviceInfo, OpenPolicy};
 use rohi_control_ble::ControlBle;
 use rohi_identity::{Identity, IdentityService, IdentityStore, IdentityStoreError, PublicKey};
+use rohi_location::{LocationConfig, LocationService, LocationShared};
 use rohi_net::wifi::WifiConfig;
 use rohi_net::{BleConnectionInfo, BleError, BleState, BleTransport};
 use rohi_service::{
@@ -297,12 +298,38 @@ impl IdentityStore for MemIdentity {
     }
 }
 
+/// The location section: publishes to the shared location like the firmware.
+#[derive(Clone)]
+pub struct LocationStore {
+    pub mem: Mem<LocationConfig>,
+    pub shared: Rc<LocationShared<NoopRawMutex>>,
+}
+
+impl SectionStore<LocationConfig> for LocationStore {
+    async fn load(&self) -> Result<Option<LocationConfig>, StoreError> {
+        self.mem.load().await
+    }
+
+    async fn store(&self, config: &LocationConfig) -> Result<(), StoreError> {
+        self.mem.store(config).await?;
+        self.shared.publish_configured(Some(config));
+        Ok(())
+    }
+
+    async fn remove(&self) -> Result<(), StoreError> {
+        self.mem.remove().await?;
+        self.shared.publish_configured(None);
+        Ok(())
+    }
+}
+
 /// The state of the fake device, kept by the test so it can look at it after
 /// the command ran.
 pub struct Bench {
     pub wifi: Mem<WifiConfig>,
     pub telemetry: Mem<ConnectivityConfig>,
     pub gadget: Mem<Gadget>,
+    pub location: LocationStore,
     pub identity: MemIdentity,
     pub radio: Radio,
 }
@@ -313,6 +340,10 @@ impl Bench {
             wifi: Mem::new(Rc::default(), false),
             telemetry: Mem::new(Rc::default(), false),
             gadget: Mem::new(Rc::default(), true),
+            location: LocationStore {
+                mem: Mem::new(Rc::default(), false),
+                shared: Rc::default(),
+            },
             identity: MemIdentity::default(),
             radio: Radio::default(),
         };
@@ -321,7 +352,10 @@ impl Bench {
     }
 
     pub fn writes(&self) -> u32 {
-        self.wifi.writes.get() + self.telemetry.writes.get() + self.gadget.writes.get()
+        self.wifi.writes.get()
+            + self.telemetry.writes.get()
+            + self.gadget.writes.get()
+            + self.location.mem.writes.get()
     }
 }
 
@@ -335,11 +369,13 @@ type Sections = (
     ManagedSection<WifiConfig, Mem<WifiConfig>, NoopRawMutex>,
     ManagedSection<ConnectivityConfig, Mem<ConnectivityConfig>, NoopRawMutex>,
     ManagedSection<Gadget, Mem<Gadget>, NoopRawMutex>,
+    ManagedSection<LocationConfig, LocationStore, NoopRawMutex>,
 );
 
 type Services<'a> = (
     Tracked<&'a Radio, NoopRawMutex>,
     Tracked<IdentityService<MemIdentity>, NoopRawMutex>,
+    Tracked<LocationService<'a, NoopRawMutex>, NoopRawMutex>,
 );
 
 pub type Backend<'a> = BackendDevice<Sections, Services<'a>>;
@@ -359,10 +395,12 @@ pub fn backend(bench: &Bench) -> Backend<'_> {
             ManagedSection::new(bench.wifi.clone()),
             ManagedSection::new(bench.telemetry.clone()),
             ManagedSection::new(bench.gadget.clone()),
+            ManagedSection::new(bench.location.clone()),
         ),
         (
             Tracked::new(&bench.radio),
             Tracked::new(IdentityService(bench.identity.clone())),
+            Tracked::new(LocationService(&bench.location.shared)),
         ),
     )
 }

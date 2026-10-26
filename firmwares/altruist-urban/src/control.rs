@@ -39,6 +39,7 @@ use rohi_control_ble::ControlBle;
 use rohi_hal::SensorsService;
 use rohi_hal_esp::EmbassyClock;
 use rohi_identity::{Identity, IdentityService, IdentityStore, IdentityStoreError, PublicKey};
+use rohi_location::{LocationConfig, LocationService};
 use rohi_net::wifi::{WifiConfig, WifiService};
 use rohi_service::{ManagedSection, SectionStore, StoreError, Tracked};
 use rohi_time::TimeStatusService;
@@ -49,7 +50,7 @@ use crate::identity::IdentityHandle;
 use crate::resources::{BleResources, BleRunner, BleTransport};
 use crate::tasks::RawMutex;
 use crate::tasks::store;
-use crate::{connectivity, net, time};
+use crate::{connectivity, location, net, time};
 
 /// Upper bound of a Wi-Fi scan requested over the control link.
 const WIFI_SCAN_TIMEOUT_MS: u32 = 20_000;
@@ -130,12 +131,17 @@ fn identity_error(error: ConfigError) -> IdentityStoreError {
 type Section<C> = ManagedSection<C, Stored<C>, RawMutex>;
 
 /// The config sections of the device.
-pub type ConfigSections = (Section<WifiConfig>, Section<ConnectivityConfig>);
+pub type ConfigSections = (
+    Section<WifiConfig>,
+    Section<ConnectivityConfig>,
+    Section<LocationConfig>,
+);
 
 /// The services of the device.
 pub type Services = (
     Tracked<WifiService<'static, RawMutex, Delay>, RawMutex>,
     Tracked<ConnectivityStatusService<'static, RawMutex>, RawMutex>,
+    Tracked<LocationService<'static, RawMutex>, RawMutex>,
     Tracked<TimeStatusService<'static, EmbassyClock, CriticalSectionRawMutex>, RawMutex>,
     Tracked<SensorsService<'static, RawMutex>, RawMutex>,
     Tracked<IdentityService<StoredIdentity>, RawMutex>,
@@ -159,13 +165,16 @@ pub fn device(config: ConfigHandle, identity: IdentityHandle) -> UrbanDevice {
         (
             ManagedSection::new(Stored::new(config)),
             ManagedSection::new(Stored::new(config)),
+            ManagedSection::new(Stored::new(config)),
         ),
         (
             Tracked::new(WifiService::new(net::handle(), Delay, WIFI_SCAN_TIMEOUT_MS)),
             Tracked::new(ConnectivityStatusService::new(
                 connectivity::shared(),
                 connectivity::effective_config,
+                location::shared(),
             )),
+            Tracked::new(LocationService(location::shared())),
             Tracked::new(TimeStatusService(time::service())),
             Tracked::new(SensorsService(store::handle())),
             Tracked::new(IdentityService(StoredIdentity(identity))),

@@ -34,6 +34,7 @@ rohi-connectivity = { path = "crates/rohi-connectivity" }
 rohi-control = { path = "crates/rohi-control" }
 rohi-control-ble = { path = "crates/rohi-control-ble" }
 rohi-identity = { path = "crates/rohi-identity" }
+rohi-location = { path = "crates/rohi-location" }
 
 # ESP. Versions are pinned here; the chip (esp32c3 / esp32c6) is selected by
 # the firmware features, never globally.

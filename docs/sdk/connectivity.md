@@ -50,7 +50,12 @@ measurement is never sent. Every `Urban` sensor message carries one measurement,
 | SDS011 PM2.5 / PM10 | `SDS011.pm25` / `pm10` | µg/m³ → 0.1 µg/m³ |
 | Microphone average / maximum | `ICS43434.noise_avg` / `noise_max` | dB → whole dB |
 | BMP280 (no humidity channel), SCD4x, ZMOD4510, AGS3871, RadSens | — | omitted |
-| GPS | — | not produced (no GPS observation in the store) |
+| Location of the device ([`rohi-location`](location.md)) | `GPS` (`lat`, `lon`, `height_m`) | WGS84 degrees; first entry; height 0 when unknown; not counted as a measurement |
+
+The location is context, not a measurement: it is added as the first entry when the device knows where it is, a frame
+with a location but no valid measurement is still not sent, and a position that is not a finite number is left out and
+counted as out of range. Without a location the frame is still sent without the entry
+(`Diagnostics::frames_without_location`) and the service is reported as degraded, see [Status](#status).
 
 A sensor without an unambiguous representation is **omitted, never relabeled**; omissions are counted
 (`Diagnostics::measurements_unsupported`). Values that cannot be represented (NaN, infinite, negative where the field
@@ -131,16 +136,37 @@ snapshot, encode, sign), queues it in the bounded in-memory `Outbox` (no allocat
 `host` (letters, digits, `.`, `-`; written into the `Host` header, so no spaces or line breaks) and `port`. The
 CBOR layout is pinned by `cbor_encoding_is_stable`.
 
-The configuration is edited over the [control plane](control.md#configuration) (`UpdateConfig`, capability
-`CONNECTIVITY`), for example with `rohi connectivity set --host ingress.example.org --node-id 42 --enable` and read with
-`rohi config connectivity`. A change is applied live: the firmware's configuration owner task publishes every commit
+The configuration is the `connectivity` [config section](service.md#config-sections), edited with the generic
+`rohi config` commands, for example `rohi config set connectivity host=ingress.example.org node_id=42 enabled=true`
+and read with `rohi config get connectivity`. A change is applied live: the firmware's configuration owner task publishes every commit
 or removal of the section to the telemetry task, which stops the running service and starts a new one with the new
 values (or stays stopped when the configuration is disabled or invalid). The outbox of the replaced service is dropped
 and the published status restarts from `Starting`.
 
 In `altruist-urban`, when no section is stored the build-time defaults apply: the environment variables
 `ROHI_CONNECTIVITY_HOST`, `ROHI_CONNECTIVITY_PORT`, `ROHI_CONNECTIVITY_NODE_ID` and `ROHI_CONNECTIVITY_INTERVAL_S`
-at compile time. Without a host, telemetry is disabled. Removing the stored section (`clear_connectivity`) returns to these defaults.
+at compile time. Without a host, telemetry is disabled. Removing the stored section (`rohi config reset connectivity`) returns to these defaults.
+
+## Status
+
+The `connectivity` [service](../getting-started/services.md) reports the state of `ConnectivityShared` and the counters
+without any cooperation from the sending task:
+
+| State of the sender | Service state / health / ready | Issue code |
+|---|---|---|
+| telemetry disabled by the effective configuration | `disabled` / unknown / no | |
+| `Starting` | `starting` / unknown / no | |
+| `Idle` | `running` / **ok** / yes, **degraded** while no location is set | `no_location` |
+| `WaitingForIdentity` | `running` / degraded / no | `no_identity` |
+| `WaitingForUtc` | `running` / degraded / no | `no_utc_time` |
+| `Backoff(error)` | `running` / degraded / no | `network_unavailable`, `dns_failed`, `connect_failed`, `connection_timeout`, `io_error`, `bad_response`, `delivery_rejected` |
+| `Unauthorized` | `running` / **error** / no | `unauthorized` |
+
+Status fields: `frames_created`, `frames_delivered`, `send_retries`, `frames_rejected`, `queue_depth`, `host` and
+`port` (the ingress of the running configuration) and `frames_without_location`. Without a location an otherwise healthy
+service is `degraded` with the warning `no_location` (and so is the device health), because the frames are sent but
+incomplete; `rohi config set location latitude=.. longitude=..` fixes it, see [Location](location.md). The service is not
+essential for the device.
 
 ## Limits
 

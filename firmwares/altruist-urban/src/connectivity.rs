@@ -53,7 +53,7 @@ use crate::config::{ConfigHandle, ServiceError};
 use crate::identity::StaticSigner;
 use crate::resources::{CONNECTIVITY_OUTBOX_DEPTH, Ip};
 use crate::tasks::RawMutex;
-use crate::time;
+use crate::{location, time};
 
 static SHARED: ConnectivityShared<RawMutex> = ConnectivityShared::new();
 
@@ -185,6 +185,7 @@ async fn serve(
         ServiceConfig::new(config.node_id, config.interval_ms()),
         &SHARED,
         measurements,
+        location::shared(),
         EmbassyClock,
         time::service(),
         &signer,

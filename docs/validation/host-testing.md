@@ -46,7 +46,7 @@ found in one of those, add a host test for the logic part and record the hardwar
 | `WifiBackend` | mock in `rohi-net/src/wifi/manager/tests.rs` |
 | `IpBackend` | `rohi_net::testing::FakeIp` (feature `testing`) |
 | `BleTransport` | scripted fake in `rohi-control-ble` tests; in-memory transport in `tools/rohi` |
-| `ControlServices` | fakes in `rohi-control`, `rohi-control-ble` and `tools/rohi` tests |
+| `ControlBackend` / registries | `Device` built from fake services in `rohi-control` and `rohi-control-ble` tests; the real sections and services in `tools/rohi` tests |
 | sensor buses and delays | `MockI2c`, `RecordingDelay`, `FixedClock` in `rohi-hal` |
 
 ## Cancellation tests

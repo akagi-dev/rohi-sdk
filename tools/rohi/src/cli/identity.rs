@@ -27,7 +27,7 @@ use super::args::{IdentityAction, Provision};
 use super::diagnostic::CliError;
 use super::dto;
 use super::{Ctx, Prepared};
-use crate::model::{FieldValue, Value};
+use crate::model::{FieldValue, ServiceState, Value};
 use crate::{ClientTransport, DerivedIdentity, Device, Error, PublicKey, derive_identity};
 
 /// SS58 network prefix of Robonomics.
@@ -68,6 +68,13 @@ pub async fn run<T: ClientTransport>(
         None => {
             let schema = device.service_schema(SERVICE).await?;
             let status = device.service_status(SERVICE).await?;
+            if status.summary.state == ServiceState::Failed {
+                return Err(Error::ServiceFailed {
+                    service: SERVICE.to_owned(),
+                    issue: status.issues.first().map(|issue| issue.message.clone()),
+                }
+                .into());
+            }
             let key = schema
                 .fields
                 .iter()

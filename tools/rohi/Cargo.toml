@@ -60,6 +60,7 @@ chrono = { workspace = true, optional = true }
 rohi-control.workspace = true
 rohi-service.workspace = true
 rohi-connectivity.workspace = true
+rohi-location.workspace = true
 embassy-sync.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "time", "sync"] }
 

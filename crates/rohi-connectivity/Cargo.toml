@@ -18,6 +18,7 @@ rohi-hal.workspace = true
 rohi-identity.workspace = true
 rohi-config.workspace = true
 rohi-service.workspace = true
+rohi-location.workspace = true
 rohi-net.workspace = true
 rohi-time.workspace = true
 minicbor.workspace = true

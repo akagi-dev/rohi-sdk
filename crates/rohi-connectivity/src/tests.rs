@@ -469,6 +469,22 @@ fn a_full_snapshot_fits_the_default_frame() {
     assert!(frame.len() <= limits::MAX_ENVELOPE_LEN);
 }
 
+#[test]
+fn a_full_snapshot_with_the_widest_location_fits_the_default_frame() {
+    let snapshot = snapshot_of(&[bme280(100), sds011(100), microphone(100)], 200);
+    let location = rohi_location::Location {
+        latitude: -89.999_999_999_9,
+        longitude: -179.999_999_999_9,
+        height_m: Some(-999.999_999_9),
+        source: rohi_location::LocationSourceKind::Configured,
+    };
+    let encoded =
+        UrbanEncoder::encode_snapshot_at(&snapshot, u64::MAX, u64::MAX, Some(&location)).unwrap();
+    let signer = MockSigner::default();
+    let frame = frame(&signer, &mut CountingNonce::default(), encoded.as_bytes());
+    assert!(frame.len() <= limits::MAX_ENVELOPE_LEN, "{}", frame.len());
+}
+
 // --- Outbox ------------------------------------------------------------------
 
 #[test]
@@ -560,4 +576,59 @@ fn sign_trait_is_object_compatible_with_the_mock() {
         Err(SignError::NotProvisioned)
     );
     assert!(Signer::sign(&signer, b"x").is_ok());
+}
+
+fn berlin() -> rohi_location::Location {
+    rohi_location::Location {
+        latitude: 52.52,
+        longitude: 13.405,
+        height_m: None,
+        source: rohi_location::LocationSourceKind::Configured,
+    }
+}
+
+#[test]
+fn the_location_is_the_first_entry_and_not_a_measurement() {
+    let snapshot = snapshot_of(&[bme280(100)], 110);
+    let located = UrbanEncoder::encode_snapshot_at(&snapshot, 0, 1, Some(&berlin())).unwrap();
+    let plain = UrbanEncoder::encode_snapshot(&snapshot, 0, 1).unwrap();
+    // 3 BME280 values, the location is context and not counted.
+    assert_eq!(located.stats().emitted, 3);
+    assert_eq!(plain.stats().emitted, 3);
+    assert!(located.stats().location_included);
+    assert!(!plain.stats().location_included);
+    assert!(located.as_bytes().len() > plain.as_bytes().len());
+
+    let (message, _) = UrbanEncoder::message_at(&snapshot, 0, 1, Some(&berlin())).unwrap();
+    let Some(Message_::Payload::Urban(urban)) = message.payload else {
+        panic!("not an urban payload");
+    };
+    let Some(Sensor::Gps(gps)) = &urban.public[0].sensor else {
+        panic!("the first entry is the location");
+    };
+    assert_eq!((gps.lat, gps.lon), (52.52, 13.405));
+    // The schema says 0 when the height is not known.
+    assert_eq!(gps.height_m, 0.0);
+    assert!(matches!(urban.public[1].sensor, Some(Sensor::Bme280(_))));
+}
+
+#[test]
+fn a_location_alone_is_not_worth_a_frame() {
+    let snapshot = snapshot_of(&[], 110);
+    assert_eq!(
+        UrbanEncoder::encode_snapshot_at(&snapshot, 0, 1, Some(&berlin())).err(),
+        Some(EncodeError::NothingToSend)
+    );
+}
+
+#[test]
+fn a_location_that_is_not_a_number_is_left_out_and_counted() {
+    let snapshot = snapshot_of(&[bme280(100)], 110);
+    let broken = rohi_location::Location {
+        latitude: f64::NAN,
+        ..berlin()
+    };
+    let encoded = UrbanEncoder::encode_snapshot_at(&snapshot, 0, 1, Some(&broken)).unwrap();
+    assert!(!encoded.stats().location_included);
+    assert_eq!(encoded.stats().omitted_out_of_range, 1);
 }

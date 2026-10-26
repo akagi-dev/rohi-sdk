@@ -37,7 +37,10 @@
 //! | Microphone average / maximum | `ICS43434.noise_avg` / `noise_max` | dB → whole dB |
 //! | BMP280 (no humidity channel), SCD4x, ZMOD4510, AGS3871, RadSens | none | omitted |
 //!
-//! The Rohi store has no GPS observation, so no `GPS` entry is produced.
+//! The location of the device (see `rohi-location`) is the `GPS` entry in
+//! front of the sensors when one is known: WGS84 degrees, height 0 when it is
+//! not known (the schema says so). It is not a measurement: a frame with a
+//! location but no valid measurement is still not sent.
 
 use core::fmt;
 
@@ -46,7 +49,7 @@ use rohi_connectivity_proto::core_v1::{Message, Message_, Meta};
 use rohi_connectivity_proto::device_v1::{Urban, UrbanSensor, UrbanSensor_};
 use rohi_connectivity_proto::limits::MAX_MESSAGE_LEN;
 use rohi_connectivity_proto::sensor_v1::{
-    BME280, BME280_, Humidity, ICS43434, ICS43434_, NoiseLevel, PM10, PM25, Pressure, SDS011,
+    BME280, BME280_, GPS, Humidity, ICS43434, ICS43434_, NoiseLevel, PM10, PM25, Pressure, SDS011,
     SDS011_, Temperature,
 };
 use rohi_connectivity_proto::{EncodeError as WireError, encode};
@@ -54,6 +57,7 @@ use rohi_hal::{
     Bmx280Measurements, Measurement, MeasurementState, MeasurementsSnapshot, NoiseMeasurements,
     Sds011Measurements,
 };
+use rohi_location::Location;
 
 /// Counters of one encoding.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +70,8 @@ pub struct EncodeStats {
     pub omitted_unsupported: u32,
     /// Valid measurements whose value cannot be represented.
     pub omitted_out_of_range: u32,
+    /// Whether the frame carries the location of the device.
+    pub location_included: bool,
 }
 
 /// The message could not be produced.
@@ -113,13 +119,28 @@ impl EncodedMessage {
 pub struct UrbanEncoder;
 
 impl UrbanEncoder {
-    /// Builds the message of `snapshot`, without serializing it.
+    /// Builds the message of `snapshot`, without serializing it and without a
+    /// location.
     pub fn message(
         snapshot: &MeasurementsSnapshot,
         node_id: u64,
         timestamp_ms: u64,
     ) -> Result<(Message, EncodeStats), EncodeError> {
+        Self::message_at(snapshot, node_id, timestamp_ms, None)
+    }
+
+    /// Builds the message of `snapshot` located at `location`, without
+    /// serializing it.
+    pub fn message_at(
+        snapshot: &MeasurementsSnapshot,
+        node_id: u64,
+        timestamp_ms: u64,
+        location: Option<&Location>,
+    ) -> Result<(Message, EncodeStats), EncodeError> {
         let mut builder = Builder::default();
+        if let Some(location) = location {
+            builder.location(location)?;
+        }
         let m = &snapshot.measurements;
         if let Some(bmx) = &m.bmx280 {
             builder.bmx280(bmx)?;
@@ -167,7 +188,18 @@ impl UrbanEncoder {
         node_id: u64,
         timestamp_ms: u64,
     ) -> Result<EncodedMessage, EncodeError> {
-        let (message, stats) = Self::message(snapshot, node_id, timestamp_ms)?;
+        Self::encode_snapshot_at(snapshot, node_id, timestamp_ms, None)
+    }
+
+    /// Like [`encode_snapshot`](Self::encode_snapshot), with the location of
+    /// the device when one is known.
+    pub fn encode_snapshot_at(
+        snapshot: &MeasurementsSnapshot,
+        node_id: u64,
+        timestamp_ms: u64,
+        location: Option<&Location>,
+    ) -> Result<EncodedMessage, EncodeError> {
+        let (message, stats) = Self::message_at(snapshot, node_id, timestamp_ms, location)?;
         let mut bytes = Vec::new();
         bytes
             .resize_default(MAX_MESSAGE_LEN)
@@ -186,6 +218,29 @@ struct Builder {
 }
 
 impl Builder {
+    /// The location is context, not a measurement: it is not counted as
+    /// emitted. A position that cannot be represented is left out.
+    fn location(&mut self, location: &Location) -> Result<(), EncodeError> {
+        let valid = location.latitude.is_finite()
+            && location.longitude.is_finite()
+            && location.height_m.is_none_or(f64::is_finite);
+        if !valid {
+            self.stats.omitted_out_of_range += 1;
+            return Ok(());
+        }
+        self.sensors
+            .push(UrbanSensor {
+                sensor: Some(UrbanSensor_::Sensor::Gps(GPS {
+                    lat: location.latitude,
+                    lon: location.longitude,
+                    height_m: location.height_m.unwrap_or(0.0),
+                })),
+            })
+            .map_err(|_| EncodeError::TooLarge)?;
+        self.stats.location_included = true;
+        Ok(())
+    }
+
     fn push(&mut self, sensor: UrbanSensor_::Sensor) -> Result<(), EncodeError> {
         self.sensors
             .push(UrbanSensor {

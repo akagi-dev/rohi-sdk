@@ -74,6 +74,7 @@ dependencies = [
  "rohi-hal",
  "rohi-hal-esp",
  "rohi-identity",
+ "rohi-location",
  "rohi-net",
  "rohi-net-esp",
  "rohi-service",
@@ -3759,6 +3760,7 @@ dependencies = [
  "rohi-control-ble",
  "rohi-control-proto",
  "rohi-identity",
+ "rohi-location",
  "rohi-net",
  "rohi-service",
  "rpassword",
@@ -3818,6 +3820,7 @@ dependencies = [
  "rohi-connectivity-proto",
  "rohi-hal",
  "rohi-identity",
+ "rohi-location",
  "rohi-net",
  "rohi-service",
  "rohi-time",
@@ -3924,6 +3927,18 @@ dependencies = [
  "rohi-config",
  "rohi-service",
  "zeroize",
+]
+
+[[package]]
+name = "rohi-location"
+version = "0.3.0"
+dependencies = [
+ "embassy-futures",
+ "embassy-sync 0.8.0",
+ "heapless 0.9.3",
+ "minicbor",
+ "rohi-config",
+ "rohi-service",
 ]
 
 [[package]]

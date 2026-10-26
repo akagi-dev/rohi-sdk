@@ -49,6 +49,8 @@
 //! the value to the Wi-Fi manager as the desired configuration, synchronously,
 //! in the same task step as the commit. The `Identity` section works the same
 //! way: the owner updates the signer in the commit step. So does
+//! `LocationConfig`: the shared location is updated for the telemetry frames and
+//! the `location` service. So does
 //! `ConnectivityConfig`: the telemetry task is signalled and restarts with the
 //! new values. There is no `.await` between commit and
 //! publication, so a caller that is cancelled while waiting for the response
@@ -76,10 +78,11 @@ use rohi_config_esp::{EspConfigStorage, EspStorageError};
 
 use rohi_connectivity::ConnectivityConfig;
 use rohi_identity::Identity;
+use rohi_location::LocationConfig;
 use rohi_net::{WifiConfig, WifiHandle};
 
 use crate::tasks::RawMutex;
-use crate::{connectivity, identity};
+use crate::{connectivity, identity, location};
 
 /// Configuration storage of the Altruist Urban.
 pub type Storage = EspConfigStorage<FlashStorage<'static>>;
@@ -494,6 +497,7 @@ pub fn start(
 ) -> ConfigHandle {
     let mut owner = open(flash);
     publish_stored_wifi(&mut owner, wifi);
+    publish_stored_location(&mut owner, wifi);
     spawner.spawn(config_task(&SERVICE, owner, wifi).unwrap());
     ConfigHandle { service: &SERVICE }
 }
@@ -535,6 +539,19 @@ fn publish_committed(wifi: WifiHandle<'static, RawMutex>, id: SectionId, blob: O
         }
         return;
     }
+    if id == LocationConfig::ID {
+        match blob {
+            None => location::shared().publish_configured(None),
+            Some(blob) => match LocationConfig::decode_versioned(blob.version, blob.payload()) {
+                Ok(config) => location::shared().publish_configured(Some(&config)),
+                Err(error) => warn!(
+                    "Location: committed configuration cannot be decoded: {}",
+                    error
+                ),
+            },
+        }
+        return;
+    }
     if id != WifiConfig::ID {
         return;
     }
@@ -547,6 +564,24 @@ fn publish_committed(wifi: WifiHandle<'static, RawMutex>, id: SectionId, blob: O
                 error
             ),
         },
+    }
+}
+
+/// Publishes the stored location at boot; without one the device does not
+/// know where it is and telemetry reports that.
+fn publish_stored_location(owner: &mut Owner, wifi: WifiHandle<'static, RawMutex>) {
+    let Owner::Ready(store) = owner else {
+        return;
+    };
+    let mut blob = Blob::empty();
+    match store.read_raw(LocationConfig::ID, &mut blob.bytes) {
+        Ok(Some(info)) => {
+            blob.version = info.version;
+            blob.len = info.length;
+            publish_committed(wifi, LocationConfig::ID, Some(&blob));
+        }
+        Ok(None) => info!("Location: not set"),
+        Err(error) => warn!("Location configuration unreadable: {}", error),
     }
 }
 

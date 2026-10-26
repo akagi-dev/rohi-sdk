@@ -40,9 +40,9 @@ generation tracking, CRC validation and power-loss recovery. There is no separat
 
 * Section type `Identity`, ID `0x94d63573d312fe9b` (FNV-1a of the struct name), version 1.
 * CBOR: `[bytes(32)]` (`#[cbor(array)]`), pinned by a golden byte test. This is persistent ABI.
-* The generic configuration API (`GetConfig` / `UpdateConfig`) only knows Wi-Fi; the identity section is unreachable
-  through it.
-* Ordinary configuration changes, removing another section and OTA never touch it. Only `EraseIdentity` removes it.
+* The identity is **not** a config section of the generic configuration API: `identity` is a service whose secret is a
+  write-only action argument, so no config request can read, patch or reset it.
+* Ordinary configuration changes, removing another section and OTA never touch it. Only the `erase` action removes it.
 * A corrupted store is reported as unavailable, never as "not provisioned".
 
 ## Boot behaviour
@@ -79,22 +79,27 @@ walk`, never a production master) live in `tools/rohi/src/provision/tests.rs`:
 | 2 | `0x276b9ce3c58b9f009f4f1f2ae5c7e9a599796246165df52f2d8b857fcecb1a40` |
 | 42 | `0x8743ca72162320542b15ef0e66995fac97cd295626627046c41f64f796bcf2f3` |
 
-## Control protocol
+## Control plane
 
-| Request | Capability | Link privilege | Effect |
-|---------|------------|----------------|--------|
-| `GetIdentity` | `IDENTITY` | read | `IdentityInfo { state, public_key? }` |
-| `ProvisionIdentity { ed25519_secret }` | `IDENTITY` | provision | stores the identity, returns its public key |
-| `EraseIdentity` | `IDENTITY` | provision | removes the identity section; no-op when absent |
+The identity is the `identity` [service](service.md) of `rohi-identity` (`IdentityService` over an `IdentityStore` that
+the firmware implements on its configuration handle):
 
-* `IdentityState`: `NOT_PROVISIONED` (no public key) or `PROVISIONED` (32-byte public key).
-* `ProvisionIdentity` succeeds only when not provisioned, otherwise `IDENTITY_ALREADY_PROVISIONED`. An existing
-  identity is never silently replaced; erase it explicitly first.
+| Request | Link privilege | Effect |
+|---------|----------------|--------|
+| `GetServiceStatus identity` | read | `provisioned` and the 32-byte `public_key` (absent when not provisioned) |
+| `InvokeAction identity.provision { secret }` | provision (secret argument) | stores the identity, returns its public key |
+| `InvokeAction identity.erase` | mutate | removes the identity section; no-op when absent |
+
+`rohi status identity` shows the state; `rohi identity provision` derives the secret on the host and runs the action.
+
+* A status of `stopped` with the informational issue `not_provisioned` is the normal state of a fresh device.
+* `provision` succeeds only when not provisioned, otherwise it is *rejected* with the reason `already_provisioned`. An
+  existing identity is never silently replaced; erase it explicitly first.
 * A secret that is not exactly 32 bytes is `INVALID_ARGUMENT`. After storing, the device reads the identity back and
   compares the public key before answering.
-* No response ever carries the secret. The request type has no `Debug` output so the secret cannot reach a log.
-* Errors: `IDENTITY_NOT_PROVISIONED`, `IDENTITY_ALREADY_PROVISIONED` (plus `INVALID_ARGUMENT`, `UNAVAILABLE`,
-  `INTERNAL`, `PERMISSION_DENIED`).
+* No response or status ever carries the secret. The invoke request type has no `Debug` output and its arguments are
+  overwritten after the call, so the secret cannot reach a log.
+* Errors: `REJECTED` (`already_provisioned`), `INVALID_ARGUMENT`, `UNAVAILABLE`, `INTERNAL`, `PERMISSION_DENIED`.
 * The master seed, the number and the derivation path are never sent to the device.
 
 ### Security status

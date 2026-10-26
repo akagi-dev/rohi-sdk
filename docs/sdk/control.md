@@ -1,8 +1,10 @@
 # Control plane (BLE)
 
-The control plane lets a desktop (or any BLE central) inspect and configure an Altruist Urban locally: device
-information, capabilities, sensors, typed configuration, Wi-Fi and the device identity ([provisioning](identity.md)). It is **local control only**:
-uplink telemetry, HTTP and SoftAP are out of scope.
+The control plane lets a desktop (or any BLE central) inspect and configure a ROHI device locally. It is **generic**:
+the protocol, the dispatcher and the client know no module by name. They offer four planes, all driven by schemas the
+device publishes: device **info**, persistent **config**, runtime **status** and explicit **actions**. What those
+planes contain (Wi-Fi, telemetry, sensors, identity, location, ...) is decided by the firmware's registries, see
+[Service pipeline](service.md). It is **local control only**: uplink telemetry, HTTP and SoftAP are out of scope.
 
 ```text
  BLE radio
@@ -11,21 +13,21 @@ uplink telemetry, HTTP and SoftAP are out of scope.
      │  BleTransport
  rohi-control-ble          Control Service, framing, fragmentation            portable
      │  bytes
- rohi-control              dispatcher, capabilities, authorization            portable
+ rohi-control              dispatcher + authorization policy                  portable
      │  rohi-control-proto messages (bounded protobuf)
- ControlServices           firmware adapter (UrbanControlServices)
-     ├── MeasurementHandle   on-demand MeasurementsSnapshot
-     ├── ConfigHandle        typed config section store
-     ├── IdentityHandle      Ed25519 identity (Identity config section)
-     └── WifiHandle          Wi-Fi manager
+ ControlBackend            device info, uptime, config registry, service registry
+     ├── ConfigRegistry    tuple of ManagedSection<..>     (rohi-service)
+     └── ServiceRegistry   tuple of Tracked<ManagedService> (rohi-service)
+              │
+        feature crates implement ManagedConfig / ManagedService over their runtime handles
 
  rohi (library + CLI)      desktop client, btleplug
 ```
 
 Dependency direction: `rohi-control-proto ← rohi-control ← rohi-control-ble → rohi-net ← rohi-net-esp ← altruist-urban`
-(see [Crate map](../concepts/crate-map.md)).
-`rohi-net*` never depends on `rohi-control*`, and there is no ESP specific control crate: the ESP part only exposes a
-generic byte pipe.
+(see [Crate map](../concepts/crate-map.md)). `rohi-control` depends only on the protocol and `rohi-service`: it has no
+dependency on Wi-Fi, telemetry, sensors, time or identity, and no ESP specific control crate exists: the ESP part only
+exposes a generic byte pipe. `rohi-net*` never depends on `rohi-control*`.
 
 ## Crates
 
@@ -34,8 +36,8 @@ generic byte pipe.
 | `rohi-net` (`ble`) | `BleTransport`, `BleState`, `BleConnectionInfo`, `BleConfig`: portable BLE API, no vendor types |
 | `rohi-net-esp` | `EspWireless` (shared radio runtime), `EspWifi`, `EspIp`, `EspBle` |
 | `rohi-control-proto` | `control.proto`, bounded generated types (`micropb`), `PROTOCOL_VERSION`, `limits` |
-| `rohi-control` | `Controller`, `ControlServices`, `Capabilities`, `AuthorizationPolicy` |
-| `rohi-identity` | `Identity` config section, `Secret`, `Signer`, `IdentitySigner`; see [Device identity](identity.md) |
+| `rohi-service` | the generic model: `Value`, `ManagedConfig`, `ManagedService`, registries; see [Service pipeline](service.md) |
+| `rohi-control` | `Controller`, `ControlBackend`, `Device` (a backend built from registries), `AuthorizationPolicy` |
 | `rohi-control-ble` | Service/characteristic UUIDs, `frame` (fragmenter, reassembler), `ControlBle` control loop |
 | `rohi` (`tools/rohi`) | Desktop library (`Device`, `Session`, `BleLink`, model) and the `rohi` command line tool |
 
@@ -44,82 +46,69 @@ Everything except `rohi-net-esp`, the firmware and `tools/rohi` builds and is te
 ## Protocol
 
 One protobuf request, one protobuf response, correlated by `request_id`. The schema is
-`crates/rohi-control-proto/proto/rohi/control/v1/control.proto`; field numbers and enum values are stable and only
-ever added. `protocol_version` is `1` in every message. Unknown requests, a wrong version or a missing capability
-return a typed error; the link is never dropped because of a bad request.
+`crates/rohi-control-proto/proto/rohi/control/v1/control.proto`. `protocol_version` is `1` in every message; the
+protocol is still under development and changes without a version bump, so keep the tool and the firmware on the
+same revision. Unknown requests, a wrong version or an unknown name return a typed error; the link is never dropped
+because of a bad request.
 
-| Request | Capability | Needs secure link policy |
-|---------|-----------|---------------------------|
-| `GetInfo`, `GetCapabilities` | – | no |
-| `GetSensors` | `SENSORS` | no |
-| `GetConfig` | `CONFIG` | no |
-| `UpdateConfig` | `CONFIG` (`CONNECTIVITY` for the telemetry section) | **yes** |
-| `ScanWifi` | `WIFI_SCAN` | no |
-| `GetWifiStatus` | `WIFI_STATUS` | no |
-| `ReconnectWifi`, `DisconnectWifi` | `WIFI_CONTROL` | **yes** |
-| `GetIdentity` | `IDENTITY` | no |
-| `GetTimeStatus` | `TIME` | no |
-| `ProvisionIdentity`, `EraseIdentity` | `IDENTITY` | **yes** (`Privilege::Provision`) |
+| Plane | Request | Needs a secure link policy |
+|-------|---------|----------------------------|
+| info | `GetInfo` | no |
+| config | `ListConfigSections`, `GetConfigSchema`, `GetConfigSection` | no |
+| config | `PatchConfigSection`, `ResetConfigSection` | **yes** (`Privilege::Mutate`) |
+| status | `ListServices`, `GetServicesStatus`, `GetServiceSchema`, `GetServiceStatus` | no |
+| actions | `ListActions`, `GetActionSchema` | no |
+| actions | `InvokeAction` | depends on the action: open, `privileged` (**Mutate**) or secret arguments (**Provision**) |
 
-Errors: `INVALID_ARGUMENT`, `NOT_FOUND`, `NOT_SUPPORTED`, `BUSY`, `UNAVAILABLE`, `PERMISSION_DENIED`, `INTERNAL`, `IDENTITY_NOT_PROVISIONED`, `IDENTITY_ALREADY_PROVISIONED`.
+Sections, services and actions are addressed by **name** (a string). There is no capability list of modules: whether
+something exists is answered by the `List...` requests. Errors:
+
+| Error | Meaning |
+|-------|---------|
+| `INVALID_ARGUMENT` | a value, field or argument is missing, unknown, of the wrong kind, out of range or fails the typed validation; nothing was changed |
+| `NOT_FOUND` | no such section, service or action |
+| `NOT_SUPPORTED` | unknown request or wrong protocol version |
+| `BUSY`, `UNAVAILABLE` | try again later; the backing service or storage is not available |
+| `PERMISSION_DENIED` | the link does not satisfy the authorization policy |
+| `CONFLICT` | `expected_revision` no longer matches the section |
+| `REJECTED` | an action ran and was refused for the stable reason in `Error.reason` (for example `already_provisioned`) |
+| `INTERNAL` | unexpected device failure |
+
 A response with `request_id = 0` means the device could not parse the request at all.
 
-Clients must read `GetCapabilities` and must not infer features from the firmware version.
+### Values and schemas
 
-### Sensors
+Config values, status values, action arguments and results all use one `Value` (`bool`, `i64`, `u64`, `f64`,
+`string`, `bytes`, `enum`) and one `FieldDescriptor { id, name, kind, description, unit, variants }`. The client
+fetches a schema on demand and parses and renders values by it; ids are stable and only ever added. **Schemas are paged**
+(four fields per response, `offset` in the request, `total` in the response) so a response stays small on a
+microcontroller; the `rohi` library follows the pages and caches the result for the connection.
 
-The firmware keeps the strongly typed `rohi-hal` model. Only at the control boundary it becomes a generic list:
-`Sensor { name, state, measurements[], error }`, `Measurement { type, value, state, age_ms }`. `Sensor.name` is the
-physical sensor (`bmx280`, `scd4x`, `sds011`, `microphone`, `zmod4510`, `ags3871`, `radsens`). Observations of one
-quantity from different sensors are never merged. Every snapshot is generated when the request is served, with the
-current monotonic time, so `valid`/`stale` and `age_ms` are correct at request time. Measurements that were never
-observed have no `value`.
+### Config
 
-Canonical units are fixed per type:
+A section has a name, a schema version and a **revision**. `GetConfigSection` returns the fields that are set (unset
+fields are absent, secrets are `redacted`, never their value) and `configured`, whether anything is stored.
+`PatchConfigSection` carries `set` / `unset` mutations by field id, an optional `expected_revision` and `dry_run`; it is
+atomic per section and validated as a whole, see [Service pipeline](service.md#config-sections).
+`ResetConfigSection` removes the stored section. The response carries the new `revision` and `restart_required`.
+Success means the configuration is stored **and handed to its runtime**, not that the network was reached: observe the
+service status. There is no request that touches several sections; a client that needs that applies them one by one.
 
-| Type | Unit | Type | Unit |
-|------|------|------|------|
-| `TEMPERATURE` | °C | `O3` | ppb |
-| `HUMIDITY` | % RH | `NO2` | ppb |
-| `PRESSURE` | Pa | `CO` | ppm |
-| `CO2` | ppm | `AQI_FAST`, `AQI_EPA` | index |
-| `PM2_5`, `PM10` | µg/m³ | `RADIATION` | µSv/h |
-| `NOISE_AVERAGE`, `NOISE_MAXIMUM` | dB | `PULSE_COUNT` | pulses |
+### Status
 
-### Configuration
+`GetServicesStatus` is the compact request: the device uptime, the device health **decided by the firmware** and one
+summary per service (`state`, `health`, `ready`, `revision`, `state_age_ms`, `reason`). It never carries
+service-specific values. `GetServiceStatus` returns the summary, one page of the service's values and the currently
+active issues (stable `code`, severity, message, age). Status is read-only: there is no start, stop or reset in it.
+Pollers compare `revision`s and fetch the detail only when one changed. See [Services and
+status](../getting-started/services.md).
 
-The API is typed and per logical field; raw CBOR, section ids, flash offsets and store records never appear on the
-wire. Updates are partial:
+### Actions
 
-| In the request | Effect |
-|----------------|--------|
-| field omitted | stored value preserved |
-| field provided | value replaced |
-| explicit clear (`clear_password`, `clear_wifi`) | value removed |
-
-A client never needs to read a secret to change something else. The Wi-Fi password is never returned or logged; the
-response only says `password_configured`. There is no generic reset: configuration operations are per section, so
-they can never touch the device identity (see [Device identity](identity.md)). A destructive reset, if ever added, has to be a separate privileged
-operation.
-
-Wi-Fi update sequence: validate (SSID 1–32 bytes, password 8–64 bytes or open) → `ControlServices::set_wifi_config`,
-which persists the section **and** publishes it to the Wi-Fi runtime as the desired configuration (the firmware's
-configuration owner task does both in one step, so there is no cancellable gap between commit and publication, see
-[Async and cancellation](../concepts/async-and-cancellation.md#durable-mutation)) → success. **Success means the
-configuration is stored and handed to the Wi-Fi runtime, not that the access point was reached**; observe
-`GetWifiStatus` (`NOT_CONFIGURED`, `IDLE`, `SCANNING`, `CONNECTING`, `CONNECTED`, `DISCONNECTED`, `ERROR`).
-
-Telemetry configuration (`CAPABILITY_CONNECTIVITY`) is a second, independent section of the same two requests:
-`GetConfigResponse.connectivity` and the `connectivity_update` oneof of `UpdateConfigRequest`
-(`update_connectivity` is a partial update of `enabled`, `node_id`, `interval_s`, `host`, `port`; `clear_connectivity`
-removes the section, so the device falls back to its build-time defaults). Without a stored section an update starts from a
-disabled configuration, so it needs a host. The merged result is validated (`ConnectivityConfig::validate`:
-host 1–64 letters, digits, `.`, `-`; port 1–65535; interval 10 s … 24 h) before anything is stored, and `INVALID_ARGUMENT`
-leaves everything unchanged, also the Wi-Fi section of the same request. The sections are then stored one by one, Wi-Fi
-first, so a failure of the second leaves the first stored. A stored configuration takes effect **without a restart**: the
-configuration owner task hands it to the telemetry task in the commit step, which rebuilds the service (frames still in
-the outbox are dropped), see [Connectivity](connectivity.md#configuration). `GetConfig` reports the *stored* section, not the
-build-time defaults.
+`ListActions` returns `(service, name, description, privileged)` in pages; `GetActionSchema` returns the argument
+and result fields. `InvokeAction` takes all arguments (typed, all required) and returns up to `MAX_RECORDS` records
+of typed fields. Arguments that are secrets are overwritten after the call; neither they nor the status of a service
+ever contain a secret.
 
 ## BLE binding
 
@@ -154,27 +143,37 @@ dispatches, and responses leave through a bounded TX queue.
 
 | Constant | Value |
 |----------|-------|
-| `MAX_REQUEST_LEN` | 256 B (worst-case encoded request: 116 B) |
-| `MAX_RESPONSE_LEN` | 2048 B (worst-case encoded response: 1906 B) |
+| `MAX_REQUEST_LEN` | 768 B (a patch of 8 full values is the worst case) |
+| `MAX_RESPONSE_LEN` | 2048 B |
 | ATT payload | 20 – 244 B, header 6 B, at most 255 fragments |
-| `MAX_SENSORS` / `MAX_MEASUREMENTS_PER_SENSOR` | 8 / 4 |
-| `MAX_WIFI_SCAN_RESULTS` | 16 |
-| `MAX_SSID_LEN` / `MAX_WIFI_PASSWORD_LEN` | 32 / 64 |
-| `MAX_HOST_LEN` | 64 |
+| `MAX_NAME_LEN` (section, service, field, action) | 24 B |
+| `MAX_VALUE_LEN` (string and bytes values) | 64 B |
+| `MAX_DESCRIPTION_LEN` / `MAX_UNIT_LEN` | 40 B / 8 B |
+| `MAX_VARIANTS` / `MAX_VARIANT_LEN` | 10 / 16 B |
+| `MAX_SCHEMA_PAGE` / `MAX_STATUS_PAGE` / `MAX_ACTIONS_PAGE` | 4 / 8 / 8 entries per response |
+| `MAX_CONFIG_FIELDS` | 10 fields per section |
+| `MAX_MUTATIONS` | 8 per patch |
+| `MAX_CONFIG_SECTIONS` / `MAX_SERVICES` | 8 / 8 |
+| `MAX_ISSUES` / `MAX_CODE_LEN` / `MAX_ISSUE_MESSAGE_LEN` | 4 / 32 B / 48 B |
+| `MAX_ACTION_ARGS` / `MAX_RECORDS` / `MAX_RECORD_FIELDS` | 3 / 6 / 4 |
 
-The limits are defined once (`rohi-control-proto/build.rs`), applied to the generated types and checked by tests
-against the worst-case encoded size. This table is the canonical list of protocol limits; the BLE queue depths belong to
-the product and are in [Resource limits](../reference/resource-limits.md#ble).
+The limits are defined once (`rohi-control-proto/build.rs`), applied to the generated types and checked by tests:
+requests must fit `MAX_REQUEST_LEN` in the worst case, full schema, status and action responses must encode within
+`MAX_RESPONSE_LEN`, and a **memory budget test** keeps the largest request or response variant under about 2.7 KB on the
+host. That last one matters on the device: responses are built and moved on the stack of the control task, and the
+main stack of the ESP32-C3 is only about 42 KB. The BLE queue depths belong to the product and are in
+[Resource limits](../reference/resource-limits.md#ble).
 
 ### Security
 
 `rohi-net` reports `encrypted` / `authenticated` for the current link. `rohi-control` turns that into decisions
-with an `AuthorizationPolicy` (`Privilege::Read` or `Privilege::Mutate`): `OpenPolicy`, `RequireEncryption`,
-`RequireAuthenticated`. The Altruist Urban firmware currently runs `OpenPolicy`, and the BLE backend does not pair yet
-(TrouBLE's `security` feature is not enabled), so every link reports unencrypted. Anyone in radio range can use the
-control plane until a policy is configured, **including identity provisioning and erase**, which use their own
-`Privilege::Provision` so that a stricter policy can protect them through the same hook. The Wi-Fi password still crosses the air in clear text until pairing is
-enabled.
+with an `AuthorizationPolicy` (`Privilege::Read`, `Mutate`, `Provision`): `OpenPolicy`, `RequireEncryption`,
+`RequireAuthenticated`. Config writes and `privileged` actions need `Mutate`; actions with secret arguments (identity
+provisioning) need `Provision`, so a stricter policy can protect them through the same hook. The policy runs
+**before** the action does. The Altruist Urban firmware currently runs `OpenPolicy`, and the BLE backend does not pair
+yet (TrouBLE's `security` feature is not enabled), so every link reports unencrypted. Anyone in radio range can use the
+control plane until a policy is configured, **including identity provisioning and erase**. Secrets such as the Wi-Fi
+password still cross the air in clear text until pairing is enabled.
 
 ## `rohi` desktop client
 
@@ -183,26 +182,26 @@ command line layer.
 
 ```text
 rohi library
-  Device         typed async API: info, capabilities, sensors, config, update_wifi, forget_wifi,
-                 update_connectivity, forget_connectivity,
-                 wifi_scan, wifi_status, wifi_reconnect, wifi_disconnect,
-                 identity, provision_identity, erase_identity  (checks capabilities first)
+  Device         generic async API: info,
+                 config_sections, config_schema, config_get, config_patch, config_reset,
+                 services, services_status, service_schema, service_status,
+                 actions, action_schema, invoke        (schemas fetched on demand and cached)
   Session        framing, request ids, timeouts, typed error mapping   (reuses rohi-control-ble::frame)
   ClientTransport  chunk link trait; BleLink (btleplug) implements it, tests use an in-memory one
-  model          plain Rust types (no protobuf), optional serde, canonical units
-  format         human readable rendering
+  model          plain Rust types (no protobuf), optional serde
+  format         human readable rendering driven by the schemas
 ```
 
-The command line has one authoritative page, [The rohi tool](../getting-started/rohi-tool.md): commands, device selection
-(`--device`, `ROHI_DEVICE`, `ble://` and `tcp://` URIs), the output contract (results on stdout, prompts and
-diagnostics on stderr, `-o json`, exit codes), Wi-Fi workflows and configuration backup and restore. It is a layer over
-`Device`: parsing, device choice, prompts, output and backup files live in `tools/rohi/src/cli`, protocol behaviour stays
-in `Device` and below, and the command dispatch (`rohi::cli::execute`) is generic over `ClientTransport`, so it runs
-unchanged against the in-memory transport of the tests.
+No method is named after a module. The command line has one authoritative page, [The rohi tool](../getting-started/rohi-tool.md):
+commands, device selection (`--device`, `ROHI_DEVICE`, `ble://` and `tcp://` URIs), the output contract (results on
+stdout, prompts and diagnostics on stderr, `-o json`, exit codes), configuration files and actions. It is a layer over
+`Device`: parsing, device choice, prompts and output live in `tools/rohi/src/cli`, protocol behaviour stays in `Device`
+and below, and the command dispatch (`rohi::cli::execute`) is generic over `ClientTransport`, so it runs unchanged
+against the in-memory device of the tests, which is built from the real `rohi-control`, `rohi-service` and feature
+crates.
 
-The Wi-Fi password is never printed, and a normal configuration backup never contains it. On Linux the build needs
-`libdbus` and `pkg-config` (provided by `nix develop`); the protobuf compiler `protoc` is needed to build
-`rohi-control-proto`.
+Secrets are never printed, exported or accepted on a command line. On Linux the build needs `libdbus` and `pkg-config`
+(provided by `nix develop`); the protobuf compiler `protoc` is needed to build `rohi-control-proto`.
 
 ## Build, test and measurements
 

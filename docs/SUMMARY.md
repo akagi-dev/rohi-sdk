@@ -10,6 +10,7 @@
 - [Build and test](getting-started/build-and-test.md)
 - [First device: Air Quality Terminal](getting-started/first-device.md)
 - [The rohi tool](getting-started/rohi-tool.md)
+- [Services and status](getting-started/services.md)
 
 # Concepts
 
@@ -27,10 +28,12 @@
 - [Sensors](sdk/sensors.md)
 - [Configuration store](sdk/config.md)
 - [Networking (rohi-net)](sdk/net.md)
+- [Service pipeline (rohi-service)](sdk/service.md)
 - [Control plane (BLE)](sdk/control.md)
 - [Device identity](sdk/identity.md)
 - [Time service](sdk/time.md)
 - [Telemetry (rohi-connectivity)](sdk/connectivity.md)
+- [Location](sdk/location.md)
 
 # Guides
 
@@ -38,7 +41,8 @@
 - [Add a ConfigSection](guides/add-config-section.md)
 - [Add or support a board](guides/add-board.md)
 - [Use IP networking](guides/use-network.md)
-- [Add a control operation](guides/add-control-operation.md)
+- [Add a service](guides/add-service.md)
+- [Add a control operation or an action](guides/add-control-operation.md)
 
 # Platform
 

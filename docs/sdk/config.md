@@ -4,6 +4,10 @@
 **independent typed sections**; there is no central `DeviceConfig`. A feature crate defines its own section and
 the store persists it without knowing anything about it.
 
+The store only persists bytes. How users see and change a section (`rohi config get/set/describe`, atomic patches,
+secret fields, revisions) is a separate, generic layer: a feature crate also implements `ManagedConfig` for its typed
+section, see [Service pipeline](service.md#config-sections).
+
 ```text
 feature crate
     ↓

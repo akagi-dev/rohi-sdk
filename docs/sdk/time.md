@@ -18,7 +18,7 @@ contact an NTP server, manage a clock chip, keep clock offsets or decide whether
                      │  now() = anchor + monotonic elapsed
         ┌────────────┼────────────┐
         ▼            ▼            ▼
-     logging       datalog     control plane (GetTimeStatus)
+     logging       datalog     control plane (`time` service)
 ```
 
 ## Monotonic time versus wall-clock time
@@ -133,18 +133,26 @@ The intervals are `SyncSchedule` fields; `SyncSchedule::DEFAULT` holds the value
 
 ## Control plane
 
-`GetTimeStatus` (capability `TIME`, read-only, no secure link needed) returns the state, `unix_time_ms` (absent while
-unsynchronized), source, age since the last sync, uncertainty, consecutive failures and the category of the last
-failure. `rohi time` shows it, and `rohi status` includes it as a `Time` section ([The rohi tool](../getting-started/rohi-tool.md#time)):
+The `time` [service](service.md) (`TimeStatusService` over `TimeService`, read-only, no secure link needed) reports its
+state and, when synchronized, `unix_time` (ms; absent while unsynchronized), `source`, `sync_age`, `uncertainty` and
+`consecutive_failures`. An unsynchronized device that has not failed yet is `starting`; after failures it is `running` and
+`degraded` with the active issue of the last failure category (`network_unavailable`, `resolve_failed`, `timeout`,
+`invalid_response`, `rejected`, `implausible`, `source_failure`). A stale time is usable but `degraded`. The service is not
+essential for the device. See [Services and status](../getting-started/services.md):
 
 ```text
-$ rohi time
-Time
-  State       synchronized
-  Unix time   1780000000.250
-  Source      ntp
-  Last sync   90 s ago
-  Accuracy    +-40 ms
+$ rohi status time
+Service:  time
+State:    running
+Health:   ok
+Ready:    yes
+Since:    2h 13m
+
+unix_time                1780000000250 ms
+source                   ntp
+sync_age                 90000 ms
+uncertainty              40 ms
+consecutive_failures     0
 ```
 
 Manual resynchronization is not offered: periodic automatic synchronization is authoritative.

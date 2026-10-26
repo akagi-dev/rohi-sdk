@@ -23,13 +23,16 @@
 //!
 //! Patch semantics: load the current section (or the module defaults), apply
 //! all mutations to a copy, validate the complete result, persist atomically,
-//! increment the revision. If anything is invalid nothing is persisted.
+//! increment the revision. If anything is invalid nothing is persisted. The
+//! whole transaction (revision check, load, validate, store, bump) runs under
+//! a per-section lock, so concurrent patches and resets are serialized.
 
 use core::cell::Cell;
 use core::marker::PhantomData;
 
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::RawMutex;
+use embassy_sync::mutex::Mutex as AsyncMutex;
 use heapless::Vec;
 
 use crate::field::ConfigField;
@@ -251,6 +254,8 @@ pub trait ConfigSectionOps {
 pub struct ManagedSection<C, S, M: RawMutex> {
     store: S,
     revision: Mutex<M, Cell<u32>>,
+    // Serializes transactions on the store.
+    transaction: AsyncMutex<M, ()>,
     _config: PhantomData<fn() -> C>,
 }
 
@@ -261,6 +266,7 @@ impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ManagedSection<C, S, M> 
         Self {
             store,
             revision: Mutex::new(Cell::new(0)),
+            transaction: AsyncMutex::new(()),
             _config: PhantomData,
         }
     }
@@ -330,6 +336,7 @@ impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ConfigSectionOps
     }
 
     async fn get(&self) -> Result<SectionValues, ConfigError> {
+        let _transaction = self.transaction.lock().await;
         let stored = self.store.load().await?;
         let mut entries = Vec::new();
         if let Some(config) = &stored {
@@ -364,6 +371,7 @@ impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ConfigSectionOps
         expected_revision: Option<u32>,
         dry_run: bool,
     ) -> Result<Patched, ConfigError> {
+        let _transaction = self.transaction.lock().await;
         self.check_revision(expected_revision)?;
         let mut next = self.store.load().await?.unwrap_or_else(C::defaults);
         for mutation in mutations {
@@ -385,6 +393,7 @@ impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ConfigSectionOps
     }
 
     async fn reset(&self, dry_run: bool) -> Result<Patched, ConfigError> {
+        let _transaction = self.transaction.lock().await;
         let restart_required = self.store.restart_required();
         if dry_run {
             return Ok(Patched {

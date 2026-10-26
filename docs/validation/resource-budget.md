@@ -39,6 +39,17 @@ the radio drivers use the wireless heap.
 
 Task stack usage is not measured yet.
 
+### Stack and the control plane
+
+All embassy tasks are polled on the one main stack, which on the ESP32-C3 build of `altruist-urban` is the linker `.stack`
+section: about 42 KB (`_stack_end` to `_stack_start` of the release ELF) and it sits directly above `.bss`, so an
+overflow corrupts task state (observed as a `Load access fault` in the embassy timer queue with the ASCII of a service
+name in the registers). The control task builds and moves protobuf responses on that stack, so response sizes are
+bounded: the largest `Request` or `Response` variant is kept under about 2.7 KB on the host
+(`messages_stay_small_in_memory` in `rohi-control-proto`), and long schemas, status values and action lists are paged
+instead of grown. The static future of `control_task` is about 11 KB of `.bss` (release build, ESP32-C3, measured with
+`nm -S` on `altruist_urban::control::control_task::POOL`). Stack depth under load is not measured yet.
+
 
 ## Configuration store
 

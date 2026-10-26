@@ -25,7 +25,7 @@
 //! - [`Device`]: generic async API (`config_*`, `services*`, `invoke`)
 //!   returning the plain types of [`model`], never protobuf; it knows no
 //!   module by name;
-//! - [`format`]: human readable rendering of the model.
+//! - [`format`](mod@format): human readable rendering of the model.
 //!
 //! The `rohi` command line tool is a thin layer over [`Device`]. Another
 //! application can use the same library, or implement [`ClientTransport`] for

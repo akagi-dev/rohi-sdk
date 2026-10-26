@@ -305,9 +305,10 @@ Device:  fake-1.0.0 (bench-esp32c3)
 Uptime:  1m 30s
 Health:  ok
 
-SERVICE   STATE    HEALTH  READY  SINCE
-radio     running  ok      yes    0ms
-identity  stopped  -       no     0ms
+SERVICE   STATE     HEALTH  READY  SINCE
+radio     running   ok      yes    0ms
+identity  stopped   -       no     0ms
+location  disabled  -       no     -
 "
     );
     assert!(outcome.stderr.is_empty());
@@ -410,7 +411,7 @@ async fn sections_are_listed_and_described_from_the_device() {
     outcome.ok();
     assert_eq!(
         outcome.stdout,
-        "SECTION       VERSION\nwifi          1\nconnectivity  1\ngadget        3\n"
+        "SECTION       VERSION\nwifi          1\nconnectivity  1\ngadget        3\nlocation      1\n"
     );
 
     let outcome = run(&bench, &["config", "describe", "gadget"]).await;
@@ -920,7 +921,7 @@ async fn bad_files_never_reach_the_device() {
         ("{", "not valid JSON"),
         (
             r#"{ "mqtt": {} }"#,
-            "the device has no section `mqtt`; its sections are: wifi, connectivity, gadget",
+            "the device has no section `mqtt`; its sections are: wifi, connectivity, gadget, location",
         ),
         (
             r#"{ "gadget": { "colour": 1 } }"#,
@@ -1363,4 +1364,176 @@ async fn schemas_longer_than_one_page_are_complete() {
     );
     let outcome = run(&bench, &["config", "describe", "connectivity"]).await;
     assert!(outcome.ok().stdout.contains("port"), "{}", outcome.stdout);
+}
+
+// ---------------------------------------------------------------------------
+// location
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_location_is_set_with_the_generic_config_and_shows_in_the_status() {
+    let bench = Bench::new();
+    let outcome = run(&bench, &["status", "location"]).await;
+    assert!(
+        outcome.ok().stdout.contains("State:    disabled"),
+        "{}",
+        outcome.stdout
+    );
+    assert!(outcome.stdout.contains("INFO"), "{}", outcome.stdout);
+    assert!(outcome.stdout.contains("not_set"), "{}", outcome.stdout);
+
+    let outcome = run(
+        &bench,
+        &[
+            "config",
+            "set",
+            "location",
+            "latitude=52.52",
+            "longitude=13.405",
+            "height_m=34",
+        ],
+    )
+    .await;
+    assert_eq!(outcome.ok().stdout, "`location` stored (revision 1)\n");
+
+    let outcome = run(&bench, &["config", "get", "location"]).await;
+    assert_eq!(
+        outcome.ok().stdout,
+        "latitude   52.52 deg\nlongitude  13.405 deg\nheight_m   34 m\n"
+    );
+
+    let outcome = run(&bench, &["status", "location"]).await;
+    outcome.ok();
+    assert!(
+        outcome.stdout.contains("State:    running"),
+        "{}",
+        outcome.stdout
+    );
+    assert!(
+        outcome.stdout.contains("latitude   52.52 deg"),
+        "{}",
+        outcome.stdout
+    );
+    assert!(
+        outcome.stdout.contains("source     configured"),
+        "{}",
+        outcome.stdout
+    );
+    let outcome = run(&bench, &["-o", "json", "status", "location"]).await;
+    let json = outcome.ok().json();
+    assert_eq!(json["values"]["longitude"], 13.405);
+    assert_eq!(json["values"]["source"], "configured");
+    assert_eq!(json["units"]["height_m"], "m");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_location_needs_both_coordinates_in_range() {
+    let bench = Bench::new();
+    // A first height alone must not store "0, 0".
+    let outcome = run(&bench, &["config", "set", "location", "height_m=10"]).await;
+    assert!(
+        matches!(outcome.error(), CliError::Device(_)),
+        "{}",
+        outcome.message()
+    );
+    let outcome = run(&bench, &["config", "set", "location", "latitude=52.5"]).await;
+    assert!(matches!(outcome.error(), CliError::Device(_)));
+    let outcome = run(
+        &bench,
+        &["config", "set", "location", "latitude=91", "longitude=0"],
+    )
+    .await;
+    assert!(matches!(
+        outcome.device_error(),
+        Error::Device(rohi::model::ErrorCode::InvalidArgument)
+    ));
+    let outcome = run(
+        &bench,
+        &["config", "set", "location", "latitude=north", "longitude=0"],
+    )
+    .await;
+    assert!(
+        outcome.message().contains("latitude: expected a number"),
+        "{}",
+        outcome.message()
+    );
+    assert!(bench.location.mem.value.borrow().is_none());
+
+    run(
+        &bench,
+        &[
+            "config",
+            "set",
+            "location",
+            "latitude=1.5",
+            "longitude=-2.5",
+        ],
+    )
+    .await
+    .ok();
+    // The height is optional and can be unset again.
+    run(&bench, &["config", "set", "location", "height_m=12"])
+        .await
+        .ok();
+    run(&bench, &["config", "unset", "location", "height_m"])
+        .await
+        .ok();
+    assert_eq!(bench.location.mem.value.borrow().unwrap().height_m, None);
+    let outcome = run(&bench, &["config", "unset", "location", "latitude"]).await;
+    assert!(
+        outcome.message().contains("required and cannot be unset"),
+        "{}",
+        outcome.message()
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn resetting_the_location_makes_the_device_not_know_where_it_is() {
+    let bench = Bench::new();
+    run(
+        &bench,
+        &["config", "set", "location", "latitude=1", "longitude=2"],
+    )
+    .await
+    .ok();
+    assert!(bench.location.shared.current().is_some());
+    run(&bench, &["config", "reset", "location", "--yes"])
+        .await
+        .ok();
+    assert!(bench.location.shared.current().is_none());
+    let outcome = run(&bench, &["status", "location"]).await;
+    assert!(
+        outcome.ok().stdout.contains("State:    disabled"),
+        "{}",
+        outcome.stdout
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn export_and_apply_carry_the_location() {
+    let bench = Bench::new();
+    run(
+        &bench,
+        &[
+            "config",
+            "set",
+            "location",
+            "latitude=52.52",
+            "longitude=13.405",
+        ],
+    )
+    .await
+    .ok();
+    let outcome = run(&bench, &["config", "export"]).await;
+    assert_eq!(
+        outcome.ok().json()["location"],
+        json!({ "latitude": 52.52, "longitude": 13.405 })
+    );
+    let file = temp_file("location.json", r#"{ "location": { "height_m": 40.5 } }"#);
+    let outcome = run(&bench, &["config", "apply", path(&file), "--yes"]).await;
+    outcome.ok();
+    assert_eq!(
+        bench.location.mem.value.borrow().unwrap().height_m,
+        Some(40.5)
+    );
 }

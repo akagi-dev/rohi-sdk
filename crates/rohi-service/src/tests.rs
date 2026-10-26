@@ -112,6 +112,8 @@ struct MemoryStore {
 
 impl SectionStore<Demo> for &MemoryStore {
     async fn load(&self) -> Result<Option<Demo>, StoreError> {
+        // Lets another task run between a load and the following store.
+        embassy_futures::yield_now().await;
         if *self.unavailable.borrow() {
             return Err(StoreError::Unavailable);
         }
@@ -277,6 +279,27 @@ fn a_stale_revision_is_a_conflict() {
     );
     assert_eq!(store.value.borrow().clone().unwrap().host.as_str(), "a.io");
     block_on(section.patch(&[set(3, text("b.io"))], Some(1), false)).unwrap();
+}
+
+#[test]
+fn concurrent_patches_are_serialized() {
+    let store = MemoryStore::default();
+    let section = section(&store);
+    let (a, b) = block_on(embassy_futures::join::join(
+        section.patch(&[set(3, text("a.io"))], Some(0), false),
+        section.patch(&[set(4, text("s3cret"))], Some(0), false),
+    ));
+    assert_eq!(a.map(|patched| patched.revision), Ok(1));
+    assert_eq!(b, Err(ConfigError::Conflict));
+
+    let (a, b) = block_on(embassy_futures::join::join(
+        section.patch(&[set(3, text("b.io"))], None, false),
+        section.patch(&[set(4, text("t0ken"))], None, false),
+    ));
+    assert!(a.is_ok() && b.is_ok());
+    let stored = store.value.borrow().clone().unwrap();
+    assert_eq!(stored.host.as_str(), "b.io");
+    assert_eq!(stored.token.as_deref(), Some("t0ken"));
 }
 
 #[test]

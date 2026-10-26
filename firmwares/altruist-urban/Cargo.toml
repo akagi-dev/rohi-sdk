@@ -27,6 +27,7 @@ rohi-control-ble = { workspace = true }
 rohi-time = { workspace = true }
 rohi-time-ntp = { workspace = true }
 rohi-connectivity = { workspace = true }
+rohi-location = { workspace = true }
 # Hardware specific, the chip is selected by the `esp32c3` / `esp32c6` features
 rohi-hal-esp = { workspace = true }
 rohi-config-esp = { workspace = true }

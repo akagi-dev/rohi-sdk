@@ -63,6 +63,7 @@ Golden values:
 | `Identity`           | `0x94d63573d312fe9b`   |
 | `WifiConfig`         | `0x335246ad20248b26`   |
 | `ConnectivityConfig` | `0x9c57015a40662d0c`   |
+| `LocationConfig`     | `0xce098b4a3e381f40`   |
 
 > **Renaming a persisted `ConfigSection` type is a storage ABI change.** `WifiConfig` renamed to `WirelessConfig`
 > gets a different ID and the stored data is no longer found.

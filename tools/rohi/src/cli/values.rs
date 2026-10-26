@@ -63,7 +63,22 @@ fn hex_bytes(text: &str) -> Option<Vec<u8>> {
 
 /// Parses `text` as the kind of `field`.
 pub fn parse(field: &FieldDescriptor, text: &str) -> Result<Value, CliError> {
-    let bad = |expected: &str| usage(format!("{}: expected {expected}, got `{text}`", field.name));
+    parse_inner(field, text, true)
+}
+
+/// Parses a secret `text`; errors never include it.
+fn parse_secret(field: &FieldDescriptor, text: &str) -> Result<Value, CliError> {
+    parse_inner(field, text, false)
+}
+
+fn parse_inner(field: &FieldDescriptor, text: &str, echo: bool) -> Result<Value, CliError> {
+    let bad = |expected: &str| {
+        if echo {
+            usage(format!("{}: expected {expected}, got `{text}`", field.name))
+        } else {
+            usage(format!("{}: expected {expected}", field.name))
+        }
+    };
     match field.kind {
         ValueKind::Bool => match text.to_ascii_lowercase().as_str() {
             "true" | "yes" | "on" | "1" => Ok(Value::Bool(true)),
@@ -140,7 +155,7 @@ pub async fn secret(ctx: &mut Ctx, field: &FieldDescriptor) -> Result<Value, Cli
     } else {
         ctx.io.secret_from_stdin(&field.name).await?
     };
-    parse(field, &text)
+    parse_secret(field, &text)
 }
 
 /// Either `-` (a secret, read separately) or a plain value.
@@ -211,6 +226,19 @@ mod tests {
         assert!(parse(&field(ValueKind::Enum), "c").is_err());
         assert!(parse(&field(ValueKind::Bytes), "abc").is_err());
         assert!(parse(&field(ValueKind::Bool), "maybe").is_err());
+    }
+
+    #[test]
+    fn secret_parse_errors_do_not_echo_the_input() {
+        let error = parse_secret(&field(ValueKind::Bytes), "zz-secret")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("f: expected hex bytes"), "{error}");
+        assert!(!error.contains("zz-secret"), "{error}");
+        let error = parse_secret(&field(ValueKind::Enum), "zz-secret")
+            .unwrap_err()
+            .to_string();
+        assert!(!error.contains("zz-secret"), "{error}");
     }
 
     #[test]

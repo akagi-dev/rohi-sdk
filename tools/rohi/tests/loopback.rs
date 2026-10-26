@@ -58,7 +58,8 @@ async fn info_and_discovery() {
             [
                 ("wifi".to_owned(), 1),
                 ("connectivity".to_owned(), 1),
-                ("gadget".to_owned(), 3)
+                ("gadget".to_owned(), 3),
+                ("location".to_owned(), 1)
             ]
         );
         let services: Vec<_> = device
@@ -68,7 +69,7 @@ async fn info_and_discovery() {
             .into_iter()
             .map(|s| s.name)
             .collect();
-        assert_eq!(services, ["radio", "identity"]);
+        assert_eq!(services, ["radio", "identity", "location"]);
         let actions: Vec<_> = device
             .actions()
             .await
@@ -334,7 +335,7 @@ async fn actions_take_arguments_and_return_records() {
 async fn works_with_a_large_mtu() {
     let bench = Bench::new();
     with_device(244, &bench, |mut device| async move {
-        assert_eq!(device.services_status().await.unwrap().services.len(), 2);
+        assert_eq!(device.services_status().await.unwrap().services.len(), 3);
         assert_eq!(device.invoke("radio", "scan", &[]).await.unwrap().len(), 2);
     })
     .await;

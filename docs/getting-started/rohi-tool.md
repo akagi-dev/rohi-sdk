@@ -1,12 +1,14 @@
 # The `rohi` tool
 
-`rohi` is the desktop command line for ROHI devices. It finds a device over Bluetooth LE, shows its status and
-sensors, manages its Wi-Fi and configuration, and backs the configuration up. It is the quickest way to check that a
-flashed device (see [First device](first-device.md)) is alive and talking.
+`rohi` is the desktop command line for ROHI devices. It finds a device over Bluetooth LE, shows the status of its
+[services](services.md), reads and changes its configuration, and runs its actions. It is the quickest way to check
+that a flashed device (see [First device](first-device.md)) is alive and talking.
 
-`rohi` is a thin layer over the [`Device`](../sdk/control.md#rohi-desktop-client) API of the `rohi` library: every
-command is one or a few control-plane requests, and the tool owns only the terminal side: arguments, device selection,
-prompts, output formats and backup files.
+`rohi` is a thin layer over the [`Device`](../sdk/control.md#rohi-desktop-client) API of the `rohi` library, and the
+command tree **knows no device module**: `status`, `config` and `action` take the names of services, sections and
+actions that the device lists, and parse values with the field descriptions the device sends. A new firmware module
+appears in `rohi` without changing the tool. The tool owns only the terminal side: arguments, device selection,
+prompts, output formats and configuration files.
 
 > The behaviour described here is covered by host tests against an in-memory device. It has not been exercised with a
 > wide range of adapters and operating systems.
@@ -24,57 +26,34 @@ On Linux the build needs `libdbus` and `pkg-config` (provided by `nix develop`) 
 [Targets and features](../reference/targets-and-features.md). Bluetooth must be enabled, and the device must be
 advertising and not connected to another client: a device accepts a single connection at a time.
 
-`rohi --help` and `rohi <COMMAND> --help` describe every command with examples.
+`rohi --help` and `rohi <COMMAND> --help` describe every command with examples. Keep the tool and the firmware from the
+same revision: the control protocol is under development and a stale `rohi` can show an incomplete view of a newer
+device (for example fewer fields of a section).
 
 ## First steps
 
 ```bash
 rohi scan                  # find nearby ROHI devices
-rohi status                # connection, firmware, board, capabilities, Wi-Fi, time, identity
-rohi sensors               # current measurements
+rohi status                # device health and every service
+rohi status sensors        # one service in detail
+rohi config list           # the configuration sections of the device
+rohi action list           # what the services can do
 ```
-
-`rohi status` is the single command for the overall snapshot of a device:
 
 ```text
 $ rohi status
-Connection
-  URI         ble://ALTRUIST-URBAN-A12F
+Device:  altruist-urban-0.4.0 (urban-esp32c3)
+Uptime:  2h 14m
+Health:  ok
 
-Device
-  Firmware    altruist-urban-0.4.0
-  Board       urban-esp32c3
-
-Capabilities
-  sensors
-  config
-  wifi scan
-  wifi status
-  wifi control
-  identity
-  time
-
-Wi-Fi
-  State       connected
-  Network     office
-  Signal      -51 dBm
-  Address     192.168.1.42
-
-Time
-  State       synchronized
-  Unix time   1780000000.250
-  Source      ntp
-  Last sync   90 s ago
-  Accuracy    +-40 ms
-
-Identity
-  State       provisioned
-  Address     4FHZCUoTq7LqeeaVhgmk3WfwL4wAtRfM45aUV11XeARGeEju
-  Public key  88dc3417d5058ec4b4503e0c12ea1a0a89be200fe98922423d4334014fa6b0ee
+SERVICE       STATE    HEALTH  READY  SINCE
+wifi          running  ok      yes    2h 14m
+connectivity  running  ok      yes    34s
+...
 ```
 
-Sections the device does not support are left out; a device without Wi-Fi still has a status. The identity `Address`
-is the device public key as a Robonomics (SS58) address.
+What the columns mean and how status differs from configuration is explained in
+[Services and status](services.md).
 
 ## Choose a device
 
@@ -106,12 +85,13 @@ Command results go to stdout. Prompts, progress, warnings and diagnostics go to 
 clean. `-o json` (`--output json`) prints a JSON document with a stable, versioned schema instead of text:
 
 ```bash
-rohi -d A12F -o json status | jq -r '.wifi.address'
-rohi -d A12F -o json sensors | jq '.sensors[].measurements[] | select(.type == "co2")'
+rohi -d A12F -o json status wifi | jq -r '.values.ip'
+rohi -d A12F -o json status sensors | jq '.values["scd4x.co2"]'
+rohi -d A12F -o json status | jq -r '.services[] | select(.health != "ok") | .service'
 ```
 
 Every JSON document has `"schema_version": 1`. The schemas are owned by the command line, not by the library types.
-A closed pipe (`rohi sensors | head -1`) ends the command quietly.
+A closed pipe (`rohi action list | head -1`) ends the command quietly.
 
 | Exit code | Meaning |
 |-----------|---------|
@@ -130,88 +110,114 @@ hint: make sure Bluetooth is enabled and the device is advertising
 hint: try `rohi scan`
 ```
 
-Destructive commands (`wifi forget`, `identity erase`, `backup import`) ask for confirmation on a terminal. Without a
-terminal they fail with `confirmation required in non-interactive mode` unless `--yes` is passed.
+Destructive commands (`config reset`, `config apply`, `identity erase`) ask for confirmation on a terminal. Without a
+terminal they fail with `confirmation required in non-interactive mode` unless `--yes` is passed. Secrets are never
+accepted as command line arguments: a field or argument that is a secret is read with `NAME=-` from stdin, or from a
+hidden prompt on a terminal.
 
-## Wi-Fi
-
-```bash
-rohi wifi                          # Wi-Fi status
-rohi wifi scan                     # networks the device sees (takes up to half a minute)
-rohi wifi connect office           # store the network and wait until the device is connected
-rohi wifi connect guests --open    # open network
-rohi wifi forget                   # remove the stored configuration
-```
-
-`rohi wifi connect <SSID>` stores the configuration, then follows the Wi-Fi status until the device is connected, reports
-a failure, or `--wait <SECONDS>` (default 30) expires. A stored configuration does not mean the network was reached, and
-the command says which of the two happened; `--no-wait` returns once the configuration is stored.
-
-Passwords are not taken as command line arguments by `connect`: they are read from a hidden prompt, from the first line
-of stdin with `--password-stdin`, or from the `ROHI_WIFI_PASSWORD` environment variable. An empty answer at the prompt
-keeps the stored password. `wifi configure` is the lower-level operation that only stores values: omitted settings are
-kept, and `--open` removes the password.
-
-## Telemetry
+## Status
 
 ```bash
-rohi config connectivity                                   # stored telemetry configuration
-rohi connectivity set --host ingress.example.org --node-id 42 --enable
-rohi connectivity set --interval 120                       # omitted settings are kept
-rohi connectivity set --disable                            # stop sending, keep the configuration
+rohi status                       # device health and one row per service: one compact request
+rohi status wifi                  # one service: values with units, active issues
+rohi status --watch               # reprint when something observable changed (Ctrl-C to stop)
+rohi status wifi --watch --interval 5
+rohi -o json status wifi
 ```
 
-`connectivity set` takes any combination of `--host`, `--port` (default 80), `--node-id`, `--interval` (10 to 86400
-seconds), `--enable` and `--disable`, and needs at least one. While nothing is stored a host is required. The device
-validates the result and applies it at once, without a restart. Telemetry is signed with the device identity, so
-provision one first (see [Identity](#identity)). A device without the `connectivity` capability answers
-`this device does not support connectivity`. The settings are part of `rohi backup`.
+Services are discovered from the device, so `rohi status <name>` works for any service the summary lists. Without a
+service the output is the summary table; with `-o json` it is
+`{ "device": .., "uptime_ms": .., "health": .., "services": [..] }`. See [Services and status](services.md) for state,
+health, readiness, issues and revisions.
 
-## Time
+## Configuration
+
+`rohi config` works on the **sections** the device lists. Fields are typed and described by the device; values are
+parsed against that description (`true`/`false`, numbers, text, hex for bytes, a variant name for enums) and checked
+again by the device.
 
 ```bash
-rohi time                  # wall-clock time and synchronization state
+rohi config list                                   # sections and their versions
+rohi config describe connectivity                  # fields: type, access, constraints, description
+rohi config get connectivity                       # values; secrets are shown as <configured>
+rohi config get connectivity host                  # one field
+
+rohi config set connectivity host=ingress.example.org port=443 enabled=true
+rohi config set connectivity interval_s=120 --dry-run
+rohi config set wifi ssid=office password=-         # secret from stdin or a hidden prompt
+rohi config unset wifi password                    # optional field: no value (not "" or 0)
+rohi config reset connectivity                     # remove the stored section, restore defaults
 ```
 
-The device has wall-clock time only after a source such as NTP delivered a plausible sample: until then the section shows
-`State unsynchronized` and **no time**; the device never reports its uptime or a placeholder date instead. `Last sync`,
-`Accuracy`, `Source` and the last failure (`Failures`) are shown when known. The time may step when a later sample
-corrects it, and NTP time is not authenticated. See [Time service](../sdk/time.md).
+```text
+$ rohi config describe connectivity
+FIELD       TYPE    ACCESS      CONSTRAINTS  DESCRIPTION
+enabled     bool    read-write               Produce and send telemetry
+node_id     u64     read-write               Robonomics CPS node identifier
+interval_s  u64     read-write  10..86400 s  Time between telemetry frames
+host        string  read-write               Ingress host name or IPv4 address
+port        u64     read-write  1..65535     Ingress TCP port
+```
 
-## Back up and restore the configuration
+- **`set` is a patch**: fields that are not mentioned keep their value, and a section that is not stored yet starts
+  from its defaults. All mutations of one command are validated together on the device and stored atomically: if
+  anything is invalid, nothing is stored. `--dry-run` validates without storing.
+- **Secrets** (`write-only` in `describe`) are never returned and never part of exports. Put `NAME=-` instead of a
+  value; the tool refuses a secret on the command line.
+- **`unset`** is only for optional fields. A required field cannot be unset.
+- **Reset** removes the persisted section, so the module defaults apply again.
+- A change that needs a restart says so (`A restart is required for the change to take effect`).
+
+### Configuration files
 
 ```bash
-rohi backup export backup.json     # or: rohi backup export > backup.json
-rohi backup import backup.json --dry-run
-rohi backup import backup.json
+rohi config export config.json              # or: rohi config export > config.json
+rohi config diff config.json                # what applying would change
+rohi config apply config.json --dry-run     # validate everything, change nothing
+rohi config apply config.json
 ```
 
-A backup is a versioned JSON file of the **stored configuration**, not of the runtime state:
+A file maps section names to their fields:
 
 ```json
 {
-  "schema_version": 1,
-  "source": { "firmware": "altruist-urban-0.4.0", "board": "urban-esp32c3" },
-  "config": {
-    "wifi": { "ssid": "office", "credential": "required" },
-    "connectivity": { "enabled": true, "node_id": 42, "interval_s": 60, "host": "ingress.example.org", "port": 80 }
-  }
+  "wifi": { "ssid": "office" },
+  "connectivity": { "enabled": true, "interval_s": 120, "host": "ingress.example.org", "port": 443 },
+  "location": { "latitude": 52.52, "longitude": 13.405 }
 }
 ```
 
-- The Wi-Fi password cannot be read back from a device, so it is never in the file. `"credential": "required"` records
-  that a password is set, `"none"` an open network, and `"wifi": null` that nothing was configured. Identity keys are not
-  part of a backup either.
-- The `connectivity` section is only exported by a device that has the capability. As with Wi-Fi, `null` means nothing was
-  configured and removes a stored section on restore, an absent section is left alone.
-- `import` validates the whole file and compares it with the device before changing anything. A malformed file, an
-  unsupported `schema_version`, or a section the device cannot restore fails with no change. It shows what would change,
-  asks for the missing password (hidden prompt, `--wifi-password-stdin`, or `ROHI_WIFI_PASSWORD`), and asks for
-  confirmation unless `--yes` is passed.
-- `--dry-run` prints the planned changes and exits without touching the device.
-- A backup can be restored onto another compatible device; the firmware and board of the source are only reported.
-- The control protocol has no atomic multi-section update, so a restore is not atomic. If it stops in the middle, the
-  error lists the sections that were applied and the ones that were not.
+| In the file | Effect |
+|-------------|--------|
+| field missing | left unchanged |
+| `"field": null` | unset (optional fields only) |
+| `"section": null` | reset the section |
+
+- **Export** writes every *configured* section. Secrets and read-only fields are left out, so applying an exported file
+  never clears or overwrites a secret.
+- A file cannot contain secrets: `config apply` refuses them and points at `config set NAME=-`.
+- **`diff`** compares the file with the device and prints `~` changes, `+` new values, `-` unsets and `reset section`;
+  nothing is changed. Fields that already match are not listed.
+- **`apply`** checks the whole file against the schemas first (unknown section, unknown or read-only field, wrong type,
+  null for a required field fail with no change), then has the device validate **every** section with a dry run, shows
+  the changes and asks for confirmation unless `--yes`, then applies the sections one by one. Each section is atomic;
+  applying several is **not** atomic as a whole. If the device fails in between, the error lists the sections that
+  were applied and the ones that were not.
+- The backup of earlier versions (`rohi backup`) is replaced by `export`/`apply`; an old backup file is not understood.
+
+## Actions
+
+```bash
+rohi action list                                   # all actions: service, name, read/write, description
+rohi action describe wifi scan                     # arguments and results
+rohi action run wifi scan                          # results as a table, one row per record
+rohi action run wifi reconnect
+rohi action run radio tune channel=11              # arguments are NAME=VALUE, all required
+rohi -o json action run wifi scan
+```
+
+`write` actions need a link that satisfies the authorization policy of the device. A refusal with a stable reason is
+reported as `the device rejected the action: <reason>` (for example `already_provisioned`).
 
 ## Identity
 
@@ -221,22 +227,34 @@ rohi identity provision --number 42 --seed master.suri
 rohi identity erase
 ```
 
-`provision` derives the identity of the device from a master secret URI in a file on this machine; only the derived
-secret is sent to the device. See [Device identity](../sdk/identity.md) for the model and its limits.
+The identity is the one module-specific command: the secret is **derived on this machine** from a master secret URI in
+a file and only the derived secret is sent, with the `identity provision` action. `identity` shows the public key as a
+Robonomics (SS58) address and in hex. See [Device identity](../sdk/identity.md) for the model and its limits.
+
+## Migrating from earlier versions
+
+| Before | Now |
+|--------|-----|
+| `rohi sensors` | `rohi status sensors` |
+| `rohi time` | `rohi status time` |
+| `rohi wifi` (status) | `rohi status wifi` |
+| `rohi wifi scan` | `rohi action run wifi scan` |
+| `rohi wifi reconnect`, `disconnect` | `rohi action run wifi reconnect` / `disconnect` |
+| `rohi wifi connect`, `configure`, `forget` | `rohi config set wifi ssid=.. password=-`, `rohi config reset wifi`, then `rohi status wifi` |
+| `rohi config [wifi\|connectivity]` | `rohi config get <section>` |
+| `rohi connectivity set --host ..` | `rohi config set connectivity host=..` |
+| `rohi backup export` / `import` | `rohi config export` / `apply` |
 
 ## Commands
 
 | Command | What it does |
 |---------|--------------|
 | `scan` | discover nearby devices |
-| `status` | overall device snapshot |
-| `sensors` | current measurements |
-| `config [wifi\|connectivity]` | stored configuration (never secrets) |
-| `connectivity set` | change the telemetry configuration |
-| `wifi` and its subcommands `status`, `scan`, `connect`, `configure`, `reconnect`, `disconnect`, `forget` | Wi-Fi |
-| `backup export [FILE]`, `backup import FILE` | configuration backup and restore |
-| `time` | wall-clock time and synchronization state |
-| `identity` and its subcommands `provision`, `erase` | device identity |
+| `status [SERVICE] [--watch]` | device summary or one service |
+| `config list`, `describe`, `get`, `set`, `unset`, `reset` | read and change configuration sections |
+| `config export`, `diff`, `apply` | configuration files |
+| `action list`, `describe`, `run` | actions of the services |
+| `identity` and `provision`, `erase` | device identity |
 
 ## Troubleshooting
 
@@ -245,8 +263,11 @@ secret is sent to the device. See [Device identity](../sdk/identity.md) for the 
 | `no ROHI device found` | Bluetooth is on, the device is powered and advertising, no other client holds its connection; raise `--scan-timeout` |
 | `timed out waiting for the device` | the device is in range; raise `--timeout` |
 | `multiple ROHI devices found` | pass `--device` or set `ROHI_DEVICE`; `rohi scan` lists them |
-| `this device does not support …` | the firmware lacks that [capability](../sdk/control.md); see `rohi status` |
+| `the device has no section …` / `NotFound` | the name is not one the device lists: `rohi config list`, `rohi status`, `rohi action list` |
+| a section shows fewer fields than expected | the tool is older than the firmware; rebuild `rohi` from the same revision |
+| `the device refused the request: permission denied` | the change needs an encrypted or authenticated link, see [Security](../sdk/control.md#security) |
 
 ## Next
 
-The protocol behind the tool and the library API are in [Control plane](../sdk/control.md).
+How the services, sections and actions are built is in [Service pipeline](../sdk/service.md); the protocol behind the
+tool and the library API are in [Control plane](../sdk/control.md).
