@@ -12,7 +12,7 @@ Arguments:
 
 Options:
   -w, --watch
-          Poll the device and print again whenever something changed, until interrupted
+          Poll the device and print again whenever something changed, until interrupted. On a terminal the screen is refreshed in place instead
 
       --interval <SECONDS>
           Pause between polls of --watch
@@ -38,6 +38,16 @@ Output:
           
           [default: human]
 
+      --color <WHEN>
+          Color the text output
+
+          Possible values:
+          - auto:   Color when stdout is a terminal, unless `NO_COLOR` is set or `TERM` is `dumb`
+          - always: Always color
+          - never:  Never color
+          
+          [default: auto]
+
 Connection:
       --scan-timeout <SECONDS>
           How long to search for the target device
@@ -51,7 +61,7 @@ Connection:
 
 Examples:
   rohi status
-  rohi status wifi
+  rohi status network
   rohi status --watch
   rohi status connectivity --watch --interval 5
   rohi -o json status sensors

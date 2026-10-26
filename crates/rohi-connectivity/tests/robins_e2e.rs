@@ -100,6 +100,10 @@ impl IpBackend for StdIp {
         true
     }
 
+    fn usage(&self) -> rohi_net::IpUsage {
+        rohi_net::IpUsage::default()
+    }
+
     async fn resolve(&self, _: &str, _: AddrType) -> Result<core::net::IpAddr, NetError> {
         Err(NetError::DnsFailed)
     }

@@ -33,7 +33,7 @@ use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embedded_hal_async::delay::DelayNs;
 
 use super::*;
-use crate::{ScanCollector, WifiNetwork, WifiPassword, WifiSecurity, WifiSsid};
+use crate::{NetworkConfig, ScanCollector, WifiNetwork, WifiPassword, WifiSecurity, WifiSsid};
 
 type Shared = WifiShared<NoopRawMutex>;
 
@@ -50,7 +50,7 @@ struct MockState {
     connects: VecDeque<Connect>,
     link_lost: VecDeque<WifiError>,
     scan_results: Option<Result<WifiScanResults, WifiError>>,
-    connect_configs: Vec<WifiConfig>,
+    connect_configs: Vec<NetworkConfig>,
     disconnects: usize,
     delays: Vec<u32>,
     /// Delays pend while set; every started delay is still recorded once.
@@ -69,10 +69,12 @@ impl Mock {
     }
 }
 
-fn info_for(config: &WifiConfig) -> NetworkInfo {
+fn info_for(config: &NetworkConfig) -> NetworkInfo {
     NetworkInfo {
         ssid: config.ssid.clone(),
         rssi_dbm: -50,
+        channel: Some(6),
+        mac: Some([2, 0, 0, 0, 0, 1]),
         ipv4: Ipv4Addr::new(192, 168, 1, 41),
         gateway: Some(Ipv4Addr::new(192, 168, 1, 1)),
         dns: None,
@@ -97,7 +99,7 @@ impl WifiBackend for Mock {
             .unwrap_or(Err(WifiError::ScanFailed))
     }
 
-    async fn connect(&mut self, config: &WifiConfig) -> Result<NetworkInfo, WifiError> {
+    async fn connect(&mut self, config: &NetworkConfig) -> Result<NetworkInfo, WifiError> {
         let next = {
             let mut state = self.0.borrow_mut();
             state.connect_configs.push(config.clone());
@@ -159,8 +161,8 @@ impl DelayNs for MockDelay {
     }
 }
 
-fn config(ssid: &str) -> WifiConfig {
-    WifiConfig::new(
+fn config(ssid: &str) -> NetworkConfig {
+    NetworkConfig::new(
         WifiSsid::from_bytes(ssid.as_bytes()).unwrap(),
         Some(WifiPassword::from_bytes(b"hunter2hunter2").unwrap()),
     )
@@ -451,7 +453,7 @@ fn config_removed_disconnects_and_is_not_configured() {
 fn invalid_config_is_rejected_without_connecting() {
     let shared = Shared::new();
     let mut f = fixture(&shared);
-    let invalid = WifiConfig::new(WifiSsid::empty(), None);
+    let invalid = NetworkConfig::new(WifiSsid::empty(), None);
     f.handle.set_desired_config(Some(invalid));
     f.steps(1);
     assert_eq!(
@@ -838,4 +840,116 @@ fn only_one_scan_in_flight() {
     // The slot is free again afterwards.
     let (again, ()) = block_on(join(handle.scan(), f.manager.step()));
     assert!(again.is_ok());
+}
+
+#[test]
+fn the_configured_timing_replaces_the_defaults() {
+    let shared = Shared::new();
+    let mut f = fixture(&shared);
+    f.mock.script([
+        Connect::Err(WifiError::DhcpFailed),
+        Connect::Err(WifiError::DhcpFailed),
+        Connect::Err(WifiError::DhcpFailed),
+        Connect::Err(WifiError::DhcpFailed),
+    ]);
+    let mut configured = config("office");
+    configured.backoff_initial_ms = 500;
+    configured.backoff_max_ms = 1_500;
+    f.handle.set_desired_config(Some(configured));
+
+    f.steps(2 + 2 + 2 + 2);
+
+    assert_eq!(f.mock.0.borrow().delays, [500, 1_000, 1_500]);
+}
+
+#[test]
+fn a_timing_change_applies_to_the_next_connection() {
+    let shared = Shared::new();
+    let mut f = fixture(&shared);
+    f.mock.script([
+        Connect::Err(WifiError::DhcpFailed),
+        Connect::Err(WifiError::DhcpFailed),
+    ]);
+    f.handle.set_desired_config(Some(config("office")));
+    f.steps(2);
+    assert_eq!(f.state(), WifiState::Error);
+
+    let mut changed = config("office");
+    changed.backoff_initial_ms = 250;
+    f.handle.set_desired_config(Some(changed));
+    f.steps(2); // reconcile, attempt
+    f.steps(1); // backoff
+
+    assert_eq!(f.mock.0.borrow().delays, [250]);
+}
+
+#[test]
+fn metrics_count_reconnects_and_time_the_link() {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    static NOW: AtomicU64 = AtomicU64::new(0);
+    fn now() -> u64 {
+        NOW.load(Ordering::Relaxed)
+    }
+
+    let shared = Shared::new();
+    let mock = Mock::default();
+    let handle = shared.handle();
+    let mut manager = WifiManager::new(
+        mock.clone(),
+        MockDelay(mock.clone()),
+        &shared,
+        ManagerConfig::DEFAULT.with_clock(now),
+    );
+    mock.script([
+        Connect::Err(WifiError::DhcpFailed),
+        Connect::Ok,
+        Connect::Ok,
+    ]);
+    handle.set_desired_config(Some(config("office")));
+    assert_eq!(handle.metrics(), LinkMetrics::default());
+
+    NOW.store(1_000, Ordering::Relaxed);
+    block_on(manager.step()); // command
+    block_on(manager.step()); // attempt fails
+    assert_eq!(handle.metrics(), LinkMetrics::default());
+
+    NOW.store(5_000, Ordering::Relaxed);
+    block_on(manager.step()); // backoff
+    block_on(manager.step()); // attempt succeeds
+    assert_eq!(
+        handle.metrics(),
+        LinkMetrics {
+            reconnects: 1,
+            connected_at_ms: Some(5_000)
+        }
+    );
+
+    handle.reconnect().unwrap();
+    block_on(manager.step()); // the command
+    assert_eq!(
+        handle.metrics(),
+        LinkMetrics {
+            reconnects: 2,
+            connected_at_ms: None
+        }
+    );
+    NOW.store(7_000, Ordering::Relaxed);
+    block_on(manager.step()); // attempt succeeds
+    assert_eq!(handle.metrics().connected_at_ms, Some(7_000));
+
+    handle.disconnect().unwrap();
+    block_on(manager.step());
+    assert_eq!(handle.metrics().connected_at_ms, None);
+}
+
+#[test]
+fn without_a_clock_the_link_time_is_not_recorded() {
+    let shared = Shared::new();
+    let mut f = fixture(&shared);
+    f.mock.script([Connect::Ok]);
+    f.handle.set_desired_config(Some(config("office")));
+    f.steps(2);
+    assert_eq!(f.state(), WifiState::Connected);
+    assert_eq!(f.handle.metrics().connected_at_ms, None);
 }

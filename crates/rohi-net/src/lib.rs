@@ -21,7 +21,7 @@
 //! Two planes, both expressed only in ROHI and standard embedded Rust types:
 //!
 //! - [Wi-Fi control plane](wifi): [`WifiManager`] owns the radio and reconciles
-//!   it towards the desired [`WifiConfig`]; other tasks use [`WifiHandle`]
+//!   it towards the desired [`NetworkConfig`]; other tasks use [`WifiHandle`]
 //!   (status, scan, reconnect, disconnect).
 //! - [IP data plane](ip): [`NetworkHandle`] offers DNS and TCP through the
 //!   standard `embedded-nal-async` and `embedded-io-async` traits, and bounded
@@ -39,6 +39,7 @@ extern crate std;
 mod ble;
 pub mod ip;
 mod limits;
+pub mod network;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub mod wifi;
@@ -47,13 +48,18 @@ pub use ble::{
     BleConfig, BleConnectionInfo, BleError, BleGattSpec, BleState, BleTransport,
     DEFAULT_BLE_PAYLOAD, MAX_BLE_PAYLOAD,
 };
-pub use ip::{IpBackend, NetError, NetworkHandle, UdpSocket};
+pub use ip::{IpBackend, IpUsage, NetError, NetworkHandle, UdpSocket};
 pub use limits::{
     MAX_SSID_LEN, MAX_WIFI_PASSWORD_LEN, MAX_WIFI_SCAN_RESULTS, MIN_WIFI_PASSWORD_LEN,
     WIFI_COMMAND_QUEUE_DEPTH,
 };
+pub use network::{
+    ADDRESS_MODES, AddressMode, HeapStats, Hostname, Ipv4, NetworkConfig, NetworkProbe,
+    NetworkService, StaticIpv4, config_field as network_config_field,
+    scan_field as network_scan_field, status_field as network_status_field,
+};
 pub use wifi::{
-    Backoff, ManagerConfig, NetworkInfo, STATUS_RECEIVERS, ScanCollector, WifiBackend, WifiConfig,
+    Backoff, LinkMetrics, ManagerConfig, NetworkInfo, STATUS_RECEIVERS, ScanCollector, WifiBackend,
     WifiError, WifiHandle, WifiManager, WifiNetwork, WifiPassword, WifiScanResults, WifiSecurity,
     WifiShared, WifiSsid, WifiState, WifiStatus,
 };

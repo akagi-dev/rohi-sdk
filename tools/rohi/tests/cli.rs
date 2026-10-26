@@ -46,6 +46,7 @@ impl Write for Buf {
 #[derive(Default)]
 struct Terminal<'a> {
     interactive: bool,
+    screen: bool,
     input: &'a [&'a str],
 }
 
@@ -105,8 +106,10 @@ async fn run_watching(
         stderr.clone(),
         terminal.interactive,
         terminal.input,
-    );
+    )
+    .with_screen(terminal.screen);
     let mut ctx = Ctx::new(io, cli.output);
+    ctx.color(cli.color);
     ctx.uri = Some("ble://BENCH-1234".into());
     ctx.watch_limit = watch_limit;
 
@@ -251,7 +254,14 @@ fn the_command_tree_has_no_module_specific_commands() {
         .map(|command| command.get_name().to_owned())
         .collect();
     assert_eq!(names, ["scan", "status", "config", "action"]);
-    for gone in ["wifi", "connectivity", "backup", "sensors", "time", "info"] {
+    for gone in [
+        "network",
+        "connectivity",
+        "backup",
+        "sensors",
+        "time",
+        "info",
+    ] {
         let error = parse(&[gone]).err().unwrap();
         assert_eq!(
             error.kind(),
@@ -267,8 +277,8 @@ fn the_command_tree_has_no_module_specific_commands() {
 fn usage_errors_have_exit_code_2() {
     for args in [
         &["bogus"][..],
-        &["config", "set", "wifi"],
-        &["config", "unset", "wifi"],
+        &["config", "set", "network"],
+        &["config", "unset", "network"],
         &["config", "get"],
         &["status", "--interval", "5"],
     ] {
@@ -384,6 +394,7 @@ async fn status_shows_the_sensor_id_once_an_identity_is_provisioned() {
     let terminal = Terminal {
         interactive: false,
         input: &[&secret],
+        ..Default::default()
     };
     run_with(
         &bench,
@@ -427,6 +438,56 @@ async fn a_watch_prints_again_only_when_the_status_changed() {
     assert!(outcome.stdout.contains("degraded"), "{}", outcome.stdout);
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn color_is_applied_only_when_asked_for_and_never_to_json() {
+    let bench = Bench::new();
+    let plain = run(&bench, &["status"]).await;
+    assert!(!plain.ok().stdout.contains('\x1b'), "{:?}", plain.stdout);
+
+    let never = run(&bench, &["--color", "never", "status"]).await;
+    assert_eq!(never.ok().stdout, plain.stdout);
+
+    let colored = run(&bench, &["--color", "always", "status"]).await;
+    let text = &colored.ok().stdout;
+    // Health words take their color; padding stays outside of the escapes so
+    // the columns line up.
+    assert!(text.contains("\x1b[32mrunning\x1b[0m  "), "{text:?}");
+    assert!(text.contains("\x1b[1mSERVICE\x1b[0m"), "{text:?}");
+    let stripped: String = text
+        .split('\x1b')
+        .enumerate()
+        .map(|(index, part)| match (index, part.find('m')) {
+            (0, _) => part,
+            (_, Some(end)) => &part[end + 1..],
+            _ => part,
+        })
+        .collect();
+    assert_eq!(stripped, plain.stdout);
+
+    let json = run(&bench, &["--color", "always", "-o", "json", "status"]).await;
+    assert!(!json.ok().stdout.contains('\x1b'), "{:?}", json.stdout);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_watch_on_a_terminal_redraws_in_place() {
+    let bench = Bench::new();
+    let outcome = run_watching(
+        &bench,
+        &["status", "--watch", "--interval", "0"],
+        Terminal {
+            screen: true,
+            ..Terminal::default()
+        },
+        Some(3),
+    )
+    .await;
+    outcome.ok();
+    // Every refresh homes the cursor, even when nothing changed.
+    assert_eq!(outcome.stdout.matches("\x1b[H").count(), 3);
+    assert_eq!(outcome.stdout.matches("Device:").count(), 3);
+    assert!(outcome.stdout.ends_with("\x1b[J"), "{:?}", outcome.stdout);
+}
+
 // ---------------------------------------------------------------------------
 // config
 // ---------------------------------------------------------------------------
@@ -438,7 +499,7 @@ async fn sections_are_listed_and_described_from_the_device() {
     outcome.ok();
     assert_eq!(
         outcome.stdout,
-        "SECTION       VERSION\nwifi          1\nconnectivity  1\ngadget        3\nlocation      1\n"
+        "SECTION       VERSION\nnetwork       2\nconnectivity  1\ngadget        3\nlocation      1\n"
     );
 
     let outcome = run(&bench, &["config", "describe", "gadget"]).await;
@@ -464,7 +525,7 @@ async fn sections_are_listed_and_described_from_the_device() {
         outcome.stdout
     );
 
-    let outcome = run(&bench, &["config", "describe", "wifi"]).await;
+    let outcome = run(&bench, &["config", "describe", "network"]).await;
     assert!(
         outcome.ok().stdout.contains("write-only"),
         "{}",
@@ -609,7 +670,7 @@ async fn secrets_never_travel_on_the_command_line_or_come_back() {
         &[
             "config",
             "set",
-            "wifi",
+            "network",
             "ssid=office",
             "password=hunter2hunter2",
         ],
@@ -631,7 +692,7 @@ async fn secrets_never_travel_on_the_command_line_or_come_back() {
     };
     let outcome = run_with(
         &bench,
-        &["config", "set", "wifi", "ssid=office", "password=-"],
+        &["config", "set", "network", "ssid=office", "password=-"],
         terminal,
     )
     .await;
@@ -642,33 +703,51 @@ async fn secrets_never_travel_on_the_command_line_or_come_back() {
     let terminal = Terminal {
         interactive: true,
         input: &["hunter2hunter3"],
+        ..Default::default()
     };
-    let outcome = run_with(&bench, &["config", "set", "wifi", "password=-"], terminal).await;
+    let outcome = run_with(
+        &bench,
+        &["config", "set", "network", "password=-"],
+        terminal,
+    )
+    .await;
     outcome.ok();
     assert_eq!(outcome.stderr, "password: \n");
-    let stored = bench.wifi.value.borrow().clone().unwrap();
+    let stored = bench.network.value.borrow().clone().unwrap();
     assert_eq!(stored.password.unwrap().expose_secret(), b"hunter2hunter3");
 
     // Reading shows the secret as configured, in text and in JSON.
-    let outcome = run(&bench, &["config", "get", "wifi"]).await;
+    let outcome = run(&bench, &["config", "get", "network"]).await;
     assert_eq!(
         outcome.ok().stdout,
-        "ssid      office\npassword  <configured>\n"
+        "ssid             office\npassword         <configured>\n\
+address_mode     dhcp\n\
+ip               -\n\
+prefix_len       -\n\
+gateway          -\n\
+dns              -\n\
+hostname         -\n\
+backoff_initial  1000 ms\n\
+backoff_max      60000 ms\n\
+link_refresh     10000 ms\n\
+scan_timeout     20000 ms\n\
+connect_timeout  30000 ms\n\
+dhcp_timeout     20000 ms\n"
     );
-    let outcome = run(&bench, &["-o", "json", "config", "get", "wifi"]).await;
+    let outcome = run(&bench, &["-o", "json", "config", "get", "network"]).await;
     let json = outcome.ok().json();
     assert_eq!(json["values"]["password"], json!({ "secret": true }));
     assert!(!outcome.stdout.contains("hunter2"));
 
     // Empty stdin is an error, never an empty secret.
-    let outcome = run(&bench, &["config", "set", "wifi", "password=-"]).await;
+    let outcome = run(&bench, &["config", "set", "network", "password=-"]).await;
     assert!(matches!(outcome.error(), CliError::PasswordRequired { .. }));
 
-    let outcome = run(&bench, &["config", "unset", "wifi", "password"]).await;
+    let outcome = run(&bench, &["config", "unset", "network", "password"]).await;
     outcome.ok();
     assert!(
         bench
-            .wifi
+            .network
             .value
             .borrow()
             .clone()
@@ -692,6 +771,7 @@ async fn reset_asks_only_where_somebody_can_answer() {
     let terminal = Terminal {
         interactive: true,
         input: &["n"],
+        ..Default::default()
     };
     let outcome = run_with(&bench, &["config", "reset", "gadget"], terminal).await;
     assert!(matches!(outcome.error(), CliError::Cancelled));
@@ -700,6 +780,7 @@ async fn reset_asks_only_where_somebody_can_answer() {
     let terminal = Terminal {
         interactive: true,
         input: &["y"],
+        ..Default::default()
     };
     let outcome = run_with(&bench, &["config", "reset", "gadget"], terminal).await;
     outcome.ok();
@@ -752,7 +833,7 @@ async fn configured() -> Bench {
     };
     run_with(
         &bench,
-        &["config", "set", "wifi", "ssid=office", "password=-"],
+        &["config", "set", "network", "ssid=office", "password=-"],
         terminal,
     )
     .await
@@ -775,7 +856,16 @@ async fn export_writes_every_configured_section_without_secrets_or_read_only_fie
     assert_eq!(
         json,
         json!({
-            "wifi": { "ssid": "office" },
+            "network": {
+                "ssid": "office",
+                "address_mode": "dhcp",
+                "backoff_initial": 1000,
+                "backoff_max": 60000,
+                "link_refresh": 10000,
+                "scan_timeout": 20000,
+                "connect_timeout": 30000,
+                "dhcp_timeout": 20000,
+            },
             "connectivity": { "enabled": true, "node_id": 0, "interval_s": 60, "host": "old.example.org", "port": 80 },
             "gadget": { "label": "lamp", "level": 50, "mode": "fast" },
         })
@@ -794,7 +884,8 @@ async fn export_writes_every_configured_section_without_secrets_or_read_only_fie
         format!("Exported 3 section(s) to {}\n", file.display())
     );
     let written: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
-    assert_eq!(written["wifi"], json!({ "ssid": "office" }));
+    assert_eq!(written["network"]["ssid"], "office");
+    assert!(written["network"].get("password").is_none());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -806,7 +897,7 @@ async fn diff_shows_what_applying_would_change_and_changes_nothing() {
         r#"{
             "connectivity": { "host": "new.example.org", "interval_s": 120, "port": 80 },
             "gadget": { "mode": null, "level": 20 },
-            "wifi": null
+            "network": null
         }"#,
     );
     let outcome = run(&bench, &["config", "diff", path(&file)]).await;
@@ -820,7 +911,7 @@ connectivity:
 gadget:
   ~ level           50 % -> 20 %
   - mode            fast -> (unset)
-wifi:
+network:
   reset section
 "
     );
@@ -845,12 +936,13 @@ async fn apply_merges_unsets_and_resets_with_one_confirmation() {
         r#"{
             "connectivity": { "host": "new.example.org", "port": 443 },
             "gadget": { "mode": null },
-            "wifi": null
+            "network": null
         }"#,
     );
     let terminal = Terminal {
         interactive: true,
         input: &["y"],
+        ..Default::default()
     };
     let outcome = run_with(&bench, &["config", "apply", path(&file)], terminal).await;
     outcome.ok();
@@ -862,7 +954,7 @@ async fn apply_merges_unsets_and_resets_with_one_confirmation() {
     assert!(
         outcome
             .stdout
-            .starts_with("Applied: connectivity, gadget, wifi\n"),
+            .starts_with("Applied: connectivity, gadget, network\n"),
         "{}",
         outcome.stdout
     );
@@ -876,7 +968,7 @@ async fn apply_merges_unsets_and_resets_with_one_confirmation() {
     assert_eq!(connectivity.interval_s, 60);
     assert!(connectivity.enabled);
     assert_eq!(bench.gadget.value.borrow().clone().unwrap().mode, None);
-    assert!(bench.wifi.value.borrow().is_none());
+    assert!(bench.network.value.borrow().is_none());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -948,7 +1040,7 @@ async fn bad_files_never_reach_the_device() {
         ("{", "not valid JSON"),
         (
             r#"{ "mqtt": {} }"#,
-            "the device has no section `mqtt`; its sections are: wifi, connectivity, gadget, location",
+            "the device has no section `mqtt`; its sections are: network, connectivity, gadget, location",
         ),
         (
             r#"{ "gadget": { "colour": 1 } }"#,
@@ -959,7 +1051,7 @@ async fn bad_files_never_reach_the_device() {
             "gadget.serial is read-only",
         ),
         (
-            r#"{ "wifi": { "password": "hunter2hunter2" } }"#,
+            r#"{ "network": { "password": "hunter2hunter2" } }"#,
             "secret and cannot be part of a file",
         ),
         (
@@ -1011,14 +1103,14 @@ async fn bad_files_never_reach_the_device() {
 #[test]
 fn a_partial_apply_names_what_was_and_was_not_applied() {
     let error = CliError::PartialApply(Box::new(PartialApply {
-        applied: vec!["wifi".into()],
+        applied: vec!["network".into()],
         failed: "connectivity".into(),
         pending: vec!["gadget".into()],
         source: Error::Timeout,
     }));
     let text = error.diagnostic().to_string();
     assert!(text.contains("failed: connectivity"), "{text}");
-    assert!(text.contains("applied:\n  wifi"), "{text}");
+    assert!(text.contains("applied:\n  network"), "{text}");
     assert!(text.contains("not applied:\n  gadget"), "{text}");
     assert!(text.contains("atomic per section only"), "{text}");
 }
@@ -1176,6 +1268,7 @@ async fn identity_is_provisioned_and_erased_with_the_generic_commands() {
     let terminal = Terminal {
         interactive: false,
         input: &[&secret],
+        ..Default::default()
     };
     let outcome = run_with(
         &bench,
@@ -1194,6 +1287,7 @@ async fn identity_is_provisioned_and_erased_with_the_generic_commands() {
     let terminal = Terminal {
         interactive: false,
         input: &[&secret],
+        ..Default::default()
     };
     let outcome = run_with(
         &bench,
@@ -1222,6 +1316,7 @@ async fn a_malformed_secret_is_not_echoed() {
     let terminal = Terminal {
         interactive: false,
         input: &["zz-hidden-secret"],
+        ..Default::default()
     };
     let outcome = run_with(
         &bench,
@@ -1265,6 +1360,7 @@ async fn factory_reset_removes_every_section_and_keeps_the_identity() {
     let terminal = Terminal {
         interactive: false,
         input: &[&secret],
+        ..Default::default()
     };
     run_with(
         &bench,
@@ -1281,7 +1377,7 @@ async fn factory_reset_removes_every_section_and_keeps_the_identity() {
         "{}",
         outcome.stdout
     );
-    for name in ["wifi", "connectivity", "gadget", "location"] {
+    for name in ["network", "connectivity", "gadget", "location"] {
         assert!(outcome.stdout.contains(name), "{name}: {}", outcome.stdout);
     }
     assert!(bench.gadget.value.borrow().is_none());
@@ -1309,6 +1405,7 @@ async fn factory_reset_asks_only_where_somebody_can_answer() {
     let terminal = Terminal {
         interactive: true,
         input: &["n"],
+        ..Default::default()
     };
     let outcome = run_with(&bench, &["config", "factory-reset"], terminal).await;
     assert!(matches!(outcome.error(), CliError::Cancelled));
@@ -1318,6 +1415,7 @@ async fn factory_reset_asks_only_where_somebody_can_answer() {
     let terminal = Terminal {
         interactive: true,
         input: &["y"],
+        ..Default::default()
     };
     run_with(&bench, &["config", "factory-reset"], terminal)
         .await

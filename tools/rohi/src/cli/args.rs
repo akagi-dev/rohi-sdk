@@ -39,6 +39,19 @@ pub enum OutputFormat {
     Json,
 }
 
+/// When command results are colored.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub enum ColorChoice {
+    /// Color when stdout is a terminal, unless `NO_COLOR` is set or `TERM` is
+    /// `dumb`.
+    #[default]
+    Auto,
+    /// Always color.
+    Always,
+    /// Never color.
+    Never,
+}
+
 #[derive(Parser)]
 #[command(
     name = "rohi",
@@ -91,6 +104,17 @@ pub struct Cli {
         help_heading = OUTPUT
     )]
     pub output: OutputFormat,
+
+    /// Color the text output.
+    #[arg(
+        long,
+        global = true,
+        value_enum,
+        default_value_t,
+        value_name = "WHEN",
+        help_heading = OUTPUT
+    )]
+    pub color: ColorChoice,
 
     /// How long to search for the target device.
     #[arg(
@@ -147,7 +171,7 @@ Examples:
     #[command(after_help = "\
 Examples:
   rohi status
-  rohi status wifi
+  rohi status network
   rohi status --watch
   rohi status connectivity --watch --interval 5
   rohi -o json status sensors")]
@@ -156,7 +180,7 @@ Examples:
         #[arg(value_name = "SERVICE")]
         service: Option<String>,
         /// Poll the device and print again whenever something changed, until
-        /// interrupted.
+        /// interrupted. On a terminal the screen is refreshed in place instead.
         #[arg(short, long)]
         watch: bool,
         /// Pause between polls of --watch.
@@ -210,7 +234,7 @@ Examples:
 Examples:
   rohi config get connectivity
   rohi config get connectivity host
-  rohi -o json config get wifi")]
+  rohi -o json config get network")]
     Get {
         /// The section.
         section: String,
@@ -228,8 +252,8 @@ Examples:
 Examples:
   rohi config set connectivity host=ingress.example.org port=443 enabled=true
   rohi config set connectivity interval_s=120 --dry-run
-  rohi config set wifi ssid=office password=-
-  echo 'hunter2hunter2' | rohi config set wifi password=-")]
+  rohi config set network ssid=office password=-
+  echo 'hunter2hunter2' | rohi config set network password=-")]
     Set {
         /// The section.
         section: String,
@@ -246,7 +270,7 @@ Examples:
     /// value afterwards.
     #[command(after_help = "\
 Examples:
-  rohi config unset wifi password")]
+  rohi config unset network password")]
     Unset {
         /// The section.
         section: String,
@@ -353,7 +377,7 @@ Examples:
     /// Describe the arguments and results of an action.
     #[command(after_help = "\
 Examples:
-  rohi action describe wifi scan")]
+  rohi action describe network scan")]
     Describe {
         /// The service.
         service: String,
@@ -369,11 +393,11 @@ Examples:
     /// table, one row per record.
     #[command(after_help = "\
 Examples:
-  rohi action run wifi scan
-  rohi action run wifi reconnect
+  rohi action run network scan
+  rohi action run network reconnect
   rohi action run identity provision secret=-
   rohi action run identity erase
-  rohi -o json action run wifi scan")]
+  rohi -o json action run network scan")]
     Run {
         /// The service.
         service: String,

@@ -34,6 +34,16 @@ Output:
           
           [default: human]
 
+      --color <WHEN>
+          Color the text output
+
+          Possible values:
+          - auto:   Color when stdout is a terminal, unless `NO_COLOR` is set or `TERM` is `dumb`
+          - always: Always color
+          - never:  Never color
+          
+          [default: auto]
+
 Connection:
       --scan-timeout <SECONDS>
           How long to search for the target device
@@ -48,5 +58,5 @@ Connection:
 Examples:
   rohi config set connectivity host=ingress.example.org port=443 enabled=true
   rohi config set connectivity interval_s=120 --dry-run
-  rohi config set wifi ssid=office password=-
-  echo 'hunter2hunter2' | rohi config set wifi password=-
+  rohi config set network ssid=office password=-
+  echo 'hunter2hunter2' | rohi config set network password=-

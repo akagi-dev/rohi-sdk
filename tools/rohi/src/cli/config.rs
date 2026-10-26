@@ -24,8 +24,9 @@ use serde_json::{Map, Value as Json};
 use super::args::ConfigAction;
 use super::diagnostic::{CliError, PartialApply};
 use super::{Ctx, dto, values};
+use crate::format::{self, Paint};
 use crate::model::*;
-use crate::{ClientTransport, Device, Error, format};
+use crate::{ClientTransport, Device, Error};
 
 pub async fn run<T: ClientTransport>(
     device: &mut Device<T>,
@@ -38,7 +39,7 @@ pub async fn run<T: ClientTransport>(
             ctx.io.emit(
                 ctx.format,
                 &dto::Versioned::new(dto::sections(&sections)),
-                || format::config_sections(&sections),
+                || format::config_sections(ctx.paint, &sections),
             )
         }
         ConfigAction::Describe { section } => {
@@ -46,7 +47,7 @@ pub async fn run<T: ClientTransport>(
             ctx.io.emit(
                 ctx.format,
                 &dto::Versioned::new(dto::config_schema(&schema)),
-                || format::config_schema(&schema),
+                || format::config_schema(ctx.paint, &schema),
             )
         }
         ConfigAction::Get { section, field } => get(device, &section, field.as_deref(), ctx).await,
@@ -192,7 +193,7 @@ async fn get<T: ClientTransport>(
     ctx.io.emit(
         ctx.format,
         &dto::Versioned::new(dto::config_values(&current, &schema, only)),
-        || format::config_values(&current, &schema, only),
+        || format::config_values(ctx.paint, &current, &schema, only),
     )
 }
 
@@ -521,15 +522,19 @@ async fn plan<T: ClientTransport>(
     Ok(plans)
 }
 
-fn diff_text(plans: &[SectionPlan]) -> String {
+fn diff_text(paint: Paint, plans: &[SectionPlan]) -> String {
     let mut out = String::new();
     for plan in plans.iter().filter(|plan| !plan.changes.is_empty()) {
-        out.push_str(&format!("{}:\n", plan.section));
+        out.push_str(&format!(
+            "{}\n",
+            paint.strong(&format!("{}:", plan.section))
+        ));
         for change in &plan.changes {
             if change.name.is_empty() {
                 out.push_str(&format!("  {}\n", change.text));
             } else {
                 out.push_str(&format::diff_line(
+                    paint,
                     change.marker,
                     &change.name,
                     &change.text,
@@ -569,7 +574,7 @@ async fn diff<T: ClientTransport>(
     let plans = plan(device, &document).await?;
     ctx.io
         .emit(ctx.format, &dto::Versioned::new(diff_json(&plans)), || {
-            diff_text(&plans)
+            diff_text(ctx.paint, &plans)
         })
 }
 
@@ -616,7 +621,7 @@ async fn apply<T: ClientTransport>(
             || {
                 format!(
                     "The file is valid; nothing was changed\n\n{}",
-                    diff_text(&plans)
+                    diff_text(ctx.paint, &plans)
                 )
             },
         );
@@ -626,7 +631,7 @@ async fn apply<T: ClientTransport>(
         .confirm(
             &format!(
                 "This changes the device:\n\n{}\nContinue?",
-                diff_text(&plans)
+                diff_text(Paint::plain(), &plans)
             ),
             yes,
         )

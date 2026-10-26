@@ -39,7 +39,7 @@ use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embedded_io_async::{ErrorType, Read, Write};
 use embedded_nal_async::AddrType;
-use rohi_net::{IpBackend, NetError, UdpSocket};
+use rohi_net::{IpBackend, IpUsage, NetError, UdpSocket};
 
 /// Sockets the stack itself needs: DHCPv4 and DNS.
 pub const STACK_INTERNAL_SOCKETS: usize = 2;
@@ -76,6 +76,10 @@ impl<const N: usize> SlotMask<N> {
     fn release(&self, index: usize) {
         self.used.lock(|used| used.set(used.get() & !(1 << index)));
     }
+
+    fn in_use(&self) -> usize {
+        self.used.lock(|used| used.get().count_ones() as usize)
+    }
 }
 
 /// Fixed pool of TCP buffers; entry `i` is in use while bit `i` is set.
@@ -100,6 +104,10 @@ impl<const N: usize, const RX: usize, const TX: usize> TcpPool<N, RX, TX> {
     fn alloc(&self) -> Option<PoolEntry<'_, N, RX, TX>> {
         let index = self.slots.acquire()?;
         Some(PoolEntry { pool: self, index })
+    }
+
+    fn in_use(&self) -> usize {
+        self.slots.in_use()
     }
 }
 
@@ -163,6 +171,10 @@ impl<const N: usize, const BUF: usize> UdpPool<N, BUF> {
     fn alloc(&self) -> Option<UdpEntry<'_, N, BUF>> {
         let index = self.slots.acquire()?;
         Some(UdpEntry { pool: self, index })
+    }
+
+    fn in_use(&self) -> usize {
+        self.slots.in_use()
     }
 }
 
@@ -326,6 +338,15 @@ impl<const TCP: usize, const RX: usize, const TX: usize, const UDP: usize, const
 
     fn is_ready(&self) -> bool {
         self.stack.is_link_up() && self.stack.is_config_up()
+    }
+
+    fn usage(&self) -> IpUsage {
+        IpUsage {
+            tcp_in_use: self.tcp.in_use(),
+            tcp_capacity: TCP,
+            udp_in_use: self.udp.in_use(),
+            udp_capacity: UDP,
+        }
     }
 
     async fn resolve(&self, host: &str, addr_type: AddrType) -> Result<IpAddr, NetError> {

@@ -45,7 +45,7 @@
 //! privileged operation of its own.
 //!
 //! Persistent Wi-Fi configuration is *state*: after the owner task committed a
-//! `WifiConfig` section (and once at boot, from the stored value) it publishes
+//! `NetworkConfig` section (and once at boot, from the stored value) it publishes
 //! the value to the Wi-Fi manager as the desired configuration, synchronously,
 //! in the same task step as the commit. The `Identity` section works the same
 //! way: the owner updates the signer in the commit step. So does
@@ -80,7 +80,7 @@ use rohi_config_esp::{EspConfigStorage, EspStorageError};
 use rohi_connectivity::ConnectivityConfig;
 use rohi_identity::Identity;
 use rohi_location::LocationConfig;
-use rohi_net::{WifiConfig, WifiHandle};
+use rohi_net::{NetworkConfig, WifiHandle};
 use rohi_time_ntp::NtpServersConfig;
 
 use crate::tasks::RawMutex;
@@ -277,7 +277,7 @@ impl ConfigHandle {
     ///
     /// Cancellation: dropping the future before the request is queued leaves
     /// the store unchanged; afterwards the owner task still commits it (and
-    /// publishes a `WifiConfig` to the Wi-Fi runtime), so the operation is
+    /// publishes a `NetworkConfig` to the Wi-Fi runtime), so the operation is
     /// logically completed and the caller only misses the result.
     pub async fn set<T: ConfigSection>(&self, value: &T) -> Result<(), ServiceError> {
         let mut blob = Blob::empty();
@@ -491,7 +491,7 @@ async fn config_task(
 /// (unprovisioned) configuration. [`maintenance`] can format it.
 ///
 /// `wifi` receives the desired Wi-Fi configuration: the stored one now, and
-/// every later commit of the `WifiConfig` section, see the module documentation.
+/// every later commit of the `NetworkConfig` section, see the module documentation.
 pub fn start(
     spawner: Spawner,
     flash: FLASH<'static>,
@@ -511,7 +511,7 @@ pub fn maintenance() -> StorageMaintenance {
 }
 
 /// Publishes a just committed (or removed) section to the runtime that
-/// depends on it: `WifiConfig` becomes the desired Wi-Fi configuration,
+/// depends on it: `NetworkConfig` becomes the desired Wi-Fi configuration,
 /// `Identity` becomes the signing identity, `ConnectivityConfig` is handed to
 /// the telemetry task, `NtpServersConfig` to the NTP task. Synchronous on
 /// purpose, see the module documentation. Other sections have no runtime consumer.
@@ -564,12 +564,12 @@ fn publish_committed(wifi: WifiHandle<'static, RawMutex>, id: SectionId, blob: O
         }
         return;
     }
-    if id != WifiConfig::ID {
+    if id != NetworkConfig::ID {
         return;
     }
     match blob {
         None => wifi.set_desired_config(None),
-        Some(blob) => match WifiConfig::decode_versioned(blob.version, blob.payload()) {
+        Some(blob) => match NetworkConfig::decode_versioned(blob.version, blob.payload()) {
             Ok(config) => wifi.set_desired_config(Some(config)),
             Err(error) => warn!(
                 "Wi-Fi: committed configuration cannot be decoded: {}",
@@ -605,11 +605,11 @@ fn publish_stored_wifi(owner: &mut Owner, wifi: WifiHandle<'static, RawMutex>) {
         return;
     };
     let mut blob = Blob::empty();
-    match store.read_raw(WifiConfig::ID, &mut blob.bytes) {
+    match store.read_raw(NetworkConfig::ID, &mut blob.bytes) {
         Ok(Some(info)) => {
             blob.version = info.version;
             blob.len = info.length;
-            publish_committed(wifi, WifiConfig::ID, Some(&blob));
+            publish_committed(wifi, NetworkConfig::ID, Some(&blob));
         }
         Ok(None) => info!("Wi-Fi: not configured"),
         Err(error) => warn!("Wi-Fi configuration unreadable: {}", error),

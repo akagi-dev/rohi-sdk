@@ -91,7 +91,7 @@ async fn main(spawner: Spawner) -> ! {
 
     // A Wi-Fi or BLE failure must never stop the sensors: log and carry on.
     let mut wifi_configured = false;
-    let mut network_failed = false;
+    let mut ip = None;
     match net::start(&mut wireless) {
         Ok((backend, runner, network)) => {
             // `network` is the IP data plane (DNS, TCP, UDP): the time service
@@ -104,20 +104,18 @@ async fn main(spawner: Spawner) -> ! {
             // changes made over the control link.
             spawner.spawn(connectivity_task(network, store::handle(), config).unwrap());
             wifi_configured = net::handle().is_configured();
+            ip = Some(network);
             info!(
                 "Wi-Fi started, wireless heap free {} B",
                 wireless.heap().free
             );
         }
-        Err(error) => {
-            network_failed = true;
-            error!("Wi-Fi unavailable: {}", error);
-        }
+        Err(error) => error!("Wi-Fi unavailable: {}", error),
     }
 
     match wireless.ble(control::BLE_CONFIG, BLE_RESOURCES.init(Default::default())) {
         Ok((transport, runner)) => {
-            let device = control::device(config, identity, network_failed);
+            let device = control::device(config, identity, ip);
             spawner.spawn(ble_task(runner).unwrap());
             spawner.spawn(control_task(transport, device).unwrap());
             info!(

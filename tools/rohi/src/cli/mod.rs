@@ -46,11 +46,12 @@ use std::time::Duration;
 
 use clap::Parser;
 
-pub use args::{ActionCommand, Cli, Command, ConfigAction, OutputFormat};
+pub use args::{ActionCommand, Cli, ColorChoice, Command, ConfigAction, OutputFormat};
 pub use diagnostic::{CliError, Diagnostic, PartialApply};
 pub use target::{Match, Target, resolve};
 pub use terminal::Io;
 
+use crate::format::Paint;
 use crate::{BleLink, ClientTransport, Device, format, scan, scan_until};
 
 /// Everything a command needs besides the device: the terminal, the output
@@ -60,6 +61,8 @@ pub struct Ctx {
     pub io: Io,
     /// How results are written.
     pub format: OutputFormat,
+    /// Styling of the human output; plain unless the terminal supports color.
+    pub paint: Paint,
     /// The URI of the connected device.
     pub uri: Option<String>,
     /// Stops `status --watch` after this many printed documents; for tests.
@@ -72,9 +75,30 @@ impl Ctx {
         Self {
             io,
             format,
+            paint: Paint::plain(),
             uri: None,
             watch_limit: None,
         }
+    }
+
+    /// Styles the human output as `choice` says. `auto` colors when stdout is a
+    /// terminal, unless `NO_COLOR` (<https://no-color.org>) is set or `TERM` is
+    /// `dumb`.
+    pub fn color(&mut self, choice: ColorChoice) {
+        let wanted = match choice {
+            ColorChoice::Always => true,
+            ColorChoice::Never => false,
+            ColorChoice::Auto => {
+                self.io.screen()
+                    && std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty())
+                    && std::env::var_os("TERM").is_none_or(|term| term != "dumb")
+            }
+        };
+        self.paint = if wanted {
+            Paint::ansi()
+        } else {
+            Paint::plain()
+        };
     }
 }
 
@@ -108,7 +132,7 @@ async fn discover(duration: u64, ctx: &mut Ctx) -> Result<(), CliError> {
     ctx.io.emit(
         ctx.format,
         &dto::Versioned::new(dto::Scan::new(&devices)),
-        || format::devices(&devices),
+        || format::devices(ctx.paint, &devices),
     )
 }
 
@@ -156,6 +180,7 @@ pub async fn run(cli: Cli, ctx: &mut Ctx) -> Result<(), CliError> {
 pub async fn main() -> ExitCode {
     let cli = Cli::parse();
     let mut ctx = Ctx::new(Io::stdio(), cli.output);
+    ctx.color(cli.color);
     match run(cli, &mut ctx).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

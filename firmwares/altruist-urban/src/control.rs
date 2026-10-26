@@ -40,7 +40,7 @@ use rohi_hal::SensorsService;
 use rohi_hal_esp::EmbassyClock;
 use rohi_identity::{Identity, IdentityService, IdentityStore, IdentityStoreError, PublicKey};
 use rohi_location::{LocationConfig, LocationService};
-use rohi_net::wifi::{WifiConfig, WifiService};
+use rohi_net::{NetworkConfig, NetworkHandle, NetworkService};
 use rohi_service::{ManagedSection, SectionStore, Startup, StoreError, Tracked};
 use rohi_time::TimeStatusService;
 use rohi_time_ntp::NtpServersConfig;
@@ -48,13 +48,10 @@ use static_cell::StaticCell;
 
 use crate::config::{ConfigHandle, ServiceError as ConfigError};
 use crate::identity::IdentityHandle;
-use crate::resources::{BleResources, BleRunner, BleTransport};
+use crate::resources::{BleResources, BleRunner, BleTransport, Ip};
 use crate::tasks::RawMutex;
 use crate::tasks::store;
 use crate::{connectivity, location, net, time};
-
-/// Upper bound of a Wi-Fi scan requested over the control link.
-const WIFI_SCAN_TIMEOUT_MS: u32 = 20_000;
 
 /// Firmware name and version.
 const FIRMWARE: &str = concat!(env!("CARGO_PKG_NAME"), "-", env!("CARGO_PKG_VERSION"));
@@ -133,7 +130,7 @@ type Section<C> = ManagedSection<C, Stored<C>, RawMutex>;
 
 /// The config sections of the device.
 pub type ConfigSections = (
-    Section<WifiConfig>,
+    Section<NetworkConfig>,
     Section<ConnectivityConfig>,
     Section<LocationConfig>,
     Section<NtpServersConfig>,
@@ -141,7 +138,7 @@ pub type ConfigSections = (
 
 /// The services of the device.
 pub type Services = (
-    Tracked<Startup<WifiService<'static, RawMutex, Delay>>, RawMutex>,
+    Tracked<Startup<NetworkService<'static, RawMutex, Delay, net::Probe>>, RawMutex>,
     Tracked<Startup<ConnectivityStatusService<'static, RawMutex>>, RawMutex>,
     Tracked<LocationService<'static, RawMutex>, RawMutex>,
     Tracked<TimeStatusService<'static, EmbassyClock, CriticalSectionRawMutex>, RawMutex>,
@@ -158,9 +155,15 @@ fn uptime_ms() -> u64 {
 
 /// The registries over the runtime handles of the firmware.
 ///
-/// `network_failed` tells that the network runtime did not start: its services
-/// then report a failed start instead of looking disabled.
-pub fn device(config: ConfigHandle, identity: IdentityHandle, network_failed: bool) -> UrbanDevice {
+/// `network` is the IP data plane; `None` tells that the network runtime did
+/// not start: its services then report a failed start instead of looking
+/// disabled.
+pub fn device(
+    config: ConfigHandle,
+    identity: IdentityHandle,
+    network: Option<NetworkHandle<'static, Ip>>,
+) -> UrbanDevice {
+    let network_failed = network.is_none();
     Device::new(
         DeviceInfo {
             firmware: FIRMWARE,
@@ -175,7 +178,7 @@ pub fn device(config: ConfigHandle, identity: IdentityHandle, network_failed: bo
         ),
         (
             Tracked::new(Startup::new(
-                WifiService::new(net::handle(), Delay, WIFI_SCAN_TIMEOUT_MS),
+                NetworkService::new(net::handle(), Delay, net::Probe::new(network)),
                 network_failed,
             )),
             Tracked::new(Startup::new(

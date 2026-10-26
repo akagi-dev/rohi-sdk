@@ -57,7 +57,7 @@ Uptime:  2h 14m
 Health:  degraded
 
 SERVICE       STATE     HEALTH    READY  SINCE
-wifi          running   ok        yes    2h 14m
+network        running   ok        yes    2h 14m
 connectivity  running   degraded  yes    34s
 time          running   ok        yes    2h 13m
 sensors       running   ok        yes    2h 14m
@@ -99,8 +99,8 @@ it `degraded`, and disabled services do not count.
 issues**:
 
 ```console
-$ rohi status wifi
-Service:  wifi
+$ rohi status network
+Service:  network
 State:    running
 Health:   ok
 Ready:    yes
@@ -118,10 +118,10 @@ age. Scripts react to the code, people read the message. Only issues that are ac
 diagnostics. With `-o json` the values are keyed by field name and carry their units:
 
 ```console
-$ rohi -o json status wifi
+$ rohi -o json status network
 {
   "schema_version": 1,
-  "service": { "service": "wifi", "state": "running", "health": "ok", "ready": true, ... },
+  "service": { "service": "network", "state": "running", "health": "ok", "ready": true, ... },
   "values": { "ssid": "office", "rssi": -61, "ip": "192.168.1.42" },
   "units": { "rssi": "dBm" },
   "issues": []
@@ -147,14 +147,14 @@ Status never changes anything. Operations are **actions**, listed and described 
 ```console
 $ rohi action list
 SERVICE   ACTION      ACCESS  DESCRIPTION
-wifi      scan        read    Scan for networks, strongest first
-wifi      reconnect   write   Drop the connection and connect again
-wifi      disconnect  write   Disconnect and stay idle
+network   scan        read    Scan for networks, strongest first
+network   reconnect   write   Drop the connection and connect again
+network   disconnect  write   Disconnect and stay idle
 identity  provision   write   Install the device identity; fails if one exists
 identity  erase       write   Remove the device identity
 
-$ rohi action describe wifi scan
-$ rohi action run wifi scan
+$ rohi action describe network scan
+$ rohi action run network scan
 SSID    RSSI     CHANNEL  SECURITY
 office  -50 dBm  6        wpa2
 guest   -70 dBm  11       open
@@ -174,7 +174,7 @@ rules are in [Service pipeline](../sdk/service.md#config-sections).
 
 | Service | What it reports | Typical issue codes |
 |---------|-----------------|---------------------|
-| `wifi` | connection state, network, signal, addresses | `authentication_failed`, `network_not_found`, `dhcp_failed` |
+| `network` | connection state, network, signal, addresses, radio heap, socket usage | `authentication_failed`, `network_not_found`, `dhcp_failed` |
 | `connectivity` | telemetry queue and counters, endpoint | `connection_timeout`, `unauthorized`, `no_identity`, `no_utc_time`, `no_location` |
 | `time` | wall-clock time, source, age, failures | `network_unavailable`, `timeout`, `implausible` |
 | `sensors` | `<sensor>.<measurement>` values in canonical units | `bmx280_error`, `sds011_degraded`, ... |

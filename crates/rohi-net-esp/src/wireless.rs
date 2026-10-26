@@ -80,6 +80,17 @@ pub struct WirelessHeap {
     pub min_free: Option<usize>,
 }
 
+impl WirelessHeap {
+    /// The portable form, as reported by the `network` service.
+    pub const fn stats(&self) -> rohi_net::HeapStats {
+        rohi_net::HeapStats {
+            size: self.size,
+            free: self.free,
+            min_free: self.min_free,
+        }
+    }
+}
+
 /// A driver was requested twice, or BLE could not be started.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WirelessError {

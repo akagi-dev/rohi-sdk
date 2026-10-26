@@ -11,7 +11,7 @@
 | **ConfigHandle / ConfigStore / ConfigSection** | Handle to the configuration owner task / the transactional store / one typed section owned by a feature crate |
 | **Control plane (BLE)** | The local protobuf protocol served over BLE by `rohi-control` + `rohi-control-ble`: info, config, status and actions, driven by schemas the device publishes |
 | **Control plane (Wi-Fi)** | `WifiHandle` / `WifiManager`: configuration, scan, status, reconnect, disconnect. Not DNS or TCP |
-| **Desired state** | The latest value a runtime should converge to (for example the desired `WifiConfig`); published, not queued. See [Runtime ownership](../concepts/runtime-ownership.md#state-versus-command) |
+| **Desired state** | The latest value a runtime should converge to (for example the desired `NetworkConfig`); published, not queued. See [Runtime ownership](../concepts/runtime-ownership.md#state-versus-command) |
 | **EspWireless** | The single owner of the ESP radio peripherals and the wireless heap; creates the Wi-Fi and BLE drivers |
 | **Golden test** | A test pinning exact encoded bytes or IDs so accidental ABI changes fail |
 | **Device health** | The overall `ok` / `degraded` / `error` of the device, decided by the firmware from its services, never by a client |

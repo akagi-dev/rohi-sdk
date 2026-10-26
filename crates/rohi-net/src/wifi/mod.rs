@@ -19,7 +19,7 @@
 //! disconnect.
 //!
 //! [`WifiManager`] is the single owner of a platform [`WifiBackend`] and
-//! reconciles the radio towards the latest desired [`WifiConfig`]. Other tasks
+//! reconciles the radio towards the latest desired [`NetworkConfig`](crate::NetworkConfig). Other tasks
 //! use the copyable [`WifiHandle`]. Nothing here carries IP traffic; that is
 //! the job of the [IP data plane](crate::ip).
 
@@ -27,7 +27,6 @@ mod backend;
 mod backoff;
 mod config;
 mod error;
-mod managed;
 mod manager;
 mod network;
 mod scan;
@@ -35,13 +34,11 @@ mod state;
 
 pub use backend::WifiBackend;
 pub use backoff::Backoff;
-pub use config::{WifiConfig, WifiPassword, WifiSsid};
+pub use config::{WifiPassword, WifiSsid};
 pub use error::WifiError;
-pub use managed::{
-    WifiService, field as wifi_config_field, scan_field as wifi_scan_field,
-    status_field as wifi_status_field,
+pub use manager::{
+    LinkMetrics, ManagerConfig, STATUS_RECEIVERS, WifiHandle, WifiManager, WifiShared,
 };
-pub use manager::{ManagerConfig, STATUS_RECEIVERS, WifiHandle, WifiManager, WifiShared};
 pub use network::NetworkInfo;
 pub use scan::{ScanCollector, WifiNetwork, WifiScanResults, WifiSecurity};
 pub use state::{WifiState, WifiStatus};

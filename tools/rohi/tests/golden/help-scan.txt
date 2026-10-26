@@ -29,6 +29,16 @@ Output:
           
           [default: human]
 
+      --color <WHEN>
+          Color the text output
+
+          Possible values:
+          - auto:   Color when stdout is a terminal, unless `NO_COLOR` is set or `TERM` is `dumb`
+          - always: Always color
+          - never:  Never color
+          
+          [default: auto]
+
 Connection:
       --scan-timeout <SECONDS>
           How long to search for the target device

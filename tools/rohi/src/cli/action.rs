@@ -34,7 +34,7 @@ pub async fn run<T: ClientTransport>(
             ctx.io.emit(
                 ctx.format,
                 &dto::Versioned::new(dto::actions(&actions)),
-                || format::actions(&actions),
+                || format::actions(ctx.paint, &actions),
             )
         }
         ActionCommand::Describe { service, action } => {
@@ -42,7 +42,7 @@ pub async fn run<T: ClientTransport>(
             ctx.io.emit(
                 ctx.format,
                 &dto::Versioned::new(dto::action_schema(&schema)),
-                || format::action_schema(&schema),
+                || format::action_schema(ctx.paint, &schema),
             )
         }
         ActionCommand::Run {
@@ -87,7 +87,7 @@ pub async fn run<T: ClientTransport>(
             ctx.io.emit(
                 ctx.format,
                 &dto::Versioned::new(dto::records(&records, &schema)),
-                || format::records(&records, &schema),
+                || format::records(ctx.paint, &records, &schema),
             )
         }
     }

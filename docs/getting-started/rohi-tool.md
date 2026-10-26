@@ -47,7 +47,7 @@ Uptime:  2h 14m
 Health:  ok
 
 SERVICE       STATE    HEALTH  READY  SINCE
-wifi          running  ok      yes    2h 14m
+network        running  ok      yes    2h 14m
 connectivity  running  ok      yes    34s
 ...
 ```
@@ -85,7 +85,7 @@ Command results go to stdout. Prompts, progress, warnings and diagnostics go to 
 clean. `-o json` (`--output json`) prints a JSON document with a stable, versioned schema instead of text:
 
 ```bash
-rohi -d A12F -o json status wifi | jq -r '.values.ip'
+rohi -d A12F -o json status network | jq -r '.values.ip'
 rohi -d A12F -o json status sensors | jq '.values["scd4x.co2"]'
 rohi -d A12F -o json status | jq -r '.services[] | select(.health != "ok") | .service'
 ```
@@ -119,10 +119,10 @@ hidden prompt on a terminal.
 
 ```bash
 rohi status                       # device health and one row per service: one compact request
-rohi status wifi                  # one service: values with units, active issues
+rohi status network                  # one service: values with units, active issues
 rohi status --watch               # reprint when something observable changed (Ctrl-C to stop)
-rohi status wifi --watch --interval 5
-rohi -o json status wifi
+rohi status network --watch --interval 5
+rohi -o json status network
 ```
 
 Services are discovered from the device, so `rohi status <name>` works for any service the summary lists. Without a
@@ -144,8 +144,8 @@ rohi config get connectivity host                  # one field
 
 rohi config set connectivity host=ingress.example.org port=443 enabled=true
 rohi config set connectivity interval_s=120 --dry-run
-rohi config set wifi ssid=office password=-         # secret from stdin or a hidden prompt
-rohi config unset wifi password                    # optional field: no value (not "" or 0)
+rohi config set network ssid=office password=-         # secret from stdin or a hidden prompt
+rohi config unset network password                    # optional field: no value (not "" or 0)
 rohi config reset connectivity                     # remove the stored section, restore defaults
 rohi config factory-reset                        # reset every section; the identity is not configuration
 ```
@@ -182,7 +182,7 @@ A file maps section names to their fields:
 
 ```json
 {
-  "wifi": { "ssid": "office" },
+  "network": { "ssid": "office" },
   "connectivity": { "enabled": true, "interval_s": 120, "host": "ingress.example.org", "port": 443 },
   "location": { "latitude": 52.52, "longitude": 13.405 }
 }
@@ -210,11 +210,11 @@ A file maps section names to their fields:
 
 ```bash
 rohi action list                                   # all actions: service, name, read/write, description
-rohi action describe wifi scan                     # arguments and results
-rohi action run wifi scan                          # results as a table, one row per record
-rohi action run wifi reconnect
+rohi action describe network scan                     # arguments and results
+rohi action run network scan                          # results as a table, one row per record
+rohi action run network reconnect
 rohi action run radio tune channel=11              # arguments are NAME=VALUE, all required
-rohi -o json action run wifi scan
+rohi -o json action run network scan
 ```
 
 `write` actions need a link that satisfies the authorization policy of the device. A refusal with a stable reason is
@@ -240,10 +240,10 @@ without echoing it.
 |--------|-----|
 | `rohi sensors` | `rohi status sensors` |
 | `rohi time` | `rohi status time` |
-| `rohi wifi` (status) | `rohi status wifi` |
-| `rohi wifi scan` | `rohi action run wifi scan` |
-| `rohi wifi reconnect`, `disconnect` | `rohi action run wifi reconnect` / `disconnect` |
-| `rohi wifi connect`, `configure`, `forget` | `rohi config set wifi ssid=.. password=-`, `rohi config reset wifi`, then `rohi status wifi` |
+| `rohi wifi` (status) | `rohi status network` |
+| `rohi wifi scan` | `rohi action run network scan` |
+| `rohi wifi reconnect`, `disconnect` | `rohi action run network reconnect` / `disconnect` |
+| `rohi wifi connect`, `configure`, `forget` | `rohi config set network ssid=.. password=-`, `rohi config reset network`, then `rohi status network` |
 | `rohi config [wifi\|connectivity]` | `rohi config get <section>` |
 | `rohi connectivity set --host ..` | `rohi config set connectivity host=..` |
 | `rohi backup export` / `import` | `rohi config export` / `apply` |

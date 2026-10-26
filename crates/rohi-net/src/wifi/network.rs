@@ -24,7 +24,11 @@ use crate::WifiSsid;
 pub struct NetworkInfo {
     pub ssid: WifiSsid,
     pub rssi_dbm: i8,
-    /// IPv4 address obtained through DHCP.
+    /// Channel of the access point, if the driver reports it.
+    pub channel: Option<u8>,
+    /// Hardware address of the station interface.
+    pub mac: Option<[u8; 6]>,
+    /// IPv4 address, from DHCP or the static configuration.
     pub ipv4: Ipv4Addr,
     pub gateway: Option<Ipv4Addr>,
     pub dns: Option<Ipv4Addr>,

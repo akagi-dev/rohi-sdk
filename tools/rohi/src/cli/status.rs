@@ -31,6 +31,9 @@ pub async fn run<T: ClientTransport>(
     interval: u64,
     ctx: &mut Ctx,
 ) -> Result<(), CliError> {
+    // On a terminal a human watch redraws one screen in place, so uptime and
+    // ages stay current; otherwise it appends a document per change.
+    let in_place = watch && ctx.format == super::OutputFormat::Human && ctx.io.screen();
     let mut previous: Option<String> = None;
     let mut printed = 0usize;
     loop {
@@ -40,7 +43,7 @@ pub async fn run<T: ClientTransport>(
                 let status = device.services_status().await?;
                 let sensor_id = sensor_id(device, &status).await?;
                 (
-                    format::services_status(&info, &status, sensor_id.as_deref()),
+                    format::services_status(ctx.paint, &info, &status, sensor_id.as_deref()),
                     dto::services_status(&info, &status, sensor_id.as_deref()),
                 )
             }
@@ -48,11 +51,20 @@ pub async fn run<T: ClientTransport>(
                 let schema = device.service_schema(service).await?;
                 let status = device.service_status(service).await?;
                 (
-                    format::service_status(&status, &schema),
+                    format::service_status(ctx.paint, &status, &schema),
                     dto::service_status(&status, &schema),
                 )
             }
         };
+        if in_place {
+            ctx.io.redraw(&text)?;
+            printed += 1;
+            if ctx.watch_limit.is_some_and(|limit| printed >= limit) {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_secs(interval)).await;
+            continue;
+        }
         // A watch prints again only when what is shown changed. Uptime and
         // ages move all the time, so they are not part of the comparison of
         // the summary: its revisions say whether anything observable changed.

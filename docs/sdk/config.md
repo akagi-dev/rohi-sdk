@@ -34,7 +34,7 @@ Crates:
 | `rohi-config-derive`  | `#[derive(ConfigSection)]`, section IDs from struct names                          |
 | `rohi-config-esp`     | ESP32-C3 / ESP32-C6 flash backend, bounded flash region, partition lookup          |
 
-Each feature crate owns its own schema (for example `rohi-net` owns `WifiConfig`); `rohi-config` never learns
+Each feature crate owns its own schema (for example `rohi-net` owns `NetworkConfig`); `rohi-config` never learns
 the set of application sections.
 
 ## Defining a section
@@ -178,13 +178,13 @@ the partition is missing or committed configuration is corrupt the firmware keep
 with `ServiceError::Unavailable` (`status()` tells why) instead of behaving as if the configuration were empty.
 `status()` reports the store's current `state()`, so `Recovered` becomes `Valid` once an update repaired the slot.
 
-The owner task also publishes a committed `WifiConfig` to the Wi-Fi runtime as the desired configuration, in the same
+The owner task also publishes a committed `NetworkConfig` to the Wi-Fi runtime as the desired configuration, in the same
 step as the commit and with no `.await` in between (and once at boot from the stored value). Cancelling a
 `ConfigHandle::set` or `remove` therefore either happens before the request was queued (nothing changed) or the
 operation is logically completed: see [Async and cancellation](../concepts/async-and-cancellation.md).
 
 `ConfigHandle` is section-oriented only: there is deliberately no "erase everything" operation, so ordinary
-maintenance such as removing `WifiConfig` never touches unrelated or future protected sections (for example an
+maintenance such as removing `NetworkConfig` never touches unrelated or future protected sections (for example an
 identity). The way out of corruption without reflashing is the separate `config::maintenance()` handle:
 `StorageMaintenance::format_storage()` formats an unavailable store (corrupt or unreadable, partition present) with
 `ConfigStore::format` and the service becomes ready with an empty store. It refuses a ready store

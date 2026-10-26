@@ -43,6 +43,8 @@ pub struct Io {
     stderr: Box<dyn Write>,
     input: Input,
     interactive: bool,
+    /// Whether stdout is a terminal that can redraw in place.
+    screen: bool,
 }
 
 impl Io {
@@ -54,6 +56,7 @@ impl Io {
             stderr: Box::new(io::stderr()),
             input: Input::Stdin(None),
             interactive: io::stdin().is_terminal() && io::stderr().is_terminal(),
+            screen: io::stdout().is_terminal(),
         }
     }
 
@@ -70,7 +73,32 @@ impl Io {
             stderr: Box::new(stderr),
             input: Input::Script(input.iter().map(|line| (*line).to_owned()).collect()),
             interactive,
+            screen: false,
         }
+    }
+
+    /// Pretends stdout is a terminal that redraws in place, for tests.
+    pub fn with_screen(mut self, screen: bool) -> Self {
+        self.screen = screen;
+        self
+    }
+
+    /// Whether [`Io::redraw`] can replace the previous output.
+    pub fn screen(&self) -> bool {
+        self.screen
+    }
+
+    /// Replaces what the previous redraw showed instead of appending to it:
+    /// the cursor goes home, every line is overwritten and the rest of the
+    /// screen is erased, so a refresh neither flickers nor scrolls.
+    pub fn redraw(&mut self, text: &str) -> Result<(), CliError> {
+        let mut frame = String::from("\x1b[H");
+        for line in text.lines() {
+            frame.push_str(line);
+            frame.push_str("\x1b[K\n");
+        }
+        frame.push_str("\x1b[J");
+        self.result(&frame)
     }
 
     /// Whether prompts can be shown and answered.

@@ -34,6 +34,16 @@ Output:
           
           [default: human]
 
+      --color <WHEN>
+          Color the text output
+
+          Possible values:
+          - auto:   Color when stdout is a terminal, unless `NO_COLOR` is set or `TERM` is `dumb`
+          - always: Always color
+          - never:  Never color
+          
+          [default: auto]
+
 Connection:
       --scan-timeout <SECONDS>
           How long to search for the target device
@@ -46,8 +56,8 @@ Connection:
           [default: 10]
 
 Examples:
-  rohi action run wifi scan
-  rohi action run wifi reconnect
+  rohi action run network scan
+  rohi action run network reconnect
   rohi action run identity provision secret=-
   rohi action run identity erase
-  rohi -o json action run wifi scan
+  rohi -o json action run network scan

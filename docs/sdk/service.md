@@ -166,7 +166,7 @@ reason such as `already_provisioned`.
 
 | Crate | Config section | Service | Actions |
 |-------|----------------|---------|---------|
-| `rohi-net` | `wifi` (`ssid`, `password` secret) | `wifi` (state, ssid, rssi, ip, gateway, dns) | `scan`, `reconnect`, `disconnect` |
+| `rohi-net` | `network` (`ssid`, `password` secret, address mode, static IPv4, host name, timing) | `network` (link, address, radio heap, sockets) | `scan`, `reconnect`, `disconnect` |
 | `rohi-connectivity` | `connectivity` | `connectivity` (queue, counters, endpoint) | |
 | `rohi-location` | `location` | `location` | |
 | `rohi-time` / `rohi-time-ntp` | `time` (NTP servers, `rohi-time-ntp`) | `time` (unix time, source, age, failures) | |

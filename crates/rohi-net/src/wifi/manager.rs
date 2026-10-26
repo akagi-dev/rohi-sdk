@@ -28,8 +28,9 @@ use embedded_hal_async::delay::DelayNs;
 use log::{info, warn};
 
 use super::backoff::Backoff;
+use crate::network::{DEFAULT_BACKOFF_INITIAL_MS, DEFAULT_BACKOFF_MAX_MS, DEFAULT_LINK_REFRESH_MS};
 use crate::{
-    NetworkInfo, WIFI_COMMAND_QUEUE_DEPTH, WifiBackend, WifiConfig, WifiError, WifiScanResults,
+    NetworkConfig, NetworkInfo, WIFI_COMMAND_QUEUE_DEPTH, WifiBackend, WifiError, WifiScanResults,
     WifiState, WifiStatus,
 };
 
@@ -51,7 +52,18 @@ enum Command {
 /// coalesced into the last one.
 struct Desired {
     generation: u32,
-    config: Option<WifiConfig>,
+    config: Option<NetworkConfig>,
+}
+
+/// Counters of the link since boot, published by the [`WifiManager`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LinkMetrics {
+    /// Connection attempts that followed a failure, a lost link or a
+    /// `reconnect` command.
+    pub reconnects: u32,
+    /// Time of the current connection, on the clock of [`ManagerConfig::now_ms`];
+    /// `None` while not connected or without a clock.
+    pub connected_at_ms: Option<u64>,
 }
 
 /// State shared between the [`WifiManager`] task and its [`WifiHandle`]s.
@@ -60,6 +72,7 @@ struct Desired {
 pub struct WifiShared<M: RawMutex> {
     desired: BlockingMutex<M, RefCell<Desired>>,
     desired_changed: Signal<M, ()>,
+    metrics: BlockingMutex<M, Cell<LinkMetrics>>,
     commands: Channel<M, Command, WIFI_COMMAND_QUEUE_DEPTH>,
     status: Watch<M, WifiStatus, STATUS_RECEIVERS>,
     info: BlockingMutex<M, RefCell<Option<NetworkInfo>>>,
@@ -75,6 +88,10 @@ impl<M: RawMutex> WifiShared<M> {
                 config: None,
             })),
             desired_changed: Signal::new(),
+            metrics: BlockingMutex::new(Cell::new(LinkMetrics {
+                reconnects: 0,
+                connected_at_ms: None,
+            })),
             commands: Channel::new(),
             status: Watch::new_with(WifiStatus::new(WifiState::NotConfigured)),
             info: BlockingMutex::new(RefCell::new(None)),
@@ -138,13 +155,25 @@ impl<M: RawMutex> WifiHandle<'_, M> {
     ///
     /// The manager validates the value again. Completion does not mean the
     /// access point was reached; follow [`status`](Self::status) for that.
-    pub fn set_desired_config(&self, config: Option<WifiConfig>) {
+    pub fn set_desired_config(&self, config: Option<NetworkConfig>) {
         self.shared.desired.lock(|desired| {
             let mut desired = desired.borrow_mut();
             desired.generation = desired.generation.wrapping_add(1);
             desired.config = config;
         });
         self.shared.desired_changed.signal(());
+    }
+
+    /// The latest desired configuration, as published.
+    pub fn desired_config(&self) -> Option<NetworkConfig> {
+        self.shared
+            .desired
+            .lock(|desired| desired.borrow().config.clone())
+    }
+
+    /// Counters of the link since boot.
+    pub fn metrics(&self) -> LinkMetrics {
+        self.shared.metrics.lock(|metrics| metrics.get())
     }
 
     /// `true` if the latest desired configuration is `Some`.
@@ -222,14 +251,34 @@ pub struct ManagerConfig {
     /// one such interval, so a link that drops right after connecting keeps
     /// backing off.
     pub info_refresh_ms: u32,
+    /// Monotonic clock in milliseconds, for the link uptime. Without one the
+    /// uptime is not recorded.
+    pub now_ms: Option<fn() -> u64>,
 }
 
 impl ManagerConfig {
     pub const DEFAULT: Self = Self {
-        backoff_initial_ms: 1_000,
-        backoff_max_ms: 60_000,
-        info_refresh_ms: 10_000,
+        backoff_initial_ms: DEFAULT_BACKOFF_INITIAL_MS,
+        backoff_max_ms: DEFAULT_BACKOFF_MAX_MS,
+        info_refresh_ms: DEFAULT_LINK_REFRESH_MS,
+        now_ms: None,
     };
+
+    /// The same clock with the timing of `config`.
+    pub const fn with_network(self, config: &NetworkConfig) -> Self {
+        Self {
+            backoff_initial_ms: config.backoff_initial_ms,
+            backoff_max_ms: config.backoff_max_ms,
+            info_refresh_ms: config.link_refresh_ms,
+            now_ms: self.now_ms,
+        }
+    }
+
+    /// Uses `now_ms` as the clock of the link uptime.
+    pub const fn with_clock(mut self, now_ms: fn() -> u64) -> Self {
+        self.now_ms = Some(now_ms);
+        self
+    }
 }
 
 impl Default for ManagerConfig {
@@ -274,7 +323,7 @@ pub struct WifiManager<'a, B, D, M: RawMutex> {
     delay: D,
     shared: &'a WifiShared<M>,
     settings: ManagerConfig,
-    config: Option<WifiConfig>,
+    config: Option<NetworkConfig>,
     /// Generation of the last desired configuration taken into account.
     seen: u32,
     phase: Phase,
@@ -321,6 +370,15 @@ impl<'a, B: WifiBackend, D: DelayNs, M: RawMutex> WifiManager<'a, B, D, M> {
 
     fn set_info(&self, info: Option<NetworkInfo>) {
         set_info(self.shared, info);
+    }
+
+    fn record_connected(&self) {
+        let now = self.settings.now_ms.map(|now_ms| now_ms());
+        self.shared.metrics.lock(|metrics| {
+            let mut value = metrics.get();
+            value.connected_at_ms = now;
+            metrics.set(value);
+        });
     }
 
     async fn offline(&mut self, state: WifiState) {
@@ -382,6 +440,7 @@ impl<'a, B: WifiBackend, D: DelayNs, M: RawMutex> WifiManager<'a, B, D, M> {
             Ok(Ok(info)) => {
                 // The backoff is reset only once the link proved stable, see `online`.
                 self.set_info(Some(info));
+                self.record_connected();
                 self.phase = Phase::Online;
                 self.publish(WifiStatus::new(WifiState::Connected));
             }
@@ -421,6 +480,7 @@ impl<'a, B: WifiBackend, D: DelayNs, M: RawMutex> WifiManager<'a, B, D, M> {
                 .await
                 {
                     Either3::First(()) => {
+                        count_reconnect(shared);
                         self.phase = Phase::Attempt;
                         return;
                     }
@@ -510,8 +570,12 @@ impl<'a, B: WifiBackend, D: DelayNs, M: RawMutex> WifiManager<'a, B, D, M> {
                 } else if self.config.as_ref() != Some(&config) {
                     let _ = self.backend.disconnect().await;
                     // Retry state belongs to the previous network.
+                    self.settings = self.settings.with_network(&config);
+                    self.backoff = Backoff::new(
+                        self.settings.backoff_initial_ms,
+                        self.settings.backoff_max_ms,
+                    );
                     self.config = Some(config);
-                    self.backoff.reset();
                     self.set_info(None);
                     self.phase = Phase::Attempt;
                 }
@@ -532,6 +596,7 @@ impl<'a, B: WifiBackend, D: DelayNs, M: RawMutex> WifiManager<'a, B, D, M> {
                 let _ = self.backend.disconnect().await;
                 self.backoff.reset();
                 self.set_info(None);
+                count_reconnect(self.shared);
                 self.phase = Phase::Attempt;
             }
             Command::Disconnect => {
@@ -574,7 +639,22 @@ fn publish<M: RawMutex>(shared: &WifiShared<M>, current: &mut WifiStatus, status
     }
 }
 
+fn count_reconnect<M: RawMutex>(shared: &WifiShared<M>) {
+    shared.metrics.lock(|metrics| {
+        let mut value = metrics.get();
+        value.reconnects = value.reconnects.saturating_add(1);
+        metrics.set(value);
+    });
+}
+
 fn set_info<M: RawMutex>(shared: &WifiShared<M>, info: Option<NetworkInfo>) {
+    if info.is_none() {
+        shared.metrics.lock(|metrics| {
+            let mut value = metrics.get();
+            value.connected_at_ms = None;
+            metrics.set(value);
+        });
+    }
     shared.info.lock(|cell| *cell.borrow_mut() = info);
 }
 
@@ -584,7 +664,7 @@ fn set_info<M: RawMutex>(shared: &WifiShared<M>, info: Option<NetworkInfo>) {
 fn desired_differs<M: RawMutex>(
     shared: &WifiShared<M>,
     seen: &mut u32,
-    current: &Option<WifiConfig>,
+    current: &Option<NetworkConfig>,
 ) -> bool {
     shared.desired.lock(|desired| {
         let desired = desired.borrow();

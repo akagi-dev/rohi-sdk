@@ -22,6 +22,19 @@ use embedded_nal_async::AddrType;
 
 use super::{NetError, UdpSocket};
 
+/// How many of the statically bounded sockets of an [`IpBackend`] are in use.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IpUsage {
+    /// TCP connections currently open.
+    pub tcp_in_use: usize,
+    /// TCP connections the backend can hold at the same time.
+    pub tcp_capacity: usize,
+    /// UDP sockets currently open.
+    pub udp_in_use: usize,
+    /// UDP sockets the backend can hold at the same time.
+    pub udp_capacity: usize,
+}
+
 /// Platform IP stack seen by a [`NetworkHandle`](crate::NetworkHandle).
 ///
 /// Implemented by platform crates (for example `rohi-net-esp` on top of
@@ -51,6 +64,9 @@ pub trait IpBackend {
     /// `true` while the stack can carry traffic: link up and IPv4
     /// configuration (DHCP) complete.
     fn is_ready(&self) -> bool;
+
+    /// Socket slots in use and available, for diagnostics.
+    fn usage(&self) -> IpUsage;
 
     /// Resolves `host` into one address of the requested family.
     async fn resolve(&self, host: &str, addr_type: AddrType) -> Result<IpAddr, NetError>;
