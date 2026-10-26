@@ -197,6 +197,28 @@ impl<T: ClientTransport> Device<T> {
         }
     }
 
+    /// Formats the configuration storage of the device: every section, the
+    /// identity included, is removed. Returns whether a restart is required.
+    pub async fn factory_reset(&mut self) -> Result<bool> {
+        match self
+            .call(Call::FactoryReset(pb::FactoryResetRequest {}))
+            .await?
+        {
+            Reply::FactoryReset(done) => Ok(done.restart_required),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Asks the device to reboot. The device answers first and reboots shortly
+    /// after, so the link is lost. Devices that cannot reboot answer
+    /// `NotSupported`.
+    pub async fn reboot(&mut self) -> Result<()> {
+        match self.call(Call::Reboot(pb::RebootRequest {})).await? {
+            Reply::Reboot(_) => Ok(()),
+            other => Err(unexpected(&other)),
+        }
+    }
+
     // -- status ---------------------------------------------------------------
 
     /// The services of the device.

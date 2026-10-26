@@ -161,7 +161,7 @@ impl NtpServersConfig {
 
 impl ManagedConfig for NtpServersConfig {
     const NAME: &'static str = "time";
-    const VERSION: u16 = 1;
+    const VERSION: u16 = <Self as ConfigSection>::VERSION;
     const FIELDS: &'static [ConfigField] = &[
         ConfigField::new(field::SERVER1, "server1", ValueKind::String)
             .describe("NTP server host name or IPv4 address"),

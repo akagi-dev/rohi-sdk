@@ -81,7 +81,7 @@ impl LocationConfig {
 
 impl ManagedConfig for LocationConfig {
     const NAME: &'static str = "location";
-    const VERSION: u16 = 1;
+    const VERSION: u16 = <Self as ConfigSection>::VERSION;
     const FIELDS: &'static [ConfigField] = &[
         ConfigField::new(field::LATITUDE, "latitude", ValueKind::F64)
             .describe("Latitude, WGS84")

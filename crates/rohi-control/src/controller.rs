@@ -86,6 +86,8 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
 
         let privilege = match &call {
             Call::PatchConfigSection(_) | Call::ResetConfigSection(_) => Privilege::Mutate,
+            Call::FactoryReset(_) => Privilege::Provision,
+            Call::Reboot(_) => Privilege::Mutate,
             Call::InvokeAction(invoke) => {
                 match self
                     .backend
@@ -182,6 +184,14 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
                     Err(e) => config_error(e),
                 }
             }
+            Call::FactoryReset(_) => match backend.config().factory_reset().await {
+                Ok(done) => Reply::FactoryReset(pb::FactoryResetResponse {
+                    restart_required: done.restart_required,
+                }),
+                Err(e) => config_error(e),
+            },
+            Call::Reboot(_) if backend.reboot() => Reply::Reboot(pb::RebootResponse {}),
+            Call::Reboot(_) => error(pb::ErrorCode::NotSupported),
             Call::ListServices(_) => {
                 let services = backend.services();
                 let mut out = Vec::new();

@@ -56,6 +56,8 @@ because of a bad request.
 | info | `GetInfo` | no |
 | config | `ListConfigSections`, `GetConfigSchema`, `GetConfigSection` | no |
 | config | `PatchConfigSection`, `ResetConfigSection` | **yes** (`Privilege::Mutate`) |
+| config | `FactoryReset` | **yes** (`Privilege::Provision`, it erases the identity) |
+| device | `Reboot` | **yes** (`Privilege::Mutate`) |
 | status | `ListServices`, `GetServicesStatus`, `GetServiceSchema`, `GetServiceStatus` | no |
 | actions | `ListActions`, `GetActionSchema` | no |
 | actions | `InvokeAction` | depends on the action: open, `privileged` (**Mutate**) or secret arguments (**Provision**) |
@@ -91,6 +93,10 @@ fields are absent, secrets are `redacted`, never their value) and `configured`, 
 `PatchConfigSection` carries `set` / `unset` mutations by field id, an optional `expected_revision` and `dry_run`; it is
 atomic per section and validated as a whole, see [Service pipeline](service.md#config-sections).
 `ResetConfigSection` removes the stored section. The response carries the new `revision` and `restart_required`.
+`FactoryReset` formats the configuration storage: every section, sections the firmware does not know and the identity are
+removed and the runtime returns to the defaults. The response carries `restart_required`.
+`Reboot` asks the device to reboot: it answers first and reboots shortly after (the Altruist Urban about 1.5 s later), so
+the link is lost. A device without a reboot hook answers `NOT_SUPPORTED`.
 Success means the configuration is stored **and handed to its runtime**, not that the network was reached: observe the
 service status. There is no request that touches several sections; a client that needs that applies them one by one.
 

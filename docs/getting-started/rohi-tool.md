@@ -110,7 +110,7 @@ hint: make sure Bluetooth is enabled and the device is advertising
 hint: try `rohi scan`
 ```
 
-Destructive commands (`config reset`, `config factory-reset`, `config apply`) ask for confirmation on a terminal. Without a
+Destructive commands (`config reset`, `factory-reset`, `config apply`) ask for confirmation on a terminal. Without a
 terminal they fail with `confirmation required in non-interactive mode` unless `--yes` is passed. Secrets are never
 accepted as command line arguments: a field or argument that is a secret is read with `NAME=-` from stdin, or from a
 hidden prompt on a terminal.
@@ -147,7 +147,15 @@ rohi config set connectivity interval_s=120 --dry-run
 rohi config set network ssid=office password=-         # secret from stdin or a hidden prompt
 rohi config unset network password                    # optional field: no value (not "" or 0)
 rohi config reset connectivity                     # remove the stored section, restore defaults
-rohi config factory-reset                        # reset every section; the identity is not configuration
+```
+
+Format the whole configuration storage of the device with the dedicated `rohi factory-reset` command (not a `config`
+subcommand): every section, the device identity and anything else stored in the partition is erased, including section
+versions, and a damaged storage is repaired. The device is unprovisioned afterwards; the command then asks it to reboot (`rohi reboot`).
+
+```sh
+rohi factory-reset            # asks for confirmation
+rohi factory-reset --yes
 ```
 
 ```text
@@ -231,7 +239,7 @@ rohi action run identity erase
 ```
 
 The secret is derived on a trusted machine (`rohi::derive_identity`, see [Device identity](../sdk/identity.md)) and
-only the derived secret is sent. `config factory-reset` does not touch the identity. A malformed secret is reported
+only the derived secret is sent. `rohi factory-reset` erases it with the rest of the configuration storage. A malformed secret is reported
 without echoing it.
 
 ## Migrating from earlier versions
@@ -254,8 +262,10 @@ without echoing it.
 |---------|--------------|
 | `scan` | discover nearby devices |
 | `status [SERVICE] [--watch]` | device summary or one service |
-| `config list`, `describe`, `get`, `set`, `unset`, `reset`, `factory-reset` | read and change configuration sections |
+| `config list`, `describe`, `get`, `set`, `unset`, `reset` | read and change configuration sections |
 | `config export`, `diff`, `apply` | configuration files |
+| `factory-reset [--yes]` | format the configuration storage, identity included |
+| `reboot` | reboot the device |
 | `action list`, `describe`, `run` | actions of the services |
 
 ## Troubleshooting

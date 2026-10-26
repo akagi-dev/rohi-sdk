@@ -124,7 +124,7 @@ rohi action run identity erase
 The secret is derived on the host with `rohi::derive_identity(suri, number)` (the library of the `rohi` crate) and only
 the derived secret is sent. The master seed, the number and the derivation path are never sent, stored or logged, and
 a malformed secret is not echoed in the error. Compare the public key reported by `status identity` with
-`DerivedIdentity::public_key()` after provisioning. `rohi config factory-reset` does not affect the identity.
+`DerivedIdentity::public_key()` after provisioning. `rohi factory-reset` formats the configuration storage and so erases the identity too.
 
 ## Firmware
 

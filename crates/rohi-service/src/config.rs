@@ -225,6 +225,13 @@ pub struct Patched {
     pub restart_required: bool,
 }
 
+/// Outcome of a successful factory reset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FactoryReset {
+    /// Whether the change only takes effect after a restart.
+    pub restart_required: bool,
+}
+
 /// The generic operations of one section.
 #[allow(async_fn_in_trait)]
 pub trait ConfigSectionOps {
@@ -434,6 +441,23 @@ pub trait ConfigRegistry {
     ) -> Result<Patched, ConfigError>;
     /// Resets the named section.
     async fn reset(&self, section: &str, dry_run: bool) -> Result<Patched, ConfigError>;
+
+    /// Returns the whole configuration storage to its factory state.
+    ///
+    /// The default resets every section of the registry one by one. A
+    /// registry that owns the storage overrides it to format the storage,
+    /// which also removes what no section of this registry knows about (stale
+    /// sections of older firmware, the device identity).
+    async fn factory_reset(&self) -> Result<FactoryReset, ConfigError> {
+        let mut restart_required = false;
+        for index in 0..self.section_count() {
+            let Some(info) = self.section_info(index) else {
+                continue;
+            };
+            restart_required |= self.reset(info.name, false).await?.restart_required;
+        }
+        Ok(FactoryReset { restart_required })
+    }
 }
 
 impl ConfigRegistry for () {

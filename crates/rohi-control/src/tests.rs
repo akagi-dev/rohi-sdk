@@ -14,7 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 
 use embassy_futures::block_on;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
@@ -547,6 +547,78 @@ fn patch_conflicts_dry_runs_unset_and_reset() {
         panic!()
     };
     assert!(!section.configured);
+}
+
+#[test]
+fn factory_reset_resets_every_section_and_needs_a_secure_link() {
+    controller!(controller, RequireEncryption);
+    let encrypted = LinkSecurity {
+        encrypted: true,
+        authenticated: false,
+    };
+    call(
+        &controller,
+        &encrypted,
+        Call::PatchConfigSection(patch("net", &[mutation(3, string_value("a.io"))])),
+    );
+    assert_eq!(
+        error_code(&call(
+            &controller,
+            &PLAIN,
+            Call::FactoryReset(pb::FactoryResetRequest {})
+        )),
+        pb::ErrorCode::PermissionDenied
+    );
+    assert!(matches!(
+        call(
+            &controller,
+            &encrypted,
+            Call::FactoryReset(pb::FactoryResetRequest {})
+        ),
+        Reply::FactoryReset(_)
+    ));
+    let Reply::GetConfigSection(section) = call(
+        &controller,
+        &PLAIN,
+        Call::GetConfigSection(pb::GetConfigSectionRequest {
+            section: text("net"),
+        }),
+    ) else {
+        panic!()
+    };
+    assert!(!section.configured);
+}
+
+#[test]
+fn reboot_needs_the_hook_and_a_secure_link() {
+    std::thread_local!(static REBOOTS: Cell<u32> = const { Cell::new(0) });
+    fn reboot() {
+        REBOOTS.with(|count| count.set(count.get() + 1));
+    }
+    let request = || Call::Reboot(pb::RebootRequest {});
+
+    let controller = Controller::new(Device::new(INFO, uptime, (), ()), OpenPolicy);
+    assert_eq!(
+        error_code(&call(&controller, &PLAIN, request())),
+        pb::ErrorCode::NotSupported
+    );
+
+    let device = Device::new(INFO, uptime, (), ()).with_reboot(reboot);
+    let controller = Controller::new(device, RequireEncryption);
+    assert_eq!(
+        error_code(&call(&controller, &PLAIN, request())),
+        pb::ErrorCode::PermissionDenied
+    );
+    assert_eq!(REBOOTS.with(Cell::get), 0);
+    let encrypted = LinkSecurity {
+        encrypted: true,
+        authenticated: false,
+    };
+    assert!(matches!(
+        call(&controller, &encrypted, request()),
+        Reply::Reboot(_)
+    ));
+    assert_eq!(REBOOTS.with(Cell::get), 1);
 }
 
 #[test]

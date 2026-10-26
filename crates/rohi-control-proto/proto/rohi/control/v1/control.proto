@@ -42,6 +42,8 @@ message Request {
     ListActionsRequest list_actions = 20;
     GetActionSchemaRequest get_action_schema = 21;
     InvokeActionRequest invoke_action = 22;
+    FactoryResetRequest factory_reset = 23;
+    RebootRequest reboot = 24;
   }
 }
 
@@ -66,6 +68,8 @@ message Response {
     ListActionsResponse list_actions = 20;
     GetActionSchemaResponse get_action_schema = 21;
     InvokeActionResponse invoke_action = 22;
+    FactoryResetResponse factory_reset = 23;
+    RebootResponse reboot = 24;
   }
 }
 
@@ -278,6 +282,23 @@ message ResetConfigSectionResponse {
   uint32 revision = 1;
   bool restart_required = 2;
 }
+
+// Formats the configuration storage: every section is removed, including
+// sections this firmware does not know and the device identity, and the
+// runtime state derived from configuration returns to the defaults. Damaged
+// storage is repaired this way.
+message FactoryResetRequest {}
+
+message FactoryResetResponse {
+  bool restart_required = 1;
+}
+
+// Reboots the device. The device answers first and reboots shortly after, so
+// the response is delivered; the link is lost afterwards. Not every device
+// can reboot: those answer `ERROR_CODE_NOT_SUPPORTED`.
+message RebootRequest {}
+
+message RebootResponse {}
 
 
 // ---------------------------------------------------------------------------

@@ -35,6 +35,7 @@ use altruist_urban::connectivity::connectivity_task;
 use altruist_urban::control::{self, BLE_RESOURCES, ble_task, control_task};
 use altruist_urban::identity;
 use altruist_urban::net::{self, net_runner_task, wifi_task};
+use altruist_urban::reboot::reboot_task;
 use altruist_urban::resources::WIRELESS_HEAP_SIZE;
 use altruist_urban::tasks::sensors::{
     SharedI2cBus, bmx280_task, i2c_handle, noise_task, scd4x_task, sds011_task,
@@ -78,6 +79,7 @@ async fn main(spawner: Spawner) -> ! {
     // Identity is provisioned from the host, never generated; a fresh device
     // simply has none and keeps sensing.
     let identity = identity::start(config).await;
+    spawner.spawn(reboot_task().unwrap());
 
     let board = AltruistUrban::new(hardware).expect("board initialization failed");
     let AltruistUrban {

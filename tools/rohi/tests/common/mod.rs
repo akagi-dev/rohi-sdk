@@ -380,6 +380,19 @@ type Services<'a> = (
 
 pub type Backend<'a> = BackendDevice<Sections, Services<'a>>;
 
+thread_local! {
+    static REBOOTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+fn reboot() {
+    REBOOTS.with(|count| count.set(count.get() + 1));
+}
+
+/// How many reboots the fake devices of this test thread were asked for.
+pub fn reboots() -> u32 {
+    REBOOTS.with(std::cell::Cell::get)
+}
+
 fn uptime() -> u64 {
     90_000
 }
@@ -403,6 +416,7 @@ pub fn backend(bench: &Bench) -> Backend<'_> {
             Tracked::new(LocationService(&bench.location.shared)),
         ),
     )
+    .with_reboot(reboot)
 }
 
 // ---------------------------------------------------------------------------

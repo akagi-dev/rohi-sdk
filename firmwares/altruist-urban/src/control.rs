@@ -41,17 +41,20 @@ use rohi_hal_esp::EmbassyClock;
 use rohi_identity::{Identity, IdentityService, IdentityStore, IdentityStoreError, PublicKey};
 use rohi_location::{LocationConfig, LocationService};
 use rohi_net::{NetworkConfig, NetworkHandle, NetworkService};
-use rohi_service::{ManagedSection, SectionStore, Startup, StoreError, Tracked};
+use rohi_service::{
+    ConfigError as RegistryError, ConfigRegistry, FactoryReset, ManagedSection, Mutation, Patched,
+    SectionInfo, SectionSchema, SectionStore, SectionValues, Startup, StoreError, Tracked,
+};
 use rohi_time::TimeStatusService;
 use rohi_time_ntp::NtpServersConfig;
 use static_cell::StaticCell;
 
-use crate::config::{ConfigHandle, ServiceError as ConfigError};
+use crate::config::{ConfigHandle, ServiceError as ConfigError, StorageMaintenance, maintenance};
 use crate::identity::IdentityHandle;
 use crate::resources::{BleResources, BleRunner, BleTransport, Ip};
 use crate::tasks::RawMutex;
 use crate::tasks::store;
-use crate::{connectivity, location, net, time};
+use crate::{connectivity, location, net, reboot, time};
 
 /// Firmware name and version.
 const FIRMWARE: &str = concat!(env!("CARGO_PKG_NAME"), "-", env!("CARGO_PKG_VERSION"));
@@ -136,6 +139,62 @@ pub type ConfigSections = (
     Section<NtpServersConfig>,
 );
 
+/// The config sections of the device plus the factory reset of the storage
+/// behind them.
+pub struct UrbanConfig {
+    sections: ConfigSections,
+    storage: StorageMaintenance,
+}
+
+impl ConfigRegistry for UrbanConfig {
+    fn section_count(&self) -> usize {
+        self.sections.section_count()
+    }
+
+    fn section_info(&self, index: usize) -> Option<SectionInfo> {
+        self.sections.section_info(index)
+    }
+
+    fn schema(&self, section: &str) -> Option<SectionSchema> {
+        self.sections.schema(section)
+    }
+
+    async fn get(&self, section: &str) -> Result<SectionValues, RegistryError> {
+        self.sections.get(section).await
+    }
+
+    async fn patch(
+        &self,
+        section: &str,
+        mutations: &[Mutation],
+        expected_revision: Option<u32>,
+        dry_run: bool,
+    ) -> Result<Patched, RegistryError> {
+        self.sections
+            .patch(section, mutations, expected_revision, dry_run)
+            .await
+    }
+
+    async fn reset(&self, section: &str, dry_run: bool) -> Result<Patched, RegistryError> {
+        self.sections.reset(section, dry_run).await
+    }
+
+    /// Formats the whole configuration region: this also removes the identity
+    /// and sections this firmware does not know. The sections are reset
+    /// afterwards; with nothing left to remove this commits nothing and only
+    /// advances their revisions.
+    async fn factory_reset(&self) -> Result<FactoryReset, RegistryError> {
+        self.storage
+            .factory_reset()
+            .await
+            .map_err(|error| match error {
+                ConfigError::Unavailable(_) => RegistryError::Unavailable,
+                _ => RegistryError::Internal,
+            })?;
+        self.sections.factory_reset().await
+    }
+}
+
 /// The services of the device.
 pub type Services = (
     Tracked<Startup<NetworkService<'static, RawMutex, Delay, net::Probe>>, RawMutex>,
@@ -147,7 +206,7 @@ pub type Services = (
 );
 
 /// The control backend of the Altruist Urban.
-pub type UrbanDevice = Device<ConfigSections, Services>;
+pub type UrbanDevice = Device<UrbanConfig, Services>;
 
 fn uptime_ms() -> u64 {
     time::service().monotonic_now().millis
@@ -170,12 +229,15 @@ pub fn device(
             board: BOARD,
         },
         uptime_ms,
-        (
-            ManagedSection::new(Stored::new(config)),
-            ManagedSection::new(Stored::new(config)),
-            ManagedSection::new(Stored::new(config)),
-            ManagedSection::new(Stored::new(config)),
-        ),
+        UrbanConfig {
+            sections: (
+                ManagedSection::new(Stored::new(config)),
+                ManagedSection::new(Stored::new(config)),
+                ManagedSection::new(Stored::new(config)),
+                ManagedSection::new(Stored::new(config)),
+            ),
+            storage: maintenance(),
+        },
         (
             Tracked::new(Startup::new(
                 NetworkService::new(net::handle(), Delay, net::Probe::new(network)),
@@ -195,6 +257,7 @@ pub fn device(
             Tracked::new(IdentityService(StoredIdentity(identity))),
         ),
     )
+    .with_reboot(reboot::request)
 }
 
 /// GATT layout of the ROHI Control Service.

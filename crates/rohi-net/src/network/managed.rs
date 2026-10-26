@@ -22,6 +22,7 @@ use core::net::Ipv4Addr;
 use core::str::FromStr;
 
 use heapless::String;
+use rohi_config::ConfigSection;
 use rohi_service::{ConfigField, FieldError, ManagedConfig, Value, ValueKind};
 
 use super::config::{
@@ -94,7 +95,7 @@ fn number(value: &Value) -> Result<u32, FieldError> {
 
 impl ManagedConfig for NetworkConfig {
     const NAME: &'static str = "network";
-    const VERSION: u16 = 2;
+    const VERSION: u16 = <Self as ConfigSection>::VERSION;
     const FIELDS: &'static [ConfigField] = &[
         ConfigField::new(field::SSID, "ssid", ValueKind::String)
             .describe("Network name, 1 to 32 bytes"),
@@ -270,6 +271,11 @@ mod tests {
 
     fn text(value: &str) -> Value {
         Value::text(value).unwrap()
+    }
+
+    #[test]
+    fn the_reported_version_is_the_stored_one() {
+        assert_eq!(<NetworkConfig as ManagedConfig>::VERSION, 1);
     }
 
     #[test]

@@ -48,7 +48,7 @@ pub mod field {
 
 impl ManagedConfig for ConnectivityConfig {
     const NAME: &'static str = "connectivity";
-    const VERSION: u16 = 1;
+    const VERSION: u16 = <Self as rohi_config::ConfigSection>::VERSION;
     const FIELDS: &'static [ConfigField] = &[
         ConfigField::new(field::ENABLED, "enabled", ValueKind::Bool)
             .describe("Produce and send telemetry"),

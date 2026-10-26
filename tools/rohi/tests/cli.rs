@@ -188,10 +188,11 @@ fn help_texts_are_snapshots() {
         &["config", "set"],
         &["config", "unset"],
         &["config", "reset"],
-        &["config", "factory-reset"],
         &["config", "export"],
         &["config", "diff"],
         &["config", "apply"],
+        &["factory-reset"],
+        &["reboot"],
         &["action"],
         &["action", "list"],
         &["action", "describe"],
@@ -253,7 +254,17 @@ fn the_command_tree_has_no_module_specific_commands() {
         .get_subcommands()
         .map(|command| command.get_name().to_owned())
         .collect();
-    assert_eq!(names, ["scan", "status", "config", "action"]);
+    assert_eq!(
+        names,
+        [
+            "scan",
+            "status",
+            "config",
+            "factory-reset",
+            "reboot",
+            "action"
+        ]
+    );
     for gone in [
         "network",
         "connectivity",
@@ -1352,45 +1363,29 @@ async fn configure_everything(bench: &Bench) {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn factory_reset_removes_every_section_and_keeps_the_identity() {
+async fn factory_reset_removes_every_section() {
     let bench = Bench::new();
     configure_everything(&bench).await;
-    let derived = rohi::derive_identity(DEV_PHRASE, 7).unwrap();
-    let secret = hex(derived.secret().expose_secret());
-    let terminal = Terminal {
-        interactive: false,
-        input: &[&secret],
-        ..Default::default()
-    };
-    run_with(
-        &bench,
-        &["action", "run", "identity", "provision", "secret=-"],
-        terminal,
-    )
-    .await
-    .ok();
 
-    let outcome = run(&bench, &["config", "factory-reset", "--yes"]).await;
+    let outcome = run(&bench, &["factory-reset", "--yes"]).await;
     outcome.ok();
     assert!(
         outcome.stdout.starts_with("Factory reset: "),
         "{}",
         outcome.stdout
     );
-    for name in ["network", "connectivity", "gadget", "location"] {
-        assert!(outcome.stdout.contains(name), "{name}: {}", outcome.stdout);
-    }
+    assert!(outcome.stdout.contains("rebooting"), "{}", outcome.stdout);
+    assert_eq!(common::reboots(), 1);
     assert!(bench.gadget.value.borrow().is_none());
     assert!(bench.location.mem.value.borrow().is_none());
-    assert!(bench.identity.0.borrow().is_some());
 
-    let json = run(&bench, &["-o", "json", "config", "factory-reset", "--yes"])
+    let json = run(&bench, &["-o", "json", "factory-reset", "--yes"])
         .await
         .ok()
         .json();
-    assert_eq!(json["dry_run"], false);
-    assert_eq!(json["reset"].as_array().unwrap().len(), 4);
     assert_eq!(json["restart_required"], true);
+    assert_eq!(json["rebooting"], true);
+    assert_eq!(common::reboots(), 2);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1398,7 +1393,7 @@ async fn factory_reset_asks_only_where_somebody_can_answer() {
     let bench = Bench::new();
     configure_everything(&bench).await;
 
-    let outcome = run(&bench, &["config", "factory-reset"]).await;
+    let outcome = run(&bench, &["factory-reset"]).await;
     assert!(matches!(outcome.error(), CliError::ConfirmationRequired));
     assert!(bench.gadget.value.borrow().is_some());
 
@@ -1407,9 +1402,8 @@ async fn factory_reset_asks_only_where_somebody_can_answer() {
         input: &["n"],
         ..Default::default()
     };
-    let outcome = run_with(&bench, &["config", "factory-reset"], terminal).await;
+    let outcome = run_with(&bench, &["factory-reset"], terminal).await;
     assert!(matches!(outcome.error(), CliError::Cancelled));
-    assert!(outcome.stderr.contains("gadget"), "{}", outcome.stderr);
     assert!(bench.gadget.value.borrow().is_some());
 
     let terminal = Terminal {
@@ -1417,30 +1411,20 @@ async fn factory_reset_asks_only_where_somebody_can_answer() {
         input: &["y"],
         ..Default::default()
     };
-    run_with(&bench, &["config", "factory-reset"], terminal)
-        .await
-        .ok();
+    run_with(&bench, &["factory-reset"], terminal).await.ok();
     assert!(bench.gadget.value.borrow().is_none());
     assert!(bench.location.mem.value.borrow().is_none());
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn a_factory_reset_dry_run_changes_nothing_and_asks_nothing() {
+async fn reboot_asks_the_device_to_reboot() {
     let bench = Bench::new();
-    configure_everything(&bench).await;
-    let writes = bench.writes();
-
-    let outcome = run(&bench, &["config", "factory-reset", "--dry-run"]).await;
-    assert!(
-        outcome
-            .ok()
-            .stdout
-            .starts_with("Factory reset is valid; nothing was changed"),
-        "{}",
-        outcome.stdout
-    );
-    assert_eq!(bench.writes(), writes);
-    assert!(bench.gadget.value.borrow().is_some());
+    let outcome = run(&bench, &["reboot"]).await;
+    assert_eq!(outcome.ok().stdout, "The device is rebooting\n");
+    assert_eq!(common::reboots(), 1);
+    let json = run(&bench, &["-o", "json", "reboot"]).await.ok().json();
+    assert_eq!(json["rebooting"], true);
+    assert_eq!(common::reboots(), 2);
 }
 
 // ---------------------------------------------------------------------------

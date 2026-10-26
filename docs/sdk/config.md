@@ -188,8 +188,10 @@ maintenance such as removing `NetworkConfig` never touches unrelated or future p
 identity). The way out of corruption without reflashing is the separate `config::maintenance()` handle:
 `StorageMaintenance::format_storage()` formats an unavailable store (corrupt or unreadable, partition present) with
 `ConfigStore::format` and the service becomes ready with an empty store. It refuses a ready store
-(`ServiceError::StorageHealthy`) and cannot help a missing partition. A full factory reset, if it ever exists, must
-be its own explicit, privileged operation.
+(`ServiceError::StorageHealthy`) and cannot help a missing partition. The factory reset is its own explicit,
+privileged operation: `StorageMaintenance::factory_reset()` formats the region whatever its state, so it also removes the
+identity, unknown sections and the generation counter, and it repairs corrupt storage. The control protocol exposes it as
+`FactoryReset` (`rohi factory-reset`).
 
 Flash erase and programming are synchronous, and `esp-storage` runs them in a critical section with the flash cache
 disabled. An update therefore stalls the whole CPU, not just the configuration task (each 4 KiB sector erase takes

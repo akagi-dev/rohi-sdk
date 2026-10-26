@@ -55,9 +55,9 @@ pub use action::{
     Records,
 };
 pub use config::{
-    ConfigEntry, ConfigError, ConfigRegistry, ConfigSectionOps, EntryState, FieldError,
-    ManagedConfig, ManagedSection, Mutation, MutationOp, Patched, SectionInfo, SectionSchema,
-    SectionStore, SectionValues, StoreError,
+    ConfigEntry, ConfigError, ConfigRegistry, ConfigSectionOps, EntryState, FactoryReset,
+    FieldError, ManagedConfig, ManagedSection, Mutation, MutationOp, Patched, SectionInfo,
+    SectionSchema, SectionStore, SectionValues, StoreError,
 };
 pub use field::{ConfigField, FieldDescriptor};
 pub use status::{

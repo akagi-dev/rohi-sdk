@@ -35,6 +35,8 @@ mod args;
 mod config;
 mod diagnostic;
 mod dto;
+mod factory_reset;
+mod reboot;
 mod status;
 mod target;
 mod terminal;
@@ -116,6 +118,8 @@ pub async fn execute<T: ClientTransport>(
             interval,
         } => status::run(device, service, watch, interval, ctx).await,
         Command::Config { action } => config::run(device, action, ctx).await,
+        Command::FactoryReset { yes } => factory_reset::run(device, yes, ctx).await,
+        Command::Reboot => reboot::run(device, ctx).await,
         Command::Action { action } => action::run(device, action, ctx).await,
     }
 }

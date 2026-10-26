@@ -41,8 +41,8 @@
 //! There is deliberately no generic "erase every section" operation on
 //! [`ConfigHandle`]: ordinary configuration maintenance (`remove` of one
 //! section) must never touch unrelated or future protected sections such as an
-//! identity. A full factory reset, if ever needed, has to be an explicit,
-//! privileged operation of its own.
+//! identity. The full factory reset is an explicit, privileged operation of its
+//! own: [`StorageMaintenance::factory_reset`] formats the whole region.
 //!
 //! Persistent Wi-Fi configuration is *state*: after the owner task committed a
 //! `NetworkConfig` section (and once at boot, from the stored value) it publishes
@@ -188,6 +188,7 @@ enum Command {
     Set { id: SectionId, blob: Blob },
     Remove(SectionId),
     FormatStorage,
+    FactoryReset,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -304,10 +305,12 @@ impl ConfigHandle {
     }
 }
 
-/// Low-level recovery of unusable storage.
+/// Low-level operations on the whole configuration storage: recovery of
+/// unusable storage and factory reset.
 ///
-/// Kept apart from [`ConfigHandle`] on purpose: it is not a configuration
-/// mutation and must never be reachable from the normal (future control) API.
+/// Kept apart from [`ConfigHandle`] on purpose: they are not configuration
+/// mutations of one section and must not be reachable from ordinary section
+/// maintenance.
 #[derive(Clone, Copy)]
 pub struct StorageMaintenance {
     service: &'static ConfigService,
@@ -331,6 +334,24 @@ impl StorageMaintenance {
             _ => unreachable!("format request answered with another outcome"),
         }
     }
+
+    /// Factory reset: formats the configuration region whatever its state,
+    /// healthy or not, and returns every runtime consumer (Wi-Fi, identity,
+    /// connectivity, NTP, location) to its defaults in the same step.
+    ///
+    /// Everything is discarded: the sections of this firmware, the identity,
+    /// sections it does not know and the generation counter. A missing
+    /// partition cannot be formatted and fails with [`ServiceError::Unavailable`].
+    pub async fn factory_reset(&self) -> Result<(), ServiceError> {
+        let handle = ConfigHandle {
+            service: self.service,
+        };
+        match handle.call(Command::FactoryReset).await {
+            Outcome::Done => Ok(()),
+            Outcome::Failed(error) => Err(error),
+            _ => unreachable!("factory reset request answered with another outcome"),
+        }
+    }
 }
 
 /// What the owner task holds.
@@ -349,6 +370,9 @@ impl Owner {
     fn handle(&mut self, command: Command, wifi: WifiHandle<'static, RawMutex>) -> Outcome {
         if let Command::FormatStorage = command {
             return self.format_storage();
+        }
+        if let Command::FactoryReset = command {
+            return self.factory_reset(wifi);
         }
         match self {
             Self::Unavailable { reason, .. } => match command {
@@ -385,8 +409,61 @@ impl Owner {
                     }
                     Err(error) => Outcome::Failed(ServiceError::Store(error)),
                 },
-                Command::FormatStorage => unreachable!("handled above"),
+                Command::FormatStorage | Command::FactoryReset => unreachable!("handled above"),
             },
+        }
+    }
+
+    /// Formats the region whatever its state, then returns the runtime to the
+    /// defaults. Unlike [`Self::format_storage`] it also acts on a healthy
+    /// store, so it erases the identity and sections unknown to this firmware.
+    fn factory_reset(&mut self, wifi: WifiHandle<'static, RawMutex>) -> Outcome {
+        if let Self::Unavailable {
+            reason,
+            storage: None,
+        } = self
+        {
+            return Outcome::Failed(ServiceError::Unavailable(reason.clone()));
+        }
+        // Every path below puts a real state back.
+        let taken = core::mem::replace(
+            self,
+            Self::Unavailable {
+                reason: Unavailable::Partition(PartitionError::NotFound),
+                storage: None,
+            },
+        );
+        let raw = match taken {
+            Self::Ready(store) => store.into_storage(),
+            Self::Unavailable {
+                storage: Some(raw), ..
+            } => raw,
+            Self::Unavailable { .. } => unreachable!("checked above"),
+        };
+        match ConfigStore::format(raw) {
+            Ok(store) => {
+                warn!("Configuration: factory reset, region formatted");
+                *self = Self::Ready(store);
+                for id in [
+                    NetworkConfig::ID,
+                    Identity::ID,
+                    ConnectivityConfig::ID,
+                    NtpServersConfig::ID,
+                    LocationConfig::ID,
+                ] {
+                    publish_committed(wifi, id, None);
+                }
+                Outcome::Done
+            }
+            Err(failure) => {
+                error!("Configuration: factory reset failed: {}", failure.error);
+                let error = failure.error.clone();
+                *self = Self::Unavailable {
+                    reason: Unavailable::Open(failure.error),
+                    storage: Some(failure.storage),
+                };
+                Outcome::Failed(ServiceError::Store(error))
+            }
         }
     }
 

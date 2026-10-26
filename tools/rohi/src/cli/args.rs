@@ -198,6 +198,33 @@ Examples:
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// Format the configuration storage of the device.
+    ///
+    /// Wipes the whole configuration partition of the device: every section,
+    /// the device identity (the device becomes unprovisioned) and anything
+    /// else stored there, including the section versions and the damaged
+    /// storage of a corrupted device, which is repaired this way. The runtime
+    /// returns to the defaults. A confirmation prompt is shown unless --yes is
+    /// passed.
+    ///
+    /// To restore the defaults of a single section use `rohi config reset`.
+    #[command(after_help = "\
+Examples:
+  rohi factory-reset
+  rohi factory-reset --yes")]
+    FactoryReset {
+        /// Skip the confirmation prompt.
+        #[arg(long, short)]
+        yes: bool,
+    },
+    /// Reboot the device.
+    ///
+    /// The device answers first and reboots shortly after, so the connection
+    /// is lost. Devices that cannot reboot report it as not supported.
+    #[command(after_help = "\
+Examples:
+  rohi reboot")]
+    Reboot,
     /// List and run the actions of the services.
     ///
     /// Actions are explicit operations a service offers, for example scanning
@@ -291,26 +318,6 @@ Examples:
     Reset {
         /// The section.
         section: String,
-        /// Skip the confirmation prompt.
-        #[arg(long, short)]
-        yes: bool,
-        /// Validate on the device without removing anything.
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// Remove every stored section and restore all defaults.
-    ///
-    /// Resets every configuration section the device lists: it is a
-    /// `config reset` of each section. Every reset is validated on the device
-    /// before the first section is changed. Actions and runtime state, such as
-    /// the device identity, are not configuration and are not affected.
-    /// A confirmation prompt is shown unless --yes is passed.
-    #[command(after_help = "\
-Examples:
-  rohi config factory-reset
-  rohi config factory-reset --yes
-  rohi config factory-reset --dry-run")]
-    FactoryReset {
         /// Skip the confirmation prompt.
         #[arg(long, short)]
         yes: bool,
