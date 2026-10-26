@@ -132,15 +132,23 @@ fn since(summary: &ServiceSummary) -> String {
 }
 
 /// The device-wide summary of `rohi status`.
-pub fn services_status(info: &DeviceInfo, status: &ServicesStatus) -> String {
-    let mut out = pairs(&[
-        (
-            "Device:".to_owned(),
-            format!("{} ({})", info.firmware, info.board),
-        ),
-        ("Uptime:".to_owned(), duration(status.uptime_ms)),
-        ("Health:".to_owned(), status.health.to_string()),
-    ]);
+///
+/// `sensor_id` is the SS58 address of the device identity, shown when known.
+pub fn services_status(
+    info: &DeviceInfo,
+    status: &ServicesStatus,
+    sensor_id: Option<&str>,
+) -> String {
+    let mut rows = vec![(
+        "Device:".to_owned(),
+        format!("{} ({})", info.firmware, info.board),
+    )];
+    if let Some(sensor_id) = sensor_id {
+        rows.push(("SensorId:".to_owned(), sensor_id.to_owned()));
+    }
+    rows.push(("Uptime:".to_owned(), duration(status.uptime_ms)));
+    rows.push(("Health:".to_owned(), status.health.to_string()));
+    let mut out = pairs(&rows);
     out.push('\n');
     let rows: Vec<Vec<String>> = status
         .services

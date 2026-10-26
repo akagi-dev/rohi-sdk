@@ -13,15 +13,20 @@ description = "Robonomics Open Hardware time service: NTP/SNTP time source over 
 maintenance = { status = "actively-developed" }
 
 [dependencies]
+rohi-config.workspace = true
 rohi-hal.workspace = true
 rohi-net.workspace = true
+rohi-service.workspace = true
 rohi-time.workspace = true
 sntpc.workspace = true
+minicbor.workspace = true
+heapless.workspace = true
 embedded-hal-async.workspace = true
 embedded-nal-async.workspace = true
 log.workspace = true
 
 [dev-dependencies]
+minicbor = { workspace = true, features = ["std"] }
 rohi-net = { path = "../rohi-net", features = ["testing"] }
 embassy-futures.workspace = true
 embassy-sync.workspace = true

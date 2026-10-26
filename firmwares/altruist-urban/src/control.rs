@@ -20,7 +20,7 @@
 //! BLE radio -> rohi-net-esp (EspBle) -> rohi-control-ble -> rohi-control
 //!                                                              |
 //!                                             UrbanDevice (this module)
-//!                          config sections: wifi, connectivity
+//!                          config sections: wifi, connectivity, location, time
 //!                          services: wifi, connectivity, time, sensors, identity
 //! ```
 //!
@@ -43,6 +43,7 @@ use rohi_location::{LocationConfig, LocationService};
 use rohi_net::wifi::{WifiConfig, WifiService};
 use rohi_service::{ManagedSection, SectionStore, StoreError, Tracked};
 use rohi_time::TimeStatusService;
+use rohi_time_ntp::NtpServersConfig;
 use static_cell::StaticCell;
 
 use crate::config::{ConfigHandle, ServiceError as ConfigError};
@@ -135,6 +136,7 @@ pub type ConfigSections = (
     Section<WifiConfig>,
     Section<ConnectivityConfig>,
     Section<LocationConfig>,
+    Section<NtpServersConfig>,
 );
 
 /// The services of the device.
@@ -163,6 +165,7 @@ pub fn device(config: ConfigHandle, identity: IdentityHandle) -> UrbanDevice {
         },
         uptime_ms,
         (
+            ManagedSection::new(Stored::new(config)),
             ManagedSection::new(Stored::new(config)),
             ManagedSection::new(Stored::new(config)),
             ManagedSection::new(Stored::new(config)),

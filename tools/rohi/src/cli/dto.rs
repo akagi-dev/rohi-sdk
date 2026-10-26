@@ -113,9 +113,14 @@ pub fn summary(summary: &ServiceSummary) -> Json {
     json(summary)
 }
 
-pub fn services_status(info: &DeviceInfo, status: &ServicesStatus) -> Json {
+pub fn services_status(
+    info: &DeviceInfo,
+    status: &ServicesStatus,
+    sensor_id: Option<&str>,
+) -> Json {
     json!({
         "device": info,
+        "sensor_id": sensor_id,
         "uptime_ms": status.uptime_ms,
         "health": status.health,
         "services": status.services,

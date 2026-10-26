@@ -27,29 +27,31 @@
 //! control plane and Wi-Fi run without wall-clock time. [`ntp_task`] samples
 //! NTP in the background once the network is ready and keeps resynchronizing;
 //! failures are retried with bounded backoff and only recorded in the status.
+//! The servers are the `time` configuration section (the public defaults
+//! when there is none) and follow its changes, see [`publish`].
 //! Components read the time through [`service`] and never touch NTP.
 //!
 //! Wall-clock time may step when a new sample corrects it; durations and
 //! deadlines use the monotonic clock. NTP is unauthenticated, so the time is
 //! not input for security decisions.
 
+use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::signal::Signal;
 use embassy_time::Delay;
+use log::{info, warn};
 use rohi_hal_esp::EmbassyClock;
 use rohi_net::NetworkHandle;
+use rohi_service::ManagedConfig;
 use rohi_time::{SyncSchedule, Synchronizer, TimeConfig, TimeService, UnixTime};
-use rohi_time_ntp::{NtpConfig, NtpTimeSource};
+use rohi_time_ntp::{NtpConfig, NtpServersConfig, NtpTimeSource};
 
+use crate::config::ConfigHandle;
 use crate::resources::Ip;
+use crate::tasks::RawMutex;
 
 /// The firmware's time service.
 pub type Time = TimeService<EmbassyClock, CriticalSectionRawMutex>;
-
-/// NTP servers, tried in turn after failures.
-///
-/// A public pool and a second operator: if one is unreachable or refuses to
-/// serve, the next attempt goes to the other.
-const NTP_SERVERS: &[&str] = &["pool.ntp.org", "time.cloudflare.com"];
 
 /// `BUILD_TIMESTAMP` (Unix seconds), set by `build.rs`. A device cannot be running
 /// before its firmware was built, so no earlier time is plausible; it is also
@@ -87,16 +89,61 @@ pub fn service() -> &'static Time {
     &TIME
 }
 
+/// Servers the next synchronization rounds use, see [`publish`].
+static UPDATES: Signal<RawMutex, Option<NtpServersConfig>> = Signal::new();
+
+/// Hands a committed (or removed) `NtpServersConfig` section to the running
+/// [`ntp_task`]. Synchronous, so the configuration owner can call it in the
+/// commit step; only the latest value matters.
+pub fn publish(stored: Option<NtpServersConfig>) {
+    UPDATES.signal(stored);
+}
+
+/// The stored servers, or the defaults when none are stored or the stored
+/// section is unusable.
+fn resolve(stored: Option<NtpServersConfig>) -> NtpServersConfig {
+    match stored {
+        Some(config) if config.validate().is_ok() => config,
+        Some(_) => {
+            warn!("Time: stored NTP servers are invalid, using the defaults");
+            NtpServersConfig::defaults()
+        }
+        None => NtpServersConfig::defaults(),
+    }
+}
+
 /// Keeps the time service synchronized over NTP; never returns.
 ///
 /// Waits for the network without counting failures, then samples hourly
 /// ([`SyncSchedule::DEFAULT`]); after a failure it backs off from 15 s up to
 /// 10 minutes. Uses one UDP socket per exchange, see
 /// [`crate::resources::UDP_SOCKETS`].
+///
+/// The servers come from the `time` configuration section. Every commit or
+/// removal of it restarts the synchronization with the new servers, which
+/// samples at once.
 #[embassy_executor::task]
-pub async fn ntp_task(network: NetworkHandle<'static, Ip>) {
-    let source = NtpTimeSource::new(network, Delay, NtpConfig::new(NTP_SERVERS), || TIME.pivot());
-    Synchronizer::new(&TIME, source, Delay, SyncSchedule::DEFAULT)
-        .run()
-        .await
+pub async fn ntp_task(network: NetworkHandle<'static, Ip>, config: ConfigHandle) {
+    let mut servers = match config.get::<NtpServersConfig>().await {
+        Ok(stored) => resolve(stored),
+        Err(error) => {
+            warn!("Time: stored NTP servers unreadable: {}", error);
+            NtpServersConfig::defaults()
+        }
+    };
+    loop {
+        let stored = {
+            let hosts = servers.servers();
+            info!("Time: NTP servers {:?}", hosts.as_slice());
+            let source =
+                NtpTimeSource::new(network, Delay, NtpConfig::new(&hosts), || TIME.pivot());
+            let mut synchronizer = Synchronizer::new(&TIME, source, Delay, SyncSchedule::DEFAULT);
+            match select(synchronizer.run(), UPDATES.wait()).await {
+                Either::First(never) => match never {},
+                Either::Second(stored) => stored,
+            }
+        };
+        info!("Time: NTP servers changed");
+        servers = resolve(stored);
+    }
 }

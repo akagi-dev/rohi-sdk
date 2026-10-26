@@ -97,7 +97,7 @@ async fn main(spawner: Spawner) -> ! {
             // uses it for NTP and the telemetry uplink for HTTP.
             spawner.spawn(net_runner_task(runner).unwrap());
             spawner.spawn(wifi_task(backend).unwrap());
-            spawner.spawn(ntp_task(network).unwrap());
+            spawner.spawn(ntp_task(network, config).unwrap());
             // Telemetry reads snapshots only: it can neither delay nor stop
             // the sensors, whatever the uplink does. It follows configuration
             // changes made over the control link.

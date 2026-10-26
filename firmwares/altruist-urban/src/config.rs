@@ -52,7 +52,8 @@
 //! `LocationConfig`: the shared location is updated for the telemetry frames and
 //! the `location` service. So does
 //! `ConnectivityConfig`: the telemetry task is signalled and restarts with the
-//! new values. There is no `.await` between commit and
+//! new values. So does `NtpServersConfig`: the NTP task restarts with the new
+//! servers. There is no `.await` between commit and
 //! publication, so a caller that is cancelled while waiting for the response
 //! cannot leave a stored configuration unknown to the runtime.
 //!
@@ -80,9 +81,10 @@ use rohi_connectivity::ConnectivityConfig;
 use rohi_identity::Identity;
 use rohi_location::LocationConfig;
 use rohi_net::{WifiConfig, WifiHandle};
+use rohi_time_ntp::NtpServersConfig;
 
 use crate::tasks::RawMutex;
-use crate::{connectivity, identity, location};
+use crate::{connectivity, identity, location, time};
 
 /// Configuration storage of the Altruist Urban.
 pub type Storage = EspConfigStorage<FlashStorage<'static>>;
@@ -511,8 +513,8 @@ pub fn maintenance() -> StorageMaintenance {
 /// Publishes a just committed (or removed) section to the runtime that
 /// depends on it: `WifiConfig` becomes the desired Wi-Fi configuration,
 /// `Identity` becomes the signing identity, `ConnectivityConfig` is handed to
-/// the telemetry task. Synchronous on purpose, see the
-/// module documentation. Other sections have no runtime consumer.
+/// the telemetry task, `NtpServersConfig` to the NTP task. Synchronous on
+/// purpose, see the module documentation. Other sections have no runtime consumer.
 fn publish_committed(wifi: WifiHandle<'static, RawMutex>, id: SectionId, blob: Option<&Blob>) {
     if id == Identity::ID {
         match blob {
@@ -536,6 +538,16 @@ fn publish_committed(wifi: WifiHandle<'static, RawMutex>, id: SectionId, blob: O
                     ),
                 }
             }
+        }
+        return;
+    }
+    if id == NtpServersConfig::ID {
+        match blob {
+            None => time::publish(None),
+            Some(blob) => match NtpServersConfig::decode_versioned(blob.version, blob.payload()) {
+                Ok(config) => time::publish(Some(config)),
+                Err(error) => warn!("Time: committed NTP servers cannot be decoded: {}", error),
+            },
         }
         return;
     }

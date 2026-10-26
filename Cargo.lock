@@ -4007,9 +4007,13 @@ dependencies = [
  "embassy-sync 0.8.0",
  "embedded-hal-async",
  "embedded-nal-async",
+ "heapless 0.9.3",
  "log",
+ "minicbor",
+ "rohi-config",
  "rohi-hal",
  "rohi-net",
+ "rohi-service",
  "rohi-time",
  "sntpc",
 ]

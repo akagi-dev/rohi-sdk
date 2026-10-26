@@ -48,5 +48,7 @@ pub use error::{Error, Result};
 pub use provision::DerivedIdentity;
 #[cfg(feature = "provision")]
 pub use provision::derive_identity;
+#[cfg(feature = "provision")]
+pub use provision::ss58;
 pub use rohi_identity::PublicKey;
 pub use session::{ClientTransport, DEFAULT_TIMEOUT, Session};

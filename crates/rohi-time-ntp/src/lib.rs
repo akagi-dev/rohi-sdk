@@ -53,6 +53,7 @@ extern crate std;
 
 mod config;
 mod error;
+mod section;
 mod source;
 
 #[cfg(test)]
@@ -60,4 +61,5 @@ mod tests;
 
 pub use config::{DEFAULT_SERVERS, DEFAULT_TIMEOUT_MS, MAX_SERVERS, NTP_PORT, NtpConfig};
 pub use error::NtpError;
+pub use section::{MAX_NAME_LEN, NtpServersConfig, ServerName, field};
 pub use source::NtpTimeSource;

@@ -15,7 +15,7 @@ Every production workspace crate, what it is for, whether it is portable and the
 | `rohi-identity` | Device identity: Ed25519 `Identity` config section, `Secret`, `Signer`, `IdentitySigner` | portable | `no_std` | `Identity`, `Secret`, `Signer`, `IdentitySigner`, `PublicKey`, `Signature` | `rohi-config`, `rohi-service`, `ed25519-zebra` | Provisioning transport, key derivation (done on the host by `rohi`), protocol semantics of signed messages |
 | `rohi-net` | Wi-Fi control plane, IP data plane (DNS, TCP, UDP), BLE transport traits, `WifiConfig` section | portable | `no_std` | `WifiManager`, `WifiHandle`, `WifiBackend`, `NetworkHandle`, `IpBackend`, `UdpSocket`, `NetError`, `BleTransport` | `rohi-config`, `rohi-service`, Embassy sync, `embedded-nal-async`, `embedded-io-async` | Radio drivers, the IP stack, control protocol |
 | `rohi-time` | Synchronized wall-clock time: `TimeService`, `TimeSource`, validation, background `Synchronizer` | portable | `no_std` | `TimeService`, `TimeSource`, `TimeSample`, `UnixTime`, `TimeStatus`, `Synchronizer` | `rohi-hal` (monotonic `Clock`, `Backoff`), `rohi-service`, Embassy sync | Network or clock hardware, any concrete source |
-| `rohi-time-ntp` | NTP/SNTP `TimeSource` over the IP data plane | portable | `no_std` | `NtpTimeSource`, `NtpConfig` | `rohi-time`, `rohi-net`, `sntpc` | The global concept of time, the UDP stack |
+| `rohi-time-ntp` | NTP/SNTP `TimeSource` over the IP data plane | portable | `no_std` | `NtpTimeSource`, `NtpConfig`, `NtpServersConfig` (the `time` config section) | `rohi-time`, `rohi-net`, `rohi-config`, `rohi-service`, `sntpc` | The global concept of time, the UDP stack |
 | `rohi-location` | The location of the device (user-configured now, GNSS later): `LocationConfig` section, `LocationShared`, `LocationService` | portable | `no_std` | `Location`, `LocationConfig`, `LocationShared`, `LocationSource`, `LocationService` | `rohi-config`, `rohi-service` | GNSS hardware, telemetry |
 | `rohi-connectivity-proto` | Bounded bindings of `airalab/connectivity-protocol` (vendored, pinned revision) | portable | `no_std` | `core_v1`, `crypto_v1`, `device_v1`, `sensor_v1`, `limits`, `signing_preimage` | `micropb` | Signing, mapping, transports |
 | `rohi-connectivity` | Telemetry: snapshot (+ location) → signed envelope frame, bounded outbox, retry, HTTP transport, `ConnectivityConfig` section, `connectivity` service | portable | `no_std` | `UrbanEncoder`, `EnvelopeBuilder`, `EnvelopeFrame`, `EnvelopeTransport`, `HttpTransport`, `ConnectivityService`, `UtcClock`, `NonceSource`, `FrameSigner` | `rohi-connectivity-proto`, `rohi-hal`, `rohi-identity`, `rohi-location`, `rohi-net`, `rohi-service`, `rohi-time` | Private keys, Wi-Fi lifecycle, sensors, backend logic |
@@ -39,7 +39,7 @@ rohi-net, rohi-connectivity, rohi-time, rohi-hal, rohi-identity, rohi-location �
 rohi-location ──► rohi-config, rohi-service   (owns the LocationConfig section)
 rohi-net ──► rohi-config                   (owns the WifiConfig section)
 rohi-identity ──► rohi-config              (owns the Identity section)
-rohi-time-ntp ──► rohi-time, rohi-net      (a source: DNS + UDP samples; rohi-time never depends on it)
+rohi-time-ntp ──► rohi-time, rohi-net, rohi-config, rohi-service   (a source: DNS + UDP samples, owns the `time` section; rohi-time never depends on it)
 rohi-connectivity ──► rohi-connectivity-proto, rohi-hal, rohi-identity, rohi-location, rohi-net, rohi-time   (snapshots, location, signing, NetworkHandle, UtcClock)
 ```
 

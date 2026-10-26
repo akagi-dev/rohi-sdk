@@ -155,6 +155,15 @@ uncertainty              40 ms
 consecutive_failures     0
 ```
 
+The servers are the `time` config section (`NtpServersConfig`, fields `server1` to `server4`: host names or IPv4
+addresses of letters, digits, `.` and `-`, up to 64 bytes). `server1` is required; the defaults are `pool.ntp.org` and
+`time.cloudflare.com`, and `rohi config reset time` restores them. A change is applied at once: the NTP task restarts
+with the new servers and samples immediately.
+
+```text
+$ rohi config set time server1=ntp.example.org server2=time.example.net
+```
+
 Manual resynchronization is not offered: periodic automatic synchronization is authoritative.
 
 ## Resources

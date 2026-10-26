@@ -20,7 +20,8 @@ use std::time::Duration;
 
 use super::diagnostic::CliError;
 use super::{Ctx, dto};
-use crate::{ClientTransport, Device, format};
+use crate::model::{ServicesStatus, Value};
+use crate::{ClientTransport, Device, PublicKey, format};
 
 /// The device summary, or one service in detail.
 pub async fn run<T: ClientTransport>(
@@ -37,9 +38,10 @@ pub async fn run<T: ClientTransport>(
             None => {
                 let info = device.info().await?;
                 let status = device.services_status().await?;
+                let sensor_id = sensor_id(device, &status).await?;
                 (
-                    format::services_status(&info, &status),
-                    dto::services_status(&info, &status),
+                    format::services_status(&info, &status, sensor_id.as_deref()),
+                    dto::services_status(&info, &status, sensor_id.as_deref()),
                 )
             }
             Some(service) => {
@@ -83,4 +85,31 @@ fn revisions(json: &serde_json::Value) -> String {
         key.push_str(&format!("|{}:{}", service["service"], service["revision"]));
     }
     key
+}
+
+/// The SS58 address of the device identity; `None` when the device has no
+/// identity service or no identity is provisioned.
+async fn sensor_id<T: ClientTransport>(
+    device: &mut Device<T>,
+    status: &ServicesStatus,
+) -> Result<Option<String>, CliError> {
+    const SERVICE: &str = "identity";
+    const FIELD: &str = "public_key";
+    if !status.services.iter().any(|service| service.service == SERVICE) {
+        return Ok(None);
+    }
+    let schema = device.service_schema(SERVICE).await?;
+    let Some(field) = schema.fields.iter().find(|field| field.name == FIELD) else {
+        return Ok(None);
+    };
+    let identity = device.service_status(SERVICE).await?;
+    let key = identity
+        .fields
+        .iter()
+        .find(|entry| entry.field_id == field.id)
+        .and_then(|entry| match &entry.value {
+            Value::Bytes(bytes) => PublicKey::from_slice(bytes),
+            _ => None,
+        });
+    Ok(key.map(|key| crate::ss58(&key)))
 }
