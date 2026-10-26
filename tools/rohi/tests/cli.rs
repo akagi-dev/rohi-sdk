@@ -364,6 +364,46 @@ async fn status_json_is_keyed_by_names_and_carries_no_protocol_types() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn status_shows_the_sensor_id_once_an_identity_is_provisioned() {
+    use sp_core::crypto::Ss58Codec;
+
+    let bench = Bench::new();
+    let outcome = run(&bench, &["status"]).await;
+    assert!(
+        !outcome.ok().stdout.contains("SensorId"),
+        "{}",
+        outcome.stdout
+    );
+
+    let derived = rohi::derive_identity(DEV_PHRASE, 7).unwrap();
+    let expected = sp_core::ed25519::Public::from_raw(derived.public_key().to_bytes())
+        .to_ss58check_with_version(
+            sp_core::crypto::Ss58AddressFormatRegistry::RobonomicsAccount.into(),
+        );
+    let secret = hex(derived.secret().expose_secret());
+    let terminal = Terminal {
+        interactive: false,
+        input: &[&secret],
+    };
+    run_with(
+        &bench,
+        &["action", "run", "identity", "provision", "secret=-"],
+        terminal,
+    )
+    .await
+    .ok();
+
+    let outcome = run(&bench, &["status"]).await;
+    let lines: Vec<&str> = outcome.ok().stdout.lines().collect();
+    assert_eq!(lines[0], format!("SensorId:  {expected}"));
+    assert_eq!(lines[1], "Device:    fake-1.0.0 (bench-esp32c3)");
+    assert_eq!(lines[2], "Uptime:    1m 30s");
+
+    let json = run(&bench, &["-o", "json", "status"]).await.ok().json();
+    assert_eq!(json["sensor_id"], expected);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn a_watch_prints_again_only_when_the_status_changed() {
     let bench = Bench::new();
     // Unchanged status: the first document is printed, the rest is silent

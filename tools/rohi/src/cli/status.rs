@@ -95,7 +95,11 @@ async fn sensor_id<T: ClientTransport>(
 ) -> Result<Option<String>, CliError> {
     const SERVICE: &str = "identity";
     const FIELD: &str = "public_key";
-    if !status.services.iter().any(|service| service.service == SERVICE) {
+    if !status
+        .services
+        .iter()
+        .any(|service| service.service == SERVICE)
+    {
         return Ok(None);
     }
     let schema = device.service_schema(SERVICE).await?;

@@ -139,13 +139,14 @@ pub fn services_status(
     status: &ServicesStatus,
     sensor_id: Option<&str>,
 ) -> String {
-    let mut rows = vec![(
-        "Device:".to_owned(),
-        format!("{} ({})", info.firmware, info.board),
-    )];
+    let mut rows = vec![];
     if let Some(sensor_id) = sensor_id {
         rows.push(("SensorId:".to_owned(), sensor_id.to_owned()));
     }
+    rows.push((
+        "Device:".to_owned(),
+        format!("{} ({})", info.firmware, info.board),
+    ));
     rows.push(("Uptime:".to_owned(), duration(status.uptime_ms)));
     rows.push(("Health:".to_owned(), status.health.to_string()));
     let mut out = pairs(&rows);

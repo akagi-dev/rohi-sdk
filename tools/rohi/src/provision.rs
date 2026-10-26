@@ -105,7 +105,9 @@ pub fn derive_identity(suri: &str, number: u64) -> crate::Result<DerivedIdentity
 pub fn ss58(public_key: &PublicKey) -> String {
     use sp_core::crypto::Ss58Codec;
 
-    sp_core::ed25519::Public::from_raw(public_key.to_bytes()).to_ss58check()
+    sp_core::ed25519::Public::from_raw(public_key.to_bytes()).to_ss58check_with_version(
+        sp_core::crypto::Ss58AddressFormatRegistry::RobonomicsAccount.into(),
+    )
 }
 
 #[cfg(test)]
