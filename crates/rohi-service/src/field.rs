@@ -156,15 +156,53 @@ impl ConfigField {
         {
             return Err(FieldError::OutOfRange);
         }
-        if let Some(number) = value.as_number() {
-            if number.is_nan() {
-                return Err(FieldError::OutOfRange);
+        let (below, above) = match *value {
+            Value::I64(value) => (
+                self.min.is_some_and(|min| int_below(value.into(), min)),
+                self.max.is_some_and(|max| int_above(value.into(), max)),
+            ),
+            Value::U64(value) => (
+                self.min.is_some_and(|min| int_below(value.into(), min)),
+                self.max.is_some_and(|max| int_above(value.into(), max)),
+            ),
+            Value::F64(value) => {
+                if value.is_nan() {
+                    return Err(FieldError::OutOfRange);
+                }
+                (
+                    self.min.is_some_and(|min| value < min),
+                    self.max.is_some_and(|max| value > max),
+                )
             }
-            if self.min.is_some_and(|min| number < min) || self.max.is_some_and(|max| number > max)
-            {
-                return Err(FieldError::OutOfRange);
-            }
+            _ => (false, false),
+        };
+        if below || above {
+            return Err(FieldError::OutOfRange);
         }
         Ok(())
     }
+}
+
+/// `bound` rounded down, saturating outside the `i128` range.
+fn floor_i128(bound: f64) -> i128 {
+    let truncated = bound as i128;
+    if (truncated as f64) > bound {
+        truncated.saturating_sub(1)
+    } else {
+        truncated
+    }
+}
+
+/// Whether the integer `value` is below `bound`; `value` is never rounded.
+fn int_below(value: i128, bound: f64) -> bool {
+    if bound.is_nan() {
+        return false;
+    }
+    let floor = floor_i128(bound);
+    value < floor || (value == floor && (floor as f64) < bound)
+}
+
+/// Whether the integer `value` is above `bound`; `value` is never rounded.
+fn int_above(value: i128, bound: f64) -> bool {
+    !bound.is_nan() && value > floor_i128(bound)
 }

@@ -41,7 +41,7 @@ use rohi_hal_esp::EmbassyClock;
 use rohi_identity::{Identity, IdentityService, IdentityStore, IdentityStoreError, PublicKey};
 use rohi_location::{LocationConfig, LocationService};
 use rohi_net::wifi::{WifiConfig, WifiService};
-use rohi_service::{ManagedSection, SectionStore, StoreError, Tracked};
+use rohi_service::{ManagedSection, SectionStore, Startup, StoreError, Tracked};
 use rohi_time::TimeStatusService;
 use rohi_time_ntp::NtpServersConfig;
 use static_cell::StaticCell;
@@ -141,8 +141,8 @@ pub type ConfigSections = (
 
 /// The services of the device.
 pub type Services = (
-    Tracked<WifiService<'static, RawMutex, Delay>, RawMutex>,
-    Tracked<ConnectivityStatusService<'static, RawMutex>, RawMutex>,
+    Tracked<Startup<WifiService<'static, RawMutex, Delay>>, RawMutex>,
+    Tracked<Startup<ConnectivityStatusService<'static, RawMutex>>, RawMutex>,
     Tracked<LocationService<'static, RawMutex>, RawMutex>,
     Tracked<TimeStatusService<'static, EmbassyClock, CriticalSectionRawMutex>, RawMutex>,
     Tracked<SensorsService<'static, RawMutex>, RawMutex>,
@@ -157,7 +157,10 @@ fn uptime_ms() -> u64 {
 }
 
 /// The registries over the runtime handles of the firmware.
-pub fn device(config: ConfigHandle, identity: IdentityHandle) -> UrbanDevice {
+///
+/// `network_failed` tells that the network runtime did not start: its services
+/// then report a failed start instead of looking disabled.
+pub fn device(config: ConfigHandle, identity: IdentityHandle, network_failed: bool) -> UrbanDevice {
     Device::new(
         DeviceInfo {
             firmware: FIRMWARE,
@@ -171,11 +174,17 @@ pub fn device(config: ConfigHandle, identity: IdentityHandle) -> UrbanDevice {
             ManagedSection::new(Stored::new(config)),
         ),
         (
-            Tracked::new(WifiService::new(net::handle(), Delay, WIFI_SCAN_TIMEOUT_MS)),
-            Tracked::new(ConnectivityStatusService::new(
-                connectivity::shared(),
-                connectivity::effective_config,
-                location::shared(),
+            Tracked::new(Startup::new(
+                WifiService::new(net::handle(), Delay, WIFI_SCAN_TIMEOUT_MS),
+                network_failed,
+            )),
+            Tracked::new(Startup::new(
+                ConnectivityStatusService::new(
+                    connectivity::shared(),
+                    connectivity::effective_config,
+                    location::shared(),
+                ),
+                network_failed,
             )),
             Tracked::new(LocationService(location::shared())),
             Tracked::new(TimeStatusService(time::service())),

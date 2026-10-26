@@ -260,6 +260,71 @@ pub trait ManagedService {
     }
 }
 
+/// A service whose runtime may have failed to start.
+///
+/// The runtime handles of a service that never started stay untouched and
+/// would read as a disabled service, which the default health policy ignores.
+/// A failed start is reported as a failed service with the issue
+/// `startup_failed` instead; everything else is forwarded.
+pub struct Startup<S> {
+    service: S,
+    failed: bool,
+}
+
+impl<S: ManagedService> Startup<S> {
+    /// Wraps `service`; `failed` tells that its runtime did not start.
+    pub const fn new(service: S, failed: bool) -> Self {
+        Self { service, failed }
+    }
+}
+
+impl<S: ManagedService> ManagedService for Startup<S> {
+    const NAME: &'static str = S::NAME;
+    const VERSION: u16 = S::VERSION;
+    const STATUS_SCHEMA: &'static [FieldDescriptor] = S::STATUS_SCHEMA;
+    const ESSENTIAL: bool = S::ESSENTIAL;
+    const ACTIONS: &'static [ActionDescriptor] = S::ACTIONS;
+
+    async fn summary(&self) -> ServiceSummary {
+        if self.failed {
+            return ServiceSummary::new(ServiceState::Failed, ServiceHealth::Error, false);
+        }
+        self.service.summary().await
+    }
+
+    async fn issues(&self, out: &mut Vec<Issue, MAX_ISSUES>) {
+        if self.failed {
+            let _ = out.push(Issue {
+                severity: IssueSeverity::Error,
+                code: "startup_failed",
+                message: "The runtime of the service failed to start",
+                age_ms: None,
+            });
+        } else {
+            self.service.issues(out).await;
+        }
+    }
+
+    async fn status(&self, out: &mut impl StatusWriter) -> Result<(), WriteError> {
+        if self.failed {
+            return Ok(());
+        }
+        self.service.status(out).await
+    }
+
+    async fn invoke(
+        &self,
+        action: &str,
+        args: &[(u32, Value)],
+        out: &mut impl ActionOutput,
+    ) -> Result<(), ActionError> {
+        if self.failed {
+            return Err(ActionError::Unavailable);
+        }
+        self.service.invoke(action, args, out).await
+    }
+}
+
 /// Name and version of a service.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ServiceInfo {

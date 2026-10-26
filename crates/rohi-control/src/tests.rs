@@ -686,6 +686,7 @@ fn actions_are_discovered_described_and_invoked() {
     };
     assert_eq!(schema.args.len(), 1);
     assert_eq!(schema.args[0].kind, pb::ValueKind::Bytes);
+    assert!(schema.action().unwrap().secret_args);
 
     let Reply::InvokeAction(done) = call(
         &controller,

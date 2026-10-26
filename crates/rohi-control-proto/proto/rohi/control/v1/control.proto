@@ -420,6 +420,9 @@ message ActionInfo {
   string description = 3;
   // Needs a link that satisfies the write privilege of the policy.
   bool privileged = 4;
+  // The arguments are secrets: clients must not echo or log them and should
+  // read them without showing them.
+  bool secret_args = 5;
 }
 
 message ListActionsRequest {

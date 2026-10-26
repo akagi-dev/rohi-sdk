@@ -433,6 +433,8 @@ pub struct ActionInfo {
     pub description: String,
     /// Whether the link must satisfy the write policy.
     pub privileged: bool,
+    /// Whether the arguments are secrets; they must be read with `NAME=-`.
+    pub secret_args: bool,
 }
 
 /// Schema of an action.

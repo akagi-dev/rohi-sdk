@@ -62,7 +62,7 @@ pub use config::{
 pub use field::{ConfigField, FieldDescriptor};
 pub use status::{
     DeviceHealth, Issue, IssueSeverity, ManagedService, ServiceHealth, ServiceInfo, ServiceOps,
-    ServiceRegistry, ServiceState, ServiceStatus, ServiceStatusSummary, ServiceSummary,
+    ServiceRegistry, ServiceState, ServiceStatus, ServiceStatusSummary, ServiceSummary, Startup,
     StatusError, StatusWriter, Tracked, WriteError, default_device_health,
 };
 pub use value::{Value, ValueKind};
@@ -74,7 +74,7 @@ pub const MAX_VARIANT_LEN: usize = 16;
 /// Maximum number of status fields of a service.
 pub const MAX_FIELDS: usize = 20;
 /// Maximum number of fields of a config section.
-pub const MAX_CONFIG_FIELDS: usize = 10;
+pub const MAX_CONFIG_FIELDS: usize = 16;
 /// Maximum number of mutations in one patch.
 pub const MAX_MUTATIONS: usize = 8;
 /// Maximum number of active issues reported for one service.

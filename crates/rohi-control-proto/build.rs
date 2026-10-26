@@ -67,7 +67,7 @@ const LIMITS: &[(&str, usize, &str)] = &[
     ),
     (
         "MAX_CONFIG_FIELDS",
-        10,
+        16,
         "Maximum number of fields of a config section.",
     ),
     (

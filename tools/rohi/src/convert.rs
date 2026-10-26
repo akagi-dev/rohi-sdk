@@ -167,5 +167,6 @@ pub(crate) fn action_info(info: &pb::ActionInfo) -> ActionInfo {
         name: info.name.as_str().to_owned(),
         description: info.description.as_str().to_owned(),
         privileged: info.privileged,
+        secret_args: info.secret_args,
     }
 }

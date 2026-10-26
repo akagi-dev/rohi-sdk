@@ -240,5 +240,6 @@ pub(crate) fn action_info(service: &str, action: &ActionDescriptor) -> pb::Actio
         name: text(action.name),
         description: text(action.description),
         privileged: action.privileged,
+        secret_args: action.secret_args,
     }
 }

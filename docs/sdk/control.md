@@ -105,7 +105,7 @@ status](../getting-started/services.md).
 
 ### Actions
 
-`ListActions` returns `(service, name, description, privileged)` in pages; `GetActionSchema` returns the argument
+`ListActions` returns `(service, name, description, privileged, secret_args)` in pages; `GetActionSchema` returns the argument
 and result fields. `InvokeAction` takes all arguments (typed, all required) and returns up to `MAX_RECORDS` records
 of typed fields. Arguments that are secrets are overwritten after the call; neither they nor the status of a service
 ever contain a secret.
@@ -151,7 +151,7 @@ dispatches, and responses leave through a bounded TX queue.
 | `MAX_DESCRIPTION_LEN` / `MAX_UNIT_LEN` | 40 B / 8 B |
 | `MAX_VARIANTS` / `MAX_VARIANT_LEN` | 10 / 16 B |
 | `MAX_SCHEMA_PAGE` / `MAX_STATUS_PAGE` / `MAX_ACTIONS_PAGE` | 4 / 8 / 8 entries per response |
-| `MAX_CONFIG_FIELDS` | 10 fields per section |
+| `MAX_CONFIG_FIELDS` | 16 fields per section |
 | `MAX_MUTATIONS` | 8 per patch |
 | `MAX_CONFIG_SECTIONS` / `MAX_SERVICES` | 8 / 8 |
 | `MAX_ISSUES` / `MAX_CODE_LEN` / `MAX_ISSUE_MESSAGE_LEN` | 4 / 32 B / 48 B |

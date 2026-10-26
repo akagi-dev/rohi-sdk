@@ -363,7 +363,11 @@ pub fn action_schema(schema: &ActionSchema) -> String {
         ("About:".to_owned(), action.description.clone()),
     ]);
     if !schema.args.is_empty() {
-        out.push_str("\nArguments (all required):\n");
+        out.push_str(if action.secret_args {
+            "\nArguments (all required, secret: give them as NAME=-):\n"
+        } else {
+            "\nArguments (all required):\n"
+        });
         out.push_str(&field_table(&schema.args));
     }
     if !schema.results.is_empty() {

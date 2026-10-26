@@ -779,3 +779,47 @@ fn wipe_clears_secret_values() {
     value.wipe();
     assert_eq!(value.as_str(), Some(""));
 }
+
+#[test]
+fn integer_bounds_hold_over_the_whole_64_bit_range() {
+    const TWO_POW_53: f64 = 9_007_199_254_740_992.0;
+    let upper = ConfigField::new(1, "n", ValueKind::U64).range(0.0, TWO_POW_53);
+    assert_eq!(upper.check(&Value::U64(1 << 53)), Ok(()));
+    assert_eq!(
+        upper.check(&Value::U64((1 << 53) + 1)),
+        Err(FieldError::OutOfRange)
+    );
+    let lower = ConfigField::new(1, "n", ValueKind::I64).range(-TWO_POW_53, 0.0);
+    assert_eq!(lower.check(&Value::I64(-(1 << 53))), Ok(()));
+    assert_eq!(
+        lower.check(&Value::I64(-(1 << 53) - 1)),
+        Err(FieldError::OutOfRange)
+    );
+    let fractional = ConfigField::new(1, "n", ValueKind::I64).range(0.5, 2.5);
+    assert_eq!(
+        fractional.check(&Value::I64(0)),
+        Err(FieldError::OutOfRange)
+    );
+    assert_eq!(fractional.check(&Value::I64(1)), Ok(()));
+    assert_eq!(fractional.check(&Value::I64(2)), Ok(()));
+    assert_eq!(
+        fractional.check(&Value::I64(3)),
+        Err(FieldError::OutOfRange)
+    );
+    let wide = ConfigField::new(1, "n", ValueKind::U64).range(0.0, 1e30);
+    assert_eq!(wide.check(&Value::U64(u64::MAX)), Ok(()));
+}
+
+#[test]
+fn a_failed_startup_is_a_failed_service() {
+    let probe = Probe::new();
+    let service = Tracked::<_, NoopRawMutex>::new(Startup::new(&probe, true));
+    let summary = block_on(service.summary(0));
+    assert_eq!(summary.state, ServiceState::Failed);
+    assert_eq!(summary.reason, Some("startup_failed"));
+    assert!(block_on(service.status(0)).fields.is_empty());
+
+    let service = Tracked::<_, NoopRawMutex>::new(Startup::new(&probe, false));
+    assert_eq!(block_on(service.summary(0)).state, ServiceState::Running);
+    assert_eq!(block_on(service.status(0)).fields.len(), 3);
+}

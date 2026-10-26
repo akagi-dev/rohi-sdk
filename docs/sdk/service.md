@@ -180,5 +180,5 @@ dispatcher. [Add a service](../guides/add-service.md) shows the steps.
 
 Bounds keep every message small enough for a microcontroller stack; they are defined once in
 `rohi-control-proto/build.rs` and listed in [Control plane](control.md#limits). In memory: `MAX_FIELDS` (status
-fields per service) 20, `MAX_CONFIG_FIELDS` 10, `MAX_MUTATIONS` 8, `MAX_ISSUES` 4, `MAX_ACTION_ARGS` 3, `MAX_RECORDS` 6,
+fields per service) 20, `MAX_CONFIG_FIELDS` 16, `MAX_MUTATIONS` 8, `MAX_ISSUES` 4, `MAX_ACTION_ARGS` 3, `MAX_RECORDS` 6,
 `MAX_RECORD_FIELDS` 4, string and bytes values 64 bytes.

@@ -15,6 +15,7 @@ maintenance = { status = "actively-developed" }
 [dependencies]
 heapless.workspace = true
 embassy-sync.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 embassy-futures.workspace = true

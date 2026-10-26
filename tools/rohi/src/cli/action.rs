@@ -19,8 +19,9 @@
 use super::args::ActionCommand;
 use super::diagnostic::CliError;
 use super::{Ctx, dto, values};
-use crate::model::FieldValue;
+use crate::model::{FieldValue, Value};
 use crate::{ClientTransport, Device, format};
+use zeroize::Zeroize;
 
 pub async fn run<T: ClientTransport>(
     device: &mut Device<T>,
@@ -50,30 +51,30 @@ pub async fn run<T: ClientTransport>(
             args,
         } => {
             let schema = device.action_schema(&service, &action).await?;
-            let mut given = Vec::new();
+            let secret = schema.action.secret_args;
+            let mut given = Arguments::default();
             for arg in &args {
                 let (name, text) = values::assignment(arg)?;
                 let field =
                     values::lookup(schema.args.iter(), &format!("{service} {action}"), name)?;
-                if given
-                    .iter()
-                    .any(|(id, _): &(u32, FieldValue)| *id == field.id)
-                {
+                if given.0.iter().any(|given| given.field_id == field.id) {
                     return Err(CliError::Usage(format!("{name} is given twice")));
                 }
+                if secret && text != "-" {
+                    return Err(CliError::Usage(format!(
+                        "{service} {action} takes secrets: do not put {name} on the command line, use {name}=- to read it from stdin"
+                    )));
+                }
                 let value = values::argument(ctx, field, text).await?;
-                given.push((
-                    field.id,
-                    FieldValue {
-                        field_id: field.id,
-                        value,
-                    },
-                ));
+                given.0.push(FieldValue {
+                    field_id: field.id,
+                    value,
+                });
             }
             let missing: Vec<&str> = schema
                 .args
                 .iter()
-                .filter(|field| !given.iter().any(|(id, _)| *id == field.id))
+                .filter(|field| !given.0.iter().any(|given| given.field_id == field.id))
                 .map(|field| field.name.as_str())
                 .collect();
             if !missing.is_empty() {
@@ -82,13 +83,29 @@ pub async fn run<T: ClientTransport>(
                     missing.join(", ")
                 )));
             }
-            let args: Vec<FieldValue> = given.into_iter().map(|(_, value)| value).collect();
-            let records = device.invoke(&service, &action, &args).await?;
+            let records = device.invoke(&service, &action, &given.0).await?;
             ctx.io.emit(
                 ctx.format,
                 &dto::Versioned::new(dto::records(&records, &schema)),
                 || format::records(&records, &schema),
             )
+        }
+    }
+}
+
+/// The arguments of an action. They can be secrets, so they are overwritten
+/// when dropped, whether the call succeeded, failed or was cancelled.
+#[derive(Default)]
+struct Arguments(Vec<FieldValue>);
+
+impl Drop for Arguments {
+    fn drop(&mut self) {
+        for argument in &mut self.0 {
+            match &mut argument.value {
+                Value::String(text) | Value::Enum(text) => text.zeroize(),
+                Value::Bytes(bytes) => bytes.zeroize(),
+                Value::Bool(_) | Value::I64(_) | Value::U64(_) | Value::F64(_) => {}
+            }
         }
     }
 }

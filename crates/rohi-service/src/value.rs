@@ -15,6 +15,7 @@
 //  limitations under the License.
 //
 use heapless::{String, Vec};
+use zeroize::Zeroize;
 
 use crate::{MAX_VALUE_LEN, MAX_VARIANT_LEN};
 
@@ -135,16 +136,6 @@ impl Value {
             _ => None,
         }
     }
-
-    /// The numeric value as `f64`, for range checks.
-    pub(crate) fn as_number(&self) -> Option<f64> {
-        match self {
-            Self::I64(value) => Some(*value as f64),
-            Self::U64(value) => Some(*value as f64),
-            Self::F64(value) => Some(*value),
-            _ => None,
-        }
-    }
 }
 
 impl core::fmt::Debug for Value {
@@ -159,15 +150,12 @@ impl Value {
     pub fn wipe(&mut self) {
         match self {
             Self::String(text) => {
-                let len = text.len();
-                text.clear();
-                for _ in 0..len {
-                    let _ = text.push('\0');
-                }
+                // SAFETY: only zero bytes are written, which are valid UTF-8.
+                unsafe { text.as_mut_vec() }.as_mut_slice().zeroize();
                 text.clear();
             }
             Self::Bytes(bytes) => {
-                bytes.iter_mut().for_each(|byte| *byte = 0);
+                bytes.as_mut_slice().zeroize();
                 bytes.clear();
             }
             Self::Enum(_) | Self::Bool(_) | Self::I64(_) | Self::U64(_) | Self::F64(_) => {}
