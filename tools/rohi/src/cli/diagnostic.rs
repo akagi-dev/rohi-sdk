@@ -24,8 +24,6 @@ use std::process::ExitCode;
 use crate::model::ErrorCode;
 use crate::{DiscoveredDevice, Error};
 
-use super::backup::BackupError;
-
 /// Exit status of an interrupted command (128 + SIGINT).
 pub const EXIT_INTERRUPTED: u8 = 130;
 
@@ -67,27 +65,23 @@ pub enum CliError {
         /// How to provide it.
         hint: String,
     },
-    /// Wi-Fi did not connect.
-    WifiNotConnected(String),
-    /// A backup cannot be used.
-    Backup(BackupError),
-    /// The backup holds sections the device cannot restore.
-    Incompatible(Vec<&'static str>),
-    /// A restore stopped half way.
-    PartialRestore(Box<PartialRestore>),
+    /// A configuration file cannot be used.
+    File(String),
+    /// Applying a configuration file stopped half way.
+    PartialApply(Box<PartialApply>),
     /// Writing the result failed.
     Output(io::Error),
 }
 
-/// A restore that stopped half way.
+/// A configuration file that was applied only in part.
 #[derive(Debug)]
-pub struct PartialRestore {
+pub struct PartialApply {
     /// Sections stored before the failure.
-    pub applied: Vec<&'static str>,
+    pub applied: Vec<String>,
     /// The section that failed.
-    pub failed: &'static str,
+    pub failed: String,
     /// Sections that were not attempted.
-    pub pending: Vec<&'static str>,
+    pub pending: Vec<String>,
     /// The failure.
     pub source: Error,
 }
@@ -148,12 +142,6 @@ impl From<Error> for CliError {
 impl From<io::Error> for CliError {
     fn from(error: io::Error) -> Self {
         Self::Output(error)
-    }
-}
-
-impl From<BackupError> for CliError {
-    fn from(error: BackupError) -> Self {
-        Self::Backup(error)
     }
 }
 
@@ -249,27 +237,16 @@ impl CliError {
             Self::PasswordRequired { what, hint } => {
                 Diagnostic::new(format!("{what} is required")).hint(hint.clone())
             }
-            Self::WifiNotConnected(reason) => Diagnostic::new(reason.clone())
-                .hint("the configuration is stored; follow it with `rohi wifi status`"),
-            Self::Backup(error) => error.diagnostic(),
-            Self::Incompatible(sections) => {
-                Diagnostic::new("this device cannot restore all sections in the backup")
-                    .details(
-                        std::iter::once("unsupported:".to_owned())
-                            .chain(sections.iter().map(|section| format!("  {section}")))
-                            .collect(),
-                    )
-                    .hint("no changes were made")
-            }
-            Self::PartialRestore(partial) => {
-                let PartialRestore {
+            Self::File(message) => Diagnostic::new(message.clone()),
+            Self::PartialApply(partial) => {
+                let PartialApply {
                     applied,
                     failed,
                     pending,
                     source,
                 } = &**partial;
                 let mut details = vec![format!("failed: {failed}")];
-                let section_list = |title: &str, sections: &[&str]| {
+                let section_list = |title: &str, sections: &[String]| {
                     let mut lines = vec![format!("{title}:")];
                     if sections.is_empty() {
                         lines.push("  none".to_owned());
@@ -281,11 +258,11 @@ impl CliError {
                 details.extend(section_list("not applied", pending));
                 let cause = device_diagnostic(source);
                 let mut diagnostic = Diagnostic::new(format!(
-                    "restore stopped after a failure: {}",
+                    "applying stopped after a failure: {}",
                     cause.message
                 ))
                 .details(details)
-                .hint("restore is not atomic: the device keeps the sections listed as applied");
+                .hint("applying is atomic per section only: the device keeps the sections listed as applied");
                 diagnostic.hints.extend(cause.hints);
                 diagnostic
             }
@@ -305,16 +282,28 @@ fn device_diagnostic(error: &Error) -> Diagnostic {
         Error::Timeout => Diagnostic::new("timed out waiting for the device")
             .hint("make sure the device is in range and no other client is connected to it")
             .hint("a slow device may need a longer --timeout <SECONDS>"),
-        Error::Unsupported(capability) => {
-            Diagnostic::new(format!("this device does not support {capability}"))
-        }
         Error::Device(code) => {
             let diagnostic = Diagnostic::new(format!("the device refused the request: {code}"));
             match code {
-                ErrorCode::IdentityAlreadyProvisioned => {
+                ErrorCode::Busy => diagnostic.hint("try again in a moment"),
+                ErrorCode::Conflict => {
+                    diagnostic.hint("the configuration changed meanwhile; read it again")
+                }
+                ErrorCode::PermissionDenied => {
+                    diagnostic.hint("this change needs an encrypted or authenticated link")
+                }
+                _ => diagnostic,
+            }
+        }
+        Error::Rejected(reason) => {
+            let diagnostic = Diagnostic::new(format!("the device rejected the action: {reason}"));
+            match reason.as_str() {
+                "already_provisioned" => {
                     diagnostic.hint("run `rohi identity erase` first to provision a new identity")
                 }
-                ErrorCode::Busy => diagnostic.hint("try again in a moment"),
+                "not_configured" => {
+                    diagnostic.hint("configure it first: `rohi config set <section> ...`")
+                }
                 _ => diagnostic,
             }
         }
@@ -328,15 +317,20 @@ mod tests {
 
     #[test]
     fn rendering_has_the_message_details_and_hints() {
-        let rendered = CliError::Incompatible(vec!["mqtt", "location"])
-            .diagnostic()
-            .to_string();
-        assert_eq!(
-            rendered,
-            "error: this device cannot restore all sections in the backup\n\n\
-             unsupported:\n  mqtt\n  location\n\n\
-             hint: no changes were made"
+        let rendered = CliError::PartialApply(Box::new(PartialApply {
+            applied: vec!["wifi".into()],
+            failed: "connectivity".into(),
+            pending: vec![],
+            source: Error::Device(ErrorCode::InvalidArgument),
+        }))
+        .diagnostic()
+        .to_string();
+        assert!(
+            rendered.starts_with("error: applying stopped after a failure"),
+            "{rendered}"
         );
+        assert!(rendered.contains("failed: connectivity"), "{rendered}");
+        assert!(rendered.contains("applied:\n  wifi"), "{rendered}");
     }
 
     #[test]

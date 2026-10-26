@@ -1,8 +1,6 @@
-Show the wall-clock time of the device and its synchronization state.
+List the configuration sections of the device
 
-The device has no time until a source, such as NTP, delivered a plausible sample; it never reports its uptime or a placeholder date instead. The time may step when a later sample corrects it, and it is not authenticated.
-
-Usage: rohi time [OPTIONS]
+Usage: rohi config list [OPTIONS]
 
 Options:
   -h, --help
@@ -36,5 +34,5 @@ Connection:
           [default: 10]
 
 Examples:
-  rohi time
-  rohi -d A12F -o json time
+  rohi config list
+  rohi -o json config list

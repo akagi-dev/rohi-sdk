@@ -15,30 +15,38 @@
 //  limitations under the License.
 //
 //! High-level typed device API.
+//!
+//! Every method is generic: sections, services and actions are named by
+//! strings the device lists, so a new firmware module needs no change here.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use rohi_control_proto::control::{
-    self as pb, Request_::Request as Call, Response_::Response as Reply, UpdateConfigRequest_,
+    self as pb, Request_::Request as Call, Response_::Response as Reply,
 };
 
 use crate::convert;
 use crate::error::{Error, Result};
 use crate::model::*;
-use crate::provision::DerivedIdentity;
 use crate::session::{ClientTransport, Session};
 
-/// Wi-Fi scans run on the device and take a while.
-const SCAN_TIMEOUT: Duration = Duration::from_secs(40);
+/// Wi-Fi scans and similar actions run on the device and take a while.
+const ACTION_TIMEOUT: Duration = Duration::from_secs(40);
+
+fn name<const N: usize>(value: &str) -> Result<heapless::String<N>> {
+    heapless::String::try_from(value)
+        .map_err(|_| Error::InvalidInput(format!("the name {value:?} is too long")))
+}
 
 /// A connected ROHI device.
 ///
-/// Every method checks the capability it needs first, so a device without
-/// Wi-Fi answers [`Error::Unsupported`] without a round trip of the request
-/// itself. Capabilities are read once, on first use.
+/// Schemas are fetched on demand and cached for the life of the connection.
 pub struct Device<T> {
     session: Session<T>,
-    capabilities: Option<Vec<Capability>>,
+    config_schemas: HashMap<String, ConfigSchema>,
+    service_schemas: HashMap<String, ServiceSchema>,
+    action_schemas: HashMap<(String, String), ActionSchema>,
 }
 
 impl<T: ClientTransport> Device<T> {
@@ -46,7 +54,9 @@ impl<T: ClientTransport> Device<T> {
     pub fn new(transport: T) -> Self {
         Self {
             session: Session::new(transport),
-            capabilities: None,
+            config_schemas: HashMap::new(),
+            service_schemas: HashMap::new(),
+            action_schemas: HashMap::new(),
         }
     }
 
@@ -64,15 +74,6 @@ impl<T: ClientTransport> Device<T> {
         self.session.call(call).await
     }
 
-    async fn require(&mut self, capability: Capability) -> Result<()> {
-        let capabilities = self.capabilities().await?;
-        if capabilities.contains(&capability) {
-            Ok(())
-        } else {
-            Err(Error::Unsupported(capability))
-        }
-    }
-
     /// Device description.
     pub async fn info(&mut self) -> Result<DeviceInfo> {
         match self.call(Call::GetInfo(pb::GetInfoRequest {})).await? {
@@ -81,246 +82,353 @@ impl<T: ClientTransport> Device<T> {
         }
     }
 
-    /// Features of the device; cached after the first call.
-    pub async fn capabilities(&mut self) -> Result<Vec<Capability>> {
-        if let Some(capabilities) = &self.capabilities {
-            return Ok(capabilities.clone());
-        }
-        let reply = self
-            .call(Call::GetCapabilities(pb::GetCapabilitiesRequest {}))
-            .await?;
-        let Reply::GetCapabilities(response) = reply else {
-            return Err(unexpected(&reply));
-        };
-        let capabilities = convert::capabilities(&response);
-        self.capabilities = Some(capabilities.clone());
-        Ok(capabilities)
-    }
+    // -- config ---------------------------------------------------------------
 
-    /// Current measurements of all sensors.
-    pub async fn sensors(&mut self) -> Result<Sensors> {
-        self.require(Capability::Sensors).await?;
-        match self
-            .call(Call::GetSensors(pb::GetSensorsRequest {}))
-            .await?
-        {
-            Reply::GetSensors(response) => Ok(convert::sensors(&response)),
+    /// The config sections of the device.
+    pub async fn config_sections(&mut self) -> Result<Vec<SectionInfo>> {
+        let call = Call::ListConfigSections(pb::ListConfigSectionsRequest {});
+        match self.call(call).await? {
+            Reply::ListConfigSections(list) => {
+                Ok(list.sections.iter().map(convert::section).collect())
+            }
             other => Err(unexpected(&other)),
         }
     }
 
-    /// Stored configuration. Secrets are never included.
-    pub async fn config(&mut self) -> Result<Config> {
-        self.require(Capability::Config).await?;
-        match self.call(Call::GetConfig(pb::GetConfigRequest {})).await? {
-            Reply::GetConfig(response) => convert::config(&response),
+    /// Schema of a section; cached.
+    pub async fn config_schema(&mut self, section: &str) -> Result<ConfigSchema> {
+        if let Some(schema) = self.config_schemas.get(section) {
+            return Ok(schema.clone());
+        }
+        // Schemas come in pages that keep every response small.
+        let mut schema: Option<ConfigSchema> = None;
+        loop {
+            let offset = schema.as_ref().map_or(0, |schema| schema.fields.len());
+            let call = Call::GetConfigSchema(pb::GetConfigSchemaRequest {
+                section: name(section)?,
+                offset: offset as u32,
+            });
+            let (page, total) = match self.call(call).await? {
+                Reply::GetConfigSchema(response) => (
+                    response
+                        .schema()
+                        .and_then(convert::config_schema)
+                        .ok_or_else(|| Error::Protocol("empty config schema".into()))?,
+                    response.total as usize,
+                ),
+                other => return Err(unexpected(&other)),
+            };
+            let advanced = !page.fields.is_empty();
+            let merged = match schema.take() {
+                None => page,
+                Some(mut schema) => {
+                    schema.fields.extend(page.fields);
+                    schema
+                }
+            };
+            let done = merged.fields.len() >= total || !advanced;
+            schema = Some(merged);
+            if done {
+                break;
+            }
+        }
+        let schema = schema.expect("the loop ran at least once");
+        self.config_schemas
+            .insert(section.to_owned(), schema.clone());
+        Ok(schema)
+    }
+
+    /// Readable content of a section. Secrets are only reported as set.
+    pub async fn config_get(&mut self, section: &str) -> Result<ConfigValues> {
+        let call = Call::GetConfigSection(pb::GetConfigSectionRequest {
+            section: name(section)?,
+        });
+        match self.call(call).await? {
+            Reply::GetConfigSection(response) => Ok(convert::config_values(&response)),
             other => Err(unexpected(&other)),
         }
     }
 
-    /// Applies a partial Wi-Fi update: omitted fields keep their value.
-    ///
-    /// Success means the device stored the configuration and handed it to its
-    /// Wi-Fi runtime, not that the network was reached; follow
-    /// [`Device::wifi_status`] for that.
-    pub async fn update_wifi(&mut self, update: &WifiUpdate) -> Result<()> {
-        self.require(Capability::Config).await?;
-        let update = convert::wifi_update(update)?;
-        let request = pb::UpdateConfigRequest {
-            wifi_update: Some(UpdateConfigRequest_::WifiUpdate::UpdateWifi(update)),
+    /// Applies `mutations` to a section atomically; with `dry_run` the
+    /// device only validates.
+    pub async fn config_patch(
+        &mut self,
+        section: &str,
+        mutations: &[Mutation],
+        expected_revision: Option<u32>,
+        dry_run: bool,
+    ) -> Result<Applied> {
+        let mut list = heapless::Vec::new();
+        for mutation in mutations {
+            let wire = convert::mutation(mutation)
+                .ok_or_else(|| Error::InvalidInput("a value does not fit the protocol".into()))?;
+            list.push(wire).map_err(|_| Error::TooLarge)?;
+        }
+        let mut request = pb::PatchConfigSectionRequest {
+            section: name(section)?,
+            mutations: list,
+            dry_run,
             ..Default::default()
         };
-        self.update_config(request).await
-    }
-
-    /// Removes the stored Wi-Fi configuration; the device disconnects.
-    pub async fn forget_wifi(&mut self) -> Result<()> {
-        self.require(Capability::Config).await?;
-        let request = pb::UpdateConfigRequest {
-            wifi_update: Some(UpdateConfigRequest_::WifiUpdate::ClearWifi(pb::Empty {})),
-            ..Default::default()
-        };
-        self.update_config(request).await
-    }
-
-    /// Applies a partial telemetry update: omitted fields keep their value, a
-    /// host is required while nothing is stored.
-    ///
-    /// The device applies a stored configuration at once, without a restart.
-    pub async fn update_connectivity(&mut self, update: &ConnectivityUpdate) -> Result<()> {
-        self.require(Capability::Config).await?;
-        self.require(Capability::Connectivity).await?;
-        let update = convert::connectivity_update(update)?;
-        let request = pb::UpdateConfigRequest {
-            connectivity_update: Some(
-                UpdateConfigRequest_::ConnectivityUpdate::UpdateConnectivity(update),
-            ),
-            ..Default::default()
-        };
-        self.update_config(request).await
-    }
-
-    /// Removes the stored telemetry configuration; the device falls back to
-    /// its build-time defaults.
-    pub async fn forget_connectivity(&mut self) -> Result<()> {
-        self.require(Capability::Config).await?;
-        self.require(Capability::Connectivity).await?;
-        let request = pb::UpdateConfigRequest {
-            connectivity_update: Some(UpdateConfigRequest_::ConnectivityUpdate::ClearConnectivity(
-                pb::Empty {},
-            )),
-            ..Default::default()
-        };
-        self.update_config(request).await
-    }
-
-    async fn update_config(&mut self, request: pb::UpdateConfigRequest) -> Result<()> {
-        match self.call(Call::UpdateConfig(request)).await? {
-            Reply::UpdateConfig(_) => Ok(()),
+        if let Some(revision) = expected_revision {
+            request.set_expected_revision(revision);
+        }
+        match self.call(Call::PatchConfigSection(request)).await? {
+            Reply::PatchConfigSection(done) => Ok(Applied {
+                revision: done.revision,
+                restart_required: done.restart_required,
+            }),
             other => Err(unexpected(&other)),
         }
     }
 
-    /// Scans for Wi-Fi networks, strongest first.
-    pub async fn wifi_scan(&mut self) -> Result<Vec<WifiNetwork>> {
-        self.require(Capability::WifiScan).await?;
-        let reply = self.session_with_timeout(SCAN_TIMEOUT, Call::ScanWifi(pb::ScanWifiRequest {}));
-        match reply.await? {
-            Reply::ScanWifi(response) => Ok(convert::scan(&response)),
+    /// Removes the persisted section and restores the defaults.
+    pub async fn config_reset(&mut self, section: &str, dry_run: bool) -> Result<Applied> {
+        let call = Call::ResetConfigSection(pb::ResetConfigSectionRequest {
+            section: name(section)?,
+            dry_run,
+        });
+        match self.call(call).await? {
+            Reply::ResetConfigSection(done) => Ok(Applied {
+                revision: done.revision,
+                restart_required: done.restart_required,
+            }),
             other => Err(unexpected(&other)),
         }
     }
 
-    async fn session_with_timeout(&mut self, timeout: Duration, call: Call) -> Result<Reply> {
-        let normal = self.session.timeout();
-        self.session.set_timeout(timeout.max(normal));
-        let reply = self.session.call(call).await;
-        self.session.set_timeout(normal);
-        reply
-    }
+    // -- status ---------------------------------------------------------------
 
-    /// Wi-Fi status.
-    pub async fn wifi_status(&mut self) -> Result<WifiStatus> {
-        self.require(Capability::WifiStatus).await?;
+    /// The services of the device.
+    pub async fn services(&mut self) -> Result<Vec<ServiceInfo>> {
         match self
-            .call(Call::GetWifiStatus(pb::GetWifiStatusRequest {}))
+            .call(Call::ListServices(pb::ListServicesRequest {}))
             .await?
         {
-            Reply::GetWifiStatus(response) => Ok(convert::wifi_status(&response)),
+            Reply::ListServices(list) => Ok(list
+                .services
+                .iter()
+                .map(|info| ServiceInfo {
+                    name: info.name.as_str().to_owned(),
+                    version: info.version,
+                })
+                .collect()),
             other => Err(unexpected(&other)),
         }
     }
 
-    /// Wall-clock time and synchronization state of the device.
-    ///
-    /// `unix_time_ms` is `None` while the device has no time; the device never
-    /// reports uptime or a placeholder date instead.
-    pub async fn time_status(&mut self) -> Result<TimeStatus> {
-        self.require(Capability::Time).await?;
-        match self
-            .call(Call::GetTimeStatus(pb::GetTimeStatusRequest {}))
-            .await?
-        {
-            Reply::GetTimeStatus(response) => Ok(convert::time_status(&response)),
+    /// Compact status of every service and the device health, in one request.
+    pub async fn services_status(&mut self) -> Result<ServicesStatus> {
+        let call = Call::GetServicesStatus(pb::GetServicesStatusRequest {});
+        match self.call(call).await? {
+            Reply::GetServicesStatus(response) => Ok(ServicesStatus {
+                uptime_ms: response.uptime_ms,
+                health: DeviceHealth::from_proto(response.health),
+                services: response.services.iter().map(convert::summary).collect(),
+            }),
             other => Err(unexpected(&other)),
         }
     }
 
-    /// Asks the device to reconnect now.
-    pub async fn wifi_reconnect(&mut self) -> Result<()> {
-        self.require(Capability::WifiControl).await?;
-        match self
-            .call(Call::ReconnectWifi(pb::ReconnectWifiRequest {}))
-            .await?
-        {
-            Reply::ReconnectWifi(_) => Ok(()),
-            other => Err(unexpected(&other)),
+    /// Status schema of a service; cached.
+    pub async fn service_schema(&mut self, service: &str) -> Result<ServiceSchema> {
+        if let Some(schema) = self.service_schemas.get(service) {
+            return Ok(schema.clone());
+        }
+        let mut schema: Option<ServiceSchema> = None;
+        loop {
+            let offset = schema.as_ref().map_or(0, |schema| schema.fields.len());
+            let call = Call::GetServiceSchema(pb::GetServiceSchemaRequest {
+                service: name(service)?,
+                offset: offset as u32,
+            });
+            let (page, total) = match self.call(call).await? {
+                Reply::GetServiceSchema(response) => (
+                    ServiceSchema {
+                        service: ServiceInfo {
+                            name: response.service.as_str().to_owned(),
+                            version: response.version,
+                        },
+                        fields: response.fields.iter().map(convert::field).collect(),
+                    },
+                    response.total as usize,
+                ),
+                other => return Err(unexpected(&other)),
+            };
+            let advanced = !page.fields.is_empty();
+            let merged = match schema.take() {
+                None => page,
+                Some(mut schema) => {
+                    schema.fields.extend(page.fields);
+                    schema
+                }
+            };
+            let done = merged.fields.len() >= total || !advanced;
+            schema = Some(merged);
+            if done {
+                break;
+            }
+        }
+        let schema = schema.expect("the loop ran at least once");
+        self.service_schemas
+            .insert(service.to_owned(), schema.clone());
+        Ok(schema)
+    }
+
+    /// Detailed status of a service.
+    pub async fn service_status(&mut self, service: &str) -> Result<ServiceStatus> {
+        // Values come in pages; the summary and the issues are in every page,
+        // the last one is the freshest.
+        let mut status: Option<ServiceStatus> = None;
+        loop {
+            let offset = status.as_ref().map_or(0, |status| status.fields.len());
+            let call = Call::GetServiceStatus(pb::GetServiceStatusRequest {
+                service: name(service)?,
+                offset: offset as u32,
+            });
+            let (page, total) = match self.call(call).await? {
+                Reply::GetServiceStatus(response) => (
+                    ServiceStatus {
+                        summary: response
+                            .summary()
+                            .map(convert::summary)
+                            .ok_or_else(|| Error::Protocol("status without a summary".into()))?,
+                        fields: response
+                            .fields
+                            .iter()
+                            .filter_map(convert::field_value)
+                            .collect(),
+                        issues: response.issues.iter().map(convert::issue).collect(),
+                    },
+                    response.total as usize,
+                ),
+                other => return Err(unexpected(&other)),
+            };
+            let advanced = !page.fields.is_empty();
+            let merged = match status.take() {
+                None => page,
+                Some(mut status) => {
+                    status.fields.extend(page.fields);
+                    ServiceStatus {
+                        fields: status.fields,
+                        ..page
+                    }
+                }
+            };
+            let done = merged.fields.len() >= total || !advanced;
+            status = Some(merged);
+            if done {
+                break;
+            }
+        }
+        Ok(status.expect("the loop ran at least once"))
+    }
+
+    // -- actions --------------------------------------------------------------
+
+    /// The actions of all services.
+    pub async fn actions(&mut self) -> Result<Vec<ActionInfo>> {
+        let mut actions: Vec<ActionInfo> = Vec::new();
+        loop {
+            let call = Call::ListActions(pb::ListActionsRequest {
+                offset: actions.len() as u32,
+            });
+            let (page, total) = match self.call(call).await? {
+                Reply::ListActions(list) => (
+                    list.actions
+                        .iter()
+                        .map(convert::action_info)
+                        .collect::<Vec<_>>(),
+                    list.total as usize,
+                ),
+                other => return Err(unexpected(&other)),
+            };
+            let advanced = !page.is_empty();
+            actions.extend(page);
+            if actions.len() >= total || !advanced {
+                return Ok(actions);
+            }
         }
     }
 
-    /// Identity state and public key of the device. The secret is never
-    /// available.
-    pub async fn identity(&mut self) -> Result<IdentityInfo> {
-        self.require(Capability::Identity).await?;
-        match self
-            .call(Call::GetIdentity(pb::GetIdentityRequest {}))
-            .await?
-        {
-            Reply::GetIdentity(response) => convert::identity(&response),
-            other => Err(unexpected(&other)),
+    /// Schema of an action; cached.
+    pub async fn action_schema(&mut self, service: &str, action: &str) -> Result<ActionSchema> {
+        let key = (service.to_owned(), action.to_owned());
+        if let Some(schema) = self.action_schemas.get(&key) {
+            return Ok(schema.clone());
         }
-    }
-
-    /// Installs the derived identity on a device that has none.
-    ///
-    /// Only the derived secret is sent. The device refuses to replace an
-    /// existing identity ([`ErrorCode::IdentityAlreadyProvisioned`]), and the
-    /// public key it reports must equal the one derived on the host, otherwise
-    /// [`Error::PublicKeyMismatch`] is returned.
-    pub async fn provision_identity(&mut self, identity: &DerivedIdentity) -> Result<PublicKey> {
-        self.require(Capability::Identity).await?;
-        let request = pb::ProvisionIdentityRequest {
-            ed25519_secret: heapless::Vec::from_slice(identity.secret().expose_secret())
-                .map_err(|_| Error::InvalidInput("identity secret is not 32 bytes".into()))?,
-        };
-        let reply = self.call(Call::ProvisionIdentity(request)).await;
-        let reported = match reply? {
-            Reply::ProvisionIdentity(response) => convert::public_key(&response.public_key)?,
+        let call = Call::GetActionSchema(pb::GetActionSchemaRequest {
+            service: name(service)?,
+            action: name(action)?,
+        });
+        let schema = match self.call(call).await? {
+            Reply::GetActionSchema(response) => ActionSchema {
+                action: response
+                    .action()
+                    .map(convert::action_info)
+                    .ok_or_else(|| Error::Protocol("action schema without an action".into()))?,
+                args: response.args.iter().map(convert::field).collect(),
+                results: response.results.iter().map(convert::field).collect(),
+            },
             other => return Err(unexpected(&other)),
         };
-        if reported != identity.public_key() {
-            return Err(Error::PublicKeyMismatch {
-                expected: identity.public_key(),
-                reported,
-            });
-        }
-        Ok(reported)
+        self.action_schemas.insert(key, schema.clone());
+        Ok(schema)
     }
 
-    /// Removes the identity of the device; the device can then be provisioned
-    /// again. Succeeds when there is no identity.
-    pub async fn erase_identity(&mut self) -> Result<()> {
-        self.require(Capability::Identity).await?;
-        match self
-            .call(Call::EraseIdentity(pb::EraseIdentityRequest {}))
-            .await?
-        {
-            Reply::EraseIdentity(_) => Ok(()),
-            other => Err(unexpected(&other)),
+    /// Runs an action with the given arguments (all required) and returns
+    /// its result records.
+    pub async fn invoke(
+        &mut self,
+        service: &str,
+        action: &str,
+        args: &[FieldValue],
+    ) -> Result<Vec<Record>> {
+        let mut list = heapless::Vec::new();
+        for arg in args {
+            let mut wire = pb::FieldValue {
+                field_id: arg.field_id,
+                ..Default::default()
+            };
+            wire.set_value(
+                convert::to_proto(&arg.value).ok_or_else(|| {
+                    Error::InvalidInput("a value does not fit the protocol".into())
+                })?,
+            );
+            list.push(wire).map_err(|_| Error::TooLarge)?;
         }
-    }
-
-    /// Asks the device to disconnect and stay idle.
-    pub async fn wifi_disconnect(&mut self) -> Result<()> {
-        self.require(Capability::WifiControl).await?;
-        match self
-            .call(Call::DisconnectWifi(pb::DisconnectWifiRequest {}))
-            .await?
-        {
-            Reply::DisconnectWifi(_) => Ok(()),
+        let request = pb::InvokeActionRequest {
+            service: name(service)?,
+            action: name(action)?,
+            args: list,
+        };
+        // Scans and similar actions take a while on the device.
+        let normal = self.session.timeout();
+        self.session.set_timeout(normal.max(ACTION_TIMEOUT));
+        let reply = self.call(Call::InvokeAction(request)).await;
+        self.session.set_timeout(normal);
+        match reply? {
+            Reply::InvokeAction(done) => Ok(done
+                .records
+                .iter()
+                .map(|record| {
+                    record
+                        .fields
+                        .iter()
+                        .filter_map(convert::field_value)
+                        .collect()
+                })
+                .collect()),
             other => Err(unexpected(&other)),
         }
     }
 }
 
 fn unexpected(reply: &Reply) -> Error {
-    Error::Protocol(format!(
-        "response of the wrong type: {}",
-        match reply {
-            Reply::Error(_) => "error",
-            Reply::GetInfo(_) => "get_info",
-            Reply::GetCapabilities(_) => "get_capabilities",
-            Reply::GetSensors(_) => "get_sensors",
-            Reply::GetConfig(_) => "get_config",
-            Reply::UpdateConfig(_) => "update_config",
-            Reply::ScanWifi(_) => "scan_wifi",
-            Reply::GetWifiStatus(_) => "get_wifi_status",
-            Reply::ReconnectWifi(_) => "reconnect_wifi",
-            Reply::DisconnectWifi(_) => "disconnect_wifi",
-            Reply::GetIdentity(_) => "get_identity",
-            Reply::ProvisionIdentity(_) => "provision_identity",
-            Reply::EraseIdentity(_) => "erase_identity",
-            Reply::GetTimeStatus(_) => "get_time_status",
-        }
-    ))
+    let kind = match reply {
+        Reply::Error(_) => "error",
+        Reply::GetInfo(_) => "info",
+        _ => "another response",
+    };
+    Error::Protocol(format!("unexpected response: {kind}"))
 }

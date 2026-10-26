@@ -1,12 +1,6 @@
-Configure telemetry delivery to the Robonomics ingress.
+List the actions of all services
 
-Use `rohi config connectivity` to show the stored configuration.
-
-Usage: rohi connectivity [OPTIONS] <COMMAND>
-
-Commands:
-  set   Change the telemetry configuration; omitted settings are kept
-  help  Print this message or the help of the given subcommand(s)
+Usage: rohi action list [OPTIONS]
 
 Options:
   -h, --help
@@ -40,6 +34,4 @@ Connection:
           [default: 10]
 
 Examples:
-  rohi connectivity set --host ingress.example.org --node-id 42 --enable
-  rohi connectivity set --interval 120
-  rohi connectivity set --disable
+  rohi action list

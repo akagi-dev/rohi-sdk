@@ -12,7 +12,7 @@ const PROTO: &str = "proto/rohi/control/v1/control.proto";
 const LIMITS: &[(&str, usize, &str)] = &[
     (
         "MAX_REQUEST_LEN",
-        256,
+        768,
         "Maximum size of an encoded `Request`, in bytes.",
     ),
     (
@@ -26,53 +26,119 @@ const LIMITS: &[(&str, usize, &str)] = &[
         "Maximum length of a name or version string.",
     ),
     (
-        "MAX_SSID_LEN",
-        32,
-        "Maximum length of a Wi-Fi SSID, in bytes.",
+        "MAX_NAME_LEN",
+        24,
+        "Maximum length of a section, service or field name, in bytes.",
     ),
     (
-        "MAX_HOST_LEN",
+        "MAX_VALUE_LEN",
         64,
-        "Maximum length of the telemetry ingress host, in bytes.",
+        "Maximum length of a string or bytes `Value`, in bytes.",
     ),
     (
-        "MAX_WIFI_PASSWORD_LEN",
-        64,
-        "Maximum length of a Wi-Fi password, in bytes.",
+        "MAX_DESCRIPTION_LEN",
+        40,
+        "Maximum length of a field description, in bytes.",
     ),
     (
-        "MAX_SENSORS",
+        "MAX_UNIT_LEN",
         8,
-        "Maximum number of sensors in one response.",
+        "Maximum length of a field unit, in bytes.",
     ),
     (
-        "MAX_MEASUREMENTS_PER_SENSOR",
+        "MAX_VARIANTS",
+        10,
+        "Maximum number of variants of an enum field.",
+    ),
+    (
+        "MAX_VARIANT_LEN",
+        10,
+        "Maximum length of an enum variant, in bytes.",
+    ),
+    (
+        "MAX_SCHEMA_PAGE",
         4,
-        "Maximum number of measurements of one sensor.",
+        "Maximum number of field descriptors in one schema response.",
     ),
     (
-        "MAX_WIFI_SCAN_RESULTS",
-        16,
-        "Maximum number of networks in one scan response.",
+        "MAX_STATUS_PAGE",
+        8,
+        "Maximum number of status values in one status response.",
     ),
     (
-        "MAX_CAPABILITIES",
-        16,
-        "Maximum number of advertised capabilities.",
+        "MAX_CONFIG_FIELDS",
+        10,
+        "Maximum number of fields of a config section.",
     ),
     (
-        "ED25519_KEY_LEN",
+        "MAX_MUTATIONS",
+        8,
+        "Maximum number of mutations in one patch request.",
+    ),
+    (
+        "MAX_CONFIG_SECTIONS",
+        8,
+        "Maximum number of config sections a device lists.",
+    ),
+    (
+        "MAX_SERVICES",
+        8,
+        "Maximum number of services a device lists.",
+    ),
+    (
+        "MAX_ISSUES",
+        4,
+        "Maximum number of active issues reported for one service.",
+    ),
+    (
+        "MAX_ACTIONS_PAGE",
+        8,
+        "Maximum number of actions in one list response.",
+    ),
+    (
+        "MAX_ACTION_ARGS",
+        3,
+        "Maximum number of arguments of an action.",
+    ),
+    (
+        "MAX_RECORDS",
+        6,
+        "Maximum number of records an action returns.",
+    ),
+    (
+        "MAX_RECORD_FIELDS",
+        4,
+        "Maximum number of fields of one action record.",
+    ),
+    (
+        "MAX_CODE_LEN",
         32,
-        "Size of an Ed25519 secret or public key, in bytes.",
+        "Maximum length of an issue code or status reason, in bytes.",
+    ),
+    (
+        "MAX_ISSUE_MESSAGE_LEN",
+        48,
+        "Maximum length of an issue message, in bytes.",
     ),
 ];
 
 /// Repeated fields are bounded in elements; strings and bytes in bytes.
 const REPEATED: &[&str] = &[
-    ".rohi.control.v1.GetCapabilitiesResponse.capabilities",
-    ".rohi.control.v1.Sensor.measurements",
-    ".rohi.control.v1.GetSensorsResponse.sensors",
-    ".rohi.control.v1.ScanWifiResponse.networks",
+    ".rohi.control.v1.ConfigSectionSchema.fields",
+    ".rohi.control.v1.ListConfigSectionsResponse.sections",
+    ".rohi.control.v1.GetConfigSectionResponse.entries",
+    ".rohi.control.v1.PatchConfigSectionRequest.mutations",
+    ".rohi.control.v1.ListServicesResponse.services",
+    ".rohi.control.v1.GetServicesStatusResponse.services",
+    ".rohi.control.v1.GetServiceSchemaResponse.fields",
+    ".rohi.control.v1.GetServiceStatusResponse.fields",
+    ".rohi.control.v1.GetServiceStatusResponse.issues",
+    ".rohi.control.v1.ListActionsResponse.actions",
+    ".rohi.control.v1.GetActionSchemaResponse.args",
+    ".rohi.control.v1.GetActionSchemaResponse.results",
+    ".rohi.control.v1.InvokeActionRequest.args",
+    ".rohi.control.v1.ActionRecord.fields",
+    ".rohi.control.v1.InvokeActionResponse.records",
 ];
 
 fn limit(name: &str) -> usize {
@@ -101,44 +167,141 @@ fn main() {
     let bounded = [
         (".rohi.control.v1.GetInfoResponse.firmware", "MAX_TEXT_LEN"),
         (".rohi.control.v1.GetInfoResponse.board", "MAX_TEXT_LEN"),
+        (".rohi.control.v1.Value.string_value", "MAX_VALUE_LEN"),
+        (".rohi.control.v1.Value.bytes_value", "MAX_VALUE_LEN"),
+        (".rohi.control.v1.Value.enum_value", "MAX_VARIANT_LEN"),
+        (".rohi.control.v1.FieldDescriptor.name", "MAX_NAME_LEN"),
         (
-            ".rohi.control.v1.GetCapabilitiesResponse.capabilities",
-            "MAX_CAPABILITIES",
+            ".rohi.control.v1.FieldDescriptor.description",
+            "MAX_DESCRIPTION_LEN",
         ),
-        (".rohi.control.v1.Sensor.name", "MAX_TEXT_LEN"),
+        (".rohi.control.v1.FieldDescriptor.unit", "MAX_UNIT_LEN"),
+        (".rohi.control.v1.ConfigSectionInfo.name", "MAX_NAME_LEN"),
         (
-            ".rohi.control.v1.Sensor.measurements",
-            "MAX_MEASUREMENTS_PER_SENSOR",
-        ),
-        (".rohi.control.v1.GetSensorsResponse.sensors", "MAX_SENSORS"),
-        (".rohi.control.v1.WifiConfig.ssid", "MAX_SSID_LEN"),
-        (".rohi.control.v1.WifiConfigUpdate.ssid", "MAX_SSID_LEN"),
-        (
-            ".rohi.control.v1.WifiConfigUpdate.password",
-            "MAX_WIFI_PASSWORD_LEN",
-        ),
-        (".rohi.control.v1.ConnectivityConfig.host", "MAX_HOST_LEN"),
-        (
-            ".rohi.control.v1.ConnectivityConfigUpdate.host",
-            "MAX_HOST_LEN",
-        ),
-        (".rohi.control.v1.WifiNetwork.ssid", "MAX_SSID_LEN"),
-        (".rohi.control.v1.WifiConnection.ssid", "MAX_SSID_LEN"),
-        (
-            ".rohi.control.v1.ScanWifiResponse.networks",
-            "MAX_WIFI_SCAN_RESULTS",
+            ".rohi.control.v1.ConfigSectionSchema.fields",
+            "MAX_SCHEMA_PAGE",
         ),
         (
-            ".rohi.control.v1.IdentityInfo.public_key",
-            "ED25519_KEY_LEN",
+            ".rohi.control.v1.ListConfigSectionsResponse.sections",
+            "MAX_CONFIG_SECTIONS",
         ),
         (
-            ".rohi.control.v1.ProvisionIdentityRequest.ed25519_secret",
-            "ED25519_KEY_LEN",
+            ".rohi.control.v1.GetConfigSchemaRequest.section",
+            "MAX_NAME_LEN",
         ),
         (
-            ".rohi.control.v1.ProvisionIdentityResponse.public_key",
-            "ED25519_KEY_LEN",
+            ".rohi.control.v1.GetConfigSectionRequest.section",
+            "MAX_NAME_LEN",
+        ),
+        (
+            ".rohi.control.v1.GetConfigSectionResponse.section",
+            "MAX_NAME_LEN",
+        ),
+        (
+            ".rohi.control.v1.GetConfigSectionResponse.entries",
+            "MAX_CONFIG_FIELDS",
+        ),
+        (
+            ".rohi.control.v1.PatchConfigSectionRequest.section",
+            "MAX_NAME_LEN",
+        ),
+        (
+            ".rohi.control.v1.PatchConfigSectionRequest.mutations",
+            "MAX_MUTATIONS",
+        ),
+        (
+            ".rohi.control.v1.ResetConfigSectionRequest.section",
+            "MAX_NAME_LEN",
+        ),
+        (".rohi.control.v1.Error.reason", "MAX_CODE_LEN"),
+        (".rohi.control.v1.ActionInfo.service", "MAX_NAME_LEN"),
+        (".rohi.control.v1.ActionInfo.name", "MAX_NAME_LEN"),
+        (
+            ".rohi.control.v1.ActionInfo.description",
+            "MAX_DESCRIPTION_LEN",
+        ),
+        (
+            ".rohi.control.v1.ListActionsResponse.actions",
+            "MAX_ACTIONS_PAGE",
+        ),
+        (
+            ".rohi.control.v1.GetActionSchemaRequest.service",
+            "MAX_NAME_LEN",
+        ),
+        (
+            ".rohi.control.v1.GetActionSchemaRequest.action",
+            "MAX_NAME_LEN",
+        ),
+        (
+            ".rohi.control.v1.GetActionSchemaResponse.args",
+            "MAX_ACTION_ARGS",
+        ),
+        (
+            ".rohi.control.v1.GetActionSchemaResponse.results",
+            "MAX_RECORD_FIELDS",
+        ),
+        (
+            ".rohi.control.v1.InvokeActionRequest.service",
+            "MAX_NAME_LEN",
+        ),
+        (
+            ".rohi.control.v1.InvokeActionRequest.action",
+            "MAX_NAME_LEN",
+        ),
+        (
+            ".rohi.control.v1.InvokeActionRequest.args",
+            "MAX_ACTION_ARGS",
+        ),
+        (".rohi.control.v1.ActionRecord.fields", "MAX_RECORD_FIELDS"),
+        (
+            ".rohi.control.v1.InvokeActionResponse.records",
+            "MAX_RECORDS",
+        ),
+        (".rohi.control.v1.ServiceInfo.name", "MAX_NAME_LEN"),
+        (
+            ".rohi.control.v1.ServiceStatusSummary.service",
+            "MAX_NAME_LEN",
+        ),
+        (
+            ".rohi.control.v1.ServiceStatusSummary.reason",
+            "MAX_CODE_LEN",
+        ),
+        (".rohi.control.v1.ServiceIssue.code", "MAX_CODE_LEN"),
+        (
+            ".rohi.control.v1.ServiceIssue.message",
+            "MAX_ISSUE_MESSAGE_LEN",
+        ),
+        (
+            ".rohi.control.v1.ListServicesResponse.services",
+            "MAX_SERVICES",
+        ),
+        (
+            ".rohi.control.v1.GetServicesStatusResponse.services",
+            "MAX_SERVICES",
+        ),
+        (
+            ".rohi.control.v1.GetServiceSchemaRequest.service",
+            "MAX_NAME_LEN",
+        ),
+        (
+            ".rohi.control.v1.GetServiceSchemaResponse.service",
+            "MAX_NAME_LEN",
+        ),
+        (
+            ".rohi.control.v1.GetServiceSchemaResponse.fields",
+            "MAX_SCHEMA_PAGE",
+        ),
+        (
+            ".rohi.control.v1.GetServiceStatusRequest.service",
+            "MAX_NAME_LEN",
+        ),
+        (
+            ".rohi.control.v1.GetServiceStatusResponse.fields",
+            "MAX_STATUS_PAGE",
+        ),
+        (
+            ".rohi.control.v1.GetServiceStatusResponse.issues",
+            "MAX_ISSUES",
         ),
     ];
     for (path, name) in bounded {
@@ -151,15 +314,22 @@ fn main() {
         generator.configure(path, config);
     }
 
-    // The Wi-Fi password must never reach a log: no derived `Debug` for the
-    // message carrying it (the generator drops it for everything containing it).
+    // A repeated string is bounded in elements and in the bytes of each one.
     generator.configure(
-        ".rohi.control.v1.WifiConfigUpdate",
+        ".rohi.control.v1.FieldDescriptor.variants",
+        Config::new()
+            .max_len(limit("MAX_VARIANTS") as u32)
+            .max_bytes(limit("MAX_VARIANT_LEN") as u32),
+    );
+
+    // A mutation can carry a secret (a Wi-Fi password): no derived `Debug`,
+    // see `lib.rs`.
+    generator.configure(
+        ".rohi.control.v1.ConfigMutation",
         Config::new().no_debug_impl(true),
     );
-    // Same for the identity secret.
     generator.configure(
-        ".rohi.control.v1.ProvisionIdentityRequest",
+        ".rohi.control.v1.InvokeActionRequest",
         Config::new().no_debug_impl(true),
     );
 

@@ -111,26 +111,31 @@ pub fn decode<M: MessageDecode + Default>(bytes: &[u8]) -> Result<M, DecodeError
     Ok(message)
 }
 
-impl fmt::Debug for control::WifiConfigUpdate {
+impl fmt::Debug for control::ConfigMutation {
+    // The value can be a secret, for example a Wi-Fi password: it is never shown.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("WifiConfigUpdate")
-            .field("ssid", &self.ssid())
+        use control::ConfigMutation_::Operation;
+        f.debug_struct("ConfigMutation")
+            .field("field_id", &self.field_id)
             .field(
-                "password",
-                &match &self.password_update {
-                    Some(control::WifiConfigUpdate_::PasswordUpdate::Password(_)) => "<set>",
-                    Some(control::WifiConfigUpdate_::PasswordUpdate::ClearPassword(_)) => "<clear>",
-                    None => "<keep>",
+                "operation",
+                &match &self.operation {
+                    Some(Operation::Set(_)) => "set <redacted>",
+                    Some(Operation::Unset(_)) => "unset",
+                    None => "<none>",
                 },
             )
             .finish()
     }
 }
 
-impl fmt::Debug for control::ProvisionIdentityRequest {
+impl fmt::Debug for control::InvokeActionRequest {
+    // Arguments can be secrets, for example an identity seed: never shown.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ProvisionIdentityRequest")
-            .field("ed25519_secret", &"<redacted>")
+        f.debug_struct("InvokeActionRequest")
+            .field("service", &self.service)
+            .field("action", &self.action)
+            .field("args", &self.args.len())
             .finish()
     }
 }

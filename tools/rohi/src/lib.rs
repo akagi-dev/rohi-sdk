@@ -22,8 +22,9 @@
 //!   exposing the ROHI Control Service and moves chunks;
 //! - [`Session`]: frames requests with [`rohi_control_ble::frame`], matches
 //!   responses by request id, enforces timeouts;
-//! - [`Device`]: typed async API (`info`, `sensors`, `config`, Wi-Fi ...)
-//!   returning the plain types of [`model`], never protobuf;
+//! - [`Device`]: generic async API (`config_*`, `services*`, `invoke`)
+//!   returning the plain types of [`model`], never protobuf; it knows no
+//!   module by name;
 //! - [`format`]: human readable rendering of the model.
 //!
 //! The `rohi` command line tool is a thin layer over [`Device`]. Another
@@ -47,4 +48,5 @@ pub use error::{Error, Result};
 pub use provision::DerivedIdentity;
 #[cfg(feature = "provision")]
 pub use provision::derive_identity;
+pub use rohi_identity::PublicKey;
 pub use session::{ClientTransport, DEFAULT_TIMEOUT, Session};

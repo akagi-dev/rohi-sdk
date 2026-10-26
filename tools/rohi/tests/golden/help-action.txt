@@ -1,23 +1,16 @@
-Change the Wi-Fi configuration; omitted settings are kept.
+List and run the actions of the services.
 
-Only stores the configuration; use `rohi wifi status` to follow the connection, or `rohi wifi connect` to wait for it.
+Actions are explicit operations a service offers, for example scanning for networks or reconnecting. The device describes the arguments and the results of every action.
 
-Usage: rohi wifi configure [OPTIONS]
+Usage: rohi action [OPTIONS] <COMMAND>
+
+Commands:
+  list      List the actions of all services
+  describe  Describe the arguments and results of an action
+  run       Run an action
+  help      Print this message or the help of the given subcommand(s)
 
 Options:
-      --ssid <SSID>
-          Network name
-
-      --password <PASSWORD>
-          Network password. Without it (and without `--open`) the password is asked for; an empty answer keeps the stored one.
-          
-          Prefer the prompt or the environment variable: a password on the command line stays in the shell history and is visible to other users in the process list.
-          
-          [env: ROHI_WIFI_PASSWORD]
-
-      --open
-          The network has no password; remove a stored one
-
   -h, --help
           Print help (see a summary with '-h')
 
@@ -47,7 +40,3 @@ Connection:
           How long to wait for a device response
           
           [default: 10]
-
-Examples:
-  rohi wifi configure --ssid office
-  rohi wifi configure --ssid guests --open

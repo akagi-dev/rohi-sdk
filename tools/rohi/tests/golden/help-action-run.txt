@@ -1,0 +1,51 @@
+Run an action.
+
+Arguments are `NAME=VALUE` pairs and all are required. Use `NAME=-` to read a value from stdin, or to be asked for it on a terminal, so that it stays out of the shell history. Bytes are given as hex. The results are printed as a table, one row per record.
+
+Usage: rohi action run [OPTIONS] <SERVICE> <ACTION> [NAME=VALUE]...
+
+Arguments:
+  <SERVICE>
+          The service
+
+  <ACTION>
+          The action
+
+  [NAME=VALUE]...
+          `NAME=VALUE` pairs
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Target:
+  -d, --device <DEVICE>
+          Target device: advertised name, ID, or a unique prefix or suffix of either; or a URI such as ble://NAME or tcp://HOST:PORT. Without it the only device found is used, or you choose among several
+          
+          [env: ROHI_DEVICE=]
+
+Output:
+  -o, --output <FORMAT>
+          Output format
+
+          Possible values:
+          - human: Text for people
+          - json:  JSON with a stable, versioned schema, for scripts
+          
+          [default: human]
+
+Connection:
+      --scan-timeout <SECONDS>
+          How long to search for the target device
+          
+          [default: 10]
+
+      --timeout <SECONDS>
+          How long to wait for a device response
+          
+          [default: 10]
+
+Examples:
+  rohi action run wifi scan
+  rohi action run wifi reconnect
+  rohi -o json action run wifi scan

@@ -7,20 +7,16 @@ edition.workspace = true
 homepage.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Robonomics Open Hardware platform-independent control dispatcher"
+description = "Robonomics Open Hardware control protocol dispatcher: transport and platform independent"
 
 [badges]
 maintenance = { status = "actively-developed" }
 
 [dependencies]
 rohi-control-proto.workspace = true
-rohi-connectivity.workspace = true
-rohi-hal.workspace = true
-rohi-net.workspace = true
-rohi-identity.workspace = true
-rohi-time.workspace = true
-zeroize.workspace = true
+rohi-service.workspace = true
 heapless.workspace = true
 
 [dev-dependencies]
 embassy-futures.workspace = true
+embassy-sync.workspace = true

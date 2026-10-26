@@ -14,6 +14,7 @@ maintenance = { status = "actively-developed" }
 
 [dependencies]
 rohi-config.workspace = true
+rohi-service.workspace = true
 minicbor.workspace = true
 heapless.workspace = true
 log.workspace = true

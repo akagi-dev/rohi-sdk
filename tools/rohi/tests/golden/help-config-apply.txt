@@ -1,22 +1,19 @@
-Validate and restore device configuration.
+Apply a configuration file.
 
-The whole backup is validated, and compared with the device, before anything is changed. A backup that is malformed, has an unsupported schema version, or holds sections the device cannot restore is rejected without changes. Secrets missing from the backup are asked for. The restore is not atomic: if a section fails, the ones already applied are reported.
+A field that is missing in the file is left unchanged, a field set to `null` is unset, and a section set to `null` is reset. Every section is validated on the device before the first one is changed, and each section is applied atomically. Applying several sections is not atomic as a whole: if the device fails in between, the sections already applied are listed.
 
-Usage: rohi backup import [OPTIONS] <FILE>
+Usage: rohi config apply [OPTIONS] <FILE>
 
 Arguments:
   <FILE>
-          Backup file written by `rohi backup export`
+          The JSON file; `-` reads stdin
 
 Options:
       --dry-run
-          Show the planned changes without modifying the device
+          Validate on the device without storing anything
 
   -y, --yes
           Skip the confirmation prompt
-
-      --wifi-password-stdin
-          Read the Wi-Fi password from the first line of stdin, if the backup requires one. ROHI_WIFI_PASSWORD works too
 
   -h, --help
           Print help (see a summary with '-h')
@@ -49,6 +46,6 @@ Connection:
           [default: 10]
 
 Examples:
-  rohi backup import backup.json --dry-run
-  rohi backup import backup.json
-  rohi backup import backup.json --yes --wifi-password-stdin
+  rohi config apply config.json --dry-run
+  rohi config apply config.json
+  rohi config apply config.json --yes

@@ -1,14 +1,20 @@
-Export device configuration.
+Set fields of a section: `FIELD=VALUE` pairs, stored atomically.
 
-Writes a versioned JSON backup of the stored configuration to FILE, or to stdout without FILE. Runtime state and secrets the device does not reveal, such as the Wi-Fi password, are not included; the backup only records that a password is required.
+Fields that are not mentioned keep their value; a section that is not configured yet starts from its defaults, and the complete result is validated by the device. Secret fields are never given on the command line: use `FIELD=-` to read the value from stdin, or to be asked for it on a terminal. Bytes are given as hex.
 
-Usage: rohi backup export [OPTIONS] [FILE]
+Usage: rohi config set [OPTIONS] <SECTION> <FIELD=VALUE>...
 
 Arguments:
-  [FILE]
-          File to write; stdout when omitted
+  <SECTION>
+          The section
+
+  <FIELD=VALUE>...
+          `FIELD=VALUE` pairs
 
 Options:
+      --dry-run
+          Validate on the device without storing anything
+
   -h, --help
           Print help (see a summary with '-h')
 
@@ -40,5 +46,7 @@ Connection:
           [default: 10]
 
 Examples:
-  rohi backup export backup.json
-  rohi backup export > backup.json
+  rohi config set connectivity host=ingress.example.org port=443 enabled=true
+  rohi config set connectivity interval_s=120 --dry-run
+  rohi config set wifi ssid=office password=-
+  echo 'hunter2hunter2' | rohi config set wifi password=-

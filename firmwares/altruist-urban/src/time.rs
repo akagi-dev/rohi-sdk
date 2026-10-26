@@ -35,7 +35,6 @@
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::Delay;
-use rohi_control::DeviceTime;
 use rohi_hal_esp::EmbassyClock;
 use rohi_net::NetworkHandle;
 use rohi_time::{SyncSchedule, Synchronizer, TimeConfig, TimeService, UnixTime};
@@ -86,14 +85,6 @@ static TIME: Time = TimeService::new(EmbassyClock, CONFIG);
 /// valid sample.
 pub fn service() -> &'static Time {
     &TIME
-}
-
-/// Time and synchronization state for the control plane.
-pub fn device_time() -> DeviceTime {
-    DeviceTime {
-        status: TIME.status(),
-        unix_time: TIME.now(),
-    }
 }
 
 /// Keeps the time service synchronized over NTP; never returns.

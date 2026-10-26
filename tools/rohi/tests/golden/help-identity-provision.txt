@@ -1,4 +1,4 @@
-Derive the identity of this device from a master seed and install it.
+Derive an identity from a master seed and install it.
 
 The master seed stays on this machine; the device receives only the secret derived with the hard junction `//<NUMBER>`. Use every number once per master: the device cannot detect duplicates.
 

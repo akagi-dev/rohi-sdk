@@ -40,7 +40,6 @@ provision = ["dep:sp-core"]
 [dependencies]
 rohi-control-proto.workspace = true
 rohi-control-ble.workspace = true
-rohi-connectivity.workspace = true
 rohi-net.workspace = true
 rohi-identity = { workspace = true, features = ["std"] }
 zeroize = { workspace = true, features = ["std"] }
@@ -59,8 +58,9 @@ chrono = { workspace = true, optional = true }
 
 [dev-dependencies]
 rohi-control.workspace = true
-rohi-time.workspace = true
-rohi-hal.workspace = true
+rohi-service.workspace = true
+rohi-connectivity.workspace = true
+embassy-sync.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "time", "sync"] }
 
 [[test]]

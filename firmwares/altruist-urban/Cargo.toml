@@ -22,6 +22,7 @@ rohi-config = { workspace = true }
 rohi-identity = { workspace = true }
 rohi-net = { workspace = true }
 rohi-control = { workspace = true }
+rohi-service = { workspace = true }
 rohi-control-ble = { workspace = true }
 rohi-time = { workspace = true }
 rohi-time-ntp = { workspace = true }

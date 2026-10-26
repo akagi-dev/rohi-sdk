@@ -1,11 +1,11 @@
-Cryptographic identity of the device: show, provision or erase.
+Show, provision or erase the device identity.
 
-Without a command: show the identity state and the public key as a Robonomics address.
+The identity is an Ed25519 key. It is derived on this machine from a master seed and installed with the `identity provision` action; the device never generates one. Without a subcommand the identity of the device is shown.
 
 Usage: rohi identity [OPTIONS] [COMMAND]
 
 Commands:
-  provision  Derive the identity of this device from a master seed and install it
+  provision  Derive an identity from a master seed and install it
   erase      Remove the identity; the device must be provisioned again to sign
   help       Print this message or the help of the given subcommand(s)
 

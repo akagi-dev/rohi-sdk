@@ -14,17 +14,16 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
-use rohi_net::BleConnectionInfo;
-
 /// What an operation needs from the link.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Privilege {
     /// Reads device state without changing it.
     Read,
-    /// Changes configuration or controls a subsystem.
+    /// Changes configuration or runs a privileged action.
     Mutate,
-    /// Installs or removes the device identity. It carries private key
-    /// material, so a link policy may demand more than for [`Mutate`](Self::Mutate).
+    /// Runs an action whose arguments are secrets (for example installing a
+    /// device identity). A link policy may demand more than for
+    /// [`Mutate`](Self::Mutate).
     Provision,
 }
 
@@ -38,19 +37,10 @@ pub struct LinkSecurity {
     pub authenticated: bool,
 }
 
-impl From<BleConnectionInfo> for LinkSecurity {
-    fn from(info: BleConnectionInfo) -> Self {
-        Self {
-            encrypted: info.encrypted,
-            authenticated: info.authenticated,
-        }
-    }
-}
-
 /// Decides whether a request with the given [`Privilege`] may run on a link.
 ///
 /// The transport only reports link properties; this is the single place
-/// where they become authorization decisions. Identity provisioning reuses
+/// where they become authorization decisions. Secret-carrying actions use
 /// the same mechanism.
 pub trait AuthorizationPolicy {
     /// `true` when the operation is allowed.

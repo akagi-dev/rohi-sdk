@@ -16,8 +16,6 @@
 //
 //! Protobuf <-> model conversion.
 
-use std::net::Ipv4Addr;
-
 use rohi_control_proto::control as pb;
 
 use crate::model::*;
@@ -29,186 +27,145 @@ pub(crate) fn info(info: pb::GetInfoResponse) -> DeviceInfo {
     }
 }
 
-pub(crate) fn capabilities(response: &pb::GetCapabilitiesResponse) -> Vec<Capability> {
-    response
-        .capabilities
-        .iter()
-        .map(|capability| Capability::from_proto(*capability))
-        .collect()
+pub(crate) fn value(value: &pb::Value) -> Option<Value> {
+    use pb::Value_::Value as V;
+    Some(match value.value.as_ref()? {
+        V::BoolValue(v) => Value::Bool(*v),
+        V::I64Value(v) => Value::I64(*v),
+        V::U64Value(v) => Value::U64(*v),
+        V::F64Value(v) => Value::F64(*v),
+        V::StringValue(v) => Value::String(v.as_str().to_owned()),
+        V::BytesValue(v) => Value::Bytes(v.to_vec()),
+        V::EnumValue(v) => Value::Enum(v.as_str().to_owned()),
+    })
 }
 
-fn measurement(measurement: &pb::Measurement) -> Measurement {
-    let kind = MeasurementType::from_proto(measurement.r#type);
-    Measurement {
-        kind,
-        unit: kind.unit(),
-        value: measurement.value().copied(),
-        state: MeasurementState::from_proto(measurement.state),
-        age_ms: measurement.age_ms().copied(),
+pub(crate) fn to_proto(value: &Value) -> Option<pb::Value> {
+    use pb::Value_::Value as V;
+    Some(pb::Value {
+        value: Some(match value {
+            Value::Bool(v) => V::BoolValue(*v),
+            Value::I64(v) => V::I64Value(*v),
+            Value::U64(v) => V::U64Value(*v),
+            Value::F64(v) => V::F64Value(*v),
+            Value::String(v) => V::StringValue(v.as_str().try_into().ok()?),
+            Value::Bytes(v) => V::BytesValue(heapless::Vec::from_slice(v).ok()?),
+            Value::Enum(v) => V::EnumValue(v.as_str().try_into().ok()?),
+        }),
+    })
+}
+
+pub(crate) fn field_value(field: &pb::FieldValue) -> Option<FieldValue> {
+    Some(FieldValue {
+        field_id: field.field_id,
+        value: value(field.value()?)?,
+    })
+}
+
+pub(crate) fn field(field: &pb::FieldDescriptor) -> FieldDescriptor {
+    FieldDescriptor {
+        id: field.id,
+        name: field.name.as_str().to_owned(),
+        kind: ValueKind::from_proto(field.kind),
+        description: field.description.as_str().to_owned(),
+        unit: field.unit.as_str().to_owned(),
+        variants: field
+            .variants
+            .iter()
+            .map(|variant| variant.as_str().to_owned())
+            .collect(),
     }
 }
 
-pub(crate) fn sensors(response: &pb::GetSensorsResponse) -> Sensors {
-    Sensors {
-        uptime_ms: response.uptime_ms,
-        sensors: response
-            .sensors
+pub(crate) fn section(info: &pb::ConfigSectionInfo) -> SectionInfo {
+    SectionInfo {
+        name: info.name.as_str().to_owned(),
+        version: info.version,
+        revision: info.revision,
+    }
+}
+
+pub(crate) fn config_schema(schema: &pb::ConfigSectionSchema) -> Option<ConfigSchema> {
+    Some(ConfigSchema {
+        section: section(schema.section()?),
+        fields: schema
+            .fields
             .iter()
-            .map(|sensor| Sensor {
-                name: sensor.name.as_str().to_owned(),
-                state: SensorState::from_proto(sensor.state),
-                error: sensor.error().map(|error| SensorError::from_proto(*error)),
-                measurements: sensor.measurements.iter().map(measurement).collect(),
+            .filter_map(|field| {
+                Some(ConfigField {
+                    field: self::field(field.field()?),
+                    writable: field.writable,
+                    secret: field.secret,
+                    optional: field.optional,
+                    min: field.min().copied(),
+                    max: field.max().copied(),
+                })
+            })
+            .collect(),
+    })
+}
+
+pub(crate) fn config_values(response: &pb::GetConfigSectionResponse) -> ConfigValues {
+    ConfigValues {
+        section: SectionInfo {
+            name: response.section.as_str().to_owned(),
+            version: response.version,
+            revision: response.revision,
+        },
+        configured: response.configured,
+        entries: response
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                let state = match entry.state.as_ref()? {
+                    pb::ConfigEntry_::State::Value(v) => EntryState::Value(value(v)?),
+                    pb::ConfigEntry_::State::Redacted(_) => EntryState::Redacted,
+                };
+                Some(ConfigEntry {
+                    field_id: entry.field_id,
+                    state,
+                })
             })
             .collect(),
     }
 }
 
-pub(crate) fn config(response: &pb::GetConfigResponse) -> Result<Config, crate::Error> {
-    let connectivity = response
-        .connectivity()
-        .map(|config| {
-            let port = u16::try_from(config.port)
-                .map_err(|_| crate::Error::Protocol("port is not a 16-bit number".into()))?;
-            Ok::<_, crate::Error>(ConnectivityConfig {
-                enabled: config.enabled,
-                node_id: config.node_id,
-                interval_s: config.interval_s,
-                host: config.host.as_str().to_owned(),
-                port,
-            })
-        })
-        .transpose()?;
-    Ok(Config {
-        wifi: response.wifi().map(|wifi| WifiConfig {
-            ssid: Ssid(wifi.ssid.to_vec()),
-            password_configured: wifi.password_configured,
+pub(crate) fn mutation(mutation: &Mutation) -> Option<pb::ConfigMutation> {
+    Some(pb::ConfigMutation {
+        field_id: mutation.field_id,
+        operation: Some(match &mutation.op {
+            MutationOp::Set(value) => pb::ConfigMutation_::Operation::Set(to_proto(value)?),
+            MutationOp::Unset => pb::ConfigMutation_::Operation::Unset(pb::Empty {}),
         }),
-        connectivity,
     })
 }
 
-pub(crate) fn identity(response: &pb::GetIdentityResponse) -> Result<IdentityInfo, crate::Error> {
-    let Some(info) = response.identity() else {
-        return Err(crate::Error::Protocol("identity info is missing".into()));
-    };
-    let state = IdentityState::from_proto(info.state);
-    let public_key = info.public_key().map(|key| public_key(key)).transpose()?;
-    Ok(IdentityInfo { state, public_key })
-}
-
-pub(crate) fn public_key(bytes: &[u8]) -> Result<PublicKey, crate::Error> {
-    PublicKey::from_slice(bytes)
-        .ok_or_else(|| crate::Error::Protocol("public key is not 32 bytes".into()))
-}
-
-pub(crate) fn scan(response: &pb::ScanWifiResponse) -> Vec<WifiNetwork> {
-    response
-        .networks
-        .iter()
-        .map(|network| WifiNetwork {
-            ssid: Ssid(network.ssid.to_vec()),
-            rssi_dbm: network.rssi_dbm,
-            channel: network.channel,
-            security: WifiSecurity::from_proto(network.security),
-        })
-        .collect()
-}
-
-pub(crate) fn wifi_status(response: &pb::GetWifiStatusResponse) -> WifiStatus {
-    WifiStatus {
-        state: WifiState::from_proto(response.state),
-        failure: response
-            .failure()
-            .map(|failure| WifiFailure::from_proto(*failure)),
-        connection: response.connection().map(|connection| WifiConnection {
-            ssid: Ssid(connection.ssid.to_vec()),
-            rssi_dbm: connection.rssi_dbm,
-            ipv4: Ipv4Addr::from(connection.ipv4),
-            gateway: connection.gateway().map(|ip| Ipv4Addr::from(*ip)),
-            dns: connection.dns().map(|ip| Ipv4Addr::from(*ip)),
-        }),
+pub(crate) fn summary(summary: &pb::ServiceStatusSummary) -> ServiceSummary {
+    ServiceSummary {
+        service: summary.service.as_str().to_owned(),
+        state: ServiceState::from_proto(summary.state),
+        health: ServiceHealth::from_proto(summary.health),
+        ready: summary.ready,
+        revision: summary.revision,
+        state_age_ms: summary.state_age_ms,
+        reason: summary.reason().map(|reason| reason.as_str().to_owned()),
     }
 }
 
-pub(crate) fn time_status(response: &pb::GetTimeStatusResponse) -> TimeStatus {
-    TimeStatus {
-        state: TimeSyncState::from_proto(response.state),
-        unix_time_ms: response.unix_time_ms().copied(),
-        source: response
-            .source()
-            .map(|source| TimeSource::from_proto(*source)),
-        sync_age_ms: response.sync_age_ms().copied(),
-        uncertainty_ms: response.uncertainty_ms().copied(),
-        consecutive_failures: response.consecutive_failures,
-        last_failure: response
-            .last_failure()
-            .map(|failure| TimeSyncFailure::from_proto(*failure)),
+pub(crate) fn issue(issue: &pb::ServiceIssue) -> Issue {
+    Issue {
+        severity: IssueSeverity::from_proto(issue.severity),
+        code: issue.code.as_str().to_owned(),
+        message: issue.message.as_str().to_owned(),
+        age_ms: issue.age_ms,
     }
 }
 
-/// Builds the wire form of a partial telemetry update.
-pub(crate) fn connectivity_update(
-    update: &ConnectivityUpdate,
-) -> Result<pb::ConnectivityConfigUpdate, crate::Error> {
-    let mut out = pb::ConnectivityConfigUpdate::default();
-    if let Some(enabled) = update.enabled {
-        out.set_enabled(enabled);
+pub(crate) fn action_info(info: &pb::ActionInfo) -> ActionInfo {
+    ActionInfo {
+        service: info.service.as_str().to_owned(),
+        name: info.name.as_str().to_owned(),
+        description: info.description.as_str().to_owned(),
+        privileged: info.privileged,
     }
-    if let Some(node_id) = update.node_id {
-        out.set_node_id(node_id);
-    }
-    if let Some(interval_s) = update.interval_s {
-        let allowed =
-            rohi_connectivity::config::MIN_INTERVAL_S..=rohi_connectivity::config::MAX_INTERVAL_S;
-        if !allowed.contains(&interval_s) {
-            return Err(crate::Error::InvalidInput(format!(
-                "interval must be {} to {} seconds",
-                allowed.start(),
-                allowed.end()
-            )));
-        }
-        out.set_interval_s(interval_s);
-    }
-    if let Some(host) = &update.host {
-        if rohi_connectivity::Host::new(host).is_none() {
-            return Err(crate::Error::InvalidInput(format!(
-                "host must be 1 to {} letters, digits, '.' or '-'",
-                rohi_connectivity::config::MAX_HOST_LEN
-            )));
-        }
-        // Length checked above.
-        let host = heapless::String::try_from(host.as_str()).map_err(|_| crate::Error::TooLarge)?;
-        out.set_host(host);
-    }
-    if let Some(port) = update.port {
-        if port == 0 {
-            return Err(crate::Error::InvalidInput("port must not be 0".into()));
-        }
-        out.set_port(u32::from(port));
-    }
-    Ok(out)
-}
-
-/// Builds the wire form of a partial Wi-Fi update.
-pub(crate) fn wifi_update(update: &WifiUpdate) -> Result<pb::WifiConfigUpdate, crate::Error> {
-    use pb::WifiConfigUpdate_::PasswordUpdate;
-
-    let mut out = pb::WifiConfigUpdate::default();
-    if let Some(ssid) = &update.ssid {
-        let ssid = heapless::Vec::from_slice(ssid)
-            .map_err(|_| crate::Error::InvalidInput("SSID is longer than 32 bytes".into()))?;
-        out.set_ssid(ssid);
-    }
-    out.password_update = match &update.password {
-        PasswordChange::Keep => None,
-        PasswordChange::Clear => Some(PasswordUpdate::ClearPassword(pb::Empty {})),
-        PasswordChange::Set(password) => {
-            let password = heapless::Vec::from_slice(password).map_err(|_| {
-                crate::Error::InvalidInput("password is longer than 64 bytes".into())
-            })?;
-            Some(PasswordUpdate::Password(password))
-        }
-    };
-    Ok(out)
 }

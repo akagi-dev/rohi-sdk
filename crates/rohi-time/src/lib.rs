@@ -64,6 +64,7 @@
 #[cfg(test)]
 extern crate std;
 
+mod managed;
 mod service;
 mod source;
 mod status;
@@ -75,6 +76,7 @@ mod tests;
 #[cfg(test)]
 mod testutil;
 
+pub use managed::{TimeStatusService, status_field};
 pub use service::{
     DEFAULT_HORIZON, DEFAULT_MAX_UNCERTAINTY, DEFAULT_STALE_AFTER, TimeConfig, TimeService,
 };

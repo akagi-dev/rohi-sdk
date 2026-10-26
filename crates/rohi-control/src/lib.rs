@@ -16,38 +16,38 @@
 //
 #![no_std]
 
-//! Platform-independent ROHI control dispatcher.
+//! Transport- and platform-independent ROHI control dispatcher.
 //!
 //! ```text
-//! request bytes -> Controller -> ControlServices (firmware adapter)
-//!                     |              measurements / config / Wi-Fi
+//! request bytes -> Controller -> ControlBackend (firmware)
+//!                     |           config registry, service registry
 //! response bytes <----+
 //! ```
 //!
 //! [`Controller::handle`] decodes one protobuf [`Request`](rohi_control_proto::control::Request),
-//! checks capabilities and the [`AuthorizationPolicy`], calls the
-//! [`ControlServices`] and encodes exactly one response. It never allocates,
+//! checks the [`AuthorizationPolicy`], serves it from the registries of
+//! [`rohi_service`] and encodes exactly one response. It never allocates,
 //! never panics on malformed input and reports every failure as a typed
-//! protocol error. The crate knows nothing about transports (BLE) or
-//! platforms (ESP): those live behind [`ControlServices`] and in the
-//! transport crates.
+//! protocol error.
+//!
+//! The crate knows no device module (Wi-Fi, sensors, telemetry, ...): config
+//! sections, services and actions are discovered through the registries, and
+//! it knows no transport (BLE) or platform (ESP).
 
 #[cfg(test)]
 extern crate std;
 
-mod capabilities;
+mod backend;
 mod controller;
 mod mapping;
 mod policy;
-mod services;
 
 #[cfg(test)]
 mod tests;
 
-pub use capabilities::Capabilities;
+pub use backend::{ControlBackend, Device, DeviceInfo};
 pub use controller::Controller;
 pub use policy::{
     AuthorizationPolicy, LinkSecurity, OpenPolicy, Privilege, RequireAuthenticated,
     RequireEncryption,
 };
-pub use services::{ControlServices, DeviceInfo, DeviceTime, ServiceError};

@@ -78,6 +78,7 @@ pub mod store;
 
 /// Hardware-independent sensor runtime.
 pub mod runtime;
+mod sensors_service;
 
 /// Sensor drivers.
 pub mod sensors;
@@ -96,6 +97,7 @@ pub use sensor::{
     Sds011Update, SensorErrorCode, SensorEvent, SensorKind, SensorState, SensorStatus,
     SensorStatuses, Zmod4510Update,
 };
+pub use sensors_service::SensorsService;
 pub use store::MeasurementStore;
 pub use time::MonotonicTimestamp;
 pub use units::*;

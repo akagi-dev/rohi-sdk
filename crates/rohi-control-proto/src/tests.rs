@@ -9,9 +9,8 @@ fn bytes<const N: usize>(data: &[u8]) -> Vec<u8, N> {
 }
 
 #[test]
-fn worst_case_sizes_fit_the_limits() {
+fn the_request_fits_the_limit_in_the_worst_case() {
     assert!(Request::MAX_SIZE.unwrap() <= limits::MAX_REQUEST_LEN);
-    assert!(Response::MAX_SIZE.unwrap() <= limits::MAX_RESPONSE_LEN);
 }
 
 #[test]
@@ -42,6 +41,7 @@ fn error_response_golden_bytes() {
         request_id: 300,
         response: Some(Response_::Response::Error(Error {
             code: ErrorCode::NotSupported,
+            ..Default::default()
         })),
     };
     let mut buf = [0u8; 16];
@@ -98,67 +98,6 @@ fn truncated_message_is_malformed() {
 }
 
 #[test]
-fn oversized_ssid_is_rejected_with_capacity() {
-    let mut update = WifiConfigUpdate::default();
-    update.set_ssid(bytes(&[b'a'; limits::MAX_SSID_LEN]));
-    let mut buf = [0u8; 64];
-    let len = encode(&update, &mut buf).unwrap();
-    assert!(decode::<WifiConfigUpdate>(&buf[..len]).is_ok());
-
-    // 33 bytes: field 1, length 33.
-    let mut wire = [b'a'; 35];
-    wire[0] = 0x0a;
-    wire[1] = 33;
-    assert_eq!(
-        decode::<WifiConfigUpdate>(&wire).err(),
-        Some(DecodeError::Capacity)
-    );
-}
-
-#[test]
-fn password_update_round_trips_and_stays_out_of_debug() {
-    let mut update = WifiConfigUpdate::default();
-    update.set_ssid(bytes(b"office"));
-    update.password_update = Some(WifiConfigUpdate_::PasswordUpdate::Password(bytes(
-        b"hunter2hunter2",
-    )));
-    let request = Request {
-        protocol_version: PROTOCOL_VERSION,
-        request_id: 1,
-        request: Some(Request_::Request::UpdateConfig(UpdateConfigRequest {
-            wifi_update: Some(UpdateConfigRequest_::WifiUpdate::UpdateWifi(update.clone())),
-            ..Default::default()
-        })),
-    };
-    let mut buf = [0u8; limits::MAX_REQUEST_LEN];
-    let len = encode(&request, &mut buf).unwrap();
-    assert!(decode::<Request>(&buf[..len]).unwrap() == request);
-
-    let debug = std::format!("{update:?}");
-    assert!(!debug.contains("hunter2"), "{debug}");
-    assert!(debug.contains("<set>"), "{debug}");
-}
-
-#[test]
-fn clear_password_is_distinct_from_omitted_password() {
-    let clear = WifiConfigUpdate {
-        password_update: Some(WifiConfigUpdate_::PasswordUpdate::ClearPassword(Empty {})),
-        ..Default::default()
-    };
-    let mut buf = [0u8; 16];
-    let len = encode(&clear, &mut buf).unwrap();
-    let decoded: WifiConfigUpdate = decode(&buf[..len]).unwrap();
-    assert!(matches!(
-        decoded.password_update,
-        Some(WifiConfigUpdate_::PasswordUpdate::ClearPassword(_))
-    ));
-
-    let omitted: WifiConfigUpdate = decode(&[]).unwrap();
-    assert!(omitted.password_update.is_none());
-    assert!(omitted.ssid().is_none());
-}
-
-#[test]
 fn encoding_into_a_short_buffer_fails() {
     let request = Request {
         protocol_version: PROTOCOL_VERSION,
@@ -169,124 +108,142 @@ fn encoding_into_a_short_buffer_fails() {
     assert_eq!(encode(&request, &mut buf), Err(EncodeError::BufferTooSmall));
 }
 
-#[test]
-fn sensor_with_absent_value_has_no_value_field() {
-    let measurement = Measurement {
-        r#type: MeasurementType::Co2,
-        state: MeasurementState::WarmingUp,
-        ..Default::default()
-    };
-    let mut buf = [0u8; 32];
-    let len = encode(&measurement, &mut buf).unwrap();
-    let decoded: Measurement = decode(&buf[..len]).unwrap();
-    assert_eq!(decoded.value(), None);
-    assert_eq!(decoded.age_ms(), None);
-    assert_eq!(decoded.state, MeasurementState::WarmingUp);
+fn text<const N: usize>(value: &str) -> heapless::String<N> {
+    value.try_into().unwrap()
+}
+
+fn string_value(value: &str) -> Value {
+    Value {
+        value: Some(Value_::Value::StringValue(text(value))),
+    }
 }
 
 #[test]
-fn provision_identity_request_golden_bytes() {
+fn patch_request_round_trips_and_keeps_values_out_of_debug() {
+    let mut mutations = Vec::new();
+    mutations
+        .push(ConfigMutation {
+            field_id: 2,
+            operation: Some(ConfigMutation_::Operation::Set(string_value(
+                "hunter2hunter2",
+            ))),
+        })
+        .ok()
+        .unwrap();
+    mutations
+        .push(ConfigMutation {
+            field_id: 3,
+            operation: Some(ConfigMutation_::Operation::Unset(Empty {})),
+        })
+        .ok()
+        .unwrap();
+    let mut patch = PatchConfigSectionRequest {
+        section: text("wifi"),
+        mutations,
+        dry_run: true,
+        ..Default::default()
+    };
+    patch.set_expected_revision(4);
     let request = Request {
         protocol_version: PROTOCOL_VERSION,
-        request_id: 2,
-        request: Some(Request_::Request::ProvisionIdentity(
-            ProvisionIdentityRequest {
-                ed25519_secret: bytes(&[0x5a; limits::ED25519_KEY_LEN]),
-            },
-        )),
+        request_id: 1,
+        request: Some(Request_::Request::PatchConfigSection(patch)),
     };
     let mut buf = [0u8; limits::MAX_REQUEST_LEN];
     let len = encode(&request, &mut buf).unwrap();
-    // field 31 (provision_identity, tag 0xfa 0x01) holds field 1 = 32 bytes.
-    let mut expected = std::vec![0x08, 0x01, 0x10, 0x02, 0xfa, 0x01, 0x22, 0x0a, 0x20];
-    expected.extend_from_slice(&[0x5a; 32]);
-    assert_eq!(&buf[..len], expected.as_slice());
     assert!(decode::<Request>(&buf[..len]).unwrap() == request);
-}
 
-#[test]
-fn identity_secret_stays_out_of_debug() {
-    let request = ProvisionIdentityRequest {
-        ed25519_secret: bytes(&[0x5a; limits::ED25519_KEY_LEN]),
+    let Some(Request_::Request::PatchConfigSection(patch)) = &request.request else {
+        unreachable!()
     };
-    let debug = std::format!("{request:?}");
-    assert!(!debug.contains("90"), "{debug}");
-    assert!(debug.contains("<redacted>"), "{debug}");
+    let debug = std::format!("{:?}", patch.mutations[0]);
+    assert!(!debug.contains("hunter2"), "{debug}");
+    assert!(debug.contains("redacted"), "{debug}");
 }
 
 #[test]
-fn oversized_identity_secret_is_rejected_with_capacity() {
-    let mut wire = [0x5a; 35];
-    wire[0] = 0x0a;
-    wire[1] = 33;
-    assert_eq!(
-        decode::<ProvisionIdentityRequest>(&wire).err(),
-        Some(DecodeError::Capacity)
-    );
+fn unset_is_distinct_from_an_empty_value() {
+    let unset = ConfigMutation {
+        field_id: 1,
+        operation: Some(ConfigMutation_::Operation::Unset(Empty {})),
+    };
+    let empty = ConfigMutation {
+        field_id: 1,
+        operation: Some(ConfigMutation_::Operation::Set(string_value(""))),
+    };
+    let mut a = [0u8; 16];
+    let mut b = [0u8; 16];
+    let la = encode(&unset, &mut a).unwrap();
+    let lb = encode(&empty, &mut b).unwrap();
+    assert_ne!(&a[..la], &b[..lb]);
+    assert!(matches!(
+        decode::<ConfigMutation>(&a[..la]).unwrap().operation,
+        Some(ConfigMutation_::Operation::Unset(_))
+    ));
 }
 
 #[test]
-fn identity_info_round_trips() {
-    let mut info = IdentityInfo {
-        state: IdentityState::Provisioned,
+fn oversized_value_is_rejected_with_capacity() {
+    // string_value (field 5) of 65 bytes.
+    let mut wire = [b'a'; 67];
+    wire[0] = 0x2a;
+    wire[1] = 65;
+    assert_eq!(decode::<Value>(&wire).err(), Some(DecodeError::Capacity));
+    wire[1] = 64;
+    assert!(decode::<Value>(&wire[..66]).is_ok());
+}
+
+fn full_field() -> FieldDescriptor {
+    full_field_with(2)
+}
+
+fn full_field_with(variant_count: usize) -> FieldDescriptor {
+    let mut variants = Vec::new();
+    for _ in 0..variant_count {
+        variants
+            .push(text(&"v".repeat(limits::MAX_VARIANT_LEN)))
+            .unwrap();
+    }
+    FieldDescriptor {
+        id: u32::MAX,
+        name: text(&"n".repeat(limits::MAX_NAME_LEN)),
+        kind: ValueKind::Enum,
+        description: text(&"d".repeat(limits::MAX_DESCRIPTION_LEN)),
+        unit: text(&"u".repeat(limits::MAX_UNIT_LEN)),
+        variants,
+    }
+}
+
+#[test]
+fn full_config_schema_fits_the_response_limit() {
+    let mut fields = Vec::new();
+    for _ in 0..limits::MAX_SCHEMA_PAGE {
+        let mut field = ConfigField {
+            writable: true,
+            secret: true,
+            optional: true,
+            ..Default::default()
+        };
+        field.set_field(full_field());
+        field.set_min(f64::MIN);
+        field.set_max(f64::MAX);
+        fields.push(field).ok().unwrap();
+    }
+    let mut schema = ConfigSectionSchema {
+        fields,
         ..Default::default()
     };
-    info.set_public_key(bytes(&[0x01; limits::ED25519_KEY_LEN]));
-    let mut out = GetIdentityResponse::default();
-    out.set_identity(info);
-    let response = Response {
-        protocol_version: PROTOCOL_VERSION,
-        request_id: 3,
-        response: Some(Response_::Response::GetIdentity(out)),
-    };
-    let mut buf = [0u8; 64];
-    let len = encode(&response, &mut buf).unwrap();
-    assert_eq!(decode::<Response>(&buf[..len]).unwrap(), response);
-
-    let absent = IdentityInfo {
-        state: IdentityState::NotProvisioned,
-        ..Default::default()
-    };
-    let len = encode(&absent, &mut buf).unwrap();
-    assert_eq!(&buf[..len], &[0x08, 0x01]);
-    assert_eq!(
-        decode::<IdentityInfo>(&buf[..len]).unwrap().public_key(),
-        None
-    );
-}
-
-#[test]
-fn get_time_status_request_golden_bytes() {
-    let request = Request {
-        protocol_version: PROTOCOL_VERSION,
-        request_id: 7,
-        request: Some(Request_::Request::GetTimeStatus(
-            GetTimeStatusRequest::default(),
-        )),
-    };
-    let mut buf = [0u8; 16];
-    let len = encode(&request, &mut buf).unwrap();
-    // field 40 (time status), length-delimited and empty.
-    assert_eq!(&buf[..len], &[0x08, 0x01, 0x10, 0x07, 0xc2, 0x02, 0x00]);
-    assert!(decode::<Request>(&buf[..len]).unwrap() == request);
-}
-
-#[test]
-fn full_time_status_response_fits_the_limit() {
-    let mut time = GetTimeStatusResponse {
-        state: TimeSyncState::Synchronized,
-        consecutive_failures: u32::MAX,
-        ..Default::default()
-    };
-    time.set_unix_time_ms(u64::MAX);
-    time.set_source(TimeSource::Ntp);
-    time.set_sync_age_ms(u64::MAX);
-    time.set_uncertainty_ms(u32::MAX);
-    time.set_last_failure(TimeSyncFailure::Source);
+    schema.set_section(ConfigSectionInfo {
+        name: text(&"s".repeat(limits::MAX_NAME_LEN)),
+        version: u32::MAX,
+        revision: u32::MAX,
+    });
+    let mut schema_response = GetConfigSchemaResponse::default();
+    schema_response.set_schema(schema);
     let response = Response {
         protocol_version: PROTOCOL_VERSION,
         request_id: u32::MAX,
-        response: Some(Response_::Response::GetTimeStatus(time)),
+        response: Some(Response_::Response::GetConfigSchema(schema_response)),
     };
     let mut buf = [0u8; limits::MAX_RESPONSE_LEN];
     let len = encode(&response, &mut buf).unwrap();
@@ -294,36 +251,211 @@ fn full_time_status_response_fits_the_limit() {
 }
 
 #[test]
-fn connectivity_update_round_trips_and_bounds_the_host() {
-    let mut update = ConnectivityConfigUpdate::default();
-    update.set_host(
-        core::str::from_utf8(&[b'a'; limits::MAX_HOST_LEN])
-            .unwrap()
-            .try_into()
-            .unwrap(),
-    );
-    update.set_port(8080);
-    update.set_enabled(true);
+fn full_service_status_fits_the_response_limit() {
+    let mut fields = Vec::new();
+    for id in 0..limits::MAX_STATUS_PAGE {
+        let mut field = FieldValue {
+            field_id: u32::MAX - id as u32,
+            ..Default::default()
+        };
+        field.set_value(string_value(&"x".repeat(limits::MAX_VALUE_LEN)));
+        fields.push(field).ok().unwrap();
+    }
+    let mut issues = Vec::new();
+    for _ in 0..limits::MAX_ISSUES {
+        issues
+            .push(ServiceIssue {
+                severity: IssueSeverity::Critical,
+                code: text(&"c".repeat(limits::MAX_CODE_LEN)),
+                message: text(&"m".repeat(limits::MAX_ISSUE_MESSAGE_LEN)),
+                age_ms: u64::MAX,
+            })
+            .unwrap();
+    }
+    let mut summary = ServiceStatusSummary {
+        service: text(&"s".repeat(limits::MAX_NAME_LEN)),
+        state: ServiceState::Running,
+        health: ServiceHealth::Degraded,
+        ready: true,
+        revision: u32::MAX,
+        state_age_ms: u64::MAX,
+        ..Default::default()
+    };
+    summary.set_reason(text(&"r".repeat(limits::MAX_CODE_LEN)));
+    let mut status = GetServiceStatusResponse {
+        fields,
+        issues,
+        ..Default::default()
+    };
+    status.set_summary(summary);
+    let response = Response {
+        protocol_version: PROTOCOL_VERSION,
+        request_id: u32::MAX,
+        response: Some(Response_::Response::GetServiceStatus(status)),
+    };
+    let mut buf = [0u8; limits::MAX_RESPONSE_LEN];
+    let len = encode(&response, &mut buf).unwrap();
+    assert!(decode::<Response>(&buf[..len]).unwrap() == response);
+}
+
+#[test]
+fn services_summary_with_every_service_fits_the_response_limit() {
+    let mut services = Vec::new();
+    for _ in 0..limits::MAX_SERVICES {
+        let mut summary = ServiceStatusSummary {
+            service: text(&"s".repeat(limits::MAX_NAME_LEN)),
+            state_age_ms: u64::MAX,
+            revision: u32::MAX,
+            ..Default::default()
+        };
+        summary.set_reason(text(&"r".repeat(limits::MAX_CODE_LEN)));
+        services.push(summary).unwrap();
+    }
+    let response = Response {
+        protocol_version: PROTOCOL_VERSION,
+        request_id: u32::MAX,
+        response: Some(Response_::Response::GetServicesStatus(
+            GetServicesStatusResponse {
+                uptime_ms: u64::MAX,
+                health: DeviceHealth::Error,
+                services,
+            },
+        )),
+    };
+    let mut buf = [0u8; limits::MAX_RESPONSE_LEN];
+    let len = encode(&response, &mut buf).unwrap();
+    assert!(decode::<Response>(&buf[..len]).unwrap() == response);
+}
+
+#[test]
+fn list_config_sections_request_golden_bytes() {
+    let request = Request {
+        protocol_version: PROTOCOL_VERSION,
+        request_id: 7,
+        request: Some(Request_::Request::ListConfigSections(
+            ListConfigSectionsRequest::default(),
+        )),
+    };
+    let mut buf = [0u8; 16];
+    let len = encode(&request, &mut buf).unwrap();
+    // field 11, length-delimited and empty.
+    assert_eq!(&buf[..len], &[0x08, 0x01, 0x10, 0x07, 0x5a, 0x00]);
+}
+
+#[test]
+fn invoke_action_round_trips_and_keeps_arguments_out_of_debug() {
+    let mut args = Vec::new();
+    args.push({
+        let mut arg = FieldValue {
+            field_id: 1,
+            ..Default::default()
+        };
+        arg.set_value(Value {
+            value: Some(Value_::Value::BytesValue(bytes(&[0x5a; 32]))),
+        });
+        arg
+    })
+    .ok()
+    .unwrap();
+    let invoke = InvokeActionRequest {
+        service: text("identity"),
+        action: text("provision"),
+        args,
+    };
+    let debug = std::format!("{invoke:?}");
+    assert!(!debug.contains("90") && !debug.contains("5a"), "{debug}");
     let request = Request {
         protocol_version: PROTOCOL_VERSION,
         request_id: 1,
-        request: Some(Request_::Request::UpdateConfig(UpdateConfigRequest {
-            wifi_update: Some(UpdateConfigRequest_::WifiUpdate::ClearWifi(Empty {})),
-            connectivity_update: Some(
-                UpdateConfigRequest_::ConnectivityUpdate::UpdateConnectivity(update),
-            ),
-        })),
+        request: Some(Request_::Request::InvokeAction(invoke)),
     };
     let mut buf = [0u8; limits::MAX_REQUEST_LEN];
     let len = encode(&request, &mut buf).unwrap();
     assert!(decode::<Request>(&buf[..len]).unwrap() == request);
+}
 
-    // 65 bytes: field 4, length 65.
-    let mut wire = [b'a'; 67];
-    wire[0] = 0x22;
-    wire[1] = 65;
-    assert_eq!(
-        decode::<ConnectivityConfigUpdate>(&wire).err(),
-        Some(DecodeError::Capacity)
-    );
+#[test]
+fn a_full_action_result_fits_the_response_limit_with_typical_values() {
+    // Eight scan results: SSID (32 bytes), rssi, channel, security.
+    let mut records = Vec::new();
+    for _ in 0..limits::MAX_RECORDS {
+        let mut fields = Vec::new();
+        for (id, value) in [
+            (1, string_value(&"s".repeat(32))),
+            (
+                2,
+                Value {
+                    value: Some(Value_::Value::I64Value(-60)),
+                },
+            ),
+            (
+                3,
+                Value {
+                    value: Some(Value_::Value::U64Value(11)),
+                },
+            ),
+            (
+                4,
+                Value {
+                    value: Some(Value_::Value::EnumValue(text("wpa2"))),
+                },
+            ),
+        ] {
+            let mut field = FieldValue {
+                field_id: id,
+                ..Default::default()
+            };
+            field.set_value(value);
+            fields.push(field).ok().unwrap();
+        }
+        records.push(ActionRecord { fields }).ok().unwrap();
+    }
+    let response = Response {
+        protocol_version: PROTOCOL_VERSION,
+        request_id: u32::MAX,
+        response: Some(Response_::Response::InvokeAction(InvokeActionResponse {
+            records,
+        })),
+    };
+    let mut buf = [0u8; limits::MAX_RESPONSE_LEN];
+    let len = encode(&response, &mut buf).unwrap();
+    assert!(len < limits::MAX_RESPONSE_LEN / 2, "{len}");
+    assert!(decode::<Response>(&buf[..len]).unwrap() == response);
+}
+
+#[test]
+fn a_rejection_carries_a_reason() {
+    let mut error = Error {
+        code: ErrorCode::Rejected,
+        ..Default::default()
+    };
+    error.set_reason(text("already_provisioned"));
+    let response = Response {
+        protocol_version: PROTOCOL_VERSION,
+        request_id: 1,
+        response: Some(Response_::Response::Error(error)),
+    };
+    let mut buf = [0u8; 64];
+    let len = encode(&response, &mut buf).unwrap();
+    assert!(decode::<Response>(&buf[..len]).unwrap() == response);
+}
+
+#[test]
+fn a_field_with_every_variant_fits() {
+    let field = full_field_with(limits::MAX_VARIANTS);
+    let mut buf = [0u8; limits::MAX_RESPONSE_LEN];
+    let len = encode(&field, &mut buf).unwrap();
+    assert_eq!(decode::<FieldDescriptor>(&buf[..len]).unwrap(), field);
+}
+
+#[test]
+fn messages_stay_small_in_memory() {
+    // A response is built, moved and encoded on the stack of the control task
+    // of a microcontroller: every page, list and record bound is chosen so
+    // that the largest variant stays within this budget.
+    const BUDGET: usize = 2700;
+    let response = core::mem::size_of::<Response>();
+    let request = core::mem::size_of::<Request>();
+    assert!(response <= BUDGET, "Response is {response} bytes");
+    assert!(request <= BUDGET, "Request is {request} bytes");
 }

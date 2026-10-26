@@ -32,7 +32,7 @@ use static_cell::StaticCell;
 
 use altruist_urban::config;
 use altruist_urban::connectivity::connectivity_task;
-use altruist_urban::control::{self, BLE_RESOURCES, UrbanControlServices, ble_task, control_task};
+use altruist_urban::control::{self, BLE_RESOURCES, ble_task, control_task};
 use altruist_urban::identity;
 use altruist_urban::net::{self, net_runner_task, wifi_task};
 use altruist_urban::resources::WIRELESS_HEAP_SIZE;
@@ -41,7 +41,6 @@ use altruist_urban::tasks::sensors::{
 };
 use altruist_urban::tasks::store::{self, store_task};
 use altruist_urban::time::ntp_task;
-use rohi_control::Capabilities;
 use rohi_hal_esp::board::altruist_urban::{AltruistUrban, Hardware};
 use rohi_net_esp::{EspWireless, wireless_heap};
 
@@ -91,8 +90,6 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(store_task().unwrap());
 
     // A Wi-Fi or BLE failure must never stop the sensors: log and carry on.
-    let mut capabilities =
-        Capabilities::SENSORS | Capabilities::CONFIG | Capabilities::IDENTITY | Capabilities::TIME;
     let mut wifi_configured = false;
     match net::start(&mut wireless) {
         Ok((backend, runner, network)) => {
@@ -106,11 +103,6 @@ async fn main(spawner: Spawner) -> ! {
             // changes made over the control link.
             spawner.spawn(connectivity_task(network, store::handle(), config).unwrap());
             wifi_configured = net::handle().is_configured();
-            capabilities = capabilities
-                | Capabilities::CONNECTIVITY
-                | Capabilities::WIFI_SCAN
-                | Capabilities::WIFI_STATUS
-                | Capabilities::WIFI_CONTROL;
             info!(
                 "Wi-Fi started, wireless heap free {} B",
                 wireless.heap().free
@@ -121,15 +113,9 @@ async fn main(spawner: Spawner) -> ! {
 
     match wireless.ble(control::BLE_CONFIG, BLE_RESOURCES.init(Default::default())) {
         Ok((transport, runner)) => {
-            let services = UrbanControlServices::new(
-                store::handle(),
-                config,
-                net::handle(),
-                identity,
-                capabilities,
-            );
+            let device = control::device(config, identity);
             spawner.spawn(ble_task(runner).unwrap());
-            spawner.spawn(control_task(transport, services).unwrap());
+            spawner.spawn(control_task(transport, device).unwrap());
             info!(
                 "BLE control started, wireless heap free {} B",
                 wireless.heap().free

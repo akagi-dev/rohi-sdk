@@ -1,0 +1,176 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Copyright 2025-2026 Akagi Engineering <admin@akagi.dev>
+//
+//  Licensed under the Apache License, Version 2.0 (the "License");
+//  you may not use this file except in compliance with the License.
+//  You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+//  Unless required by applicable law or agreed to in writing, software
+//  distributed under the License is distributed on an "AS IS" BASIS,
+//  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+//  See the License for the specific language governing permissions and
+//  limitations under the License.
+//
+use heapless::{String, Vec};
+
+use crate::{MAX_VALUE_LEN, MAX_VARIANT_LEN};
+
+/// Primitive type of a [`Value`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ValueKind {
+    /// `true` or `false`.
+    Bool,
+    /// Signed 64-bit integer.
+    I64,
+    /// Unsigned 64-bit integer.
+    U64,
+    /// 64-bit float.
+    F64,
+    /// UTF-8 text.
+    String,
+    /// Arbitrary bytes.
+    Bytes,
+    /// One of the variants listed by the field descriptor.
+    Enum,
+}
+
+/// A generic typed value, the common currency of config and status.
+///
+/// `Debug` shows only the kind: a value can be a secret.
+#[derive(Clone, PartialEq)]
+pub enum Value {
+    /// See [`ValueKind::Bool`].
+    Bool(bool),
+    /// See [`ValueKind::I64`].
+    I64(i64),
+    /// See [`ValueKind::U64`].
+    U64(u64),
+    /// See [`ValueKind::F64`].
+    F64(f64),
+    /// See [`ValueKind::String`].
+    String(String<MAX_VALUE_LEN>),
+    /// See [`ValueKind::Bytes`].
+    Bytes(Vec<u8, MAX_VALUE_LEN>),
+    /// See [`ValueKind::Enum`].
+    Enum(String<MAX_VARIANT_LEN>),
+}
+
+impl Value {
+    /// The kind of the value.
+    pub const fn kind(&self) -> ValueKind {
+        match self {
+            Self::Bool(_) => ValueKind::Bool,
+            Self::I64(_) => ValueKind::I64,
+            Self::U64(_) => ValueKind::U64,
+            Self::F64(_) => ValueKind::F64,
+            Self::String(_) => ValueKind::String,
+            Self::Bytes(_) => ValueKind::Bytes,
+            Self::Enum(_) => ValueKind::Enum,
+        }
+    }
+
+    /// A text value; `None` if `text` exceeds [`MAX_VALUE_LEN`].
+    pub fn text(text: &str) -> Option<Self> {
+        String::try_from(text).ok().map(Self::String)
+    }
+
+    /// A bytes value; `None` if `bytes` exceed [`MAX_VALUE_LEN`].
+    pub fn bytes(bytes: &[u8]) -> Option<Self> {
+        Vec::from_slice(bytes).ok().map(Self::Bytes)
+    }
+
+    /// An enum value; `None` if `variant` exceeds [`MAX_VARIANT_LEN`].
+    pub fn variant(variant: &str) -> Option<Self> {
+        String::try_from(variant).ok().map(Self::Enum)
+    }
+
+    /// The boolean, if this is a [`Value::Bool`].
+    pub const fn as_bool(&self) -> Option<bool> {
+        match self {
+            Self::Bool(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// The integer, if this is a [`Value::U64`].
+    pub const fn as_u64(&self) -> Option<u64> {
+        match self {
+            Self::U64(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// The integer, if this is a [`Value::I64`].
+    pub const fn as_i64(&self) -> Option<i64> {
+        match self {
+            Self::I64(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// The float, if this is a [`Value::F64`].
+    pub const fn as_f64(&self) -> Option<f64> {
+        match self {
+            Self::F64(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// The text of a [`Value::String`] or the variant of a [`Value::Enum`].
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::String(value) => Some(value),
+            Self::Enum(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    /// The bytes of a [`Value::Bytes`].
+    pub fn as_bytes(&self) -> Option<&[u8]> {
+        match self {
+            Self::Bytes(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    /// The numeric value as `f64`, for range checks.
+    pub(crate) fn as_number(&self) -> Option<f64> {
+        match self {
+            Self::I64(value) => Some(*value as f64),
+            Self::U64(value) => Some(*value as f64),
+            Self::F64(value) => Some(*value),
+            _ => None,
+        }
+    }
+}
+
+impl core::fmt::Debug for Value {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Value({:?})", self.kind())
+    }
+}
+
+impl Value {
+    /// Overwrites the content of a text or bytes value, for values that held
+    /// a secret.
+    pub fn wipe(&mut self) {
+        match self {
+            Self::String(text) => {
+                let len = text.len();
+                text.clear();
+                for _ in 0..len {
+                    let _ = text.push('\0');
+                }
+                text.clear();
+            }
+            Self::Bytes(bytes) => {
+                bytes.iter_mut().for_each(|byte| *byte = 0);
+                bytes.clear();
+            }
+            Self::Enum(_) | Self::Bool(_) | Self::I64(_) | Self::U64(_) | Self::F64(_) => {}
+        }
+    }
+}

@@ -1,13 +1,14 @@
-Remove the stored Wi-Fi configuration.
+Show what applying a configuration file would change.
 
-This removes the configured SSID and credentials from the device. A confirmation prompt is shown unless --yes is passed.
+Compares the file with the device and prints the differences; nothing is changed. Secrets cannot be compared and are not part of files.
 
-Usage: rohi wifi forget [OPTIONS]
+Usage: rohi config diff [OPTIONS] <FILE>
+
+Arguments:
+  <FILE>
+          The JSON file; `-` reads stdin
 
 Options:
-  -y, --yes
-          Skip the confirmation prompt
-
   -h, --help
           Print help (see a summary with '-h')
 
@@ -39,5 +40,4 @@ Connection:
           [default: 10]
 
 Examples:
-  rohi wifi forget
-  rohi wifi forget --yes
+  rohi config diff config.json

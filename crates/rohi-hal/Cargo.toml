@@ -18,5 +18,7 @@ embedded-hal.workspace = true
 embedded-hal-async.workspace = true
 embedded-io-async.workspace = true
 embassy-sync.workspace = true
+rohi-service.workspace = true
+heapless.workspace = true
 embassy-futures.workspace = true
 libm.workspace = true

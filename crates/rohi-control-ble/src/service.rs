@@ -15,7 +15,7 @@
 //  limitations under the License.
 //
 use log::{debug, warn};
-use rohi_control::{AuthorizationPolicy, ControlServices, Controller, LinkSecurity};
+use rohi_control::{AuthorizationPolicy, ControlBackend, Controller, LinkSecurity};
 use rohi_control_proto::control::{self as pb, Response_::Response as Reply};
 use rohi_control_proto::limits::{MAX_REQUEST_LEN, MAX_RESPONSE_LEN};
 use rohi_control_proto::{PROTOCOL_VERSION, encode};
@@ -44,7 +44,7 @@ pub struct ControlBle<'c, T, S, P> {
 impl<'c, T, S, P> ControlBle<'c, T, S, P>
 where
     T: BleTransport,
-    S: ControlServices,
+    S: ControlBackend,
     P: AuthorizationPolicy,
 {
     /// Serves `controller` over `transport`.
@@ -99,7 +99,10 @@ where
         let link = self
             .transport
             .connection_info()
-            .map(LinkSecurity::from)
+            .map(|info| LinkSecurity {
+                encrypted: info.encrypted,
+                authenticated: info.authenticated,
+            })
             .unwrap_or_default();
 
         let outcome = match self.request.push(&self.chunk[..len]) {
@@ -136,6 +139,7 @@ where
             request_id: 0,
             response: Some(Reply::Error(pb::Error {
                 code: pb::ErrorCode::InvalidArgument,
+                ..Default::default()
             })),
         };
         if let Ok(written) = encode(&response, &mut self.response) {

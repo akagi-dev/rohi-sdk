@@ -17,7 +17,7 @@
 //! The `rohi` command line.
 //!
 //! ```text
-//! clap / terminal / output / backup files
+//! clap / terminal / output / configuration files
 //!                   ↓
 //!                CLI app
 //!                   ↓
@@ -30,8 +30,8 @@
 //! Protocol logic lives in [`Device`] and below; nothing here frames or
 //! decodes messages.
 
+mod action;
 mod args;
-mod backup;
 mod config;
 mod diagnostic;
 mod dto;
@@ -39,8 +39,7 @@ mod identity;
 mod status;
 mod target;
 mod terminal;
-mod time;
-mod wifi;
+mod values;
 
 use std::future::Future;
 use std::process::ExitCode;
@@ -49,11 +48,9 @@ use std::time::Duration;
 use clap::Parser;
 
 pub use args::{
-    BackupAction, Cli, Command, ConfigSection, Configure, Connect, ConnectivityAction,
-    IdentityAction, Import, OutputFormat, Provision, SetConnectivity, WifiAction,
+    ActionCommand, Cli, Command, ConfigAction, IdentityAction, OutputFormat, Provision,
 };
-pub use backup::{Backup, BackupError};
-pub use diagnostic::{CliError, Diagnostic, PartialRestore};
+pub use diagnostic::{CliError, Diagnostic, PartialApply};
 pub use target::{Match, Target, resolve};
 pub use terminal::Io;
 
@@ -66,12 +63,10 @@ pub struct Ctx {
     pub io: Io,
     /// How results are written.
     pub format: OutputFormat,
-    /// The URI of the connected device, for `status`.
+    /// The URI of the connected device.
     pub uri: Option<String>,
-    /// A Wi-Fi password given through `ROHI_WIFI_PASSWORD`.
-    pub wifi_password: Option<String>,
-    /// Pause between Wi-Fi status polls of `wifi connect`.
-    pub poll_interval: Duration,
+    /// Stops `status --watch` after this many printed documents; for tests.
+    pub watch_limit: Option<usize>,
 }
 
 impl Ctx {
@@ -81,20 +76,17 @@ impl Ctx {
             io,
             format,
             uri: None,
-            wifi_password: None,
-            poll_interval: Duration::from_secs(1),
+            watch_limit: None,
         }
     }
 }
 
 /// What a command needs from the host before it talks to the device, so that
-/// a bad seed or backup file fails before a device is touched.
+/// a bad seed file fails before a device is touched.
 #[derive(Default)]
 pub struct Prepared {
     /// For `identity provision`: the identity derived from the seed file.
     pub identity: Option<DerivedIdentity>,
-    /// For `backup import`: the parsed and validated backup.
-    pub backup: Option<Backup>,
 }
 
 /// Reads the files `command` refers to.
@@ -104,13 +96,6 @@ pub fn prepare(command: &Command) -> Result<Prepared, CliError> {
             action: Some(IdentityAction::Provision(provision)),
         } => Prepared {
             identity: Some(identity::load(provision)?),
-            backup: None,
-        },
-        Command::Backup {
-            action: BackupAction::Import(import),
-        } => Prepared {
-            identity: None,
-            backup: Some(Backup::load(&import.file)?),
         },
         _ => Prepared::default(),
     })
@@ -125,30 +110,13 @@ pub async fn execute<T: ClientTransport>(
 ) -> Result<(), CliError> {
     match command {
         Command::Scan { .. } => Err(CliError::Usage("scan does not talk to a device".into())),
-        Command::Status => status::run(device, ctx).await,
-        Command::Sensors => {
-            let sensors = device.sensors().await?;
-            ctx.io.emit(
-                ctx.format,
-                &dto::Versioned::new(dto::Sensors::new(&sensors)),
-                || format::sensors(&sensors),
-            )
-        }
-        Command::Time => time::run(device, ctx).await,
-        Command::Config { section } => config::show(device, section, ctx).await,
-        Command::Connectivity { action } => config::run(device, action, ctx).await,
-        Command::Wifi { action } => {
-            wifi::run(device, action.unwrap_or(WifiAction::Status), ctx).await
-        }
-        Command::Backup { action } => match action {
-            BackupAction::Export { file } => backup::export(device, file, ctx).await,
-            BackupAction::Import(import) => {
-                let backup = prepared.backup.ok_or_else(|| {
-                    CliError::Usage("the backup was not read before connecting".into())
-                })?;
-                backup::import(device, import, backup, ctx).await
-            }
-        },
+        Command::Status {
+            service,
+            watch,
+            interval,
+        } => status::run(device, service, watch, interval, ctx).await,
+        Command::Config { action } => config::run(device, action, ctx).await,
+        Command::Action { action } => action::run(device, action, ctx).await,
         Command::Identity { action } => identity::run(device, action, prepared, ctx).await,
     }
 }
@@ -215,9 +183,6 @@ pub async fn run(cli: Cli, ctx: &mut Ctx) -> Result<(), CliError> {
 pub async fn main() -> ExitCode {
     let cli = Cli::parse();
     let mut ctx = Ctx::new(Io::stdio(), cli.output);
-    ctx.wifi_password = std::env::var("ROHI_WIFI_PASSWORD")
-        .ok()
-        .filter(|password| !password.is_empty());
     match run(cli, &mut ctx).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

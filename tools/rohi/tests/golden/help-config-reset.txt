@@ -1,17 +1,20 @@
-Export or restore device configuration.
+Remove the stored section and restore its defaults.
 
-Backups contain persistent device settings that can be restored later or applied to another compatible ROHI device.
+A confirmation prompt is shown unless --yes is passed.
 
-Secrets that cannot be read back from the device are not included. They may be requested during restore.
+Usage: rohi config reset [OPTIONS] <SECTION>
 
-Usage: rohi backup [OPTIONS] <COMMAND>
-
-Commands:
-  export  Export device configuration
-  import  Validate and restore device configuration
-  help    Print this message or the help of the given subcommand(s)
+Arguments:
+  <SECTION>
+          The section
 
 Options:
+  -y, --yes
+          Skip the confirmation prompt
+
+      --dry-run
+          Validate on the device without removing anything
+
   -h, --help
           Print help (see a summary with '-h')
 
@@ -43,7 +46,5 @@ Connection:
           [default: 10]
 
 Examples:
-  rohi backup export backup.json
-  rohi backup export > backup.json
-  rohi backup import backup.json --dry-run
-  rohi backup import backup.json
+  rohi config reset connectivity
+  rohi config reset connectivity --yes

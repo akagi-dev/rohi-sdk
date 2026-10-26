@@ -51,6 +51,7 @@ mod error;
 mod identity;
 mod keys;
 mod secret;
+mod service;
 mod signer;
 
 #[cfg(test)]
@@ -60,6 +61,9 @@ pub use error::IdentityError;
 pub use identity::{Identity, SECRET_LEN};
 pub use keys::{PUBLIC_KEY_LEN, PublicKey, SIGNATURE_LEN, Signature};
 pub use secret::Secret;
+pub use service::{
+    IdentityService, IdentityStore, StoreError as IdentityStoreError, action_field, status_field,
+};
 #[cfg(any(test, feature = "mock"))]
 pub use signer::MockSigner;
 pub use signer::{IdentitySigner, Signer};

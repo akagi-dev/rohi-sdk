@@ -27,6 +27,7 @@ mod backend;
 mod backoff;
 mod config;
 mod error;
+mod managed;
 mod manager;
 mod network;
 mod scan;
@@ -36,6 +37,10 @@ pub use backend::WifiBackend;
 pub use backoff::Backoff;
 pub use config::{WifiConfig, WifiPassword, WifiSsid};
 pub use error::WifiError;
+pub use managed::{
+    WifiService, field as wifi_config_field, scan_field as wifi_scan_field,
+    status_field as wifi_status_field,
+};
 pub use manager::{ManagerConfig, STATUS_RECEIVERS, WifiHandle, WifiManager, WifiShared};
 pub use network::NetworkInfo;
 pub use scan::{ScanCollector, WifiNetwork, WifiScanResults, WifiSecurity};

@@ -2,11 +2,17 @@
 //
 // One request, one response, correlated by `request_id`. The messages are
 // bounded: every string, bytes and repeated field has a fixed maximum
-// capacity, see `control.options` / `build.rs` and `rohi_control_proto::limits`.
+// capacity, see `build.rs` and `rohi_control_proto::limits`.
 //
-// Field numbers and enum values are stable; new fields and values may only be
-// added, never reused. Unknown enum values must be treated as "unknown" by
-// clients.
+// The protocol knows no device module by name. It offers four generic
+// planes, all driven by schemas the device publishes:
+//
+//   config   - desired persistent state, named sections of typed fields
+//   status   - observed runtime state of named services, read-only
+//   actions  - explicit runtime operations declared by services
+//   info     - static description of the device
+//
+// Unknown enum values must be treated as "unknown" by clients.
 
 syntax = "proto3";
 
@@ -24,18 +30,18 @@ message Request {
 
   oneof request {
     GetInfoRequest get_info = 10;
-    GetCapabilitiesRequest get_capabilities = 11;
-    GetSensorsRequest get_sensors = 12;
-    GetConfigRequest get_config = 13;
-    UpdateConfigRequest update_config = 14;
-    ScanWifiRequest scan_wifi = 20;
-    GetWifiStatusRequest get_wifi_status = 21;
-    ReconnectWifiRequest reconnect_wifi = 22;
-    DisconnectWifiRequest disconnect_wifi = 23;
-    GetIdentityRequest get_identity = 30;
-    ProvisionIdentityRequest provision_identity = 31;
-    EraseIdentityRequest erase_identity = 32;
-    GetTimeStatusRequest get_time_status = 40;
+    ListConfigSectionsRequest list_config_sections = 11;
+    GetConfigSchemaRequest get_config_schema = 12;
+    GetConfigSectionRequest get_config_section = 13;
+    PatchConfigSectionRequest patch_config_section = 14;
+    ResetConfigSectionRequest reset_config_section = 15;
+    ListServicesRequest list_services = 16;
+    GetServicesStatusRequest get_services_status = 17;
+    GetServiceSchemaRequest get_service_schema = 18;
+    GetServiceStatusRequest get_service_status = 19;
+    ListActionsRequest list_actions = 20;
+    GetActionSchemaRequest get_action_schema = 21;
+    InvokeActionRequest invoke_action = 22;
   }
 }
 
@@ -48,18 +54,18 @@ message Response {
   oneof response {
     Error error = 9;
     GetInfoResponse get_info = 10;
-    GetCapabilitiesResponse get_capabilities = 11;
-    GetSensorsResponse get_sensors = 12;
-    GetConfigResponse get_config = 13;
-    UpdateConfigResponse update_config = 14;
-    ScanWifiResponse scan_wifi = 20;
-    GetWifiStatusResponse get_wifi_status = 21;
-    ReconnectWifiResponse reconnect_wifi = 22;
-    DisconnectWifiResponse disconnect_wifi = 23;
-    GetIdentityResponse get_identity = 30;
-    ProvisionIdentityResponse provision_identity = 31;
-    EraseIdentityResponse erase_identity = 32;
-    GetTimeStatusResponse get_time_status = 40;
+    ListConfigSectionsResponse list_config_sections = 11;
+    GetConfigSchemaResponse get_config_schema = 12;
+    GetConfigSectionResponse get_config_section = 13;
+    PatchConfigSectionResponse patch_config_section = 14;
+    ResetConfigSectionResponse reset_config_section = 15;
+    ListServicesResponse list_services = 16;
+    GetServicesStatusResponse get_services_status = 17;
+    GetServiceSchemaResponse get_service_schema = 18;
+    GetServiceStatusResponse get_service_status = 19;
+    ListActionsResponse list_actions = 20;
+    GetActionSchemaResponse get_action_schema = 21;
+    InvokeActionResponse invoke_action = 22;
   }
 }
 
@@ -83,18 +89,20 @@ enum ErrorCode {
   ERROR_CODE_PERMISSION_DENIED = 6;
   // Unexpected device failure.
   ERROR_CODE_INTERNAL = 7;
-  // The operation needs a device identity, but none is provisioned.
-  ERROR_CODE_IDENTITY_NOT_PROVISIONED = 8;
-  // The device already has an identity; erase it explicitly first.
-  ERROR_CODE_IDENTITY_ALREADY_PROVISIONED = 9;
+  // The addressed object changed since the revision the client expected.
+  ERROR_CODE_CONFLICT = 8;
+  // The action ran and was refused for the stable reason in `Error.reason`.
+  ERROR_CODE_REJECTED = 9;
 }
 
 message Error {
   ErrorCode code = 1;
+  // Stable machine-readable reason, set with `ERROR_CODE_REJECTED`.
+  optional string reason = 2;
 }
 
 // ---------------------------------------------------------------------------
-// Device information and capabilities
+// Device information
 // ---------------------------------------------------------------------------
 
 message GetInfoRequest {}
@@ -106,384 +114,348 @@ message GetInfoResponse {
   string board = 2;
 }
 
-enum Capability {
-  CAPABILITY_UNSPECIFIED = 0;
-  CAPABILITY_SENSORS = 1;
-  CAPABILITY_CONFIG = 2;
-  CAPABILITY_WIFI_SCAN = 3;
-  CAPABILITY_WIFI_STATUS = 4;
-  CAPABILITY_WIFI_CONTROL = 5;
-  CAPABILITY_IDENTITY = 6;
-  CAPABILITY_TIME = 7;
-  CAPABILITY_CONNECTIVITY = 8;
-}
-
-message GetCapabilitiesRequest {}
-
-message GetCapabilitiesResponse {
-  repeated Capability capabilities = 1;
-}
-
 // ---------------------------------------------------------------------------
-// Sensors
+// Generic values and field descriptors
 // ---------------------------------------------------------------------------
+//
+// Configuration and status share one dynamic typing system. A module
+// describes its fields once (id, name, kind, unit, ...); clients render and
+// parse values from that description and never know a module by name.
 
-// Canonical units are fixed per type and never negotiated.
-enum MeasurementType {
-  MEASUREMENT_TYPE_UNSPECIFIED = 0;
-  // Degrees Celsius.
-  MEASUREMENT_TYPE_TEMPERATURE = 1;
-  // Relative humidity, percent.
-  MEASUREMENT_TYPE_HUMIDITY = 2;
-  // Pressure, pascal.
-  MEASUREMENT_TYPE_PRESSURE = 3;
-  // CO2 concentration, parts per million.
-  MEASUREMENT_TYPE_CO2 = 4;
-  // PM2.5 mass concentration, micrograms per cubic meter.
-  MEASUREMENT_TYPE_PM2_5 = 5;
-  // PM10 mass concentration, micrograms per cubic meter.
-  MEASUREMENT_TYPE_PM10 = 6;
-  // Average sound level, decibels.
-  MEASUREMENT_TYPE_NOISE_AVERAGE = 7;
-  // Maximum sound level, decibels.
-  MEASUREMENT_TYPE_NOISE_MAXIMUM = 8;
-  // Ozone concentration, parts per billion.
-  MEASUREMENT_TYPE_O3 = 9;
-  // Nitrogen dioxide concentration, parts per billion.
-  MEASUREMENT_TYPE_NO2 = 10;
-  // Fast air quality index, dimensionless.
-  MEASUREMENT_TYPE_AQI_FAST = 11;
-  // EPA air quality index, dimensionless.
-  MEASUREMENT_TYPE_AQI_EPA = 12;
-  // Carbon monoxide concentration, parts per million.
-  MEASUREMENT_TYPE_CO = 13;
-  // Ionizing radiation dose rate, microsieverts per hour.
-  MEASUREMENT_TYPE_RADIATION = 14;
-  // Detected radiation pulses, count.
-  MEASUREMENT_TYPE_PULSE_COUNT = 15;
+message Empty {}
+
+enum ValueKind {
+  VALUE_KIND_UNSPECIFIED = 0;
+  VALUE_KIND_BOOL = 1;
+  VALUE_KIND_I64 = 2;
+  VALUE_KIND_U64 = 3;
+  VALUE_KIND_F64 = 4;
+  VALUE_KIND_STRING = 5;
+  VALUE_KIND_BYTES = 6;
+  // One of the `variants` of the field descriptor.
+  VALUE_KIND_ENUM = 7;
 }
 
-enum MeasurementState {
-  MEASUREMENT_STATE_UNSPECIFIED = 0;
-  MEASUREMENT_STATE_UNAVAILABLE = 1;
-  MEASUREMENT_STATE_WARMING_UP = 2;
-  MEASUREMENT_STATE_VALID = 3;
-  MEASUREMENT_STATE_STALE = 4;
-  MEASUREMENT_STATE_ERROR = 5;
+message Value {
+  oneof value {
+    bool bool_value = 1;
+    sint64 i64_value = 2;
+    uint64 u64_value = 3;
+    double f64_value = 4;
+    string string_value = 5;
+    bytes bytes_value = 6;
+    string enum_value = 7;
+  }
 }
 
-enum SensorState {
-  SENSOR_STATE_UNSPECIFIED = 0;
-  SENSOR_STATE_NOT_DETECTED = 1;
-  SENSOR_STATE_INITIALIZING = 2;
-  SENSOR_STATE_WARMING_UP = 3;
-  SENSOR_STATE_READY = 4;
-  SENSOR_STATE_DEGRADED = 5;
-  SENSOR_STATE_ERROR = 6;
+message FieldDescriptor {
+  // Stable within the section or service: only ever added, never reused.
+  uint32 id = 1;
+  // Stable name; nested fields use dotted paths (`tls.enabled`).
+  string name = 2;
+  ValueKind kind = 3;
+  string description = 4;
+  // Unit of the value, for example "s" or "dBm"; empty when unitless.
+  string unit = 5;
+  // Allowed values of `VALUE_KIND_ENUM` fields.
+  repeated string variants = 6;
 }
 
-enum SensorError {
-  SENSOR_ERROR_UNSPECIFIED = 0;
-  SENSOR_ERROR_TIMEOUT = 1;
-  SENSOR_ERROR_BUS = 2;
-  SENSOR_ERROR_CRC = 3;
-  SENSOR_ERROR_INVALID_DATA = 4;
-  SENSOR_ERROR_NOT_READY = 5;
-  SENSOR_ERROR_CALIBRATION = 6;
-  SENSOR_ERROR_UNKNOWN = 7;
-}
-
-message Measurement {
-  MeasurementType type = 1;
-  // Last valid value in the canonical unit of `type`; absent when never
-  // measured.
-  optional double value = 2;
-  MeasurementState state = 3;
-  // Age of `value` at the time of the request.
-  optional uint64 age_ms = 4;
-}
-
-message Sensor {
-  // Identifies the physical sensor instance, for example "bmx280".
-  string name = 1;
-  SensorState state = 2;
-  repeated Measurement measurements = 3;
-  // Last error, cleared by the next successful update.
-  optional SensorError error = 4;
-}
-
-message GetSensorsRequest {}
-
-message GetSensorsResponse {
-  // Only sensors that are present.
-  repeated Sensor sensors = 1;
-  // Device monotonic time at which the snapshot was generated.
-  uint64 uptime_ms = 2;
+message FieldValue {
+  uint32 field_id = 1;
+  Value value = 2;
 }
 
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
+//
+// Desired persistent state. The device exposes a registry of named sections;
+// the protocol knows none of them. Updates are patches applied atomically per
+// section. Secret fields are write-only.
 
-// The stored Wi-Fi configuration. The password is never returned.
-message WifiConfig {
-  // SSID, 1..=32 arbitrary bytes.
-  bytes ssid = 1;
-  bool password_configured = 2;
+message ConfigSectionInfo {
+  // Stable section name, for example "wifi".
+  string name = 1;
+  // Version of the section schema.
+  uint32 version = 2;
+  // Changes after every successful write or reset. Restarts from 0 at boot.
+  uint32 revision = 3;
 }
 
-// The stored telemetry (connectivity) configuration.
-message ConnectivityConfig {
-  // Telemetry is only produced and sent when enabled.
-  bool enabled = 1;
-  // Robonomics CPS node identifier.
-  uint64 node_id = 2;
-  // Seconds between telemetry frames.
-  uint32 interval_s = 3;
-  // Ingress host name or IPv4 address: 1..=64 bytes of letters, digits, '.'
-  // and '-'.
-  string host = 4;
-  // Ingress TCP port, 1..=65535.
-  uint32 port = 5;
+message ConfigField {
+  FieldDescriptor field = 1;
+  bool writable = 2;
+  // Never returned by `GetConfigSection` (reported as `redacted`).
+  bool secret = 3;
+  // May be unset; unset is distinct from an empty string or zero.
+  bool optional = 4;
+  optional double min = 5;
+  optional double max = 6;
 }
 
-message GetConfigRequest {}
-
-message GetConfigResponse {
-  // Absent when Wi-Fi is not configured.
-  optional WifiConfig wifi = 1;
-  // Absent when telemetry is not configured or the device does not offer
-  // `CAPABILITY_CONNECTIVITY`.
-  optional ConnectivityConfig connectivity = 2;
+message ConfigSectionSchema {
+  ConfigSectionInfo section = 1;
+  repeated ConfigField fields = 2;
 }
 
-message Empty {}
+message ListConfigSectionsRequest {}
 
-message WifiConfigUpdate {
-  // Omitted: keep the stored SSID (an SSID is required when nothing is
-  // stored yet).
-  optional bytes ssid = 1;
+message ListConfigSectionsResponse {
+  repeated ConfigSectionInfo sections = 1;
+}
 
-  // Omitted: keep the stored password.
-  oneof password_update {
-    // 8..=64 bytes; replaces the stored password.
-    bytes password = 2;
-    // Removes the stored password (open network).
-    Empty clear_password = 3;
+message GetConfigSchemaRequest {
+  string section = 1;
+  // Index of the first field of the page; schemas are sent in pages so that
+  // one response stays small.
+  uint32 offset = 2;
+}
+
+message GetConfigSchemaResponse {
+  // The section and one page of its fields.
+  ConfigSectionSchema schema = 1;
+  // Number of fields of the whole section.
+  uint32 total = 2;
+}
+
+message ConfigEntry {
+  uint32 field_id = 1;
+
+  oneof state {
+    Value value = 2;
+    // The field is set but is a secret and not readable.
+    Empty redacted = 3;
   }
 }
 
-// Omitted fields keep their stored value; a host is required when nothing is
-// stored yet.
-message ConnectivityConfigUpdate {
-  optional bool enabled = 1;
-  optional uint64 node_id = 2;
-  optional uint32 interval_s = 3;
-  optional string host = 4;
-  optional uint32 port = 5;
+message GetConfigSectionRequest {
+  string section = 1;
 }
 
-message UpdateConfigRequest {
-  // Omitted: the Wi-Fi configuration is not touched.
-  oneof wifi_update {
-    // Partial update, validated as a whole before anything is stored.
-    WifiConfigUpdate update_wifi = 1;
-    // Removes the Wi-Fi configuration and disconnects.
-    Empty clear_wifi = 2;
-  }
+// Fields that are not set (and not secret) are absent from `entries`.
+message GetConfigSectionResponse {
+  string section = 1;
+  uint32 version = 2;
+  uint32 revision = 3;
+  repeated ConfigEntry entries = 4;
+  // False while nothing is persisted for the section.
+  bool configured = 5;
+}
 
-  // Omitted: the telemetry configuration is not touched. Requires
-  // `CAPABILITY_CONNECTIVITY`.
-  oneof connectivity_update {
-    // Partial update, validated as a whole before anything is stored.
-    ConnectivityConfigUpdate update_connectivity = 3;
-    // Removes the telemetry configuration; the device falls back to its
-    // build-time defaults.
-    Empty clear_connectivity = 4;
+message ConfigMutation {
+  uint32 field_id = 1;
+
+  oneof operation {
+    Value set = 2;
+    Empty unset = 3;
   }
 }
 
-// Success only means that the configuration is stored and handed to the
-// runtime, not that the network was reached; observe `GetWifiStatus`.
-// A telemetry update takes effect without a restart.
-message UpdateConfigResponse {}
+// All mutations are applied to a temporary copy, the complete result is
+// validated, and only then persisted. If anything is invalid nothing changes.
+message PatchConfigSectionRequest {
+  string section = 1;
+  repeated ConfigMutation mutations = 2;
+  // Fails with `ERROR_CODE_CONFLICT` when the section changed meanwhile.
+  optional uint32 expected_revision = 3;
+  // Validate only; nothing is persisted and the revision does not change.
+  bool dry_run = 4;
+}
+
+message PatchConfigSectionResponse {
+  uint32 revision = 1;
+  bool restart_required = 2;
+}
+
+// Removes the persisted section and restores the module defaults.
+message ResetConfigSectionRequest {
+  string section = 1;
+  bool dry_run = 2;
+}
+
+message ResetConfigSectionResponse {
+  uint32 revision = 1;
+  bool restart_required = 2;
+}
+
 
 // ---------------------------------------------------------------------------
-// Wi-Fi
-// ---------------------------------------------------------------------------
-
-enum WifiSecurity {
-  WIFI_SECURITY_UNSPECIFIED = 0;
-  WIFI_SECURITY_OPEN = 1;
-  WIFI_SECURITY_WEP = 2;
-  WIFI_SECURITY_WPA = 3;
-  WIFI_SECURITY_WPA2 = 4;
-  WIFI_SECURITY_WPA_WPA2 = 5;
-  WIFI_SECURITY_WPA3 = 6;
-  WIFI_SECURITY_WPA2_WPA3 = 7;
-  WIFI_SECURITY_ENTERPRISE = 8;
-  WIFI_SECURITY_UNKNOWN = 9;
-}
-
-enum WifiState {
-  WIFI_STATE_UNSPECIFIED = 0;
-  WIFI_STATE_NOT_CONFIGURED = 1;
-  WIFI_STATE_IDLE = 2;
-  WIFI_STATE_SCANNING = 3;
-  WIFI_STATE_CONNECTING = 4;
-  WIFI_STATE_CONNECTED = 5;
-  WIFI_STATE_DISCONNECTED = 6;
-  WIFI_STATE_ERROR = 7;
-}
-
-enum WifiFailure {
-  WIFI_FAILURE_UNSPECIFIED = 0;
-  WIFI_FAILURE_NOT_CONFIGURED = 1;
-  WIFI_FAILURE_BUSY = 2;
-  WIFI_FAILURE_TIMEOUT = 3;
-  WIFI_FAILURE_SCAN_FAILED = 4;
-  WIFI_FAILURE_NETWORK_NOT_FOUND = 5;
-  WIFI_FAILURE_AUTHENTICATION_FAILED = 6;
-  WIFI_FAILURE_ASSOCIATION_FAILED = 7;
-  WIFI_FAILURE_DHCP_FAILED = 8;
-  WIFI_FAILURE_DISCONNECTED = 9;
-  WIFI_FAILURE_INVALID_CONFIG = 10;
-  WIFI_FAILURE_DRIVER_ERROR = 11;
-}
-
-message WifiNetwork {
-  bytes ssid = 1;
-  sint32 rssi_dbm = 2;
-  uint32 channel = 3;
-  WifiSecurity security = 4;
-}
-
-message ScanWifiRequest {}
-
-message ScanWifiResponse {
-  // Strongest first.
-  repeated WifiNetwork networks = 1;
-}
-
-message WifiConnection {
-  bytes ssid = 1;
-  sint32 rssi_dbm = 2;
-  // IPv4 addresses in network byte order interpreted as big-endian.
-  fixed32 ipv4 = 3;
-  optional fixed32 gateway = 4;
-  optional fixed32 dns = 5;
-}
-
-message GetWifiStatusRequest {}
-
-message GetWifiStatusResponse {
-  WifiState state = 1;
-  // Set in the error and disconnected states.
-  optional WifiFailure failure = 2;
-  // Set while connected.
-  optional WifiConnection connection = 3;
-}
-
-message ReconnectWifiRequest {}
-message ReconnectWifiResponse {}
-message DisconnectWifiRequest {}
-message DisconnectWifiResponse {}
-
-// ---------------------------------------------------------------------------
-// Identity
+// Service status
 // ---------------------------------------------------------------------------
 //
-// The device holds at most one Ed25519 identity. It is provisioned from the
-// host, which derives the secret; the device never generates one. The secret
-// is write-only: no response ever contains it.
+// Observed runtime state, read-only. The device exposes a registry of named
+// services; the protocol knows none of them. State, health and readiness are
+// independent: a running service can be degraded and not ready.
 
-enum IdentityState {
-  IDENTITY_STATE_UNSPECIFIED = 0;
-  IDENTITY_STATE_NOT_PROVISIONED = 1;
-  IDENTITY_STATE_PROVISIONED = 2;
+enum ServiceState {
+  SERVICE_STATE_UNSPECIFIED = 0;
+  // Turned off by configuration; not an error.
+  SERVICE_STATE_DISABLED = 1;
+  SERVICE_STATE_STOPPED = 2;
+  SERVICE_STATE_STARTING = 3;
+  SERVICE_STATE_RUNNING = 4;
+  SERVICE_STATE_STOPPING = 5;
+  SERVICE_STATE_FAILED = 6;
 }
 
-message IdentityInfo {
-  IdentityState state = 1;
-  // 32-byte Ed25519 public key; set only when provisioned.
-  optional bytes public_key = 2;
+enum ServiceHealth {
+  SERVICE_HEALTH_UNSPECIFIED = 0;
+  SERVICE_HEALTH_UNKNOWN = 1;
+  SERVICE_HEALTH_OK = 2;
+  SERVICE_HEALTH_DEGRADED = 3;
+  SERVICE_HEALTH_ERROR = 4;
 }
 
-message GetIdentityRequest {}
-
-message GetIdentityResponse {
-  IdentityInfo identity = 1;
+// Decided by the firmware, which knows which services are mandatory, optional
+// or redundant. Clients must not derive it from service health.
+enum DeviceHealth {
+  DEVICE_HEALTH_UNSPECIFIED = 0;
+  DEVICE_HEALTH_OK = 1;
+  DEVICE_HEALTH_DEGRADED = 2;
+  DEVICE_HEALTH_ERROR = 3;
 }
 
-// Succeeds only when no identity is provisioned, otherwise fails with
-// `ERROR_CODE_IDENTITY_ALREADY_PROVISIONED`.
-message ProvisionIdentityRequest {
-  // The derived 32-byte Ed25519 secret key (RFC 8032 seed).
-  bytes ed25519_secret = 1;
+enum IssueSeverity {
+  ISSUE_SEVERITY_UNSPECIFIED = 0;
+  ISSUE_SEVERITY_INFO = 1;
+  ISSUE_SEVERITY_WARNING = 2;
+  ISSUE_SEVERITY_ERROR = 3;
+  ISSUE_SEVERITY_CRITICAL = 4;
 }
 
-message ProvisionIdentityResponse {
-  // 32-byte Ed25519 public key of the stored identity.
-  bytes public_key = 1;
+message ServiceInfo {
+  // Stable public name, for example "connectivity".
+  string name = 1;
+  // Version of the status schema.
+  uint32 version = 2;
 }
 
-// Removes the identity; a no-op when none is provisioned.
-message EraseIdentityRequest {}
-message EraseIdentityResponse {}
+message ServiceStatusSummary {
+  string service = 1;
+  ServiceState state = 2;
+  ServiceHealth health = 3;
+  // Whether the service can currently perform its intended role.
+  bool ready = 4;
+  // Incremented whenever the state, health, readiness, reason or the active
+  // issues change. Service-specific values that vary continuously (counters,
+  // ages, signal strength) do not change it.
+  uint32 revision = 5;
+  // Time spent in the current lifecycle state.
+  uint64 state_age_ms = 6;
+  // Stable machine-readable code of the primary active issue.
+  optional string reason = 7;
+}
+
+message ServiceIssue {
+  IssueSeverity severity = 1;
+  // Stable machine-readable identifier.
+  string code = 2;
+  // Human-readable explanation.
+  string message = 3;
+  // How long the issue has been active.
+  uint64 age_ms = 4;
+}
+
+message ListServicesRequest {}
+
+message ListServicesResponse {
+  repeated ServiceInfo services = 1;
+}
+
+// Compact snapshot of every service, used by polling clients. It never
+// contains service-specific fields.
+message GetServicesStatusRequest {}
+
+message GetServicesStatusResponse {
+  uint64 uptime_ms = 1;
+  DeviceHealth health = 2;
+  repeated ServiceStatusSummary services = 3;
+}
+
+message GetServiceSchemaRequest {
+  string service = 1;
+  // Index of the first field of the page.
+  uint32 offset = 2;
+}
+
+message GetServiceSchemaResponse {
+  string service = 1;
+  uint32 version = 2;
+  // One page of the status fields.
+  repeated FieldDescriptor fields = 3;
+  // Number of status fields of the whole service.
+  uint32 total = 4;
+}
+
+message GetServiceStatusRequest {
+  string service = 1;
+  // Index of the first value of the page, counting only fields that have a
+  // value.
+  uint32 offset = 2;
+}
+
+// Fields without a current value are absent from `fields`. Only currently
+// active issues are listed; history belongs to diagnostics.
+message GetServiceStatusResponse {
+  ServiceStatusSummary summary = 1;
+  repeated FieldValue fields = 2;
+  repeated ServiceIssue issues = 3;
+  // Number of fields that have a value; `fields` is one page of them.
+  uint32 total = 4;
+}
 
 // ---------------------------------------------------------------------------
-// Time
+// Actions
 // ---------------------------------------------------------------------------
 //
-// Wall-clock time is optional: the device has none until a time source (for
-// example NTP) delivered a plausible sample. It is never invented and uptime
-// is never reported as Unix time. The time may step when a later sample
-// corrects it; durations must be measured with the device's monotonic clock.
-// The time is not authenticated.
+// Explicit runtime operations declared by services (scan, reconnect,
+// provision, ...). Status stays read-only; everything that changes the
+// runtime is an action. An action takes typed arguments and returns zero or
+// more records of typed fields.
 
-enum TimeSyncState {
-  TIME_SYNC_STATE_UNSPECIFIED = 0;
-  // No valid sample yet: `unix_time_ms` is not set.
-  TIME_SYNC_STATE_UNSYNCHRONIZED = 1;
-  TIME_SYNC_STATE_SYNCHRONIZED = 2;
-  // The last sample is older than the stale threshold; `unix_time_ms` is
-  // still calculated from it.
-  TIME_SYNC_STATE_STALE = 3;
+message ActionInfo {
+  string service = 1;
+  string name = 2;
+  string description = 3;
+  // Needs a link that satisfies the write privilege of the policy.
+  bool privileged = 4;
 }
 
-enum TimeSource {
-  TIME_SOURCE_UNSPECIFIED = 0;
-  TIME_SOURCE_NTP = 1;
-  TIME_SOURCE_RTC = 2;
-  TIME_SOURCE_EXTERNAL = 3;
+message ListActionsRequest {
+  // Index of the first action of the page.
+  uint32 offset = 1;
 }
 
-// Category of the most recent failed synchronization attempt.
-enum TimeSyncFailure {
-  TIME_SYNC_FAILURE_UNSPECIFIED = 0;
-  TIME_SYNC_FAILURE_NETWORK_UNAVAILABLE = 1;
-  TIME_SYNC_FAILURE_RESOLVE = 2;
-  TIME_SYNC_FAILURE_TIMEOUT = 3;
-  TIME_SYNC_FAILURE_INVALID_RESPONSE = 4;
-  TIME_SYNC_FAILURE_REJECTED = 5;
-  TIME_SYNC_FAILURE_IMPLAUSIBLE = 6;
-  TIME_SYNC_FAILURE_SOURCE = 7;
+message ListActionsResponse {
+  repeated ActionInfo actions = 1;
+  // Number of actions of the whole device.
+  uint32 total = 2;
 }
 
-message GetTimeStatusRequest {}
+message GetActionSchemaRequest {
+  string service = 1;
+  string action = 2;
+}
 
-message GetTimeStatusResponse {
-  TimeSyncState state = 1;
-  // Milliseconds since the Unix epoch; unset while unsynchronized.
-  optional uint64 unix_time_ms = 2;
-  // Source of the current time; unset while unsynchronized.
-  optional TimeSource source = 3;
-  // Milliseconds since the current time was accepted.
-  optional uint64 sync_age_ms = 4;
-  // Uncertainty of the current time when it was accepted, in milliseconds.
-  optional uint32 uncertainty_ms = 5;
-  // Failed attempts since the last accepted sample.
-  uint32 consecutive_failures = 6;
-  // Most recent failure, cleared by the next accepted sample.
-  optional TimeSyncFailure last_failure = 7;
+message GetActionSchemaResponse {
+  ActionInfo action = 1;
+  // All arguments are required.
+  repeated FieldDescriptor args = 2;
+  // Fields of every returned record.
+  repeated FieldDescriptor results = 3;
+}
+
+message InvokeActionRequest {
+  string service = 1;
+  string action = 2;
+  repeated FieldValue args = 3;
+}
+
+message ActionRecord {
+  repeated FieldValue fields = 1;
+}
+
+message InvokeActionResponse {
+  repeated ActionRecord records = 1;
 }

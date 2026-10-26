@@ -1,0 +1,391 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Copyright 2025-2026 Akagi Engineering <admin@akagi.dev>
+//
+//  Licensed under the Apache License, Version 2.0 (the "License");
+//  you may not use this file except in compliance with the License.
+//  You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+//  Unless required by applicable law or agreed to in writing, software
+//  distributed under the License is distributed on an "AS IS" BASIS,
+//  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+//  See the License for the specific language governing permissions and
+//  limitations under the License.
+//
+//! The telemetry configuration and status in the generic management plane.
+
+use core::fmt::Write as _;
+
+use embassy_sync::blocking_mutex::raw::RawMutex;
+use heapless::Vec;
+use rohi_service::{
+    ConfigField, FieldDescriptor, FieldError, Issue, IssueSeverity, MAX_ISSUES, ManagedConfig,
+    ManagedService, ServiceHealth, ServiceState, ServiceSummary, StatusWriter, Value, ValueKind,
+    WriteError,
+};
+
+use crate::config::{MAX_INTERVAL_S, MIN_INTERVAL_S};
+use crate::service::{ConnectivityShared, ConnectivityState};
+use crate::transport::TransportError;
+use crate::{ConnectivityConfig, Host};
+
+/// Field ids of the `connectivity` config section.
+pub mod field {
+    /// Telemetry is only produced and sent when enabled.
+    pub const ENABLED: u32 = 1;
+    /// Robonomics CPS node identifier.
+    pub const NODE_ID: u32 = 2;
+    /// Seconds between telemetry frames.
+    pub const INTERVAL_S: u32 = 3;
+    /// Ingress host name or IPv4 address.
+    pub const HOST: u32 = 4;
+    /// Ingress TCP port.
+    pub const PORT: u32 = 5;
+}
+
+impl ManagedConfig for ConnectivityConfig {
+    const NAME: &'static str = "connectivity";
+    const VERSION: u16 = 1;
+    const FIELDS: &'static [ConfigField] = &[
+        ConfigField::new(field::ENABLED, "enabled", ValueKind::Bool)
+            .describe("Produce and send telemetry"),
+        ConfigField::new(field::NODE_ID, "node_id", ValueKind::U64)
+            .describe("Robonomics CPS node identifier"),
+        ConfigField::new(field::INTERVAL_S, "interval_s", ValueKind::U64)
+            .describe("Time between telemetry frames")
+            .unit("s")
+            .range(MIN_INTERVAL_S as f64, MAX_INTERVAL_S as f64),
+        ConfigField::new(field::HOST, "host", ValueKind::String)
+            .describe("Ingress host name or IPv4 address"),
+        ConfigField::new(field::PORT, "port", ValueKind::U64)
+            .describe("Ingress TCP port")
+            .range(1.0, 65535.0),
+    ];
+
+    fn defaults() -> Self {
+        Self::disabled()
+    }
+
+    fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
+        Ok(Some(match id {
+            field::ENABLED => Value::Bool(self.enabled),
+            field::NODE_ID => Value::U64(self.node_id),
+            field::INTERVAL_S => Value::U64(u64::from(self.interval_s)),
+            field::HOST => Value::text(self.host.as_str()).ok_or(FieldError::Invalid)?,
+            field::PORT => Value::U64(u64::from(self.port)),
+            _ => return Err(FieldError::UnknownField),
+        }))
+    }
+
+    fn set_field(&mut self, id: u32, value: Value) -> Result<(), FieldError> {
+        match id {
+            field::ENABLED => self.enabled = value.as_bool().ok_or(FieldError::WrongKind)?,
+            field::NODE_ID => self.node_id = value.as_u64().ok_or(FieldError::WrongKind)?,
+            field::INTERVAL_S => {
+                let seconds = value.as_u64().ok_or(FieldError::WrongKind)?;
+                self.interval_s = u32::try_from(seconds).map_err(|_| FieldError::OutOfRange)?;
+            }
+            field::HOST => {
+                let host = value.as_str().ok_or(FieldError::WrongKind)?;
+                self.host = Host::new(host).ok_or(FieldError::Invalid)?;
+            }
+            field::PORT => {
+                let port = value.as_u64().ok_or(FieldError::WrongKind)?;
+                self.port = u16::try_from(port).map_err(|_| FieldError::OutOfRange)?;
+            }
+            _ => return Err(FieldError::UnknownField),
+        }
+        Ok(())
+    }
+
+    fn unset_field(&mut self, id: u32) -> Result<(), FieldError> {
+        match id {
+            field::ENABLED..=field::PORT => Err(FieldError::NotOptional),
+            _ => Err(FieldError::UnknownField),
+        }
+    }
+
+    fn validate(&self) -> Result<(), FieldError> {
+        ConnectivityConfig::validate(self).map_err(|_| FieldError::Invalid)
+    }
+}
+
+/// Field ids of the `connectivity` service status.
+pub mod status_field {
+    /// Frames signed and queued.
+    pub const FRAMES_CREATED: u32 = 1;
+    /// Frames accepted by the ingress.
+    pub const FRAMES_DELIVERED: u32 = 2;
+    /// Delivery attempts that failed and will be retried.
+    pub const SEND_RETRIES: u32 = 3;
+    /// Frames dropped after a permanent rejection.
+    pub const FRAMES_REJECTED: u32 = 4;
+    /// Frames waiting for delivery.
+    pub const QUEUE_DEPTH: u32 = 5;
+    /// Ingress `host:port` of the effective configuration.
+    pub const ENDPOINT: u32 = 6;
+}
+
+fn warning(code: &'static str, message: &'static str) -> Issue {
+    Issue {
+        severity: IssueSeverity::Warning,
+        code,
+        message,
+        age_ms: None,
+    }
+}
+
+fn transport_issue(error: TransportError) -> Issue {
+    match error {
+        TransportError::NetworkUnavailable => {
+            warning("network_unavailable", "The network cannot carry traffic")
+        }
+        TransportError::Dns => warning("dns_failed", "Name resolution failed"),
+        TransportError::Connect => warning("connect_failed", "The connection failed"),
+        TransportError::Timeout => warning("connection_timeout", "The exchange timed out"),
+        TransportError::Io => warning("io_error", "The connection closed unexpectedly"),
+        TransportError::BadResponse => warning("bad_response", "The response is invalid"),
+        TransportError::Status(_) => warning("delivery_rejected", "The ingress rejected the frame"),
+    }
+}
+
+/// The telemetry service as a `connectivity` service of the status plane.
+///
+/// `effective` returns the configuration the service currently runs, or `None`
+/// while it is disabled or invalid; a disabled service is not an error. The
+/// endpoint of that configuration is part of the status.
+pub struct ConnectivityStatusService<'a, M: RawMutex> {
+    shared: &'a ConnectivityShared<M>,
+    effective: fn() -> Option<ConnectivityConfig>,
+}
+
+impl<'a, M: RawMutex> ConnectivityStatusService<'a, M> {
+    /// Status of the service publishing through `shared`.
+    pub const fn new(
+        shared: &'a ConnectivityShared<M>,
+        effective: fn() -> Option<ConnectivityConfig>,
+    ) -> Self {
+        Self { shared, effective }
+    }
+}
+
+impl<M: RawMutex> ManagedService for ConnectivityStatusService<'_, M> {
+    const NAME: &'static str = "connectivity";
+    const VERSION: u16 = 1;
+    const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
+        FieldDescriptor::new(
+            status_field::FRAMES_CREATED,
+            "frames_created",
+            ValueKind::U64,
+        )
+        .describe("Frames signed and queued"),
+        FieldDescriptor::new(
+            status_field::FRAMES_DELIVERED,
+            "frames_delivered",
+            ValueKind::U64,
+        )
+        .describe("Frames accepted by the ingress"),
+        FieldDescriptor::new(status_field::SEND_RETRIES, "send_retries", ValueKind::U64)
+            .describe("Failed delivery attempts"),
+        FieldDescriptor::new(
+            status_field::FRAMES_REJECTED,
+            "frames_rejected",
+            ValueKind::U64,
+        )
+        .describe("Frames dropped after a rejection"),
+        FieldDescriptor::new(status_field::QUEUE_DEPTH, "queue_depth", ValueKind::U64)
+            .describe("Frames waiting for delivery"),
+        FieldDescriptor::new(status_field::ENDPOINT, "endpoint", ValueKind::String)
+            .describe("Ingress host:port"),
+    ];
+    const ESSENTIAL: bool = false;
+
+    async fn summary(&self) -> ServiceSummary {
+        use ServiceHealth as H;
+        use ServiceState as S;
+        if (self.effective)().is_none() {
+            return ServiceSummary::new(S::Disabled, H::Unknown, false);
+        }
+        match self.shared.status().state {
+            ConnectivityState::Starting => ServiceSummary::new(S::Starting, H::Unknown, false),
+            ConnectivityState::Idle => ServiceSummary::new(S::Running, H::Ok, true),
+            ConnectivityState::WaitingForIdentity
+            | ConnectivityState::WaitingForUtc
+            | ConnectivityState::Backoff(_) => ServiceSummary::new(S::Running, H::Degraded, false),
+            ConnectivityState::Unauthorized(_) => ServiceSummary::new(S::Running, H::Error, false),
+        }
+    }
+
+    async fn issues(&self, out: &mut Vec<Issue, MAX_ISSUES>) {
+        if (self.effective)().is_none() {
+            return;
+        }
+        let issue = match self.shared.status().state {
+            ConnectivityState::Starting | ConnectivityState::Idle => return,
+            ConnectivityState::WaitingForIdentity => {
+                warning("no_identity", "The device has no identity yet")
+            }
+            ConnectivityState::WaitingForUtc => {
+                warning("no_utc_time", "UTC time is not synchronized yet")
+            }
+            ConnectivityState::Backoff(error) => transport_issue(error),
+            ConnectivityState::Unauthorized(_) => Issue {
+                severity: IssueSeverity::Error,
+                code: "unauthorized",
+                message: "The ingress does not authorize the device",
+                age_ms: None,
+            },
+        };
+        let _ = out.push(issue);
+    }
+
+    async fn status(&self, out: &mut impl StatusWriter) -> Result<(), WriteError> {
+        let status = self.shared.status();
+        let counters = status.diagnostics;
+        out.u64(
+            status_field::FRAMES_CREATED,
+            u64::from(counters.frames_created),
+        )?;
+        out.u64(
+            status_field::FRAMES_DELIVERED,
+            u64::from(counters.frames_delivered),
+        )?;
+        out.u64(status_field::SEND_RETRIES, u64::from(counters.send_retries))?;
+        out.u64(
+            status_field::FRAMES_REJECTED,
+            u64::from(counters.frames_rejected),
+        )?;
+        out.u64(status_field::QUEUE_DEPTH, status.outbox_len as u64)?;
+        if let Some(config) = (self.effective)() {
+            let endpoint = config.endpoint();
+            let mut text = heapless::String::<80>::new();
+            let _ = write!(text, "{}:{}", endpoint.host, endpoint.port);
+            out.text(status_field::ENDPOINT, &text)?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use embassy_futures::block_on;
+    use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+
+    use super::*;
+
+    fn text(value: &str) -> Value {
+        Value::text(value).unwrap()
+    }
+
+    #[test]
+    fn a_patch_on_the_defaults_needs_a_host() {
+        let mut config = ConnectivityConfig::defaults();
+        assert_eq!(ManagedConfig::validate(&config), Err(FieldError::Invalid));
+        config
+            .set_field(field::HOST, text("ingress.example.org"))
+            .unwrap();
+        config.set_field(field::ENABLED, Value::Bool(true)).unwrap();
+        config.set_field(field::PORT, Value::U64(443)).unwrap();
+        config.set_field(field::NODE_ID, Value::U64(42)).unwrap();
+        config
+            .set_field(field::INTERVAL_S, Value::U64(120))
+            .unwrap();
+        assert_eq!(ManagedConfig::validate(&config), Ok(()));
+        assert_eq!(
+            config.read_field(field::HOST),
+            Ok(Some(text("ingress.example.org")))
+        );
+        assert_eq!(config.read_field(field::PORT), Ok(Some(Value::U64(443))));
+        assert_eq!(config.interval_s, 120);
+    }
+
+    #[test]
+    fn typed_conversions_reject_what_does_not_fit() {
+        let mut config = ConnectivityConfig::defaults();
+        assert_eq!(
+            config.set_field(field::PORT, Value::U64(70_000)),
+            Err(FieldError::OutOfRange)
+        );
+        assert_eq!(
+            config.set_field(field::HOST, text("bad host!")),
+            Err(FieldError::Invalid)
+        );
+        assert_eq!(
+            config.set_field(field::ENABLED, Value::U64(1)),
+            Err(FieldError::WrongKind)
+        );
+        assert_eq!(
+            config.unset_field(field::HOST),
+            Err(FieldError::NotOptional)
+        );
+        assert_eq!(config.unset_field(99), Err(FieldError::UnknownField));
+    }
+
+    #[test]
+    fn the_schema_bounds_match_the_typed_validation() {
+        let field = |id| {
+            ConnectivityConfig::FIELDS
+                .iter()
+                .find(|field| field.field.id == id)
+                .unwrap()
+        };
+        assert_eq!(
+            field(field::INTERVAL_S).min,
+            Some(f64::from(MIN_INTERVAL_S))
+        );
+        assert_eq!(
+            field(field::INTERVAL_S).max,
+            Some(f64::from(MAX_INTERVAL_S))
+        );
+        assert_eq!(field(field::INTERVAL_S).field.unit, "s");
+    }
+
+    fn enabled() -> Option<ConnectivityConfig> {
+        let mut config = ConnectivityConfig::defaults();
+        config.host = Host::new("ingress.example.org").unwrap();
+        config.port = 443;
+        config.enabled = true;
+        Some(config)
+    }
+
+    fn disabled() -> Option<ConnectivityConfig> {
+        None
+    }
+
+    #[test]
+    fn the_service_state_follows_the_published_status() {
+        let shared = ConnectivityShared::<NoopRawMutex>::new();
+        let service = ConnectivityStatusService::new(&shared, enabled);
+        let summary = block_on(service.summary());
+        assert_eq!(summary.state, ServiceState::Starting);
+
+        // The endpoint of the running configuration is reported with its port.
+        struct Sink(std::vec::Vec<(u32, Value)>);
+        impl StatusWriter for Sink {
+            fn put(&mut self, id: u32, value: Value) -> Result<(), WriteError> {
+                self.0.push((id, value));
+                Ok(())
+            }
+        }
+        let mut sink = Sink(std::vec::Vec::new());
+        block_on(service.status(&mut sink)).unwrap();
+        assert!(sink.0.contains(&(
+            status_field::ENDPOINT,
+            Value::text("ingress.example.org:443").unwrap()
+        )));
+
+        let off = ConnectivityStatusService::new(&shared, disabled);
+        let mut sink = Sink(std::vec::Vec::new());
+        block_on(off.status(&mut sink)).unwrap();
+        // No effective configuration, no endpoint.
+        assert!(sink.0.iter().all(|(id, _)| *id != status_field::ENDPOINT));
+        let summary = block_on(off.summary());
+        assert_eq!(summary.state, ServiceState::Disabled);
+        assert!(!summary.ready);
+        let mut issues = Vec::new();
+        block_on(off.issues(&mut issues));
+        assert!(issues.is_empty());
+    }
+}

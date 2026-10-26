@@ -14,159 +14,72 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
-//! `rohi status`: one snapshot of the device assembled from the typed API.
+//! `rohi status`: the runtime state of the device and its services.
 
-use core::fmt::Write;
+use std::time::Duration;
 
 use super::diagnostic::CliError;
-use super::dto;
-use super::{Ctx, identity};
-use crate::model::*;
-use crate::{ClientTransport, Device, Error};
+use super::{Ctx, dto};
+use crate::{ClientTransport, Device, format};
 
-/// What the device told, section by section.
-pub struct Snapshot {
-    pub uri: Option<String>,
-    pub info: DeviceInfo,
-    pub capabilities: Vec<Capability>,
-    pub wifi: Option<WifiStatus>,
-    pub time: Option<TimeStatus>,
-    pub identity: Option<IdentityInfo>,
-}
-
-/// An optional section: a device that does not offer it, or answers that it
-/// cannot, simply has no such section. Link and protocol failures still fail
-/// the whole command.
-fn optional<T>(result: Result<T, Error>) -> Result<Option<T>, Error> {
-    match result {
-        Ok(value) => Ok(Some(value)),
-        Err(Error::Unsupported(_) | Error::Device(ErrorCode::NotSupported)) => Ok(None),
-        Err(error) => Err(error),
-    }
-}
-
-pub async fn collect<T: ClientTransport>(
-    device: &mut Device<T>,
-    uri: Option<String>,
-) -> Result<Snapshot, Error> {
-    let info = device.info().await?;
-    let capabilities = device.capabilities().await?;
-    let wifi = if capabilities.contains(&Capability::WifiStatus) {
-        optional(device.wifi_status().await)?
-    } else {
-        None
-    };
-    let time = if capabilities.contains(&Capability::Time) {
-        optional(device.time_status().await)?
-    } else {
-        None
-    };
-    let identity = if capabilities.contains(&Capability::Identity) {
-        optional(device.identity().await)?
-    } else {
-        None
-    };
-    Ok(Snapshot {
-        uri,
-        info,
-        capabilities,
-        wifi,
-        time,
-        identity,
-    })
-}
-
-fn section(out: &mut String, title: &str, lines: &[(&str, String)]) {
-    if !out.is_empty() {
-        out.push('\n');
-    }
-    let _ = writeln!(out, "{title}");
-    for (name, value) in lines {
-        let _ = writeln!(out, "  {name:<12}{value}");
-    }
-}
-
-/// Lines of a Wi-Fi status for the human output.
-pub fn wifi_lines(status: &WifiStatus) -> Vec<(&'static str, String)> {
-    let mut lines = vec![("State", status.state.to_string())];
-    if let Some(failure) = status.failure {
-        lines.push(("Failure", failure.to_string()));
-    }
-    if let Some(connection) = &status.connection {
-        lines.push(("Network", connection.ssid.to_text()));
-        lines.push(("Signal", format!("{} dBm", connection.rssi_dbm)));
-        lines.push(("Address", connection.ipv4.to_string()));
-        if let Some(gateway) = connection.gateway {
-            lines.push(("Gateway", gateway.to_string()));
-        }
-        if let Some(dns) = connection.dns {
-            lines.push(("DNS", dns.to_string()));
-        }
-    }
-    lines
-}
-
-pub fn human(snapshot: &Snapshot) -> String {
-    let mut out = String::new();
-    section(
-        &mut out,
-        "Device",
-        &[
-            ("Firmware", snapshot.info.firmware.clone()),
-            ("Board", snapshot.info.board.clone()),
-            ("URI", snapshot.uri.clone().unwrap_or("NONE".into())),
-        ],
-    );
-    if let Some(wifi) = &snapshot.wifi {
-        section(&mut out, "Wi-Fi", &wifi_lines(wifi));
-    }
-    if let Some(time) = &snapshot.time {
-        section(&mut out, "Time", &super::time::lines(time));
-    }
-    if let Some(identity) = &snapshot.identity {
-        let lines = identity::lines(identity);
-        section(&mut out, "Identity", &lines);
-    }
-    out
-}
-
-pub fn json(snapshot: &Snapshot) -> dto::Versioned<dto::Status> {
-    dto::Versioned::new(dto::Status {
-        connection: snapshot.uri.clone().map(|uri| dto::Connection { uri }),
-        device: dto::Device {
-            firmware: snapshot.info.firmware.clone(),
-            board: snapshot.info.board.clone(),
-        },
-        capabilities: snapshot
-            .capabilities
-            .iter()
-            .map(dto::capability_id)
-            .collect(),
-        wifi: snapshot.wifi.as_ref().map(dto::Wifi::new),
-        time: snapshot.time.as_ref().map(dto::Time::new),
-        identity: snapshot.identity.as_ref().map(dto::Identity::new),
-    })
-}
-
+/// The device summary, or one service in detail.
 pub async fn run<T: ClientTransport>(
     device: &mut Device<T>,
+    service: Option<String>,
+    watch: bool,
+    interval: u64,
     ctx: &mut Ctx,
 ) -> Result<(), CliError> {
-    let snapshot = collect(device, ctx.uri.clone()).await?;
-    ctx.io
-        .emit(ctx.format, &json(&snapshot), || human(&snapshot))
+    let mut previous: Option<String> = None;
+    let mut printed = 0usize;
+    loop {
+        let (text, json) = match &service {
+            None => {
+                let info = device.info().await?;
+                let status = device.services_status().await?;
+                (
+                    format::services_status(&info, &status),
+                    dto::services_status(&info, &status),
+                )
+            }
+            Some(service) => {
+                let schema = device.service_schema(service).await?;
+                let status = device.service_status(service).await?;
+                (
+                    format::service_status(&status, &schema),
+                    dto::service_status(&status, &schema),
+                )
+            }
+        };
+        // A watch prints again only when what is shown changed. Uptime and
+        // ages move all the time, so they are not part of the comparison of
+        // the summary: its revisions say whether anything observable changed.
+        let key = match (&service, watch) {
+            (None, true) => revisions(&json),
+            _ => text.clone(),
+        };
+        if previous.as_deref() != Some(key.as_str()) {
+            if printed > 0 && ctx.format == super::OutputFormat::Human {
+                ctx.io.result("\n")?;
+            }
+            ctx.io
+                .emit(ctx.format, &dto::Versioned::new(json), || text)?;
+            previous = Some(key);
+            printed += 1;
+        }
+        if !watch || ctx.watch_limit.is_some_and(|limit| printed >= limit) {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_secs(interval)).await;
+    }
 }
 
-/// One titled section as a complete text.
-pub fn section_text(title: &str, lines: &[(&str, String)]) -> String {
-    let mut out = String::new();
-    section(&mut out, title, lines);
-    out
-}
-
-/// The `Wi-Fi` section alone, for `rohi wifi status`.
-pub fn wifi_text(status: &WifiStatus) -> String {
-    let mut out = String::new();
-    section(&mut out, "Wi-Fi", &wifi_lines(status));
-    out
+/// What a summary watch compares: the device health and the revision of every
+/// service.
+fn revisions(json: &serde_json::Value) -> String {
+    let mut key = json["health"].to_string();
+    for service in json["services"].as_array().into_iter().flatten() {
+        key.push_str(&format!("|{}:{}", service["service"], service["revision"]));
+    }
+    key
 }

@@ -17,10 +17,13 @@
 //! Command line definition: the public interface of `rohi`, including its
 //! `--help` texts. Help examples are parsed by the tests, so they cannot go
 //! stale.
+//!
+//! The command tree knows no device module: `config`, `status` and `action`
+//! take section, service and action names that the device lists.
 
 use std::path::PathBuf;
 
-use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 const TARGET: &str = "Target";
 const OUTPUT: &str = "Output";
@@ -56,8 +59,10 @@ pub enum OutputFormat {
 ╚══════════════════════════════════════════════════════╝
 "#,
     long_about = "Control Robonomics devices from terminal.\n\n\
-        CLI discovers nearby ROHI devices, reads their status and sensors,\n\
-        manages device configuration, and provides backup/restore workflows.",
+        CLI discovers nearby ROHI devices, shows the status of their services,\n\
+        manages their configuration and runs their actions. Sections, services\n\
+        and actions are discovered from the device, so new firmware modules\n\
+        need no update of this tool.",
     after_help = "Run `rohi <COMMAND> --help` for more information about a command.",
     arg_required_else_help = true
 )]
@@ -128,93 +133,62 @@ Examples:
         #[arg(long, default_value_t = 5, value_name = "SECONDS")]
         duration: u64,
     },
-    /// Show device information, capabilities, and current status.
+    /// Show the runtime status of the device and its services.
     ///
-    /// Displays the connection, firmware and board information, supported
-    /// capabilities, and available runtime status such as Wi-Fi connectivity,
-    /// the wall-clock time and identity. Sections the device does not support
-    /// are omitted.
+    /// Without a service this is one compact request: the device health set by
+    /// the firmware and the state, health and readiness of every service.
+    /// With a service name it shows that service in detail: its
+    /// service-specific values and the active issues, each with a stable
+    /// code. Services are discovered from the device; `rohi status` lists
+    /// them.
+    ///
+    /// Status is what is happening now. What the device is set up to do is
+    /// `rohi config`.
     #[command(after_help = "\
 Examples:
   rohi status
-  rohi -d A12F status
-  rohi -d A12F -o json status")]
-    Status,
-    /// Read current sensor measurements.
-    #[command(after_help = "\
-Examples:
-  rohi sensors
-  rohi -d A12F -o json sensors")]
-    Sensors,
-    /// Inspect device configuration.
+  rohi status wifi
+  rohi status --watch
+  rohi status connectivity --watch --interval 5
+  rohi -o json status sensors")]
+    Status {
+        /// The service to show in detail.
+        #[arg(value_name = "SERVICE")]
+        service: Option<String>,
+        /// Poll the device and print again whenever something changed, until
+        /// interrupted.
+        #[arg(short, long)]
+        watch: bool,
+        /// Pause between polls of --watch.
+        #[arg(long, default_value_t = 2, value_name = "SECONDS", requires = "watch")]
+        interval: u64,
+    },
+    /// Read and change the persistent configuration.
     ///
-    /// Shows the stored configuration. Secrets, such as the Wi-Fi password,
-    /// are never shown.
-    #[command(after_help = "\
-Examples:
-  rohi config
-  rohi config wifi
-  rohi config connectivity")]
+    /// The device lists its configuration sections and describes their
+    /// fields; values are parsed and checked against that description. Changes
+    /// are patches applied atomically per section: if anything is invalid,
+    /// nothing is stored. Secrets are write-only and are never shown or
+    /// exported.
     Config {
         #[command(subcommand)]
-        section: Option<ConfigSection>,
+        action: ConfigAction,
     },
-    /// Inspect and configure Wi-Fi.
+    /// List and run the actions of the services.
     ///
-    /// Without a command: show the Wi-Fi status.
-    #[command(after_help = "\
-Examples:
-  rohi wifi
-  rohi wifi scan
-  rohi wifi connect office")]
-    Wifi {
+    /// Actions are explicit operations a service offers, for example scanning
+    /// for networks or reconnecting. The device describes the arguments and
+    /// the results of every action.
+    Action {
         #[command(subcommand)]
-        action: Option<WifiAction>,
+        action: ActionCommand,
     },
-    /// Configure telemetry delivery to the Robonomics ingress.
+    /// Show, provision or erase the device identity.
     ///
-    /// Use `rohi config connectivity` to show the stored configuration.
-    #[command(after_help = "\
-Examples:
-  rohi connectivity set --host ingress.example.org --node-id 42 --enable
-  rohi connectivity set --interval 120
-  rohi connectivity set --disable")]
-    Connectivity {
-        #[command(subcommand)]
-        action: ConnectivityAction,
-    },
-    /// Show the wall-clock time of the device and its synchronization state.
-    ///
-    /// The device has no time until a source, such as NTP, delivered a
-    /// plausible sample; it never reports its uptime or a placeholder date
-    /// instead. The time may step when a later sample corrects it, and it is
-    /// not authenticated.
-    #[command(after_help = "\
-Examples:
-  rohi time
-  rohi -d A12F -o json time")]
-    Time,
-    /// Export or restore device configuration.
-    ///
-    /// Backups contain persistent device settings that can be restored later
-    /// or applied to another compatible ROHI device.
-    ///
-    /// Secrets that cannot be read back from the device are not included.
-    /// They may be requested during restore.
-    #[command(after_help = "\
-Examples:
-  rohi backup export backup.json
-  rohi backup export > backup.json
-  rohi backup import backup.json --dry-run
-  rohi backup import backup.json")]
-    Backup {
-        #[command(subcommand)]
-        action: BackupAction,
-    },
-    /// Cryptographic identity of the device: show, provision or erase.
-    ///
-    /// Without a command: show the identity state and the public key as a
-    /// Robonomics address.
+    /// The identity is an Ed25519 key. It is derived on this machine from a
+    /// master seed and installed with the `identity provision` action; the
+    /// device never generates one. Without a subcommand the identity of the
+    /// device is shown.
     #[command(
         visible_alias = "id",
         after_help = "\
@@ -230,8 +204,185 @@ Examples:
 }
 
 #[derive(Subcommand)]
+pub enum ConfigAction {
+    /// List the configuration sections of the device.
+    #[command(after_help = "\
+Examples:
+  rohi config list
+  rohi -o json config list")]
+    List,
+    /// Describe the fields of a section.
+    ///
+    /// Shows the type, access, constraints and description of every field.
+    #[command(after_help = "\
+Examples:
+  rohi config describe connectivity")]
+    Describe {
+        /// The section.
+        section: String,
+    },
+    /// Show the values of a section, or of one field.
+    ///
+    /// Secrets are shown as `<configured>`.
+    #[command(after_help = "\
+Examples:
+  rohi config get connectivity
+  rohi config get connectivity host
+  rohi -o json config get wifi")]
+    Get {
+        /// The section.
+        section: String,
+        /// Show only this field.
+        field: Option<String>,
+    },
+    /// Set fields of a section: `FIELD=VALUE` pairs, stored atomically.
+    ///
+    /// Fields that are not mentioned keep their value; a section that is not
+    /// configured yet starts from its defaults, and the complete result is
+    /// validated by the device. Secret fields are never given on the command
+    /// line: use `FIELD=-` to read the value from stdin, or to be asked for
+    /// it on a terminal. Bytes are given as hex.
+    #[command(after_help = "\
+Examples:
+  rohi config set connectivity host=ingress.example.org port=443 enabled=true
+  rohi config set connectivity interval_s=120 --dry-run
+  rohi config set wifi ssid=office password=-
+  echo 'hunter2hunter2' | rohi config set wifi password=-")]
+    Set {
+        /// The section.
+        section: String,
+        /// `FIELD=VALUE` pairs.
+        #[arg(required = true, value_name = "FIELD=VALUE")]
+        assignments: Vec<String>,
+        /// Validate on the device without storing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Unset optional fields of a section.
+    ///
+    /// Unset is not the same as an empty string or zero: the field has no
+    /// value afterwards.
+    #[command(after_help = "\
+Examples:
+  rohi config unset wifi password")]
+    Unset {
+        /// The section.
+        section: String,
+        /// The fields to unset.
+        #[arg(required = true)]
+        fields: Vec<String>,
+        /// Validate on the device without storing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Remove the stored section and restore its defaults.
+    ///
+    /// A confirmation prompt is shown unless --yes is passed.
+    #[command(after_help = "\
+Examples:
+  rohi config reset connectivity
+  rohi config reset connectivity --yes")]
+    Reset {
+        /// The section.
+        section: String,
+        /// Skip the confirmation prompt.
+        #[arg(long, short)]
+        yes: bool,
+        /// Validate on the device without removing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Write the configuration of the device to a JSON file.
+    ///
+    /// The file maps section names to their fields. Secrets and read-only
+    /// fields are left out, so applying the file never touches them.
+    /// Without a file, or with `-`, the document goes to stdout.
+    #[command(after_help = "\
+Examples:
+  rohi config export config.json
+  rohi config export > config.json")]
+    Export {
+        /// Output file.
+        file: Option<PathBuf>,
+    },
+    /// Show what applying a configuration file would change.
+    ///
+    /// Compares the file with the device and prints the differences; nothing
+    /// is changed. Secrets cannot be compared and are not part of files.
+    #[command(after_help = "\
+Examples:
+  rohi config diff config.json")]
+    Diff {
+        /// The JSON file; `-` reads stdin.
+        file: PathBuf,
+    },
+    /// Apply a configuration file.
+    ///
+    /// A field that is missing in the file is left unchanged, a field set to
+    /// `null` is unset, and a section set to `null` is reset. Every section is
+    /// validated on the device before the first one is changed, and each
+    /// section is applied atomically. Applying several sections is not atomic
+    /// as a whole: if the device fails in between, the sections already
+    /// applied are listed.
+    #[command(after_help = "\
+Examples:
+  rohi config apply config.json --dry-run
+  rohi config apply config.json
+  rohi config apply config.json --yes")]
+    Apply {
+        /// The JSON file; `-` reads stdin.
+        file: PathBuf,
+        /// Validate on the device without storing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip the confirmation prompt.
+        #[arg(long, short)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ActionCommand {
+    /// List the actions of all services.
+    #[command(after_help = "\
+Examples:
+  rohi action list")]
+    List,
+    /// Describe the arguments and results of an action.
+    #[command(after_help = "\
+Examples:
+  rohi action describe wifi scan")]
+    Describe {
+        /// The service.
+        service: String,
+        /// The action.
+        action: String,
+    },
+    /// Run an action.
+    ///
+    /// Arguments are `NAME=VALUE` pairs and all are required. Use `NAME=-` to
+    /// read a value from stdin, or to be asked for it on a terminal, so that
+    /// it stays out of the shell history. Bytes are given as hex. The
+    /// results are printed as a table, one row per record.
+    #[command(after_help = "\
+Examples:
+  rohi action run wifi scan
+  rohi action run wifi reconnect
+  rohi -o json action run wifi scan")]
+    Run {
+        /// The service.
+        service: String,
+        /// The action.
+        action: String,
+        /// `NAME=VALUE` pairs.
+        #[arg(value_name = "NAME=VALUE")]
+        args: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum IdentityAction {
-    /// Derive the identity of this device from a master seed and install it.
+    /// Derive an identity from a master seed and install it.
     ///
     /// The master seed stays on this machine; the device receives only the
     /// secret derived with the hard junction `//<NUMBER>`. Use every number
@@ -265,228 +416,4 @@ pub struct Provision {
     /// path); it is read here and never sent to the device.
     #[arg(long, value_name = "FILE")]
     pub seed: PathBuf,
-}
-
-#[derive(Subcommand)]
-pub enum ConfigSection {
-    /// Show the Wi-Fi configuration.
-    Wifi,
-    /// Show the telemetry (connectivity) configuration.
-    Connectivity,
-}
-
-#[derive(Subcommand)]
-pub enum ConnectivityAction {
-    /// Change the telemetry configuration; omitted settings are kept.
-    ///
-    /// The device stores the configuration and applies it at once, without a
-    /// restart. While nothing is stored a host is required; the interval is
-    /// 10 to 86400 seconds and the port defaults to 80. Telemetry is signed
-    /// with the identity of the device, see `rohi identity`.
-    #[command(after_help = "\
-Examples:
-  rohi connectivity set --host ingress.example.org --node-id 42 --enable
-  rohi connectivity set --interval 120
-  rohi connectivity set --disable")]
-    Set(SetConnectivity),
-}
-
-#[derive(Args)]
-#[command(group(
-    ArgGroup::new("change")
-        .required(true)
-        .multiple(true)
-        .args(["host", "port", "node_id", "interval", "enable", "disable"])
-))]
-pub struct SetConnectivity {
-    /// Ingress host name or IPv4 address.
-    #[arg(long, value_name = "HOST")]
-    pub host: Option<String>,
-
-    /// Ingress TCP port.
-    #[arg(long, value_name = "PORT", value_parser = clap::value_parser!(u16).range(1..))]
-    pub port: Option<u16>,
-
-    /// Robonomics CPS node identifier.
-    #[arg(long, value_name = "ID")]
-    pub node_id: Option<u64>,
-
-    /// Seconds between telemetry frames.
-    #[arg(long, value_name = "SECONDS")]
-    pub interval: Option<u32>,
-
-    /// Send telemetry.
-    #[arg(long, conflicts_with = "disable")]
-    pub enable: bool,
-
-    /// Stop sending telemetry; the configuration is kept.
-    #[arg(long)]
-    pub disable: bool,
-}
-
-#[derive(Subcommand)]
-pub enum WifiAction {
-    /// Show the Wi-Fi status (default).
-    #[command(after_help = "\
-Examples:
-  rohi wifi status
-  rohi -o json wifi status")]
-    Status,
-    /// List networks the device sees.
-    ///
-    /// The scan runs on the device and can take half a minute.
-    #[command(after_help = "\
-Examples:
-  rohi wifi scan")]
-    Scan,
-    /// Join a network and wait until the device is connected.
-    ///
-    /// Stores the network on the device, then follows the Wi-Fi status until
-    /// the device is connected, reports a failure, or --wait expires. A stored
-    /// configuration does not mean the network was reached.
-    ///
-    /// The password is read from a hidden prompt, from stdin with
-    /// --password-stdin, or from the ROHI_WIFI_PASSWORD environment variable;
-    /// an empty answer keeps the stored password. Use --open for a network
-    /// without a password.
-    #[command(after_help = "\
-Examples:
-  rohi wifi connect office
-  rohi wifi connect guests --open
-  rohi wifi connect office --password-stdin
-  rohi wifi connect office --no-wait")]
-    Connect(Connect),
-    /// Change the Wi-Fi configuration; omitted settings are kept.
-    ///
-    /// Only stores the configuration; use `rohi wifi status` to follow the
-    /// connection, or `rohi wifi connect` to wait for it.
-    #[command(after_help = "\
-Examples:
-  rohi wifi configure --ssid office
-  rohi wifi configure --ssid guests --open")]
-    Configure(Configure),
-    /// Reconnect now.
-    #[command(after_help = "\
-Examples:
-  rohi wifi reconnect")]
-    Reconnect,
-    /// Disconnect and stay idle.
-    #[command(after_help = "\
-Examples:
-  rohi wifi disconnect")]
-    Disconnect,
-    /// Remove the stored Wi-Fi configuration.
-    ///
-    /// This removes the configured SSID and credentials from the device.
-    /// A confirmation prompt is shown unless --yes is passed.
-    #[command(after_help = "\
-Examples:
-  rohi wifi forget
-  rohi wifi forget --yes")]
-    Forget {
-        /// Skip the confirmation prompt.
-        #[arg(long, short)]
-        yes: bool,
-    },
-}
-
-#[derive(Args)]
-pub struct Connect {
-    /// Network name.
-    #[arg(value_name = "SSID")]
-    pub ssid: String,
-
-    /// The network has no password; remove a stored one.
-    #[arg(long, conflicts_with = "password_stdin")]
-    pub open: bool,
-
-    /// Read the password from the first line of stdin.
-    #[arg(long)]
-    pub password_stdin: bool,
-
-    /// Return once the configuration is stored, without waiting for the
-    /// connection.
-    #[arg(long, conflicts_with = "wait")]
-    pub no_wait: bool,
-
-    /// How long to wait for the connection.
-    #[arg(long, default_value_t = 30, value_name = "SECONDS")]
-    pub wait: u64,
-}
-
-#[derive(Args)]
-pub struct Configure {
-    /// Network name.
-    #[arg(long, value_name = "SSID")]
-    pub ssid: Option<String>,
-
-    /// Network password. Without it (and without `--open`) the password is
-    /// asked for; an empty answer keeps the stored one.
-    ///
-    /// Prefer the prompt or the environment variable: a password on the command line stays in
-    /// the shell history and is visible to other users in the process list.
-    #[arg(
-        long,
-        env = "ROHI_WIFI_PASSWORD",
-        hide_env_values = true,
-        value_name = "PASSWORD"
-    )]
-    pub password: Option<String>,
-
-    /// The network has no password; remove a stored one.
-    #[arg(long, conflicts_with = "password")]
-    pub open: bool,
-}
-
-#[derive(Subcommand)]
-pub enum BackupAction {
-    /// Export device configuration.
-    ///
-    /// Writes a versioned JSON backup of the stored configuration to FILE, or
-    /// to stdout without FILE. Runtime state and secrets the device does not
-    /// reveal, such as the Wi-Fi password, are not included; the backup only
-    /// records that a password is required.
-    #[command(after_help = "\
-Examples:
-  rohi backup export backup.json
-  rohi backup export > backup.json")]
-    Export {
-        /// File to write; stdout when omitted.
-        #[arg(value_name = "FILE")]
-        file: Option<PathBuf>,
-    },
-    /// Validate and restore device configuration.
-    ///
-    /// The whole backup is validated, and compared with the device, before
-    /// anything is changed. A backup that is malformed, has an unsupported
-    /// schema version, or holds sections the device cannot restore is
-    /// rejected without changes. Secrets missing from the backup are asked
-    /// for. The restore is not atomic: if a section fails, the ones already
-    /// applied are reported.
-    #[command(after_help = "\
-Examples:
-  rohi backup import backup.json --dry-run
-  rohi backup import backup.json
-  rohi backup import backup.json --yes --wifi-password-stdin")]
-    Import(Import),
-}
-
-#[derive(Args)]
-pub struct Import {
-    /// Backup file written by `rohi backup export`.
-    #[arg(value_name = "FILE")]
-    pub file: PathBuf,
-
-    /// Show the planned changes without modifying the device.
-    #[arg(long, conflicts_with = "yes")]
-    pub dry_run: bool,
-
-    /// Skip the confirmation prompt.
-    #[arg(long, short)]
-    pub yes: bool,
-
-    /// Read the Wi-Fi password from the first line of stdin, if the backup
-    /// requires one. ROHI_WIFI_PASSWORD works too.
-    #[arg(long)]
-    pub wifi_password_stdin: bool,
 }

@@ -1,6 +1,15 @@
-Read current sensor measurements
+Show the values of a section, or of one field.
 
-Usage: rohi sensors [OPTIONS]
+Secrets are shown as `<configured>`.
+
+Usage: rohi config get [OPTIONS] <SECTION> [FIELD]
+
+Arguments:
+  <SECTION>
+          The section
+
+  [FIELD]
+          Show only this field
 
 Options:
   -h, --help
@@ -34,5 +43,6 @@ Connection:
           [default: 10]
 
 Examples:
-  rohi sensors
-  rohi -d A12F -o json sensors
+  rohi config get connectivity
+  rohi config get connectivity host
+  rohi -o json config get wifi
