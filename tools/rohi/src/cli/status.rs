@@ -56,6 +56,7 @@ pub async fn run<T: ClientTransport>(
         // the summary: its revisions say whether anything observable changed.
         let key = match (&service, watch) {
             (None, true) => revisions(&json),
+            (Some(_), true) if ctx.format == super::OutputFormat::Json => json.to_string(),
             _ => text.clone(),
         };
         if previous.as_deref() != Some(key.as_str()) {
