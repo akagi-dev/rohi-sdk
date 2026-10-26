@@ -52,14 +52,6 @@ pub enum Error {
     /// `already_provisioned`.
     #[error("rejected by the device: {0}")]
     Rejected(String),
-    /// A service reports that it has failed, so its status cannot be trusted.
-    #[error("the {service} service has failed{}", issue_suffix(.issue))]
-    ServiceFailed {
-        /// The service.
-        service: String,
-        /// Message of its most severe issue, if any.
-        issue: Option<String>,
-    },
     /// A value given by the caller is invalid.
     #[error("invalid input: {0}")]
     InvalidInput(String),
@@ -99,12 +91,6 @@ impl From<btleplug::Error> for Error {
     fn from(error: btleplug::Error) -> Self {
         Self::Transport(error.to_string())
     }
-}
-
-fn issue_suffix(issue: &Option<String>) -> String {
-    issue
-        .as_ref()
-        .map_or_else(String::new, |issue| format!(": {issue}"))
 }
 
 /// Result of library calls.

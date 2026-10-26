@@ -1,12 +1,15 @@
-Remove the identity; the device must be provisioned again to sign.
+Remove every stored section and restore all defaults.
 
-A confirmation prompt is shown unless --yes is passed.
+Resets every configuration section the device lists: it is a `config reset` of each section. Every reset is validated on the device before the first section is changed. Actions and runtime state, such as the device identity, are not configuration and are not affected. A confirmation prompt is shown unless --yes is passed.
 
-Usage: rohi identity erase [OPTIONS]
+Usage: rohi config factory-reset [OPTIONS]
 
 Options:
   -y, --yes
           Skip the confirmation prompt
+
+      --dry-run
+          Validate on the device without removing anything
 
   -h, --help
           Print help (see a summary with '-h')
@@ -39,5 +42,6 @@ Connection:
           [default: 10]
 
 Examples:
-  rohi identity erase
-  rohi identity erase --yes
+  rohi config factory-reset
+  rohi config factory-reset --yes
+  rohi config factory-reset --dry-run

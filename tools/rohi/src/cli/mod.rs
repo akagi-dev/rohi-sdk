@@ -35,7 +35,6 @@ mod args;
 mod config;
 mod diagnostic;
 mod dto;
-mod identity;
 mod status;
 mod target;
 mod terminal;
@@ -47,14 +46,12 @@ use std::time::Duration;
 
 use clap::Parser;
 
-pub use args::{
-    ActionCommand, Cli, Command, ConfigAction, IdentityAction, OutputFormat, Provision,
-};
+pub use args::{ActionCommand, Cli, Command, ConfigAction, OutputFormat};
 pub use diagnostic::{CliError, Diagnostic, PartialApply};
 pub use target::{Match, Target, resolve};
 pub use terminal::Io;
 
-use crate::{BleLink, ClientTransport, DerivedIdentity, Device, format, scan, scan_until};
+use crate::{BleLink, ClientTransport, Device, format, scan, scan_until};
 
 /// Everything a command needs besides the device: the terminal, the output
 /// format and what is known about the connection.
@@ -81,31 +78,10 @@ impl Ctx {
     }
 }
 
-/// What a command needs from the host before it talks to the device, so that
-/// a bad seed file fails before a device is touched.
-#[derive(Default)]
-pub struct Prepared {
-    /// For `identity provision`: the identity derived from the seed file.
-    pub identity: Option<DerivedIdentity>,
-}
-
-/// Reads the files `command` refers to.
-pub fn prepare(command: &Command) -> Result<Prepared, CliError> {
-    Ok(match command {
-        Command::Identity {
-            action: Some(IdentityAction::Provision(provision)),
-        } => Prepared {
-            identity: Some(identity::load(provision)?),
-        },
-        _ => Prepared::default(),
-    })
-}
-
 /// Runs `command` on a connected device.
 pub async fn execute<T: ClientTransport>(
     device: &mut Device<T>,
     command: Command,
-    prepared: Prepared,
     ctx: &mut Ctx,
 ) -> Result<(), CliError> {
     match command {
@@ -117,7 +93,6 @@ pub async fn execute<T: ClientTransport>(
         } => status::run(device, service, watch, interval, ctx).await,
         Command::Config { action } => config::run(device, action, ctx).await,
         Command::Action { action } => action::run(device, action, ctx).await,
-        Command::Identity { action } => identity::run(device, action, prepared, ctx).await,
     }
 }
 
@@ -169,10 +144,8 @@ pub async fn run(cli: Cli, ctx: &mut Ctx) -> Result<(), CliError> {
         Target::Ble(selector) => selector.clone(),
         Target::Tcp(_) => return Err(CliError::UnsupportedTransport("tcp".into())),
     };
-    // A bad seed or backup must fail before a device is touched.
-    let prepared = prepare(&cli.command)?;
     let mut device = interruptible(connect_ble(&cli, selector.as_deref(), ctx)).await?;
-    let result = interruptible(execute(&mut device, cli.command, prepared, ctx)).await;
+    let result = interruptible(execute(&mut device, cli.command, ctx)).await;
     // Dropping the peripheral does not disconnect it (BlueZ keeps the link),
     // and the device accepts a single connection: always close it.
     let closed = device.into_transport().disconnect().await;

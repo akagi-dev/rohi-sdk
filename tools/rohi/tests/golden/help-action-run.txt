@@ -48,4 +48,6 @@ Connection:
 Examples:
   rohi action run wifi scan
   rohi action run wifi reconnect
+  rohi action run identity provision secret=-
+  rohi action run identity erase
   rohi -o json action run wifi scan

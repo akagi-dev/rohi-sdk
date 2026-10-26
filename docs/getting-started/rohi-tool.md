@@ -110,7 +110,7 @@ hint: make sure Bluetooth is enabled and the device is advertising
 hint: try `rohi scan`
 ```
 
-Destructive commands (`config reset`, `config apply`, `identity erase`) ask for confirmation on a terminal. Without a
+Destructive commands (`config reset`, `config factory-reset`, `config apply`) ask for confirmation on a terminal. Without a
 terminal they fail with `confirmation required in non-interactive mode` unless `--yes` is passed. Secrets are never
 accepted as command line arguments: a field or argument that is a secret is read with `NAME=-` from stdin, or from a
 hidden prompt on a terminal.
@@ -147,6 +147,7 @@ rohi config set connectivity interval_s=120 --dry-run
 rohi config set wifi ssid=office password=-         # secret from stdin or a hidden prompt
 rohi config unset wifi password                    # optional field: no value (not "" or 0)
 rohi config reset connectivity                     # remove the stored section, restore defaults
+rohi config factory-reset                        # reset every section; the identity is not configuration
 ```
 
 ```text
@@ -221,15 +222,17 @@ reported as `the device rejected the action: <reason>` (for example `already_pro
 
 ## Identity
 
+The identity is an ordinary service: no dedicated command.
+
 ```bash
-rohi identity                                          # state and address (alias: rohi id)
-rohi identity provision --number 42 --seed master.suri
-rohi identity erase
+rohi status identity                                   # state, public key; never the secret
+rohi action run identity provision secret=-            # 32-byte secret as hex, from stdin or a hidden prompt
+rohi action run identity erase
 ```
 
-The identity is the one module-specific command: the secret is **derived on this machine** from a master secret URI in
-a file and only the derived secret is sent, with the `identity provision` action. `identity` shows the public key as a
-Robonomics (SS58) address and in hex. See [Device identity](../sdk/identity.md) for the model and its limits.
+The secret is derived on a trusted machine (`rohi::derive_identity`, see [Device identity](../sdk/identity.md)) and
+only the derived secret is sent. `config factory-reset` does not touch the identity. A malformed secret is reported
+without echoing it.
 
 ## Migrating from earlier versions
 
@@ -251,10 +254,9 @@ Robonomics (SS58) address and in hex. See [Device identity](../sdk/identity.md) 
 |---------|--------------|
 | `scan` | discover nearby devices |
 | `status [SERVICE] [--watch]` | device summary or one service |
-| `config list`, `describe`, `get`, `set`, `unset`, `reset` | read and change configuration sections |
+| `config list`, `describe`, `get`, `set`, `unset`, `reset`, `factory-reset` | read and change configuration sections |
 | `config export`, `diff`, `apply` | configuration files |
 | `action list`, `describe`, `run` | actions of the services |
-| `identity` and `provision`, `erase` | device identity |
 
 ## Troubleshooting
 

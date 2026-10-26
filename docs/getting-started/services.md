@@ -161,8 +161,8 @@ guest   -70 dBm  11       open
 ```
 
 `write` actions need a link that satisfies the device's authorization policy. Arguments are `NAME=VALUE` pairs; use
-`NAME=-` to read a value from stdin so it stays out of the shell history. Actions that take secrets, like identity
-provisioning, have their own commands where a host-side step is needed (`rohi identity provision`).
+`NAME=-` to read a value from stdin so it stays out of the shell history. Secret arguments, like the one of identity
+provisioning, are always read from stdin or a hidden prompt: `rohi action run identity provision secret=-`.
 
 ## Configuration
 

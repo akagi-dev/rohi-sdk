@@ -23,7 +23,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 
 const TARGET: &str = "Target";
 const OUTPUT: &str = "Output";
@@ -183,24 +183,6 @@ Examples:
         #[command(subcommand)]
         action: ActionCommand,
     },
-    /// Show, provision or erase the device identity.
-    ///
-    /// The identity is an Ed25519 key. It is derived on this machine from a
-    /// master seed and installed with the `identity provision` action; the
-    /// device never generates one. Without a subcommand the identity of the
-    /// device is shown.
-    #[command(
-        visible_alias = "id",
-        after_help = "\
-Examples:
-  rohi identity
-  rohi identity provision --number 42 --seed master.suri
-  rohi identity erase --yes"
-    )]
-    Identity {
-        #[command(subcommand)]
-        action: Option<IdentityAction>,
-    },
 }
 
 #[derive(Subcommand)]
@@ -292,6 +274,26 @@ Examples:
         #[arg(long)]
         dry_run: bool,
     },
+    /// Remove every stored section and restore all defaults.
+    ///
+    /// Resets every configuration section the device lists: it is a
+    /// `config reset` of each section. Every reset is validated on the device
+    /// before the first section is changed. Actions and runtime state, such as
+    /// the device identity, are not configuration and are not affected.
+    /// A confirmation prompt is shown unless --yes is passed.
+    #[command(after_help = "\
+Examples:
+  rohi config factory-reset
+  rohi config factory-reset --yes
+  rohi config factory-reset --dry-run")]
+    FactoryReset {
+        /// Skip the confirmation prompt.
+        #[arg(long, short)]
+        yes: bool,
+        /// Validate on the device without removing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Write the configuration of the device to a JSON file.
     ///
     /// The file maps section names to their fields. Secrets and read-only
@@ -368,6 +370,8 @@ Examples:
 Examples:
   rohi action run wifi scan
   rohi action run wifi reconnect
+  rohi action run identity provision secret=-
+  rohi action run identity erase
   rohi -o json action run wifi scan")]
     Run {
         /// The service.
@@ -378,42 +382,4 @@ Examples:
         #[arg(value_name = "NAME=VALUE")]
         args: Vec<String>,
     },
-}
-
-#[derive(Subcommand)]
-pub enum IdentityAction {
-    /// Derive an identity from a master seed and install it.
-    ///
-    /// The master seed stays on this machine; the device receives only the
-    /// secret derived with the hard junction `//<NUMBER>`. Use every number
-    /// once per master: the device cannot detect duplicates.
-    #[command(after_help = "\
-Examples:
-  rohi identity provision --number 42 --seed master.suri
-  rohi id provision -n 42 --seed master.suri")]
-    Provision(Provision),
-    /// Remove the identity; the device must be provisioned again to sign.
-    ///
-    /// A confirmation prompt is shown unless --yes is passed.
-    #[command(after_help = "\
-Examples:
-  rohi identity erase
-  rohi identity erase --yes")]
-    Erase {
-        /// Skip the confirmation prompt.
-        #[arg(long, short)]
-        yes: bool,
-    },
-}
-
-#[derive(Args)]
-pub struct Provision {
-    /// Sensor number used for the hard derivation `//<NUMBER>`.
-    #[arg(short, long, value_name = "NUMBER")]
-    pub number: u64,
-
-    /// File with the master secret URI (mnemonic phrase or `0x` seed, optional
-    /// path); it is read here and never sent to the device.
-    #[arg(long, value_name = "FILE")]
-    pub seed: PathBuf,
 }

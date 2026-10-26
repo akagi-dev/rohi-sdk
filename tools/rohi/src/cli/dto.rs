@@ -47,15 +47,6 @@ impl<T> Versioned<T> {
 }
 
 #[derive(Serialize)]
-pub struct Done {
-    pub ok: bool,
-}
-
-pub fn done() -> Versioned<Done> {
-    Versioned::new(Done { ok: true })
-}
-
-#[derive(Serialize)]
 pub struct ScanDevice {
     pub id: String,
     pub name: Option<String>,
@@ -200,18 +191,4 @@ pub fn records(records: &[Record], schema: &ActionSchema) -> Json {
         .map(|record| values(record, &schema.results))
         .collect();
     json!({ "records": records, "units": units(&schema.results) })
-}
-
-#[derive(Serialize)]
-pub struct Identity {
-    pub provisioned: bool,
-    pub address: Option<String>,
-    pub public_key: Option<String>,
-}
-
-#[derive(Serialize)]
-pub struct Provisioned {
-    pub ok: bool,
-    pub address: String,
-    pub public_key: String,
 }

@@ -1,6 +1,6 @@
 //! The `rohi` command line without Bluetooth: parsing, help, output contract,
-//! the generic `status`, `config` and `action` commands and the identity
-//! workflow, run through `rohi::cli::execute` against the in-memory device.
+//! the generic `status`, `config` and `action` commands, run through
+//! `rohi::cli::execute` against the in-memory device.
 
 mod common;
 
@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use clap::{CommandFactory, Parser};
 use common::*;
-use rohi::cli::{Cli, CliError, Ctx, Io, PartialApply, execute, prepare};
+use rohi::cli::{Cli, CliError, Ctx, Io, PartialApply, execute};
 use rohi::{Device, Error};
 use rohi_control::{Controller, OpenPolicy};
 use rohi_control_ble::ControlBle;
@@ -110,16 +110,6 @@ async fn run_watching(
     ctx.uri = Some("ble://BENCH-1234".into());
     ctx.watch_limit = watch_limit;
 
-    let prepared = match prepare(&cli.command) {
-        Ok(prepared) => prepared,
-        Err(error) => {
-            return Outcome {
-                result: Err(error),
-                stdout: stdout.text(),
-                stderr: stderr.text(),
-            };
-        }
-    };
     let (client, device) = link(244);
     let controller = Controller::new(backend(bench), OpenPolicy);
     let mut server = ControlBle::new(device, &controller);
@@ -128,7 +118,7 @@ async fn run_watching(
         () = async { server.run().await } => unreachable!(),
         result = async {
             let mut device = Device::new(client);
-            execute(&mut device, command, prepared, &mut ctx).await
+            execute(&mut device, command, &mut ctx).await
         } => result,
     };
     Outcome {
@@ -195,6 +185,7 @@ fn help_texts_are_snapshots() {
         &["config", "set"],
         &["config", "unset"],
         &["config", "reset"],
+        &["config", "factory-reset"],
         &["config", "export"],
         &["config", "diff"],
         &["config", "apply"],
@@ -202,9 +193,6 @@ fn help_texts_are_snapshots() {
         &["action", "list"],
         &["action", "describe"],
         &["action", "run"],
-        &["identity"],
-        &["identity", "provision"],
-        &["identity", "erase"],
     ];
     for page in pages {
         let name = format!("help-{}.txt", page.join("-")).replace("help-.txt", "help.txt");
@@ -257,12 +245,12 @@ fn every_example_in_the_help_parses() {
 #[test]
 fn the_command_tree_has_no_module_specific_commands() {
     // No compile-time list of sections, services or modules: only the
-    // generic verbs, plus the identity workflow that derives a key on the host.
+    // generic verbs.
     let names: Vec<_> = Cli::command()
         .get_subcommands()
         .map(|command| command.get_name().to_owned())
         .collect();
-    assert_eq!(names, ["scan", "status", "config", "action", "identity"]);
+    assert_eq!(names, ["scan", "status", "config", "action"]);
     for gone in ["wifi", "connectivity", "backup", "sensors", "time", "info"] {
         let error = parse(&[gone]).err().unwrap();
         assert_eq!(
@@ -283,7 +271,6 @@ fn usage_errors_have_exit_code_2() {
         &["config", "unset", "wifi"],
         &["config", "get"],
         &["status", "--interval", "5"],
-        &["identity", "provision"],
     ] {
         assert_eq!(parse(args).err().unwrap().exit_code(), 2, "{args:?}");
     }
@@ -1127,147 +1114,195 @@ async fn action_arguments_are_checked_and_failures_are_typed() {
 }
 
 // ---------------------------------------------------------------------------
-// identity
+// identity, through the generic commands
 // ---------------------------------------------------------------------------
 
-fn seed_file() -> std::path::PathBuf {
-    temp_file("master.suri", &format!("{DEV_PHRASE}\n"))
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn identity_is_derived_on_the_host_and_installed_with_the_action() {
+async fn identity_is_provisioned_and_erased_with_the_generic_commands() {
     let bench = Bench::new();
-    let outcome = run(&bench, &["identity"]).await;
-    assert_eq!(outcome.ok().stdout, "State:       not provisioned\n");
+    let outcome = run(&bench, &["status", "identity"]).await;
+    assert!(
+        outcome.ok().stdout.contains("not_provisioned"),
+        "{}",
+        outcome.stdout
+    );
 
-    let seed = seed_file();
-    let outcome = run(
+    let derived = rohi::derive_identity(DEV_PHRASE, 7).unwrap();
+    let secret = hex(derived.secret().expose_secret());
+    let terminal = Terminal {
+        interactive: false,
+        input: &[&secret],
+    };
+    let outcome = run_with(
         &bench,
-        &[
-            "identity",
-            "provision",
-            "--number",
-            "7",
-            "--seed",
-            path(&seed),
-        ],
+        &["action", "run", "identity", "provision", "secret=-"],
+        terminal,
     )
     .await;
     outcome.ok();
-    assert!(
-        outcome
-            .stdout
-            .starts_with("Identity provisioned\n\nAddress:    4"),
-        "{}",
-        outcome.stdout
-    );
-    let expected = rohi::derive_identity(DEV_PHRASE, 7).unwrap();
     assert_eq!(
         bench.identity.0.borrow().as_ref().unwrap().public_key(),
-        expected.public_key()
+        derived.public_key()
     );
-    assert!(!outcome.stdout.contains(DEV_PHRASE) && !outcome.stderr.contains(DEV_PHRASE));
-
-    let outcome = run(&bench, &["identity"]).await;
-    assert!(
-        outcome
-            .ok()
-            .stdout
-            .starts_with("State:       provisioned\nAddress:     4"),
-        "{}",
-        outcome.stdout
-    );
-    let outcome = run(&bench, &["-o", "json", "identity"]).await;
-    let json = outcome.ok().json();
-    assert_eq!(json["provisioned"], true);
-    assert_eq!(json["public_key"], expected.public_key().to_string());
+    assert!(!outcome.stdout.contains(&secret) && !outcome.stderr.contains(&secret));
 
     // The device never replaces an identity.
-    let outcome = run(
+    let terminal = Terminal {
+        interactive: false,
+        input: &[&secret],
+    };
+    let outcome = run_with(
         &bench,
-        &[
-            "identity",
-            "provision",
-            "--number",
-            "8",
-            "--seed",
-            path(&seed),
-        ],
+        &["action", "run", "identity", "provision", "secret=-"],
+        terminal,
     )
     .await;
     assert!(
         matches!(outcome.device_error(), Error::Rejected(reason) if reason == "already_provisioned")
     );
     assert!(
-        outcome.message().contains("rohi identity erase"),
+        outcome.message().contains("rohi action run identity erase"),
         "{}",
         outcome.message()
     );
-}
 
-#[tokio::test(flavor = "current_thread")]
-async fn a_bad_seed_fails_before_a_device_is_touched() {
-    let bench = Bench::new();
-    let bad = temp_file("bad.suri", "not a seed at all\n");
-    let outcome = run(
-        &bench,
-        &["identity", "provision", "-n", "1", "--seed", path(&bad)],
-    )
-    .await;
-    assert!(matches!(
-        outcome.error(),
-        CliError::Device(Error::InvalidInput(_))
-    ));
-    let missing = run(
-        &bench,
-        &[
-            "identity",
-            "provision",
-            "-n",
-            "1",
-            "--seed",
-            "/nonexistent/seed",
-        ],
-    )
-    .await;
-    assert!(
-        missing.message().contains("cannot read the seed file"),
-        "{}",
-        missing.message()
-    );
+    run(&bench, &["action", "run", "identity", "erase"])
+        .await
+        .ok();
     assert!(bench.identity.0.borrow().is_none());
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn erase_asks_only_where_somebody_can_answer() {
+async fn a_malformed_secret_is_not_echoed() {
     let bench = Bench::new();
-    let seed = seed_file();
-    run(
+    let terminal = Terminal {
+        interactive: false,
+        input: &["zz-hidden-secret"],
+    };
+    let outcome = run_with(
         &bench,
-        &["id", "provision", "-n", "7", "--seed", path(&seed)],
+        &["action", "run", "identity", "provision", "secret=-"],
+        terminal,
+    )
+    .await;
+    assert!(matches!(outcome.error(), CliError::Usage(_)));
+    assert!(
+        !outcome.message().contains("zz-hidden-secret"),
+        "{}",
+        outcome.message()
+    );
+    assert!(bench.identity.0.borrow().is_none());
+}
+
+// ---------------------------------------------------------------------------
+// factory-reset
+// ---------------------------------------------------------------------------
+
+async fn configure_everything(bench: &Bench) {
+    run(bench, &["config", "set", "gadget", "label=lamp"])
+        .await
+        .ok();
+    run(
+        bench,
+        &["config", "set", "location", "latitude=1.5", "longitude=2.5"],
+    )
+    .await
+    .ok();
+    assert!(bench.gadget.value.borrow().is_some());
+    assert!(bench.location.mem.value.borrow().is_some());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn factory_reset_removes_every_section_and_keeps_the_identity() {
+    let bench = Bench::new();
+    configure_everything(&bench).await;
+    let derived = rohi::derive_identity(DEV_PHRASE, 7).unwrap();
+    let secret = hex(derived.secret().expose_secret());
+    let terminal = Terminal {
+        interactive: false,
+        input: &[&secret],
+    };
+    run_with(
+        &bench,
+        &["action", "run", "identity", "provision", "secret=-"],
+        terminal,
     )
     .await
     .ok();
 
-    let outcome = run(&bench, &["id", "erase"]).await;
-    assert!(matches!(outcome.error(), CliError::ConfirmationRequired));
+    let outcome = run(&bench, &["config", "factory-reset", "--yes"]).await;
+    outcome.ok();
+    assert!(
+        outcome.stdout.starts_with("Factory reset: "),
+        "{}",
+        outcome.stdout
+    );
+    for name in ["wifi", "connectivity", "gadget", "location"] {
+        assert!(outcome.stdout.contains(name), "{name}: {}", outcome.stdout);
+    }
+    assert!(bench.gadget.value.borrow().is_none());
+    assert!(bench.location.mem.value.borrow().is_none());
     assert!(bench.identity.0.borrow().is_some());
+
+    let json = run(&bench, &["-o", "json", "config", "factory-reset", "--yes"])
+        .await
+        .ok()
+        .json();
+    assert_eq!(json["dry_run"], false);
+    assert_eq!(json["reset"].as_array().unwrap().len(), 4);
+    assert_eq!(json["restart_required"], true);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn factory_reset_asks_only_where_somebody_can_answer() {
+    let bench = Bench::new();
+    configure_everything(&bench).await;
+
+    let outcome = run(&bench, &["config", "factory-reset"]).await;
+    assert!(matches!(outcome.error(), CliError::ConfirmationRequired));
+    assert!(bench.gadget.value.borrow().is_some());
 
     let terminal = Terminal {
         interactive: true,
-        input: &["no"],
+        input: &["n"],
     };
-    let outcome = run_with(&bench, &["id", "erase"], terminal).await;
+    let outcome = run_with(&bench, &["config", "factory-reset"], terminal).await;
     assert!(matches!(outcome.error(), CliError::Cancelled));
+    assert!(outcome.stderr.contains("gadget"), "{}", outcome.stderr);
+    assert!(bench.gadget.value.borrow().is_some());
+
+    let terminal = Terminal {
+        interactive: true,
+        input: &["y"],
+    };
+    run_with(&bench, &["config", "factory-reset"], terminal)
+        .await
+        .ok();
+    assert!(bench.gadget.value.borrow().is_none());
+    assert!(bench.location.mem.value.borrow().is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_factory_reset_dry_run_changes_nothing_and_asks_nothing() {
+    let bench = Bench::new();
+    configure_everything(&bench).await;
+    let writes = bench.writes();
+
+    let outcome = run(&bench, &["config", "factory-reset", "--dry-run"]).await;
     assert!(
         outcome
-            .stderr
-            .contains("lose its current cryptographic identity")
+            .ok()
+            .stdout
+            .starts_with("Factory reset is valid; nothing was changed"),
+        "{}",
+        outcome.stdout
     );
-
-    let outcome = run(&bench, &["id", "erase", "--yes"]).await;
-    assert_eq!(outcome.ok().stdout, "Identity erased\n");
-    assert!(bench.identity.0.borrow().is_none());
+    assert_eq!(bench.writes(), writes);
+    assert!(bench.gadget.value.borrow().is_some());
 }
 
 // ---------------------------------------------------------------------------
@@ -1332,7 +1367,7 @@ async fn a_failing_stdout_fails_the_command_and_a_closed_pipe_is_quiet() {
                 );
                 let mut device = Device::new(client);
                 let command = parse(&["status"]).unwrap().command;
-                execute(&mut device, command, Default::default(), &mut ctx).await
+                execute(&mut device, command, &mut ctx).await
             } => result.unwrap_err(),
         };
         assert_eq!(error.is_broken_pipe(), quiet, "{kind:?}");

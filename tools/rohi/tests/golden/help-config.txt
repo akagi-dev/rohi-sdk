@@ -5,16 +5,17 @@ The device lists its configuration sections and describes their fields; values a
 Usage: rohi config [OPTIONS] <COMMAND>
 
 Commands:
-  list      List the configuration sections of the device
-  describe  Describe the fields of a section
-  get       Show the values of a section, or of one field
-  set       Set fields of a section: `FIELD=VALUE` pairs, stored atomically
-  unset     Unset optional fields of a section
-  reset     Remove the stored section and restore its defaults
-  export    Write the configuration of the device to a JSON file
-  diff      Show what applying a configuration file would change
-  apply     Apply a configuration file
-  help      Print this message or the help of the given subcommand(s)
+  list           List the configuration sections of the device
+  describe       Describe the fields of a section
+  get            Show the values of a section, or of one field
+  set            Set fields of a section: `FIELD=VALUE` pairs, stored atomically
+  unset          Unset optional fields of a section
+  reset          Remove the stored section and restore its defaults
+  factory-reset  Remove every stored section and restore all defaults
+  export         Write the configuration of the device to a JSON file
+  diff           Show what applying a configuration file would change
+  apply          Apply a configuration file
+  help           Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help

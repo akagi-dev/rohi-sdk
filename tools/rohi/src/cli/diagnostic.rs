@@ -298,9 +298,8 @@ fn device_diagnostic(error: &Error) -> Diagnostic {
         Error::Rejected(reason) => {
             let diagnostic = Diagnostic::new(format!("the device rejected the action: {reason}"));
             match reason.as_str() {
-                "already_provisioned" => {
-                    diagnostic.hint("run `rohi identity erase` first to provision a new identity")
-                }
+                "already_provisioned" => diagnostic
+                    .hint("run `rohi action run identity erase` first to provision a new identity"),
                 "not_configured" => {
                     diagnostic.hint("configure it first: `rohi config set <section> ...`")
                 }

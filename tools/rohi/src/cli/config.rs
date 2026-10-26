@@ -80,10 +80,98 @@ pub async fn run<T: ClientTransport>(
             let applied = device.config_reset(&section, dry_run).await?;
             report(ctx, &section, &applied, dry_run)
         }
+        ConfigAction::FactoryReset { yes, dry_run } => {
+            factory_reset(device, yes, dry_run, ctx).await
+        }
         ConfigAction::Export { file } => export(device, file, ctx).await,
         ConfigAction::Diff { file } => diff(device, &file, ctx).await,
         ConfigAction::Apply { file, dry_run, yes } => apply(device, &file, dry_run, yes, ctx).await,
     }
+}
+
+/// Resets every section the device lists. All resets are validated before the
+/// first one is made, and each section is reset atomically.
+async fn factory_reset<T: ClientTransport>(
+    device: &mut Device<T>,
+    yes: bool,
+    dry_run: bool,
+    ctx: &mut Ctx,
+) -> Result<(), CliError> {
+    let names: Vec<String> = device
+        .config_sections()
+        .await?
+        .into_iter()
+        .map(|section| section.name)
+        .collect();
+    if names.is_empty() {
+        return ctx.io.emit(
+            ctx.format,
+            &dto::Versioned::new(serde_json::json!({ "reset": [], "dry_run": dry_run })),
+            || "The device has no configuration sections\n".to_owned(),
+        );
+    }
+    for name in &names {
+        device.config_reset(name, true).await?;
+    }
+    if dry_run {
+        return ctx.io.emit(
+            ctx.format,
+            &dto::Versioned::new(serde_json::json!({
+                "reset": [],
+                "dry_run": true,
+                "valid": names,
+            })),
+            || {
+                format!(
+                    "Factory reset is valid; nothing was changed\n\nSections: {}\n",
+                    names.join(", ")
+                )
+            },
+        );
+    }
+
+    ctx.io
+        .confirm(
+            &format!(
+                "All configuration will be removed and the defaults restored:\n\n  {}\n\nContinue?",
+                names.join("\n  ")
+            ),
+            yes,
+        )
+        .await?;
+    let mut reset: Vec<String> = Vec::new();
+    let mut restart = false;
+    for (index, name) in names.iter().enumerate() {
+        match device.config_reset(name, false).await {
+            Ok(done) => {
+                restart |= done.restart_required;
+                reset.push(name.clone());
+            }
+            Err(source) => {
+                return Err(CliError::PartialApply(Box::new(PartialApply {
+                    applied: reset,
+                    failed: name.clone(),
+                    pending: names[index + 1..].to_vec(),
+                    source,
+                })));
+            }
+        }
+    }
+    ctx.io.emit(
+        ctx.format,
+        &dto::Versioned::new(serde_json::json!({
+            "reset": reset,
+            "dry_run": false,
+            "restart_required": restart,
+        })),
+        || {
+            let mut text = format!("Factory reset: {}\n", reset.join(", "));
+            if restart {
+                text.push_str("A restart is required for the changes to take effect\n");
+            }
+            text
+        },
+    )
 }
 
 async fn get<T: ClientTransport>(
