@@ -135,7 +135,7 @@ The intervals are `SyncSchedule` fields; `SyncSchedule::DEFAULT` holds the value
 
 The `time` [service](service.md) (`TimeStatusService` over `TimeService`, read-only, no secure link needed) reports its
 state and, when synchronized, `unix_time` (ms; absent while unsynchronized), `source`, `sync_age`, `uncertainty` and
-`consecutive_failures`. An unsynchronized device that has not failed yet is `starting`; after failures it is `running` and
+`consecutive_failures`, plus the time servers in use (`server1` to `server4`, only the set ones). An unsynchronized device that has not failed yet is `starting`; after failures it is `running` and
 `degraded` with the active issue of the last failure category (`network_unavailable`, `resolve_failed`, `timeout`,
 `invalid_response`, `rejected`, `implausible`, `source_failure`). A stale time is usable but `degraded`. The service is not
 essential for the device. See [Services and status](../getting-started/services.md):
@@ -153,6 +153,8 @@ source                   ntp
 sync_age                 90000 ms
 uncertainty              40 ms
 consecutive_failures     0
+server1                  pool.ntp.org
+server2                  time.cloudflare.com
 ```
 
 The servers are the `time` config section (`NtpServersConfig`, fields `server1` to `server4`: host names or IPv4
