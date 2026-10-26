@@ -25,7 +25,7 @@ use heapless::String;
 use minicbor::decode::{self, Decoder};
 use minicbor::encode::{self, Encoder, Write};
 use minicbor::{CborLen, Decode, Encode};
-use rohi_config::{ConfigSection, SectionError};
+use rohi_config::ConfigSection;
 
 use crate::{MIN_WIFI_PASSWORD_LEN, WifiError, WifiPassword, WifiSsid};
 
@@ -176,18 +176,11 @@ impl fmt::Debug for Hostname {
 /// [`AddressMode::Static`] and kept otherwise, so switching the mode back and
 /// forth does not lose them.
 ///
-/// Persistent ABI: this section was `WifiConfig` (version 1: `ssid` and
-/// `password`) and keeps its section ID, so a stored version 1 is read by
-/// [`migrate`](Self::migrate) and migrated with the
-/// defaults of the new fields. The CBOR array is pinned by a golden test;
-/// fields are only ever appended.
+/// Persistent ABI: the CBOR array is pinned by a golden test; fields are
+/// only ever appended.
 #[derive(Clone, PartialEq, Eq, Encode, Decode, CborLen, ConfigSection)]
 #[cbor(array)]
-#[config(
-    id = 0x3352_46ad_2024_8b26,
-    version = 2,
-    decode_versioned = "NetworkConfig::migrate"
-)]
+#[config(version = 1)]
 pub struct NetworkConfig {
     /// Network name.
     #[n(0)]
@@ -234,16 +227,6 @@ pub struct NetworkConfig {
     pub dhcp_timeout_ms: u32,
 }
 
-/// Version 1 of the section, when it was `WifiConfig`.
-#[derive(Decode)]
-#[cbor(array)]
-struct WifiConfigV1 {
-    #[n(0)]
-    ssid: WifiSsid,
-    #[n(1)]
-    password: Option<WifiPassword>,
-}
-
 impl NetworkConfig {
     /// A configuration for `ssid` and `password` with DHCP and the default
     /// timing.
@@ -263,22 +246,6 @@ impl NetworkConfig {
             scan_timeout_ms: DEFAULT_SCAN_TIMEOUT_MS,
             connect_timeout_ms: DEFAULT_CONNECT_TIMEOUT_MS,
             dhcp_timeout_ms: DEFAULT_DHCP_TIMEOUT_MS,
-        }
-    }
-
-    /// Reads a stored section written with `version`: the current one, or the
-    /// `WifiConfig` of version 1.
-    pub fn migrate(version: u16, payload: &[u8]) -> Result<Self, SectionError> {
-        match version {
-            1 => {
-                let legacy: WifiConfigV1 = rohi_config::decode_exact(payload)?;
-                Ok(Self::new(legacy.ssid, legacy.password))
-            }
-            2 => rohi_config::decode_exact(payload),
-            _ => Err(SectionError::UnsupportedSectionVersion {
-                id: Self::ID,
-                version,
-            }),
         }
     }
 
@@ -430,12 +397,10 @@ mod tests {
     }
 
     #[test]
-    fn section_id_is_the_one_of_the_wifi_config() {
-        // The type was renamed from `WifiConfig`: renaming without keeping the ID
-        // would lose the stored network.
-        assert_eq!(NetworkConfig::ID, SectionId::from_name("WifiConfig"));
-        assert_eq!(NetworkConfig::ID, SectionId(0x3352_46ad_2024_8b26));
-        assert_eq!(NetworkConfig::VERSION, 2);
+    fn section_id_is_derived_from_the_type_name() {
+        assert_eq!(NetworkConfig::ID, SectionId::from_name("NetworkConfig"));
+        assert_eq!(NetworkConfig::VERSION, 1);
+        assert_eq!(NetworkConfig::ID, SectionId(0x48f8_9649_eb74_bec7));
     }
 
     #[test]
@@ -472,39 +437,12 @@ mod tests {
     }
 
     #[test]
-    fn version_1_is_migrated_with_the_defaults() {
-        // `WifiConfig` of version 1: array(2) [ssid, password].
-        let open = [0x81, 0x42, 0x61, 0x62];
-        assert_eq!(
-            NetworkConfig::migrate(1, &open),
-            Ok(NetworkConfig::new(ssid("ab"), None))
-        );
-        let protected = [0x82, 0x42, 0x61, 0x62, 0x42, 0x70, 0x77];
-        assert_eq!(
-            NetworkConfig::migrate(1, &protected),
-            Ok(NetworkConfig::new(ssid("ab"), Some(password("pw"))))
-        );
-        // Through the trait, as the store reads it.
-        assert_eq!(
-            <NetworkConfig as ConfigSection>::decode_versioned(1, &open),
-            Ok(NetworkConfig::new(ssid("ab"), None))
-        );
-    }
-
-    #[test]
-    fn other_versions_and_trailing_bytes_are_rejected() {
-        let open = [0x81, 0x42, 0x61, 0x62];
-        assert!(matches!(
-            NetworkConfig::migrate(0, &open),
-            Err(SectionError::UnsupportedSectionVersion { version: 0, .. })
-        ));
-        assert!(matches!(
-            NetworkConfig::migrate(3, &open),
-            Err(SectionError::UnsupportedSectionVersion { version: 3, .. })
-        ));
-        assert!(NetworkConfig::migrate(1, &[0x81, 0x42, 0x61, 0x62, 0x00]).is_err());
-        // A version 1 payload is not a version 2 one.
-        assert!(NetworkConfig::migrate(2, &open).is_err());
+    fn other_layouts_and_trailing_bytes_are_rejected() {
+        // The two-element layout of the former `WifiConfig`.
+        assert!(rohi_config::decode_exact::<NetworkConfig>(&[0x81, 0x42, 0x61, 0x62]).is_err());
+        let mut bytes = encode(&NetworkConfig::new(ssid("ab"), None));
+        bytes.push(0x00);
+        assert!(rohi_config::decode_exact::<NetworkConfig>(&bytes).is_err());
     }
 
     #[test]
@@ -703,33 +641,5 @@ mod tests {
         assert_eq!(store.get::<NetworkConfig>().unwrap(), Some(config));
         store.remove::<NetworkConfig>().unwrap();
         assert_eq!(store.get::<NetworkConfig>().unwrap(), None);
-    }
-
-    #[test]
-    fn a_stored_wifi_config_is_read_as_a_network_config() {
-        #[derive(Encode, Decode, CborLen, ConfigSection)]
-        #[cbor(array)]
-        #[config(id = 0x3352_46ad_2024_8b26, version = 1)]
-        struct WifiConfig {
-            #[n(0)]
-            ssid: WifiSsid,
-            #[n(1)]
-            password: Option<WifiPassword>,
-        }
-
-        let mut store = ConfigStore::open(MemoryStorage::<16384>::new()).unwrap();
-        store
-            .set(&WifiConfig {
-                ssid: ssid("office"),
-                password: Some(password("hunter2hunter2")),
-            })
-            .unwrap();
-        assert_eq!(
-            store.get::<NetworkConfig>().unwrap(),
-            Some(NetworkConfig::new(
-                ssid("office"),
-                Some(password("hunter2hunter2"))
-            ))
-        );
     }
 }

@@ -27,7 +27,7 @@ What is covered:
 >
 > **Explicit representation.** Every production `ConfigSection` must declare its CBOR representation with
 > `#[cbor(array)]` or `#[cbor(map)]` instead of relying on the `minicbor` derive default, and pin the encoded bytes
-> with a golden test (see `WifiConfig` in `rohi-net`). The encoding is persistent ABI.
+> with a golden test (see `NetworkConfig` in `rohi-net`). The encoding is persistent ABI.
 >
 > **Strict decode.** `get` requires the decoder to consume the whole payload. A valid value followed by extra
 > bytes fails with `SectionError::TrailingBytes`, never with an unrelated error.
@@ -61,12 +61,12 @@ Golden values:
 | Struct name          | `SectionId`            |
 |----------------------|------------------------|
 | `Identity`           | `0x94d63573d312fe9b`   |
-| `WifiConfig`         | `0x335246ad20248b26`   |
+| `NetworkConfig`      | `0x48f89649eb74bec7`   |
 | `ConnectivityConfig` | `0x9c57015a40662d0c`   |
 | `LocationConfig`     | `0xce098b4a3e381f40`   |
 | `NtpServersConfig`   | `0x2feb7d230f6ed989`   |
 
-> **Renaming a persisted `ConfigSection` type is a storage ABI change.** `WifiConfig` renamed to `WirelessConfig`
+> **Renaming a persisted `ConfigSection` type is a storage ABI change.** `NetworkConfig` renamed to `WirelessConfig`
 > gets a different ID and the stored data is no longer found.
 
 A raw identifier (`r#Type`) hashes as `Type`. Types with type or const parameters are rejected unless they give an
@@ -76,7 +76,7 @@ The explicit `id` is the escape hatch for the cases where the ID must stay fixed
 
 ```rust,ignore
 #[derive(Encode, Decode, CborLen, ConfigSection)]
-#[config(id = 0x335246ad20248b26, version = 2)] // formerly named `WifiConfig`
+#[config(id = 0x48f89649eb74bec7, version = 1)] // formerly named `NetworkConfig`
 pub struct WirelessConfig { /* ... */ }
 ```
 
@@ -145,7 +145,7 @@ fails the test suite instead of silently orphaning stored data:
 
 - `rohi-config` tests pin the container (envelope, payload, record bytes, CRC) and the section ID hash values listed
   above.
-- Every production section pins its encoded bytes; `WifiConfig` in `rohi-net` and `Identity` in `rohi-identity` (`[bytes(32)]`) are the reference examples. The section ID golden values above include both.
+- Every production section pins its encoded bytes; `NetworkConfig` in `rohi-net` and `Identity` in `rohi-identity` (`[bytes(32)]`) are the reference examples. The section ID golden values above include both.
 - A new section must add its own golden test before it is persisted by a release, see
   [Add a ConfigSection](../guides/add-config-section.md).
 

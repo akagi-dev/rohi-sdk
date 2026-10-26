@@ -30,6 +30,20 @@ data plane has its own readiness (link up and DHCP complete) and its own typed e
 no `esp-radio`, `esp-hal` or `embassy-net` type appears in a public signature of `rohi-net`; vendor types and errors are
 converted inside `rohi-net-esp`. `rohi-net` has no ESP dependency and builds and tests on the host.
 
+## The `network` section and service
+
+The management plane sees the network as one config section and one service, both named `network` (`rohi config get network`,
+`rohi status network`). They replace the former `wifi` pair.
+
+| | |
+|---|---|
+| Config `network` | `ssid`, `password` (secret), `address_mode` (`dhcp` or `static`), `ip`, `prefix_len`, `gateway`, `dns`, `hostname` (DHCP option 12), `backoff_initial`, `backoff_max`, `link_refresh`, `scan_timeout`, `connect_timeout`, `dhcp_timeout` (ms). Static mode needs `ip`, `prefix_len` and `gateway` on the same link; timings default to the former constants. Any change reconnects. |
+| Status `network` | `ssid`, `rssi`, `ip`, `gateway`, `dns`, `channel`, `mac`, `reconnects`, `link_uptime`, `address_mode`, `heap_size`, `heap_free`, `heap_min_free` (with `heap-stats`), `tcp_in_use`, `tcp_capacity`, `udp_in_use`, `udp_capacity`. Fields that do not exist now are not reported. |
+| Actions | `scan`, `reconnect`, `disconnect` |
+
+The heap and socket numbers come from a `NetworkProbe` the firmware passes to `NetworkService`, so `rohi-net` stays free of
+platform types. Socket counts and buffer sizes stay compile-time (they size static memory), see [Resource limits](../reference/resource-limits.md).
+
 ## Wi-Fi control plane
 
 `WifiHandle` is a cheap, copyable handle to the `WifiManager`, the single owner of the Wi-Fi backend. It does **not**
@@ -37,7 +51,7 @@ carry DNS, sockets, TLS or HTTP.
 
 | Type | Role |
 |------|------|
-| `WifiConfig` | Persistent CBOR section `WifiConfig` (`ssid`, optional `password`); open network = `password: None` |
+| `NetworkConfig` | Persistent CBOR section: `ssid`, optional `password` (open network = `None`), DHCP or static IPv4, host name, reconnect and timeout timing |
 | `WifiState` / `WifiStatus` | `NotConfigured`, `Idle`, `Scanning`, `Connecting`, `Connected`, `Disconnected`, `Error` (+ last `WifiError`) |
 | `NetworkInfo` | SSID, RSSI, IPv4, gateway, DNS. Never contains credentials |
 | `WifiNetwork` / `WifiScanResults` | Bounded scan result (`heapless::Vec`), strongest first |
@@ -52,12 +66,12 @@ The persistent configuration is **state**, the rest are **transient actions** (s
 [State versus command](../concepts/runtime-ownership.md#state-versus-command)):
 
 ```text
-persistent WifiConfig ──► desired Wi-Fi config ──► WifiManager ──► actual Wi-Fi state
+persistent NetworkConfig ──► desired network config ──► WifiManager ──► actual Wi-Fi state
                            (latest value wins)      reconciles
 Scan · Reconnect · Disconnect ──► bounded command queue ──► WifiManager
 ```
 
-- `WifiHandle::set_desired_config(Option<WifiConfig>)` publishes the desired configuration. It is **synchronous**: no
+- `WifiHandle::set_desired_config(Option<NetworkConfig>)` publishes the desired configuration. It is **synchronous**: no
   `.await`, no queue, never `Busy`. The latest value wins; updates published before the manager ran are coalesced, so
   rapid updates A, B, C converge directly on C instead of causing a connect/disconnect cycle for A and B.
 - `scan()`, `reconnect()` and `disconnect()` are commands in a bounded queue (`WIFI_COMMAND_QUEUE_DEPTH`). They return
@@ -206,7 +220,7 @@ send secrets over `NetworkHandle` without a TLS layer on top.
 ## Out of scope
 
 SoftAP, TLS/HTTP(S), NTP, Connectivity Protocol uplink, multiple saved networks, static IP, WPA enterprise.
-`WifiConfig` authentication currently selects WPA/WPA2 personal; WPA3-only networks are not yet supported by the
+`NetworkConfig` authentication currently selects WPA/WPA2 personal; WPA3-only networks are not yet supported by the
 `esp-radio` station configuration used here.
 
 Hardware validation status of Wi-Fi, IP and coexistence is tracked in

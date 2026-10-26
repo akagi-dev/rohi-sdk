@@ -401,10 +401,10 @@ impl<'a, B: WifiBackend, D: DelayNs, M: RawMutex> WifiManager<'a, B, D, M> {
     }
 
     async fn attempt(&mut self) {
-        let Some(config) = self.config.clone() else {
+        if self.config.is_none() {
             self.phase = Phase::NoConfig;
             return;
-        };
+        }
         self.set_info(None);
         self.publish(WifiStatus::new(WifiState::Connecting));
 
@@ -412,7 +412,11 @@ impl<'a, B: WifiBackend, D: DelayNs, M: RawMutex> WifiManager<'a, B, D, M> {
         let seen = &mut self.seen;
         let mut scan_requested = false;
         let outcome = {
-            let mut connect = pin!(self.backend.connect(&config));
+            // Borrowed, not cloned: the connect future lives in the task storage.
+            let Some(config) = self.config.as_ref() else {
+                return;
+            };
+            let mut connect = pin!(self.backend.connect(config));
             loop {
                 if desired_differs(shared, seen, &self.config) {
                     break Err(Interrupt::Desired);

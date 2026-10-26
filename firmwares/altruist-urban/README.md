@@ -52,7 +52,7 @@ See [HAL](../../docs/sdk/hal.md), [Sensors](../../docs/sdk/sensors.md) and [Boar
 
 ## Wi-Fi
 
-The firmware starts a Wi-Fi station through [`rohi-net`](../../docs/sdk/net.md). If a `WifiConfig` configuration section is
+The firmware starts a Wi-Fi station through [`rohi-net`](../../docs/sdk/net.md). If a `NetworkConfig` (`network`) configuration section is
 stored it connects automatically (and reconnects with bounded backoff); otherwise the state stays `NotConfigured`.
 Wi-Fi can be provisioned over BLE with the `rohi` tool, see below.
 
@@ -65,7 +65,7 @@ reconnect / disconnect. Wi-Fi and BLE share one radio runtime (`rohi_net_esp::Es
 ```bash
 cargo run -p rohi -- scan
 cargo run -p rohi -- sensors
-cargo run -p rohi -- wifi configure --ssid <SSID>   # asks for the password
+cargo run -p rohi -- config set network ssid=<SSID> password=-   # asks for the password
 ```
 
 > **Security:** there is no BLE pairing and no authorization policy in this version, so anyone in radio range can read
