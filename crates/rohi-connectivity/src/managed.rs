@@ -28,7 +28,7 @@ use rohi_service::{
 use crate::config::{MAX_INTERVAL_S, MIN_INTERVAL_S};
 use crate::service::{ConnectivityShared, ConnectivityState};
 use crate::transport::TransportError;
-use crate::{ConnectivityConfig, Host};
+use crate::{ConnectivityConfig, ConnectivityOverrides, Host};
 
 /// Field ids of the `connectivity` config section.
 pub mod field {
@@ -45,9 +45,9 @@ pub mod field {
 }
 
 impl ManagedConfig for ConnectivityConfig {
-    const SECTION_ID: u64 = <Self as rohi_config::ConfigSection>::ID.0;
+    const SECTION_ID: u64 = <ConnectivityOverrides as rohi_config::ConfigSection>::ID.0;
     const NAME: &'static str = "connectivity";
-    const VERSION: u16 = <Self as rohi_config::ConfigSection>::VERSION;
+    const VERSION: u16 = <ConnectivityOverrides as rohi_config::ConfigSection>::VERSION;
     const FIELDS: &'static [ConfigField] = &[
         ConfigField::new(field::ENABLED, "enabled", ValueKind::Bool),
         ConfigField::new(field::NODE_ID, "node_id", ValueKind::U64),
@@ -58,9 +58,7 @@ impl ManagedConfig for ConnectivityConfig {
         ConfigField::new(field::PORT, "port", ValueKind::U64).bounds(Bounds::U64(1, 65535)),
     ];
 
-    fn defaults() -> Self {
-        Self::disabled()
-    }
+    type Overrides = ConnectivityOverrides;
 
     fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
         Ok(Some(match id {
@@ -96,13 +94,6 @@ impl ManagedConfig for ConnectivityConfig {
 
     fn field_is_set(&self, id: u32) -> Result<bool, FieldError> {
         Ok(self.read_field(id)?.is_some())
-    }
-
-    fn unset_field(&mut self, id: u32) -> Result<(), FieldError> {
-        match id {
-            field::ENABLED..=field::PORT => Err(FieldError::NotOptional),
-            _ => Err(FieldError::UnknownField),
-        }
     }
 
     fn validate(&self) -> Result<(), FieldError> {
@@ -330,6 +321,7 @@ impl<M: RawMutex> ManagedService for ConnectivityStatusService<'_, M> {
 mod tests {
     use embassy_futures::block_on;
     use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+    use rohi_config::ConfigOverrides;
     use rohi_location::NoLocation;
 
     use super::*;
@@ -340,7 +332,7 @@ mod tests {
 
     #[test]
     fn a_patch_on_the_defaults_needs_a_host() {
-        let mut config = ConnectivityConfig::defaults();
+        let mut config = ConnectivityConfig::default();
         assert_eq!(ManagedConfig::validate(&config), Err(FieldError::Invalid));
         config
             .set_field(field::HOST, text("ingress.example.org"))
@@ -362,7 +354,7 @@ mod tests {
 
     #[test]
     fn typed_conversions_reject_what_does_not_fit() {
-        let mut config = ConnectivityConfig::defaults();
+        let mut config = ConnectivityConfig::default();
         assert_eq!(
             config.set_field(field::PORT, Value::U64(70_000)),
             Err(FieldError::OutOfRange)
@@ -376,10 +368,32 @@ mod tests {
             Err(FieldError::WrongKind)
         );
         assert_eq!(
-            config.unset_field(field::HOST),
-            Err(FieldError::NotOptional)
+            config.set_field(99, Value::U64(1)),
+            Err(FieldError::UnknownField)
         );
-        assert_eq!(config.unset_field(99), Err(FieldError::UnknownField));
+    }
+
+    #[test]
+    fn every_field_can_be_overridden_and_cleared() {
+        let mut ids: std::vec::Vec<_> = ConnectivityConfig::FIELDS
+            .iter()
+            .map(|f| f.field.id)
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(ids, ConnectivityOverrides::FIELD_IDS);
+
+        let mut overrides = ConnectivityOverrides::default();
+        let mut config = overrides.effective();
+        config
+            .set_field(field::INTERVAL_S, Value::U64(120))
+            .unwrap();
+        overrides.capture(&config, field::INTERVAL_S);
+        assert_eq!(overrides.effective().interval_s, 120);
+        overrides.clear(field::INTERVAL_S);
+        assert_eq!(
+            overrides.effective().interval_s,
+            ConnectivityConfig::default().interval_s
+        );
     }
 
     #[test]
@@ -398,11 +412,12 @@ mod tests {
     }
 
     fn enabled() -> Option<ConnectivityConfig> {
-        let mut config = ConnectivityConfig::defaults();
-        config.host = Host::new("ingress.example.org").unwrap();
-        config.port = 443;
-        config.enabled = true;
-        Some(config)
+        Some(ConnectivityConfig {
+            host: Host::new("ingress.example.org").unwrap(),
+            port: 443,
+            enabled: true,
+            ..ConnectivityConfig::default()
+        })
     }
 
     fn disabled() -> Option<ConnectivityConfig> {

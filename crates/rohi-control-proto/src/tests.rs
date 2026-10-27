@@ -141,7 +141,7 @@ fn patch_request_round_trips_and_keeps_values_out_of_debug() {
     mutations
         .push(ConfigMutation {
             field_id: 3,
-            operation: Some(ConfigMutation_::Operation::Unset(Empty {})),
+            operation: Some(ConfigMutation_::Operation::Clear(Empty {})),
         })
         .ok()
         .unwrap();
@@ -170,10 +170,10 @@ fn patch_request_round_trips_and_keeps_values_out_of_debug() {
 }
 
 #[test]
-fn unset_is_distinct_from_an_empty_value() {
-    let unset = ConfigMutation {
+fn clear_is_distinct_from_an_empty_value() {
+    let clear = ConfigMutation {
         field_id: 1,
-        operation: Some(ConfigMutation_::Operation::Unset(Empty {})),
+        operation: Some(ConfigMutation_::Operation::Clear(Empty {})),
     };
     let empty = ConfigMutation {
         field_id: 1,
@@ -181,12 +181,12 @@ fn unset_is_distinct_from_an_empty_value() {
     };
     let mut a = [0u8; 16];
     let mut b = [0u8; 16];
-    let la = encode(&unset, &mut a).unwrap();
+    let la = encode(&clear, &mut a).unwrap();
     let lb = encode(&empty, &mut b).unwrap();
     assert_ne!(&a[..la], &b[..lb]);
     assert!(matches!(
         decode::<ConfigMutation>(&a[..la]).unwrap().operation,
-        Some(ConfigMutation_::Operation::Unset(_))
+        Some(ConfigMutation_::Operation::Clear(_))
     ));
 }
 
@@ -515,7 +515,8 @@ fn a_rejection_carries_a_reason() {
 // these on the stack of a microcontroller, so growth must fail here and not
 // as a stack overflow on the device. Raising a budget is a deliberate
 // decision: measure the control task again and update `resource-budget.md`.
-// Measured: 736, 1824, 48, 56, 536 and 1192 bytes, with a few percent of
+// Measured: 736, 1824, 48, 56, 536, 1192, 1504 (config read) and 728 (config
+// patch) bytes, with a few percent of
 // headroom. Before the compact layout: 760, 2616, 352, 88, 792 and 1272 (the
 // last one for a page of eight values).
 const REQUEST_BUDGET: usize = 768;
@@ -524,6 +525,8 @@ const FIELD_DESCRIPTOR_BUDGET: usize = 56;
 const FIELD_VALUE_BUDGET: usize = 64;
 const SERVICES_STATUS_BUDGET: usize = 576;
 const SERVICE_STATUS_BUDGET: usize = 1280;
+const CONFIG_SECTION_BUDGET: usize = 1536;
+const PATCH_BUDGET: usize = 768;
 
 #[test]
 fn generated_types_stay_within_their_memory_budgets() {
@@ -546,6 +549,16 @@ fn generated_types_stay_within_their_memory_budgets() {
             "GetServiceStatusResponse",
             size_of::<GetServiceStatusResponse>(),
             SERVICE_STATUS_BUDGET,
+        ),
+        (
+            "GetConfigSectionResponse",
+            size_of::<GetConfigSectionResponse>(),
+            CONFIG_SECTION_BUDGET,
+        ),
+        (
+            "PatchConfigSectionRequest",
+            size_of::<PatchConfigSectionRequest>(),
+            PATCH_BUDGET,
         ),
     ] {
         std::println!("size_of::<{name}>() = {size}");

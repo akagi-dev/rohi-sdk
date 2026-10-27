@@ -22,7 +22,7 @@ use rohi_service::{Bounds, ConfigField, FieldError, ManagedConfig, Unit, Value, 
 
 use super::config::{
     BACKOFF_INITIAL_RANGE_MS, BACKOFF_MAX_RANGE_MS, CONNECT_TIMEOUT_RANGE_MS,
-    LINK_REFRESH_RANGE_MS, SCAN_TIMEOUT_RANGE_MS, WifiConfig,
+    LINK_REFRESH_RANGE_MS, SCAN_TIMEOUT_RANGE_MS, WifiConfig, WifiOverrides,
 };
 use crate::{WifiPassword, WifiSsid};
 
@@ -30,7 +30,7 @@ use crate::{WifiPassword, WifiSsid};
 pub mod field {
     /// Network name; text only.
     pub const SSID: u32 = 1;
-    /// Write-only passphrase; unset for an open network.
+    /// Write-only passphrase; none (the default) for an open network.
     pub const PASSWORD: u32 = 2;
     /// Bound of a scan.
     pub const SCAN_TIMEOUT: u32 = 3;
@@ -58,9 +58,9 @@ fn number(value: &Value) -> Result<u32, FieldError> {
 }
 
 impl ManagedConfig for WifiConfig {
-    const SECTION_ID: u64 = <Self as ConfigSection>::ID.0;
+    const SECTION_ID: u64 = <WifiOverrides as ConfigSection>::ID.0;
     const NAME: &'static str = "wifi";
-    const VERSION: u16 = <Self as ConfigSection>::VERSION;
+    const VERSION: u16 = <WifiOverrides as ConfigSection>::VERSION;
     const FIELDS: &'static [ConfigField] = &[
         ConfigField::new(field::SSID, "ssid", ValueKind::String),
         ConfigField::new(field::PASSWORD, "password", ValueKind::String)
@@ -81,9 +81,7 @@ impl ManagedConfig for WifiConfig {
         timing(field::LINK_REFRESH, "link_refresh", LINK_REFRESH_RANGE_MS),
     ];
 
-    fn defaults() -> Self {
-        Self::new(WifiSsid::empty(), None)
-    }
+    type Overrides = WifiOverrides;
 
     /// An SSID or password that is not UTF-8 cannot be expressed as text and
     /// is reported as invalid; it is not shown, but it keeps working.
@@ -140,20 +138,6 @@ impl ManagedConfig for WifiConfig {
         }
     }
 
-    fn unset_field(&mut self, id: u32) -> Result<(), FieldError> {
-        match id {
-            field::PASSWORD => self.password = None,
-            field::SSID
-            | field::SCAN_TIMEOUT
-            | field::CONNECT_TIMEOUT
-            | field::BACKOFF_INITIAL
-            | field::BACKOFF_MAX
-            | field::LINK_REFRESH => return Err(FieldError::NotOptional),
-            _ => return Err(FieldError::UnknownField),
-        }
-        Ok(())
-    }
-
     fn validate(&self) -> Result<(), FieldError> {
         WifiConfig::validate(self).map_err(|_| FieldError::Invalid)
     }
@@ -163,6 +147,7 @@ impl ManagedConfig for WifiConfig {
 mod tests {
     extern crate std;
 
+    use rohi_config::ConfigOverrides;
     use rohi_service::MAX_CONFIG_FIELDS;
 
     use super::*;
@@ -174,6 +159,13 @@ mod tests {
     #[test]
     fn the_reported_version_is_the_stored_one() {
         assert_eq!(<WifiConfig as ManagedConfig>::VERSION, 1);
+    }
+
+    #[test]
+    fn every_field_can_be_overridden() {
+        let mut ids: std::vec::Vec<_> = WifiConfig::FIELDS.iter().map(|f| f.field.id).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, WifiOverrides::FIELD_IDS);
     }
 
     #[test]
@@ -190,7 +182,7 @@ mod tests {
 
     #[test]
     fn fields_round_trip_and_the_password_is_optional() {
-        let mut config = WifiConfig::defaults();
+        let mut config = WifiConfig::default();
         assert!(ManagedConfig::validate(&config).is_err());
         config.set_field(field::SSID, text("office")).unwrap();
         assert_eq!(ManagedConfig::validate(&config), Ok(()));
@@ -204,17 +196,25 @@ mod tests {
             Ok(Some(text("hunter2hunter2")))
         );
         assert_eq!(config.read_field(field::SSID), Ok(Some(text("office"))));
-        config.unset_field(field::PASSWORD).unwrap();
-        assert_eq!(config.password, None);
-        assert_eq!(
-            config.unset_field(field::SSID),
-            Err(FieldError::NotOptional)
-        );
+    }
+
+    #[test]
+    fn clearing_the_password_override_restores_the_open_network_default() {
+        let mut overrides = WifiOverrides::default();
+        let mut config = overrides.effective();
+        config
+            .set_field(field::PASSWORD, text("hunter2hunter2"))
+            .unwrap();
+        assert!(overrides.capture(&config, field::PASSWORD));
+        assert_eq!(overrides.effective().password, config.password);
+        assert!(overrides.clear(field::PASSWORD));
+        assert_eq!(overrides.effective().password, None);
+        assert!(overrides.is_empty());
     }
 
     #[test]
     fn the_defaults_are_the_former_constants() {
-        let config = WifiConfig::defaults();
+        let config = WifiConfig::default();
         let read = |id| config.read_field(id).unwrap();
         assert_eq!(read(field::SCAN_TIMEOUT), Some(Value::U64(20_000)));
         assert_eq!(read(field::CONNECT_TIMEOUT), Some(Value::U64(30_000)));
@@ -225,7 +225,7 @@ mod tests {
 
     #[test]
     fn bad_values_are_refused() {
-        let mut config = WifiConfig::defaults();
+        let mut config = WifiConfig::default();
         assert_eq!(
             config.set_field(field::SSID, Value::U64(1)),
             Err(FieldError::WrongKind)
@@ -246,7 +246,7 @@ mod tests {
 
     #[test]
     fn the_timing_belongs_to_the_whole_section() {
-        let mut config = WifiConfig::defaults();
+        let mut config = WifiConfig::default();
         config.set_field(field::SSID, text("office")).unwrap();
         config
             .set_field(field::BACKOFF_MAX, Value::U64(500))
@@ -257,15 +257,11 @@ mod tests {
             .set_field(field::BACKOFF_INITIAL, Value::U64(200))
             .unwrap();
         assert_eq!(ManagedConfig::validate(&config), Ok(()));
-        assert_eq!(
-            config.unset_field(field::BACKOFF_MAX),
-            Err(FieldError::NotOptional)
-        );
     }
 
     #[test]
     fn the_complete_section_is_validated() {
-        let mut config = WifiConfig::defaults();
+        let mut config = WifiConfig::default();
         config.set_field(field::SSID, text("office")).unwrap();
         config.set_field(field::PASSWORD, text("short")).unwrap();
         assert_eq!(ManagedConfig::validate(&config), Err(FieldError::Invalid));

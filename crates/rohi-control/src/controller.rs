@@ -158,12 +158,18 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
                                 break;
                             }
                         }
+                        let mut overridden = Vec::new();
+                        for id in &values.overridden {
+                            if overridden.push(*id).is_err() {
+                                break;
+                            }
+                        }
                         Reply::GetConfigSection(pb::GetConfigSectionResponse {
                             section_id: values.section.id,
                             version: values.section.version,
                             revision: values.section.revision,
-                            entries,
-                            configured: values.configured,
+                            effective: entries,
+                            overridden,
                         })
                     }
                 }

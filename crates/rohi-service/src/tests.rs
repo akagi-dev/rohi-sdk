@@ -15,9 +15,11 @@
 //  limitations under the License.
 //
 use core::cell::RefCell;
+use std::string::String;
 
 use embassy_futures::block_on;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use rohi_config::ConfigOverrides;
 
 use crate::*;
 
@@ -25,8 +27,34 @@ use crate::*;
 struct Demo {
     enabled: bool,
     interval_s: u64,
-    host: heapless::String<16>,
-    token: Option<heapless::String<16>>,
+    host: String,
+    token: Option<String>,
+}
+
+std::thread_local! {
+    /// The default interval of the "firmware": a test changes it to model a
+    /// firmware update between two reads.
+    static DEFAULT_INTERVAL_S: core::cell::Cell<u64> = const { core::cell::Cell::new(60) };
+}
+
+impl Default for Demo {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval_s: DEFAULT_INTERVAL_S.get(),
+            host: String::new(),
+            token: None,
+        }
+    }
+}
+
+rohi_config::config_overrides! {
+    struct DemoOverrides for Demo, version 3 {
+        1 => enabled: bool,
+        2 => interval_s: u64,
+        3 => host: String,
+        4 => token: Option<String>,
+    }
 }
 
 const DEMO_FIELDS: &[ConfigField] = &[
@@ -54,15 +82,7 @@ impl ManagedConfig for Demo {
     const VERSION: u16 = 3;
     const FIELDS: &'static [ConfigField] = DEMO_FIELDS;
     const ENUMS: &'static [EnumDescriptor] = MODES;
-
-    fn defaults() -> Self {
-        Self {
-            enabled: false,
-            interval_s: 60,
-            host: heapless::String::new(),
-            token: None,
-        }
-    }
+    type Overrides = DemoOverrides;
 
     fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
         Ok(match id {
@@ -79,14 +99,8 @@ impl ManagedConfig for Demo {
         match (id, value) {
             (1, Value::Bool(v)) => self.enabled = v,
             (2, Value::U64(v)) => self.interval_s = v,
-            (3, Value::String(v)) => {
-                self.host =
-                    heapless::String::try_from(v.as_str()).map_err(|_| FieldError::Invalid)?
-            }
-            (4, Value::String(v)) => {
-                self.token =
-                    Some(heapless::String::try_from(v.as_str()).map_err(|_| FieldError::Invalid)?)
-            }
+            (3, Value::String(v)) => self.host = v.as_str().into(),
+            (4, Value::String(v)) => self.token = Some(v.as_str().into()),
             _ => return Err(FieldError::UnknownField),
         }
         Ok(())
@@ -96,16 +110,6 @@ impl ManagedConfig for Demo {
         match id {
             4 => Ok(self.token.is_some()),
             _ => Ok(self.read_field(id)?.is_some()),
-        }
-    }
-
-    fn unset_field(&mut self, id: u32) -> Result<(), FieldError> {
-        match id {
-            4 => {
-                self.token = None;
-                Ok(())
-            }
-            _ => Err(FieldError::NotOptional),
         }
     }
 
@@ -119,13 +123,20 @@ impl ManagedConfig for Demo {
 
 #[derive(Default)]
 struct MemoryStore {
-    value: RefCell<Option<Demo>>,
+    value: RefCell<Option<DemoOverrides>>,
     writes: RefCell<u32>,
     unavailable: RefCell<bool>,
 }
 
-impl SectionStore<Demo> for &MemoryStore {
-    async fn load(&self) -> Result<Option<Demo>, StoreError> {
+impl MemoryStore {
+    /// The effective configuration behind the persisted overrides.
+    fn effective(&self) -> Demo {
+        self.value.borrow().clone().unwrap_or_default().effective()
+    }
+}
+
+impl SectionStore<DemoOverrides> for &MemoryStore {
+    async fn load(&self) -> Result<Option<DemoOverrides>, StoreError> {
         // Lets another task run between a load and the following store.
         embassy_futures::yield_now().await;
         if *self.unavailable.borrow() {
@@ -134,8 +145,8 @@ impl SectionStore<Demo> for &MemoryStore {
         Ok(self.value.borrow().clone())
     }
 
-    async fn store(&self, config: &Demo) -> Result<(), StoreError> {
-        *self.value.borrow_mut() = Some(config.clone());
+    async fn store(&self, overrides: &DemoOverrides) -> Result<(), StoreError> {
+        *self.value.borrow_mut() = Some(overrides.clone());
         *self.writes.borrow_mut() += 1;
         Ok(())
     }
@@ -154,10 +165,10 @@ fn set(id: u32, value: Value) -> Mutation {
     }
 }
 
-fn unset(id: u32) -> Mutation {
+fn clear(id: u32) -> Mutation {
     Mutation {
         field_id: id,
-        op: MutationOp::Unset,
+        op: MutationOp::Clear,
     }
 }
 
@@ -185,21 +196,44 @@ fn patch_applies_all_mutations_and_bumps_the_revision() {
     .unwrap();
     assert_eq!(patched.revision, 1);
     assert!(!patched.restart_required);
-    let stored = store.value.borrow().clone().unwrap();
+    let stored = store.effective();
     assert!(stored.enabled);
     assert_eq!(stored.host.as_str(), "a.io");
     assert_eq!(stored.interval_s, 30);
 }
 
 #[test]
-fn a_patch_keeps_untouched_fields() {
+fn a_patch_keeps_untouched_overrides() {
     let store = MemoryStore::default();
     let section = section(&store);
     block_on(section.patch(&[set(3, text("a.io")), set(2, Value::U64(20))], None, false)).unwrap();
     block_on(section.patch(&[set(3, text("b.io"))], None, false)).unwrap();
-    let stored = store.value.borrow().clone().unwrap();
+    let stored = store.effective();
     assert_eq!(stored.host.as_str(), "b.io");
     assert_eq!(stored.interval_s, 20);
+}
+
+#[test]
+fn only_the_fields_that_were_set_are_persisted() {
+    let store = MemoryStore::default();
+    let section = section(&store);
+    block_on(section.patch(&[set(3, text("a.io"))], None, false)).unwrap();
+    let overrides = store.value.borrow().clone().unwrap();
+    assert_eq!(overrides.host, rohi_config::Override::Value("a.io".into()));
+    assert_eq!(overrides.interval_s, rohi_config::Override::Default);
+    assert_eq!(overrides.enabled, rohi_config::Override::Default);
+}
+
+#[test]
+fn a_value_equal_to_the_default_is_still_an_override() {
+    let store = MemoryStore::default();
+    let section = section(&store);
+    block_on(section.patch(&[set(2, Value::U64(60))], None, false)).unwrap();
+    assert_eq!(
+        store.value.borrow().clone().unwrap().interval_s,
+        rohi_config::Override::Value(60)
+    );
+    assert_eq!(block_on(section.get()).unwrap().overridden.as_slice(), [2]);
 }
 
 #[test]
@@ -220,7 +254,7 @@ fn an_invalid_mutation_changes_nothing() {
 }
 
 #[test]
-fn the_complete_result_is_validated() {
+fn the_complete_effective_result_is_validated() {
     let store = MemoryStore::default();
     let section = section(&store);
     // `enabled` needs a host: a cross-field rule of the typed section.
@@ -229,6 +263,19 @@ fn the_complete_result_is_validated() {
         Err(ConfigError::Field(FieldError::Invalid))
     );
     assert!(store.value.borrow().is_none());
+    // The host can come from the same patch.
+    block_on(section.patch(
+        &[set(1, Value::Bool(true)), set(3, text("a.io"))],
+        None,
+        false,
+    ))
+    .unwrap();
+    // Clearing the host leaves `enabled` without one.
+    assert_eq!(
+        block_on(section.patch(&[clear(3)], None, false)),
+        Err(ConfigError::Field(FieldError::Invalid))
+    );
+    assert_eq!(store.effective().host.as_str(), "a.io");
 }
 
 #[test]
@@ -248,22 +295,55 @@ fn field_errors_are_distinguished() {
         patch(set(5, Value::Enum(0))),
         Err(FieldError::ReadOnly.into())
     );
-    assert_eq!(patch(unset(3)), Err(FieldError::NotOptional.into()));
-    assert_eq!(patch(unset(99)), Err(FieldError::UnknownField.into()));
+    assert_eq!(patch(clear(5)), Err(FieldError::ReadOnly.into()));
+    assert_eq!(patch(clear(99)), Err(FieldError::UnknownField.into()));
     assert!(store.value.borrow().is_none());
 }
 
 #[test]
-fn unset_is_distinct_from_an_empty_value() {
+fn clearing_an_override_restores_the_default_of_any_field() {
     let store = MemoryStore::default();
     let section = section(&store);
-    block_on(section.patch(&[set(3, text("a.io")), set(4, text(""))], None, false)).unwrap();
-    assert_eq!(
-        store.value.borrow().clone().unwrap().token.as_deref(),
-        Some("")
-    );
-    block_on(section.patch(&[unset(4)], None, false)).unwrap();
-    assert_eq!(store.value.borrow().clone().unwrap().token, None);
+    block_on(section.patch(
+        &[
+            set(3, text("a.io")),
+            set(2, Value::U64(20)),
+            set(4, text("")),
+        ],
+        None,
+        false,
+    ))
+    .unwrap();
+    assert_eq!(store.effective().interval_s, 20);
+    // A required field can be cleared too: the default applies again.
+    block_on(section.patch(&[clear(2)], None, false)).unwrap();
+    assert_eq!(store.effective().interval_s, 60);
+    assert_eq!(store.effective().host.as_str(), "a.io");
+    // An empty value is an override, clearing is not the same.
+    assert_eq!(store.effective().token.as_deref(), Some(""));
+    block_on(section.patch(&[clear(4)], None, false)).unwrap();
+    assert_eq!(store.effective().token, None);
+}
+
+#[test]
+fn clearing_the_last_override_removes_the_persisted_section() {
+    let store = MemoryStore::default();
+    let section = section(&store);
+    block_on(section.patch(&[set(3, text("a.io"))], None, false)).unwrap();
+    block_on(section.patch(&[clear(3)], None, false)).unwrap();
+    assert!(store.value.borrow().is_none());
+    assert_eq!(store.effective(), Demo::default());
+    assert!(block_on(section.get()).unwrap().overridden.is_empty());
+}
+
+#[test]
+fn clearing_a_field_that_is_not_overridden_is_a_no_op() {
+    let store = MemoryStore::default();
+    let section = section(&store);
+    block_on(section.patch(&[clear(2)], None, false)).unwrap();
+    assert!(store.value.borrow().is_none());
+    // Nothing was persisted, so there was nothing to write either.
+    assert_eq!(*store.writes.borrow(), 0);
 }
 
 #[test]
@@ -291,7 +371,7 @@ fn a_stale_revision_is_a_conflict() {
         block_on(section.patch(&[set(3, text("b.io"))], Some(0), false)),
         Err(ConfigError::Conflict)
     );
-    assert_eq!(store.value.borrow().clone().unwrap().host.as_str(), "a.io");
+    assert_eq!(store.effective().host.as_str(), "a.io");
     block_on(section.patch(&[set(3, text("b.io"))], Some(1), false)).unwrap();
 }
 
@@ -311,53 +391,92 @@ fn concurrent_patches_are_serialized() {
         section.patch(&[set(4, text("t0ken"))], None, false),
     ));
     assert!(a.is_ok() && b.is_ok());
-    let stored = store.value.borrow().clone().unwrap();
+    let stored = store.effective();
     assert_eq!(stored.host.as_str(), "b.io");
     assert_eq!(stored.token.as_deref(), Some("t0ken"));
 }
 
 #[test]
-fn get_redacts_secrets_and_omits_unset_fields() {
+fn get_reports_the_effective_values_and_redacts_secrets() {
     let store = MemoryStore::default();
     let section = section(&store);
-    let empty = block_on(section.get()).unwrap();
-    assert!(!empty.configured);
-    assert!(empty.entries.is_empty());
-
-    block_on(section.patch(&[set(3, text("a.io")), set(4, text("s3cret"))], None, false)).unwrap();
-    let values = block_on(section.get()).unwrap();
-    assert!(values.configured);
-    let state = |id| {
+    // Nothing is overridden: the defaults are the effective values.
+    let defaults = block_on(section.get()).unwrap();
+    assert!(defaults.overridden.is_empty());
+    let value = |values: &SectionValues, id| {
         values
             .entries
             .iter()
             .find(|entry| entry.field_id == id)
             .map(|entry| entry.state.clone())
     };
-    assert_eq!(state(3), Some(EntryState::Value(text("a.io"))));
-    assert_eq!(state(4), Some(EntryState::Redacted));
+    assert_eq!(
+        value(&defaults, 1),
+        Some(EntryState::Value(Value::Bool(false)))
+    );
+    assert_eq!(value(&defaults, 2), Some(EntryState::Value(Value::U64(60))));
+    assert_eq!(value(&defaults, 3), Some(EntryState::Value(text(""))));
+    // An optional field without a value is absent.
+    assert_eq!(value(&defaults, 4), None);
+
+    block_on(section.patch(&[set(3, text("a.io")), set(4, text("s3cret"))], None, false)).unwrap();
+    let values = block_on(section.get()).unwrap();
+    assert_eq!(values.overridden.as_slice(), [3, 4]);
+    assert_eq!(value(&values, 2), Some(EntryState::Value(Value::U64(60))));
+    assert_eq!(value(&values, 3), Some(EntryState::Value(text("a.io"))));
+    assert_eq!(value(&values, 4), Some(EntryState::Redacted));
     assert!(!std::format!("{values:?}").contains("s3cret"));
 
-    block_on(section.patch(&[unset(4)], None, false)).unwrap();
-    assert_eq!(
-        block_on(section.get())
-            .unwrap()
-            .entries
-            .iter()
-            .find(|e| e.field_id == 4),
-        None
-    );
+    block_on(section.patch(&[clear(4)], None, false)).unwrap();
+    let values = block_on(section.get()).unwrap();
+    assert_eq!(value(&values, 4), None);
+    assert_eq!(values.overridden.as_slice(), [3]);
+}
+
+fn interval(section: &ManagedSection<Demo, &MemoryStore, NoopRawMutex>) -> Option<EntryState> {
+    block_on(section.get())
+        .unwrap()
+        .entries
+        .iter()
+        .find(|entry| entry.field_id == 2)
+        .map(|entry| entry.state.clone())
 }
 
 #[test]
-fn reset_removes_the_persisted_section() {
+fn a_changed_firmware_default_reaches_the_fields_without_an_override() {
     let store = MemoryStore::default();
     let section = section(&store);
     block_on(section.patch(&[set(3, text("a.io"))], None, false)).unwrap();
+    assert_eq!(interval(&section), Some(EntryState::Value(Value::U64(60))));
+    // A firmware update changes the default; the persisted data stays.
+    DEFAULT_INTERVAL_S.set(90);
+    assert_eq!(interval(&section), Some(EntryState::Value(Value::U64(90))));
+    assert_eq!(store.effective().host.as_str(), "a.io");
+}
+
+#[test]
+fn an_explicit_override_survives_a_changed_default() {
+    let store = MemoryStore::default();
+    let section = section(&store);
+    block_on(section.patch(&[set(2, Value::U64(30))], None, false)).unwrap();
+    DEFAULT_INTERVAL_S.set(90);
+    assert_eq!(interval(&section), Some(EntryState::Value(Value::U64(30))));
+    // Clearing the override falls back to the current default.
+    block_on(section.patch(&[clear(2)], None, false)).unwrap();
+    assert_eq!(interval(&section), Some(EntryState::Value(Value::U64(90))));
+}
+
+#[test]
+fn reset_clears_every_override() {
+    let store = MemoryStore::default();
+    let section = section(&store);
+    block_on(section.patch(&[set(3, text("a.io")), set(2, Value::U64(20))], None, false)).unwrap();
     let patched = block_on(section.reset(None, false)).unwrap();
     assert_eq!(patched.revision, 2);
     assert!(store.value.borrow().is_none());
-    assert!(!block_on(section.get()).unwrap().configured);
+    let values = block_on(section.get()).unwrap();
+    assert!(values.overridden.is_empty());
+    assert_eq!(store.effective(), Demo::default());
 }
 
 #[test]
@@ -386,10 +505,55 @@ fn the_schema_describes_the_fields() {
 #[test]
 fn a_tuple_of_sections_is_a_registry() {
     let a = MemoryStore::default();
-    let b = MemoryStore::default();
 
-    #[derive(Clone)]
+    #[derive(Clone, Debug, Default)]
     struct Other(Demo);
+    #[derive(Clone, Default)]
+    struct OtherOverrides(DemoOverrides);
+    impl rohi_config::ConfigSection for OtherOverrides {
+        const ID: rohi_config::SectionId = rohi_config::SectionId(2);
+        const VERSION: u16 = 1;
+    }
+    impl minicbor::Encode<()> for OtherOverrides {
+        fn encode<W: minicbor::encode::Write>(
+            &self,
+            e: &mut minicbor::Encoder<W>,
+            ctx: &mut (),
+        ) -> Result<(), minicbor::encode::Error<W::Error>> {
+            self.0.encode(e, ctx)
+        }
+    }
+    impl minicbor::CborLen<()> for OtherOverrides {
+        fn cbor_len(&self, ctx: &mut ()) -> usize {
+            self.0.cbor_len(ctx)
+        }
+    }
+    impl<'b> minicbor::Decode<'b, ()> for OtherOverrides {
+        fn decode(
+            d: &mut minicbor::Decoder<'b>,
+            ctx: &mut (),
+        ) -> Result<Self, minicbor::decode::Error> {
+            minicbor::Decode::decode(d, ctx).map(Self)
+        }
+    }
+    impl ConfigOverrides<Other> for OtherOverrides {
+        const FIELD_IDS: &'static [u32] = DemoOverrides::FIELD_IDS;
+        fn effective(&self) -> Other {
+            Other(self.0.effective())
+        }
+        fn is_overridden(&self, id: u32) -> Option<bool> {
+            self.0.is_overridden(id)
+        }
+        fn capture(&mut self, config: &Other, id: u32) -> bool {
+            self.0.capture(&config.0, id)
+        }
+        fn clear(&mut self, id: u32) -> bool {
+            self.0.clear(id)
+        }
+        fn is_empty(&self) -> bool {
+            self.0.is_empty()
+        }
+    }
     // A second section type with another name.
     impl ManagedConfig for Other {
         const SECTION_ID: u64 = 2;
@@ -397,9 +561,7 @@ fn a_tuple_of_sections_is_a_registry() {
         const VERSION: u16 = 1;
         const FIELDS: &'static [ConfigField] = DEMO_FIELDS;
         const ENUMS: &'static [EnumDescriptor] = MODES;
-        fn defaults() -> Self {
-            Self(Demo::defaults())
-        }
+        type Overrides = OtherOverrides;
         fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
             self.0.read_field(id)
         }
@@ -409,21 +571,18 @@ fn a_tuple_of_sections_is_a_registry() {
         fn set_field(&mut self, id: u32, value: Value) -> Result<(), FieldError> {
             self.0.set_field(id, value)
         }
-        fn unset_field(&mut self, id: u32) -> Result<(), FieldError> {
-            self.0.unset_field(id)
-        }
         fn validate(&self) -> Result<(), FieldError> {
             self.0.validate()
         }
     }
     #[derive(Default)]
-    struct OtherStore(RefCell<Option<Demo>>);
-    impl SectionStore<Other> for &OtherStore {
-        async fn load(&self) -> Result<Option<Other>, StoreError> {
-            Ok(self.0.borrow().clone().map(Other))
+    struct OtherStore(RefCell<Option<DemoOverrides>>);
+    impl SectionStore<OtherOverrides> for &OtherStore {
+        async fn load(&self) -> Result<Option<OtherOverrides>, StoreError> {
+            Ok(self.0.borrow().clone().map(OtherOverrides))
         }
-        async fn store(&self, config: &Other) -> Result<(), StoreError> {
-            *self.0.borrow_mut() = Some(config.0.clone());
+        async fn store(&self, overrides: &OtherOverrides) -> Result<(), StoreError> {
+            *self.0.borrow_mut() = Some(overrides.0.clone());
             Ok(())
         }
         async fn remove(&self) -> Result<(), StoreError> {
@@ -440,7 +599,6 @@ fn a_tuple_of_sections_is_a_registry() {
         section(&a),
         ManagedSection::<Other, _, NoopRawMutex>::new(&other_store),
     );
-    let _ = &b;
     assert_eq!(registry.section_count(), 2);
     assert_eq!(registry.section_info(0).unwrap().name, "demo");
     assert_eq!(registry.section_info(1).unwrap().name, "other");
@@ -1083,9 +1241,26 @@ fn issue_age_follows_the_set_of_active_issues_only() {
     assert_eq!(age(12_000), Some(0));
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Vault {
-    token: Option<heapless::String<16>>,
+    label: String,
+    token: Option<String>,
+}
+
+impl Default for Vault {
+    fn default() -> Self {
+        Self {
+            label: "main".into(),
+            token: None,
+        }
+    }
+}
+
+rohi_config::config_overrides! {
+    struct VaultOverrides for Vault, version 1 {
+        1 => label: String,
+        2 => token: Option<String>,
+    }
 }
 
 impl ManagedConfig for Vault {
@@ -1093,19 +1268,16 @@ impl ManagedConfig for Vault {
     const NAME: &'static str = "vault";
     const VERSION: u16 = 1;
     const FIELDS: &'static [ConfigField] = &[
-        ConfigField::new(1, "label", ValueKind::String).optional(),
+        ConfigField::new(1, "label", ValueKind::String),
         ConfigField::new(2, "token", ValueKind::String)
             .secret()
             .optional(),
     ];
-
-    fn defaults() -> Self {
-        Self { token: None }
-    }
+    type Overrides = VaultOverrides;
 
     fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
         match id {
-            1 => Ok(Some(Value::text("main").unwrap())),
+            1 => Ok(Value::text(&self.label)),
             2 => panic!("a secret must never be read"),
             _ => Err(FieldError::UnknownField),
         }
@@ -1119,12 +1291,14 @@ impl ManagedConfig for Vault {
         }
     }
 
-    fn set_field(&mut self, _: u32, _: Value) -> Result<(), FieldError> {
-        Err(FieldError::ReadOnly)
-    }
-
-    fn unset_field(&mut self, _: u32) -> Result<(), FieldError> {
-        Err(FieldError::NotOptional)
+    fn set_field(&mut self, id: u32, value: Value) -> Result<(), FieldError> {
+        let text = value.as_str().ok_or(FieldError::WrongKind)?;
+        match id {
+            1 => self.label = text.into(),
+            2 => self.token = Some(text.into()),
+            _ => return Err(FieldError::UnknownField),
+        }
+        Ok(())
     }
 
     fn validate(&self) -> Result<(), FieldError> {
@@ -1133,14 +1307,14 @@ impl ManagedConfig for Vault {
 }
 
 #[derive(Default)]
-struct VaultStore(RefCell<Option<Vault>>);
+struct VaultStore(RefCell<Option<VaultOverrides>>);
 
-impl SectionStore<Vault> for &VaultStore {
-    async fn load(&self) -> Result<Option<Vault>, StoreError> {
+impl SectionStore<VaultOverrides> for &VaultStore {
+    async fn load(&self) -> Result<Option<VaultOverrides>, StoreError> {
         Ok(self.0.borrow().clone())
     }
-    async fn store(&self, config: &Vault) -> Result<(), StoreError> {
-        *self.0.borrow_mut() = Some(config.clone());
+    async fn store(&self, overrides: &VaultOverrides) -> Result<(), StoreError> {
+        *self.0.borrow_mut() = Some(overrides.clone());
         Ok(())
     }
     async fn remove(&self) -> Result<(), StoreError> {
@@ -1154,17 +1328,31 @@ fn reading_a_section_never_reads_a_secret() {
     let store = VaultStore::default();
     let section = ManagedSection::<Vault, _, NoopRawMutex>::new(&store);
 
-    // A configured secret is reported as configured.
-    *store.0.borrow_mut() = Some(Vault {
-        token: Some(heapless::String::try_from("hunter2").unwrap()),
+    // A secret that is set is reported as redacted.
+    *store.0.borrow_mut() = Some(VaultOverrides {
+        token: rohi_config::Override::Value(Some("hunter2".into())),
+        ..VaultOverrides::default()
     });
     let values = block_on(section.get()).unwrap();
     assert_eq!(values.entries.len(), 2);
     assert_eq!(values.entries[1].state, EntryState::Redacted);
+    assert_eq!(values.overridden.as_slice(), [2]);
 
-    // An unset optional secret is absent.
-    *store.0.borrow_mut() = Some(Vault { token: None });
+    // An explicit `None` is not set: the secret is absent.
+    *store.0.borrow_mut() = Some(VaultOverrides {
+        token: rohi_config::Override::Value(None),
+        ..VaultOverrides::default()
+    });
     let values = block_on(section.get()).unwrap();
     assert_eq!(values.entries.len(), 1);
     assert_eq!(values.entries[0].field_id, 1);
+}
+
+#[test]
+fn a_patch_never_reads_a_secret_either() {
+    let store = VaultStore::default();
+    let section = ManagedSection::<Vault, _, NoopRawMutex>::new(&store);
+    block_on(section.patch(&[set(2, text("hunter2"))], None, false)).unwrap();
+    block_on(section.patch(&[clear(2)], None, false)).unwrap();
+    assert!(store.0.borrow().is_none());
 }

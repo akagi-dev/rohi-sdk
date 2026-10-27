@@ -23,6 +23,7 @@ use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embedded_hal_async::delay::DelayNs;
 use heapless::{String, Vec};
+use rohi_config::{ConfigOverrides, Override};
 use rohi_service::{
     ActionDescriptor, ActionError, ActionOutput, EnumDescriptor, EnumVariant, FieldDescriptor,
     Issue, IssueDescriptor, IssueSeverity, MAX_FIELD_VALUE_LEN, MAX_ISSUES, ManagedService,
@@ -31,7 +32,9 @@ use rohi_service::{
 };
 
 use super::config::DEFAULT_SCAN_TIMEOUT_MS;
-use crate::{WifiConfig, WifiError, WifiHandle, WifiPassword, WifiSecurity, WifiSsid, WifiState};
+use crate::{
+    WifiError, WifiHandle, WifiOverrides, WifiPassword, WifiSecurity, WifiSsid, WifiState,
+};
 
 // SSIDs and MAC addresses are status values and scan results, which are
 // never cut.
@@ -286,7 +289,7 @@ pub struct WifiService<'a, M: RawMutex, D, P, S> {
     store: S,
 }
 
-impl<'a, M: RawMutex, D: DelayNs + Clone, P: WifiProbe, S: SectionStore<WifiConfig>>
+impl<'a, M: RawMutex, D: DelayNs + Clone, P: WifiProbe, S: SectionStore<WifiOverrides>>
     WifiService<'a, M, D, P, S>
 {
     /// The service of the manager behind `handle`, with the platform
@@ -316,27 +319,31 @@ impl<'a, M: RawMutex, D: DelayNs + Clone, P: WifiProbe, S: SectionStore<WifiConf
         };
         let ssid = WifiSsid::from_bytes(text(connect_field::SSID)?.as_bytes())
             .ok_or(ActionError::InvalidArgument)?;
+        // An empty password is an open network, which is the default: the
+        // password override is removed, not set to a value.
         let password = match text(connect_field::PASSWORD)? {
-            "" => None,
-            password => Some(
+            "" => Override::Default,
+            password => Override::Value(Some(
                 WifiPassword::from_bytes(password.as_bytes())
                     .ok_or(ActionError::InvalidArgument)?,
-            ),
+            )),
         };
 
-        // The timing of the stored section is kept; only the network changes.
-        let current = self
+        // The other overrides (the timing) are kept; only the network changes.
+        let mut overrides = self
             .store
             .load()
             .await
             .map_err(|_| ActionError::Unavailable)?
-            .unwrap_or(WifiConfig::new(WifiSsid::empty(), None));
-        let config = current.with_ssid(ssid).with_password(password);
+            .unwrap_or_default();
+        overrides.ssid = Override::Value(ssid);
+        overrides.password = password;
+        let config = overrides.effective();
         config.validate().map_err(action_error)?;
 
         let unchanged = self.handle.wifi_config().as_ref() == Some(&config);
         self.store
-            .store(&config)
+            .store(&overrides)
             .await
             .map_err(|_| ActionError::Unavailable)?;
         // A changed configuration makes the manager connect by itself; the
@@ -348,7 +355,7 @@ impl<'a, M: RawMutex, D: DelayNs + Clone, P: WifiProbe, S: SectionStore<WifiConf
     }
 }
 
-impl<M: RawMutex, D: DelayNs + Clone, P: WifiProbe, S: SectionStore<WifiConfig>> ManagedService
+impl<M: RawMutex, D: DelayNs + Clone, P: WifiProbe, S: SectionStore<WifiOverrides>> ManagedService
     for WifiService<'_, M, D, P, S>
 {
     const ID: u32 = SERVICE_ID;
@@ -501,6 +508,7 @@ mod tests {
     use rohi_service::{MAX_FIELDS, StoreError};
 
     use super::*;
+    use crate::WifiConfig;
     use crate::WifiShared;
     use crate::{LinkConfig, ManagerConfig, NetworkInfo, WifiBackend, WifiManager};
 
@@ -540,7 +548,7 @@ mod tests {
     /// Like the firmware: storing hands the value to the manager.
     struct Store<'a> {
         handle: WifiHandle<'a, NoopRawMutex>,
-        value: RefCell<Option<WifiConfig>>,
+        value: RefCell<Option<WifiOverrides>>,
         writes: RefCell<usize>,
         fail: bool,
     }
@@ -556,18 +564,18 @@ mod tests {
         }
     }
 
-    impl SectionStore<WifiConfig> for &Store<'_> {
-        async fn load(&self) -> Result<Option<WifiConfig>, StoreError> {
+    impl SectionStore<WifiOverrides> for &Store<'_> {
+        async fn load(&self) -> Result<Option<WifiOverrides>, StoreError> {
             if self.fail {
                 return Err(StoreError::Unavailable);
             }
             Ok(self.value.borrow().clone())
         }
 
-        async fn store(&self, config: &WifiConfig) -> Result<(), StoreError> {
+        async fn store(&self, overrides: &WifiOverrides) -> Result<(), StoreError> {
             *self.writes.borrow_mut() += 1;
-            *self.value.borrow_mut() = Some(config.clone());
-            self.handle.set_wifi_config(Some(config.clone()));
+            *self.value.borrow_mut() = Some(overrides.clone());
+            self.handle.set_wifi_config(Some(overrides.effective()));
             Ok(())
         }
 
@@ -822,7 +830,7 @@ mod tests {
             block_on(service.invoke(action::CONNECT, &args, &mut out)),
             Ok(())
         );
-        let stored = store.value.borrow().clone().unwrap();
+        let stored = store.value.borrow().clone().unwrap().effective();
         assert_eq!(stored.ssid.as_str(), Some("office"));
         assert_eq!(
             stored.password.as_ref().map(WifiPassword::expose_secret),
@@ -839,12 +847,11 @@ mod tests {
         let shared = Shared::new();
         let handle = shared.handle();
         let store = Store::new(handle);
-        *store.value.borrow_mut() = Some(WifiConfig {
-            scan_timeout_ms: 5_000,
-            ..WifiConfig::new(
-                WifiSsid::from_bytes(b"old").unwrap(),
-                Some(WifiPassword::from_bytes(b"hunter2hunter2").unwrap()),
-            )
+        *store.value.borrow_mut() = Some(WifiOverrides {
+            ssid: Override::Value(WifiSsid::from_bytes(b"old").unwrap()),
+            password: Override::Value(Some(WifiPassword::from_bytes(b"hunter2hunter2").unwrap())),
+            scan_timeout_ms: Override::Value(5_000),
+            ..WifiOverrides::default()
         });
         let service = WifiService::new(handle, NoDelay, (), &store);
 
@@ -855,6 +862,9 @@ mod tests {
             Ok(())
         );
         let stored = store.value.borrow().clone().unwrap();
+        assert_eq!(stored.password, Override::Default);
+        assert_eq!(stored.scan_timeout_ms, Override::Value(5_000));
+        let stored = stored.effective();
         assert_eq!(stored.ssid.as_str(), Some("cafe"));
         assert_eq!(stored.password, None);
         assert_eq!(stored.scan_timeout_ms, 5_000);

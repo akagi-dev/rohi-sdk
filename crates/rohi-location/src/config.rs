@@ -16,8 +16,7 @@
 //
 //! The persistent `location` section and its generic config interface.
 
-use minicbor::{CborLen, Decode, Encode};
-use rohi_config::ConfigSection;
+use rohi_config::{ConfigSection, config_overrides};
 use rohi_service::{Bounds, ConfigField, FieldError, ManagedConfig, Unit, Value, ValueKind};
 
 use crate::{Location, LocationSourceKind};
@@ -32,23 +31,44 @@ pub mod field {
     pub const HEIGHT_M: u32 = 3;
 }
 
-/// Where the user says the device is.
+/// Where the user says the device is (effective configuration).
 ///
-/// Persistent ABI: the section ID is derived from the struct name
-/// `LocationConfig`, the encoding is a CBOR array pinned by a golden test.
-#[derive(Clone, Copy, Debug, PartialEq, Encode, Decode, CborLen, ConfigSection)]
-#[cbor(array)]
-#[config(version = 1)]
+/// `LocationConfig::default()` is no position: latitude and longitude are
+/// `NaN` and the section is not valid on its own, so a first `height_m=...`
+/// never stores "0, 0". What is stored are the explicit user overrides of it,
+/// [`LocationOverrides`].
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LocationConfig {
     /// Latitude in decimal degrees, -90 to 90 (WGS84).
-    #[n(0)]
     pub latitude: f64,
     /// Longitude in decimal degrees, -180 to 180 (WGS84).
-    #[n(1)]
     pub longitude: f64,
     /// Height above mean sea level in metres.
-    #[n(2)]
     pub height_m: Option<f64>,
+}
+
+config_overrides! {
+    /// Persisted overrides of the [`LocationConfig`] section (section
+    /// `LocationConfig`).
+    ///
+    /// Persistent ABI: a CBOR map keyed by the field ids of [`field`], which
+    /// are only ever added; a field that is not overridden is absent. The map
+    /// is pinned by a golden test.
+    pub struct LocationOverrides for LocationConfig, version 1 {
+        1 => latitude: f64,
+        2 => longitude: f64,
+        3 => height_m: Option<f64>,
+    }
+}
+
+impl Default for LocationConfig {
+    fn default() -> Self {
+        Self {
+            latitude: f64::NAN,
+            longitude: f64::NAN,
+            height_m: None,
+        }
+    }
 }
 
 /// Lowest height accepted: the Dead Sea shore is about -430 m.
@@ -80,9 +100,9 @@ impl LocationConfig {
 }
 
 impl ManagedConfig for LocationConfig {
-    const SECTION_ID: u64 = <Self as ConfigSection>::ID.0;
+    const SECTION_ID: u64 = <LocationOverrides as ConfigSection>::ID.0;
     const NAME: &'static str = "location";
-    const VERSION: u16 = <Self as ConfigSection>::VERSION;
+    const VERSION: u16 = <LocationOverrides as ConfigSection>::VERSION;
     const FIELDS: &'static [ConfigField] = &[
         ConfigField::new(field::LATITUDE, "latitude", ValueKind::F32)
             .unit(Unit::Degrees)
@@ -96,20 +116,15 @@ impl ManagedConfig for LocationConfig {
             .optional(),
     ];
 
-    /// Not a position: latitude and longitude must both be given, otherwise
-    /// a first `set height_m=...` would store "0, 0".
-    fn defaults() -> Self {
-        Self {
-            latitude: f64::NAN,
-            longitude: f64::NAN,
-            height_m: None,
-        }
-    }
+    type Overrides = LocationOverrides;
 
+    /// Latitude and longitude have no value until they are given: the
+    /// default is not a position.
     fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
+        let coordinate = |degrees: f64| (!degrees.is_nan()).then_some(Value::F32(degrees as f32));
         match id {
-            field::LATITUDE => Ok(Some(Value::F32(self.latitude as f32))),
-            field::LONGITUDE => Ok(Some(Value::F32(self.longitude as f32))),
+            field::LATITUDE => Ok(coordinate(self.latitude)),
+            field::LONGITUDE => Ok(coordinate(self.longitude)),
             field::HEIGHT_M => Ok(self.height_m.map(|height| Value::F32(height as f32))),
             _ => Err(FieldError::UnknownField),
         }
@@ -128,17 +143,6 @@ impl ManagedConfig for LocationConfig {
 
     fn field_is_set(&self, id: u32) -> Result<bool, FieldError> {
         Ok(self.read_field(id)?.is_some())
-    }
-
-    fn unset_field(&mut self, id: u32) -> Result<(), FieldError> {
-        match id {
-            field::HEIGHT_M => {
-                self.height_m = None;
-                Ok(())
-            }
-            field::LATITUDE | field::LONGITUDE => Err(FieldError::NotOptional),
-            _ => Err(FieldError::UnknownField),
-        }
     }
 
     fn validate(&self) -> Result<(), FieldError> {

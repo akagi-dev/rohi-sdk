@@ -1,24 +1,56 @@
 Read and change the persistent configuration.
 
-The device lists its configuration sections and describes their fields; values are parsed and checked against that description. Changes are patches applied atomically per section: if anything is invalid, nothing is stored. Secrets are write-only and are never shown or exported.
+The configuration is a set of sections of typed fields that the device
+describes; values are parsed and checked against that description.
 
-Usage: rohi config [OPTIONS] <COMMAND>
+  rohi config                       list the sections
+  rohi config SECTION               show a section
+  rohi config SECTION FIELD=VALUE   change fields of a section
+  rohi config SECTION --help        describe the fields of a section
+
+What a section shows is its effective configuration: the defaults of
+the firmware with your overrides applied. `FIELD=VALUE` sets an
+override, `FIELD=null` removes it so that the field follows the
+default again. A field you never set keeps following the defaults of
+the firmware, also after an update. Changes are patches applied
+atomically per section: if anything is invalid, nothing is stored.
+After a change the section is read again and shown as the device
+reports it.
+
+A section can be inactive until it is set up: a section with the
+defaults only (nothing overridden) is not validated, but the result of
+every change is, so the fields that belong together are set in one
+command.
+
+Secret fields are never given on the command line: use `FIELD=-` to
+read the value from stdin, or to be asked for it on a terminal. They
+are write-only and are never shown or exported. Bytes are given as
+hex.
+
+SECTION must not be one of the names of the commands below.
+
+Usage: rohi config [OPTIONS] [SECTION] [FIELD=VALUE]...
+       rohi config <COMMAND>
 
 Commands:
-  list      List the configuration sections of the device
-  describe  Describe the fields of a section
-  get       Show the values of a section, or of one field
-  set       Set fields of a section: `FIELD=VALUE` pairs, stored atomically
-  unset     Unset optional fields of a section
-  reset     Remove the stored section and restore its defaults
-  export    Write the configuration of the device to a JSON file
-  diff      Show what applying a configuration file would change
-  apply     Apply a configuration file
-  help      Print this message or the help of the given subcommand(s)
+  reset   Remove every override of a section: it follows the defaults again
+  export  Write your overrides to a JSON file
+  diff    Show what applying a configuration file would change
+  apply   Apply a configuration file of overrides
+
+Arguments:
+  [SECTION]
+          The section to show or change
+
+  [FIELD=VALUE]...
+          Fields to set: `FIELD=VALUE` sets an override, `FIELD=null` removes it
 
 Options:
+      --dry-run
+          Validate on the device without storing anything
+
   -h, --help
-          Print help (see a summary with '-h')
+          Print help; for a section, describe its fields
 
 Target:
   -d, --device <DEVICE>
@@ -56,3 +88,14 @@ Connection:
           How long to wait for a device response
           
           [default: 10]
+
+Examples:
+  rohi config
+  rohi config wifi
+  rohi config wifi ssid=office password=-
+  rohi config wifi scan_timeout=5000
+  rohi config wifi scan_timeout=null
+  rohi config wifi scan_timeout=5000 --dry-run
+  rohi config wifi --help
+  echo 'hunter2hunter2' | rohi config wifi password=-
+

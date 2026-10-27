@@ -40,10 +40,11 @@ use embassy_sync::signal::Signal;
 use embassy_time::Delay;
 use esp_hal::rng::Rng;
 use log::{info, warn};
+use rohi_config::ConfigOverrides;
 use rohi_connectivity::config::{DEFAULT_INTERVAL_S, DEFAULT_PORT};
 use rohi_connectivity::{
-    ConnectivityConfig, ConnectivityService, ConnectivityShared, ConnectivityStatus, Host,
-    HttpTransport, NONCE_LEN, NonceError, NonceSource, ServiceConfig,
+    ConnectivityConfig, ConnectivityOverrides, ConnectivityService, ConnectivityShared,
+    ConnectivityStatus, Host, HttpTransport, NONCE_LEN, NonceError, NonceSource, ServiceConfig,
 };
 use rohi_hal::runtime::MeasurementHandle;
 use rohi_hal_esp::EmbassyClock;
@@ -106,8 +107,10 @@ fn env_number<T: core::str::FromStr>(value: Option<&str>) -> Option<T> {
 }
 
 /// Configuration compiled into the firmware: disabled unless a host is set.
+/// It applies while the user overrides nothing; overrides are applied to
+/// [`ConnectivityConfig::default`].
 fn build_defaults() -> ConnectivityConfig {
-    let mut config = ConnectivityConfig::disabled();
+    let mut config = ConnectivityConfig::default();
     let Some(host) = option_env!("ROHI_CONNECTIVITY_HOST").and_then(Host::new) else {
         return config;
     };
@@ -123,9 +126,9 @@ fn build_defaults() -> ConnectivityConfig {
 /// The stored configuration, or the build-time defaults. `None` when
 /// telemetry is disabled or the configuration is invalid.
 async fn load_config(config: ConfigHandle) -> Option<ConnectivityConfig> {
-    let loaded = match config.get::<ConnectivityConfig>().await {
-        Ok(Some(stored)) => stored,
-        Ok(None) => build_defaults(),
+    let loaded = match config.get::<ConnectivityOverrides>().await {
+        Ok(Some(overrides)) if !overrides.is_empty() => overrides.effective(),
+        Ok(_) => build_defaults(),
         Err(ServiceError::Unavailable(_)) => build_defaults(),
         Err(error) => {
             warn!("Connectivity: stored configuration unusable: {}", error);

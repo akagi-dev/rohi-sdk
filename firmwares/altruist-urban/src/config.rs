@@ -71,17 +71,17 @@ use embassy_sync::mutex::Mutex;
 use esp_hal::peripherals::FLASH;
 use log::{error, info, warn};
 use rohi_config::{
-    ConfigError, ConfigOpenState, ConfigSection, ConfigStore, Corruption, EncodeError,
-    MAX_SECTION_PAYLOAD, SectionError, SectionId,
+    ConfigError, ConfigOpenState, ConfigOverrides, ConfigSection, ConfigStore, Corruption,
+    EncodeError, MAX_SECTION_PAYLOAD, SectionError, SectionId,
 };
 use rohi_config_esp::esp::{PartitionError, config_storage, esp_storage::FlashStorage};
 use rohi_config_esp::{EspConfigStorage, EspStorageError};
 
-use rohi_connectivity::ConnectivityConfig;
+use rohi_connectivity::{ConnectivityConfig, ConnectivityOverrides};
 use rohi_identity::Identity;
-use rohi_location::LocationConfig;
-use rohi_net::{NetworkConfig, WifiConfig, WifiHandle};
-use rohi_time_ntp::NtpServersConfig;
+use rohi_location::{LocationConfig, LocationOverrides};
+use rohi_net::{NetworkConfig, NetworkOverrides, WifiConfig, WifiHandle, WifiOverrides};
+use rohi_time_ntp::{NtpServersConfig, NtpServersOverrides};
 
 use crate::tasks::RawMutex;
 use crate::{connectivity, identity, location, time};
@@ -445,12 +445,12 @@ impl Owner {
                 warn!("Configuration: factory reset, region formatted");
                 *self = Self::Ready(store);
                 for id in [
-                    WifiConfig::ID,
-                    NetworkConfig::ID,
+                    WifiOverrides::ID,
+                    NetworkOverrides::ID,
                     Identity::ID,
-                    ConnectivityConfig::ID,
-                    NtpServersConfig::ID,
-                    LocationConfig::ID,
+                    ConnectivityOverrides::ID,
+                    NtpServersOverrides::ID,
+                    LocationOverrides::ID,
                 ] {
                     publish_committed(wifi, id, None);
                 }
@@ -606,70 +606,67 @@ fn publish_committed(wifi: WifiHandle<'static, RawMutex>, id: SectionId, blob: O
         }
         return;
     }
-    if id == ConnectivityConfig::ID {
-        match blob {
-            None => connectivity::publish(None),
-            Some(blob) => {
-                match ConnectivityConfig::decode_versioned(blob.version, blob.payload()) {
-                    Ok(config) => connectivity::publish(Some(config)),
-                    Err(error) => warn!(
-                        "Connectivity: committed configuration cannot be decoded: {}",
-                        error
-                    ),
-                }
-            }
-        }
-        return;
-    }
-    if id == NtpServersConfig::ID {
-        match blob {
-            None => time::publish(None),
-            Some(blob) => match NtpServersConfig::decode_versioned(blob.version, blob.payload()) {
-                Ok(config) => time::publish(Some(config)),
-                Err(error) => warn!("Time: committed NTP servers cannot be decoded: {}", error),
-            },
-        }
-        return;
-    }
-    if id == LocationConfig::ID {
-        match blob {
-            None => location::shared().publish_configured(None),
-            Some(blob) => match LocationConfig::decode_versioned(blob.version, blob.payload()) {
-                Ok(config) => location::shared().publish_configured(Some(&config)),
-                Err(error) => warn!(
-                    "Location: committed configuration cannot be decoded: {}",
-                    error
-                ),
-            },
-        }
-        return;
-    }
-    if id == WifiConfig::ID {
-        match blob {
-            None => wifi.set_wifi_config(None),
-            Some(blob) => match WifiConfig::decode_versioned(blob.version, blob.payload()) {
-                Ok(config) => wifi.set_wifi_config(Some(config)),
-                Err(error) => warn!(
-                    "Wi-Fi: committed configuration cannot be decoded: {}",
-                    error
-                ),
-            },
-        }
-        return;
-    }
-    if id != NetworkConfig::ID {
-        return;
-    }
-    match blob {
-        None => wifi.set_network_config(NetworkConfig::new()),
-        Some(blob) => match NetworkConfig::decode_versioned(blob.version, blob.payload()) {
-            Ok(config) => wifi.set_network_config(config),
+    if id == ConnectivityOverrides::ID {
+        match effective::<ConnectivityOverrides, ConnectivityConfig>(blob) {
+            Ok(config) => connectivity::publish(config),
             Err(error) => warn!(
-                "Network: committed configuration cannot be decoded: {}",
+                "Connectivity: committed configuration cannot be decoded: {}",
                 error
             ),
-        },
+        }
+        return;
     }
+    if id == NtpServersOverrides::ID {
+        match effective::<NtpServersOverrides, NtpServersConfig>(blob) {
+            Ok(config) => time::publish(config),
+            Err(error) => warn!("Time: committed NTP servers cannot be decoded: {}", error),
+        }
+        return;
+    }
+    if id == LocationOverrides::ID {
+        match effective::<LocationOverrides, LocationConfig>(blob) {
+            Ok(config) => location::shared().publish_configured(config.as_ref()),
+            Err(error) => warn!(
+                "Location: committed configuration cannot be decoded: {}",
+                error
+            ),
+        }
+        return;
+    }
+    if id == WifiOverrides::ID {
+        match effective::<WifiOverrides, WifiConfig>(blob) {
+            Ok(config) => wifi.set_wifi_config(config),
+            Err(error) => warn!(
+                "Wi-Fi: committed configuration cannot be decoded: {}",
+                error
+            ),
+        }
+        return;
+    }
+    if id != NetworkOverrides::ID {
+        return;
+    }
+    match effective::<NetworkOverrides, NetworkConfig>(blob) {
+        Ok(config) => wifi.set_network_config(config.unwrap_or_default()),
+        Err(error) => warn!(
+            "Network: committed configuration cannot be decoded: {}",
+            error
+        ),
+    }
+}
+
+/// The effective configuration of a committed (or removed) section: the
+/// defaults of `C` with the stored overrides applied. `None` when the section
+/// has no overrides, the runtime then keeps its own defaults and stays
+/// inactive.
+fn effective<O: ConfigOverrides<C>, C: Default>(
+    blob: Option<&Blob>,
+) -> Result<Option<C>, SectionError> {
+    let Some(blob) = blob else {
+        return Ok(None);
+    };
+    let overrides = O::decode_versioned(blob.version, blob.payload())?;
+    Ok((!overrides.is_empty()).then(|| overrides.effective()))
 }
 
 /// Publishes the stored location at boot; without one the device does not
@@ -679,11 +676,11 @@ fn publish_stored_location(owner: &mut Owner, wifi: WifiHandle<'static, RawMutex
         return;
     };
     let mut blob = Blob::empty();
-    match store.read_raw(LocationConfig::ID, &mut blob.bytes) {
+    match store.read_raw(LocationOverrides::ID, &mut blob.bytes) {
         Ok(Some(info)) => {
             blob.version = info.version;
             blob.len = info.length;
-            publish_committed(wifi, LocationConfig::ID, Some(&blob));
+            publish_committed(wifi, LocationOverrides::ID, Some(&blob));
         }
         Ok(None) => info!("Location: not set"),
         Err(error) => warn!("Location configuration unreadable: {}", error),
@@ -699,20 +696,20 @@ fn publish_stored_wifi(owner: &mut Owner, wifi: WifiHandle<'static, RawMutex>) {
         return;
     };
     let mut blob = Blob::empty();
-    match store.read_raw(NetworkConfig::ID, &mut blob.bytes) {
+    match store.read_raw(NetworkOverrides::ID, &mut blob.bytes) {
         Ok(Some(info)) => {
             blob.version = info.version;
             blob.len = info.length;
-            publish_committed(wifi, NetworkConfig::ID, Some(&blob));
+            publish_committed(wifi, NetworkOverrides::ID, Some(&blob));
         }
         Ok(None) => info!("Network: default address settings"),
         Err(error) => warn!("Network configuration unreadable: {}", error),
     }
-    match store.read_raw(WifiConfig::ID, &mut blob.bytes) {
+    match store.read_raw(WifiOverrides::ID, &mut blob.bytes) {
         Ok(Some(info)) => {
             blob.version = info.version;
             blob.len = info.length;
-            publish_committed(wifi, WifiConfig::ID, Some(&blob));
+            publish_committed(wifi, WifiOverrides::ID, Some(&blob));
         }
         Ok(None) => info!("Wi-Fi: not configured"),
         Err(error) => warn!("Wi-Fi configuration unreadable: {}", error),

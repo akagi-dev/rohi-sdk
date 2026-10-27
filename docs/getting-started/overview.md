@@ -21,7 +21,7 @@ protocol, and the rules that make them safe to combine.
 | Area | What you get | Read |
 |------|--------------|------|
 | Sensors | Typed measurements, drivers (BMx280, SCD4x, SDS011, noise), runtime, `MeasurementStore` | [Sensor HAL](../sdk/hal.md), [Sensors](../sdk/sensors.md) |
-| Configuration | CBOR, A/B-slot, power-fail-safe store of independent typed sections | [Configuration store](../sdk/config.md) |
+| Configuration | CBOR, A/B-slot, power-fail-safe store of independent typed sections; users persist only their overrides of the firmware defaults | [Configuration store](../sdk/config.md) |
 | Networking | Wi-Fi control plane, DNS/TCP data plane, ESP backend | [Networking](../sdk/net.md) |
 | Services | Config sections, live status (state, health, issues) and actions of every module, discovered by name | [Service pipeline](../sdk/service.md), [Services and status](services.md) |
 | Control | Generic local BLE control protocol, `rohi` desktop client | [Control plane](../sdk/control.md), [The rohi tool](rohi-tool.md) |

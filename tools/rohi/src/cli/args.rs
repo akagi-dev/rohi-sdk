@@ -189,14 +189,66 @@ Examples:
     },
     /// Read and change the persistent configuration.
     ///
-    /// The device lists its configuration sections and describes their
-    /// fields; values are parsed and checked against that description. Changes
-    /// are patches applied atomically per section: if anything is invalid,
-    /// nothing is stored. Secrets are write-only and are never shown or
-    /// exported.
+    /// The configuration is a set of sections of typed fields that the device
+    /// describes; values are parsed and checked against that description.
+    ///
+    ///   rohi config                       list the sections
+    ///   rohi config SECTION               show a section
+    ///   rohi config SECTION FIELD=VALUE   change fields of a section
+    ///   rohi config SECTION --help        describe the fields of a section
+    ///
+    /// What a section shows is its effective configuration: the defaults of
+    /// the firmware with your overrides applied. `FIELD=VALUE` sets an
+    /// override, `FIELD=null` removes it so that the field follows the
+    /// default again. A field you never set keeps following the defaults of
+    /// the firmware, also after an update. Changes are patches applied
+    /// atomically per section: if anything is invalid, nothing is stored.
+    /// After a change the section is read again and shown as the device
+    /// reports it.
+    ///
+    /// A section can be inactive until it is set up: a section with the
+    /// defaults only (nothing overridden) is not validated, but the result of
+    /// every change is, so the fields that belong together are set in one
+    /// command.
+    ///
+    /// Secret fields are never given on the command line: use `FIELD=-` to
+    /// read the value from stdin, or to be asked for it on a terminal. They
+    /// are write-only and are never shown or exported. Bytes are given as
+    /// hex.
+    ///
+    /// SECTION must not be one of the names of the commands below.
+    #[command(
+        verbatim_doc_comment,
+        args_conflicts_with_subcommands = true,
+        disable_help_flag = true,
+        disable_help_subcommand = true,
+        after_help = "\
+Examples:
+  rohi config
+  rohi config wifi
+  rohi config wifi ssid=office password=-
+  rohi config wifi scan_timeout=5000
+  rohi config wifi scan_timeout=null
+  rohi config wifi scan_timeout=5000 --dry-run
+  rohi config wifi --help
+  echo 'hunter2hunter2' | rohi config wifi password=-"
+    )]
     Config {
         #[command(subcommand)]
-        action: ConfigAction,
+        action: Option<ConfigAction>,
+        /// The section to show or change.
+        #[arg(value_name = "SECTION")]
+        section: Option<String>,
+        /// Fields to set: `FIELD=VALUE` sets an override, `FIELD=null`
+        /// removes it.
+        #[arg(value_name = "FIELD=VALUE")]
+        assignments: Vec<String>,
+        /// Validate on the device without storing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Print help; for a section, describe its fields.
+        #[arg(short = 'h', long = "help")]
+        help: bool,
     },
     /// Format the configuration storage of the device.
     ///
@@ -230,87 +282,56 @@ Examples:
     /// Actions are explicit operations a service offers, for example scanning
     /// for networks or reconnecting. The device describes the arguments and
     /// the results of every action.
+    ///
+    ///   rohi action                            list all actions
+    ///   rohi action SERVICE                    list the actions of a service
+    ///   rohi action SERVICE ACTION [ARG=VALUE] run an action
+    ///   rohi action SERVICE ACTION --help      describe an action
+    ///
+    /// Arguments are `NAME=VALUE` pairs and all are required. Use `NAME=-` to
+    /// read a value from stdin, or to be asked for it on a terminal, so that
+    /// it stays out of the shell history; actions with secret arguments accept
+    /// nothing else. Bytes are given as hex. The results are printed as a
+    /// table, one row per record.
+    #[command(
+        verbatim_doc_comment,
+        disable_help_flag = true,
+        after_help = "\
+Examples:
+  rohi action
+  rohi action wifi
+  rohi action wifi scan
+  rohi action wifi connect ssid=- password=-
+  rohi action wifi reconnect
+  rohi action wifi connect --help
+  rohi action identity provision secret=-
+  rohi -o json action wifi scan"
+    )]
     Action {
-        #[command(subcommand)]
-        action: ActionCommand,
+        /// The service whose actions to list or run.
+        #[arg(value_name = "SERVICE")]
+        service: Option<String>,
+        /// The action to run.
+        #[arg(value_name = "ACTION")]
+        action: Option<String>,
+        /// `NAME=VALUE` pairs.
+        #[arg(value_name = "ARG=VALUE")]
+        args: Vec<String>,
+        /// Print help; for an action, describe its arguments and results.
+        #[arg(short = 'h', long = "help")]
+        help: bool,
     },
 }
 
+/// The fixed commands of `rohi config`; any other name is a section.
 #[derive(Subcommand)]
 pub enum ConfigAction {
-    /// List the configuration sections of the device.
-    #[command(after_help = "\
-Examples:
-  rohi config list
-  rohi -o json config list")]
-    List,
-    /// Describe the fields of a section.
+    /// Remove every override of a section: it follows the defaults again.
     ///
-    /// Shows the type, access, unit and allowed values of every field.
-    #[command(after_help = "\
-Examples:
-  rohi config describe connectivity")]
-    Describe {
-        /// The section.
-        section: String,
-    },
-    /// Show the values of a section, or of one field.
-    ///
-    /// Secrets are shown as `<configured>`.
-    #[command(after_help = "\
-Examples:
-  rohi config get connectivity
-  rohi config get connectivity host
-  rohi -o json config get wifi")]
-    Get {
-        /// The section.
-        section: String,
-        /// Show only this field.
-        field: Option<String>,
-    },
-    /// Set fields of a section: `FIELD=VALUE` pairs, stored atomically.
-    ///
-    /// Fields that are not mentioned keep their value; a section that is not
-    /// configured yet starts from its defaults, and the complete result is
-    /// validated by the device. Secret fields are never given on the command
-    /// line: use `FIELD=-` to read the value from stdin, or to be asked for
-    /// it on a terminal. Bytes are given as hex.
-    #[command(after_help = "\
-Examples:
-  rohi config set connectivity host=ingress.example.org port=443 enabled=true
-  rohi config set connectivity interval_s=120 --dry-run
-  rohi config set wifi ssid=office password=-
-  echo 'hunter2hunter2' | rohi config set wifi password=-")]
-    Set {
-        /// The section.
-        section: String,
-        /// `FIELD=VALUE` pairs.
-        #[arg(required = true, value_name = "FIELD=VALUE")]
-        assignments: Vec<String>,
-        /// Validate on the device without storing anything.
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// Unset optional fields of a section.
-    ///
-    /// Unset is not the same as an empty string or zero: the field has no
-    /// value afterwards.
-    #[command(after_help = "\
-Examples:
-  rohi config unset wifi password")]
-    Unset {
-        /// The section.
-        section: String,
-        /// The fields to unset.
-        #[arg(required = true)]
-        fields: Vec<String>,
-        /// Validate on the device without storing anything.
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// Remove the stored section and restore its defaults.
-    ///
-    /// A confirmation prompt is shown unless --yes is passed.
+    /// The effective configuration of the section is the defaults of the
+    /// firmware afterwards. To remove a single override use
+    /// `rohi config SECTION FIELD=null`. A confirmation prompt is shown unless
+    /// --yes is passed.
     #[command(after_help = "\
 Examples:
   rohi config reset connectivity
@@ -325,11 +346,14 @@ Examples:
         #[arg(long)]
         dry_run: bool,
     },
-    /// Write the configuration of the device to a JSON file.
+    /// Write your overrides to a JSON file.
     ///
-    /// The file maps section names to their fields. Secrets and read-only
-    /// fields are left out, so applying the file never touches them.
-    /// Without a file, or with `-`, the document goes to stdout.
+    /// The file maps section names to the fields you set explicitly, not to
+    /// the effective configuration: fields that follow the defaults are left
+    /// out, so applying the file elsewhere or later does not pin the defaults
+    /// of today. Sections without overrides, secrets and read-only fields are
+    /// left out as well. Without a file, or with `-`, the document goes to
+    /// stdout.
     #[command(after_help = "\
 Examples:
   rohi config export config.json
@@ -340,8 +364,9 @@ Examples:
     },
     /// Show what applying a configuration file would change.
     ///
-    /// Compares the file with the device and prints the differences; nothing
-    /// is changed. Secrets cannot be compared and are not part of files.
+    /// Compares the file with your overrides on the device and prints the
+    /// differences; nothing is changed. Secrets cannot be compared and are not
+    /// part of files.
     #[command(after_help = "\
 Examples:
   rohi config diff config.json")]
@@ -349,14 +374,15 @@ Examples:
         /// The JSON file; `-` reads stdin.
         file: PathBuf,
     },
-    /// Apply a configuration file.
+    /// Apply a configuration file of overrides.
     ///
-    /// A field that is missing in the file is left unchanged, a field set to
-    /// `null` is unset, and a section set to `null` is reset. Every section is
-    /// validated on the device before the first one is changed, and each
-    /// section is applied atomically. Applying several sections is not atomic
-    /// as a whole: if the device fails in between, the sections already
-    /// applied are listed.
+    /// A field with a value sets an override, a field set to `null` removes
+    /// it (the field follows the default again), a field that is missing in
+    /// the file is left unchanged, and a section set to `null` is reset. Every
+    /// section is validated on the device before the first one is changed,
+    /// and each section is applied atomically. Applying several sections is
+    /// not atomic as a whole: if the device fails in between, the sections
+    /// already applied are listed.
     #[command(after_help = "\
 Examples:
   rohi config apply config.json --dry-run
@@ -371,48 +397,5 @@ Examples:
         /// Skip the confirmation prompt.
         #[arg(long, short)]
         yes: bool,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum ActionCommand {
-    /// List the actions of all services.
-    #[command(after_help = "\
-Examples:
-  rohi action list")]
-    List,
-    /// Describe the arguments and results of an action.
-    #[command(after_help = "\
-Examples:
-  rohi action describe wifi scan")]
-    Describe {
-        /// The service.
-        service: String,
-        /// The action.
-        action: String,
-    },
-    /// Run an action.
-    ///
-    /// Arguments are `NAME=VALUE` pairs and all are required. Use `NAME=-` to
-    /// read a value from stdin, or to be asked for it on a terminal, so that
-    /// it stays out of the shell history; actions with secret arguments accept
-    /// nothing else. Bytes are given as hex. The results are printed as a
-    /// table, one row per record.
-    #[command(after_help = "\
-Examples:
-  rohi action run wifi scan
-  rohi action run wifi connect ssid=- password=-
-  rohi action run wifi reconnect
-  rohi action run identity provision secret=-
-  rohi action run identity erase
-  rohi -o json action run wifi scan")]
-    Run {
-        /// The service.
-        service: String,
-        /// The action.
-        action: String,
-        /// `NAME=VALUE` pairs.
-        #[arg(value_name = "NAME=VALUE")]
-        args: Vec<String>,
     },
 }

@@ -41,7 +41,7 @@ pub use config::{
     BACKOFF_INITIAL_RANGE_MS, BACKOFF_MAX_RANGE_MS, CONNECT_TIMEOUT_RANGE_MS,
     DEFAULT_BACKOFF_INITIAL_MS, DEFAULT_BACKOFF_MAX_MS, DEFAULT_CONNECT_TIMEOUT_MS,
     DEFAULT_LINK_REFRESH_MS, DEFAULT_SCAN_TIMEOUT_MS, LINK_REFRESH_RANGE_MS, LinkConfig,
-    SCAN_TIMEOUT_RANGE_MS, WifiConfig, WifiPassword, WifiSsid,
+    SCAN_TIMEOUT_RANGE_MS, WifiConfig, WifiOverrides, WifiPassword, WifiSsid,
 };
 pub use error::WifiError;
 pub use managed::field as config_field;

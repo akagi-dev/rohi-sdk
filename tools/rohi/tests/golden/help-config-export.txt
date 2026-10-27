@@ -1,54 +1,5 @@
-Write the configuration of the device to a JSON file.
+error: unexpected argument '--help' found
 
-The file maps section names to their fields. Secrets and read-only fields are left out, so applying the file never touches them. Without a file, or with `-`, the document goes to stdout.
+  tip: to pass '--help' as a value, use '-- --help'
 
 Usage: rohi config export [OPTIONS] [FILE]
-
-Arguments:
-  [FILE]
-          Output file
-
-Options:
-  -h, --help
-          Print help (see a summary with '-h')
-
-Target:
-  -d, --device <DEVICE>
-          Target device: advertised name, ID, or a unique prefix or suffix of either; or a URI such as ble://NAME or tcp://HOST:PORT. Without it the only device found is used, or you choose among several
-          
-          [env: ROHI_DEVICE=]
-
-Output:
-  -o, --output <FORMAT>
-          Output format
-
-          Possible values:
-          - human: Text for people
-          - json:  JSON with a stable, versioned schema, for scripts
-          
-          [default: human]
-
-      --color <WHEN>
-          Color the text output
-
-          Possible values:
-          - auto:   Color when stdout is a terminal, unless `NO_COLOR` is set or `TERM` is `dumb`
-          - always: Always color
-          - never:  Never color
-          
-          [default: auto]
-
-Connection:
-      --scan-timeout <SECONDS>
-          How long to search for the target device
-          
-          [default: 10]
-
-      --timeout <SECONDS>
-          How long to wait for a device response
-          
-          [default: 10]
-
-Examples:
-  rohi config export config.json
-  rohi config export > config.json

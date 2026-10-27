@@ -40,7 +40,7 @@ mod config;
 mod service;
 mod shared;
 
-pub use config::{LocationConfig, field};
+pub use config::{LocationConfig, LocationOverrides, field};
 pub use service::{LocationService, SERVICE_ID, issue, source, status_field};
 pub use shared::{Location, LocationShared, LocationSource, LocationSourceKind, NoLocation};
 

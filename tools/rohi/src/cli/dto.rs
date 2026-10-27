@@ -144,32 +144,31 @@ pub fn config_schema(schema: &ConfigSchema) -> Json {
     json!({ "section": schema.section, "fields": schema.fields })
 }
 
-/// The values of a section, keyed by field name; a set secret is
-/// `{"secret": true}`.
-pub fn config_values(values: &ConfigValues, schema: &ConfigSchema, only: Option<&str>) -> Json {
+/// The effective values of a section, keyed by field name: a field without a
+/// value is `null`, a set secret is `{"secret": true}`. `overridden` names
+/// the fields the user set explicitly.
+pub fn config_values(values: &ConfigValues, schema: &ConfigSchema) -> Json {
     let mut map = Map::new();
+    let mut overridden = Vec::new();
     for field in &schema.fields {
-        if only.is_some_and(|name| name != field.field.name) {
-            continue;
-        }
         let entry = values
             .entries
             .iter()
             .find(|entry| entry.field_id == field.field.id);
-        match entry.map(|entry| &entry.state) {
-            Some(EntryState::Value(value)) => {
-                map.insert(field.field.name.clone(), json(value));
-            }
-            Some(EntryState::Redacted) => {
-                map.insert(field.field.name.clone(), json!({ "secret": true }));
-            }
-            None => {}
+        let shown = match entry.map(|entry| &entry.state) {
+            Some(EntryState::Value(value)) => json(value),
+            Some(EntryState::Redacted) => json!({ "secret": true }),
+            None => Json::Null,
+        };
+        map.insert(field.field.name.clone(), shown);
+        if values.is_overridden(field.field.id) {
+            overridden.push(field.field.name.clone());
         }
     }
     json!({
         "section": values.section,
-        "configured": values.configured,
         "values": Json::Object(map),
+        "overridden": overridden,
     })
 }
 

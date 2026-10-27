@@ -36,8 +36,8 @@ device (for example fewer fields of a section).
 rohi scan                  # find nearby ROHI devices
 rohi status                # device health and every service
 rohi status sensors        # one service in detail
-rohi config list           # the configuration sections of the device
-rohi action list           # what the services can do
+rohi config                # the configuration sections of the device
+rohi action                # what the services can do
 ```
 
 ```text
@@ -88,10 +88,11 @@ clean. `-o json` (`--output json`) prints a JSON document with a stable, version
 rohi -d A12F -o json status network | jq -r '.values.ip'
 rohi -d A12F -o json status sensors | jq '.values["scd4x.co2"]'
 rohi -d A12F -o json status | jq -r '.services[] | select(.health != "ok") | .service'
+rohi -d A12F -o json config wifi | jq '.overridden'   # {"section", "values", "overridden": [field names]}
 ```
 
 Every JSON document has `"schema_version": 1`. The schemas are owned by the command line, not by the library types.
-A closed pipe (`rohi action list | head -1`) ends the command quietly.
+A closed pipe (`rohi action | head -1`) ends the command quietly.
 
 | Exit code | Meaning |
 |-----------|---------|
@@ -132,22 +133,39 @@ health, readiness, issues and revisions.
 
 ## Configuration
 
-`rohi config` works on the **sections** the device lists. Fields are typed and described by the device; values are
-parsed against that description (`true`/`false`, numbers, text, hex for bytes, a variant name for enums) and checked
-again by the device.
+`rohi config` works on the **sections** the device lists. The configuration of a section is its **effective**
+configuration: the defaults of the firmware plus the **overrides** you set explicitly. Fields are typed and described by
+the device; values are parsed against that description (`true`/`false`, numbers, text, hex for bytes, a variant name for
+enums) and checked again by the device.
 
 ```bash
-rohi config list                                   # sections and their versions
-rohi config describe connectivity                  # fields: type, access, unit, allowed values
-rohi config get connectivity                       # values; secrets are shown as <configured>
-rohi config get connectivity host                  # one field
+rohi config                                        # sections and their versions
+rohi config connectivity                           # the effective values; secrets are shown as <redacted>
+rohi config connectivity --help                    # fields: type, unit, allowed values (from the device)
 
-rohi config set connectivity host=ingress.example.org port=443 enabled=true
-rohi config set connectivity interval_s=120 --dry-run
-rohi config set wifi ssid=office password=-            # secret from stdin or a hidden prompt
-rohi config unset wifi password                       # optional field: no value (not "" or 0)
-rohi config reset connectivity                     # remove the stored section, restore defaults
+rohi config connectivity host=ingress.example.org port=443 enabled=true
+rohi config connectivity interval_s=120 --dry-run
+rohi config wifi ssid=office password=-               # secret from stdin or a hidden prompt
+rohi config wifi scan_timeout=null                    # remove the override: back to the firmware default
+rohi config reset connectivity                     # remove every override of the section
 ```
+
+A name that is also a command (`reset`, `export`, `diff`, `apply`) is not a valid section name. `rohi config --help`
+and `rohi action --help` need no device; `rohi config SECTION --help` connects and is generated from the schema.
+
+```text
+$ rohi config wifi
+ssid             office
+password         <redacted>
+scan_timeout     20000 ms
+connect_timeout  30000 ms
+backoff_initial  1000 ms
+backoff_max      60000 ms
+link_refresh     10000 ms
+```
+
+An optional field without a value (its default is none) shows as `<unset>`. After a change `rohi` reads the section
+again and prints what the device reports, so the output is always the effective result.
 
 Format the whole configuration storage of the device with the dedicated `rohi factory-reset` command (not a `config`
 subcommand): every section, the device identity and anything else stored in the partition is erased, including section
@@ -159,25 +177,41 @@ rohi factory-reset --yes
 ```
 
 ```text
-$ rohi config describe connectivity
-FIELD       TYPE    ACCESS      CONSTRAINTS
-enabled     bool    read-write
-node_id     u64     read-write
-interval_s  u64     read-write  s
-host        string  read-write
-port        u64     read-write
+$ rohi config connectivity --help
+Usage:
+  rohi config connectivity [FIELD=VALUE...]
+
+Fields:
+  enabled     bool
+  node_id     u64
+  interval_s  u64 s
+  host        string
+  port        u64
+
+Special values:
+  FIELD=null  clear the override and use the field default
+...
 ```
 
-- **`set` is a patch**: fields that are not mentioned keep their value, and a section that is not stored yet starts
-  from its defaults. All mutations of one command are validated together on the device and stored atomically: if
-  anything is invalid, nothing is stored. `--dry-run` validates without storing.
-- **Secrets** (`write-only` in `describe`) are never returned and never part of exports. Put `NAME=-` instead of a
-  value; the tool refuses a secret on the command line.
-- **`unset`** is only for optional fields. A required field cannot be unset.
-- **Reset** removes the persisted section, so the module defaults apply again.
+- **Effective = defaults + overrides.** A field you never set keeps following the firmware default, also after a
+  firmware update changes it; a field you set stays as you set it.
+- **`FIELD=VALUE` is a patch** of overrides: fields that are not mentioned are not touched. All mutations of one command
+  are applied to a copy, the complete effective result is validated on the device and stored atomically: if anything
+  is invalid, nothing is stored. `--dry-run` validates without storing.
+- **A section without overrides is inactive and is not validated**, but the result of every change is. Fields that
+  belong together are therefore set in one command: `rohi config wifi scan_timeout=5000` alone fails until the
+  `ssid` is set, `rohi config wifi ssid=office scan_timeout=5000` works.
+- **`FIELD=null` removes the override** of any writable field, required or not; the field follows the firmware default
+  again. It does not set an optional field to "none": a field whose default has a value cannot be forced to none
+  (`time` `server2=null` restores its default server).
+- **Secrets** (`secret` in `--help`) are never returned and never part of exports. Put `NAME=-` instead of a value;
+  the tool refuses a secret on the command line. `password=null` is allowed: it removes the override.
+- **Reset** removes every override of the section, so the firmware defaults apply again.
 - A change that needs a restart says so (`A restart is required for the change to take effect`).
 
 ### Configuration files
+
+A file describes your **overrides**, not the defaults:
 
 ```bash
 rohi config export config.json              # or: rohi config export > config.json
@@ -198,17 +232,19 @@ A file maps section names to their fields:
 
 | In the file | Effect |
 |-------------|--------|
+| `"field": value` | set the override (even if the value equals the default) |
+| `"field": null` | remove the override |
 | field missing | left unchanged |
-| `"field": null` | unset (optional fields only) |
-| `"section": null` | reset the section |
+| `"section": null` | reset the section (remove every override) |
 
-- **Export** writes every *configured* section. Secrets and read-only fields are left out, so applying an exported file
-  never clears or overwrites a secret.
-- A file cannot contain secrets: `config apply` refuses them and points at `config set NAME=-`.
-- **`diff`** compares the file with the device and prints `~` changes, `+` new values, `-` unsets and `reset section`;
-  nothing is changed. Fields that already match are not listed.
-- **`apply`** checks the whole file against the schemas first (unknown section, unknown or read-only field, wrong type,
-  null for a required field fail with no change), then has the device validate **every** section with a dry run, shows
+- **Export** writes the explicit overrides only, never materialized defaults, so a later firmware default still
+  reaches fields you did not override. Sections without overrides are omitted; secrets and read-only fields are left
+  out, so applying an exported file never clears or overwrites a secret.
+- A file cannot contain secrets: `config apply` refuses them and points at `config SECTION NAME=-`.
+- **`diff`** compares the file with your overrides on the device and prints `~` changes, `+` new overrides, `-` removed
+  overrides and `reset section`; nothing is changed. Fields that already match are not listed.
+- **`apply`** checks the whole file against the schemas first (unknown section, unknown or read-only field, wrong type
+  fail with no change), then has the device validate **every** section with a dry run, shows
   the changes and asks for confirmation unless `--yes`, then applies the sections one by one. Each section is atomic;
   applying several is **not** atomic as a whole. If the device fails in between, the error lists the sections that
   were applied and the ones that were not. Every section is applied against the revision its diff was computed from, so
@@ -218,16 +254,18 @@ A file maps section names to their fields:
 ## Actions
 
 ```bash
-rohi action list                                   # all actions: service, name, read/write
-rohi action describe network scan                     # arguments and results
-rohi action run network scan                          # results as a table, one row per record
-rohi action run network reconnect
-rohi action run radio tune channel=11              # arguments are NAME=VALUE, all required
-rohi -o json action run network scan
+rohi action                                        # all actions: service, name, privileged
+rohi action network                                # the actions of one service with their arguments
+rohi action network scan --help                    # arguments and results (generated from the device)
+rohi action network scan                           # results as a table, one row per record
+rohi action network reconnect
+rohi action radio tune channel=11                  # arguments are NAME=VALUE, all required
+rohi -o json action network scan
 ```
 
-`write` actions need a link that satisfies the authorization policy of the device. A refusal with a stable reason is
-reported as `the device rejected the action: <reason>` (for example `already_provisioned`).
+`-o json` with `--help` prints the schema. Privileged actions need a link that satisfies the authorization policy of
+the device. A refusal with a stable reason is reported as `the device rejected the action: <reason>` (for example
+`already_provisioned`).
 
 ## Identity
 
@@ -235,8 +273,8 @@ The identity is an ordinary service: no dedicated command.
 
 ```bash
 rohi status identity                                   # state, public key; never the secret
-rohi action run identity provision secret=-            # 32-byte secret as hex, from stdin or a hidden prompt
-rohi action run identity erase
+rohi action identity provision secret=-               # 32-byte secret as hex, from stdin or a hidden prompt
+rohi action identity erase
 ```
 
 The secret is derived on a trusted machine (`rohi::derive_identity`, see [Device identity](../sdk/identity.md)) and
@@ -250,11 +288,14 @@ without echoing it.
 | `rohi sensors` | `rohi status sensors` |
 | `rohi time` | `rohi status time` |
 | `rohi wifi` (status) | `rohi status wifi` |
-| `rohi wifi scan` | `rohi action run wifi scan` |
-| `rohi wifi reconnect`, `disconnect` | `rohi action run wifi reconnect` / `disconnect` |
-| `rohi wifi connect`, `configure`, `forget` | `rohi action run wifi connect ssid=- password=-`, `rohi config set wifi ssid=.. password=-`, `rohi config reset wifi`, then `rohi status wifi` |
-| `rohi config [wifi\|connectivity]` | `rohi config get <section>` |
-| `rohi connectivity set --host ..` | `rohi config set connectivity host=..` |
+| `rohi wifi scan` | `rohi action wifi scan` |
+| `rohi wifi reconnect`, `disconnect` | `rohi action wifi reconnect` / `disconnect` |
+| `rohi wifi connect`, `configure`, `forget` | `rohi action wifi connect ssid=- password=-`, `rohi config wifi ssid=.. password=-`, `rohi config reset wifi`, then `rohi status wifi` |
+| `rohi connectivity set --host ..` | `rohi config connectivity host=..` |
+| `rohi config list`, `config describe <section>` | `rohi config`, `rohi config <section> --help` |
+| `rohi config get <section>`, `config set <section> ..` | `rohi config <section>`, `rohi config <section> FIELD=VALUE` |
+| `rohi config unset <section> <field>` | `rohi config <section> FIELD=null` (removes the override) |
+| `rohi action list`, `describe`, `run` | `rohi action`, `rohi action <service> <action> --help`, `rohi action <service> <action>` |
 | `rohi backup export` / `import` | `rohi config export` / `apply` |
 
 ## Commands
@@ -263,11 +304,11 @@ without echoing it.
 |---------|--------------|
 | `scan` | discover nearby devices |
 | `status [SERVICE] [--watch]` | device summary or one service |
-| `config list`, `describe`, `get`, `set`, `unset`, `reset` | read and change configuration sections |
-| `config export`, `diff`, `apply` | configuration files |
+| `config [SECTION] [FIELD=VALUE...]`, `config reset SECTION` | list, show and change configuration sections |
+| `config export`, `diff`, `apply` | configuration files (your overrides) |
 | `factory-reset [--yes]` | format the configuration storage, identity included |
 | `reboot` | reboot the device |
-| `action list`, `describe`, `run` | actions of the services |
+| `action [SERVICE] [ACTION] [ARG=VALUE...]` | list and run the actions of the services |
 
 ## Troubleshooting
 
@@ -276,7 +317,7 @@ without echoing it.
 | `no ROHI device found` | Bluetooth is on, the device is powered and advertising, no other client holds its connection; raise `--scan-timeout` |
 | `timed out waiting for the device` | the device is in range; raise `--timeout` |
 | `multiple ROHI devices found` | pass `--device` or set `ROHI_DEVICE`; `rohi scan` lists them |
-| `the device has no section …` / `NotFound` | the name is not one the device lists: `rohi config list`, `rohi status`, `rohi action list` |
+| `the device has no section …` / `NotFound` | the name is not one the device lists: `rohi config`, `rohi status`, `rohi action` |
 | a section shows fewer fields than expected | the tool is older than the firmware; rebuild `rohi` from the same revision |
 | `the device refused the request: permission denied` | the change needs an encrypted or authenticated link, see [Security](../sdk/control.md#security) |
 

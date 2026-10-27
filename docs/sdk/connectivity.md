@@ -131,21 +131,21 @@ snapshot, encode, sign), queues it in the bounded in-memory `Outbox` (no allocat
 
 ## Configuration
 
-`ConnectivityConfig` is a persistent `ConfigSection` (owned by `rohi-connectivity`; see
+`ConnectivityConfig` is the effective section, persisted as the overrides `ConnectivityOverrides` (owned by `rohi-connectivity`; see
 [Add a ConfigSection](../guides/add-config-section.md)): `enabled`, `node_id`, `interval_s` (10 s … 24 h),
 `host` (letters, digits, `.`, `-`; written into the `Host` header, so no spaces or line breaks) and `port`. The
-CBOR layout is pinned by `cbor_encoding_is_stable`.
+CBOR map of overrides (version 1) is pinned by a golden test.
 
 The configuration is the `connectivity` [config section](service.md#config-sections), edited with the generic
-`rohi config` commands, for example `rohi config set connectivity host=ingress.example.org node_id=42 enabled=true`
-and read with `rohi config get connectivity`. A change is applied live: the firmware's configuration owner task publishes every commit
+`rohi config` commands, for example `rohi config connectivity host=ingress.example.org node_id=42 enabled=true`
+and read with `rohi config connectivity`. A change is applied live: the firmware's configuration owner task publishes every commit
 or removal of the section to the telemetry task, which stops the running service and starts a new one with the new
 values (or stays stopped when the configuration is disabled or invalid). The outbox of the replaced service is dropped
 and the published status restarts from `Starting`.
 
-In `altruist-urban`, when no section is stored the build-time defaults apply: the environment variables
+In `altruist-urban`, while the user has no connectivity overrides the build-time defaults apply: the environment variables
 `ROHI_CONNECTIVITY_HOST`, `ROHI_CONNECTIVITY_PORT`, `ROHI_CONNECTIVITY_NODE_ID` and `ROHI_CONNECTIVITY_INTERVAL_S`
-at compile time. Without a host, telemetry is disabled. Removing the stored section (`rohi config reset connectivity`) returns to these defaults.
+at compile time. Without a host, telemetry is disabled. Once any override is stored, the overrides are applied to `ConnectivityConfig::default()` (disabled) and the build-time values no longer apply, so set `host`, `node_id` and `enabled` together. `rohi config reset connectivity` returns to the build-time defaults.
 
 ## Status
 
@@ -162,9 +162,9 @@ without any cooperation from the sending task:
 | `Backoff(error)` | `running` / degraded / no | `network_unavailable`, `dns_failed`, `connect_failed`, `connection_timeout`, `io_error`, `bad_response`, `delivery_rejected` |
 | `Unauthorized` | `running` / **error** / no | `unauthorized` |
 
-Status fields: `frames_created`, `frames_delivered`, `send_retries`, `frames_rejected`, `queue_depth` and `frames_without_location`; the ingress `host` and `port` are configuration, see `rohi config get connectivity`. Without a location an otherwise healthy
+Status fields: `frames_created`, `frames_delivered`, `send_retries`, `frames_rejected`, `queue_depth` and `frames_without_location`; the ingress `host` and `port` are configuration, see `rohi config connectivity`. Without a location an otherwise healthy
 service is `degraded` with the warning `no_location` (and so is the device health), because the frames are sent but
-incomplete; `rohi config set location latitude=.. longitude=..` fixes it, see [Location](location.md). The service is not
+incomplete; `rohi config location latitude=.. longitude=..` fixes it, see [Location](location.md). The service is not
 essential for the device.
 
 ## Limits

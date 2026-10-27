@@ -1,18 +1,35 @@
 List and run the actions of the services.
 
-Actions are explicit operations a service offers, for example scanning for networks or reconnecting. The device describes the arguments and the results of every action.
+Actions are explicit operations a service offers, for example scanning
+for networks or reconnecting. The device describes the arguments and
+the results of every action.
 
-Usage: rohi action [OPTIONS] <COMMAND>
+  rohi action                            list all actions
+  rohi action SERVICE                    list the actions of a service
+  rohi action SERVICE ACTION [ARG=VALUE] run an action
+  rohi action SERVICE ACTION --help      describe an action
 
-Commands:
-  list      List the actions of all services
-  describe  Describe the arguments and results of an action
-  run       Run an action
-  help      Print this message or the help of the given subcommand(s)
+Arguments are `NAME=VALUE` pairs and all are required. Use `NAME=-` to
+read a value from stdin, or to be asked for it on a terminal, so that
+it stays out of the shell history; actions with secret arguments accept
+nothing else. Bytes are given as hex. The results are printed as a
+table, one row per record.
+
+Usage: rohi action [OPTIONS] [SERVICE] [ACTION] [ARG=VALUE]...
+
+Arguments:
+  [SERVICE]
+          The service whose actions to list or run
+
+  [ACTION]
+          The action to run
+
+  [ARG=VALUE]...
+          `NAME=VALUE` pairs
 
 Options:
   -h, --help
-          Print help (see a summary with '-h')
+          Print help; for an action, describe its arguments and results
 
 Target:
   -d, --device <DEVICE>
@@ -50,3 +67,14 @@ Connection:
           How long to wait for a device response
           
           [default: 10]
+
+Examples:
+  rohi action
+  rohi action wifi
+  rohi action wifi scan
+  rohi action wifi connect ssid=- password=-
+  rohi action wifi reconnect
+  rohi action wifi connect --help
+  rohi action identity provision secret=-
+  rohi -o json action wifi scan
+

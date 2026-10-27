@@ -13,13 +13,15 @@ use std::rc::Rc;
 
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use rohi::{ClientTransport, Device, Error};
-use rohi_connectivity::ConnectivityConfig;
+use rohi_config::ConfigOverrides;
+use rohi_connectivity::{ConnectivityConfig, ConnectivityOverrides};
 use rohi_control::{ControlBackend, Controller, Device as BackendDevice, DeviceInfo, OpenPolicy};
 use rohi_control_ble::ControlBle;
 use rohi_identity::{Identity, IdentityService, IdentityStore, IdentityStoreError, PublicKey};
-use rohi_location::{LocationConfig, LocationService, LocationShared};
-use rohi_net::WifiConfig;
+use rohi_location::LocationConfig;
+use rohi_location::{LocationOverrides, LocationService, LocationShared};
 use rohi_net::{BleConnectionInfo, BleError, BleState, BleTransport};
+use rohi_net::{WifiConfig, WifiOverrides};
 use rohi_service::{
     ActionDescriptor, ActionError, ActionOutput, Bounds, ConfigField, EnumDescriptor, EnumVariant,
     FIRST_SERVICE_ISSUE, FieldDescriptor, FieldError, Issue, IssueDescriptor, IssueSeverity,
@@ -121,6 +123,24 @@ pub struct Gadget {
     pub mode: Option<u32>,
 }
 
+impl Default for Gadget {
+    fn default() -> Self {
+        Self {
+            label: String::new(),
+            level: 50,
+            mode: None,
+        }
+    }
+}
+
+rohi_config::config_overrides! {
+    pub struct GadgetOverrides for Gadget, version 3 {
+        1 => label: String,
+        2 => level: u64,
+        3 => mode: Option<u32>,
+    }
+}
+
 impl ManagedConfig for Gadget {
     const SECTION_ID: u64 = 9;
     const NAME: &'static str = "gadget";
@@ -140,13 +160,7 @@ impl ManagedConfig for Gadget {
         &[EnumVariant::new(0, "fast"), EnumVariant::new(1, "slow")],
     )];
 
-    fn defaults() -> Self {
-        Self {
-            label: String::new(),
-            level: 50,
-            mode: None,
-        }
-    }
+    type Overrides = GadgetOverrides;
 
     fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
         Ok(match id {
@@ -170,16 +184,6 @@ impl ManagedConfig for Gadget {
 
     fn field_is_set(&self, id: u32) -> Result<bool, FieldError> {
         Ok(self.read_field(id)?.is_some())
-    }
-
-    fn unset_field(&mut self, id: u32) -> Result<(), FieldError> {
-        match id {
-            3 => {
-                self.mode = None;
-                Ok(())
-            }
-            _ => Err(FieldError::NotOptional),
-        }
     }
 
     fn validate(&self) -> Result<(), FieldError> {
@@ -318,18 +322,18 @@ impl IdentityStore for MemIdentity {
 /// The location section: publishes to the shared location like the firmware.
 #[derive(Clone)]
 pub struct LocationStore {
-    pub mem: Mem<LocationConfig>,
+    pub mem: Mem<LocationOverrides>,
     pub shared: Rc<LocationShared<NoopRawMutex>>,
 }
 
-impl SectionStore<LocationConfig> for LocationStore {
-    async fn load(&self) -> Result<Option<LocationConfig>, StoreError> {
+impl SectionStore<LocationOverrides> for LocationStore {
+    async fn load(&self) -> Result<Option<LocationOverrides>, StoreError> {
         self.mem.load().await
     }
 
-    async fn store(&self, config: &LocationConfig) -> Result<(), StoreError> {
-        self.mem.store(config).await?;
-        self.shared.publish_configured(Some(config));
+    async fn store(&self, overrides: &LocationOverrides) -> Result<(), StoreError> {
+        self.mem.store(overrides).await?;
+        self.shared.publish_configured(Some(&overrides.effective()));
         Ok(())
     }
 
@@ -343,9 +347,9 @@ impl SectionStore<LocationConfig> for LocationStore {
 /// The state of the fake device, kept by the test so it can look at it after
 /// the command ran.
 pub struct Bench {
-    pub wifi: Mem<WifiConfig>,
-    pub telemetry: Mem<ConnectivityConfig>,
-    pub gadget: Mem<Gadget>,
+    pub wifi: Mem<WifiOverrides>,
+    pub telemetry: Mem<ConnectivityOverrides>,
+    pub gadget: Mem<GadgetOverrides>,
     pub location: LocationStore,
     pub identity: MemIdentity,
     pub radio: Radio,
@@ -383,9 +387,9 @@ impl Default for Bench {
 }
 
 type Sections = (
-    ManagedSection<WifiConfig, Mem<WifiConfig>, NoopRawMutex>,
-    ManagedSection<ConnectivityConfig, Mem<ConnectivityConfig>, NoopRawMutex>,
-    ManagedSection<Gadget, Mem<Gadget>, NoopRawMutex>,
+    ManagedSection<WifiConfig, Mem<WifiOverrides>, NoopRawMutex>,
+    ManagedSection<ConnectivityConfig, Mem<ConnectivityOverrides>, NoopRawMutex>,
+    ManagedSection<Gadget, Mem<GadgetOverrides>, NoopRawMutex>,
     ManagedSection<LocationConfig, LocationStore, NoopRawMutex>,
 );
 

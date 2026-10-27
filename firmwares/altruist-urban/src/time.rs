@@ -40,11 +40,12 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::Delay;
 use log::{info, warn};
+use rohi_config::ConfigOverrides;
 use rohi_hal_esp::EmbassyClock;
 use rohi_net::NetworkHandle;
 use rohi_service::ManagedConfig;
 use rohi_time::{SyncSchedule, Synchronizer, TimeConfig, TimeService, UnixTime};
-use rohi_time_ntp::{NtpConfig, NtpServersConfig, NtpTimeSource};
+use rohi_time_ntp::{NtpConfig, NtpServersConfig, NtpServersOverrides, NtpTimeSource};
 
 use crate::config::ConfigHandle;
 use crate::resources::Ip;
@@ -106,9 +107,9 @@ fn resolve(stored: Option<NtpServersConfig>) -> NtpServersConfig {
         Some(config) if config.validate().is_ok() => config,
         Some(_) => {
             warn!("Time: stored NTP servers are invalid, using the defaults");
-            NtpServersConfig::defaults()
+            NtpServersConfig::default()
         }
-        None => NtpServersConfig::defaults(),
+        None => NtpServersConfig::default(),
     }
 }
 
@@ -124,11 +125,11 @@ fn resolve(stored: Option<NtpServersConfig>) -> NtpServersConfig {
 /// samples at once.
 #[embassy_executor::task]
 pub async fn ntp_task(network: NetworkHandle<'static, Ip>, config: ConfigHandle) {
-    let mut servers = match config.get::<NtpServersConfig>().await {
-        Ok(stored) => resolve(stored),
+    let mut servers = match config.get::<NtpServersOverrides>().await {
+        Ok(stored) => resolve(stored.map(|overrides| overrides.effective())),
         Err(error) => {
             warn!("Time: stored NTP servers unreadable: {}", error);
-            NtpServersConfig::defaults()
+            NtpServersConfig::default()
         }
     };
     loop {

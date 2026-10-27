@@ -95,7 +95,7 @@ the firmware implements on its configuration handle):
 | `InvokeAction identity.provision { secret }` | provision (secret argument) | stores the identity, returns its public key |
 | `InvokeAction identity.erase` | mutate | removes the identity section; no-op when absent |
 
-`rohi status identity` shows the state; `rohi action run identity provision secret=-` runs the action.
+`rohi status identity` shows the state; `rohi action identity provision secret=-` runs the action.
 
 * A status of `stopped` with the informational issue `not_provisioned` is the normal state of a fresh device.
 * `provision` succeeds only when not provisioned, otherwise it is *rejected* with the reason `already_provisioned`. An
@@ -122,8 +122,8 @@ There is no identity command: the generic `status` and `action` commands are use
 
 ```bash
 rohi status identity                          # state and public key; never the secret
-rohi action run identity provision secret=-   # 32-byte secret as hex, read from stdin or a hidden prompt
-rohi action run identity erase
+rohi action identity provision secret=-   # 32-byte secret as hex, read from stdin or a hidden prompt
+rohi action identity erase
 ```
 
 The secret is derived on the host with `rohi::derive_identity(suri, number)` (the library of the `rohi` crate) and only
@@ -148,9 +148,9 @@ scrubbed after use.
 ## Validation checklist (hardware)
 
 1. Fresh Altruist Urban: `rohi status identity` reports *not provisioned*; sensors and BLE diagnostics work.
-2. `rohi action run identity provision secret=-` with the secret derived from `<test-master>`: host and device public keys match.
+2. `rohi action identity provision secret=-` with the secret derived from `<test-master>`: host and device public keys match.
 3. Reboot: `rohi status identity` returns the same public key. Change unrelated configuration, reboot: unchanged.
-4. `rohi action run identity erase`: state becomes *not provisioned*, signing returns `IdentityNotProvisioned`, sensors keep running.
+4. `rohi action identity erase`: state becomes *not provisioned*, signing returns `IdentityNotProvisioned`, sensors keep running.
 5. Provision again with the same master and number: the original public key is restored.
 
 ## Out of scope

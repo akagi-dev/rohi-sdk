@@ -4,14 +4,14 @@
 **independent typed sections**; there is no central `DeviceConfig`. A feature crate defines its own section and
 the store persists it without knowing anything about it.
 
-The store only persists bytes. How users see and change a section (`rohi config get/set/describe`, atomic patches,
+The store only persists bytes. How users see and change a section (`rohi config`, atomic patches of overrides,
 secret fields, revisions) is a separate, generic layer: a feature crate also implements `ManagedConfig` for its typed
 section, see [Service pipeline](service.md#config-sections).
 
 ```text
 feature crate
     ↓
-typed ConfigSection ── #[derive(ConfigSection)] ── section ID / version
+typed section ── overrides (`config_overrides!`) or `#[derive(ConfigSection)]` ── section ID / version
     ↓
 minicbor payload
     ↓
@@ -30,14 +30,16 @@ Crates:
 
 | Crate                 | Responsibility                                                                    |
 |-----------------------|-----------------------------------------------------------------------------------|
-| `rohi-config`         | `ConfigSection`, `ConfigStorage`, `ConfigStore`, CBOR slot format, `MemoryStorage` |
+| `rohi-config`         | `ConfigSection`, `Override`, `config_overrides!`, `ConfigStorage`, `ConfigStore`, CBOR slot format, `MemoryStorage` |
 | `rohi-config-derive`  | `#[derive(ConfigSection)]`, section IDs from struct names                          |
 | `rohi-config-esp`     | ESP32-C3 / ESP32-C6 flash backend, bounded flash region, partition lookup          |
 
-Each feature crate owns its own schema (for example `rohi-net` owns `NetworkConfig`); `rohi-config` never learns
+Each feature crate owns its own schema (for example `rohi-net` owns `NetworkConfig` and `NetworkOverrides`); `rohi-config` never learns
 the set of application sections.
 
 ## Defining a section
+
+A hand written section derives the codec and `ConfigSection` (this is how `Identity` is defined):
 
 ```rust,ignore
 use minicbor::{CborLen, Decode, Encode};
@@ -46,16 +48,38 @@ use rohi_config::ConfigSection;
 #[derive(Encode, Decode, CborLen, ConfigSection)]
 #[cbor(array)]
 #[config(version = 1)]
-pub struct WifiConfig {
+pub struct Identity {
     #[n(0)]
-    pub ssid: WifiSsid,
-    #[n(1)]
-    pub password: Option<WifiPassword>,
+    pub secret: Secret,
 }
 
-store.set(&wifi)?;
-let wifi = store.get::<WifiConfig>()?; // Option<WifiConfig>
+store.set(&identity)?;
+let identity = store.get::<Identity>()?; // Option<Identity>
 ```
+
+A section that users configure is split in two. The typed struct (`WifiConfig`) is the **effective** configuration,
+`Default` is the firmware default and it is not persisted. What the store holds is the user's explicit **overrides**,
+declared with the declarative macro `config_overrides!`:
+
+```rust,ignore
+rohi_config::config_overrides! {
+    pub struct WifiOverrides for WifiConfig, version 1 {
+        1 => ssid: WifiSsid,
+        2 => password: Option<WifiPassword>,
+        3 => scan_timeout_ms: u32,
+    }
+}
+
+store.set(&overrides)?;
+let overrides = store.get::<WifiOverrides>()?; // Option<WifiOverrides>
+let wifi: WifiConfig = overrides.effective();  // defaults + overrides
+```
+
+The macro generates a struct with an `Override<T>` per field (`Override::Default`: the user did not override it,
+`Override::Value(v)`: explicit; nullable fields are `Override<Option<T>>`, so `Value(None)` differs from `Default`),
+derives the CBOR codec as a **map** keyed by the stable field ids, and implements `ConfigSection` (the section ID is the
+hash of the name of the *section type*, `WifiConfig`) and `ConfigOverrides<WifiConfig>` (`effective()`,
+`is_overridden`, `capture`, `clear`, `is_empty()`, `FIELD_IDS`). A section without overrides encodes as the empty map.
 
 `store.remove::<T>()` deletes one section, `store.clear()` all of them. The caller never handles section IDs,
 record framing, CRCs, slots or generations.
@@ -65,7 +89,8 @@ secret handling, section IDs, versioning, the container format and unknown-secti
 and documented once in [Persistent ABI](../reference/persistent-abi.md). The step by step recipe is
 [Add a ConfigSection](../guides/add-config-section.md).
 
-The `#[config(version = N)]` attribute is required; `id` and `decode_versioned` are optional, see
+The `#[config(version = N)]` attribute is required for a derived section (`config_overrides!` takes the version in its
+header); `id` and `decode_versioned` are optional, see
 [Section versioning](../reference/persistent-abi.md#section-versioning).
 
 

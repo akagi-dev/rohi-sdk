@@ -21,7 +21,7 @@ use core::net::Ipv4Addr;
 
 use heapless::String;
 use minicbor::{CborLen, Decode, Encode};
-use rohi_config::ConfigSection;
+use rohi_config::config_overrides;
 
 use crate::WifiError;
 
@@ -118,39 +118,48 @@ impl fmt::Debug for Hostname {
     }
 }
 
-/// Persistent network configuration (section `NetworkConfig`, shown to
-/// clients as `network`): how the device gets its IPv4 address.
+/// Effective network configuration (shown to clients as the `network`
+/// section): how the device gets its IPv4 address.
+///
+/// `NetworkConfig::default()` is DHCP with the default timeout. What is
+/// stored are the explicit user overrides of it, [`NetworkOverrides`].
 ///
 /// The static address fields are used only in [`AddressMode::Static`] and
 /// kept otherwise, so switching the mode back and forth does not lose them.
-///
-/// Persistent ABI: the CBOR array is pinned by a golden test; fields are
-/// only ever appended.
-#[derive(Clone, PartialEq, Eq, Debug, Encode, Decode, CborLen, ConfigSection)]
-#[cbor(array)]
-#[config(version = 1)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct NetworkConfig {
     /// How the IPv4 address is obtained.
-    #[n(0)]
     pub address_mode: AddressMode,
     /// Static IPv4 address.
-    #[n(1)]
     pub static_ip: Option<Ipv4>,
     /// Length of the network prefix of the static address, 1 to 30.
-    #[n(2)]
     pub prefix_len: Option<u8>,
     /// Static default gateway.
-    #[n(3)]
     pub gateway: Option<Ipv4>,
     /// Static DNS server.
-    #[n(4)]
     pub dns: Option<Ipv4>,
     /// Host name announced to the DHCP server.
-    #[n(5)]
     pub hostname: Option<Hostname>,
     /// Bound of obtaining an address from DHCP.
-    #[n(6)]
     pub dhcp_timeout_ms: u32,
+}
+
+config_overrides! {
+    /// Persisted overrides of the [`NetworkConfig`] section (section
+    /// `NetworkConfig`).
+    ///
+    /// Persistent ABI: a CBOR map keyed by the field ids below, which are only
+    /// ever added; a field that is not overridden is absent. The map is pinned
+    /// by a golden test.
+    pub struct NetworkOverrides for NetworkConfig, version 1 {
+        1 => address_mode: AddressMode,
+        2 => static_ip: Option<Ipv4>,
+        3 => prefix_len: Option<u8>,
+        4 => gateway: Option<Ipv4>,
+        5 => dns: Option<Ipv4>,
+        6 => hostname: Option<Hostname>,
+        7 => dhcp_timeout_ms: u32,
+    }
 }
 
 impl Default for NetworkConfig {
@@ -234,7 +243,9 @@ pub struct StaticIpv4 {
 mod tests {
     extern crate std;
 
-    use rohi_config::{ConfigStore, MemoryStorage, SectionId};
+    use rohi_config::{
+        ConfigOverrides, ConfigSection, ConfigStore, MemoryStorage, Override, SectionId,
+    };
 
     use super::*;
 
@@ -255,68 +266,97 @@ mod tests {
 
     const BUFFER: usize = 256;
 
-    fn encode(config: &NetworkConfig) -> std::vec::Vec<u8> {
+    fn encode(overrides: &NetworkOverrides) -> std::vec::Vec<u8> {
         let mut buffer = [0u8; BUFFER];
-        let used = rohi_config::encode_to_slice(config, &mut buffer).unwrap();
-        assert_eq!(used, minicbor::len(config));
+        let used = rohi_config::encode_to_slice(overrides, &mut buffer).unwrap();
+        assert_eq!(used, minicbor::len(overrides));
         buffer[..used].to_vec()
     }
 
-    fn roundtrip(config: &NetworkConfig) -> NetworkConfig {
-        rohi_config::decode_exact(&encode(config)).unwrap()
+    fn roundtrip(overrides: &NetworkOverrides) -> NetworkOverrides {
+        rohi_config::decode_exact(&encode(overrides)).unwrap()
+    }
+
+    /// The overrides that make `config` the effective configuration.
+    fn overrides_of(config: &NetworkConfig) -> NetworkOverrides {
+        NetworkOverrides {
+            address_mode: Override::Value(config.address_mode),
+            static_ip: Override::Value(config.static_ip),
+            prefix_len: Override::Value(config.prefix_len),
+            gateway: Override::Value(config.gateway),
+            dns: Override::Value(config.dns),
+            hostname: Override::Value(config.hostname.clone()),
+            dhcp_timeout_ms: Override::Value(config.dhcp_timeout_ms),
+        }
     }
 
     #[test]
     fn section_id_is_derived_from_the_type_name() {
-        assert_eq!(NetworkConfig::ID, SectionId::from_name("NetworkConfig"));
-        assert_eq!(NetworkConfig::VERSION, 1);
-        assert_eq!(NetworkConfig::ID, SectionId(0x48f8_9649_eb74_bec7));
+        assert_eq!(NetworkOverrides::ID, SectionId::from_name("NetworkConfig"));
+        assert_eq!(NetworkOverrides::VERSION, 1);
+        assert_eq!(NetworkOverrides::ID, SectionId(0x48f8_9649_eb74_bec7));
     }
 
     #[test]
     fn cbor_encoding_is_stable() {
-        assert_eq!(
-            encode(&NetworkConfig::new()),
-            [
-                0x87, // array(7)
-                0x00, // address_mode: dhcp
-                0xf6, 0xf6, 0xf6, 0xf6, 0xf6, // static_ip, prefix_len, gateway, dns, hostname
-                0x19, 0x4e, 0x20, // dhcp_timeout_ms 20000
-            ]
-        );
-        let mut config = static_config();
-        config.hostname = Hostname::new("urban");
+        // Nothing overridden is an empty map.
+        assert_eq!(encode(&NetworkOverrides::default()), [0xa0]);
+        let overrides = NetworkOverrides {
+            address_mode: Override::Value(AddressMode::Static),
+            static_ip: Override::Value(address(192, 168, 1, 50)),
+            prefix_len: Override::Value(Some(24)),
+            hostname: Override::Value(Hostname::new("urban")),
+            ..NetworkOverrides::default()
+        };
         // Static mode, 192.168.1.50 as a big-endian integer, /24.
         assert_eq!(
-            encode(&config),
+            encode(&overrides),
             [
-                0x87, 0x01, 0x1a, 0xc0, 0xa8, 0x01, 0x32, 0x18, 0x18, 0x1a, 0xc0, 0xa8, 0x01, 0x01,
-                0x1a, 0x01, 0x01, 0x01, 0x01, 0x65, b'u', b'r', b'b', b'a', b'n', 0x19, 0x4e, 0x20,
+                0xa4, // map(4)
+                0x01, 0x01, // 1: address_mode static
+                0x02, 0x1a, 0xc0, 0xa8, 0x01, 0x32, // 2: static_ip
+                0x03, 0x18, 0x18, // 3: prefix_len 24
+                0x06, 0x65, b'u', b'r', b'b', b'a', b'n', // 6: hostname
             ]
         );
     }
 
     #[test]
     fn other_layouts_and_trailing_bytes_are_rejected() {
-        // An array of the wrong length.
-        assert!(rohi_config::decode_exact::<NetworkConfig>(&[0x81, 0x00]).is_err());
-        let mut bytes = encode(&NetworkConfig::new());
+        // An array instead of a map.
+        assert!(rohi_config::decode_exact::<NetworkOverrides>(&[0x81, 0x00]).is_err());
+        let mut bytes = encode(&NetworkOverrides::default());
         bytes.push(0x00);
-        assert!(rohi_config::decode_exact::<NetworkConfig>(&bytes).is_err());
+        assert!(rohi_config::decode_exact::<NetworkOverrides>(&bytes).is_err());
     }
 
     #[test]
     fn a_record_of_another_version_is_not_decoded() {
-        let bytes = encode(&NetworkConfig::new());
-        assert!(NetworkConfig::decode_versioned(1, &bytes).is_ok());
+        let bytes = encode(&NetworkOverrides::default());
+        assert!(NetworkOverrides::decode_versioned(1, &bytes).is_ok());
+        assert!(NetworkOverrides::decode_versioned(2, &bytes).is_err());
     }
 
     #[test]
     fn roundtrips() {
-        assert_eq!(roundtrip(&NetworkConfig::new()), NetworkConfig::new());
+        assert_eq!(
+            roundtrip(&NetworkOverrides::default()),
+            NetworkOverrides::default()
+        );
         let mut full = static_config();
         full.hostname = Hostname::new("altruist-1");
-        assert_eq!(roundtrip(&full), full);
+        let overrides = overrides_of(&full);
+        assert_eq!(roundtrip(&overrides), overrides);
+        assert_eq!(overrides.effective(), full);
+    }
+
+    #[test]
+    fn nothing_is_stored_for_the_defaults() {
+        assert!(NetworkOverrides::default().is_empty());
+        assert_eq!(
+            NetworkOverrides::default().effective(),
+            NetworkConfig::default()
+        );
     }
 
     #[test]
@@ -324,8 +364,9 @@ mod tests {
         let mut config = static_config();
         config.hostname = Hostname::new(&"h".repeat(MAX_HOSTNAME_LEN));
         config.dhcp_timeout_ms = u32::MAX;
-        assert!(minicbor::len(&config) <= rohi_config::MAX_SECTION_PAYLOAD);
-        assert_eq!(roundtrip(&config), config);
+        let overrides = overrides_of(&config);
+        assert!(minicbor::len(&overrides) <= rohi_config::MAX_SECTION_PAYLOAD);
+        assert_eq!(roundtrip(&overrides), overrides);
     }
 
     #[test]
@@ -434,10 +475,10 @@ mod tests {
     #[test]
     fn persists_in_config_store_and_can_be_removed() {
         let mut store = ConfigStore::open(MemoryStorage::<16384>::new()).unwrap();
-        let config = static_config();
-        store.set(&config).unwrap();
-        assert_eq!(store.get::<NetworkConfig>().unwrap(), Some(config));
-        store.remove::<NetworkConfig>().unwrap();
-        assert_eq!(store.get::<NetworkConfig>().unwrap(), None);
+        let overrides = overrides_of(&static_config());
+        store.set(&overrides).unwrap();
+        assert_eq!(store.get::<NetworkOverrides>().unwrap(), Some(overrides));
+        store.remove::<NetworkOverrides>().unwrap();
+        assert_eq!(store.get::<NetworkOverrides>().unwrap(), None);
     }
 }

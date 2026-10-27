@@ -135,7 +135,7 @@ The intervals are `SyncSchedule` fields; `SyncSchedule::DEFAULT` holds the value
 
 The `time` [service](service.md) (`TimeStatusService` over `TimeService`, read-only, no secure link needed) reports its
 state and, when synchronized, `unix_time` (ms; absent while unsynchronized), `source`, `sync_age`, `uncertainty` and
-`consecutive_failures`; the configured time servers are in the `time` config section, not repeated in the status. An unsynchronized device that has not failed yet is `starting`; after failures it is `running` and
+`consecutive_failures`; the time servers are in the `time` config section, not repeated in the status. An unsynchronized device that has not failed yet is `starting`; after failures it is `running` and
 `degraded` with the active issue of the last failure category (`network_unavailable`, `resolve_failed`, `timeout`,
 `invalid_response`, `rejected`, `implausible`, `source_failure`). A stale time is usable but `degraded`. The service is not
 essential for the device. See [Services and status](../getting-started/services.md):
@@ -156,12 +156,14 @@ consecutive_failures     0
 ```
 
 The servers are the `time` config section (`NtpServersConfig`, fields `server1` to `server4`: host names or IPv4
-addresses of letters, digits, `.` and `-`, up to 64 bytes). `server1` is required; the defaults are `pool.ntp.org` and
-`time.cloudflare.com`, and `rohi config reset time` restores them. A change is applied at once: the NTP task restarts
-with the new servers and samples immediately.
+addresses of letters, digits, `.` and `-`, up to 64 bytes). The defaults are `pool.ntp.org` and `time.cloudflare.com`
+(`server3` and `server4` have no value). `FIELD=null` removes an override and restores the default, so
+`server2=null` brings back `time.cloudflare.com`; a field whose default is a server cannot be forced to "none", and
+`rohi config reset time` removes every override. A change is applied at once: the NTP task restarts with the new
+servers and samples immediately.
 
 ```text
-$ rohi config set time server1=ntp.example.org server2=time.example.net
+$ rohi config time server1=ntp.example.org server2=time.example.net
 ```
 
 Manual resynchronization is not offered: periodic automatic synchronization is authoritative.

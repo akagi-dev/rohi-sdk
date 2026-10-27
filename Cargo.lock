@@ -53,7 +53,7 @@ checksum = "c583acf993cf4245c4acb0a2cc2ab1f9cc097de73411bb6d3647ff6af2b1013d"
 
 [[package]]
 name = "altruist-urban"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "embassy-embedded-hal",
  "embassy-executor",
@@ -3747,7 +3747,7 @@ dependencies = [
 
 [[package]]
 name = "rohi"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "btleplug",
  "chrono",
@@ -3755,6 +3755,8 @@ dependencies = [
  "embassy-sync 0.8.0",
  "futures",
  "heapless 0.9.3",
+ "minicbor",
+ "rohi-config",
  "rohi-connectivity",
  "rohi-control",
  "rohi-control-ble",
@@ -3776,7 +3778,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-config"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "minicbor",
  "proptest",
@@ -3785,7 +3787,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-config-derive"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -3795,7 +3797,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-config-esp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "embedded-storage",
  "esp-bootloader-esp-idf",
@@ -3806,7 +3808,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-connectivity"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",
@@ -3829,7 +3831,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-connectivity-proto"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "heapless 0.9.3",
  "micropb",
@@ -3838,11 +3840,13 @@ dependencies = [
 
 [[package]]
 name = "rohi-control"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",
  "heapless 0.9.3",
+ "minicbor",
+ "rohi-config",
  "rohi-control-proto",
  "rohi-service",
  "zeroize",
@@ -3850,7 +3854,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-control-ble"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",
@@ -3864,7 +3868,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-control-proto"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "heapless 0.9.3",
  "micropb",
@@ -3873,7 +3877,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-examples"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "altruist-urban",
  "embassy-executor",
@@ -3895,7 +3899,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-hal"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",
@@ -3910,7 +3914,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-hal-esp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "embassy-time",
  "esp-hal",
@@ -3919,7 +3923,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-identity"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "ed25519-zebra",
  "embassy-futures",
@@ -3933,7 +3937,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-location"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",
@@ -3945,7 +3949,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-net"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",
@@ -3962,7 +3966,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-net-esp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "embassy-futures",
  "embassy-net",
@@ -3981,17 +3985,19 @@ dependencies = [
 
 [[package]]
 name = "rohi-service"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",
  "heapless 0.9.3",
+ "minicbor",
+ "rohi-config",
  "zeroize",
 ]
 
 [[package]]
 name = "rohi-time"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",
@@ -4004,7 +4010,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-time-ntp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",

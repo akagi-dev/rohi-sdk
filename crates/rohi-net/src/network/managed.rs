@@ -27,7 +27,9 @@ use rohi_service::{
     ValueKind,
 };
 
-use super::config::{AddressMode, DHCP_TIMEOUT_RANGE_MS, Hostname, Ipv4, NetworkConfig};
+use super::config::{
+    AddressMode, DHCP_TIMEOUT_RANGE_MS, Hostname, Ipv4, NetworkConfig, NetworkOverrides,
+};
 
 /// Field ids of the `network` config section. Only ever added.
 pub mod field {
@@ -88,9 +90,9 @@ fn number(value: &Value) -> Result<u32, FieldError> {
 }
 
 impl ManagedConfig for NetworkConfig {
-    const SECTION_ID: u64 = <Self as ConfigSection>::ID.0;
+    const SECTION_ID: u64 = <NetworkOverrides as ConfigSection>::ID.0;
     const NAME: &'static str = "network";
-    const VERSION: u16 = <Self as ConfigSection>::VERSION;
+    const VERSION: u16 = <NetworkOverrides as ConfigSection>::VERSION;
     const FIELDS: &'static [ConfigField] = &[
         ConfigField::new(field::ADDRESS_MODE, "address_mode", ValueKind::Enum)
             .with_enum(ADDRESS_MODE_ENUM),
@@ -110,9 +112,7 @@ impl ManagedConfig for NetworkConfig {
     ];
     const ENUMS: &'static [EnumDescriptor] = ADDRESS_MODES;
 
-    fn defaults() -> Self {
-        Self::new()
-    }
+    type Overrides = NetworkOverrides;
 
     fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
         let optional_address = |address: Option<Ipv4>| match address {
@@ -170,19 +170,6 @@ impl ManagedConfig for NetworkConfig {
         Ok(self.read_field(id)?.is_some())
     }
 
-    fn unset_field(&mut self, id: u32) -> Result<(), FieldError> {
-        match id {
-            field::IP => self.static_ip = None,
-            field::PREFIX_LEN => self.prefix_len = None,
-            field::GATEWAY => self.gateway = None,
-            field::DNS => self.dns = None,
-            field::HOSTNAME => self.hostname = None,
-            field::ADDRESS_MODE | field::DHCP_TIMEOUT => return Err(FieldError::NotOptional),
-            _ => return Err(FieldError::UnknownField),
-        }
-        Ok(())
-    }
-
     fn validate(&self) -> Result<(), FieldError> {
         NetworkConfig::validate(self).map_err(|_| FieldError::Invalid)
     }
@@ -192,6 +179,7 @@ impl ManagedConfig for NetworkConfig {
 mod tests {
     extern crate std;
 
+    use rohi_config::ConfigOverrides;
     use rohi_service::MAX_CONFIG_FIELDS;
 
     use super::*;
@@ -203,6 +191,13 @@ mod tests {
     #[test]
     fn the_reported_version_is_the_stored_one() {
         assert_eq!(<NetworkConfig as ManagedConfig>::VERSION, 1);
+    }
+
+    #[test]
+    fn every_field_can_be_overridden() {
+        let mut ids: std::vec::Vec<_> = NetworkConfig::FIELDS.iter().map(|f| f.field.id).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, NetworkOverrides::FIELD_IDS);
     }
 
     #[test]
@@ -219,7 +214,7 @@ mod tests {
 
     #[test]
     fn the_defaults_are_dhcp_without_a_static_address() {
-        let config = NetworkConfig::defaults();
+        let config = NetworkConfig::default();
         assert_eq!(ManagedConfig::validate(&config), Ok(()));
         let read = |id| config.read_field(id).unwrap();
         assert_eq!(
@@ -240,7 +235,7 @@ mod tests {
 
     #[test]
     fn a_static_address_is_set_field_by_field_and_validated_as_a_whole() {
-        let mut config = NetworkConfig::defaults();
+        let mut config = NetworkConfig::default();
         config
             .set_field(field::ADDRESS_MODE, Value::Enum(address_mode::STATIC))
             .unwrap();
@@ -265,13 +260,17 @@ mod tests {
         config.set_field(field::GATEWAY, text("10.0.0.1")).unwrap();
         assert_eq!(ManagedConfig::validate(&config), Err(FieldError::Invalid));
 
-        config.unset_field(field::DNS).unwrap();
-        assert_eq!(config.read_field(field::DNS), Ok(None));
+        // Clearing the override of the DNS server restores the default: none.
+        let mut overrides = NetworkOverrides::default();
+        assert!(overrides.capture(&config, field::DNS));
+        assert_eq!(overrides.effective().dns, config.dns);
+        assert!(overrides.clear(field::DNS));
+        assert_eq!(overrides.effective().read_field(field::DNS), Ok(None));
     }
 
     #[test]
     fn bad_values_are_refused() {
-        let mut config = NetworkConfig::defaults();
+        let mut config = NetworkConfig::default();
         assert_eq!(
             config.set_field(field::IP, text("not an address")),
             Err(FieldError::Invalid)
@@ -307,21 +306,21 @@ mod tests {
     }
 
     #[test]
-    fn the_required_fields_cannot_be_unset() {
-        let mut config = NetworkConfig::defaults();
-        assert_eq!(
-            config.unset_field(field::ADDRESS_MODE),
-            Err(FieldError::NotOptional)
-        );
-        assert_eq!(
-            config.unset_field(field::DHCP_TIMEOUT),
-            Err(FieldError::NotOptional)
-        );
+    fn clearing_an_override_restores_the_default_of_a_required_field() {
+        let mut overrides = NetworkOverrides::default();
+        let mut config = overrides.effective();
+        config
+            .set_field(field::DHCP_TIMEOUT, Value::U64(5_000))
+            .unwrap();
+        overrides.capture(&config, field::DHCP_TIMEOUT);
+        assert_eq!(overrides.effective().dhcp_timeout_ms, 5_000);
+        overrides.clear(field::DHCP_TIMEOUT);
+        assert_eq!(overrides.effective().dhcp_timeout_ms, 20_000);
     }
 
     #[test]
     fn the_host_name_is_optional() {
-        let mut config = NetworkConfig::defaults();
+        let mut config = NetworkConfig::default();
         config
             .set_field(field::HOSTNAME, text("altruist-1"))
             .unwrap();
@@ -329,8 +328,10 @@ mod tests {
             config.read_field(field::HOSTNAME),
             Ok(Some(text("altruist-1")))
         );
-        config.unset_field(field::HOSTNAME).unwrap();
-        assert_eq!(config.hostname, None);
+        let mut overrides = NetworkOverrides::default();
+        overrides.capture(&config, field::HOSTNAME);
+        overrides.clear(field::HOSTNAME);
+        assert_eq!(overrides.effective().hostname, None);
     }
 
     #[test]

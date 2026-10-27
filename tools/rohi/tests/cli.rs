@@ -12,8 +12,10 @@ use clap::{CommandFactory, Parser};
 use common::*;
 use rohi::cli::{Cli, CliError, Ctx, Io, PartialApply, execute};
 use rohi::{Device, Error};
+use rohi_config::{ConfigOverrides, Override};
 use rohi_control::{Controller, OpenPolicy};
 use rohi_control_ble::ControlBle;
+use rohi_net::WifiPassword;
 use serde_json::{Value, json};
 
 const DEV_PHRASE: &str = "bottom drive obey lake curtain smoke basket hold race lonely fit walk";
@@ -140,11 +142,17 @@ async fn run(bench: &Bench, args: &[&str]) -> Outcome {
     run_with(bench, args, Terminal::default()).await
 }
 
+/// The `--help` page of a command: clap's, or for `config` and `action` the
+/// static one printed before any device is contacted.
 fn help(args: &[&str]) -> String {
     let argv = std::iter::once("rohi")
         .chain(args.iter().copied())
         .chain(["--help"]);
-    Cli::try_parse_from(argv).err().unwrap().to_string()
+    match Cli::try_parse_from(argv) {
+        Err(error) => error.to_string(),
+        Ok(cli) => rohi::cli::static_help(&cli.command)
+            .unwrap_or_else(|| panic!("`{args:?} --help` is not a static page")),
+    }
 }
 
 fn golden(name: &str, actual: &str) {
@@ -187,11 +195,6 @@ fn help_texts_are_snapshots() {
         &["scan"],
         &["status"],
         &["config"],
-        &["config", "list"],
-        &["config", "describe"],
-        &["config", "get"],
-        &["config", "set"],
-        &["config", "unset"],
         &["config", "reset"],
         &["config", "export"],
         &["config", "diff"],
@@ -199,9 +202,6 @@ fn help_texts_are_snapshots() {
         &["factory-reset"],
         &["reboot"],
         &["action"],
-        &["action", "list"],
-        &["action", "describe"],
-        &["action", "run"],
     ];
     for page in pages {
         let name = format!("help-{}.txt", page.join("-")).replace("help-.txt", "help.txt");
@@ -286,9 +286,10 @@ fn the_command_tree_has_no_module_specific_commands() {
 fn usage_errors_have_exit_code_2() {
     for args in [
         &["bogus"][..],
-        &["config", "set", "wifi"],
-        &["config", "unset", "wifi"],
-        &["config", "get"],
+        &["config", "reset"],
+        &["config", "diff"],
+        &["config", "wifi", "--bogus"],
+        &["action", "wifi", "scan", "--bogus"],
         &["status", "--interval", "5"],
     ] {
         assert_eq!(parse(args).err().unwrap().exit_code(), 2, "{args:?}");
@@ -402,7 +403,7 @@ async fn status_shows_the_sensor_id_once_an_identity_is_provisioned() {
     };
     run_with(
         &bench,
-        &["action", "run", "identity", "provision", "secret=-"],
+        &["action", "identity", "provision", "secret=-"],
         terminal,
     )
     .await
@@ -538,42 +539,58 @@ async fn a_watch_redraws_in_place_only_while_it_fits_the_terminal() {
 #[tokio::test(flavor = "current_thread")]
 async fn sections_are_listed_and_described_from_the_device() {
     let bench = Bench::new();
-    let outcome = run(&bench, &["config", "list"]).await;
+    let outcome = run(&bench, &["config"]).await;
     outcome.ok();
     assert_eq!(
         outcome.stdout,
         "SECTION       VERSION\nwifi          1\nconnectivity  1\ngadget        3\nlocation      1\n"
     );
+    let outcome = run(&bench, &["-o", "json", "config"]).await;
+    assert_eq!(outcome.ok().json()["sections"][2]["name"], "gadget");
 
-    let outcome = run(&bench, &["config", "describe", "gadget"]).await;
-    outcome.ok();
-    assert!(outcome.stdout.contains("FIELD"), "{}", outcome.stdout);
-    assert!(
-        outcome.stdout.contains("level   u64     read-write  %"),
-        "{}",
-        outcome.stdout
-    );
-    assert!(
-        outcome
-            .stdout
-            .contains("mode    enum?   read-write  fast|slow"),
-        "{}",
-        outcome.stdout
-    );
-    assert!(
-        outcome.stdout.contains("serial  string  read-only"),
-        "{}",
-        outcome.stdout
-    );
+    // The help of a section is generated from the schema of the device.
+    let outcome = run(&bench, &["config", "gadget", "--help"]).await;
+    assert_eq!(
+        outcome.ok().stdout,
+        "\
+Usage:
+  rohi config gadget [FIELD=VALUE...]
 
-    let outcome = run(&bench, &["config", "describe", "wifi"]).await;
-    assert!(
-        outcome.ok().stdout.contains("write-only"),
-        "{}",
-        outcome.stdout
+Fields:
+  label   string
+  level   u64 %
+  mode    enum (fast|slow), nullable
+  serial  string, read-only
+
+Special values:
+  FIELD=null  clear the override and use the field default
+
+Without FIELD=VALUE the effective configuration is shown: the defaults of the
+firmware with your overrides applied. `rohi config reset gadget` removes
+all overrides.
+"
     );
 
-    let outcome = run(&bench, &["config", "describe", "missing"]).await;
+    // Secrets get their own line in the help.
+    let outcome = run(&bench, &["config", "wifi", "-h"]).await;
+    let help = outcome.ok().stdout.clone();
+    assert!(help.contains("password"), "{help}");
+    assert!(help.contains("string, secret, nullable"), "{help}");
+    assert!(help.contains("SECRET=-"), "{help}");
+    assert!(help.contains("scan_timeout"), "{help}");
+
+    // JSON gets the schema.
+    let outcome = run(&bench, &["-o", "json", "config", "gadget", "--help"]).await;
+    let json = outcome.ok().json();
+    assert_eq!(json["fields"][1]["field"]["name"], "level");
+
+    // The dynamic help needs the device: an unknown section is an error.
+    let outcome = run(&bench, &["config", "missing", "--help"]).await;
+    assert!(matches!(
+        outcome.device_error(),
+        Error::Device(rohi::model::ErrorCode::NotFound)
+    ));
+    let outcome = run(&bench, &["config", "missing"]).await;
     assert!(matches!(
         outcome.device_error(),
         Error::Device(rohi::model::ErrorCode::NotFound)
@@ -581,28 +598,33 @@ async fn sections_are_listed_and_described_from_the_device() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn set_stores_a_section_the_tool_has_never_heard_of() {
+async fn the_static_help_of_config_and_action_needs_no_device() {
+    let bench = Bench::new();
+    for command in ["config", "action"] {
+        let outcome = run(&bench, &[command, "--help"]).await;
+        let text = outcome.ok().stdout.clone();
+        assert!(text.contains(&format!("rohi {command}")), "{text}");
+        assert!(text.contains("Examples:"), "{text}");
+    }
+    assert_eq!(bench.writes(), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn setting_fields_shows_the_effective_configuration_the_device_reports() {
     let bench = Bench::new();
     let outcome = run(
         &bench,
-        &[
-            "config",
-            "set",
-            "gadget",
-            "label=lamp",
-            "level=70",
-            "mode=slow",
-        ],
+        &["config", "gadget", "label=lamp", "level=70", "mode=slow"],
     )
     .await;
     outcome.ok();
     assert_eq!(
         outcome.stdout,
-        "`gadget` stored (revision 1)\nA restart is required for the change to take effect\n"
+        "label   lamp\nlevel   70 %\nmode    slow\nserial  SN-1\n\nA restart is required for the change to take effect\n"
     );
     let stored = bench.gadget.value.borrow().clone().unwrap();
     assert_eq!(
-        stored,
+        stored.effective(),
         Gadget {
             label: "lamp".into(),
             level: 70,
@@ -610,20 +632,91 @@ async fn set_stores_a_section_the_tool_has_never_heard_of() {
         }
     );
 
-    let outcome = run(&bench, &["config", "get", "gadget"]).await;
-    outcome.ok();
+    let outcome = run(&bench, &["config", "gadget"]).await;
     assert_eq!(
-        outcome.stdout,
+        outcome.ok().stdout,
         "label   lamp\nlevel   70 %\nmode    slow\nserial  SN-1\n"
     );
-    let outcome = run(&bench, &["config", "get", "gadget", "level"]).await;
-    assert_eq!(outcome.ok().stdout, "level  70 %\n");
-    let outcome = run(&bench, &["-o", "json", "config", "get", "gadget"]).await;
+    let outcome = run(&bench, &["-o", "json", "config", "gadget"]).await;
     let json = outcome.ok().json();
     assert_eq!(json["values"]["level"], 70);
     assert_eq!(json["values"]["mode"], "slow");
-    assert_eq!(json["configured"], true);
+    assert_eq!(json["overridden"], json!(["label", "level", "mode"]));
     assert_eq!(json["section"]["name"], "gadget");
+    assert!(json.get("configured").is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_field_that_is_not_overridden_shows_its_default_and_null_restores_it() {
+    let bench = Bench::new();
+    // Nothing is overridden: the effective configuration is the defaults, a
+    // field whose default is none is `<unset>`.
+    let outcome = run(&bench, &["config", "gadget"]).await;
+    assert_eq!(
+        outcome.ok().stdout,
+        "label   \nlevel   50 %\nmode    <unset>\nserial  SN-1\n"
+    );
+    let outcome = run(&bench, &["-o", "json", "config", "gadget"]).await;
+    let json = outcome.ok().json();
+    assert_eq!(json["values"]["mode"], Value::Null);
+    assert_eq!(json["overridden"], json!([]));
+    assert!(bench.gadget.value.borrow().is_none());
+
+    run(
+        &bench,
+        &["config", "gadget", "label=lamp", "level=70", "mode=slow"],
+    )
+    .await
+    .ok();
+
+    // `null` removes the override: the field follows the default again.
+    let outcome = run(&bench, &["config", "gadget", "level=null"]).await;
+    assert_eq!(
+        outcome.ok().stdout,
+        "label   lamp\nlevel   50 %\nmode    slow\nserial  SN-1\n\nA restart is required for the change to take effect\n"
+    );
+    let stored = bench.gadget.value.borrow().clone().unwrap();
+    assert_eq!(stored.level, Override::Default);
+    assert_eq!(stored.mode, Override::Value(Some(1)));
+
+    // For a field whose default is none it is the same: no value.
+    let outcome = run(&bench, &["config", "gadget", "mode=null"]).await;
+    assert!(
+        outcome.ok().stdout.contains("mode    <unset>\n"),
+        "{}",
+        outcome.stdout
+    );
+    assert_eq!(
+        bench.gadget.value.borrow().clone().unwrap().mode,
+        Override::Default
+    );
+
+    // A required field can be cleared too; the section is then not valid, but
+    // it has no override left except the label.
+    let outcome = run(&bench, &["config", "gadget", "label=null"]).await;
+    assert!(
+        outcome.ok().stdout.contains("label   \n"),
+        "{}",
+        outcome.stdout
+    );
+    assert!(bench.gadget.value.borrow().is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn setting_and_clearing_fields_can_be_combined_in_one_patch() {
+    let bench = Bench::new();
+    run(
+        &bench,
+        &["config", "gadget", "label=lamp", "level=70", "mode=slow"],
+    )
+    .await
+    .ok();
+    let outcome = run(&bench, &["config", "gadget", "level=null", "mode=fast"]).await;
+    outcome.ok();
+    let stored = bench.gadget.value.borrow().clone().unwrap();
+    assert_eq!(stored.label, Override::Value("lamp".into()));
+    assert_eq!(stored.level, Override::Default);
+    assert_eq!(stored.mode, Override::Value(Some(0)));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -631,33 +724,35 @@ async fn bad_input_is_refused_before_anything_is_stored() {
     let bench = Bench::new();
     let cases: &[(&[&str], &str)] = &[
         (
-            &["config", "set", "gadget", "level=lots"],
+            &["config", "gadget", "level=lots"],
             "level: expected a non-negative integer, got `lots`",
         ),
         (
-            &["config", "set", "gadget", "mode=medium"],
+            &["config", "gadget", "mode=medium"],
             "mode: expected one of fast, slow, got `medium`",
         ),
         (
-            &["config", "set", "gadget", "colour=red"],
+            &["config", "gadget", "colour=red"],
             "gadget has no field `colour`; its fields are: label, level, mode, serial",
         ),
         (
-            &["config", "set", "gadget", "serial=X"],
+            &["config", "gadget", "serial=X"],
             "gadget.serial is read-only",
         ),
         (
-            &["config", "set", "gadget", "label"],
-            "`label` is not NAME=VALUE",
+            &["config", "gadget", "serial=null"],
+            "gadget.serial is read-only",
+        ),
+        (&["config", "gadget", "label"], "`label` is not NAME=VALUE"),
+        (
+            &["config", "gadget", "label=a", "label=b"],
+            "label is given twice",
         ),
         (
-            &["config", "unset", "gadget", "label"],
-            "gadget.label is required and cannot be unset",
+            &["config", "gadget", "--dry-run"],
+            "--dry-run needs FIELD=VALUE",
         ),
-        (
-            &["config", "get", "gadget", "colour"],
-            "gadget has no field `colour`",
-        ),
+        (&["config", "--dry-run"], "name the section"),
     ];
     for (args, message) in cases {
         let outcome = run(&bench, args).await;
@@ -673,12 +768,12 @@ async fn bad_input_is_refused_before_anything_is_stored() {
         );
     }
     // The device refuses what the schema cannot express: nothing is stored.
-    let outcome = run(&bench, &["config", "set", "gadget", "level=500"]).await;
+    let outcome = run(&bench, &["config", "gadget", "level=500"]).await;
     assert!(matches!(
         outcome.device_error(),
         Error::Device(rohi::model::ErrorCode::InvalidArgument)
     ));
-    let outcome = run(&bench, &["config", "set", "gadget", "level=5"]).await;
+    let outcome = run(&bench, &["config", "gadget", "level=5"]).await;
     assert!(
         matches!(outcome.error(), CliError::Device(_)),
         "a label is needed"
@@ -689,17 +784,13 @@ async fn bad_input_is_refused_before_anything_is_stored() {
 #[tokio::test(flavor = "current_thread")]
 async fn dry_run_validates_without_storing() {
     let bench = Bench::new();
-    let outcome = run(
-        &bench,
-        &["config", "set", "gadget", "label=lamp", "--dry-run"],
-    )
-    .await;
+    let outcome = run(&bench, &["config", "gadget", "label=lamp", "--dry-run"]).await;
     assert_eq!(
         outcome.ok().stdout,
         "`gadget` is valid; nothing was changed\n"
     );
     assert_eq!(bench.writes(), 0);
-    let outcome = run(&bench, &["config", "set", "gadget", "level=5", "--dry-run"]).await;
+    let outcome = run(&bench, &["config", "gadget", "level=5", "--dry-run"]).await;
     assert!(matches!(outcome.error(), CliError::Device(_)));
 }
 
@@ -708,13 +799,7 @@ async fn secrets_never_travel_on_the_command_line_or_come_back() {
     let bench = Bench::new();
     let outcome = run(
         &bench,
-        &[
-            "config",
-            "set",
-            "wifi",
-            "ssid=office",
-            "password=hunter2hunter2",
-        ],
+        &["config", "wifi", "ssid=office", "password=hunter2hunter2"],
     )
     .await;
     assert!(matches!(outcome.error(), CliError::Usage(_)));
@@ -733,12 +818,17 @@ async fn secrets_never_travel_on_the_command_line_or_come_back() {
     };
     let outcome = run_with(
         &bench,
-        &["config", "set", "wifi", "ssid=office", "password=-"],
+        &["config", "wifi", "ssid=office", "password=-"],
         terminal,
     )
     .await;
     outcome.ok();
     assert!(!outcome.stdout.contains("hunter2") && !outcome.stderr.contains("hunter2"));
+    assert!(
+        outcome.stdout.contains("password         <redacted>\n"),
+        "{}",
+        outcome.stdout
+    );
 
     // On a terminal the user is asked without echo.
     let terminal = Terminal {
@@ -746,30 +836,33 @@ async fn secrets_never_travel_on_the_command_line_or_come_back() {
         input: &["hunter2hunter3"],
         ..Default::default()
     };
-    let outcome = run_with(&bench, &["config", "set", "wifi", "password=-"], terminal).await;
+    let outcome = run_with(&bench, &["config", "wifi", "password=-"], terminal).await;
     outcome.ok();
     assert_eq!(outcome.stderr, "password: \n");
     let stored = bench.wifi.value.borrow().clone().unwrap();
-    assert_eq!(stored.password.unwrap().expose_secret(), b"hunter2hunter3");
+    assert_eq!(
+        stored.password,
+        Override::Value(Some(WifiPassword::from_bytes(b"hunter2hunter3").unwrap()))
+    );
 
-    // Reading shows the secret as configured, in text and in JSON.
-    let outcome = run(&bench, &["config", "get", "wifi"]).await;
+    // Reading shows the secret as redacted, in text and in JSON.
+    let outcome = run(&bench, &["config", "wifi"]).await;
     assert_eq!(
         outcome.ok().stdout,
-        "ssid             office\npassword         <configured>\n\
+        "ssid             office\npassword         <redacted>\n\
 scan_timeout     20000 ms\n\
 connect_timeout  30000 ms\n\
 backoff_initial  1000 ms\n\
 backoff_max      60000 ms\n\
 link_refresh     10000 ms\n"
     );
-    let outcome = run(&bench, &["-o", "json", "config", "get", "wifi"]).await;
+    let outcome = run(&bench, &["-o", "json", "config", "wifi"]).await;
     let json = outcome.ok().json();
     assert_eq!(json["values"]["password"], json!({ "secret": true }));
     assert!(!outcome.stdout.contains("hunter2"));
 
     // Empty stdin is an error, never an empty secret.
-    let outcome = run(&bench, &["config", "set", "wifi", "password=-"]).await;
+    let outcome = run(&bench, &["config", "wifi", "password=-"]).await;
     assert!(matches!(outcome.error(), CliError::PasswordRequired { .. }));
 
     // An empty line is a value for the device to judge, not a missing one.
@@ -777,33 +870,30 @@ link_refresh     10000 ms\n"
         input: &[""],
         ..Default::default()
     };
-    let outcome = run_with(&bench, &["config", "set", "wifi", "password=-"], terminal).await;
+    let outcome = run_with(&bench, &["config", "wifi", "password=-"], terminal).await;
     assert!(
         !matches!(outcome.result, Err(CliError::PasswordRequired { .. })),
         "{}",
         outcome.stderr
     );
 
-    let outcome = run(&bench, &["config", "unset", "wifi", "password"]).await;
-    outcome.ok();
+    // `null` is not a secret: it removes the override, no input is read.
+    let outcome = run(&bench, &["config", "wifi", "password=null"]).await;
     assert!(
-        bench
-            .wifi
-            .value
-            .borrow()
-            .clone()
-            .unwrap()
-            .password
-            .is_none()
+        outcome.ok().stdout.contains("password         <unset>\n"),
+        "{}",
+        outcome.stdout
+    );
+    assert_eq!(
+        bench.wifi.value.borrow().clone().unwrap().password,
+        Override::Default
     );
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn reset_asks_only_where_somebody_can_answer() {
     let bench = Bench::new();
-    run(&bench, &["config", "set", "gadget", "label=lamp"])
-        .await
-        .ok();
+    run(&bench, &["config", "gadget", "label=lamp"]).await.ok();
 
     let outcome = run(&bench, &["config", "reset", "gadget"]).await;
     assert!(matches!(outcome.error(), CliError::ConfirmationRequired));
@@ -826,15 +916,19 @@ async fn reset_asks_only_where_somebody_can_answer() {
     let outcome = run_with(&bench, &["config", "reset", "gadget"], terminal).await;
     outcome.ok();
     assert!(
-        outcome.stderr.contains("will be removed"),
+        outcome
+            .stderr
+            .contains("Every override of the `gadget` section"),
         "{}",
         outcome.stderr
     );
+    assert_eq!(
+        outcome.stdout,
+        "`gadget` reset to the defaults (revision 1)\nA restart is required for the change to take effect\n"
+    );
     assert!(bench.gadget.value.borrow().is_none());
 
-    run(&bench, &["config", "set", "gadget", "label=lamp"])
-        .await
-        .ok();
+    run(&bench, &["config", "gadget", "label=lamp"]).await.ok();
     run(&bench, &["config", "reset", "gadget", "--yes"])
         .await
         .ok();
@@ -858,7 +952,6 @@ async fn configured() -> Bench {
         &bench,
         &[
             "config",
-            "set",
             "connectivity",
             "host=old.example.org",
             "port=80",
@@ -874,45 +967,39 @@ async fn configured() -> Bench {
     };
     run_with(
         &bench,
-        &["config", "set", "wifi", "ssid=office", "password=-"],
+        &["config", "wifi", "ssid=office", "password=-"],
         terminal,
     )
     .await
     .ok();
-    run(
-        &bench,
-        &["config", "set", "gadget", "label=lamp", "mode=fast"],
-    )
-    .await
-    .ok();
+    run(&bench, &["config", "gadget", "label=lamp", "mode=fast"])
+        .await
+        .ok();
     bench
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn export_writes_every_configured_section_without_secrets_or_read_only_fields() {
+async fn export_writes_the_explicit_overrides_without_secrets_or_read_only_fields() {
     let bench = configured().await;
     let outcome = run(&bench, &["config", "export"]).await;
     outcome.ok();
     let json = outcome.json();
+    // Only what was set: the timing of the Wi-Fi and the other fields that
+    // follow the defaults are not frozen into the file. A value that was set
+    // explicitly stays, also when it equals the default (the port).
     assert_eq!(
         json,
         json!({
-            "wifi": {
-                "ssid": "office",
-                "backoff_initial": 1000,
-                "backoff_max": 60000,
-                "link_refresh": 10000,
-                "scan_timeout": 20000,
-                "connect_timeout": 30000,
-            },
-            "connectivity": { "enabled": true, "node_id": 0, "interval_s": 60, "host": "old.example.org", "port": 80 },
-            "gadget": { "label": "lamp", "level": 50, "mode": "fast" },
+            "wifi": { "ssid": "office" },
+            "connectivity": { "enabled": true, "interval_s": 60, "host": "old.example.org", "port": 80 },
+            "gadget": { "label": "lamp", "mode": "fast" },
         })
     );
     assert!(!outcome.stdout.contains("hunter2"));
     assert!(!outcome.stdout.contains("serial"));
+    assert!(!outcome.stdout.contains("scan_timeout"));
 
-    // A section nobody configured is not exported.
+    // A section without overrides is not exported.
     let outcome = run(&Bench::new(), &["config", "export"]).await;
     assert_eq!(outcome.ok().json(), json!({}));
 
@@ -948,8 +1035,8 @@ connectivity:
   ~ host            old.example.org -> new.example.org
   ~ interval_s      60 s -> 120 s
 gadget:
-  ~ level           50 % -> 20 %
-  - mode            fast -> (unset)
+  + level           20 %
+  - mode            fast -> (default)
 wifi:
   reset section
 "
@@ -959,6 +1046,21 @@ wifi:
     // The same file against a device that already matches.
     let same = temp_file("same.json", r#"{ "connectivity": { "port": 80 } }"#);
     let outcome = run(&bench, &["config", "diff", path(&same)]).await;
+    assert_eq!(outcome.ok().stdout, "No differences\n");
+
+    // A value that equals the default is still a change when it is not an
+    // override yet, and clearing a field that is not overridden is none.
+    let pin = temp_file(
+        "pin.json",
+        r#"{ "gadget": { "level": 50, "mode": null, "label": "lamp" } }"#,
+    );
+    let outcome = run(&bench, &["config", "diff", path(&pin)]).await;
+    assert_eq!(
+        outcome.ok().stdout,
+        "gadget:\n  + level           50 %\n  - mode            fast -> (default)\n"
+    );
+    let clear_default = temp_file("clear.json", r#"{ "gadget": { "level": null } }"#);
+    let outcome = run(&bench, &["config", "diff", path(&clear_default)]).await;
     assert_eq!(outcome.ok().stdout, "No differences\n");
 
     let outcome = run(&bench, &["-o", "json", "config", "diff", path(&file)]).await;
@@ -1000,13 +1102,17 @@ async fn apply_merges_unsets_and_resets_with_one_confirmation() {
     // The gadget needs a restart.
     assert!(outcome.stdout.contains("restart"), "{}", outcome.stdout);
 
-    let connectivity = bench.telemetry.value.borrow().clone().unwrap();
+    let connectivity = bench.telemetry.value.borrow().clone().unwrap().effective();
     assert_eq!(connectivity.host.as_str(), "new.example.org");
     assert_eq!(connectivity.port, 443);
     // Missing fields are left alone.
     assert_eq!(connectivity.interval_s, 60);
     assert!(connectivity.enabled);
-    assert_eq!(bench.gadget.value.borrow().clone().unwrap().mode, None);
+    // `null` removed the override of the mode: it follows the default.
+    assert_eq!(
+        bench.gadget.value.borrow().clone().unwrap().mode,
+        Override::Default
+    );
     assert!(bench.wifi.value.borrow().is_none());
 }
 
@@ -1034,6 +1140,7 @@ async fn apply_validates_every_section_before_changing_any() {
             .borrow()
             .clone()
             .unwrap()
+            .effective()
             .host
             .as_str(),
         "old.example.org"
@@ -1063,7 +1170,17 @@ async fn apply_dry_run_and_non_interactive_confirmation() {
 
     let outcome = run(&bench, &["config", "apply", path(&file), "--yes"]).await;
     outcome.ok();
-    assert_eq!(bench.telemetry.value.borrow().clone().unwrap().port, 8080);
+    assert_eq!(
+        bench
+            .telemetry
+            .value
+            .borrow()
+            .clone()
+            .unwrap()
+            .effective()
+            .port,
+        8080
+    );
 
     // A second application has nothing to do.
     let outcome = run(&bench, &["config", "apply", path(&file), "--yes"]).await;
@@ -1092,10 +1209,6 @@ async fn bad_files_never_reach_the_device() {
         (
             r#"{ "wifi": { "password": "hunter2hunter2" } }"#,
             "secret and cannot be part of a file",
-        ),
-        (
-            r#"{ "gadget": { "label": null } }"#,
-            "gadget.label is required and cannot be null",
         ),
         (
             r#"{ "gadget": { "level": "high" } }"#,
@@ -1161,57 +1274,119 @@ fn a_partial_apply_names_what_was_and_was_not_applied() {
 #[tokio::test(flavor = "current_thread")]
 async fn actions_are_listed_described_and_run_from_the_schema() {
     let bench = Bench::new();
-    let outcome = run(&bench, &["action", "list"]).await;
+    let outcome = run(&bench, &["action"]).await;
     outcome.ok();
     assert!(
-        outcome.stdout.starts_with("SERVICE   ACTION     ACCESS\n"),
+        outcome
+            .stdout
+            .starts_with("SERVICE   ACTION     PRIVILEGED\n"),
         "{}",
         outcome.stdout
     );
     assert!(
-        outcome.stdout.contains("radio     reconnect  write"),
+        outcome.stdout.contains("radio     reconnect  yes"),
         "{}",
         outcome.stdout
     );
     assert!(
-        outcome.stdout.contains("identity  provision  write"),
+        outcome.stdout.contains("radio     scan       no"),
+        "{}",
+        outcome.stdout
+    );
+    assert!(
+        outcome.stdout.contains("identity  provision  yes"),
         "{}",
         outcome.stdout
     );
 
-    let outcome = run(&bench, &["action", "describe", "radio", "scan"]).await;
+    // The actions of one service with their arguments.
+    let outcome = run(&bench, &["action", "radio"]).await;
     outcome.ok();
+    assert!(
+        outcome
+            .stdout
+            .starts_with("ACTION     ARGS     PRIVILEGED\n"),
+        "{}",
+        outcome.stdout
+    );
+    assert!(
+        outcome.stdout.contains("tune       channel  no"),
+        "{}",
+        outcome.stdout
+    );
+    assert!(
+        outcome.stdout.contains("scan       -        no"),
+        "{}",
+        outcome.stdout
+    );
+    assert!(!outcome.stdout.contains("provision"), "{}", outcome.stdout);
+    let outcome = run(&bench, &["action", "missing"]).await;
+    assert!(matches!(
+        outcome.device_error(),
+        Error::Device(rohi::model::ErrorCode::NotFound)
+    ));
+
+    // The help of an action is generated from its schema.
+    let outcome = run(&bench, &["action", "radio", "scan", "--help"]).await;
+    outcome.ok();
+    assert!(
+        outcome
+            .stdout
+            .starts_with("Usage:\n  rohi action radio scan\n"),
+        "{}",
+        outcome.stdout
+    );
     assert!(
         outcome.stdout.contains("Results (one record each):"),
         "{}",
         outcome.stdout
     );
     assert!(
-        outcome.stdout.contains("security  enum"),
+        outcome.stdout.contains("security  enum (open|wpa2)"),
         "{}",
         outcome.stdout
     );
-    let outcome = run(&bench, &["action", "describe", "radio", "tune"]).await;
     assert!(
-        outcome.ok().stdout.contains("Arguments (all required):"),
+        outcome.stdout.ends_with("Privileged: no\n"),
         "{}",
         outcome.stdout
     );
+    let outcome = run(&bench, &["action", "radio", "tune", "-h"]).await;
+    assert!(
+        outcome
+            .ok()
+            .stdout
+            .starts_with("Usage:\n  rohi action radio tune channel=VALUE\n"),
+        "{}",
+        outcome.stdout
+    );
+    assert!(
+        outcome
+            .stdout
+            .contains("Arguments (all required):\n  channel  u64"),
+        "{}",
+        outcome.stdout
+    );
+    let outcome = run(&bench, &["-o", "json", "action", "radio", "scan", "--help"]).await;
+    let json = outcome.ok().json();
+    assert_eq!(json["action"]["name"], "scan");
+    // Asking for help runs nothing.
+    assert!(bench.radio.calls.borrow().is_empty());
 
-    let outcome = run(&bench, &["action", "run", "radio", "scan"]).await;
+    let outcome = run(&bench, &["action", "radio", "scan"]).await;
     assert_eq!(
         outcome.ok().stdout,
         "SSID    RSSI     SECURITY\noffice  -50 dBm  wpa2\nguest   -70 dBm  open\n"
     );
-    let outcome = run(&bench, &["-o", "json", "action", "run", "radio", "scan"]).await;
+    let outcome = run(&bench, &["-o", "json", "action", "radio", "scan"]).await;
     let json = outcome.ok().json();
     assert_eq!(json["records"][1]["ssid"], "guest");
     assert_eq!(json["records"][0]["rssi"], -50);
     assert_eq!(json["units"]["rssi"], "dBm");
 
-    let outcome = run(&bench, &["action", "run", "radio", "reconnect"]).await;
+    let outcome = run(&bench, &["action", "radio", "reconnect"]).await;
     assert_eq!(outcome.ok().stdout, "Done\n");
-    let outcome = run(&bench, &["action", "run", "radio", "tune", "channel=11"]).await;
+    let outcome = run(&bench, &["action", "radio", "tune", "channel=11"]).await;
     outcome.ok();
     assert!(
         bench
@@ -1225,13 +1400,13 @@ async fn actions_are_listed_described_and_run_from_the_schema() {
 #[tokio::test(flavor = "current_thread")]
 async fn action_arguments_are_checked_and_failures_are_typed() {
     let bench = Bench::new();
-    let outcome = run(&bench, &["action", "run", "radio", "tune"]).await;
+    let outcome = run(&bench, &["action", "radio", "tune"]).await;
     assert!(
         outcome.message().contains("radio tune needs: channel"),
         "{}",
         outcome.message()
     );
-    let outcome = run(&bench, &["action", "run", "radio", "tune", "channel=high"]).await;
+    let outcome = run(&bench, &["action", "radio", "tune", "channel=high"]).await;
     assert!(
         outcome
             .message()
@@ -1239,7 +1414,7 @@ async fn action_arguments_are_checked_and_failures_are_typed() {
         "{}",
         outcome.message()
     );
-    let outcome = run(&bench, &["action", "run", "radio", "tune", "speed=1"]).await;
+    let outcome = run(&bench, &["action", "radio", "tune", "speed=1"]).await;
     assert!(
         outcome.message().contains("has no field `speed`"),
         "{}",
@@ -1247,7 +1422,7 @@ async fn action_arguments_are_checked_and_failures_are_typed() {
     );
     let outcome = run(
         &bench,
-        &["action", "run", "radio", "tune", "channel=1", "channel=2"],
+        &["action", "radio", "tune", "channel=1", "channel=2"],
     )
     .await;
     assert!(
@@ -1255,13 +1430,13 @@ async fn action_arguments_are_checked_and_failures_are_typed() {
         "{}",
         outcome.message()
     );
-    let outcome = run(&bench, &["action", "run", "radio", "missing"]).await;
+    let outcome = run(&bench, &["action", "radio", "missing"]).await;
     assert!(matches!(
         outcome.device_error(),
         Error::Device(rohi::model::ErrorCode::NotFound)
     ));
 
-    let outcome = run(&bench, &["action", "run", "radio", "explode"]).await;
+    let outcome = run(&bench, &["action", "radio", "explode"]).await;
     assert!(matches!(outcome.device_error(), Error::Rejected(reason) if reason == "not_today"));
     assert!(
         outcome
@@ -1307,7 +1482,7 @@ async fn identity_is_provisioned_and_erased_with_the_generic_commands() {
     };
     let outcome = run_with(
         &bench,
-        &["action", "run", "identity", "provision", "secret=-"],
+        &["action", "identity", "provision", "secret=-"],
         terminal,
     )
     .await;
@@ -1326,7 +1501,7 @@ async fn identity_is_provisioned_and_erased_with_the_generic_commands() {
     };
     let outcome = run_with(
         &bench,
-        &["action", "run", "identity", "provision", "secret=-"],
+        &["action", "identity", "provision", "secret=-"],
         terminal,
     )
     .await;
@@ -1339,9 +1514,7 @@ async fn identity_is_provisioned_and_erased_with_the_generic_commands() {
         outcome.message()
     );
 
-    run(&bench, &["action", "run", "identity", "erase"])
-        .await
-        .ok();
+    run(&bench, &["action", "identity", "erase"]).await.ok();
     assert!(bench.identity.0.borrow().is_none());
 }
 
@@ -1355,7 +1528,7 @@ async fn a_malformed_secret_is_not_echoed() {
     };
     let outcome = run_with(
         &bench,
-        &["action", "run", "identity", "provision", "secret=-"],
+        &["action", "identity", "provision", "secret=-"],
         terminal,
     )
     .await;
@@ -1373,12 +1546,10 @@ async fn a_malformed_secret_is_not_echoed() {
 // ---------------------------------------------------------------------------
 
 async fn configure_everything(bench: &Bench) {
-    run(bench, &["config", "set", "gadget", "label=lamp"])
-        .await
-        .ok();
+    run(bench, &["config", "gadget", "label=lamp"]).await.ok();
     run(
         bench,
-        &["config", "set", "location", "latitude=1.5", "longitude=2.5"],
+        &["config", "location", "latitude=1.5", "longitude=2.5"],
     )
     .await
     .ok();
@@ -1461,9 +1632,12 @@ async fn human_results_go_to_stdout_only_and_json_is_versioned() {
     for args in [
         &["status"][..],
         &["status", "radio"],
-        &["config", "list"],
-        &["config", "get", "gadget"],
-        &["action", "list"],
+        &["config"],
+        &["config", "gadget"],
+        &["config", "gadget", "--help"],
+        &["action"],
+        &["action", "radio"],
+        &["action", "radio", "scan", "--help"],
     ] {
         let outcome = run(&bench, args).await;
         outcome.ok();
@@ -1472,10 +1646,12 @@ async fn human_results_go_to_stdout_only_and_json_is_versioned() {
     }
     for args in [
         &["-o", "json", "status"][..],
-        &["-o", "json", "config", "list"],
-        &["-o", "json", "config", "describe", "gadget"],
-        &["-o", "json", "action", "list"],
-        &["-o", "json", "action", "describe", "radio", "scan"],
+        &["-o", "json", "config"],
+        &["-o", "json", "config", "gadget"],
+        &["-o", "json", "config", "gadget", "--help"],
+        &["-o", "json", "action"],
+        &["-o", "json", "action", "radio"],
+        &["-o", "json", "action", "radio", "scan", "--help"],
     ] {
         let outcome = run(&bench, args).await;
         assert_eq!(outcome.ok().json()["schema_version"], 1, "{args:?}");
@@ -1527,23 +1703,17 @@ async fn a_schema_of_many_fields_arrives_complete_in_one_response() {
     let bench = Bench::new();
     run(
         &bench,
-        &[
-            "config",
-            "set",
-            "connectivity",
-            "host=a.example.org",
-            "port=443",
-        ],
+        &["config", "connectivity", "host=a.example.org", "port=443"],
     )
     .await
     .ok();
-    let outcome = run(&bench, &["config", "get", "connectivity"]).await;
+    let outcome = run(&bench, &["config", "connectivity"]).await;
     outcome.ok();
     assert_eq!(
         outcome.stdout,
         "enabled     false\nnode_id     0\ninterval_s  60 s\nhost        a.example.org\nport        443\n"
     );
-    let outcome = run(&bench, &["config", "describe", "connectivity"]).await;
+    let outcome = run(&bench, &["config", "connectivity", "--help"]).await;
     assert!(outcome.ok().stdout.contains("port"), "{}", outcome.stdout);
 }
 
@@ -1567,7 +1737,6 @@ async fn the_location_is_set_with_the_generic_config_and_shows_in_the_status() {
         &bench,
         &[
             "config",
-            "set",
             "location",
             "latitude=52.52",
             "longitude=13.405",
@@ -1575,9 +1744,12 @@ async fn the_location_is_set_with_the_generic_config_and_shows_in_the_status() {
         ],
     )
     .await;
-    assert_eq!(outcome.ok().stdout, "`location` stored (revision 1)\n");
+    assert_eq!(
+        outcome.ok().stdout,
+        "latitude   52.52 deg\nlongitude  13.405 deg\nheight_m   34 m\n"
+    );
 
-    let outcome = run(&bench, &["config", "get", "location"]).await;
+    let outcome = run(&bench, &["config", "location"]).await;
     assert_eq!(
         outcome.ok().stdout,
         "latitude   52.52 deg\nlongitude  13.405 deg\nheight_m   34 m\n"
@@ -1611,17 +1783,17 @@ async fn the_location_is_set_with_the_generic_config_and_shows_in_the_status() {
 async fn a_location_needs_both_coordinates_in_range() {
     let bench = Bench::new();
     // A first height alone must not store "0, 0".
-    let outcome = run(&bench, &["config", "set", "location", "height_m=10"]).await;
+    let outcome = run(&bench, &["config", "location", "height_m=10"]).await;
     assert!(
         matches!(outcome.error(), CliError::Device(_)),
         "{}",
         outcome.message()
     );
-    let outcome = run(&bench, &["config", "set", "location", "latitude=52.5"]).await;
+    let outcome = run(&bench, &["config", "location", "latitude=52.5"]).await;
     assert!(matches!(outcome.error(), CliError::Device(_)));
     let outcome = run(
         &bench,
-        &["config", "set", "location", "latitude=91", "longitude=0"],
+        &["config", "location", "latitude=91", "longitude=0"],
     )
     .await;
     assert!(matches!(
@@ -1630,7 +1802,7 @@ async fn a_location_needs_both_coordinates_in_range() {
     ));
     let outcome = run(
         &bench,
-        &["config", "set", "location", "latitude=north", "longitude=0"],
+        &["config", "location", "latitude=north", "longitude=0"],
     )
     .await;
     assert!(
@@ -1642,27 +1814,28 @@ async fn a_location_needs_both_coordinates_in_range() {
 
     run(
         &bench,
-        &[
-            "config",
-            "set",
-            "location",
-            "latitude=1.5",
-            "longitude=-2.5",
-        ],
+        &["config", "location", "latitude=1.5", "longitude=-2.5"],
     )
     .await
     .ok();
-    // The height is optional and can be unset again.
-    run(&bench, &["config", "set", "location", "height_m=12"])
+    // The height can be removed again: it follows the default, no height.
+    run(&bench, &["config", "location", "height_m=12"])
         .await
         .ok();
-    run(&bench, &["config", "unset", "location", "height_m"])
-        .await
-        .ok();
-    assert_eq!(bench.location.mem.value.borrow().unwrap().height_m, None);
-    let outcome = run(&bench, &["config", "unset", "location", "latitude"]).await;
+    let outcome = run(&bench, &["config", "location", "height_m=null"]).await;
     assert!(
-        outcome.message().contains("required and cannot be unset"),
+        outcome.ok().stdout.contains("height_m   <unset>\n"),
+        "{}",
+        outcome.stdout
+    );
+    assert_eq!(
+        bench.location.mem.value.borrow().clone().unwrap().height_m,
+        rohi_config::Override::Default
+    );
+    // Without a coordinate the position is not valid any more.
+    let outcome = run(&bench, &["config", "location", "latitude=null"]).await;
+    assert!(
+        matches!(outcome.error(), CliError::Device(_)),
         "{}",
         outcome.message()
     );
@@ -1671,12 +1844,9 @@ async fn a_location_needs_both_coordinates_in_range() {
 #[tokio::test(flavor = "current_thread")]
 async fn resetting_the_location_makes_the_device_not_know_where_it_is() {
     let bench = Bench::new();
-    run(
-        &bench,
-        &["config", "set", "location", "latitude=1", "longitude=2"],
-    )
-    .await
-    .ok();
+    run(&bench, &["config", "location", "latitude=1", "longitude=2"])
+        .await
+        .ok();
     assert!(bench.location.shared.current().is_some());
     run(&bench, &["config", "reset", "location", "--yes"])
         .await
@@ -1695,13 +1865,7 @@ async fn export_and_apply_carry_the_location() {
     let bench = Bench::new();
     run(
         &bench,
-        &[
-            "config",
-            "set",
-            "location",
-            "latitude=52.52",
-            "longitude=13.405",
-        ],
+        &["config", "location", "latitude=52.52", "longitude=13.405"],
     )
     .await
     .ok();
@@ -1714,8 +1878,8 @@ async fn export_and_apply_carry_the_location() {
     let outcome = run(&bench, &["config", "apply", path(&file), "--yes"]).await;
     outcome.ok();
     assert_eq!(
-        bench.location.mem.value.borrow().unwrap().height_m,
-        Some(40.5)
+        bench.location.mem.value.borrow().clone().unwrap().height_m,
+        rohi_config::Override::Value(Some(40.5))
     );
 }
 
@@ -1811,7 +1975,14 @@ async fn apply_conflicts_when_the_section_changes_after_the_diff_was_shown() {
     let (outcome, requests) = apply_with_rival(&bench, &file, 0).await;
     outcome.ok();
     assert_eq!(
-        bench.telemetry.value.borrow().clone().unwrap().interval_s,
+        bench
+            .telemetry
+            .value
+            .borrow()
+            .clone()
+            .unwrap()
+            .effective()
+            .interval_s,
         120
     );
 
@@ -1827,7 +1998,7 @@ async fn apply_conflicts_when_the_section_changes_after_the_diff_was_shown() {
         partial.source,
         Error::Device(rohi::model::ErrorCode::Conflict)
     ));
-    let stored = bench.telemetry.value.borrow().clone().unwrap();
+    let stored = bench.telemetry.value.borrow().clone().unwrap().effective();
     assert_eq!(stored.port, 9000);
     assert_eq!(stored.interval_s, 60);
 }

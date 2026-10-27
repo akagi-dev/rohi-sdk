@@ -33,7 +33,7 @@ use core::marker::PhantomData;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::Delay;
 use log::warn;
-use rohi_config::ConfigSection;
+use rohi_config::{ConfigOverrides, ConfigSection};
 use rohi_connectivity::{ConnectivityConfig, ConnectivityStatusService};
 use rohi_control::{Controller, Device, DeviceInfo, OpenPolicy};
 use rohi_control_ble::ControlBle;
@@ -42,12 +42,13 @@ use rohi_hal_esp::EmbassyClock;
 use rohi_identity::{Identity, IdentityService, IdentityStore, IdentityStoreError, PublicKey};
 use rohi_location::{LocationConfig, LocationService};
 use rohi_net::{
-    BleService, BleSettings, NetworkConfig, NetworkHandle, NetworkService, WifiConfig, WifiService,
+    BleOverrides, BleService, BleSettings, NetworkConfig, NetworkHandle, NetworkService,
+    WifiConfig, WifiOverrides, WifiService,
 };
 use rohi_service::{
-    ConfigError as RegistryError, ConfigRegistry, FactoryReset, ManagedSection, Mutation, Patched,
-    RestartRequired, SectionInfo, SectionSchema, SectionStore, SectionValues, Startup, StoreError,
-    Tracked,
+    ConfigError as RegistryError, ConfigRegistry, FactoryReset, ManagedConfig, ManagedSection,
+    Mutation, Patched, RestartRequired, SectionInfo, SectionSchema, SectionStore, SectionValues,
+    Startup, StoreError, Tracked,
 };
 use rohi_time::TimeStatusService;
 use rohi_time_ntp::NtpServersConfig;
@@ -76,17 +77,18 @@ fn store_error(error: ConfigError) -> StoreError {
     }
 }
 
-/// A persistent config section behind the configuration owner task.
+/// The persisted overrides `O` of a config section behind the configuration
+/// owner task.
 ///
-/// The owner task publishes the committed value to the runtime itself, see
-/// [`crate::config`]; cancelling a call can therefore never leave a stored
-/// configuration unknown to the runtime.
-pub struct Stored<C> {
+/// The owner task publishes the committed effective value to the runtime
+/// itself, see [`crate::config`]; cancelling a call can therefore never leave
+/// a stored configuration unknown to the runtime.
+pub struct Stored<O> {
     config: ConfigHandle,
-    _section: PhantomData<fn() -> C>,
+    _section: PhantomData<fn() -> O>,
 }
 
-impl<C> Stored<C> {
+impl<O> Stored<O> {
     const fn new(config: ConfigHandle) -> Self {
         Self {
             config,
@@ -95,17 +97,17 @@ impl<C> Stored<C> {
     }
 }
 
-impl<C: ConfigSection> SectionStore<C> for Stored<C> {
-    async fn load(&self) -> Result<Option<C>, StoreError> {
-        self.config.get::<C>().await.map_err(store_error)
+impl<O: ConfigSection> SectionStore<O> for Stored<O> {
+    async fn load(&self) -> Result<Option<O>, StoreError> {
+        self.config.get::<O>().await.map_err(store_error)
     }
 
-    async fn store(&self, config: &C) -> Result<(), StoreError> {
-        self.config.set(config).await.map_err(store_error)
+    async fn store(&self, overrides: &O) -> Result<(), StoreError> {
+        self.config.set(overrides).await.map_err(store_error)
     }
 
     async fn remove(&self) -> Result<(), StoreError> {
-        self.config.remove::<C>().await.map_err(store_error)
+        self.config.remove::<O>().await.map_err(store_error)
     }
 }
 
@@ -133,11 +135,12 @@ fn identity_error(error: ConfigError) -> IdentityStoreError {
     }
 }
 
-type Section<C> = ManagedSection<C, Stored<C>, RawMutex>;
+type Section<C> = ManagedSection<C, Stored<<C as ManagedConfig>::Overrides>, RawMutex>;
 
 /// A section the firmware reads once at start: the BLE peripheral advertises
 /// its name from the configuration it was started with.
-type RestartSection<C> = ManagedSection<C, RestartRequired<Stored<C>>, RawMutex>;
+type RestartSection<C> =
+    ManagedSection<C, RestartRequired<Stored<<C as ManagedConfig>::Overrides>>, RawMutex>;
 
 /// The config sections of the device.
 pub type ConfigSections = (
@@ -215,7 +218,7 @@ impl ConfigRegistry for UrbanConfig {
 /// The services of the device.
 pub type Services = (
     Tracked<
-        Startup<WifiService<'static, RawMutex, Delay, net::Probe, Stored<WifiConfig>>>,
+        Startup<WifiService<'static, RawMutex, Delay, net::Probe, Stored<WifiOverrides>>>,
         RawMutex,
     >,
     Tracked<Startup<NetworkService<'static, RawMutex, net::Probe>>, RawMutex>,
@@ -313,8 +316,8 @@ pub const BLE_CONFIG: rohi_net::BleConfig = rohi_net::BleConfig {
 /// [`BLE_CONFIG`] with the name stored in the `ble` section. The name is read
 /// once, when the peripheral starts.
 pub async fn ble_config(config: ConfigHandle) -> rohi_net::BleConfig {
-    match config.get::<BleSettings>().await {
-        Ok(Some(settings)) => BLE_CONFIG.with_settings(&settings),
+    match config.get::<BleOverrides>().await {
+        Ok(Some(overrides)) => BLE_CONFIG.with_settings(&overrides.effective()),
         Ok(None) => BLE_CONFIG,
         Err(error) => {
             warn!(

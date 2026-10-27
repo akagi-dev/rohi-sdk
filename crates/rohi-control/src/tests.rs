@@ -41,6 +41,28 @@ struct Net {
     mode: Option<u32>,
 }
 
+impl Default for Net {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: 80,
+            host: std::string::String::new(),
+            token: None,
+            mode: None,
+        }
+    }
+}
+
+rohi_config::config_overrides! {
+    struct NetOverrides for Net, version 2 {
+        1 => enabled: bool,
+        2 => port: u64,
+        3 => host: std::string::String,
+        4 => token: Option<std::string::String>,
+        5 => mode: Option<u32>,
+    }
+}
+
 impl ManagedConfig for Net {
     const SECTION_ID: u64 = 1;
     const NAME: &'static str = "net";
@@ -61,15 +83,7 @@ impl ManagedConfig for Net {
         &[EnumVariant::new(0, "auto"), EnumVariant::new(5, "manual")],
     )];
 
-    fn defaults() -> Self {
-        Self {
-            enabled: false,
-            port: 80,
-            host: std::string::String::new(),
-            token: None,
-            mode: None,
-        }
-    }
+    type Overrides = NetOverrides;
 
     fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
         Ok(match id {
@@ -101,15 +115,6 @@ impl ManagedConfig for Net {
         }
     }
 
-    fn unset_field(&mut self, id: u32) -> Result<(), FieldError> {
-        match id {
-            4 => self.token = None,
-            5 => self.mode = None,
-            _ => unreachable!(),
-        }
-        Ok(())
-    }
-
     fn validate(&self) -> Result<(), FieldError> {
         if self.enabled && self.host.is_empty() {
             return Err(FieldError::Invalid);
@@ -119,15 +124,15 @@ impl ManagedConfig for Net {
 }
 
 #[derive(Default)]
-struct Memory(RefCell<Option<Net>>);
+struct Memory(RefCell<Option<NetOverrides>>);
 
-impl SectionStore<Net> for &Memory {
-    async fn load(&self) -> Result<Option<Net>, StoreError> {
+impl SectionStore<NetOverrides> for &Memory {
+    async fn load(&self) -> Result<Option<NetOverrides>, StoreError> {
         Ok(self.0.borrow().clone())
     }
 
-    async fn store(&self, config: &Net) -> Result<(), StoreError> {
-        *self.0.borrow_mut() = Some(config.clone());
+    async fn store(&self, overrides: &NetOverrides) -> Result<(), StoreError> {
+        *self.0.borrow_mut() = Some(overrides.clone());
         Ok(())
     }
 
@@ -459,14 +464,20 @@ fn a_patch_is_atomic_and_secrets_are_never_returned() {
     ) else {
         panic!()
     };
-    assert!(section.configured);
+    assert_eq!(section.overridden.as_slice(), [1, 3, 4]);
     assert_eq!(section.revision, 1);
-    let token = section.entries.iter().find(|e| e.field_id == 4).unwrap();
+    // The effective values include the defaults, such as the port.
+    let port = section.effective.iter().find(|e| e.field_id == 2).unwrap();
+    assert!(matches!(
+        &port.state,
+        Some(pb::ConfigEntry_::State::U64Value(80))
+    ));
+    let token = section.effective.iter().find(|e| e.field_id == 4).unwrap();
     assert!(matches!(
         token.state,
         Some(pb::ConfigEntry_::State::Redacted(_))
     ));
-    let host = section.entries.iter().find(|e| e.field_id == 3).unwrap();
+    let host = section.effective.iter().find(|e| e.field_id == 3).unwrap();
     assert!(matches!(
         &host.state,
         Some(pb::ConfigEntry_::State::StringValue(v)) if v.as_str() == "ingress.example.org"
@@ -495,7 +506,7 @@ fn a_patch_is_atomic_and_secrets_are_never_returned() {
 }
 
 #[test]
-fn patch_conflicts_dry_runs_unset_and_reset() {
+fn patch_conflicts_dry_runs_clear_and_reset() {
     controller!(controller, OpenPolicy);
     let mut stale = patch(1, &[mutation(3, string_value("a.io"))]);
     stale.set_expected_revision(5);
@@ -521,7 +532,7 @@ fn patch_conflicts_dry_runs_unset_and_reset() {
     let Reply::GetConfigSection(section) = get() else {
         panic!()
     };
-    assert!(!section.configured);
+    assert!(section.overridden.is_empty());
 
     let set = patch(
         1,
@@ -531,19 +542,21 @@ fn patch_conflicts_dry_runs_unset_and_reset() {
         ],
     );
     call(&controller, &PLAIN, Call::PatchConfigSection(set));
-    let unset = pb::ConfigMutation {
+    let clear = pb::ConfigMutation {
         field_id: 4,
-        operation: Some(pb::ConfigMutation_::Operation::Unset(pb::Empty {})),
+        operation: Some(pb::ConfigMutation_::Operation::Clear(pb::Empty {})),
     };
     call(
         &controller,
         &PLAIN,
-        Call::PatchConfigSection(patch(1, &[unset])),
+        Call::PatchConfigSection(patch(1, &[clear])),
     );
     let Reply::GetConfigSection(section) = get() else {
         panic!()
     };
-    assert!(section.entries.iter().all(|e| e.field_id != 4));
+    // The override is gone, so the token has its default again: none.
+    assert!(section.effective.iter().all(|e| e.field_id != 4));
+    assert_eq!(section.overridden.as_slice(), [3]);
 
     // A reset of a revision the section has moved past is a conflict.
     let mut stale = pb::ResetConfigSectionRequest {
@@ -558,7 +571,7 @@ fn patch_conflicts_dry_runs_unset_and_reset() {
     let Reply::GetConfigSection(section) = get() else {
         panic!()
     };
-    assert!(section.configured);
+    assert_eq!(section.overridden.as_slice(), [3]);
 
     let mut current = pb::ResetConfigSectionRequest {
         section_id: 1,
@@ -574,7 +587,7 @@ fn patch_conflicts_dry_runs_unset_and_reset() {
     let Reply::GetConfigSection(section) = get() else {
         panic!()
     };
-    assert!(!section.configured);
+    assert!(section.overridden.is_empty());
 }
 
 #[test]
@@ -612,7 +625,7 @@ fn factory_reset_resets_every_section_and_needs_a_secure_link() {
     ) else {
         panic!()
     };
-    assert!(!section.configured);
+    assert!(section.overridden.is_empty());
 }
 
 #[test]

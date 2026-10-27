@@ -17,15 +17,21 @@
 //! Typed configuration sections behind a generic, schema-driven interface.
 //!
 //! A module implements [`ManagedConfig`] for its typed section and a
-//! [`SectionStore`] that persists it and applies runtime effects. A
-//! [`ManagedSection`] ties both together and implements the generic
+//! [`SectionStore`] that persists its overrides and applies runtime effects.
+//! A [`ManagedSection`] ties both together and implements the generic
 //! operations; a tuple of sections is a [`ConfigRegistry`].
 //!
-//! Patch semantics: load the current section (or the module defaults), apply
-//! all mutations to a copy, validate the complete result, persist atomically,
-//! increment the revision. If anything is invalid nothing is persisted. The
-//! whole transaction (revision check, load, validate, store, bump) runs under
-//! a per-section lock, so concurrent patches and resets are serialized.
+//! The effective configuration is `C::default()` plus the explicit overrides
+//! of the user ([`ConfigOverrides`]). Only the overrides are persisted, so a
+//! field the user never set follows the defaults of the firmware that runs.
+//!
+//! Patch semantics: load the persisted overrides, apply all mutations to a
+//! copy (`Set` creates or replaces an override, `Clear` removes it), validate
+//! the complete effective result, persist atomically, increment the revision.
+//! If anything is invalid nothing is persisted. A section without overrides
+//! is not validated: it is inactive. The whole transaction (revision check,
+//! load, validate, store, bump) runs under a per-section lock, so concurrent
+//! patches and resets are serialized.
 
 use core::cell::Cell;
 use core::marker::PhantomData;
@@ -34,6 +40,7 @@ use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embassy_sync::mutex::Mutex as AsyncMutex;
 use heapless::Vec;
+use rohi_config::ConfigOverrides;
 
 use crate::field::{ConfigField, EnumDescriptor};
 use crate::schema::{config_fields_valid, enums_valid, name_ok};
@@ -51,8 +58,6 @@ pub enum FieldError {
     WrongKind,
     /// The value is outside the range or variants of the field.
     OutOfRange,
-    /// The field is required and cannot be unset.
-    NotOptional,
     /// The value or the resulting section is rejected by the typed
     /// validation.
     Invalid,
@@ -60,10 +65,14 @@ pub enum FieldError {
 
 /// A typed config section exposed through the generic config interface.
 ///
+/// The type is the *effective* configuration the runtime consumes; its
+/// `Default` is the firmware default. The persisted state is
+/// [`Overrides`](Self::Overrides), the fields the user set explicitly.
+///
 /// The module owns the typed struct, the field metadata, the conversion
 /// between [`Value`] and typed fields, and the validation. Field ids are
 /// stable and only ever added.
-pub trait ManagedConfig: Clone {
+pub trait ManagedConfig: Clone + Default {
     /// Stable numeric id, the address of requests; unique within the
     /// registry. Only ever added, never reused.
     const SECTION_ID: u64;
@@ -76,11 +85,13 @@ pub trait ManagedConfig: Clone {
     /// The enums the fields refer to, see [`EnumDescriptor`].
     const ENUMS: &'static [EnumDescriptor] = &[];
 
-    /// The module defaults: the base of a patch when nothing is persisted.
-    fn defaults() -> Self;
+    /// The persisted explicit overrides, see [`rohi_config::config_overrides`].
+    /// `Overrides::default()` overrides nothing.
+    type Overrides: ConfigOverrides<Self>;
 
-    /// The current value of a field, `None` when it is unset. Never called for
-    /// secret fields: the registry only asks whether they are set.
+    /// The current value of a field, `None` when it has none (an optional
+    /// field that is not set). Never called for secret fields: the registry
+    /// only asks whether they are set.
     fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError>;
 
     /// Whether a field has a value. A secret field must answer without
@@ -93,10 +104,8 @@ pub trait ManagedConfig: Clone {
     /// is writable and that the value matches kind, variants and range.
     fn set_field(&mut self, id: u32, value: Value) -> Result<(), FieldError>;
 
-    /// Unsets an optional field.
-    fn unset_field(&mut self, id: u32) -> Result<(), FieldError>;
-
-    /// Validates the complete section, including rules across fields.
+    /// Validates the complete effective section, including rules across
+    /// fields. It is not called for a section without overrides.
     fn validate(&self) -> Result<(), FieldError>;
 }
 
@@ -109,20 +118,21 @@ pub enum StoreError {
     Internal,
 }
 
-/// Persistence and runtime effects of one section.
+/// Persistence and runtime effects of one section, stored as its overrides
+/// `O`.
 ///
 /// `store` and `remove` commit atomically and hand the effective value to the
 /// runtime (the owner of the store publishes it in the same step), so a
 /// cancelled caller can never leave a stored value unknown to the runtime.
 #[allow(async_fn_in_trait)]
-pub trait SectionStore<C> {
-    /// The persisted section, `None` when nothing is persisted.
-    async fn load(&self) -> Result<Option<C>, StoreError>;
+pub trait SectionStore<O> {
+    /// The persisted overrides, `None` when nothing is persisted.
+    async fn load(&self) -> Result<Option<O>, StoreError>;
 
-    /// Persists `config` and applies it.
-    async fn store(&self, config: &C) -> Result<(), StoreError>;
+    /// Persists `overrides` and applies them.
+    async fn store(&self, overrides: &O) -> Result<(), StoreError>;
 
-    /// Removes the persisted section and restores the module defaults.
+    /// Removes the persisted overrides: the section is back to the defaults.
     async fn remove(&self) -> Result<(), StoreError>;
 
     /// Whether a change only takes effect after a restart.
@@ -135,13 +145,13 @@ pub trait SectionStore<C> {
 /// change, a reset included, takes effect only after a restart.
 pub struct RestartRequired<S>(pub S);
 
-impl<C, S: SectionStore<C>> SectionStore<C> for RestartRequired<S> {
-    async fn load(&self) -> Result<Option<C>, StoreError> {
+impl<O, S: SectionStore<O>> SectionStore<O> for RestartRequired<S> {
+    async fn load(&self) -> Result<Option<O>, StoreError> {
         self.0.load().await
     }
 
-    async fn store(&self, config: &C) -> Result<(), StoreError> {
-        self.0.store(config).await
+    async fn store(&self, overrides: &O) -> Result<(), StoreError> {
+        self.0.store(overrides).await
     }
 
     async fn remove(&self) -> Result<(), StoreError> {
@@ -210,13 +220,13 @@ pub struct SectionSchema {
 /// State of one field in [`SectionValues`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum EntryState {
-    /// The current value.
+    /// The effective value.
     Value(Value),
     /// A set secret; its value is not readable.
     Redacted,
 }
 
-/// One set field.
+/// One field that has an effective value.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConfigEntry {
     /// Field id.
@@ -230,19 +240,20 @@ pub struct ConfigEntry {
 pub struct SectionValues {
     /// Name, version and current revision.
     pub section: SectionInfo,
-    /// Whether anything is persisted for the section.
-    pub configured: bool,
-    /// The fields that are set. Unset fields are absent.
+    /// The effective configuration: the defaults with the overrides applied.
+    /// A field without a value (an optional field that is not set) is absent.
     pub entries: Vec<ConfigEntry, MAX_CONFIG_FIELDS>,
+    /// The ids of the fields the user overrides explicitly.
+    pub overridden: Vec<u32, MAX_CONFIG_FIELDS>,
 }
 
 /// What a mutation does to a field.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MutationOp {
-    /// Sets the field.
+    /// Creates or replaces the override of the field.
     Set(Value),
-    /// Unsets the (optional) field.
-    Unset,
+    /// Removes the override of the field: the default applies again.
+    Clear,
 }
 
 /// One change of a patch.
@@ -288,7 +299,7 @@ pub trait ConfigSectionOps {
         expected_revision: Option<u32>,
         dry_run: bool,
     ) -> Result<Patched, ConfigError>;
-    /// Removes the persisted section and restores the defaults.
+    /// Removes every override: the effective configuration is the defaults.
     async fn reset(
         &self,
         expected_revision: Option<u32>,
@@ -308,7 +319,7 @@ pub struct ManagedSection<C, S, M: RawMutex> {
     _config: PhantomData<fn() -> C>,
 }
 
-impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ManagedSection<C, S, M> {
+impl<C: ManagedConfig, S: SectionStore<C::Overrides>, M: RawMutex> ManagedSection<C, S, M> {
     /// A section persisted through `store`.
     pub const fn new(store: S) -> Self {
         const {
@@ -350,7 +361,7 @@ impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ManagedSection<C, S, M> 
             .ok_or(FieldError::UnknownField)
     }
 
-    fn apply(config: &mut C, mutation: &Mutation) -> Result<(), FieldError> {
+    fn apply(overrides: &mut C::Overrides, mutation: &Mutation) -> Result<(), FieldError> {
         let field = Self::field(mutation.field_id)?;
         if !field.writable {
             return Err(FieldError::ReadOnly);
@@ -358,11 +369,15 @@ impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ManagedSection<C, S, M> 
         match &mutation.op {
             MutationOp::Set(value) => {
                 field.check(value, C::ENUMS)?;
-                config.set_field(field.field.id, value.clone())
+                let mut config = overrides.effective();
+                config.set_field(field.field.id, value.clone())?;
+                overrides.capture(&config, field.field.id);
             }
-            MutationOp::Unset if field.optional => config.unset_field(field.field.id),
-            MutationOp::Unset => Err(FieldError::NotOptional),
+            MutationOp::Clear => {
+                overrides.clear(field.field.id);
+            }
         }
+        Ok(())
     }
 
     fn check_revision(&self, expected: Option<u32>) -> Result<(), ConfigError> {
@@ -373,7 +388,7 @@ impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ManagedSection<C, S, M> 
     }
 }
 
-impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ConfigSectionOps
+impl<C: ManagedConfig, S: SectionStore<C::Overrides>, M: RawMutex> ConfigSectionOps
     for ManagedSection<C, S, M>
 {
     fn id(&self) -> u64 {
@@ -399,35 +414,40 @@ impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ConfigSectionOps
 
     async fn get(&self) -> Result<SectionValues, ConfigError> {
         let _transaction = self.transaction.lock().await;
-        let stored = self.store.load().await?;
+        let overrides = self.store.load().await?.unwrap_or_default();
+        let config = overrides.effective();
         let mut entries = Vec::new();
-        if let Some(config) = &stored {
-            for field in C::FIELDS {
-                // A value the generic model cannot express (for example a
-                // non-UTF-8 SSID) is simply not reported. A secret is only
-                // asked whether it is set, its value is never read.
-                let state = if field.secret {
-                    match config.field_is_set(field.field.id) {
-                        Ok(true) => EntryState::Redacted,
-                        _ => continue,
-                    }
-                } else {
-                    match config.read_field(field.field.id) {
-                        Ok(Some(value)) => EntryState::Value(value),
-                        _ => continue,
-                    }
-                };
-                // At most `FIELDS.len() <= MAX_CONFIG_FIELDS` entries.
-                let _ = entries.push(ConfigEntry {
-                    field_id: field.field.id,
-                    state,
-                });
+        let mut overridden = Vec::new();
+        for field in C::FIELDS {
+            let id = field.field.id;
+            if overrides.is_overridden(id) == Some(true) {
+                // At most `FIELDS.len() <= MAX_CONFIG_FIELDS` ids.
+                let _ = overridden.push(id);
             }
+            // A value the generic model cannot express (for example a
+            // non-UTF-8 SSID) is simply not reported. A secret is only
+            // asked whether it is set, its value is never read.
+            let state = if field.secret {
+                match config.field_is_set(id) {
+                    Ok(true) => EntryState::Redacted,
+                    _ => continue,
+                }
+            } else {
+                match config.read_field(id) {
+                    Ok(Some(value)) => EntryState::Value(value),
+                    _ => continue,
+                }
+            };
+            // At most `FIELDS.len() <= MAX_CONFIG_FIELDS` entries.
+            let _ = entries.push(ConfigEntry {
+                field_id: id,
+                state,
+            });
         }
         Ok(SectionValues {
             section: self.info(),
-            configured: stored.is_some(),
             entries,
+            overridden,
         })
     }
 
@@ -439,11 +459,16 @@ impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ConfigSectionOps
     ) -> Result<Patched, ConfigError> {
         let _transaction = self.transaction.lock().await;
         self.check_revision(expected_revision)?;
-        let mut next = self.store.load().await?.unwrap_or_else(C::defaults);
+        let stored = self.store.load().await?;
+        let persisted = stored.is_some();
+        let mut next = stored.unwrap_or_default();
         for mutation in mutations {
             Self::apply(&mut next, mutation)?;
         }
-        next.validate()?;
+        // Without overrides the section is inactive and always valid.
+        if !next.is_empty() {
+            next.effective().validate()?;
+        }
         let restart_required = self.store.restart_required();
         if dry_run {
             return Ok(Patched {
@@ -451,7 +476,12 @@ impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ConfigSectionOps
                 restart_required,
             });
         }
-        self.store.store(&next).await?;
+        if !next.is_empty() {
+            self.store.store(&next).await?;
+        } else if persisted {
+            // The last override is gone: the section is the defaults again.
+            self.store.remove().await?;
+        }
         Ok(Patched {
             revision: self.bump(),
             restart_required,

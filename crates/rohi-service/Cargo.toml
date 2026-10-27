@@ -16,6 +16,8 @@ maintenance = { status = "actively-developed" }
 heapless.workspace = true
 embassy-sync.workspace = true
 zeroize.workspace = true
+rohi-config.workspace = true
 
 [dev-dependencies]
 embassy-futures.workspace = true
+minicbor = { workspace = true, features = ["std"] }

@@ -59,7 +59,7 @@ pub mod service;
 pub mod transport;
 
 pub use clock::{ClockError, NONCE_LEN, NonceError, NonceSource, UtcClock};
-pub use config::{ConfigError, ConnectivityConfig, Endpoint, Host};
+pub use config::{ConfigError, ConnectivityConfig, ConnectivityOverrides, Endpoint, Host};
 pub use encoder::{EncodeError, EncodeStats, EncodedMessage, UrbanEncoder};
 pub use envelope::{BuildError, EnvelopeBuilder, EnvelopeFrame, FrameSigner, SignError};
 pub use http::HttpTransport;

@@ -127,7 +127,8 @@ const REPEATED: &[&str] = &[
     ".rohi.control.v1.GetConfigSchemaResponse.fields",
     ".rohi.control.v1.GetConfigSchemaResponse.enums",
     ".rohi.control.v1.ListConfigSectionsResponse.sections",
-    ".rohi.control.v1.GetConfigSectionResponse.entries",
+    ".rohi.control.v1.GetConfigSectionResponse.effective",
+    ".rohi.control.v1.GetConfigSectionResponse.overridden",
     ".rohi.control.v1.PatchConfigSectionRequest.mutations",
     ".rohi.control.v1.GetServicesStatusResponse.services",
     ".rohi.control.v1.GetServiceSchemaResponse.fields",
@@ -215,7 +216,11 @@ fn main() {
             "MAX_ENUMS",
         ),
         (
-            ".rohi.control.v1.GetConfigSectionResponse.entries",
+            ".rohi.control.v1.GetConfigSectionResponse.effective",
+            "MAX_CONFIG_FIELDS",
+        ),
+        (
+            ".rohi.control.v1.GetConfigSectionResponse.overridden",
             "MAX_CONFIG_FIELDS",
         ),
         (

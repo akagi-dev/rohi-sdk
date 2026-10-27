@@ -319,87 +319,112 @@ pub fn config_sections(paint: Paint, sections: &[SectionInfo]) -> String {
     table(paint, &["SECTION", "VERSION"], &rows, &[])
 }
 
-fn constraints(field: &ConfigField) -> String {
-    let mut parts = Vec::new();
-    if !field.field.variants.is_empty() {
-        parts.push(field.field.variants.join("|"));
+/// The type of a field as help shows it: `u64 ms`, `string, secret`, ...
+fn field_type(field: &FieldDescriptor) -> String {
+    let mut text = field.kind.to_string();
+    if !field.variants.is_empty() {
+        text = format!("{text} ({})", field.variants.join("|"));
     }
-    let mut text = parts.join(" ");
-    if !field.field.unit.is_empty() {
-        if !text.is_empty() {
-            text.push(' ');
-        }
-        text.push_str(&field.field.unit);
+    if !field.unit.is_empty() {
+        text.push(' ');
+        text.push_str(&field.unit);
     }
     text
 }
 
-fn access(field: &ConfigField) -> &'static str {
-    match (field.writable, field.secret) {
-        (_, true) => "write-only",
-        (true, false) => "read-write",
-        (false, false) => "read-only",
-    }
-}
-
-/// The fields of a config section.
-pub fn config_schema(paint: Paint, schema: &ConfigSchema) -> String {
-    let rows: Vec<Vec<String>> = schema
-        .fields
+fn help_fields(paint: Paint, rows: &[(String, String)]) -> String {
+    let width = rows
         .iter()
-        .map(|field| {
-            let mut kind = field.field.kind.to_string();
-            if field.optional {
-                kind.push('?');
-            }
-            vec![
-                field.field.name.clone(),
-                kind,
-                access(field).to_owned(),
-                constraints(field),
-            ]
-        })
-        .collect();
-    table(
-        paint,
-        &["FIELD", "TYPE", "ACCESS", "CONSTRAINTS"],
-        &rows,
-        &[],
-    )
-}
-
-/// The values of a config section; secrets are `<configured>`.
-pub fn config_values(
-    paint: Paint,
-    values: &ConfigValues,
-    schema: &ConfigSchema,
-    only: Option<&str>,
-) -> String {
-    let mut rows = Vec::new();
-    for field in &schema.fields {
-        if only.is_some_and(|name| name != field.field.name) {
-            continue;
-        }
-        let entry = values
-            .entries
-            .iter()
-            .find(|entry| entry.field_id == field.field.id);
-        let text = match entry.map(|entry| &entry.state) {
-            Some(EntryState::Value(v)) => value(v, Some(&field.field)),
-            Some(EntryState::Redacted) => paint.muted("<configured>"),
-            None => paint.muted("-"),
-        };
-        rows.push((field.field.name.clone(), text));
-    }
+        .map(|(name, _)| name.chars().count())
+        .max()
+        .unwrap_or(0)
+        + 2;
     let mut out = String::new();
-    if !values.configured && only.is_none() {
-        out.push_str("Not configured\n\n");
+    for (name, text) in rows {
+        let _ = writeln!(out, "  {}{text}", paint.strong(&format!("{name:<width$}")));
     }
-    out.push_str(&pairs(paint, &rows));
     out
 }
 
-/// The actions of the device.
+/// The help of `rohi config <section>`, generated from the schema of the
+/// device.
+pub fn config_help(paint: Paint, schema: &ConfigSchema) -> String {
+    let section = &schema.section.name;
+    let rows: Vec<(String, String)> = schema
+        .fields
+        .iter()
+        .map(|field| {
+            let mut text = field_type(&field.field);
+            if field.secret {
+                text.push_str(", secret");
+            }
+            if field.optional {
+                text.push_str(", nullable");
+            }
+            if !field.writable {
+                text.push_str(", read-only");
+            }
+            (field.field.name.clone(), text)
+        })
+        .collect();
+    let mut out = format!(
+        "{}\n  rohi config {section} [FIELD=VALUE...]\n\n",
+        paint.strong("Usage:")
+    );
+    out.push_str(&format!("{}\n", paint.strong("Fields:")));
+    out.push_str(&help_fields(paint, &rows));
+    out.push_str(&format!("\n{}\n", paint.strong("Special values:")));
+    let mut special = vec![(
+        "FIELD=null".to_owned(),
+        "clear the override and use the field default".to_owned(),
+    )];
+    if schema.fields.iter().any(|field| field.secret) {
+        special.push((
+            "SECRET=-".to_owned(),
+            "read the secret from stdin or a prompt".to_owned(),
+        ));
+    }
+    out.push_str(&help_fields(paint, &special));
+    out.push_str(&format!(
+        "\nWithout FIELD=VALUE the effective configuration is shown: the defaults of the\nfirmware with your overrides applied. `rohi config reset {section}` removes\nall overrides.\n"
+    ));
+    out
+}
+
+/// The values of a config section: its effective configuration. A secret that
+/// is set is `<redacted>`, a field without a value `<unset>`.
+pub fn config_values(paint: Paint, values: &ConfigValues, schema: &ConfigSchema) -> String {
+    let rows: Vec<(String, String)> = schema
+        .fields
+        .iter()
+        .map(|field| {
+            let entry = values
+                .entries
+                .iter()
+                .find(|entry| entry.field_id == field.field.id);
+            let text = match entry.map(|entry| &entry.state) {
+                Some(EntryState::Value(v)) => value(v, Some(&field.field)),
+                Some(EntryState::Redacted) => paint.muted("<redacted>"),
+                None => paint.muted("<unset>"),
+            };
+            (field.field.name.clone(), text)
+        })
+        .collect();
+    pairs(paint, &rows)
+}
+
+fn arguments_of(args: &[FieldDescriptor]) -> String {
+    if args.is_empty() {
+        "-".to_owned()
+    } else {
+        args.iter()
+            .map(|arg| arg.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// The actions of the device, grouped by nothing: one row per action.
 pub fn actions(paint: Paint, actions: &[ActionInfo]) -> String {
     if actions.is_empty() {
         return "The device offers no actions\n".to_owned();
@@ -410,63 +435,75 @@ pub fn actions(paint: Paint, actions: &[ActionInfo]) -> String {
             vec![
                 action.service.clone(),
                 action.name.clone(),
-                if action.privileged { "write" } else { "read" }.to_owned(),
+                yes_no(action.privileged).to_owned(),
             ]
         })
         .collect();
-    table(paint, &["SERVICE", "ACTION", "ACCESS"], &rows, &[])
+    table(paint, &["SERVICE", "ACTION", "PRIVILEGED"], &rows, &[])
 }
 
-fn field_table(paint: Paint, fields: &[FieldDescriptor]) -> String {
-    let rows: Vec<Vec<String>> = fields
+/// The actions of one service with their arguments.
+pub fn service_actions(paint: Paint, schemas: &[ActionSchema]) -> String {
+    let rows: Vec<Vec<String>> = schemas
         .iter()
-        .map(|field| {
+        .map(|schema| {
             vec![
-                field.name.clone(),
-                field.kind.to_string(),
-                if field.variants.is_empty() {
-                    field.unit.clone()
-                } else {
-                    field.variants.join("|")
-                },
+                schema.action.name.clone(),
+                arguments_of(&schema.args),
+                yes_no(schema.action.privileged).to_owned(),
             ]
         })
         .collect();
-    table(paint, &["FIELD", "TYPE", "UNIT/VALUES"], &rows, &[])
+    table(paint, &["ACTION", "ARGS", "PRIVILEGED"], &rows, &[])
 }
 
-/// The arguments and results of an action.
-pub fn action_schema(paint: Paint, schema: &ActionSchema) -> String {
+/// The help of `rohi action <service> <action>`, generated from the schema
+/// of the device.
+pub fn action_help(paint: Paint, schema: &ActionSchema) -> String {
     let action = &schema.action;
-    let mut out = pairs(
-        paint,
-        &[
-            (
-                "Action:".to_owned(),
-                format!("{} {}", action.service, action.name),
-            ),
-            (
-                "Access:".to_owned(),
-                if action.privileged { "write" } else { "read" }.to_owned(),
-            ),
-        ],
-    );
+    let mut usage = format!("  rohi action {} {}", action.service, action.name);
+    for arg in &schema.args {
+        let _ = write!(usage, " {}=VALUE", arg.name);
+    }
+    let mut out = format!("{}\n{usage}\n", paint.strong("Usage:"));
     if !schema.args.is_empty() {
-        let heading = if action.secret_args {
-            "Arguments (all required, secret: give them as NAME=-):"
-        } else {
-            "Arguments (all required):"
-        };
-        out.push_str(&format!("\n{}\n", paint.strong(heading)));
-        out.push_str(&field_table(paint, &schema.args));
+        let rows: Vec<(String, String)> = schema
+            .args
+            .iter()
+            .map(|arg| {
+                let mut text = field_type(arg);
+                if action.secret_args {
+                    text.push_str(", secret");
+                }
+                (arg.name.clone(), text)
+            })
+            .collect();
+        out.push_str(&format!(
+            "\n{}\n{}",
+            paint.strong("Arguments (all required):"),
+            help_fields(paint, &rows)
+        ));
+        if action.secret_args {
+            out.push_str("\nSecrets are never put on the command line: give ARG=- to read the value\nfrom stdin or a prompt.\n");
+        }
     }
     if !schema.results.is_empty() {
+        let rows: Vec<(String, String)> = schema
+            .results
+            .iter()
+            .map(|field| (field.name.clone(), field_type(field)))
+            .collect();
         out.push_str(&format!(
-            "\n{}\n",
-            paint.strong("Results (one record each):")
+            "\n{}\n{}",
+            paint.strong("Results (one record each):"),
+            help_fields(paint, &rows)
         ));
-        out.push_str(&field_table(paint, &schema.results));
     }
+    out.push_str(&format!(
+        "\n{} {}\n",
+        paint.strong("Privileged:"),
+        yes_no(action.privileged)
+    ));
     out
 }
 
