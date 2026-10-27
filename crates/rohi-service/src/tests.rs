@@ -278,7 +278,7 @@ fn dry_run_validates_without_persisting() {
         block_on(section.patch(&[set(1, Value::Bool(true))], None, true)),
         Err(FieldError::Invalid.into())
     );
-    block_on(section.reset(true)).unwrap();
+    block_on(section.reset(None, true)).unwrap();
     assert_eq!(*store.writes.borrow(), 0);
 }
 
@@ -354,7 +354,7 @@ fn reset_removes_the_persisted_section() {
     let store = MemoryStore::default();
     let section = section(&store);
     block_on(section.patch(&[set(3, text("a.io"))], None, false)).unwrap();
-    let patched = block_on(section.reset(false)).unwrap();
+    let patched = block_on(section.reset(None, false)).unwrap();
     assert_eq!(patched.revision, 2);
     assert!(store.value.borrow().is_none());
     assert!(!block_on(section.get()).unwrap().configured);
@@ -454,7 +454,7 @@ fn a_tuple_of_sections_is_a_registry() {
     assert!(a.value.borrow().is_none());
     assert_eq!(block_on(registry.get(99)), Err(ConfigError::UnknownSection));
     assert_eq!(block_on(().get(1)), Err(ConfigError::UnknownSection));
-    block_on(registry.reset(2, false)).unwrap();
+    block_on(registry.reset(2, None, false)).unwrap();
     assert!(other_store.0.borrow().is_none());
 }
 
@@ -906,7 +906,11 @@ fn a_restart_only_store_reports_it_for_every_change_and_factory_reset() {
     assert!(store.value.borrow().is_some());
     let dry = block_on(registry.patch(1, &[set(3, text("b.io"))], None, true)).unwrap();
     assert!(dry.restart_required);
-    assert!(block_on(registry.reset(1, false)).unwrap().restart_required);
+    assert!(
+        block_on(registry.reset(1, None, false))
+            .unwrap()
+            .restart_required
+    );
     assert!(store.value.borrow().is_none());
     assert!(block_on(registry.factory_reset()).unwrap().restart_required);
 }

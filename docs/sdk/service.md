@@ -83,7 +83,7 @@ The schema only expresses simple constraints (kind, enum variants, numeric range
 2. **Secrets** (`secret`) are write-only: `GetConfigSection` reports them as `redacted`, never their value.
 3. **Dry run** validates exactly like a real patch and stores nothing; the revision does not change.
 4. **Revision** (`u32`, RAM only, 0 at boot) increments on every successful write or reset; `expected_revision`
-   makes a patch fail with `CONFLICT` if the section changed meanwhile.
+   makes a patch or a reset fail with `CONFLICT` if the section changed meanwhile.
 5. **Reset** removes the stored section and restores the module defaults.
 6. `restart_required` tells the client that a change needs a restart.
 

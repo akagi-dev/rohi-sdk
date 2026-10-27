@@ -104,7 +104,7 @@ A section has a name, a schema version and a **revision**. `GetConfigSection` re
 fields are absent, secrets are `redacted`, never their value) and `configured`, whether anything is stored.
 `PatchConfigSection` carries `set` / `unset` mutations by field id, an optional `expected_revision` and `dry_run`; it is
 atomic per section and validated as a whole, see [Service pipeline](service.md#config-sections).
-`ResetConfigSection` removes the stored section. The response carries the new `revision` and `restart_required`.
+`ResetConfigSection` removes the stored section; like a patch it takes an optional `expected_revision`. The response carries the new `revision` and `restart_required`.
 `FactoryReset` formats the configuration storage: every section, sections the firmware does not know and the identity are
 removed and the runtime returns to the defaults. The response carries `restart_required`.
 `Reboot` asks the device to reboot: it answers first and reboots shortly after (the Altruist Urban about 1.5 s later), so

@@ -545,14 +545,29 @@ fn patch_conflicts_dry_runs_unset_and_reset() {
     };
     assert!(section.entries.iter().all(|e| e.field_id != 4));
 
-    let Reply::ResetConfigSection(done) = call(
-        &controller,
-        &PLAIN,
-        Call::ResetConfigSection(pb::ResetConfigSectionRequest {
-            section_id: 1,
-            dry_run: false,
-        }),
-    ) else {
+    // A reset of a revision the section has moved past is a conflict.
+    let mut stale = pb::ResetConfigSectionRequest {
+        section_id: 1,
+        ..Default::default()
+    };
+    stale.set_expected_revision(1);
+    assert_eq!(
+        error_code(&call(&controller, &PLAIN, Call::ResetConfigSection(stale))),
+        pb::ErrorCode::Conflict
+    );
+    let Reply::GetConfigSection(section) = get() else {
+        panic!()
+    };
+    assert!(section.configured);
+
+    let mut current = pb::ResetConfigSectionRequest {
+        section_id: 1,
+        ..Default::default()
+    };
+    current.set_expected_revision(2);
+    let Reply::ResetConfigSection(done) =
+        call(&controller, &PLAIN, Call::ResetConfigSection(current))
+    else {
         panic!()
     };
     assert_eq!(done.revision, 3);
@@ -867,6 +882,7 @@ fn the_policy_gates_writes_and_privileged_actions() {
     let reset = Call::ResetConfigSection(pb::ResetConfigSectionRequest {
         section_id: 1,
         dry_run: true,
+        ..Default::default()
     });
     assert_eq!(
         error_code(&call(&controller, &PLAIN, reset)),

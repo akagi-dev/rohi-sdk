@@ -78,7 +78,7 @@ pub async fn run<T: ClientTransport>(
                     )
                     .await?;
             }
-            let applied = device.config_reset(&section, dry_run).await?;
+            let applied = device.config_reset(&section, None, dry_run).await?;
             report(ctx, &section, &applied, dry_run)
         }
         ConfigAction::Export { file } => export(device, file, ctx).await,
@@ -279,6 +279,9 @@ struct Change {
 /// What applying the file does to one section.
 struct SectionPlan {
     section: String,
+    // The revision the changes were computed from; applying fails with a
+    // conflict when the section moved on.
+    expected_revision: u32,
     reset: bool,
     mutations: Vec<Mutation>,
     changes: Vec<Change>,
@@ -327,6 +330,7 @@ async fn plan<T: ClientTransport>(
         let current = device.config_get(section).await?;
         let mut plan = SectionPlan {
             section: section.clone(),
+            expected_revision: current.section.revision,
             reset: false,
             mutations: Vec::new(),
             changes: Vec::new(),
@@ -515,10 +519,17 @@ async fn apply<T: ClientTransport>(
     // first one is stored.
     for plan in &plans {
         if plan.reset {
-            device.config_reset(&plan.section, true).await?;
+            device
+                .config_reset(&plan.section, Some(plan.expected_revision), true)
+                .await?;
         } else {
             device
-                .config_patch(&plan.section, &plan.mutations, None, true)
+                .config_patch(
+                    &plan.section,
+                    &plan.mutations,
+                    Some(plan.expected_revision),
+                    true,
+                )
                 .await?;
         }
     }
@@ -552,10 +563,17 @@ async fn apply<T: ClientTransport>(
     let mut restart = false;
     for (index, plan) in plans.iter().enumerate() {
         let result = if plan.reset {
-            device.config_reset(&plan.section, false).await
+            device
+                .config_reset(&plan.section, Some(plan.expected_revision), false)
+                .await
         } else {
             device
-                .config_patch(&plan.section, &plan.mutations, None, false)
+                .config_patch(
+                    &plan.section,
+                    &plan.mutations,
+                    Some(plan.expected_revision),
+                    false,
+                )
                 .await
         };
         match result {

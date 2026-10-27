@@ -187,12 +187,24 @@ impl<T: ClientTransport> Device<T> {
         }
     }
 
-    /// Removes the persisted section and restores the defaults.
-    pub async fn config_reset(&mut self, section: &str, dry_run: bool) -> Result<Applied> {
-        let call = Call::ResetConfigSection(pb::ResetConfigSectionRequest {
+    /// Removes the persisted section and restores the defaults. With
+    /// `expected_revision` it fails with a conflict when the section changed
+    /// since that revision.
+    pub async fn config_reset(
+        &mut self,
+        section: &str,
+        expected_revision: Option<u32>,
+        dry_run: bool,
+    ) -> Result<Applied> {
+        let mut request = pb::ResetConfigSectionRequest {
             section_id: self.section_id(section).await?,
             dry_run,
-        });
+            ..Default::default()
+        };
+        if let Some(revision) = expected_revision {
+            request.set_expected_revision(revision);
+        }
+        let call = Call::ResetConfigSection(request);
         match self.call(call).await? {
             Reply::ResetConfigSection(done) => Ok(Applied {
                 revision: done.revision,

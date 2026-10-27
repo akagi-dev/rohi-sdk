@@ -343,6 +343,8 @@ message PatchConfigSectionResponse {
 message ResetConfigSectionRequest {
   uint64 section_id = 1;
   bool dry_run = 2;
+  // Fails with `ERROR_CODE_CONFLICT` when the section changed meanwhile.
+  optional uint32 expected_revision = 3;
 }
 
 message ResetConfigSectionResponse {

@@ -289,7 +289,11 @@ pub trait ConfigSectionOps {
         dry_run: bool,
     ) -> Result<Patched, ConfigError>;
     /// Removes the persisted section and restores the defaults.
-    async fn reset(&self, dry_run: bool) -> Result<Patched, ConfigError>;
+    async fn reset(
+        &self,
+        expected_revision: Option<u32>,
+        dry_run: bool,
+    ) -> Result<Patched, ConfigError>;
 }
 
 /// A typed section with its store and revision counter.
@@ -454,8 +458,13 @@ impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ConfigSectionOps
         })
     }
 
-    async fn reset(&self, dry_run: bool) -> Result<Patched, ConfigError> {
+    async fn reset(
+        &self,
+        expected_revision: Option<u32>,
+        dry_run: bool,
+    ) -> Result<Patched, ConfigError> {
         let _transaction = self.transaction.lock().await;
+        self.check_revision(expected_revision)?;
         let restart_required = self.store.restart_required();
         if dry_run {
             return Ok(Patched {
@@ -495,7 +504,12 @@ pub trait ConfigRegistry {
         dry_run: bool,
     ) -> Result<Patched, ConfigError>;
     /// Resets the section with the given id.
-    async fn reset(&self, section: u64, dry_run: bool) -> Result<Patched, ConfigError>;
+    async fn reset(
+        &self,
+        section: u64,
+        expected_revision: Option<u32>,
+        dry_run: bool,
+    ) -> Result<Patched, ConfigError>;
 
     /// Whether no two sections share an id. Firmware checks it once at
     /// start, a clash would make requests reach the wrong section.
@@ -518,7 +532,7 @@ pub trait ConfigRegistry {
             let Some(info) = self.section_info(index) else {
                 continue;
             };
-            restart_required |= self.reset(info.id, false).await?.restart_required;
+            restart_required |= self.reset(info.id, None, false).await?.restart_required;
         }
         Ok(FactoryReset { restart_required })
     }
@@ -551,7 +565,7 @@ impl ConfigRegistry for () {
         Err(ConfigError::UnknownSection)
     }
 
-    async fn reset(&self, _: u64, _: bool) -> Result<Patched, ConfigError> {
+    async fn reset(&self, _: u64, _: Option<u32>, _: bool) -> Result<Patched, ConfigError> {
         Err(ConfigError::UnknownSection)
     }
 }
@@ -597,9 +611,14 @@ macro_rules! tuple_config_registry {
                 Err(ConfigError::UnknownSection)
             }
 
-            async fn reset(&self, section: u64, dry_run: bool) -> Result<Patched, ConfigError> {
+            async fn reset(
+                &self,
+                section: u64,
+                expected_revision: Option<u32>,
+                dry_run: bool,
+            ) -> Result<Patched, ConfigError> {
                 $(if self.$index.id() == section {
-                    return self.$index.reset(dry_run).await;
+                    return self.$index.reset(expected_revision, dry_run).await;
                 })+
                 Err(ConfigError::UnknownSection)
             }

@@ -211,7 +211,8 @@ A file maps section names to their fields:
   null for a required field fail with no change), then has the device validate **every** section with a dry run, shows
   the changes and asks for confirmation unless `--yes`, then applies the sections one by one. Each section is atomic;
   applying several is **not** atomic as a whole. If the device fails in between, the error lists the sections that
-  were applied and the ones that were not.
+  were applied and the ones that were not. Every section is applied against the revision its diff was computed from, so
+  a section that another client changed after the diff was shown fails with a conflict instead of being overwritten.
 - The backup of earlier versions (`rohi backup`) is replaced by `export`/`apply`; an old backup file is not understood.
 
 ## Actions

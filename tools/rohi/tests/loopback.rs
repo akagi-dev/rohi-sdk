@@ -229,7 +229,7 @@ async fn dry_runs_conflicts_restarts_and_reset() {
             .unwrap_err();
         assert!(matches!(error, Error::Device(ErrorCode::Conflict)));
 
-        let reset = device.config_reset("gadget", false).await.unwrap();
+        let reset = device.config_reset("gadget", None, false).await.unwrap();
         assert_eq!(reset.revision, 2);
         assert!(!device.config_get("gadget").await.unwrap().configured);
     })

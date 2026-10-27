@@ -1718,3 +1718,116 @@ async fn export_and_apply_carry_the_location() {
         Some(40.5)
     );
 }
+
+// ---------------------------------------------------------------------------
+// optimistic concurrency of `config apply`
+// ---------------------------------------------------------------------------
+
+/// A client link that lets another client change the device right before its
+/// `at`-th request is sent; `at == 0` never does.
+struct Interfering {
+    inner: ClientEnd,
+    sent: usize,
+    at: usize,
+    seen: Rc<std::cell::Cell<usize>>,
+    rival: Option<Device<ClientEnd>>,
+}
+
+impl rohi::ClientTransport for Interfering {
+    fn max_payload(&self) -> usize {
+        self.inner.max_payload()
+    }
+
+    async fn send(&mut self, chunk: &[u8]) -> rohi::Result<()> {
+        self.sent += 1;
+        self.seen.set(self.sent);
+        if self.sent == self.at
+            && let Some(mut rival) = self.rival.take()
+        {
+            let port = rohi::model::Mutation {
+                field_id: 5,
+                op: rohi::model::MutationOp::Set(rohi::model::Value::U64(9000)),
+            };
+            rival
+                .config_patch("connectivity", &[port], None, false)
+                .await
+                .unwrap();
+        }
+        self.inner.send(chunk).await
+    }
+
+    async fn recv(&mut self) -> rohi::Result<Vec<u8>> {
+        self.inner.recv().await
+    }
+}
+
+/// Applies `file` while a rival client changes the device before request
+/// number `at`; returns how many requests were sent.
+async fn apply_with_rival(bench: &Bench, file: &std::path::Path, at: usize) -> (Outcome, usize) {
+    let cli = parse(&["config", "apply", path(file), "--yes"]).unwrap();
+    let (stdout, stderr) = (Buf::default(), Buf::default());
+    let mut ctx = Ctx::new(
+        Io::scripted(stdout.clone(), stderr.clone(), false, &[]),
+        cli.output,
+    );
+    ctx.uri = Some("ble://BENCH-1234".into());
+
+    let (client, device) = link(244);
+    let (rival_client, rival_device) = link(244);
+    let controller = Controller::new(backend(bench), OpenPolicy);
+    let mut server = ControlBle::new(device, &controller);
+    let mut rival_server = ControlBle::new(rival_device, &controller);
+    let seen = Rc::new(std::cell::Cell::new(0));
+    let transport = Interfering {
+        inner: client,
+        sent: 0,
+        at,
+        seen: seen.clone(),
+        rival: Some(Device::new(rival_client)),
+    };
+    let command = cli.command;
+    let result = tokio::select! {
+        () = async { server.run().await } => unreachable!(),
+        () = async { rival_server.run().await } => unreachable!(),
+        result = async {
+            let mut device = Device::new(transport);
+            execute(&mut device, command, &mut ctx).await
+        } => result,
+    };
+    let outcome = Outcome {
+        result,
+        stdout: stdout.text(),
+        stderr: stderr.text(),
+    };
+    (outcome, seen.get())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn apply_conflicts_when_the_section_changes_after_the_diff_was_shown() {
+    let file = temp_file("race.json", r#"{ "connectivity": { "interval_s": 120 } }"#);
+
+    // Undisturbed, the last request is the store of the section.
+    let bench = configured().await;
+    let (outcome, requests) = apply_with_rival(&bench, &file, 0).await;
+    outcome.ok();
+    assert_eq!(
+        bench.telemetry.value.borrow().clone().unwrap().interval_s,
+        120
+    );
+
+    // Another client gets in just before that store: nothing is overwritten.
+    let bench = configured().await;
+    let (outcome, _) = apply_with_rival(&bench, &file, requests).await;
+    let CliError::PartialApply(partial) = outcome.error() else {
+        panic!("{}", outcome.message());
+    };
+    assert_eq!(partial.failed, "connectivity");
+    assert!(partial.applied.is_empty());
+    assert!(matches!(
+        partial.source,
+        Error::Device(rohi::model::ErrorCode::Conflict)
+    ));
+    let stored = bench.telemetry.value.borrow().clone().unwrap();
+    assert_eq!(stored.port, 9000);
+    assert_eq!(stored.interval_s, 60);
+}

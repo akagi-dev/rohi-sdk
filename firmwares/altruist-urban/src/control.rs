@@ -185,8 +185,15 @@ impl ConfigRegistry for UrbanConfig {
             .await
     }
 
-    async fn reset(&self, section: u64, dry_run: bool) -> Result<Patched, RegistryError> {
-        self.sections.reset(section, dry_run).await
+    async fn reset(
+        &self,
+        section: u64,
+        expected_revision: Option<u32>,
+        dry_run: bool,
+    ) -> Result<Patched, RegistryError> {
+        self.sections
+            .reset(section, expected_revision, dry_run)
+            .await
     }
 
     /// Formats the whole configuration region: this also removes the identity

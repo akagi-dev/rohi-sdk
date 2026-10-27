@@ -172,7 +172,11 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             Call::ResetConfigSection(request) => {
                 match backend
                     .config()
-                    .reset(request.section_id, request.dry_run)
+                    .reset(
+                        request.section_id,
+                        request.expected_revision().copied(),
+                        request.dry_run,
+                    )
                     .await
                 {
                     Ok(done) => Reply::ResetConfigSection(pb::ResetConfigSectionResponse {
