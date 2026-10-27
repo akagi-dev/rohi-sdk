@@ -22,9 +22,9 @@ use embassy_sync::blocking_mutex::raw::RawMutex;
 use heapless::Vec;
 use rohi_location::LocationSource;
 use rohi_service::{
-    ConfigField, FieldDescriptor, FieldError, Issue, IssueSeverity, MAX_ISSUES, ManagedConfig,
-    ManagedService, ServiceHealth, ServiceState, ServiceSummary, StatusWriter, Value, ValueKind,
-    WriteError,
+    Bounds, ConfigField, FieldDescriptor, FieldError, Issue, IssueDescriptor, IssueSeverity,
+    MAX_ISSUES, ManagedConfig, ManagedService, ServiceHealth, ServiceState, ServiceSummary,
+    StatusWriter, Unit, Value, ValueKind, WriteError,
 };
 
 use crate::config::{MAX_HOST_LEN, MAX_INTERVAL_S, MIN_INTERVAL_S};
@@ -47,22 +47,17 @@ pub mod field {
 }
 
 impl ManagedConfig for ConnectivityConfig {
+    const SECTION_ID: u64 = <Self as rohi_config::ConfigSection>::ID.0;
     const NAME: &'static str = "connectivity";
     const VERSION: u16 = <Self as rohi_config::ConfigSection>::VERSION;
     const FIELDS: &'static [ConfigField] = &[
-        ConfigField::new(field::ENABLED, "enabled", ValueKind::Bool)
-            .describe("Produce and send telemetry"),
-        ConfigField::new(field::NODE_ID, "node_id", ValueKind::U64)
-            .describe("Robonomics CPS node identifier"),
+        ConfigField::new(field::ENABLED, "enabled", ValueKind::Bool),
+        ConfigField::new(field::NODE_ID, "node_id", ValueKind::U64),
         ConfigField::new(field::INTERVAL_S, "interval_s", ValueKind::U64)
-            .describe("Time between telemetry frames")
-            .unit("s")
-            .range(MIN_INTERVAL_S as f64, MAX_INTERVAL_S as f64),
-        ConfigField::new(field::HOST, "host", ValueKind::String)
-            .describe("Ingress host name or IPv4 address"),
-        ConfigField::new(field::PORT, "port", ValueKind::U64)
-            .describe("Ingress TCP port")
-            .range(1.0, 65535.0),
+            .unit(Unit::S)
+            .bounds(Bounds::U64(MIN_INTERVAL_S as u64, MAX_INTERVAL_S as u64)),
+        ConfigField::new(field::HOST, "host", ValueKind::String),
+        ConfigField::new(field::PORT, "port", ValueKind::U64).bounds(Bounds::U64(1, 65535)),
     ];
 
     fn defaults() -> Self {
@@ -113,6 +108,37 @@ impl ManagedConfig for ConnectivityConfig {
     }
 }
 
+/// Id of the `connectivity` service.
+pub const SERVICE_ID: u32 = 6;
+
+/// Issue codes of the `connectivity` service.
+pub mod issue {
+    use rohi_service::FIRST_SERVICE_ISSUE as BASE;
+
+    /// The network cannot carry traffic.
+    pub const NETWORK_UNAVAILABLE: u32 = BASE;
+    /// Name resolution failed.
+    pub const DNS_FAILED: u32 = BASE + 1;
+    /// The connection failed.
+    pub const CONNECT_FAILED: u32 = BASE + 2;
+    /// The exchange timed out.
+    pub const CONNECTION_TIMEOUT: u32 = BASE + 3;
+    /// The connection closed unexpectedly.
+    pub const IO_ERROR: u32 = BASE + 4;
+    /// The response is invalid.
+    pub const BAD_RESPONSE: u32 = BASE + 5;
+    /// The ingress rejected the frame.
+    pub const DELIVERY_REJECTED: u32 = BASE + 6;
+    /// The device has no identity yet.
+    pub const NO_IDENTITY: u32 = BASE + 7;
+    /// UTC time is not synchronized yet.
+    pub const NO_UTC_TIME: u32 = BASE + 8;
+    /// The ingress does not authorize the device.
+    pub const UNAUTHORIZED: u32 = BASE + 9;
+    /// No location is set; telemetry is sent without it.
+    pub const NO_LOCATION: u32 = BASE + 10;
+}
+
 /// Field ids of the `connectivity` service status.
 pub mod status_field {
     /// Frames signed and queued.
@@ -133,26 +159,23 @@ pub mod status_field {
     pub const PORT: u32 = 8;
 }
 
-fn warning(code: &'static str, message: &'static str) -> Issue {
+fn warning(code: u32) -> Issue {
     Issue {
         severity: IssueSeverity::Warning,
         code,
-        message,
         age_ms: None,
     }
 }
 
 fn transport_issue(error: TransportError) -> Issue {
     match error {
-        TransportError::NetworkUnavailable => {
-            warning("network_unavailable", "The network cannot carry traffic")
-        }
-        TransportError::Dns => warning("dns_failed", "Name resolution failed"),
-        TransportError::Connect => warning("connect_failed", "The connection failed"),
-        TransportError::Timeout => warning("connection_timeout", "The exchange timed out"),
-        TransportError::Io => warning("io_error", "The connection closed unexpectedly"),
-        TransportError::BadResponse => warning("bad_response", "The response is invalid"),
-        TransportError::Status(_) => warning("delivery_rejected", "The ingress rejected the frame"),
+        TransportError::NetworkUnavailable => warning(issue::NETWORK_UNAVAILABLE),
+        TransportError::Dns => warning(issue::DNS_FAILED),
+        TransportError::Connect => warning(issue::CONNECT_FAILED),
+        TransportError::Timeout => warning(issue::CONNECTION_TIMEOUT),
+        TransportError::Io => warning(issue::IO_ERROR),
+        TransportError::BadResponse => warning(issue::BAD_RESPONSE),
+        TransportError::Status(_) => warning(issue::DELIVERY_REJECTED),
     }
 }
 
@@ -189,15 +212,13 @@ impl<'a, M: RawMutex> ConnectivityStatusService<'a, M> {
     /// is.
     fn no_location(&self, out: &mut Vec<Issue, MAX_ISSUES>) {
         if self.location.location().is_none() {
-            let _ = out.push(warning(
-                "no_location",
-                "No location is set; telemetry is sent without it",
-            ));
+            let _ = out.push(warning(issue::NO_LOCATION));
         }
     }
 }
 
 impl<M: RawMutex> ManagedService for ConnectivityStatusService<'_, M> {
+    const ID: u32 = SERVICE_ID;
     const NAME: &'static str = "connectivity";
     const VERSION: u16 = 1;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
@@ -205,32 +226,38 @@ impl<M: RawMutex> ManagedService for ConnectivityStatusService<'_, M> {
             status_field::FRAMES_CREATED,
             "frames_created",
             ValueKind::U64,
-        )
-        .describe("Frames signed and queued"),
+        ),
         FieldDescriptor::new(
             status_field::FRAMES_DELIVERED,
             "frames_delivered",
             ValueKind::U64,
-        )
-        .describe("Frames accepted by the ingress"),
-        FieldDescriptor::new(status_field::SEND_RETRIES, "send_retries", ValueKind::U64)
-            .describe("Failed delivery attempts"),
+        ),
+        FieldDescriptor::new(status_field::SEND_RETRIES, "send_retries", ValueKind::U64),
         FieldDescriptor::new(
             status_field::FRAMES_REJECTED,
             "frames_rejected",
             ValueKind::U64,
-        )
-        .describe("Frames dropped after a rejection"),
-        FieldDescriptor::new(status_field::QUEUE_DEPTH, "queue_depth", ValueKind::U64)
-            .describe("Frames waiting for delivery"),
-        FieldDescriptor::new(status_field::HOST, "host", ValueKind::String)
-            .describe("Ingress host"),
+        ),
+        FieldDescriptor::new(status_field::QUEUE_DEPTH, "queue_depth", ValueKind::U64),
+        FieldDescriptor::new(status_field::HOST, "host", ValueKind::String),
         FieldDescriptor::new(
             status_field::FRAMES_WITHOUT_LOCATION,
             "frames_without_location",
             ValueKind::U64,
-        )
-        .describe("Frames created without a location"),
+        ),
+    ];
+    const ISSUES: &'static [IssueDescriptor] = &[
+        IssueDescriptor::new(issue::NETWORK_UNAVAILABLE, "network_unavailable"),
+        IssueDescriptor::new(issue::DNS_FAILED, "dns_failed"),
+        IssueDescriptor::new(issue::CONNECT_FAILED, "connect_failed"),
+        IssueDescriptor::new(issue::CONNECTION_TIMEOUT, "connection_timeout"),
+        IssueDescriptor::new(issue::IO_ERROR, "io_error"),
+        IssueDescriptor::new(issue::BAD_RESPONSE, "bad_response"),
+        IssueDescriptor::new(issue::DELIVERY_REJECTED, "delivery_rejected"),
+        IssueDescriptor::new(issue::NO_IDENTITY, "no_identity"),
+        IssueDescriptor::new(issue::NO_UTC_TIME, "no_utc_time"),
+        IssueDescriptor::new(issue::UNAUTHORIZED, "unauthorized"),
+        IssueDescriptor::new(issue::NO_LOCATION, "no_location"),
     ];
     const ESSENTIAL: bool = false;
 
@@ -264,17 +291,12 @@ impl<M: RawMutex> ManagedService for ConnectivityStatusService<'_, M> {
                 self.no_location(out);
                 return;
             }
-            ConnectivityState::WaitingForIdentity => {
-                warning("no_identity", "The device has no identity yet")
-            }
-            ConnectivityState::WaitingForUtc => {
-                warning("no_utc_time", "UTC time is not synchronized yet")
-            }
+            ConnectivityState::WaitingForIdentity => warning(issue::NO_IDENTITY),
+            ConnectivityState::WaitingForUtc => warning(issue::NO_UTC_TIME),
             ConnectivityState::Backoff(error) => transport_issue(error),
             ConnectivityState::Unauthorized(_) => Issue {
                 severity: IssueSeverity::Error,
-                code: "unauthorized",
-                message: "The ingress does not authorize the device",
+                code: issue::UNAUTHORIZED,
                 age_ms: None,
             },
         };
@@ -380,14 +402,10 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(
-            field(field::INTERVAL_S).min,
-            Some(f64::from(MIN_INTERVAL_S))
+            field(field::INTERVAL_S).bounds,
+            Some(Bounds::U64(MIN_INTERVAL_S.into(), MAX_INTERVAL_S.into()))
         );
-        assert_eq!(
-            field(field::INTERVAL_S).max,
-            Some(f64::from(MAX_INTERVAL_S))
-        );
-        assert_eq!(field(field::INTERVAL_S).field.unit, "s");
+        assert_eq!(field(field::INTERVAL_S).field.unit, Unit::S);
     }
 
     fn enabled() -> Option<ConnectivityConfig> {
@@ -433,7 +451,7 @@ mod tests {
         assert!(summary.ready);
         let mut issues = Vec::new();
         block_on(unlocated.issues(&mut issues));
-        assert_eq!(issues[0].code, "no_location");
+        assert_eq!(issues[0].code, issue::NO_LOCATION);
         assert_eq!(issues[0].severity, IssueSeverity::Warning);
 
         let located = ConnectivityStatusService::new(&shared, enabled, &Located);
@@ -465,7 +483,7 @@ mod tests {
         let mut issues = Vec::new();
         block_on(service.issues(&mut issues));
         let codes: std::vec::Vec<_> = issues.iter().map(|issue| issue.code).collect();
-        assert_eq!(codes, ["connection_timeout", "no_location"]);
+        assert_eq!(codes, [issue::CONNECTION_TIMEOUT, issue::NO_LOCATION]);
     }
 
     #[test]

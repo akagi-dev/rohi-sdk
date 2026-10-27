@@ -28,41 +28,41 @@ const LIMITS: &[(&str, usize, &str)] = &[
     (
         "MAX_NAME_LEN",
         24,
-        "Maximum length of a section, service or field name, in bytes.",
+        "Maximum length of a section, service, action, field or issue name, in bytes.",
     ),
     (
         "MAX_VALUE_LEN",
         64,
-        "Maximum length of a string or bytes `Value`, in bytes.",
+        "Maximum length of a string or bytes value of a request or config, in bytes.",
     ),
     (
-        "MAX_DESCRIPTION_LEN",
-        40,
-        "Maximum length of a field description, in bytes.",
+        "MAX_FIELD_VALUE_LEN",
+        32,
+        "Maximum length of a string or bytes status value or action result, in bytes.",
     ),
     (
-        "MAX_UNIT_LEN",
-        8,
-        "Maximum length of a field unit, in bytes.",
+        "MAX_ENUMS",
+        1,
+        "Maximum number of enums in one schema response.",
     ),
     (
-        "MAX_VARIANTS",
-        10,
-        "Maximum number of variants of an enum field.",
+        "MAX_ENUM_VARIANTS",
+        9,
+        "Maximum number of variants of an enum.",
     ),
     (
-        "MAX_VARIANT_LEN",
+        "MAX_VARIANT_NAME_LEN",
         16,
-        "Maximum length of an enum variant, in bytes.",
+        "Maximum length of an enum variant name, in bytes.",
     ),
     (
-        "MAX_SCHEMA_PAGE",
-        4,
+        "MAX_SCHEMA_FIELDS",
+        20,
         "Maximum number of field descriptors in one schema response.",
     ),
     (
-        "MAX_STATUS_PAGE",
-        8,
+        "MAX_STATUS_FIELDS",
+        20,
         "Maximum number of status values in one status response.",
     ),
     (
@@ -91,9 +91,14 @@ const LIMITS: &[(&str, usize, &str)] = &[
         "Maximum number of active issues reported for one service.",
     ),
     (
-        "MAX_ACTIONS_PAGE",
-        8,
-        "Maximum number of actions in one list response.",
+        "MAX_ISSUE_DESCRIPTORS",
+        12,
+        "Maximum number of issues a service schema describes.",
+    ),
+    (
+        "MAX_ACTIONS",
+        12,
+        "Maximum number of actions a device lists.",
     ),
     (
         "MAX_ACTION_ARGS",
@@ -111,34 +116,33 @@ const LIMITS: &[(&str, usize, &str)] = &[
         "Maximum number of fields of one action record.",
     ),
     (
-        "MAX_CODE_LEN",
+        "MAX_REASON_LEN",
         32,
-        "Maximum length of an issue code or status reason, in bytes.",
-    ),
-    (
-        "MAX_ISSUE_MESSAGE_LEN",
-        48,
-        "Maximum length of an issue message, in bytes.",
+        "Maximum length of the reason of a rejected action, in bytes.",
     ),
 ];
 
-/// Repeated fields are bounded in elements; strings and bytes in bytes.
+/// Repeated fields: bounded by element count, not by byte length.
 const REPEATED: &[&str] = &[
-    ".rohi.control.v1.ConfigSectionSchema.fields",
+    ".rohi.control.v1.GetConfigSchemaResponse.fields",
+    ".rohi.control.v1.GetConfigSchemaResponse.enums",
     ".rohi.control.v1.ListConfigSectionsResponse.sections",
     ".rohi.control.v1.GetConfigSectionResponse.entries",
     ".rohi.control.v1.PatchConfigSectionRequest.mutations",
-    ".rohi.control.v1.ListServicesResponse.services",
     ".rohi.control.v1.GetServicesStatusResponse.services",
     ".rohi.control.v1.GetServiceSchemaResponse.fields",
+    ".rohi.control.v1.GetServiceSchemaResponse.enums",
+    ".rohi.control.v1.GetServiceSchemaResponse.issues",
     ".rohi.control.v1.GetServiceStatusResponse.fields",
     ".rohi.control.v1.GetServiceStatusResponse.issues",
     ".rohi.control.v1.ListActionsResponse.actions",
     ".rohi.control.v1.GetActionSchemaResponse.args",
     ".rohi.control.v1.GetActionSchemaResponse.results",
+    ".rohi.control.v1.GetActionSchemaResponse.enums",
     ".rohi.control.v1.InvokeActionRequest.args",
     ".rohi.control.v1.ActionRecord.fields",
     ".rohi.control.v1.InvokeActionResponse.records",
+    ".rohi.control.v1.EnumDescriptor.variants",
 ];
 
 fn limit(name: &str) -> usize {
@@ -160,77 +164,99 @@ fn main() {
     }
     fs::write(out_dir.join("limits.rs"), limits).expect("write limits.rs");
 
-    // The Debug removal below is intentional; do not turn it into build warnings.
     let mut generator = Generator::with_warning_callback(|_| {});
     generator.use_container_heapless();
 
     let bounded = [
         (".rohi.control.v1.GetInfoResponse.firmware", "MAX_TEXT_LEN"),
         (".rohi.control.v1.GetInfoResponse.board", "MAX_TEXT_LEN"),
-        (".rohi.control.v1.Value.string_value", "MAX_VALUE_LEN"),
-        (".rohi.control.v1.Value.bytes_value", "MAX_VALUE_LEN"),
-        (".rohi.control.v1.Value.enum_value", "MAX_VARIANT_LEN"),
+        (".rohi.control.v1.Error.reason", "MAX_REASON_LEN"),
+        // Values.
+        (
+            ".rohi.control.v1.FieldValue.string_value",
+            "MAX_FIELD_VALUE_LEN",
+        ),
+        (
+            ".rohi.control.v1.FieldValue.bytes_value",
+            "MAX_FIELD_VALUE_LEN",
+        ),
+        (".rohi.control.v1.ActionArg.string_value", "MAX_VALUE_LEN"),
+        (".rohi.control.v1.ActionArg.bytes_value", "MAX_VALUE_LEN"),
+        (".rohi.control.v1.ConfigEntry.string_value", "MAX_VALUE_LEN"),
+        (".rohi.control.v1.ConfigEntry.bytes_value", "MAX_VALUE_LEN"),
+        (
+            ".rohi.control.v1.ConfigMutation.string_value",
+            "MAX_VALUE_LEN",
+        ),
+        (
+            ".rohi.control.v1.ConfigMutation.bytes_value",
+            "MAX_VALUE_LEN",
+        ),
+        // Descriptors.
         (".rohi.control.v1.FieldDescriptor.name", "MAX_NAME_LEN"),
+        (".rohi.control.v1.EnumVariant.name", "MAX_VARIANT_NAME_LEN"),
         (
-            ".rohi.control.v1.FieldDescriptor.description",
-            "MAX_DESCRIPTION_LEN",
+            ".rohi.control.v1.EnumDescriptor.variants",
+            "MAX_ENUM_VARIANTS",
         ),
-        (".rohi.control.v1.FieldDescriptor.unit", "MAX_UNIT_LEN"),
+        (".rohi.control.v1.IssueDescriptor.name", "MAX_NAME_LEN"),
+        // Config.
         (".rohi.control.v1.ConfigSectionInfo.name", "MAX_NAME_LEN"),
-        (
-            ".rohi.control.v1.ConfigSectionSchema.fields",
-            "MAX_SCHEMA_PAGE",
-        ),
         (
             ".rohi.control.v1.ListConfigSectionsResponse.sections",
             "MAX_CONFIG_SECTIONS",
         ),
         (
-            ".rohi.control.v1.GetConfigSchemaRequest.section",
-            "MAX_NAME_LEN",
+            ".rohi.control.v1.GetConfigSchemaResponse.fields",
+            "MAX_CONFIG_FIELDS",
         ),
         (
-            ".rohi.control.v1.GetConfigSectionRequest.section",
-            "MAX_NAME_LEN",
-        ),
-        (
-            ".rohi.control.v1.GetConfigSectionResponse.section",
-            "MAX_NAME_LEN",
+            ".rohi.control.v1.GetConfigSchemaResponse.enums",
+            "MAX_ENUMS",
         ),
         (
             ".rohi.control.v1.GetConfigSectionResponse.entries",
             "MAX_CONFIG_FIELDS",
         ),
         (
-            ".rohi.control.v1.PatchConfigSectionRequest.section",
-            "MAX_NAME_LEN",
-        ),
-        (
             ".rohi.control.v1.PatchConfigSectionRequest.mutations",
             "MAX_MUTATIONS",
         ),
+        // Services.
+        (".rohi.control.v1.ServiceStatusSummary.name", "MAX_NAME_LEN"),
         (
-            ".rohi.control.v1.ResetConfigSectionRequest.section",
+            ".rohi.control.v1.GetServicesStatusResponse.services",
+            "MAX_SERVICES",
+        ),
+        (
+            ".rohi.control.v1.GetServiceSchemaResponse.name",
             "MAX_NAME_LEN",
         ),
-        (".rohi.control.v1.Error.reason", "MAX_CODE_LEN"),
-        (".rohi.control.v1.ActionInfo.service", "MAX_NAME_LEN"),
+        (
+            ".rohi.control.v1.GetServiceSchemaResponse.fields",
+            "MAX_SCHEMA_FIELDS",
+        ),
+        (
+            ".rohi.control.v1.GetServiceSchemaResponse.enums",
+            "MAX_ENUMS",
+        ),
+        (
+            ".rohi.control.v1.GetServiceSchemaResponse.issues",
+            "MAX_ISSUE_DESCRIPTORS",
+        ),
+        (
+            ".rohi.control.v1.GetServiceStatusResponse.fields",
+            "MAX_STATUS_FIELDS",
+        ),
+        (
+            ".rohi.control.v1.GetServiceStatusResponse.issues",
+            "MAX_ISSUES",
+        ),
+        // Actions.
         (".rohi.control.v1.ActionInfo.name", "MAX_NAME_LEN"),
         (
-            ".rohi.control.v1.ActionInfo.description",
-            "MAX_DESCRIPTION_LEN",
-        ),
-        (
             ".rohi.control.v1.ListActionsResponse.actions",
-            "MAX_ACTIONS_PAGE",
-        ),
-        (
-            ".rohi.control.v1.GetActionSchemaRequest.service",
-            "MAX_NAME_LEN",
-        ),
-        (
-            ".rohi.control.v1.GetActionSchemaRequest.action",
-            "MAX_NAME_LEN",
+            "MAX_ACTIONS",
         ),
         (
             ".rohi.control.v1.GetActionSchemaResponse.args",
@@ -241,12 +267,8 @@ fn main() {
             "MAX_RECORD_FIELDS",
         ),
         (
-            ".rohi.control.v1.InvokeActionRequest.service",
-            "MAX_NAME_LEN",
-        ),
-        (
-            ".rohi.control.v1.InvokeActionRequest.action",
-            "MAX_NAME_LEN",
+            ".rohi.control.v1.GetActionSchemaResponse.enums",
+            "MAX_ENUMS",
         ),
         (
             ".rohi.control.v1.InvokeActionRequest.args",
@@ -256,52 +278,6 @@ fn main() {
         (
             ".rohi.control.v1.InvokeActionResponse.records",
             "MAX_RECORDS",
-        ),
-        (".rohi.control.v1.ServiceInfo.name", "MAX_NAME_LEN"),
-        (
-            ".rohi.control.v1.ServiceStatusSummary.service",
-            "MAX_NAME_LEN",
-        ),
-        (
-            ".rohi.control.v1.ServiceStatusSummary.reason",
-            "MAX_CODE_LEN",
-        ),
-        (".rohi.control.v1.ServiceIssue.code", "MAX_CODE_LEN"),
-        (
-            ".rohi.control.v1.ServiceIssue.message",
-            "MAX_ISSUE_MESSAGE_LEN",
-        ),
-        (
-            ".rohi.control.v1.ListServicesResponse.services",
-            "MAX_SERVICES",
-        ),
-        (
-            ".rohi.control.v1.GetServicesStatusResponse.services",
-            "MAX_SERVICES",
-        ),
-        (
-            ".rohi.control.v1.GetServiceSchemaRequest.service",
-            "MAX_NAME_LEN",
-        ),
-        (
-            ".rohi.control.v1.GetServiceSchemaResponse.service",
-            "MAX_NAME_LEN",
-        ),
-        (
-            ".rohi.control.v1.GetServiceSchemaResponse.fields",
-            "MAX_SCHEMA_PAGE",
-        ),
-        (
-            ".rohi.control.v1.GetServiceStatusRequest.service",
-            "MAX_NAME_LEN",
-        ),
-        (
-            ".rohi.control.v1.GetServiceStatusResponse.fields",
-            "MAX_STATUS_PAGE",
-        ),
-        (
-            ".rohi.control.v1.GetServiceStatusResponse.issues",
-            "MAX_ISSUES",
         ),
     ];
     for (path, name) in bounded {
@@ -314,16 +290,6 @@ fn main() {
         generator.configure(path, config);
     }
 
-    // A repeated string is bounded in elements and in the bytes of each one.
-    generator.configure(
-        ".rohi.control.v1.FieldDescriptor.variants",
-        Config::new()
-            .max_len(limit("MAX_VARIANTS") as u32)
-            .max_bytes(limit("MAX_VARIANT_LEN") as u32),
-    );
-
-    // A mutation can carry a secret (a Wi-Fi password): no derived `Debug`,
-    // see `lib.rs`.
     generator.configure(
         ".rohi.control.v1.ConfigMutation",
         Config::new().no_debug_impl(true),

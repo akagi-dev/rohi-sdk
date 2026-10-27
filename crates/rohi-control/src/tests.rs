@@ -24,9 +24,10 @@ use rohi_control_proto::control::{
 };
 use rohi_control_proto::{PROTOCOL_VERSION, decode, encode, limits};
 use rohi_service::{
-    ActionDescriptor, ActionError, ActionOutput, ConfigField, FieldDescriptor, FieldError, Issue,
-    IssueSeverity, ManagedConfig, ManagedSection, ManagedService, SectionStore, ServiceHealth,
-    ServiceState, ServiceSummary, StatusWriter, StoreError, Tracked, Value, ValueKind, WriteError,
+    ActionDescriptor, ActionError, ActionOutput, Bounds, ConfigField, EnumDescriptor, EnumVariant,
+    FIRST_SERVICE_ISSUE, FieldDescriptor, FieldError, Issue, IssueDescriptor, IssueSeverity,
+    ManagedConfig, ManagedSection, ManagedService, SectionStore, ServiceHealth, ServiceState,
+    ServiceSummary, StatusWriter, StoreError, Tracked, Unit, Value, ValueKind, WriteError,
 };
 
 use crate::*;
@@ -37,19 +38,28 @@ struct Net {
     port: u64,
     host: std::string::String,
     token: Option<std::string::String>,
+    mode: Option<u32>,
 }
 
 impl ManagedConfig for Net {
+    const SECTION_ID: u64 = 1;
     const NAME: &'static str = "net";
     const VERSION: u16 = 2;
     const FIELDS: &'static [ConfigField] = &[
         ConfigField::new(1, "enabled", ValueKind::Bool),
-        ConfigField::new(2, "port", ValueKind::U64).range(1.0, 65535.0),
+        ConfigField::new(2, "port", ValueKind::U64).bounds(Bounds::U64(1, 65535)),
         ConfigField::new(3, "host", ValueKind::String),
         ConfigField::new(4, "token", ValueKind::String)
             .secret()
             .optional(),
+        ConfigField::new(5, "mode", ValueKind::Enum)
+            .with_enum(1)
+            .optional(),
     ];
+    const ENUMS: &'static [EnumDescriptor] = &[EnumDescriptor::new(
+        1,
+        &[EnumVariant::new(0, "auto"), EnumVariant::new(5, "manual")],
+    )];
 
     fn defaults() -> Self {
         Self {
@@ -57,6 +67,7 @@ impl ManagedConfig for Net {
             port: 80,
             host: std::string::String::new(),
             token: None,
+            mode: None,
         }
     }
 
@@ -66,6 +77,7 @@ impl ManagedConfig for Net {
             2 => Some(Value::U64(self.port)),
             3 => Value::text(&self.host),
             4 => self.token.as_deref().and_then(Value::text),
+            5 => self.mode.map(Value::Enum),
             _ => return Err(FieldError::UnknownField),
         })
     }
@@ -76,14 +88,18 @@ impl ManagedConfig for Net {
             2 => self.port = value.as_u64().unwrap(),
             3 => self.host = value.as_str().unwrap().into(),
             4 => self.token = Some(value.as_str().unwrap().into()),
+            5 => self.mode = value.as_enum(),
             _ => return Err(FieldError::UnknownField),
         }
         Ok(())
     }
 
     fn unset_field(&mut self, id: u32) -> Result<(), FieldError> {
-        assert_eq!(id, 4);
-        self.token = None;
+        match id {
+            4 => self.token = None,
+            5 => self.mode = None,
+            _ => unreachable!(),
+        }
         Ok(())
     }
 
@@ -120,18 +136,29 @@ struct Radio {
 }
 
 impl ManagedService for &Radio {
+    const ID: u32 = 3;
     const NAME: &'static str = "radio";
     const VERSION: u16 = 1;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
         FieldDescriptor::new(1, "ssid", ValueKind::String),
-        FieldDescriptor::new(2, "rssi", ValueKind::I64).unit("dBm"),
+        FieldDescriptor::new(2, "rssi", ValueKind::I64).unit(Unit::Dbm),
+        FieldDescriptor::new(3, "band", ValueKind::Enum).with_enum(1),
+        FieldDescriptor::new(4, "gain", ValueKind::F32),
     ];
+    const ENUMS: &'static [EnumDescriptor] = &[EnumDescriptor::new(
+        1,
+        &[EnumVariant::new(2, "2.4ghz"), EnumVariant::new(5, "5ghz")],
+    )];
+    const ISSUES: &'static [IssueDescriptor] =
+        &[IssueDescriptor::new(FIRST_SERVICE_ISSUE, "link_lost")];
     const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new("scan")
-            .describe("Scan for networks")
-            .results(&[FieldDescriptor::new(1, "ssid", ValueKind::String)]),
-        ActionDescriptor::new("reconnect").privileged(),
-        ActionDescriptor::new("provision")
+        ActionDescriptor::new(1, "scan").results(&[FieldDescriptor::new(
+            1,
+            "ssid",
+            ValueKind::String,
+        )]),
+        ActionDescriptor::new(2, "reconnect").privileged(),
+        ActionDescriptor::new(3, "provision")
             .args(&[FieldDescriptor::new(1, "secret", ValueKind::Bytes)])
             .secret(),
     ];
@@ -148,8 +175,7 @@ impl ManagedService for &Radio {
         if *self.degraded.borrow() {
             let _ = out.push(Issue {
                 severity: IssueSeverity::Warning,
-                code: "link_lost",
-                message: "The link was lost",
+                code: FIRST_SERVICE_ISSUE,
                 age_ms: None,
             });
         }
@@ -157,26 +183,28 @@ impl ManagedService for &Radio {
 
     async fn status(&self, out: &mut impl StatusWriter) -> Result<(), WriteError> {
         out.text(1, "office")?;
-        out.i64(2, -61)
+        out.i64(2, -61)?;
+        out.variant(3, 5)?;
+        out.f32(4, 1.5)
     }
 
     async fn invoke(
         &self,
-        action: &str,
+        action: u32,
         args: &[(u32, Value)],
         out: &mut impl ActionOutput,
     ) -> Result<(), ActionError> {
-        self.log.borrow_mut().push(action.into());
+        self.log.borrow_mut().push(std::format!("{action}"));
         match action {
-            "scan" => {
+            1 => {
                 for name in ["a", "b"] {
                     out.next_record().map_err(|_| ActionError::Internal)?;
                     out.text(1, name).map_err(|_| ActionError::Internal)?;
                 }
                 Ok(())
             }
-            "reconnect" => Err(ActionError::Rejected("not_configured")),
-            "provision" => {
+            2 => Err(ActionError::Rejected("not_configured")),
+            3 => {
                 assert_eq!(args[0].1.as_bytes().unwrap().len(), 4);
                 Ok(())
             }
@@ -249,26 +277,24 @@ fn error_code(reply: &Reply) -> pb::ErrorCode {
     }
 }
 
-fn string_value(value: &str) -> pb::Value {
-    pb::Value {
-        value: Some(pb::Value_::Value::StringValue(text(value))),
-    }
+fn string_value(value: &str) -> pb::ConfigMutation_::Operation {
+    pb::ConfigMutation_::Operation::StringValue(text(value))
 }
 
-fn mutation(id: u32, value: pb::Value) -> pb::ConfigMutation {
+fn mutation(id: u32, value: pb::ConfigMutation_::Operation) -> pb::ConfigMutation {
     pb::ConfigMutation {
         field_id: id,
-        operation: Some(pb::ConfigMutation_::Operation::Set(value)),
+        operation: Some(value),
     }
 }
 
-fn patch(section: &str, mutations: &[pb::ConfigMutation]) -> pb::PatchConfigSectionRequest {
+fn patch(section: u64, mutations: &[pb::ConfigMutation]) -> pb::PatchConfigSectionRequest {
     let mut list = Vec::new();
     for mutation in mutations {
         list.push(mutation.clone()).ok().unwrap();
     }
     pb::PatchConfigSectionRequest {
-        section: text(section),
+        section_id: section,
         mutations: list,
         ..Default::default()
     }
@@ -300,10 +326,7 @@ fn info_is_served_without_any_module() {
         panic!()
     };
     assert!(sections.sections.is_empty());
-    let get = Call::GetServiceStatus(pb::GetServiceStatusRequest {
-        service: text("radio"),
-        ..Default::default()
-    });
+    let get = Call::GetServiceStatus(pb::GetServiceStatusRequest { service_id: 3 });
     assert_eq!(
         error_code(&call(&controller, &PLAIN, get)),
         pb::ErrorCode::NotFound
@@ -378,25 +401,26 @@ fn config_sections_are_discovered_and_described() {
     let Reply::GetConfigSchema(schema) = call(
         &controller,
         &PLAIN,
-        Call::GetConfigSchema(pb::GetConfigSchemaRequest {
-            section: text("net"),
-            ..Default::default()
-        }),
+        Call::GetConfigSchema(pb::GetConfigSchemaRequest { section_id: 1 }),
     ) else {
         panic!()
     };
-    let schema = schema.schema().unwrap();
-    assert_eq!(schema.fields.len(), 4);
+    assert_eq!(schema.section().unwrap().id, 1);
+    assert_eq!(schema.fields.len(), 5);
     let port = &schema.fields[1];
     assert_eq!(port.field().unwrap().name.as_str(), "port");
-    assert_eq!(port.min(), Some(&1.0));
-    assert_eq!(port.max(), Some(&65535.0));
+    assert_eq!(port.field().unwrap().kind, pb::ValueKind::U64);
     assert!(schema.fields[3].secret && schema.fields[3].optional);
+    // Enums are a table; only enum fields refer to it.
+    let mode = schema.fields[4].field().unwrap();
+    assert_eq!((mode.kind, mode.enum_id), (pb::ValueKind::Enum, 1));
+    assert_eq!(port.field().unwrap().enum_id, 0);
+    assert_eq!(schema.enums.len(), 1);
+    assert_eq!(schema.enums[0].id, 1);
+    assert_eq!(schema.enums[0].variants[1].value, 5);
+    assert_eq!(schema.enums[0].variants[1].name.as_str(), "manual");
 
-    let missing = Call::GetConfigSchema(pb::GetConfigSchemaRequest {
-        section: text("missing"),
-        ..Default::default()
-    });
+    let missing = Call::GetConfigSchema(pb::GetConfigSchemaRequest { section_id: 99 });
     assert_eq!(
         error_code(&call(&controller, &PLAIN, missing)),
         pb::ErrorCode::NotFound
@@ -407,14 +431,9 @@ fn config_sections_are_discovered_and_described() {
 fn a_patch_is_atomic_and_secrets_are_never_returned() {
     controller!(controller, OpenPolicy);
     let ok = patch(
-        "net",
+        1,
         &[
-            mutation(
-                1,
-                pb::Value {
-                    value: Some(pb::Value_::Value::BoolValue(true)),
-                },
-            ),
+            mutation(1, pb::ConfigMutation_::Operation::BoolValue(true)),
             mutation(3, string_value("ingress.example.org")),
             mutation(4, string_value("s3cret-token")),
         ],
@@ -429,9 +448,7 @@ fn a_patch_is_atomic_and_secrets_are_never_returned() {
     let Reply::GetConfigSection(section) = call(
         &controller,
         &PLAIN,
-        Call::GetConfigSection(pb::GetConfigSectionRequest {
-            section: text("net"),
-        }),
+        Call::GetConfigSection(pb::GetConfigSectionRequest { section_id: 1 }),
     ) else {
         panic!()
     };
@@ -445,22 +462,15 @@ fn a_patch_is_atomic_and_secrets_are_never_returned() {
     let host = section.entries.iter().find(|e| e.field_id == 3).unwrap();
     assert!(matches!(
         &host.state,
-        Some(pb::ConfigEntry_::State::Value(pb::Value {
-            value: Some(pb::Value_::Value::StringValue(v))
-        })) if v.as_str() == "ingress.example.org"
+        Some(pb::ConfigEntry_::State::StringValue(v)) if v.as_str() == "ingress.example.org"
     ));
 
     // One bad mutation rejects the whole patch.
     let bad = patch(
-        "net",
+        1,
         &[
             mutation(3, string_value("other.example.org")),
-            mutation(
-                2,
-                pb::Value {
-                    value: Some(pb::Value_::Value::U64Value(0)),
-                },
-            ),
+            mutation(2, pb::ConfigMutation_::Operation::U64Value(0)),
         ],
     );
     assert_eq!(
@@ -470,9 +480,7 @@ fn a_patch_is_atomic_and_secrets_are_never_returned() {
     let Reply::GetConfigSection(section) = call(
         &controller,
         &PLAIN,
-        Call::GetConfigSection(pb::GetConfigSectionRequest {
-            section: text("net"),
-        }),
+        Call::GetConfigSection(pb::GetConfigSectionRequest { section_id: 1 }),
     ) else {
         panic!()
     };
@@ -482,14 +490,14 @@ fn a_patch_is_atomic_and_secrets_are_never_returned() {
 #[test]
 fn patch_conflicts_dry_runs_unset_and_reset() {
     controller!(controller, OpenPolicy);
-    let mut stale = patch("net", &[mutation(3, string_value("a.io"))]);
+    let mut stale = patch(1, &[mutation(3, string_value("a.io"))]);
     stale.set_expected_revision(5);
     assert_eq!(
         error_code(&call(&controller, &PLAIN, Call::PatchConfigSection(stale))),
         pb::ErrorCode::Conflict
     );
 
-    let mut dry = patch("net", &[mutation(3, string_value("a.io"))]);
+    let mut dry = patch(1, &[mutation(3, string_value("a.io"))]);
     dry.dry_run = true;
     let Reply::PatchConfigSection(done) = call(&controller, &PLAIN, Call::PatchConfigSection(dry))
     else {
@@ -500,9 +508,7 @@ fn patch_conflicts_dry_runs_unset_and_reset() {
         call(
             &controller,
             &PLAIN,
-            Call::GetConfigSection(pb::GetConfigSectionRequest {
-                section: text("net"),
-            }),
+            Call::GetConfigSection(pb::GetConfigSectionRequest { section_id: 1 }),
         )
     };
     let Reply::GetConfigSection(section) = get() else {
@@ -511,7 +517,7 @@ fn patch_conflicts_dry_runs_unset_and_reset() {
     assert!(!section.configured);
 
     let set = patch(
-        "net",
+        1,
         &[
             mutation(3, string_value("a.io")),
             mutation(4, string_value("t")),
@@ -525,7 +531,7 @@ fn patch_conflicts_dry_runs_unset_and_reset() {
     call(
         &controller,
         &PLAIN,
-        Call::PatchConfigSection(patch("net", &[unset])),
+        Call::PatchConfigSection(patch(1, &[unset])),
     );
     let Reply::GetConfigSection(section) = get() else {
         panic!()
@@ -536,7 +542,7 @@ fn patch_conflicts_dry_runs_unset_and_reset() {
         &controller,
         &PLAIN,
         Call::ResetConfigSection(pb::ResetConfigSectionRequest {
-            section: text("net"),
+            section_id: 1,
             dry_run: false,
         }),
     ) else {
@@ -559,7 +565,7 @@ fn factory_reset_resets_every_section_and_needs_a_secure_link() {
     call(
         &controller,
         &encrypted,
-        Call::PatchConfigSection(patch("net", &[mutation(3, string_value("a.io"))])),
+        Call::PatchConfigSection(patch(1, &[mutation(3, string_value("a.io"))])),
     );
     assert_eq!(
         error_code(&call(
@@ -580,9 +586,7 @@ fn factory_reset_resets_every_section_and_needs_a_secure_link() {
     let Reply::GetConfigSection(section) = call(
         &controller,
         &PLAIN,
-        Call::GetConfigSection(pb::GetConfigSectionRequest {
-            section: text("net"),
-        }),
+        Call::GetConfigSection(pb::GetConfigSectionRequest { section_id: 1 }),
     ) else {
         panic!()
     };
@@ -624,12 +628,15 @@ fn reboot_needs_the_hook_and_a_secure_link() {
 #[test]
 fn a_value_without_content_is_invalid() {
     controller!(controller, OpenPolicy);
-    let empty = mutation(3, pb::Value { value: None });
+    let empty = pb::ConfigMutation {
+        field_id: 3,
+        operation: None,
+    };
     assert_eq!(
         error_code(&call(
             &controller,
             &PLAIN,
-            Call::PatchConfigSection(patch("net", &[empty]))
+            Call::PatchConfigSection(patch(1, &[empty]))
         )),
         pb::ErrorCode::InvalidArgument
     );
@@ -638,15 +645,6 @@ fn a_value_without_content_is_invalid() {
 #[test]
 fn service_status_is_compact_in_the_summary_and_detailed_per_service() {
     controller!(controller, OpenPolicy);
-    let Reply::ListServices(list) = call(
-        &controller,
-        &PLAIN,
-        Call::ListServices(pb::ListServicesRequest {}),
-    ) else {
-        panic!()
-    };
-    assert_eq!(list.services[0].name.as_str(), "radio");
-
     let Reply::GetServicesStatus(all) = call(
         &controller,
         &PLAIN,
@@ -658,7 +656,10 @@ fn service_status_is_compact_in_the_summary_and_detailed_per_service() {
     assert_eq!(all.health, pb::DeviceHealth::Ok);
     assert_eq!(all.services.len(), 1);
     let summary = &all.services[0];
-    assert_eq!(summary.service.as_str(), "radio");
+    // Discovery and compact status in one message.
+    assert_eq!(summary.service_id, 3);
+    assert_eq!(summary.name.as_str(), "radio");
+    assert_eq!(summary.version, 1);
     assert_eq!(summary.state, pb::ServiceState::Running);
     assert!(summary.ready);
     assert_eq!(summary.revision, 1);
@@ -666,27 +667,39 @@ fn service_status_is_compact_in_the_summary_and_detailed_per_service() {
     let Reply::GetServiceSchema(schema) = call(
         &controller,
         &PLAIN,
-        Call::GetServiceSchema(pb::GetServiceSchemaRequest {
-            service: text("radio"),
-            ..Default::default()
-        }),
+        Call::GetServiceSchema(pb::GetServiceSchemaRequest { service_id: 3 }),
     ) else {
         panic!()
     };
-    assert_eq!(schema.fields.len(), 2);
-    assert_eq!(schema.fields[1].unit.as_str(), "dBm");
+    assert_eq!(schema.service_id, 3);
+    assert_eq!(schema.name.as_str(), "radio");
+    assert_eq!(schema.fields.len(), 4);
+    assert_eq!(schema.fields[1].unit, pb::Unit::Dbm);
+    assert_eq!(schema.fields[3].kind, pb::ValueKind::F32);
+    assert_eq!(schema.fields[2].enum_id, 1);
+    assert_eq!(schema.enums[0].variants[1].name.as_str(), "5ghz");
+    assert_eq!(schema.issues[0].code, FIRST_SERVICE_ISSUE);
+    assert_eq!(schema.issues[0].name.as_str(), "link_lost");
 
     let Reply::GetServiceStatus(status) = call(
         &controller,
         &PLAIN,
-        Call::GetServiceStatus(pb::GetServiceStatusRequest {
-            service: text("radio"),
-            ..Default::default()
-        }),
+        Call::GetServiceStatus(pb::GetServiceStatusRequest { service_id: 3 }),
     ) else {
         panic!()
     };
-    assert_eq!(status.fields.len(), 2);
+    // The detailed status does not repeat the summary.
+    assert_eq!(status.service_id, 3);
+    assert_eq!(status.revision, summary.revision);
+    assert_eq!(status.fields.len(), 4);
+    assert!(matches!(
+        status.fields[2].value,
+        Some(pb::FieldValue_::Value::EnumValue(5))
+    ));
+    assert!(matches!(
+        status.fields[3].value,
+        Some(pb::FieldValue_::Value::F32Value(v)) if v == 1.5
+    ));
     assert!(status.issues.is_empty());
 }
 
@@ -704,21 +717,16 @@ fn device_health_is_decided_by_the_firmware_and_issues_have_codes() {
         panic!()
     };
     assert_eq!(all.health, pb::DeviceHealth::Degraded);
-    assert_eq!(
-        all.services[0].reason().map(|reason| reason.as_str()),
-        Some("link_lost")
-    );
+    assert_eq!(all.services[0].health, pb::ServiceHealth::Degraded);
     let Reply::GetServiceStatus(status) = call(
         &controller,
         &PLAIN,
-        Call::GetServiceStatus(pb::GetServiceStatusRequest {
-            service: text("radio"),
-            ..Default::default()
-        }),
+        Call::GetServiceStatus(pb::GetServiceStatusRequest { service_id: 3 }),
     ) else {
         panic!()
     };
-    assert_eq!(status.issues[0].code.as_str(), "link_lost");
+    assert_eq!(status.issues[0].code, FIRST_SERVICE_ISSUE);
+    assert_eq!(status.issues[0].age_ms, 0);
     assert_eq!(status.issues[0].severity, pb::IssueSeverity::Warning);
 }
 
@@ -735,14 +743,14 @@ fn actions_are_discovered_described_and_invoked() {
     let names: std::vec::Vec<_> = list
         .actions
         .iter()
-        .map(|a| (a.service.as_str(), a.name.as_str(), a.privileged))
+        .map(|a| (a.service_id, a.id, a.name.as_str(), a.privileged))
         .collect();
     assert_eq!(
         names,
         [
-            ("radio", "scan", false),
-            ("radio", "reconnect", true),
-            ("radio", "provision", true)
+            (3, 1, "scan", false),
+            (3, 2, "reconnect", true),
+            (3, 3, "provision", true)
         ]
     );
 
@@ -750,8 +758,8 @@ fn actions_are_discovered_described_and_invoked() {
         &controller,
         &PLAIN,
         Call::GetActionSchema(pb::GetActionSchemaRequest {
-            service: text("radio"),
-            action: text("provision"),
+            service_id: 3,
+            action_id: 3,
         }),
     ) else {
         panic!()
@@ -764,8 +772,8 @@ fn actions_are_discovered_described_and_invoked() {
         &controller,
         &PLAIN,
         Call::InvokeAction(pb::InvokeActionRequest {
-            service: text("radio"),
-            action: text("scan"),
+            service_id: 3,
+            action_id: 1,
             args: Vec::new(),
         }),
     ) else {
@@ -773,39 +781,39 @@ fn actions_are_discovered_described_and_invoked() {
     };
     assert_eq!(done.records.len(), 2);
     assert!(matches!(
-        done.records[1].fields[0].value().unwrap().value,
-        Some(pb::Value_::Value::StringValue(ref s)) if s.as_str() == "b"
+        done.records[1].fields[0].value,
+        Some(pb::FieldValue_::Value::StringValue(ref s)) if s.as_str() == "b"
     ));
 }
 
 #[test]
 fn action_failures_are_typed() {
     controller!(controller, OpenPolicy);
-    let invoke = |service: &str, action: &str, args: Vec<pb::FieldValue, 3>| {
+    let invoke = |service: u32, action: u32, args: Vec<pb::ActionArg, 3>| {
         call(
             &controller,
             &PLAIN,
             Call::InvokeAction(pb::InvokeActionRequest {
-                service: text(service),
-                action: text(action),
+                service_id: service,
+                action_id: action,
                 args,
             }),
         )
     };
     assert_eq!(
-        error_code(&invoke("radio", "missing", Vec::new())),
+        error_code(&invoke(3, 99, Vec::new())),
         pb::ErrorCode::NotFound
     );
     assert_eq!(
-        error_code(&invoke("missing", "scan", Vec::new())),
+        error_code(&invoke(99, 1, Vec::new())),
         pb::ErrorCode::NotFound
     );
     // `provision` needs its argument.
     assert_eq!(
-        error_code(&invoke("radio", "provision", Vec::new())),
+        error_code(&invoke(3, 3, Vec::new())),
         pb::ErrorCode::InvalidArgument
     );
-    let Reply::Error(rejected) = invoke("radio", "reconnect", Vec::new()) else {
+    let Reply::Error(rejected) = invoke(3, 2, Vec::new()) else {
         panic!()
     };
     assert_eq!(rejected.code, pb::ErrorCode::Rejected);
@@ -839,7 +847,7 @@ fn the_policy_gates_writes_and_privileged_actions() {
         authenticated: true,
     };
 
-    let write = || Call::PatchConfigSection(patch("net", &[mutation(3, string_value("a.io"))]));
+    let write = || Call::PatchConfigSection(patch(1, &[mutation(3, string_value("a.io"))]));
     assert_eq!(
         error_code(&call(&controller, &PLAIN, write())),
         pb::ErrorCode::PermissionDenied
@@ -850,7 +858,7 @@ fn the_policy_gates_writes_and_privileged_actions() {
     ));
 
     let reset = Call::ResetConfigSection(pb::ResetConfigSectionRequest {
-        section: text("net"),
+        section_id: 1,
         dry_run: true,
     });
     assert_eq!(
@@ -858,46 +866,39 @@ fn the_policy_gates_writes_and_privileged_actions() {
         pb::ErrorCode::PermissionDenied
     );
 
-    let action = |name: &str, args: Vec<pb::FieldValue, 3>| {
+    let action = |id: u32, args: Vec<pb::ActionArg, 3>| {
         Call::InvokeAction(pb::InvokeActionRequest {
-            service: text("radio"),
-            action: text(name),
+            service_id: 3,
+            action_id: id,
             args,
         })
     };
     // An unprivileged action is open; a privileged one needs encryption.
     assert!(matches!(
-        call(&controller, &PLAIN, action("scan", Vec::new())),
+        call(&controller, &PLAIN, action(1, Vec::new())),
         Reply::InvokeAction(_)
     ));
     assert_eq!(
-        error_code(&call(&controller, &PLAIN, action("reconnect", Vec::new()))),
+        error_code(&call(&controller, &PLAIN, action(2, Vec::new()))),
         pb::ErrorCode::PermissionDenied
     );
 
     // Secret arguments need the strongest link, and the policy runs before
     // the action does.
     let mut args = Vec::new();
-    let mut secret = pb::FieldValue {
+    let secret = pb::ActionArg {
         field_id: 1,
-        ..Default::default()
-    };
-    secret.set_value(pb::Value {
-        value: Some(pb::Value_::Value::BytesValue(
+        value: Some(pb::ActionArg_::Value::BytesValue(
             Vec::from_slice(&[1, 2, 3, 4]).unwrap(),
         )),
-    });
+    };
     args.push(secret).ok().unwrap();
     assert_eq!(
-        error_code(&call(
-            &controller,
-            &encrypted,
-            action("provision", args.clone())
-        )),
+        error_code(&call(&controller, &encrypted, action(3, args.clone()))),
         pb::ErrorCode::PermissionDenied
     );
     assert!(matches!(
-        call(&controller, &strong, action("provision", args)),
+        call(&controller, &strong, action(3, args)),
         Reply::InvokeAction(_)
     ));
 }
@@ -908,8 +909,8 @@ fn policy_rejections_do_not_reach_the_service() {
     let radio = radio();
     let controller = Controller::new(device(&memory, &radio), RequireEncryption);
     let reconnect = Call::InvokeAction(pb::InvokeActionRequest {
-        service: text("radio"),
-        action: text("reconnect"),
+        service_id: 3,
+        action_id: 2,
         args: Vec::new(),
     });
     call(&controller, &PLAIN, reconnect);
@@ -918,27 +919,28 @@ fn policy_rejections_do_not_reach_the_service() {
 
 struct Many;
 
+macro_rules! counters {
+    ($($id:expr, $name:expr;)+) => {
+        &[$(FieldDescriptor::new($id, $name, ValueKind::U64)),+]
+    };
+}
+
 impl ManagedService for Many {
+    const ID: u32 = 10;
     const NAME: &'static str = "many";
     const VERSION: u16 = 1;
-    const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
-        FieldDescriptor::new(1, "f1", ValueKind::U64),
-        FieldDescriptor::new(2, "f2", ValueKind::U64),
-        FieldDescriptor::new(3, "f3", ValueKind::U64),
-        FieldDescriptor::new(4, "f4", ValueKind::U64),
-        FieldDescriptor::new(5, "f5", ValueKind::U64),
-        FieldDescriptor::new(6, "f6", ValueKind::U64),
-        FieldDescriptor::new(7, "f7", ValueKind::U64),
-        FieldDescriptor::new(8, "f8", ValueKind::U64),
-        FieldDescriptor::new(9, "f9", ValueKind::U64),
-        FieldDescriptor::new(10, "f10", ValueKind::U64),
-    ];
+    const STATUS_SCHEMA: &'static [FieldDescriptor] = counters! {
+        1, "f1"; 2, "f2"; 3, "f3"; 4, "f4"; 5, "f5"; 6, "f6"; 7, "f7"; 8, "f8"; 9, "f9"; 10, "f10";
+        11, "f11"; 12, "f12"; 13, "f13"; 14, "f14"; 15, "f15"; 16, "f16"; 17, "f17"; 18, "f18";
+        19, "f19"; 20, "f20";
+    };
     const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new("a"),
-        ActionDescriptor::new("b"),
-        ActionDescriptor::new("c"),
-        ActionDescriptor::new("d"),
-        ActionDescriptor::new("e"),
+        ActionDescriptor::new(1, "a"),
+        ActionDescriptor::new(2, "b"),
+        ActionDescriptor::new(3, "c"),
+        ActionDescriptor::new(4, "d"),
+        ActionDescriptor::new(5, "e"),
+        ActionDescriptor::new(6, "f"),
     ];
 
     async fn summary(&self) -> ServiceSummary {
@@ -946,7 +948,7 @@ impl ManagedService for Many {
     }
 
     async fn status(&self, out: &mut impl StatusWriter) -> Result<(), WriteError> {
-        for id in 1..=10 {
+        for id in 1..=20 {
             out.u64(id, u64::from(id) * 100)?;
         }
         Ok(())
@@ -954,7 +956,7 @@ impl ManagedService for Many {
 }
 
 #[test]
-fn long_schemas_status_and_action_lists_are_paged() {
+fn full_schemas_status_and_action_lists_fit_one_response() {
     let controller = Controller::new(
         Device::new(
             INFO,
@@ -967,92 +969,53 @@ fn long_schemas_status_and_action_lists_are_paged() {
         ),
         OpenPolicy,
     );
-    let schema = |offset| {
-        let Reply::GetServiceSchema(page) = call(
-            &controller,
-            &PLAIN,
-            Call::GetServiceSchema(pb::GetServiceSchemaRequest {
-                service: text("many"),
-                offset,
-            }),
-        ) else {
-            panic!()
-        };
-        page
+    let Reply::GetServiceSchema(schema) = call(
+        &controller,
+        &PLAIN,
+        Call::GetServiceSchema(pb::GetServiceSchemaRequest { service_id: 10 }),
+    ) else {
+        panic!()
     };
-    let first = schema(0);
-    assert_eq!(first.total, 10);
-    assert_eq!(first.fields.len(), limits::MAX_SCHEMA_PAGE);
-    let mut names: std::vec::Vec<std::string::String> = first
-        .fields
-        .iter()
-        .map(|f| f.name.as_str().into())
-        .collect();
-    let mut offset = names.len() as u32;
-    while offset < first.total {
-        let page = schema(offset);
-        names.extend(
-            page.fields
-                .iter()
-                .map(|f| std::string::String::from(f.name.as_str())),
-        );
-        offset = names.len() as u32;
-    }
-    assert_eq!(names.len(), 10);
-    assert_eq!(names[9], "f10");
+    assert_eq!(schema.fields.len(), rohi_service::MAX_FIELDS);
+    assert_eq!(schema.fields[19].name.as_str(), "f20");
 
-    let status = |offset| {
-        let Reply::GetServiceStatus(page) = call(
-            &controller,
-            &PLAIN,
-            Call::GetServiceStatus(pb::GetServiceStatusRequest {
-                service: text("many"),
-                offset,
-            }),
-        ) else {
-            panic!()
-        };
-        page
+    let Reply::GetServiceStatus(status) = call(
+        &controller,
+        &PLAIN,
+        Call::GetServiceStatus(pb::GetServiceStatusRequest { service_id: 10 }),
+    ) else {
+        panic!()
     };
-    let first = status(0);
-    assert_eq!(first.total, 10);
-    assert_eq!(first.fields.len(), limits::MAX_STATUS_PAGE);
-    let second = status(first.fields.len() as u32);
-    assert_eq!(second.fields.len(), 2);
-    assert_eq!(second.fields[1].field_id, 10);
-    // Every page repeats the compact status.
-    assert_eq!(second.summary().unwrap().service.as_str(), "many");
+    assert_eq!(status.fields.len(), rohi_service::MAX_FIELDS);
+    assert_eq!(status.fields[19].field_id, 20);
 
-    let actions = |offset| {
-        let Reply::ListActions(page) = call(
-            &controller,
-            &PLAIN,
-            Call::ListActions(pb::ListActionsRequest { offset }),
-        ) else {
-            panic!()
-        };
-        page
+    let Reply::ListActions(list) = call(
+        &controller,
+        &PLAIN,
+        Call::ListActions(pb::ListActionsRequest {}),
+    ) else {
+        panic!()
     };
-    let first = actions(0);
-    assert_eq!(first.total, 10);
-    assert_eq!(first.actions.len(), limits::MAX_ACTIONS_PAGE);
-    let rest = actions(limits::MAX_ACTIONS_PAGE as u32);
-    assert_eq!(rest.actions.len(), 2);
-    assert_eq!(rest.actions[1].service.as_str(), "many2");
+    assert_eq!(list.actions.len(), limits::MAX_ACTIONS);
+    assert_eq!(list.actions[0].service_id, 10);
+    assert_eq!(list.actions[11].service_id, 11);
+    assert_eq!(list.actions[11].name.as_str(), "f");
 }
 
 struct Many2;
 
 impl ManagedService for Many2 {
+    const ID: u32 = 11;
     const NAME: &'static str = "many2";
     const VERSION: u16 = 1;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[];
     const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new("a"),
-        ActionDescriptor::new("b"),
-        ActionDescriptor::new("c"),
-        ActionDescriptor::new("d"),
-        ActionDescriptor::new("e"),
+        ActionDescriptor::new(1, "a"),
+        ActionDescriptor::new(2, "b"),
+        ActionDescriptor::new(3, "c"),
+        ActionDescriptor::new(4, "d"),
+        ActionDescriptor::new(5, "e"),
+        ActionDescriptor::new(6, "f"),
     ];
 
     async fn summary(&self) -> ServiceSummary {

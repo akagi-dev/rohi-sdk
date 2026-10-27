@@ -17,7 +17,7 @@
 use heapless::{String, Vec};
 use zeroize::Zeroize;
 
-use crate::{MAX_VALUE_LEN, MAX_VARIANT_LEN};
+use crate::MAX_VALUE_LEN;
 
 /// Primitive type of a [`Value`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,13 +28,13 @@ pub enum ValueKind {
     I64,
     /// Unsigned 64-bit integer.
     U64,
-    /// 64-bit float.
-    F64,
+    /// 32-bit float.
+    F32,
     /// UTF-8 text.
     String,
     /// Arbitrary bytes.
     Bytes,
-    /// One of the variants listed by the field descriptor.
+    /// One of the variants of the enum the field descriptor refers to.
     Enum,
 }
 
@@ -49,14 +49,14 @@ pub enum Value {
     I64(i64),
     /// See [`ValueKind::U64`].
     U64(u64),
-    /// See [`ValueKind::F64`].
-    F64(f64),
+    /// See [`ValueKind::F32`].
+    F32(f32),
     /// See [`ValueKind::String`].
     String(String<MAX_VALUE_LEN>),
     /// See [`ValueKind::Bytes`].
     Bytes(Vec<u8, MAX_VALUE_LEN>),
     /// See [`ValueKind::Enum`].
-    Enum(String<MAX_VARIANT_LEN>),
+    Enum(u32),
 }
 
 impl Value {
@@ -66,7 +66,7 @@ impl Value {
             Self::Bool(_) => ValueKind::Bool,
             Self::I64(_) => ValueKind::I64,
             Self::U64(_) => ValueKind::U64,
-            Self::F64(_) => ValueKind::F64,
+            Self::F32(_) => ValueKind::F32,
             Self::String(_) => ValueKind::String,
             Self::Bytes(_) => ValueKind::Bytes,
             Self::Enum(_) => ValueKind::Enum,
@@ -83,9 +83,12 @@ impl Value {
         Vec::from_slice(bytes).ok().map(Self::Bytes)
     }
 
-    /// An enum value; `None` if `variant` exceeds [`MAX_VARIANT_LEN`].
-    pub fn variant(variant: &str) -> Option<Self> {
-        String::try_from(variant).ok().map(Self::Enum)
+    /// The number of an enum value, if this is a [`Value::Enum`].
+    pub const fn as_enum(&self) -> Option<u32> {
+        match self {
+            Self::Enum(value) => Some(*value),
+            _ => None,
+        }
     }
 
     /// The boolean, if this is a [`Value::Bool`].
@@ -112,19 +115,18 @@ impl Value {
         }
     }
 
-    /// The float, if this is a [`Value::F64`].
-    pub const fn as_f64(&self) -> Option<f64> {
+    /// The float, if this is a [`Value::F32`].
+    pub const fn as_f32(&self) -> Option<f32> {
         match self {
-            Self::F64(value) => Some(*value),
+            Self::F32(value) => Some(*value),
             _ => None,
         }
     }
 
-    /// The text of a [`Value::String`] or the variant of a [`Value::Enum`].
+    /// The text of a [`Value::String`].
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Self::String(value) => Some(value),
-            Self::Enum(value) => Some(value),
             _ => None,
         }
     }
@@ -158,7 +160,7 @@ impl Value {
                 bytes.as_mut_slice().zeroize();
                 bytes.clear();
             }
-            Self::Enum(_) | Self::Bool(_) | Self::I64(_) | Self::U64(_) | Self::F64(_) => {}
+            Self::Enum(_) | Self::Bool(_) | Self::I64(_) | Self::U64(_) | Self::F32(_) => {}
         }
     }
 }

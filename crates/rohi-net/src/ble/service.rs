@@ -18,8 +18,9 @@
 
 use heapless::Vec;
 use rohi_service::{
-    FieldDescriptor, Issue, IssueSeverity, MAX_ISSUES, ManagedService, ServiceHealth, ServiceState,
-    ServiceSummary, StatusWriter, ValueKind, WriteError,
+    EnumDescriptor, EnumVariant, FieldDescriptor, Issue, IssueDescriptor, IssueSeverity,
+    MAX_ISSUES, ManagedService, ServiceHealth, ServiceState, ServiceSummary, StatusWriter, Unit,
+    ValueKind, WriteError,
 };
 
 use super::{BleError, BleName, BleState};
@@ -38,6 +39,23 @@ pub trait BleProbe {
     fn name(&self) -> Option<BleName>;
 }
 
+/// Id of the `ble` service.
+pub const SERVICE_ID: u32 = 3;
+
+/// Issue codes of the `ble` service.
+pub mod issue {
+    use rohi_service::FIRST_SERVICE_ISSUE as BASE;
+
+    /// The central disconnected.
+    pub const DISCONNECTED: u32 = BASE;
+    /// A BLE chunk did not fit.
+    pub const BUFFER_TOO_SMALL: u32 = BASE + 1;
+    /// The BLE transport is busy.
+    pub const BUSY: u32 = BASE + 2;
+    /// The BLE driver failed.
+    pub const DRIVER_ERROR: u32 = BASE + 3;
+}
+
 /// Field ids of the `ble` service status. Only ever added.
 pub mod status_field {
     /// `disabled`, `advertising`, `connected` or `error`.
@@ -52,33 +70,55 @@ pub mod status_field {
     pub const MAX_PAYLOAD: u32 = 5;
 }
 
-/// Variants of the `state` field.
-pub const STATES: &[&str] = &["disabled", "advertising", "connected", "error"];
+/// Values of the `state` field.
+pub mod state {
+    /// The peripheral is off.
+    pub const DISABLED: u32 = 0;
+    /// Waiting for a central.
+    pub const ADVERTISING: u32 = 1;
+    /// A central is connected.
+    pub const CONNECTED: u32 = 2;
+    /// The peripheral failed.
+    pub const ERROR: u32 = 3;
+}
+
+/// The enum of the `state` field.
+pub const STATES: &[EnumDescriptor] = &[EnumDescriptor::new(
+    1,
+    &[
+        EnumVariant::new(state::DISABLED, "disabled"),
+        EnumVariant::new(state::ADVERTISING, "advertising"),
+        EnumVariant::new(state::CONNECTED, "connected"),
+        EnumVariant::new(state::ERROR, "error"),
+    ],
+)];
 
 /// The BLE peripheral as a `ble` service. It has no actions; it is
 /// configured through the `ble` section.
 pub struct BleService<P>(pub P);
 
 impl<P: BleProbe> ManagedService for BleService<P> {
+    const ID: u32 = SERVICE_ID;
     const NAME: &'static str = "ble";
     const VERSION: u16 = 1;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
-        FieldDescriptor::new(status_field::STATE, "state", ValueKind::Enum)
-            .describe("State of the peripheral")
-            .variants(STATES),
-        FieldDescriptor::new(status_field::NAME, "name", ValueKind::String)
-            .describe("Advertised name"),
-        FieldDescriptor::new(status_field::ENCRYPTED, "encrypted", ValueKind::Bool)
-            .describe("The link is encrypted"),
+        FieldDescriptor::new(status_field::STATE, "state", ValueKind::Enum).with_enum(1),
+        FieldDescriptor::new(status_field::NAME, "name", ValueKind::String),
+        FieldDescriptor::new(status_field::ENCRYPTED, "encrypted", ValueKind::Bool),
         FieldDescriptor::new(
             status_field::AUTHENTICATED,
             "authenticated",
             ValueKind::Bool,
-        )
-        .describe("The link key is authenticated"),
+        ),
         FieldDescriptor::new(status_field::MAX_PAYLOAD, "max_payload", ValueKind::U64)
-            .describe("Largest chunk of the link")
-            .unit("B"),
+            .unit(Unit::Bytes),
+    ];
+    const ENUMS: &'static [EnumDescriptor] = STATES;
+    const ISSUES: &'static [IssueDescriptor] = &[
+        IssueDescriptor::new(issue::DISCONNECTED, "disconnected"),
+        IssueDescriptor::new(issue::BUFFER_TOO_SMALL, "buffer_too_small"),
+        IssueDescriptor::new(issue::BUSY, "busy"),
+        IssueDescriptor::new(issue::DRIVER_ERROR, "driver_error"),
     ];
 
     async fn summary(&self) -> ServiceSummary {
@@ -97,16 +137,15 @@ impl<P: BleProbe> ManagedService for BleService<P> {
 
     async fn issues(&self, out: &mut Vec<Issue, MAX_ISSUES>) {
         if let BleState::Error(error) = self.0.state() {
-            let (code, message) = match error {
-                BleError::Disconnected => ("disconnected", "The central disconnected"),
-                BleError::BufferTooSmall => ("buffer_too_small", "A BLE chunk did not fit"),
-                BleError::Busy => ("busy", "The BLE transport is busy"),
-                BleError::DriverError => ("driver_error", "The BLE driver failed"),
+            let code = match error {
+                BleError::Disconnected => issue::DISCONNECTED,
+                BleError::BufferTooSmall => issue::BUFFER_TOO_SMALL,
+                BleError::Busy => issue::BUSY,
+                BleError::DriverError => issue::DRIVER_ERROR,
             };
             let _ = out.push(Issue {
                 severity: IssueSeverity::Error,
                 code,
-                message,
                 age_ms: None,
             });
         }
@@ -114,13 +153,13 @@ impl<P: BleProbe> ManagedService for BleService<P> {
 
     async fn status(&self, out: &mut impl StatusWriter) -> Result<(), WriteError> {
         let state = self.0.state();
-        let name = match state {
-            BleState::Disabled => "disabled",
-            BleState::Advertising => "advertising",
-            BleState::Connected(_) => "connected",
-            BleState::Error(_) => "error",
+        let value = match state {
+            BleState::Disabled => state::DISABLED,
+            BleState::Advertising => state::ADVERTISING,
+            BleState::Connected(_) => state::CONNECTED,
+            BleState::Error(_) => state::ERROR,
         };
-        out.variant(status_field::STATE, name)?;
+        out.variant(status_field::STATE, value)?;
         if let Some(name) = self.0.name() {
             out.text(status_field::NAME, name.as_str())?;
         }
@@ -192,7 +231,6 @@ mod tests {
         assert_eq!(ids.len(), schema.len());
         for field in schema {
             assert!(field.name.len() <= 24, "{}", field.name);
-            assert!(field.description.len() <= 40, "{}", field.name);
         }
         assert!(<BleService<&Fake> as ManagedService>::ACTIONS.is_empty());
     }
@@ -215,7 +253,7 @@ mod tests {
         block_on(service.status(&mut out)).unwrap();
         assert_eq!(
             out.get(status_field::STATE),
-            Value::variant("advertising").as_ref()
+            Some(&Value::Enum(state::ADVERTISING))
         );
         assert_eq!(
             out.get(status_field::NAME),
@@ -247,6 +285,6 @@ mod tests {
         let mut issues = Vec::new();
         block_on(service.issues(&mut issues));
         assert_eq!(issues.len(), 1);
-        assert_eq!(issues[0].code, "driver_error");
+        assert_eq!(issues[0].code, issue::DRIVER_ERROR);
     }
 }

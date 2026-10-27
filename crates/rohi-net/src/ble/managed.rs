@@ -28,12 +28,11 @@ pub mod field {
 }
 
 impl ManagedConfig for BleSettings {
+    const SECTION_ID: u64 = <Self as ConfigSection>::ID.0;
     const NAME: &'static str = "ble";
     const VERSION: u16 = <Self as ConfigSection>::VERSION;
     const FIELDS: &'static [ConfigField] =
-        &[ConfigField::new(field::NAME, "name", ValueKind::String)
-            .describe("Name, 1 to 29 bytes; applied at start")
-            .optional()];
+        &[ConfigField::new(field::NAME, "name", ValueKind::String).optional()];
 
     fn defaults() -> Self {
         Self::default()
@@ -93,7 +92,6 @@ mod tests {
         assert!(BleSettings::FIELDS.len() <= MAX_CONFIG_FIELDS);
         for field in BleSettings::FIELDS {
             assert!(field.field.name.len() <= 24);
-            assert!(field.field.description.len() <= 40);
             assert!(!field.secret);
         }
     }

@@ -18,8 +18,8 @@ use embassy_futures::block_on;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use rohi_config::ConfigSection;
 use rohi_service::{
-    ConfigField, FieldError, ManagedConfig, ManagedService, ServiceRegistry, ServiceState, Tracked,
-    Value,
+    Bounds, ConfigField, FieldError, ManagedConfig, ManagedService, ServiceRegistry, ServiceState,
+    Tracked, Unit, Value,
 };
 
 use crate::*;
@@ -120,18 +120,18 @@ fn a_patch_needs_both_coordinates() {
     // A first `set height_m=...` must not store "0, 0".
     let mut section = LocationConfig::defaults();
     section
-        .set_field(field::HEIGHT_M, Value::F64(10.0))
+        .set_field(field::HEIGHT_M, Value::F32(10.0))
         .unwrap();
     assert_eq!(ManagedConfig::validate(&section), Err(FieldError::Invalid));
-    section.set_field(field::LATITUDE, Value::F64(1.5)).unwrap();
+    section.set_field(field::LATITUDE, Value::F32(1.5)).unwrap();
     assert_eq!(ManagedConfig::validate(&section), Err(FieldError::Invalid));
     section
-        .set_field(field::LONGITUDE, Value::F64(2.5))
+        .set_field(field::LONGITUDE, Value::F32(2.5))
         .unwrap();
     assert_eq!(ManagedConfig::validate(&section), Ok(()));
     assert_eq!(
         section.read_field(field::LATITUDE),
-        Ok(Some(Value::F64(1.5)))
+        Ok(Some(Value::F32(1.5)))
     );
     section.unset_field(field::HEIGHT_M).unwrap();
     assert_eq!(section.read_field(field::HEIGHT_M), Ok(None));
@@ -153,10 +153,10 @@ fn the_schema_bounds_match_the_validation() {
             .find(|f| f.field.id == id)
             .unwrap()
     };
-    assert_eq!((field(1).min, field(1).max), (Some(-90.0), Some(90.0)));
-    assert_eq!((field(2).min, field(2).max), (Some(-180.0), Some(180.0)));
+    assert_eq!(field(1).bounds, Some(Bounds::F32(-90.0, 90.0)));
+    assert_eq!(field(2).bounds, Some(Bounds::F32(-180.0, 180.0)));
     assert!(field(3).optional && !field(1).optional);
-    assert_eq!(field(1).field.unit, "deg");
+    assert_eq!(field(1).field.unit, Unit::Degrees);
 }
 
 #[test]
@@ -211,25 +211,25 @@ fn a_live_fix_beats_the_configured_location_and_gives_way_when_lost() {
 fn the_service_is_disabled_until_a_location_is_set() {
     let shared = LocationShared::<NoopRawMutex>::new();
     let registry = (Tracked::<_, NoopRawMutex>::new(LocationService(&shared)),);
-    let status = block_on(registry.status("location", 0)).unwrap();
+    let status = block_on(registry.status(SERVICE_ID, 0)).unwrap();
     assert_eq!(status.summary.state, ServiceState::Disabled);
     assert!(!status.summary.ready);
-    assert_eq!(status.issues[0].code, "not_set");
+    assert_eq!(status.issues[0].code, issue::NOT_SET);
     assert!(status.fields.is_empty());
 
     shared.publish_configured(Some(&config()));
-    let status = block_on(registry.status("location", 1_000)).unwrap();
+    let status = block_on(registry.status(SERVICE_ID, 1_000)).unwrap();
     assert_eq!(status.summary.state, ServiceState::Running);
     assert!(status.summary.ready);
     assert!(status.issues.is_empty());
     assert_eq!(
         status.fields[0],
-        (status_field::LATITUDE, Value::F64(52.52))
+        (status_field::LATITUDE, Value::F32(52.52))
     );
-    assert_eq!(status.fields[2], (status_field::HEIGHT_M, Value::F64(34.0)));
+    assert_eq!(status.fields[2], (status_field::HEIGHT_M, Value::F32(34.0)));
     assert_eq!(
         status.fields[3],
-        (status_field::SOURCE, Value::variant("configured").unwrap())
+        (status_field::SOURCE, Value::Enum(source::CONFIGURED))
     );
     // Setting the location is a change an observer wants to see.
     assert!(status.summary.revision > 1);

@@ -27,9 +27,9 @@
 
 use heapless::Vec;
 
-use crate::field::FieldDescriptor;
+use crate::field::{EnumDescriptor, FieldDescriptor, enum_allows};
 use crate::status::{StatusWriter, WriteError};
-use crate::value::{Value, ValueKind};
+use crate::value::Value;
 
 /// Maximum number of arguments of an action.
 pub const MAX_ACTION_ARGS: usize = 3;
@@ -41,14 +41,17 @@ pub const MAX_RECORD_FIELDS: usize = 4;
 /// Static description of an action.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ActionDescriptor {
+    /// Stable numeric id within the service, the address of requests. Only
+    /// ever added, never reused.
+    pub id: u32,
     /// Stable name within the service, for example `scan`.
     pub name: &'static str,
-    /// One line of presentation text.
-    pub description: &'static str,
     /// Arguments; all are required. At most [`MAX_ACTION_ARGS`].
     pub args: &'static [FieldDescriptor],
     /// Fields of every returned record. At most [`MAX_RECORD_FIELDS`].
     pub results: &'static [FieldDescriptor],
+    /// The enums the argument and result fields refer to.
+    pub enums: &'static [EnumDescriptor],
     /// Whether the link policy must grant write privilege.
     pub privileged: bool,
     /// Whether the arguments contain secrets: they are never logged and are
@@ -58,21 +61,16 @@ pub struct ActionDescriptor {
 
 impl ActionDescriptor {
     /// An unprivileged action without arguments or results.
-    pub const fn new(name: &'static str) -> Self {
+    pub const fn new(id: u32, name: &'static str) -> Self {
         Self {
+            id,
             name,
-            description: "",
             args: &[],
             results: &[],
+            enums: &[],
             privileged: false,
             secret_args: false,
         }
-    }
-
-    /// Sets the description.
-    pub const fn describe(mut self, description: &'static str) -> Self {
-        self.description = description;
-        self
     }
 
     /// Sets the arguments.
@@ -84,6 +82,12 @@ impl ActionDescriptor {
     /// Sets the result fields.
     pub const fn results(mut self, results: &'static [FieldDescriptor]) -> Self {
         self.results = results;
+        self
+    }
+
+    /// Sets the enums the fields refer to.
+    pub const fn enums(mut self, enums: &'static [EnumDescriptor]) -> Self {
+        self.enums = enums;
         self
     }
 
@@ -104,7 +108,7 @@ impl ActionDescriptor {
 /// Why an action failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActionError {
-    /// No service with this name.
+    /// No service with this id.
     UnknownService,
     /// The service has no such action.
     UnknownAction,
@@ -134,14 +138,16 @@ pub trait ActionOutput: StatusWriter {
 }
 
 pub(crate) struct RecordCollector {
-    pub(crate) results: &'static [FieldDescriptor],
+    results: &'static [FieldDescriptor],
+    enums: &'static [EnumDescriptor],
     pub(crate) records: Records,
 }
 
 impl RecordCollector {
-    pub(crate) fn new(results: &'static [FieldDescriptor]) -> Self {
+    pub(crate) fn new(action: &ActionDescriptor) -> Self {
         Self {
-            results,
+            results: action.results,
+            enums: action.enums,
             records: Vec::new(),
         }
     }
@@ -154,12 +160,7 @@ impl StatusWriter for RecordCollector {
             .iter()
             .find(|field| field.id == id)
             .ok_or(WriteError::UnknownField)?;
-        if field.kind != value.kind()
-            || (field.kind == ValueKind::Enum
-                && value
-                    .as_str()
-                    .is_none_or(|variant| !field.variants.contains(&variant)))
-        {
+        if field.kind != value.kind() || !enum_ok(self.enums, field, &value) {
             return Err(WriteError::WrongKind);
         }
         if self.records.is_empty() {
@@ -190,13 +191,34 @@ pub(crate) fn check_args(
         let (Some((_, value)), None) = (matching.next(), matching.next()) else {
             return Err(ActionError::InvalidArgument);
         };
-        let variant_ok = field.kind != ValueKind::Enum
-            || value
-                .as_str()
-                .is_some_and(|variant| field.variants.contains(&variant));
-        if value.kind() != field.kind || !variant_ok {
+        if value.kind() != field.kind || !enum_ok(action.enums, field, value) {
             return Err(ActionError::InvalidArgument);
         }
     }
     Ok(())
+}
+
+/// Whether an enum value is a variant of the enum of its field; any other
+/// value passes.
+pub(crate) fn enum_ok(enums: &[EnumDescriptor], field: &FieldDescriptor, value: &Value) -> bool {
+    match value {
+        Value::Enum(variant) => enum_allows(enums, field.enum_id, *variant),
+        _ => true,
+    }
+}
+
+/// Whether the actions fit the limits of the control protocol.
+pub(crate) const fn actions_fit(actions: &[ActionDescriptor]) -> bool {
+    let mut index = 0;
+    while index < actions.len() {
+        let action = &actions[index];
+        if action.args.len() > MAX_ACTION_ARGS
+            || action.results.len() > MAX_RECORD_FIELDS
+            || !crate::field::enums_fit(action.enums)
+        {
+            return false;
+        }
+        index += 1;
+    }
+    true
 }

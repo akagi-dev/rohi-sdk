@@ -12,6 +12,13 @@
 //   actions  - explicit runtime operations declared by services
 //   info     - static description of the device
 //
+// Compactness: the generated types store every bounded field inline, so the
+// size of a message is the size of its largest possible content. Names are
+// sent by discovery only; runtime requests address sections, services and
+// actions by numeric id, and runtime enum values and issues are numbers whose
+// names live in the schema. Collections are never paged: every response
+// fits one bounded message.
+//
 // Unknown enum values must be treated as "unknown" by clients.
 
 syntax = "proto3";
@@ -35,7 +42,6 @@ message Request {
     GetConfigSectionRequest get_config_section = 13;
     PatchConfigSectionRequest patch_config_section = 14;
     ResetConfigSectionRequest reset_config_section = 15;
-    ListServicesRequest list_services = 16;
     GetServicesStatusRequest get_services_status = 17;
     GetServiceSchemaRequest get_service_schema = 18;
     GetServiceStatusRequest get_service_status = 19;
@@ -61,7 +67,6 @@ message Response {
     GetConfigSectionResponse get_config_section = 13;
     PatchConfigSectionResponse patch_config_section = 14;
     ResetConfigSectionResponse reset_config_section = 15;
-    ListServicesResponse list_services = 16;
     GetServicesStatusResponse get_services_status = 17;
     GetServiceSchemaResponse get_service_schema = 18;
     GetServiceStatusResponse get_service_status = 19;
@@ -125,6 +130,10 @@ message GetInfoResponse {
 // Configuration and status share one dynamic typing system. A module
 // describes its fields once (id, name, kind, unit, ...); clients render and
 // parse values from that description and never know a module by name.
+//
+// The value oneof is repeated, not wrapped, in `FieldValue`, `ConfigEntry`
+// and `ConfigMutation`: a nested generic message would cost an extra
+// temporary of the full value size.
 
 message Empty {}
 
@@ -133,74 +142,122 @@ enum ValueKind {
   VALUE_KIND_BOOL = 1;
   VALUE_KIND_I64 = 2;
   VALUE_KIND_U64 = 3;
-  VALUE_KIND_F64 = 4;
+  VALUE_KIND_F32 = 4;
   VALUE_KIND_STRING = 5;
   VALUE_KIND_BYTES = 6;
-  // One of the `variants` of the field descriptor.
+  // A variant of the enum `FieldDescriptor.enum_id` refers to.
   VALUE_KIND_ENUM = 7;
 }
 
-message Value {
-  oneof value {
-    bool bool_value = 1;
-    sint64 i64_value = 2;
-    uint64 u64_value = 3;
-    double f64_value = 4;
-    string string_value = 5;
-    bytes bytes_value = 6;
-    string enum_value = 7;
-  }
+enum Unit {
+  UNIT_NONE = 0;
+  UNIT_MS = 1;
+  UNIT_S = 2;
+  UNIT_HZ = 3;
+  UNIT_DBM = 4;
+  UNIT_BYTES = 5;
+  UNIT_PERCENT = 6;
+  UNIT_DEGREES = 7;
+  UNIT_METERS = 8;
+  UNIT_CELSIUS = 9;
+  UNIT_PASCAL = 10;
+  UNIT_PPM = 11;
+  UNIT_PPB = 12;
+  UNIT_DECIBELS = 13;
+  UNIT_MICROGRAMS_PER_CUBIC_METER = 14;
+  UNIT_MICROSIEVERTS_PER_HOUR = 15;
 }
 
 message FieldDescriptor {
-  // Stable within the section or service: only ever added, never reused.
+  // Stable within the section, service or action: only ever added, never
+  // reused.
   uint32 id = 1;
   // Stable name; nested fields use dotted paths (`tls.enabled`).
   string name = 2;
   ValueKind kind = 3;
-  string description = 4;
-  // Unit of the value, for example "s" or "dBm"; empty when unitless.
-  string unit = 5;
-  // Allowed values of `VALUE_KIND_ENUM` fields.
-  repeated string variants = 6;
+  Unit unit = 4;
+  // Id of the `EnumDescriptor` of the same response for `VALUE_KIND_ENUM`
+  // fields; 0 for all other fields.
+  uint32 enum_id = 5;
 }
 
+message EnumVariant {
+  uint32 value = 1;
+  string name = 2;
+}
+
+// The named values of an enum field. A schema response carries a small table
+// of them, referenced by `FieldDescriptor.enum_id`, so that fields without an
+// enum pay nothing for it.
+message EnumDescriptor {
+  // Non-zero, unique within the response.
+  uint32 id = 1;
+  repeated EnumVariant variants = 2;
+}
+
+// A value of a status field or an action result. Its strings and bytes are
+// shorter than those of requests (`ActionArg`, `ConfigMutation`): responses
+// carry many of them and are built on the stack of the device.
 message FieldValue {
   uint32 field_id = 1;
-  Value value = 2;
+
+  oneof value {
+    bool bool_value = 2;
+    sint64 i64_value = 3;
+    uint64 u64_value = 4;
+    float f32_value = 5;
+    string string_value = 6;
+    bytes bytes_value = 7;
+    // The `value` of an `EnumVariant`.
+    uint32 enum_value = 8;
+  }
+}
+
+// An argument of an action: the same cases as `FieldValue`, with the longer
+// strings a request may need (a Wi-Fi passphrase).
+message ActionArg {
+  uint32 field_id = 1;
+
+  oneof value {
+    bool bool_value = 2;
+    sint64 i64_value = 3;
+    uint64 u64_value = 4;
+    float f32_value = 5;
+    string string_value = 6;
+    bytes bytes_value = 7;
+    uint32 enum_value = 8;
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 //
-// Desired persistent state. The device exposes a registry of named sections;
-// the protocol knows none of them. Updates are patches applied atomically per
+// Desired persistent state. The device exposes a registry of sections; the
+// protocol knows none of them. Updates are patches applied atomically per
 // section. Secret fields are write-only.
 
 message ConfigSectionInfo {
+  // Stable numeric id of the section, the address of every later request.
+  // For sections with persistent storage it is the id of the stored section
+  // (derived from the name of its type).
+  uint64 id = 1;
   // Stable section name, for example "wifi".
-  string name = 1;
+  string name = 2;
   // Version of the section schema.
-  uint32 version = 2;
+  uint32 version = 3;
   // Changes after every successful write or reset. Restarts from 0 at boot.
-  uint32 revision = 3;
+  uint32 revision = 4;
 }
 
-message ConfigField {
+message ConfigFieldDescriptor {
   FieldDescriptor field = 1;
+  // False for fields clients can only read.
   bool writable = 2;
   // Never returned by `GetConfigSection` (reported as `redacted`).
   bool secret = 3;
   // May be unset; unset is distinct from an empty string or zero.
   bool optional = 4;
-  optional double min = 5;
-  optional double max = 6;
-}
-
-message ConfigSectionSchema {
-  ConfigSectionInfo section = 1;
-  repeated ConfigField fields = 2;
 }
 
 message ListConfigSectionsRequest {}
@@ -210,36 +267,38 @@ message ListConfigSectionsResponse {
 }
 
 message GetConfigSchemaRequest {
-  string section = 1;
-  // Index of the first field of the page; schemas are sent in pages so that
-  // one response stays small.
-  uint32 offset = 2;
+  uint64 section_id = 1;
 }
 
 message GetConfigSchemaResponse {
-  // The section and one page of its fields.
-  ConfigSectionSchema schema = 1;
-  // Number of fields of the whole section.
-  uint32 total = 2;
+  ConfigSectionInfo section = 1;
+  repeated ConfigFieldDescriptor fields = 2;
+  repeated EnumDescriptor enums = 3;
 }
 
+// Fields that are not set (and not secret) are absent from `entries`.
 message ConfigEntry {
   uint32 field_id = 1;
 
   oneof state {
-    Value value = 2;
-    // The field is set but is a secret and not readable.
-    Empty redacted = 3;
+    bool bool_value = 2;
+    sint64 i64_value = 3;
+    uint64 u64_value = 4;
+    float f32_value = 5;
+    string string_value = 6;
+    bytes bytes_value = 7;
+    uint32 enum_value = 8;
+    // A secret field that is configured.
+    Empty redacted = 9;
   }
 }
 
 message GetConfigSectionRequest {
-  string section = 1;
+  uint64 section_id = 1;
 }
 
-// Fields that are not set (and not secret) are absent from `entries`.
 message GetConfigSectionResponse {
-  string section = 1;
+  uint64 section_id = 1;
   uint32 version = 2;
   uint32 revision = 3;
   repeated ConfigEntry entries = 4;
@@ -251,15 +310,22 @@ message ConfigMutation {
   uint32 field_id = 1;
 
   oneof operation {
-    Value set = 2;
-    Empty unset = 3;
+    bool bool_value = 2;
+    sint64 i64_value = 3;
+    uint64 u64_value = 4;
+    float f32_value = 5;
+    string string_value = 6;
+    bytes bytes_value = 7;
+    uint32 enum_value = 8;
+    // Removes the value of an optional field.
+    Empty unset = 9;
   }
 }
 
 // All mutations are applied to a temporary copy, the complete result is
 // validated, and only then persisted. If anything is invalid nothing changes.
 message PatchConfigSectionRequest {
-  string section = 1;
+  uint64 section_id = 1;
   repeated ConfigMutation mutations = 2;
   // Fails with `ERROR_CODE_CONFLICT` when the section changed meanwhile.
   optional uint32 expected_revision = 3;
@@ -269,12 +335,13 @@ message PatchConfigSectionRequest {
 
 message PatchConfigSectionResponse {
   uint32 revision = 1;
+  // The change takes effect after a restart.
   bool restart_required = 2;
 }
 
 // Removes the persisted section and restores the module defaults.
 message ResetConfigSectionRequest {
-  string section = 1;
+  uint64 section_id = 1;
   bool dry_run = 2;
 }
 
@@ -300,12 +367,11 @@ message RebootRequest {}
 
 message RebootResponse {}
 
-
 // ---------------------------------------------------------------------------
 // Service status
 // ---------------------------------------------------------------------------
 //
-// Observed runtime state, read-only. The device exposes a registry of named
+// Observed runtime state, read-only. The device exposes a registry of
 // services; the protocol knows none of them. State, health and readiness are
 // independent: a running service can be degraded and not ready.
 
@@ -345,85 +411,79 @@ enum IssueSeverity {
   ISSUE_SEVERITY_CRITICAL = 4;
 }
 
-message ServiceInfo {
-  // Stable public name, for example "connectivity".
-  string name = 1;
-  // Version of the status schema.
-  uint32 version = 2;
-}
-
-message ServiceStatusSummary {
-  string service = 1;
-  ServiceState state = 2;
-  ServiceHealth health = 3;
-  // Whether the service can currently perform its intended role.
-  bool ready = 4;
-  // Incremented whenever the state, health, readiness, reason or the active
-  // issues change. Service-specific values that vary continuously (counters,
-  // ages, signal strength) do not change it.
-  uint32 revision = 5;
-  // Time spent in the current lifecycle state.
-  uint64 state_age_ms = 6;
-  // Stable machine-readable code of the primary active issue.
-  optional string reason = 7;
-}
-
-message ServiceIssue {
-  IssueSeverity severity = 1;
-  // Stable machine-readable identifier.
-  string code = 2;
-  // Human-readable explanation.
-  string message = 3;
-  // How long the issue has been active.
-  uint64 age_ms = 4;
-}
-
-message ListServicesRequest {}
-
-message ListServicesResponse {
-  repeated ServiceInfo services = 1;
-}
-
-// Compact snapshot of every service, used by polling clients. It never
+// Discovery and compact status of one service in one message. It never
 // contains service-specific fields.
+message ServiceStatusSummary {
+  // Stable numeric id of the service, the address of every later request.
+  uint32 service_id = 1;
+  // Stable public name, for example "connectivity".
+  string name = 2;
+  // Version of the status schema.
+  uint32 version = 3;
+
+  ServiceState state = 4;
+  ServiceHealth health = 5;
+  // Whether the service can currently perform its intended role.
+  bool ready = 6;
+  // Incremented whenever the state, health, readiness or the active issues
+  // change. Service-specific values that vary continuously (counters, ages,
+  // signal strength) do not change it.
+  uint32 revision = 7;
+  // Time spent in the current lifecycle state; saturates at the maximum.
+  uint32 state_age_ms = 8;
+}
+
 message GetServicesStatusRequest {}
 
 message GetServicesStatusResponse {
+  // Monotonic device time.
   uint64 uptime_ms = 1;
   DeviceHealth health = 2;
   repeated ServiceStatusSummary services = 3;
 }
 
+// A currently active problem of a service, named in the service schema.
+message ServiceIssue {
+  // Stable numeric code, described by `IssueDescriptor` in the schema. Codes
+  // below 256 are reserved for the SDK.
+  uint32 code = 1;
+  IssueSeverity severity = 2;
+  // How long the issue has been active; saturates at the maximum.
+  uint32 age_ms = 3;
+}
+
+message IssueDescriptor {
+  uint32 code = 1;
+  // Stable machine-readable name, for example "connection_timeout".
+  string name = 2;
+}
+
 message GetServiceSchemaRequest {
-  string service = 1;
-  // Index of the first field of the page.
-  uint32 offset = 2;
+  uint32 service_id = 1;
 }
 
 message GetServiceSchemaResponse {
-  string service = 1;
-  uint32 version = 2;
-  // One page of the status fields.
-  repeated FieldDescriptor fields = 3;
-  // Number of status fields of the whole service.
-  uint32 total = 4;
+  uint32 service_id = 1;
+  string name = 2;
+  uint32 version = 3;
+  repeated FieldDescriptor fields = 4;
+  repeated EnumDescriptor enums = 5;
+  repeated IssueDescriptor issues = 6;
 }
 
 message GetServiceStatusRequest {
-  string service = 1;
-  // Index of the first value of the page, counting only fields that have a
-  // value.
-  uint32 offset = 2;
+  uint32 service_id = 1;
 }
 
 // Fields without a current value are absent from `fields`. Only currently
-// active issues are listed; history belongs to diagnostics.
+// active issues are listed; history belongs to diagnostics. The compact state
+// comes from `GetServicesStatus`; `revision` tells whether it is still
+// current.
 message GetServiceStatusResponse {
-  ServiceStatusSummary summary = 1;
-  repeated FieldValue fields = 2;
-  repeated ServiceIssue issues = 3;
-  // Number of fields that have a value; `fields` is one page of them.
-  uint32 total = 4;
+  uint32 service_id = 1;
+  uint32 revision = 2;
+  repeated FieldValue fields = 3;
+  repeated ServiceIssue issues = 4;
 }
 
 // ---------------------------------------------------------------------------
@@ -436,9 +496,10 @@ message GetServiceStatusResponse {
 // more records of typed fields.
 
 message ActionInfo {
-  string service = 1;
-  string name = 2;
-  string description = 3;
+  uint32 service_id = 1;
+  // Stable numeric id, unique within the service.
+  uint32 id = 2;
+  string name = 3;
   // Needs a link that satisfies the write privilege of the policy.
   bool privileged = 4;
   // The arguments are secrets: clients must not echo or log them and should
@@ -446,20 +507,15 @@ message ActionInfo {
   bool secret_args = 5;
 }
 
-message ListActionsRequest {
-  // Index of the first action of the page.
-  uint32 offset = 1;
-}
+message ListActionsRequest {}
 
 message ListActionsResponse {
   repeated ActionInfo actions = 1;
-  // Number of actions of the whole device.
-  uint32 total = 2;
 }
 
 message GetActionSchemaRequest {
-  string service = 1;
-  string action = 2;
+  uint32 service_id = 1;
+  uint32 action_id = 2;
 }
 
 message GetActionSchemaResponse {
@@ -468,12 +524,13 @@ message GetActionSchemaResponse {
   repeated FieldDescriptor args = 2;
   // Fields of every returned record.
   repeated FieldDescriptor results = 3;
+  repeated EnumDescriptor enums = 4;
 }
 
 message InvokeActionRequest {
-  string service = 1;
-  string action = 2;
-  repeated FieldValue args = 3;
+  uint32 service_id = 1;
+  uint32 action_id = 2;
+  repeated ActionArg args = 3;
 }
 
 message ActionRecord {

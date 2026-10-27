@@ -92,7 +92,7 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
                 match self
                     .backend
                     .services()
-                    .action(&invoke.service, &invoke.action)
+                    .action(invoke.service_id, invoke.action_id)
                 {
                     Ok(action) if action.secret_args => Privilege::Provision,
                     Ok(action) if action.privileged => Privilege::Mutate,
@@ -130,51 +130,49 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
                 }
                 Reply::ListConfigSections(pb::ListConfigSectionsResponse { sections })
             }
-            Call::GetConfigSchema(request) => match backend.config().schema(&request.section) {
+            Call::GetConfigSchema(request) => match backend.config().schema(request.section_id) {
                 None => error(pb::ErrorCode::NotFound),
                 Some(schema) => {
                     let mut fields = Vec::new();
-                    for field in schema.fields.iter().skip(request.offset as usize) {
+                    for field in schema.fields {
                         if fields.push(mapping::config_field(field)).is_err() {
                             break;
                         }
                     }
-                    let mut out = pb::ConfigSectionSchema {
-                        fields,
-                        ..Default::default()
-                    };
-                    out.set_section(mapping::section_info(&schema.section));
                     let mut response = pb::GetConfigSchemaResponse {
-                        total: schema.fields.len() as u32,
+                        fields,
+                        enums: mapping::enums(schema.enums),
                         ..Default::default()
                     };
-                    response.set_schema(out);
+                    response.set_section(mapping::section_info(&schema.section));
                     Reply::GetConfigSchema(response)
                 }
             },
-            Call::GetConfigSection(request) => match backend.config().get(&request.section).await {
-                Err(e) => config_error(e),
-                Ok(values) => {
-                    let mut entries = Vec::new();
-                    for entry in &values.entries {
-                        if entries.push(mapping::config_entry(entry)).is_err() {
-                            break;
+            Call::GetConfigSection(request) => {
+                match backend.config().get(request.section_id).await {
+                    Err(e) => config_error(e),
+                    Ok(values) => {
+                        let mut entries = Vec::new();
+                        for entry in &values.entries {
+                            if entries.push(mapping::config_entry(entry)).is_err() {
+                                break;
+                            }
                         }
+                        Reply::GetConfigSection(pb::GetConfigSectionResponse {
+                            section_id: values.section.id,
+                            version: values.section.version,
+                            revision: values.section.revision,
+                            entries,
+                            configured: values.configured,
+                        })
                     }
-                    Reply::GetConfigSection(pb::GetConfigSectionResponse {
-                        section: mapping::text(values.section.name),
-                        version: values.section.version,
-                        revision: values.section.revision,
-                        entries,
-                        configured: values.configured,
-                    })
                 }
-            },
+            }
             Call::PatchConfigSection(request) => self.patch(request).await,
             Call::ResetConfigSection(request) => {
                 match backend
                     .config()
-                    .reset(&request.section, request.dry_run)
+                    .reset(request.section_id, request.dry_run)
                     .await
                 {
                     Ok(done) => Reply::ResetConfigSection(pb::ResetConfigSectionResponse {
@@ -192,18 +190,6 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             },
             Call::Reboot(_) if backend.reboot() => Reply::Reboot(pb::RebootResponse {}),
             Call::Reboot(_) => error(pb::ErrorCode::NotSupported),
-            Call::ListServices(_) => {
-                let services = backend.services();
-                let mut out = Vec::new();
-                for index in 0..services.service_count() {
-                    if let Some(info) = services.service_info(index)
-                        && out.push(mapping::service_info(&info)).is_err()
-                    {
-                        break;
-                    }
-                }
-                Reply::ListServices(pb::ListServicesResponse { services: out })
-            }
             Call::GetServicesStatus(_) => {
                 let services = backend.services();
                 let now = backend.uptime_ms();
@@ -230,33 +216,29 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
                     services: wire,
                 })
             }
-            Call::GetServiceSchema(request) => match backend.services().schema(&request.service) {
-                None => error(pb::ErrorCode::NotFound),
-                Some((info, fields)) => {
-                    let mut out = Vec::new();
-                    for field in fields.iter().skip(request.offset as usize) {
-                        if out.push(mapping::field(field)).is_err() {
-                            break;
-                        }
-                    }
-                    Reply::GetServiceSchema(pb::GetServiceSchemaResponse {
-                        service: mapping::text(info.name),
-                        version: info.version,
-                        fields: out,
-                        total: fields.len() as u32,
-                    })
+            Call::GetServiceSchema(request) => {
+                match backend.services().schema(request.service_id) {
+                    None => error(pb::ErrorCode::NotFound),
+                    Some(schema) => Reply::GetServiceSchema(pb::GetServiceSchemaResponse {
+                        service_id: schema.info.id,
+                        name: mapping::text(schema.info.name),
+                        version: schema.info.version,
+                        fields: mapping::fields(schema.fields),
+                        enums: mapping::enums(schema.enums),
+                        issues: mapping::issue_descriptors(schema.issues),
+                    }),
                 }
-            },
+            }
             Call::GetServiceStatus(request) => {
                 match backend
                     .services()
-                    .status(&request.service, backend.uptime_ms())
+                    .status(request.service_id, backend.uptime_ms())
                     .await
                 {
                     Err(StatusError::UnknownService) => error(pb::ErrorCode::NotFound),
                     Ok(status) => {
                         let mut fields = Vec::new();
-                        for (id, value) in status.fields.iter().skip(request.offset as usize) {
+                        for (id, value) in &status.fields {
                             if fields.push(mapping::field_value(*id, value)).is_err() {
                                 break;
                             }
@@ -267,57 +249,44 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
                                 break;
                             }
                         }
-                        let mut out = pb::GetServiceStatusResponse {
+                        Reply::GetServiceStatus(pb::GetServiceStatusResponse {
+                            service_id: status.summary.id,
+                            revision: status.summary.revision,
                             fields,
                             issues,
-                            total: status.fields.len() as u32,
-                            ..Default::default()
-                        };
-                        out.set_summary(mapping::summary(&status.summary));
-                        Reply::GetServiceStatus(out)
+                        })
                     }
                 }
             }
-            Call::ListActions(request) => {
+            Call::ListActions(_) => {
                 let services = backend.services();
                 let mut actions = Vec::new();
-                let mut total = 0u32;
-                for index in 0..services.service_count() {
+                'services: for index in 0..services.service_count() {
                     let Some(info) = services.service_info(index) else {
                         continue;
                     };
                     for action in services.service_actions(index) {
-                        if total >= request.offset {
-                            // A full page: only the count goes on.
-                            let _ = actions.push(mapping::action_info(info.name, action));
+                        if actions.push(mapping::action_info(info.id, action)).is_err() {
+                            break 'services;
                         }
-                        total += 1;
                     }
                 }
-                Reply::ListActions(pb::ListActionsResponse { actions, total })
+                Reply::ListActions(pb::ListActionsResponse { actions })
             }
             Call::GetActionSchema(request) => {
-                match backend.services().action(&request.service, &request.action) {
+                match backend
+                    .services()
+                    .action(request.service_id, request.action_id)
+                {
                     Err(e) => action_error(e),
                     Ok(action) => {
-                        let mut args = Vec::new();
-                        for field in action.args {
-                            if args.push(mapping::field(field)).is_err() {
-                                break;
-                            }
-                        }
-                        let mut results = Vec::new();
-                        for field in action.results {
-                            if results.push(mapping::field(field)).is_err() {
-                                break;
-                            }
-                        }
                         let mut out = pb::GetActionSchemaResponse {
-                            args,
-                            results,
+                            args: mapping::fields(action.args),
+                            results: mapping::fields(action.results),
+                            enums: mapping::enums(action.enums),
                             ..Default::default()
                         };
-                        out.set_action(mapping::action_info(&request.service, action));
+                        out.set_action(mapping::action_info(request.service_id, action));
                         Reply::GetActionSchema(out)
                     }
                 }
@@ -340,7 +309,7 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             self.backend
                 .config()
                 .patch(
-                    &request.section,
+                    request.section_id,
                     &mutations,
                     request.expected_revision().copied(),
                     request.dry_run,
@@ -355,9 +324,7 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             }
         }
         for mutation in &mut request.mutations {
-            if let Some(pb::ConfigMutation_::Operation::Set(value)) = &mut mutation.operation {
-                mapping::wipe(value);
-            }
+            mapping::wipe_mutation(mutation);
         }
         match result {
             Ok(done) => Reply::PatchConfigSection(pb::PatchConfigSectionResponse {
@@ -372,15 +339,15 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
         let mut args: Vec<(u32, Value), MAX_ACTION_ARGS> = Vec::new();
         let mut valid = true;
         for arg in &request.args {
-            match arg.value().and_then(mapping::from_value) {
-                Some(value) => valid &= args.push((arg.field_id, value)).is_ok(),
+            match mapping::from_arg(arg) {
+                Some(arg) => valid &= args.push(arg).is_ok(),
                 None => valid = false,
             }
         }
         let result = if valid {
             self.backend
                 .services()
-                .invoke(&request.service, &request.action, &args)
+                .invoke(request.service_id, request.action_id, &args)
                 .await
         } else {
             Err(ActionError::InvalidArgument)
@@ -389,9 +356,7 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             value.wipe();
         }
         for arg in &mut request.args {
-            if let Some(value) = arg.mut_value() {
-                mapping::wipe(value);
-            }
+            mapping::wipe_arg(arg);
         }
         match result {
             Err(e) => action_error(e),

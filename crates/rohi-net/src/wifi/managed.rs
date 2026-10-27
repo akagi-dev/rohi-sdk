@@ -18,7 +18,7 @@
 //! The `wifi` config section in the generic management plane.
 
 use rohi_config::ConfigSection;
-use rohi_service::{ConfigField, FieldError, ManagedConfig, Value, ValueKind};
+use rohi_service::{Bounds, ConfigField, FieldError, ManagedConfig, Unit, Value, ValueKind};
 
 use super::config::{
     BACKOFF_INITIAL_RANGE_MS, BACKOFF_MAX_RANGE_MS, CONNECT_TIMEOUT_RANGE_MS,
@@ -46,8 +46,8 @@ pub mod field {
 
 const fn timing(id: u32, name: &'static str, (min, max): (u32, u32)) -> ConfigField {
     ConfigField::new(id, name, ValueKind::U64)
-        .unit("ms")
-        .range(min as f64, max as f64)
+        .unit(Unit::Ms)
+        .bounds(Bounds::U64(min as u64, max as u64))
 }
 
 fn number(value: &Value) -> Result<u32, FieldError> {
@@ -58,33 +58,27 @@ fn number(value: &Value) -> Result<u32, FieldError> {
 }
 
 impl ManagedConfig for WifiConfig {
+    const SECTION_ID: u64 = <Self as ConfigSection>::ID.0;
     const NAME: &'static str = "wifi";
     const VERSION: u16 = <Self as ConfigSection>::VERSION;
     const FIELDS: &'static [ConfigField] = &[
-        ConfigField::new(field::SSID, "ssid", ValueKind::String)
-            .describe("Network name, 1 to 32 bytes"),
+        ConfigField::new(field::SSID, "ssid", ValueKind::String),
         ConfigField::new(field::PASSWORD, "password", ValueKind::String)
-            .describe("Passphrase, 8 to 64 bytes; unset if open")
             .secret()
             .optional(),
-        timing(field::SCAN_TIMEOUT, "scan_timeout", SCAN_TIMEOUT_RANGE_MS)
-            .describe("Bound of a network scan"),
+        timing(field::SCAN_TIMEOUT, "scan_timeout", SCAN_TIMEOUT_RANGE_MS),
         timing(
             field::CONNECT_TIMEOUT,
             "connect_timeout",
             CONNECT_TIMEOUT_RANGE_MS,
-        )
-        .describe("Bound of joining the network"),
+        ),
         timing(
             field::BACKOFF_INITIAL,
             "backoff_initial",
             BACKOFF_INITIAL_RANGE_MS,
-        )
-        .describe("First delay before a reconnect"),
-        timing(field::BACKOFF_MAX, "backoff_max", BACKOFF_MAX_RANGE_MS)
-            .describe("Longest delay between reconnects"),
-        timing(field::LINK_REFRESH, "link_refresh", LINK_REFRESH_RANGE_MS)
-            .describe("Link refresh and stability interval"),
+        ),
+        timing(field::BACKOFF_MAX, "backoff_max", BACKOFF_MAX_RANGE_MS),
+        timing(field::LINK_REFRESH, "link_refresh", LINK_REFRESH_RANGE_MS),
     ];
 
     fn defaults() -> Self {
@@ -183,7 +177,6 @@ mod tests {
         assert_eq!(ids.len(), WifiConfig::FIELDS.len());
         for field in WifiConfig::FIELDS {
             assert!(field.field.name.len() <= 24, "{}", field.field.name);
-            assert!(field.field.description.len() <= 40, "{}", field.field.name);
         }
     }
 

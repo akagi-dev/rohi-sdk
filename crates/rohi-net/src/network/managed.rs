@@ -22,7 +22,10 @@ use core::str::FromStr;
 
 use heapless::String;
 use rohi_config::ConfigSection;
-use rohi_service::{ConfigField, FieldError, ManagedConfig, Value, ValueKind};
+use rohi_service::{
+    Bounds, ConfigField, EnumDescriptor, EnumVariant, FieldError, ManagedConfig, Unit, Value,
+    ValueKind,
+};
 
 use super::config::{AddressMode, DHCP_TIMEOUT_RANGE_MS, Hostname, Ipv4, NetworkConfig};
 
@@ -44,8 +47,25 @@ pub mod field {
     pub const DHCP_TIMEOUT: u32 = 7;
 }
 
-/// Variants of the `address_mode` field.
-pub const ADDRESS_MODES: &[&str] = &["dhcp", "static"];
+/// Values of the `address_mode` field.
+pub mod address_mode {
+    /// The address comes from a DHCP server.
+    pub const DHCP: u32 = 0;
+    /// The address is configured.
+    pub const STATIC: u32 = 1;
+}
+
+/// Id of the enum of the `address_mode` field.
+pub const ADDRESS_MODE_ENUM: u32 = 1;
+
+/// The enum of the `address_mode` field, in the config and in the status.
+pub const ADDRESS_MODES: &[EnumDescriptor] = &[EnumDescriptor::new(
+    ADDRESS_MODE_ENUM,
+    &[
+        EnumVariant::new(address_mode::DHCP, "dhcp"),
+        EnumVariant::new(address_mode::STATIC, "static"),
+    ],
+)];
 
 fn address_text(address: Ipv4) -> Option<Value> {
     let mut text = String::<15>::new();
@@ -68,36 +88,27 @@ fn number(value: &Value) -> Result<u32, FieldError> {
 }
 
 impl ManagedConfig for NetworkConfig {
+    const SECTION_ID: u64 = <Self as ConfigSection>::ID.0;
     const NAME: &'static str = "network";
     const VERSION: u16 = <Self as ConfigSection>::VERSION;
     const FIELDS: &'static [ConfigField] = &[
         ConfigField::new(field::ADDRESS_MODE, "address_mode", ValueKind::Enum)
-            .describe("How the IPv4 address is obtained")
-            .variants(ADDRESS_MODES),
-        ConfigField::new(field::IP, "ip", ValueKind::String)
-            .describe("Static IPv4 address")
-            .optional(),
+            .with_enum(ADDRESS_MODE_ENUM),
+        ConfigField::new(field::IP, "ip", ValueKind::String).optional(),
         ConfigField::new(field::PREFIX_LEN, "prefix_len", ValueKind::U64)
-            .describe("Static network prefix length")
-            .range(1.0, 30.0)
+            .bounds(Bounds::U64(1, 30))
             .optional(),
-        ConfigField::new(field::GATEWAY, "gateway", ValueKind::String)
-            .describe("Static default gateway")
-            .optional(),
-        ConfigField::new(field::DNS, "dns", ValueKind::String)
-            .describe("Static DNS server")
-            .optional(),
-        ConfigField::new(field::HOSTNAME, "hostname", ValueKind::String)
-            .describe("Host name announced over DHCP")
-            .optional(),
+        ConfigField::new(field::GATEWAY, "gateway", ValueKind::String).optional(),
+        ConfigField::new(field::DNS, "dns", ValueKind::String).optional(),
+        ConfigField::new(field::HOSTNAME, "hostname", ValueKind::String).optional(),
         ConfigField::new(field::DHCP_TIMEOUT, "dhcp_timeout", ValueKind::U64)
-            .describe("Bound of obtaining a DHCP lease")
-            .unit("ms")
-            .range(
-                DHCP_TIMEOUT_RANGE_MS.0 as f64,
-                DHCP_TIMEOUT_RANGE_MS.1 as f64,
-            ),
+            .unit(Unit::Ms)
+            .bounds(Bounds::U64(
+                DHCP_TIMEOUT_RANGE_MS.0 as u64,
+                DHCP_TIMEOUT_RANGE_MS.1 as u64,
+            )),
     ];
+    const ENUMS: &'static [EnumDescriptor] = ADDRESS_MODES;
 
     fn defaults() -> Self {
         Self::new()
@@ -109,13 +120,10 @@ impl ManagedConfig for NetworkConfig {
             Some(address) => address_text(address).map(Some).ok_or(FieldError::Invalid),
         };
         match id {
-            field::ADDRESS_MODE => {
-                let name = match self.address_mode {
-                    AddressMode::Dhcp => "dhcp",
-                    AddressMode::Static => "static",
-                };
-                Ok(Value::variant(name))
-            }
+            field::ADDRESS_MODE => Ok(Some(Value::Enum(match self.address_mode {
+                AddressMode::Dhcp => address_mode::DHCP,
+                AddressMode::Static => address_mode::STATIC,
+            }))),
             field::IP => optional_address(self.static_ip),
             field::PREFIX_LEN => Ok(self.prefix_len.map(|len| Value::U64(len.into()))),
             field::GATEWAY => optional_address(self.gateway),
@@ -135,8 +143,8 @@ impl ManagedConfig for NetworkConfig {
         match id {
             field::ADDRESS_MODE => {
                 self.address_mode = match &value {
-                    Value::Enum(variant) if variant == "dhcp" => AddressMode::Dhcp,
-                    Value::Enum(variant) if variant == "static" => AddressMode::Static,
+                    Value::Enum(address_mode::DHCP) => AddressMode::Dhcp,
+                    Value::Enum(address_mode::STATIC) => AddressMode::Static,
                     Value::Enum(_) => return Err(FieldError::OutOfRange),
                     _ => return Err(FieldError::WrongKind),
                 };
@@ -202,7 +210,6 @@ mod tests {
         assert_eq!(ids.len(), NetworkConfig::FIELDS.len());
         for field in NetworkConfig::FIELDS {
             assert!(field.field.name.len() <= 24, "{}", field.field.name);
-            assert!(field.field.description.len() <= 40, "{}", field.field.name);
         }
     }
 
@@ -211,7 +218,10 @@ mod tests {
         let config = NetworkConfig::defaults();
         assert_eq!(ManagedConfig::validate(&config), Ok(()));
         let read = |id| config.read_field(id).unwrap();
-        assert_eq!(read(field::ADDRESS_MODE), Value::variant("dhcp"));
+        assert_eq!(
+            read(field::ADDRESS_MODE),
+            Some(Value::Enum(address_mode::DHCP))
+        );
         assert_eq!(read(field::DHCP_TIMEOUT), Some(Value::U64(20_000)));
         for id in [
             field::IP,
@@ -228,7 +238,7 @@ mod tests {
     fn a_static_address_is_set_field_by_field_and_validated_as_a_whole() {
         let mut config = NetworkConfig::defaults();
         config
-            .set_field(field::ADDRESS_MODE, Value::variant("static").unwrap())
+            .set_field(field::ADDRESS_MODE, Value::Enum(address_mode::STATIC))
             .unwrap();
         // Static mode without an address is incomplete.
         assert_eq!(ManagedConfig::validate(&config), Err(FieldError::Invalid));
@@ -275,7 +285,7 @@ mod tests {
             Err(FieldError::OutOfRange)
         );
         assert_eq!(
-            config.set_field(field::ADDRESS_MODE, Value::variant("auto").unwrap()),
+            config.set_field(field::ADDRESS_MODE, Value::Enum(7)),
             Err(FieldError::OutOfRange)
         );
         assert_eq!(

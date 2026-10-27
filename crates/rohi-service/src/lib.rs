@@ -59,18 +59,27 @@ pub use config::{
     FieldError, ManagedConfig, ManagedSection, Mutation, MutationOp, Patched, SectionInfo,
     SectionSchema, SectionStore, SectionValues, StoreError,
 };
-pub use field::{ConfigField, FieldDescriptor};
+pub use field::{Bounds, ConfigField, EnumDescriptor, EnumVariant, FieldDescriptor, Unit};
 pub use status::{
-    DeviceHealth, Issue, IssueSeverity, ManagedService, ServiceHealth, ServiceInfo, ServiceOps,
-    ServiceRegistry, ServiceState, ServiceStatus, ServiceStatusSummary, ServiceSummary, Startup,
-    StatusError, StatusWriter, Tracked, WriteError, default_device_health,
+    DeviceHealth, FIRST_SERVICE_ISSUE, ISSUE_STARTUP_FAILED, Issue, IssueDescriptor, IssueSeverity,
+    ManagedService, ServiceHealth, ServiceInfo, ServiceOps, ServiceRegistry, ServiceSchema,
+    ServiceState, ServiceStatus, ServiceStatusSummary, ServiceSummary, Startup, StatusError,
+    StatusWriter, Tracked, WriteError, default_device_health,
 };
 pub use value::{Value, ValueKind};
 
 /// Maximum length of a string or bytes [`Value`], in bytes.
 pub const MAX_VALUE_LEN: usize = 64;
-/// Maximum length of an enum variant, in bytes.
-pub const MAX_VARIANT_LEN: usize = 16;
+/// Maximum length of a string or bytes status value or action result, in
+/// bytes; longer text is cut. Arguments and config values may be
+/// [`MAX_VALUE_LEN`] long.
+pub const MAX_FIELD_VALUE_LEN: usize = 32;
+/// Maximum length of an enum variant name, in bytes.
+pub const MAX_VARIANT_NAME_LEN: usize = 16;
+/// Maximum number of enums of a section, service or action.
+pub const MAX_ENUMS: usize = 1;
+/// Maximum number of variants of an enum.
+pub const MAX_ENUM_VARIANTS: usize = 9;
 /// Maximum number of status fields of a service.
 pub const MAX_FIELDS: usize = 20;
 /// Maximum number of fields of a config section.
@@ -79,6 +88,8 @@ pub const MAX_CONFIG_FIELDS: usize = 16;
 pub const MAX_MUTATIONS: usize = 8;
 /// Maximum number of active issues reported for one service.
 pub const MAX_ISSUES: usize = 4;
+/// Maximum number of issues the schema of a service describes.
+pub const MAX_ISSUE_DESCRIPTORS: usize = 12;
 /// Maximum number of sections or services in one registry.
 pub const MAX_REGISTRY_ENTRIES: usize = 8;
 

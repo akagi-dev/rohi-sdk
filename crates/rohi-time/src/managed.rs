@@ -20,12 +20,46 @@ use embassy_sync::blocking_mutex::raw::RawMutex;
 use heapless::Vec;
 use rohi_hal::runtime::Clock;
 use rohi_service::{
-    FieldDescriptor, Issue, IssueSeverity, MAX_ISSUES, ManagedService, ServiceHealth, ServiceState,
-    ServiceSummary, StatusWriter, ValueKind, WriteError,
+    EnumDescriptor, EnumVariant, FieldDescriptor, Issue, IssueDescriptor, IssueSeverity,
+    MAX_ISSUES, ManagedService, ServiceHealth, ServiceState, ServiceSummary, StatusWriter, Unit,
+    ValueKind, WriteError,
 };
 
 use crate::service::MAX_SERVERS;
 use crate::{SyncFailure, TimeService, TimeSourceKind, TimeSyncState};
+
+/// Id of the `time` service.
+pub const SERVICE_ID: u32 = 5;
+
+/// Issue codes of the `time` service.
+pub mod issue {
+    use rohi_service::FIRST_SERVICE_ISSUE as BASE;
+
+    /// The network is unavailable.
+    pub const NETWORK_UNAVAILABLE: u32 = BASE;
+    /// The time server name was not resolved.
+    pub const RESOLVE_FAILED: u32 = BASE + 1;
+    /// The time source did not answer.
+    pub const TIMEOUT: u32 = BASE + 2;
+    /// The answer was invalid.
+    pub const INVALID_RESPONSE: u32 = BASE + 3;
+    /// The time source refused to serve.
+    pub const REJECTED: u32 = BASE + 4;
+    /// The sample was not plausible.
+    pub const IMPLAUSIBLE: u32 = BASE + 5;
+    /// The time source failed.
+    pub const SOURCE_FAILURE: u32 = BASE + 6;
+}
+
+/// Values of the `source` status field.
+pub mod source_value {
+    /// Network time protocol.
+    pub const NTP: u32 = 0;
+    /// Battery-backed clock.
+    pub const RTC: u32 = 1;
+    /// Set by the application.
+    pub const EXTERNAL: u32 = 2;
+}
 
 /// Field ids of the `time` service status.
 pub mod status_field {
@@ -50,19 +84,18 @@ pub mod status_field {
 }
 
 fn failure_issue(failure: SyncFailure) -> Issue {
-    let (code, message) = match failure {
-        SyncFailure::NetworkUnavailable => ("network_unavailable", "The network is unavailable"),
-        SyncFailure::Resolve => ("resolve_failed", "The time server name was not resolved"),
-        SyncFailure::Timeout => ("timeout", "The time source did not answer"),
-        SyncFailure::InvalidResponse => ("invalid_response", "The answer was invalid"),
-        SyncFailure::Rejected => ("rejected", "The time source refused to serve"),
-        SyncFailure::Implausible => ("implausible", "The sample was not plausible"),
-        SyncFailure::Source => ("source_failure", "The time source failed"),
+    let code = match failure {
+        SyncFailure::NetworkUnavailable => issue::NETWORK_UNAVAILABLE,
+        SyncFailure::Resolve => issue::RESOLVE_FAILED,
+        SyncFailure::Timeout => issue::TIMEOUT,
+        SyncFailure::InvalidResponse => issue::INVALID_RESPONSE,
+        SyncFailure::Rejected => issue::REJECTED,
+        SyncFailure::Implausible => issue::IMPLAUSIBLE,
+        SyncFailure::Source => issue::SOURCE_FAILURE,
     };
     Issue {
         severity: IssueSeverity::Warning,
         code,
-        message,
         age_ms: None,
     }
 }
@@ -74,35 +107,42 @@ fn failure_issue(failure: SyncFailure) -> Issue {
 pub struct TimeStatusService<'a, C, M: RawMutex>(pub &'a TimeService<C, M>);
 
 impl<C: Clock, M: RawMutex> ManagedService for TimeStatusService<'_, C, M> {
+    const ID: u32 = SERVICE_ID;
     const NAME: &'static str = "time";
     const VERSION: u16 = 1;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
         FieldDescriptor::new(status_field::UNIX_TIME_MS, "unix_time", ValueKind::U64)
-            .describe("Wall-clock time since the Unix epoch")
-            .unit("ms"),
-        FieldDescriptor::new(status_field::SOURCE, "source", ValueKind::Enum)
-            .describe("Source of the current time")
-            .variants(&["ntp", "rtc", "external"]),
-        FieldDescriptor::new(status_field::SYNC_AGE_MS, "sync_age", ValueKind::U64)
-            .describe("Time since the current time was accepted")
-            .unit("ms"),
+            .unit(Unit::Ms),
+        FieldDescriptor::new(status_field::SOURCE, "source", ValueKind::Enum).with_enum(1),
+        FieldDescriptor::new(status_field::SYNC_AGE_MS, "sync_age", ValueKind::U64).unit(Unit::Ms),
         FieldDescriptor::new(status_field::UNCERTAINTY_MS, "uncertainty", ValueKind::U64)
-            .describe("Uncertainty when the time was accepted")
-            .unit("ms"),
+            .unit(Unit::Ms),
         FieldDescriptor::new(
             status_field::CONSECUTIVE_FAILURES,
             "consecutive_failures",
             ValueKind::U64,
-        )
-        .describe("Failed attempts since the last accepted sample"),
-        FieldDescriptor::new(status_field::SERVER1, "server1", ValueKind::String)
-            .describe("First time server"),
-        FieldDescriptor::new(status_field::SERVER2, "server2", ValueKind::String)
-            .describe("Second time server"),
-        FieldDescriptor::new(status_field::SERVER3, "server3", ValueKind::String)
-            .describe("Third time server"),
-        FieldDescriptor::new(status_field::SERVER4, "server4", ValueKind::String)
-            .describe("Fourth time server"),
+        ),
+        FieldDescriptor::new(status_field::SERVER1, "server1", ValueKind::String),
+        FieldDescriptor::new(status_field::SERVER2, "server2", ValueKind::String),
+        FieldDescriptor::new(status_field::SERVER3, "server3", ValueKind::String),
+        FieldDescriptor::new(status_field::SERVER4, "server4", ValueKind::String),
+    ];
+    const ENUMS: &'static [EnumDescriptor] = &[EnumDescriptor::new(
+        1,
+        &[
+            EnumVariant::new(source_value::NTP, "ntp"),
+            EnumVariant::new(source_value::RTC, "rtc"),
+            EnumVariant::new(source_value::EXTERNAL, "external"),
+        ],
+    )];
+    const ISSUES: &'static [IssueDescriptor] = &[
+        IssueDescriptor::new(issue::NETWORK_UNAVAILABLE, "network_unavailable"),
+        IssueDescriptor::new(issue::RESOLVE_FAILED, "resolve_failed"),
+        IssueDescriptor::new(issue::TIMEOUT, "timeout"),
+        IssueDescriptor::new(issue::INVALID_RESPONSE, "invalid_response"),
+        IssueDescriptor::new(issue::REJECTED, "rejected"),
+        IssueDescriptor::new(issue::IMPLAUSIBLE, "implausible"),
+        IssueDescriptor::new(issue::SOURCE_FAILURE, "source_failure"),
     ];
     const ESSENTIAL: bool = false;
 
@@ -137,9 +177,9 @@ impl<C: Clock, M: RawMutex> ManagedService for TimeStatusService<'_, C, M> {
             out.variant(
                 status_field::SOURCE,
                 match source {
-                    TimeSourceKind::Ntp => "ntp",
-                    TimeSourceKind::Rtc => "rtc",
-                    TimeSourceKind::External => "external",
+                    TimeSourceKind::Ntp => source_value::NTP,
+                    TimeSourceKind::Rtc => source_value::RTC,
+                    TimeSourceKind::External => source_value::EXTERNAL,
                 },
             )?;
         }
@@ -183,7 +223,7 @@ mod tests {
             TimeConfig::new(crate::UnixTime::from_secs(1_700_000_000)),
         );
         let registry = (Tracked::<_, NoopRawMutex>::new(TimeStatusService(&service)),);
-        let status = block_on(registry.status("time", 0)).unwrap();
+        let status = block_on(registry.status(SERVICE_ID, 0)).unwrap();
         assert_eq!(status.summary.state, rohi_service::ServiceState::Starting);
         assert!(!status.summary.ready);
         assert!(status.issues.is_empty());
@@ -203,7 +243,7 @@ mod tests {
         );
         service.set_servers(&["ntp.example.org", "time.example.net"]);
         let registry = (Tracked::<_, NoopRawMutex>::new(TimeStatusService(&service)),);
-        let status = block_on(registry.status("time", 0)).unwrap();
+        let status = block_on(registry.status(SERVICE_ID, 0)).unwrap();
         let text = |id| {
             status
                 .fields
@@ -216,18 +256,15 @@ mod tests {
         assert_eq!(text(status_field::SERVER3), None);
 
         service.set_servers(&["pool.ntp.org"]);
-        let status = block_on(registry.status("time", 0)).unwrap();
+        let status = block_on(registry.status(SERVICE_ID, 0)).unwrap();
         assert_eq!(status.fields.len(), 2);
     }
 
     #[test]
     fn the_schema_lists_the_sources() {
         type S = TimeStatusService<'static, ManualClock, NoopRawMutex>;
-        assert!(
-            <S as ManagedService>::STATUS_SCHEMA[1]
-                .variants
-                .contains(&"rtc")
-        );
+        assert!(<S as ManagedService>::ENUMS[0].contains(source_value::RTC));
+        assert_eq!(<S as ManagedService>::STATUS_SCHEMA[1].enum_id, 1);
         const { assert!(!<S as ManagedService>::ESSENTIAL) };
     }
 }

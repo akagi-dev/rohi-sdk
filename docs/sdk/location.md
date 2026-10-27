@@ -41,9 +41,12 @@ source     configured
 
 | Field | Type | Range | Required |
 |-------|------|-------|----------|
-| `latitude` | `f64`, degrees (WGS84) | -90 … 90 | yes |
-| `longitude` | `f64`, degrees (WGS84) | -180 … 180 | yes |
-| `height_m` | `f64`, metres above mean sea level | -1000 … 10000 | no (`rohi config unset location height_m`) |
+| `latitude` | `f32` on the control plane, degrees (WGS84) | -90 … 90 | yes |
+| `longitude` | `f32` on the control plane, degrees (WGS84) | -180 … 180 | yes |
+| `height_m` | `f32` on the control plane, metres above mean sea level | -1000 … 10000 | no (`rohi config unset location height_m`) |
+
+Single precision resolves a coordinate to about one to two metres; the section is stored as `f64` (see [persistent
+ABI](../reference/persistent-abi.md)) and the control plane converts.
 
 Latitude and longitude only exist as a pair: the section starts from a value that is not a position, so a first
 `set height_m=10` is refused instead of storing `0, 0`. NaN and infinite values are refused too. The device validates

@@ -32,21 +32,28 @@ struct Demo {
 const DEMO_FIELDS: &[ConfigField] = &[
     ConfigField::new(1, "enabled", ValueKind::Bool),
     ConfigField::new(2, "interval_s", ValueKind::U64)
-        .range(10.0, 100.0)
-        .unit("s"),
+        .bounds(Bounds::U64(10, 100))
+        .unit(Unit::S),
     ConfigField::new(3, "host", ValueKind::String),
     ConfigField::new(4, "token", ValueKind::String)
         .secret()
         .optional(),
     ConfigField::new(5, "mode", ValueKind::Enum)
-        .variants(&["fast", "slow"])
+        .with_enum(1)
         .read_only(),
 ];
 
+const MODES: &[EnumDescriptor] = &[EnumDescriptor::new(
+    1,
+    &[EnumVariant::new(0, "fast"), EnumVariant::new(1, "slow")],
+)];
+
 impl ManagedConfig for Demo {
+    const SECTION_ID: u64 = 1;
     const NAME: &'static str = "demo";
     const VERSION: u16 = 3;
     const FIELDS: &'static [ConfigField] = DEMO_FIELDS;
+    const ENUMS: &'static [EnumDescriptor] = MODES;
 
     fn defaults() -> Self {
         Self {
@@ -63,7 +70,7 @@ impl ManagedConfig for Demo {
             2 => Some(Value::U64(self.interval_s)),
             3 => Some(Value::text(&self.host).unwrap()),
             4 => self.token.as_deref().and_then(Value::text),
-            5 => Some(Value::variant("fast").unwrap()),
+            5 => Some(Value::Enum(0)),
             _ => return Err(FieldError::UnknownField),
         })
     }
@@ -231,7 +238,7 @@ fn field_errors_are_distinguished() {
         Err(FieldError::WrongKind.into())
     );
     assert_eq!(
-        patch(set(5, Value::variant("fast").unwrap())),
+        patch(set(5, Value::Enum(0))),
         Err(FieldError::ReadOnly.into())
     );
     assert_eq!(patch(unset(3)), Err(FieldError::NotOptional.into()));
@@ -378,9 +385,11 @@ fn a_tuple_of_sections_is_a_registry() {
     struct Other(Demo);
     // A second section type with another name.
     impl ManagedConfig for Other {
+        const SECTION_ID: u64 = 2;
         const NAME: &'static str = "other";
         const VERSION: u16 = 1;
         const FIELDS: &'static [ConfigField] = DEMO_FIELDS;
+        const ENUMS: &'static [EnumDescriptor] = MODES;
         fn defaults() -> Self {
             Self(Demo::defaults())
         }
@@ -426,41 +435,46 @@ fn a_tuple_of_sections_is_a_registry() {
     assert_eq!(registry.section_info(0).unwrap().name, "demo");
     assert_eq!(registry.section_info(1).unwrap().name, "other");
     assert_eq!(registry.section_info(2), None);
-    assert!(registry.schema("other").is_some());
-    assert!(registry.schema("missing").is_none());
+    assert!(registry.schema(2).is_some());
+    assert!(registry.schema(99).is_none());
 
-    let patched = block_on(registry.patch("other", &[set(3, text("x.io"))], None, false)).unwrap();
+    let patched = block_on(registry.patch(2, &[set(3, text("x.io"))], None, false)).unwrap();
     assert!(patched.restart_required);
     assert!(other_store.0.borrow().is_some());
     assert!(a.value.borrow().is_none());
-    assert_eq!(
-        block_on(registry.get("missing")),
-        Err(ConfigError::UnknownSection)
-    );
-    assert_eq!(
-        block_on(().get("anything")),
-        Err(ConfigError::UnknownSection)
-    );
-    block_on(registry.reset("other", false)).unwrap();
+    assert_eq!(block_on(registry.get(99)), Err(ConfigError::UnknownSection));
+    assert_eq!(block_on(().get(1)), Err(ConfigError::UnknownSection));
+    block_on(registry.reset(2, false)).unwrap();
     assert!(other_store.0.borrow().is_none());
 }
 
 #[test]
 fn check_enforces_kind_variants_and_range() {
-    let field = ConfigField::new(1, "n", ValueKind::U64).range(1.0, 10.0);
-    assert_eq!(field.check(&Value::U64(5)), Ok(()));
-    assert_eq!(field.check(&Value::U64(0)), Err(FieldError::OutOfRange));
-    assert_eq!(field.check(&Value::U64(11)), Err(FieldError::OutOfRange));
-    assert_eq!(field.check(&Value::I64(5)), Err(FieldError::WrongKind));
-    let float = ConfigField::new(1, "f", ValueKind::F64).range(0.0, 1.0);
+    let field = ConfigField::new(1, "n", ValueKind::U64).bounds(Bounds::U64(1, 10));
+    assert_eq!(field.check(&Value::U64(5), &[]), Ok(()));
     assert_eq!(
-        float.check(&Value::F64(f64::NAN)),
+        field.check(&Value::U64(0), &[]),
         Err(FieldError::OutOfRange)
     );
-    let variant = ConfigField::new(1, "e", ValueKind::Enum).variants(&["a", "b"]);
-    assert_eq!(variant.check(&Value::variant("a").unwrap()), Ok(()));
     assert_eq!(
-        variant.check(&Value::variant("c").unwrap()),
+        field.check(&Value::U64(11), &[]),
+        Err(FieldError::OutOfRange)
+    );
+    assert_eq!(field.check(&Value::I64(5), &[]), Err(FieldError::WrongKind));
+    let float = ConfigField::new(1, "f", ValueKind::F32).bounds(Bounds::F32(0.0, 1.0));
+    assert_eq!(float.check(&Value::F32(0.5), &[]), Ok(()));
+    assert_eq!(
+        float.check(&Value::F32(f32::NAN), &[]),
+        Err(FieldError::OutOfRange)
+    );
+    assert_eq!(
+        float.check(&Value::F32(1.5), &[]),
+        Err(FieldError::OutOfRange)
+    );
+    let variant = ConfigField::new(1, "e", ValueKind::Enum).with_enum(1);
+    assert_eq!(variant.check(&Value::Enum(0), MODES), Ok(()));
+    assert_eq!(
+        variant.check(&Value::Enum(7), MODES),
         Err(FieldError::OutOfRange)
     );
 }
@@ -475,7 +489,7 @@ fn value_debug_never_shows_the_content() {
 struct Probe {
     state: RefCell<ServiceState>,
     health: RefCell<ServiceHealth>,
-    issue: RefCell<Option<&'static str>>,
+    issue: RefCell<Option<u32>>,
     queue: RefCell<u64>,
 }
 
@@ -491,13 +505,22 @@ impl Probe {
 }
 
 impl ManagedService for &Probe {
+    const ID: u32 = 7;
     const NAME: &'static str = "probe";
     const VERSION: u16 = 2;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
         FieldDescriptor::new(1, "endpoint", ValueKind::String),
         FieldDescriptor::new(2, "queue_depth", ValueKind::U64),
-        FieldDescriptor::new(3, "mode", ValueKind::Enum).variants(&["a", "b"]),
+        FieldDescriptor::new(3, "mode", ValueKind::Enum).with_enum(1),
     ];
+    const ENUMS: &'static [EnumDescriptor] = &[EnumDescriptor::new(
+        1,
+        &[EnumVariant::new(0, "a"), EnumVariant::new(1, "b")],
+    )];
+    const ISSUES: &'static [IssueDescriptor] = &[IssueDescriptor::new(
+        FIRST_SERVICE_ISSUE,
+        "connection_timeout",
+    )];
 
     async fn summary(&self) -> ServiceSummary {
         let health = *self.health.borrow();
@@ -509,7 +532,6 @@ impl ManagedService for &Probe {
             let _ = out.push(Issue {
                 severity: IssueSeverity::Warning,
                 code,
-                message: "something is wrong",
                 age_ms: None,
             });
         }
@@ -518,7 +540,7 @@ impl ManagedService for &Probe {
     async fn status(&self, out: &mut impl StatusWriter) -> Result<(), WriteError> {
         out.text(1, "ingress.example.org:443")?;
         out.u64(2, *self.queue.borrow())?;
-        out.variant(3, "b")
+        out.variant(3, 1)
     }
 }
 
@@ -537,10 +559,9 @@ fn the_status_revision_follows_observable_changes_only() {
     assert_eq!(block_on(service.summary(2_000)).revision, 1);
 
     *probe.health.borrow_mut() = ServiceHealth::Degraded;
-    *probe.issue.borrow_mut() = Some("connection_timeout");
+    *probe.issue.borrow_mut() = Some(FIRST_SERVICE_ISSUE);
     let degraded = block_on(service.summary(3_000));
     assert_eq!(degraded.revision, 2);
-    assert_eq!(degraded.reason, Some("connection_timeout"));
 
     assert_eq!(block_on(service.summary(4_000)).revision, 2);
     *probe.issue.borrow_mut() = None;
@@ -564,39 +585,45 @@ fn detailed_status_has_fields_and_active_issues_with_age() {
     let probe = Probe::new();
     *probe.queue.borrow_mut() = 17;
     let registry = (Tracked::<_, NoopRawMutex>::new(&probe),);
-    *probe.issue.borrow_mut() = Some("connection_timeout");
+    *probe.issue.borrow_mut() = Some(FIRST_SERVICE_ISSUE);
     let _ = block_on(registry.summary(0, 1_000));
-    let status = block_on(registry.status("probe", 35_000)).unwrap();
+    let status = block_on(registry.status(7, 35_000)).unwrap();
     assert_eq!(status.issues.len(), 1);
-    assert_eq!(status.issues[0].code, "connection_timeout");
+    assert_eq!(status.issues[0].code, FIRST_SERVICE_ISSUE);
     assert_eq!(status.issues[0].age_ms, Some(34_000));
     assert_eq!(status.fields.len(), 3);
     assert_eq!(status.fields[0], (1, text("ingress.example.org:443")));
     assert_eq!(status.fields[1], (2, Value::U64(17)));
-    assert_eq!(status.fields[2], (3, Value::variant("b").unwrap()));
+    assert_eq!(status.fields[2], (3, Value::Enum(1)));
     assert_eq!(
-        block_on(registry.status("missing", 0)),
+        block_on(registry.status(99, 0)),
         Err(StatusError::UnknownService)
     );
-    let (info, schema) = registry.schema("probe").unwrap();
-    assert_eq!((info.name, info.version), ("probe", 2));
-    assert_eq!(schema.len(), 3);
+    let schema = registry.schema(7).unwrap();
+    assert_eq!(
+        (schema.info.id, schema.info.name, schema.info.version),
+        (7, "probe", 2)
+    );
+    assert_eq!(schema.fields.len(), 3);
+    assert_eq!(schema.enums.len(), 1);
+    assert_eq!(schema.issues[0].name, "connection_timeout");
 }
 
 #[test]
 fn the_writer_checks_the_schema() {
     let mut writer = status::Collector {
         schema: <&Probe as ManagedService>::STATUS_SCHEMA,
+        enums: <&Probe as ManagedService>::ENUMS,
         fields: heapless::Vec::new(),
     };
     assert_eq!(writer.u64(99, 1), Err(WriteError::UnknownField));
     assert_eq!(writer.u64(1, 1), Err(WriteError::WrongKind));
-    assert_eq!(writer.variant(3, "c"), Err(WriteError::WrongKind));
-    assert_eq!(writer.bytes(1, &[0; 65]), Err(WriteError::TooLong));
+    assert_eq!(writer.variant(3, 9), Err(WriteError::WrongKind));
+    assert_eq!(writer.bytes(1, &[0; 33]), Err(WriteError::TooLong));
     // Text is cut at a character boundary.
     let long = "é".repeat(40);
     writer.text(1, &long).unwrap();
-    assert_eq!(writer.fields[0].1.as_str().unwrap().len(), 64);
+    assert_eq!(writer.fields[0].1.as_str().unwrap().len(), 32);
 }
 
 fn summary(
@@ -606,13 +633,14 @@ fn summary(
     essential: bool,
 ) -> ServiceStatusSummary {
     ServiceStatusSummary {
+        id: 1,
         name: "s",
+        version: 1,
         state,
         health,
         ready,
         revision: 1,
         state_age_ms: 0,
-        reason: None,
         essential,
     }
 }
@@ -657,18 +685,19 @@ fn the_default_device_health_policy() {
 struct Scanner;
 
 impl ManagedService for Scanner {
+    const ID: u32 = 3;
     const NAME: &'static str = "scanner";
     const VERSION: u16 = 1;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[];
     const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new("scan")
+        ActionDescriptor::new(1, "scan")
             .args(&[FieldDescriptor::new(1, "limit", ValueKind::U64)])
             .results(&[
                 FieldDescriptor::new(1, "name", ValueKind::String),
-                FieldDescriptor::new(2, "rssi", ValueKind::I64).unit("dBm"),
+                FieldDescriptor::new(2, "rssi", ValueKind::I64).unit(Unit::Dbm),
             ]),
-        ActionDescriptor::new("reset"),
-        ActionDescriptor::new("provision")
+        ActionDescriptor::new(2, "reset"),
+        ActionDescriptor::new(3, "provision")
             .args(&[FieldDescriptor::new(1, "secret", ValueKind::Bytes)])
             .secret(),
     ];
@@ -683,12 +712,12 @@ impl ManagedService for Scanner {
 
     async fn invoke(
         &self,
-        action: &str,
+        action: u32,
         args: &[(u32, Value)],
         out: &mut impl ActionOutput,
     ) -> Result<(), ActionError> {
         match action {
-            "scan" => {
+            1 => {
                 let limit = args[0].1.as_u64().ok_or(ActionError::InvalidArgument)?;
                 for index in 0..limit {
                     out.next_record().map_err(|_| ActionError::Internal)?;
@@ -698,7 +727,7 @@ impl ManagedService for Scanner {
                 }
                 Ok(())
             }
-            "reset" => Err(ActionError::Rejected("busy_resetting")),
+            2 => Err(ActionError::Rejected("busy_resetting")),
             _ => Err(ActionError::UnknownAction),
         }
     }
@@ -711,26 +740,26 @@ fn scanner() -> (Tracked<Scanner, NoopRawMutex>,) {
 #[test]
 fn an_action_returns_records() {
     let registry = scanner();
-    let records = block_on(registry.invoke("scanner", "scan", &[(1, Value::U64(3))])).unwrap();
+    let records = block_on(registry.invoke(3, 1, &[(1, Value::U64(3))])).unwrap();
     assert_eq!(records.len(), 3);
     assert_eq!(records[1][0], (1, text("net")));
     assert_eq!(records[2][1], (2, Value::I64(-2)));
 
-    let none = block_on(registry.invoke("scanner", "scan", &[(1, Value::U64(0))])).unwrap();
+    let none = block_on(registry.invoke(3, 1, &[(1, Value::U64(0))])).unwrap();
     assert!(none.is_empty());
 }
 
 #[test]
 fn too_many_records_fail_instead_of_truncating() {
     let registry = scanner();
-    let result = block_on(registry.invoke("scanner", "scan", &[(1, Value::U64(7))]));
+    let result = block_on(registry.invoke(3, 1, &[(1, Value::U64(7))]));
     assert_eq!(result, Err(ActionError::Internal));
 }
 
 #[test]
 fn arguments_are_checked_against_the_descriptor() {
     let registry = scanner();
-    let call = |args: &[(u32, Value)]| block_on(registry.invoke("scanner", "scan", args));
+    let call = |args: &[(u32, Value)]| block_on(registry.invoke(3, 1, args));
     assert_eq!(call(&[]), Err(ActionError::InvalidArgument));
     assert_eq!(call(&[(1, text("3"))]), Err(ActionError::InvalidArgument));
     assert_eq!(
@@ -747,15 +776,15 @@ fn arguments_are_checked_against_the_descriptor() {
 fn unknown_targets_and_rejections_are_distinguished() {
     let registry = scanner();
     assert_eq!(
-        block_on(registry.invoke("missing", "scan", &[])),
+        block_on(registry.invoke(99, 1, &[])),
         Err(ActionError::UnknownService)
     );
     assert_eq!(
-        block_on(registry.invoke("scanner", "missing", &[])),
+        block_on(registry.invoke(3, 99, &[])),
         Err(ActionError::UnknownAction)
     );
     assert_eq!(
-        block_on(registry.invoke("scanner", "reset", &[])),
+        block_on(registry.invoke(3, 2, &[])),
         Err(ActionError::Rejected("busy_resetting"))
     );
 }
@@ -782,32 +811,25 @@ fn wipe_clears_secret_values() {
 
 #[test]
 fn integer_bounds_hold_over_the_whole_64_bit_range() {
-    const TWO_POW_53: f64 = 9_007_199_254_740_992.0;
-    let upper = ConfigField::new(1, "n", ValueKind::U64).range(0.0, TWO_POW_53);
-    assert_eq!(upper.check(&Value::U64(1 << 53)), Ok(()));
+    let upper = ConfigField::new(1, "n", ValueKind::U64).bounds(Bounds::U64(0, u64::MAX - 1));
+    assert_eq!(upper.check(&Value::U64(u64::MAX - 1), &[]), Ok(()));
     assert_eq!(
-        upper.check(&Value::U64((1 << 53) + 1)),
+        upper.check(&Value::U64(u64::MAX), &[]),
         Err(FieldError::OutOfRange)
     );
-    let lower = ConfigField::new(1, "n", ValueKind::I64).range(-TWO_POW_53, 0.0);
-    assert_eq!(lower.check(&Value::I64(-(1 << 53))), Ok(()));
+    let lower = ConfigField::new(1, "n", ValueKind::I64).bounds(Bounds::I64(i64::MIN + 1, 0));
+    assert_eq!(lower.check(&Value::I64(i64::MIN + 1), &[]), Ok(()));
     assert_eq!(
-        lower.check(&Value::I64(-(1 << 53) - 1)),
+        lower.check(&Value::I64(i64::MIN), &[]),
         Err(FieldError::OutOfRange)
     );
-    let fractional = ConfigField::new(1, "n", ValueKind::I64).range(0.5, 2.5);
+    // A bound of another kind never matches: integers are not compared as
+    // floats.
+    let mismatched = ConfigField::new(1, "n", ValueKind::U64).bounds(Bounds::I64(0, 10));
     assert_eq!(
-        fractional.check(&Value::I64(0)),
+        mismatched.check(&Value::U64(5), &[]),
         Err(FieldError::OutOfRange)
     );
-    assert_eq!(fractional.check(&Value::I64(1)), Ok(()));
-    assert_eq!(fractional.check(&Value::I64(2)), Ok(()));
-    assert_eq!(
-        fractional.check(&Value::I64(3)),
-        Err(FieldError::OutOfRange)
-    );
-    let wide = ConfigField::new(1, "n", ValueKind::U64).range(0.0, 1e30);
-    assert_eq!(wide.check(&Value::U64(u64::MAX)), Ok(()));
 }
 
 #[test]
@@ -816,10 +838,47 @@ fn a_failed_startup_is_a_failed_service() {
     let service = Tracked::<_, NoopRawMutex>::new(Startup::new(&probe, true));
     let summary = block_on(service.summary(0));
     assert_eq!(summary.state, ServiceState::Failed);
-    assert_eq!(summary.reason, Some("startup_failed"));
+    assert!(
+        block_on(service.status(0))
+            .issues
+            .iter()
+            .any(|issue| issue.code == ISSUE_STARTUP_FAILED)
+    );
     assert!(block_on(service.status(0)).fields.is_empty());
 
     let service = Tracked::<_, NoopRawMutex>::new(Startup::new(&probe, false));
     assert_eq!(block_on(service.summary(0)).state, ServiceState::Running);
     assert_eq!(block_on(service.status(0)).fields.len(), 3);
+}
+
+#[test]
+fn registries_detect_clashing_ids() {
+    let probe = Probe::new();
+    let mixed = (
+        Tracked::<_, NoopRawMutex>::new(&probe),
+        Tracked::<_, NoopRawMutex>::new(Scanner),
+    );
+    assert!(mixed.ids_are_unique());
+    let twice = (
+        Tracked::<_, NoopRawMutex>::new(&probe),
+        Tracked::<_, NoopRawMutex>::new(&probe),
+    );
+    assert!(!twice.ids_are_unique());
+
+    let store = MemoryStore::default();
+    assert!((section(&store),).ids_are_unique());
+    let (a, b) = (MemoryStore::default(), MemoryStore::default());
+    assert!(!(section(&a), section(&b)).ids_are_unique());
+}
+
+#[test]
+fn enum_values_are_checked_against_the_enum_of_the_field() {
+    let descriptor = Scanner::ACTIONS[0];
+    assert_eq!(descriptor.enums.len(), 0);
+    const VARIANTS: &[EnumVariant] = &[EnumVariant::new(4, "wpa2")];
+    let table = EnumDescriptor::new(1, VARIANTS);
+    assert!(table.contains(4) && !table.contains(5));
+    assert_eq!(table.name_of(4), Some("wpa2"));
+    assert_eq!(table.value_of("wpa2"), Some(4));
+    assert_eq!(table.value_of("open"), None);
 }

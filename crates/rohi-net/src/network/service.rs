@@ -21,12 +21,12 @@ use core::fmt::Write as _;
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use heapless::{String, Vec};
 use rohi_service::{
-    FieldDescriptor, Issue, IssueSeverity, MAX_ISSUES, ManagedService, ServiceSummary,
-    StatusWriter, ValueKind, WriteError,
+    EnumDescriptor, FIRST_SERVICE_ISSUE, FieldDescriptor, Issue, IssueDescriptor, IssueSeverity,
+    MAX_ISSUES, ManagedService, ServiceSummary, StatusWriter, ValueKind, WriteError,
 };
 
 use super::config::AddressMode;
-use super::managed::ADDRESS_MODES;
+use super::managed::{ADDRESS_MODE_ENUM, ADDRESS_MODES, address_mode};
 use crate::wifi::service_summary;
 use crate::{IpUsage, WifiError, WifiHandle, WifiState};
 
@@ -42,6 +42,15 @@ impl NetworkProbe for () {
     fn sockets(&self) -> Option<IpUsage> {
         None
     }
+}
+
+/// Id of the `network` service.
+pub const SERVICE_ID: u32 = 2;
+
+/// Issue codes of the `network` service.
+pub mod issue {
+    /// No IPv4 configuration was obtained.
+    pub const DHCP_FAILED: u32 = super::FIRST_SERVICE_ISSUE;
 }
 
 /// Field ids of the `network` service status. Only ever added.
@@ -80,26 +89,23 @@ impl<'a, M: RawMutex, P: NetworkProbe> NetworkService<'a, M, P> {
 }
 
 impl<M: RawMutex, P: NetworkProbe> ManagedService for NetworkService<'_, M, P> {
+    const ID: u32 = SERVICE_ID;
     const NAME: &'static str = "network";
     const VERSION: u16 = 1;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
-        FieldDescriptor::new(status_field::IP, "ip", ValueKind::String).describe("IPv4 address"),
-        FieldDescriptor::new(status_field::GATEWAY, "gateway", ValueKind::String)
-            .describe("IPv4 gateway"),
-        FieldDescriptor::new(status_field::DNS, "dns", ValueKind::String)
-            .describe("IPv4 DNS server"),
+        FieldDescriptor::new(status_field::IP, "ip", ValueKind::String),
+        FieldDescriptor::new(status_field::GATEWAY, "gateway", ValueKind::String),
+        FieldDescriptor::new(status_field::DNS, "dns", ValueKind::String),
         FieldDescriptor::new(status_field::ADDRESS_MODE, "address_mode", ValueKind::Enum)
-            .describe("How the IPv4 address is obtained")
-            .variants(ADDRESS_MODES),
-        FieldDescriptor::new(status_field::TCP_IN_USE, "tcp_in_use", ValueKind::U64)
-            .describe("TCP connections in use"),
-        FieldDescriptor::new(status_field::TCP_CAPACITY, "tcp_capacity", ValueKind::U64)
-            .describe("TCP connections available"),
-        FieldDescriptor::new(status_field::UDP_IN_USE, "udp_in_use", ValueKind::U64)
-            .describe("UDP sockets in use"),
-        FieldDescriptor::new(status_field::UDP_CAPACITY, "udp_capacity", ValueKind::U64)
-            .describe("UDP sockets available"),
+            .with_enum(ADDRESS_MODE_ENUM),
+        FieldDescriptor::new(status_field::TCP_IN_USE, "tcp_in_use", ValueKind::U64),
+        FieldDescriptor::new(status_field::TCP_CAPACITY, "tcp_capacity", ValueKind::U64),
+        FieldDescriptor::new(status_field::UDP_IN_USE, "udp_in_use", ValueKind::U64),
+        FieldDescriptor::new(status_field::UDP_CAPACITY, "udp_capacity", ValueKind::U64),
     ];
+    const ENUMS: &'static [EnumDescriptor] = ADDRESS_MODES;
+    const ISSUES: &'static [IssueDescriptor] =
+        &[IssueDescriptor::new(issue::DHCP_FAILED, "dhcp_failed")];
 
     async fn summary(&self) -> ServiceSummary {
         service_summary(self.handle.status().state)
@@ -112,8 +118,7 @@ impl<M: RawMutex, P: NetworkProbe> ManagedService for NetworkService<'_, M, P> {
         {
             let _ = out.push(Issue {
                 severity: IssueSeverity::Warning,
-                code: "dhcp_failed",
-                message: "No IPv4 configuration was obtained",
+                code: issue::DHCP_FAILED,
                 age_ms: None,
             });
         }
@@ -137,8 +142,8 @@ impl<M: RawMutex, P: NetworkProbe> ManagedService for NetworkService<'_, M, P> {
         }
 
         let mode = match self.handle.network_config().address_mode {
-            AddressMode::Dhcp => "dhcp",
-            AddressMode::Static => "static",
+            AddressMode::Dhcp => address_mode::DHCP,
+            AddressMode::Static => address_mode::STATIC,
         };
         out.variant(status_field::ADDRESS_MODE, mode)?;
 
@@ -239,7 +244,6 @@ mod tests {
         assert_eq!(ids.len(), schema.len());
         for field in schema {
             assert!(field.name.len() <= 24, "{}", field.name);
-            assert!(field.description.len() <= 40, "{}", field.name);
         }
         assert!(<NetworkService<'static, NoopRawMutex, ()> as ManagedService>::ACTIONS.is_empty());
     }
@@ -260,7 +264,7 @@ mod tests {
         assert!(out.get(status_field::IP).is_none());
         assert_eq!(
             out.get(status_field::ADDRESS_MODE),
-            Value::variant("dhcp").as_ref()
+            Some(&Value::Enum(address_mode::DHCP))
         );
         assert_eq!(out.get(status_field::TCP_IN_USE), Some(&Value::U64(1)));
         assert_eq!(out.get(status_field::TCP_CAPACITY), Some(&Value::U64(2)));
@@ -291,7 +295,7 @@ mod tests {
         block_on(service.status(&mut out)).unwrap();
         assert_eq!(
             out.get(status_field::ADDRESS_MODE),
-            Value::variant("static").as_ref()
+            Some(&Value::Enum(address_mode::STATIC))
         );
     }
 

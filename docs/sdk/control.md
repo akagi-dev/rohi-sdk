@@ -58,12 +58,16 @@ because of a bad request.
 | config | `PatchConfigSection`, `ResetConfigSection` | **yes** (`Privilege::Mutate`) |
 | config | `FactoryReset` | **yes** (`Privilege::Provision`, it erases the identity) |
 | device | `Reboot` | **yes** (`Privilege::Mutate`) |
-| status | `ListServices`, `GetServicesStatus`, `GetServiceSchema`, `GetServiceStatus` | no |
+| status | `GetServicesStatus`, `GetServiceSchema`, `GetServiceStatus` | no |
 | actions | `ListActions`, `GetActionSchema` | no |
 | actions | `InvokeAction` | depends on the action: open, `privileged` (**Mutate**) or secret arguments (**Provision**) |
 
-Sections, services and actions are addressed by **name** (a string). There is no capability list of modules: whether
-something exists is answered by the `List...` requests. Errors:
+Sections, services and actions have a stable **name** and a stable numeric **id**. The id of a section is the `u64` id of its
+stored `ConfigSection` (derived from the type name, see [persistent ABI](../reference/persistent-abi.md)); the ids of
+services and actions are `u32` declared by the module that owns them. Names are for discovery and for people; every request after discovery addresses by id (`section_id`,
+`service_id`, `action_id`), which keeps requests small. There is no capability list of modules: whether something
+exists is answered by `ListConfigSections`, `GetServicesStatus` (which carries id, name and version of every service)
+and `ListActions`. Ids are unique within their registry and only ever added. Errors:
 
 | Error | Meaning |
 |-------|---------|
@@ -80,11 +84,19 @@ A response with `request_id = 0` means the device could not parse the request at
 
 ### Values and schemas
 
-Config values, status values, action arguments and results all use one `Value` (`bool`, `i64`, `u64`, `f64`,
-`string`, `bytes`, `enum`) and one `FieldDescriptor { id, name, kind, description, unit, variants }`. The client
-fetches a schema on demand and parses and renders values by it; ids are stable and only ever added. **Schemas are paged**
-(four fields per response, `offset` in the request, `total` in the response) so a response stays small on a
-microcontroller; the `rohi` library follows the pages and caches the result for the connection.
+Config values, status values, action arguments and results all use the same value cases (`bool`, `i64`, `u64`, `f32`,
+`string`, `bytes`, `enum`), repeated flat in `FieldValue`, `ActionArg`, `ConfigEntry` and `ConfigMutation` instead of a
+nested generic message. Floats are single precision: counters, timestamps, ids and exact configuration values are
+integers. An **enum value is a number**; its name is schema metadata.
+
+One `FieldDescriptor { id, name, kind, unit, enum_id }` describes a field. The unit is a code (`Unit`, for example
+`UNIT_DBM`), there is no description text on the wire (documentation belongs to the SDK pages), and the variants of
+enums are not part of the field: a schema response carries a small table of `EnumDescriptor { id, variants[] }`
+that fields refer to with `enum_id`, so fields that are no enums pay nothing for it. A service schema also names its
+issue codes (`IssueDescriptor { code, name }`). The client fetches a schema on demand, caches it for the connection and
+parses and renders values by it. **Nothing is paged**: every schema, status and action list fits one response, and the
+limits below are hard compile-time bounds. If a device ever exceeds them, pagination can come back with explicit
+snapshot semantics.
 
 ### Config
 
@@ -103,15 +115,17 @@ service status. There is no request that touches several sections; a client that
 ### Status
 
 `GetServicesStatus` is the compact request: the device uptime, the device health **decided by the firmware** and one
-summary per service (`state`, `health`, `ready`, `revision`, `state_age_ms`, `reason`). It never carries
-service-specific values. `GetServiceStatus` returns the summary, one page of the service's values and the currently
-active issues (stable `code`, severity, message, age). Status is read-only: there is no start, stop or reset in it.
+summary per service (`service_id`, `name`, `version`, `state`, `health`, `ready`, `revision`, `state_age_ms`): discovery
+and status in one message. It never carries service-specific values. `GetServiceStatus` returns the service's values,
+its `revision` and the currently active issues (numeric `code`, severity, age; the name of the code is in the service
+schema), but not the summary again. There is no human-readable reason in the protocol: the active issues say why.
+Status is read-only: there is no start, stop or reset in it.
 Pollers compare `revision`s and fetch the detail only when one changed. See [Services and
 status](../getting-started/services.md).
 
 ### Actions
 
-`ListActions` returns `(service, name, description, privileged, secret_args)` in pages; `GetActionSchema` returns the argument
+`ListActions` returns `(service_id, id, name, privileged, secret_args)`; `GetActionSchema` returns the argument
 and result fields. `InvokeAction` takes all arguments (typed, all required) and returns up to `MAX_RECORDS` records
 of typed fields. Arguments that are secrets are overwritten after the call; neither they nor the status of a service
 ever contain a secret.
@@ -152,21 +166,25 @@ dispatches, and responses leave through a bounded TX queue.
 | `MAX_REQUEST_LEN` | 768 B (a patch of 8 full values is the worst case) |
 | `MAX_RESPONSE_LEN` | 2048 B |
 | ATT payload | 20 – 244 B, header 6 B, at most 255 fragments |
-| `MAX_NAME_LEN` (section, service, field, action) | 24 B |
-| `MAX_VALUE_LEN` (string and bytes values) | 64 B |
-| `MAX_DESCRIPTION_LEN` / `MAX_UNIT_LEN` | 40 B / 8 B |
-| `MAX_VARIANTS` / `MAX_VARIANT_LEN` | 10 / 16 B |
-| `MAX_SCHEMA_PAGE` / `MAX_STATUS_PAGE` / `MAX_ACTIONS_PAGE` | 4 / 8 / 8 entries per response |
+| `MAX_NAME_LEN` (section, service, field, action, issue) | 24 B |
+| `MAX_VALUE_LEN` (string and bytes of config values and action arguments) | 64 B |
+| `MAX_FIELD_VALUE_LEN` (string and bytes of status values and action results; longer text is cut) | 32 B |
+| `MAX_ENUMS` / `MAX_ENUM_VARIANTS` / `MAX_VARIANT_NAME_LEN` | 1 / 9 / 16 B per schema response |
+| `MAX_SCHEMA_FIELDS` / `MAX_STATUS_FIELDS` | 20 / 20 per response |
+| `MAX_ACTIONS` | 12 per device |
 | `MAX_CONFIG_FIELDS` | 16 fields per section |
 | `MAX_MUTATIONS` | 8 per patch |
 | `MAX_CONFIG_SECTIONS` / `MAX_SERVICES` | 8 / 8 |
-| `MAX_ISSUES` / `MAX_CODE_LEN` / `MAX_ISSUE_MESSAGE_LEN` | 4 / 32 B / 48 B |
+| `MAX_ISSUES` / `MAX_ISSUE_DESCRIPTORS` | 4 active / 12 described |
+| `MAX_REASON_LEN` (reason of a rejected action) | 32 B |
 | `MAX_ACTION_ARGS` / `MAX_RECORDS` / `MAX_RECORD_FIELDS` | 3 / 6 / 4 |
 
 The limits are defined once (`rohi-control-proto/build.rs`), applied to the generated types and checked by tests:
 requests must fit `MAX_REQUEST_LEN` in the worst case, full schema, status and action responses must encode within
-`MAX_RESPONSE_LEN`, and a **memory budget test** keeps the largest request or response variant under about 2.7 KB on the
-host. That last one matters on the device: responses are built and moved on the stack of the control task, and the
+`MAX_RESPONSE_LEN`, and a **memory budget test** keeps the size of the generated types (`Request`, `Response`,
+`FieldDescriptor`, `FieldValue`, `GetServicesStatusResponse`, `GetServiceStatusResponse`) under explicit budgets; the
+measured values are in [Resource budget](../validation/resource-budget.md#control-protocol-types). Growth fails CI
+instead of showing up as a stack overflow on the device. That matters on the device: responses are built and moved on the stack of the control task, and the
 main stack of the ESP32-C3 is only about 42 KB. The BLE queue depths belong to the product and are in
 [Resource limits](../reference/resource-limits.md#ble).
 

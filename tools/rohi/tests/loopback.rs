@@ -107,7 +107,6 @@ async fn a_schema_describes_the_fields_of_a_section_the_client_has_never_seen() 
         let level = &schema.fields[1];
         assert_eq!(level.field.kind, ValueKind::U64);
         assert_eq!(level.field.unit, "%");
-        assert_eq!((level.min, level.max), (Some(0.0), Some(100.0)));
         let mode = &schema.fields[2];
         assert!(mode.optional);
         assert_eq!(mode.field.variants, ["fast", "slow"]);
@@ -270,7 +269,7 @@ async fn services_report_state_health_readiness_and_issues() {
     with_device(20, &bench, |mut device| async move {
         let all = device.services_status().await.unwrap();
         assert_eq!(all.health, DeviceHealth::Degraded);
-        assert_eq!(all.services[0].reason.as_deref(), Some("link_lost"));
+        assert_eq!(all.services[0].health, ServiceHealth::Degraded);
         let status = device.service_status("radio").await.unwrap();
         assert_eq!(status.issues[0].code, "link_lost");
         assert_eq!(status.issues[0].severity, IssueSeverity::Warning);

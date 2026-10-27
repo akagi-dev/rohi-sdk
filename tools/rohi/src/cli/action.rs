@@ -104,7 +104,7 @@ impl Drop for Arguments {
             match &mut argument.value {
                 Value::String(text) | Value::Enum(text) => text.zeroize(),
                 Value::Bytes(bytes) => bytes.zeroize(),
-                Value::Bool(_) | Value::I64(_) | Value::U64(_) | Value::F64(_) => {}
+                Value::Bool(_) | Value::I64(_) | Value::U64(_) | Value::F32(_) => {}
             }
         }
     }

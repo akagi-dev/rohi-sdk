@@ -45,15 +45,45 @@ All embassy tasks are polled on the one main stack, which on the ESP32-C3 build 
 section: about 42 KB (`_stack_end` to `_stack_start` of the release ELF) and it sits directly above `.bss`, so an
 overflow corrupts task state (observed as a `Load access fault` in the embassy timer queue with the ASCII of a service
 name in the registers). The control task builds and moves protobuf responses on that stack, so response sizes are
-bounded: the largest `Request` or `Response` variant is kept under about 2.7 KB on the host
-(`messages_stay_small_in_memory` in `rohi-control-proto`), and long schemas, status values and action lists are paged
-instead of grown. The static future of `control_task` is about 11 KB of `.bss` (release build, ESP32-C3, measured with
-`nm -S` on `altruist_urban::control::control_task::POOL`). Stack depth under load is not measured yet. The stack is what the linker leaves after `.bss`, so every
+bounded by the compact protocol layout and by explicit budgets, see [Control protocol types](#control-protocol-types).
+The static future of `control_task` is about 11.6 KB of `.bss` (11 856 B, release build, ESP32-C3, measured with
+`nm -S` on `altruist_urban::control::control_task::POOL`). **Stack depth under load is not measured yet**: it needs a
+device, see [the plan to measure it](#measuring-the-control-task). The stack is what the linker leaves after `.bss`, so every
 static byte and every deep frame on the config or control path costs stack: a decoder that builds a large section from
 temporaries (the `wifi` section, about 200 B) needed ~900 B of frame and overflowed the stack on a `rohi config` request;
 `WifiConfig` is decoded in place for that reason. Check `_stack_end` and the frames of the config and control path
 when a section or a static grows.
 
+
+### Control protocol types
+
+The generated types of the control protocol keep every bounded field inline, so their size is the size of their largest
+possible content. `generated_types_stay_within_their_memory_budgets` (`rohi-control-proto`, runs in CI) asserts a budget
+for each; the sizes are `size_of` on the host (64-bit), before and after the compact layout of the protocol (numeric
+ids and enum values, `f32`, compact `FieldDescriptor`, enums and issue names in the schema, no descriptions, no
+summary in the detailed status, no pagination):
+
+| Type | Before | After | Budget |
+|------|-------:|------:|-------:|
+| `Request` | 760 | 736 | 768 |
+| `Response` | 2 616 | 1 824 | 1 900 |
+| `FieldDescriptor` | 352 | 48 | 56 |
+| `FieldValue` | 88 | 56 | 64 |
+| `GetServicesStatusResponse` | 792 | 536 | 576 |
+| `GetServiceStatusResponse` | 1 272 (8 values) | 1 192 (20 values) | 1 280 |
+
+The `Response` is the largest of its variants (the service schema). The before column paged status values by eight, schemas by
+four; the after column holds a whole service status (20 values), a whole schema (20 fields, an enum table, 12 issue
+names) and 12 actions in one response. Raising a budget is a deliberate decision: measure the control task again and
+update this table.
+
+### Measuring the control task
+
+The stack high-water mark of the control task has to be measured on a device (paint the stack, run, read the first
+touched word) in at least these cases: unconfigured device; Wi-Fi configured; identity provisioned; Wi-Fi and identity
+configured; `rohi status`; `rohi status <service>`; `rohi config get` and `set`; an action invocation. The result and
+the safety margin belong in this section. **Not measured yet**: no hardware was available for this change, so it is
+not established here that `rohi status` no longer overflows the stack; the type sizes above are what makes it likely.
 
 ## Configuration store
 

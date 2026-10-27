@@ -130,7 +130,7 @@ open_enum! {
         Bool = Bool => "bool",
         I64 = I64 => "i64",
         U64 = U64 => "u64",
-        F64 = F64 => "f64",
+        F32 = F32 => "f32",
         String = String => "string",
         Bytes = Bytes => "bytes",
         Enum = Enum => "enum",
@@ -146,13 +146,14 @@ pub enum Value {
     I64(i64),
     /// Unsigned integer.
     U64(u64),
-    /// Float.
-    F64(f64),
+    /// Single-precision float.
+    F32(f32),
     /// Text.
     String(String),
     /// Bytes; text and JSON use lower-case hex.
     Bytes(Vec<u8>),
-    /// A variant of an enum field.
+    /// A variant of an enum field, by the name the schema gives it. The wire
+    /// carries a number; the client translates with the schema.
     Enum(String),
 }
 
@@ -163,7 +164,7 @@ impl Value {
             Self::Bool(_) => ValueKind::Bool,
             Self::I64(_) => ValueKind::I64,
             Self::U64(_) => ValueKind::U64,
-            Self::F64(_) => ValueKind::F64,
+            Self::F32(_) => ValueKind::F32,
             Self::String(_) => ValueKind::String,
             Self::Bytes(_) => ValueKind::Bytes,
             Self::Enum(_) => ValueKind::Enum,
@@ -182,7 +183,7 @@ impl fmt::Display for Value {
             Self::Bool(value) => write!(f, "{value}"),
             Self::I64(value) => write!(f, "{value}"),
             Self::U64(value) => write!(f, "{value}"),
-            Self::F64(value) => write!(f, "{value}"),
+            Self::F32(value) => write!(f, "{value}"),
             Self::String(value) | Self::Enum(value) => f.write_str(value),
             Self::Bytes(value) => f.write_str(&hex(value)),
         }
@@ -196,7 +197,11 @@ impl Serialize for Value {
             Self::Bool(value) => serializer.serialize_bool(*value),
             Self::I64(value) => serializer.serialize_i64(*value),
             Self::U64(value) => serializer.serialize_u64(*value),
-            Self::F64(value) => serializer.serialize_f64(*value),
+            // The shortest decimal of the f32, not its binary expansion as f64.
+            Self::F32(value) => match value.to_string().parse::<f64>() {
+                Ok(number) if value.is_finite() => serializer.serialize_f64(number),
+                _ => serializer.serialize_none(),
+            },
             Self::String(value) | Self::Enum(value) => serializer.serialize_str(value),
             Self::Bytes(value) => serializer.serialize_str(&hex(value)),
         }
@@ -213,12 +218,13 @@ pub struct FieldDescriptor {
     pub name: String,
     /// Type.
     pub kind: ValueKind,
-    /// One line of text.
-    pub description: String,
-    /// Unit, empty when unitless.
+    /// Unit symbol, empty when unitless.
     pub unit: String,
-    /// Allowed values of an enum field.
+    /// Names of the allowed values of an enum field.
     pub variants: Vec<String>,
+    /// The number of each of `variants` on the wire.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub(crate) variant_values: Vec<u32>,
 }
 
 /// A field value together with the id of its field.
@@ -247,6 +253,8 @@ pub struct DeviceInfo {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct SectionInfo {
+    /// Numeric id, the address of requests.
+    pub id: u64,
     /// Section name.
     pub name: String,
     /// Version of the section schema.
@@ -267,10 +275,6 @@ pub struct ConfigField {
     pub secret: bool,
     /// May be unset.
     pub optional: bool,
-    /// Inclusive lower bound.
-    pub min: Option<f64>,
-    /// Inclusive upper bound.
-    pub max: Option<f64>,
 }
 
 /// Schema of a config section.
@@ -346,6 +350,8 @@ pub struct Applied {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct ServiceInfo {
+    /// Numeric id, the address of requests.
+    pub id: u32,
     /// Service name.
     pub name: String,
     /// Version of the status schema.
@@ -356,8 +362,12 @@ pub struct ServiceInfo {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct ServiceSummary {
+    /// Numeric id, the address of requests.
+    pub id: u32,
     /// Service name.
     pub service: String,
+    /// Version of the status schema.
+    pub version: u32,
     /// Lifecycle state.
     pub state: ServiceState,
     /// Operational quality.
@@ -368,8 +378,6 @@ pub struct ServiceSummary {
     pub revision: u32,
     /// Time in the current state.
     pub state_age_ms: u64,
-    /// Stable short reason.
-    pub reason: Option<String>,
 }
 
 /// Compact status of the whole device.
@@ -392,6 +400,18 @@ pub struct ServiceSchema {
     pub service: ServiceInfo,
     /// Status fields.
     pub fields: Vec<FieldDescriptor>,
+    /// The issues the service can report.
+    pub issues: Vec<IssueInfo>,
+}
+
+/// The name of an issue code, from the schema of its service.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub struct IssueInfo {
+    /// Numeric code.
+    pub code: u32,
+    /// Stable machine-readable name.
+    pub name: String,
 }
 
 /// An active issue of a service.
@@ -400,10 +420,10 @@ pub struct ServiceSchema {
 pub struct Issue {
     /// Severity.
     pub severity: IssueSeverity,
-    /// Stable machine-readable code.
+    /// Numeric code.
+    pub id: u32,
+    /// Stable machine-readable name of the code, from the service schema.
     pub code: String,
-    /// Human-readable text.
-    pub message: String,
     /// How long it has been active.
     pub age_ms: u64,
 }
@@ -425,12 +445,14 @@ pub struct ServiceStatus {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct ActionInfo {
-    /// Service that offers it.
+    /// Id of the service that offers it.
+    pub service_id: u32,
+    /// Name of the service that offers it.
     pub service: String,
+    /// Numeric id within the service, the address of requests.
+    pub id: u32,
     /// Action name.
     pub name: String,
-    /// One line of text.
-    pub description: String,
     /// Whether the link must satisfy the write policy.
     pub privileged: bool,
     /// Whether the arguments are secrets; they must be read with `NAME=-`.

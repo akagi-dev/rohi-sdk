@@ -24,9 +24,9 @@ use embassy_sync::blocking_mutex::raw::RawMutex;
 use embedded_hal_async::delay::DelayNs;
 use heapless::{String, Vec};
 use rohi_service::{
-    ActionDescriptor, ActionError, ActionOutput, FieldDescriptor, Issue, IssueSeverity, MAX_ISSUES,
-    ManagedService, SectionStore, ServiceHealth, ServiceState, ServiceSummary, StatusWriter, Value,
-    ValueKind, WriteError,
+    ActionDescriptor, ActionError, ActionOutput, EnumDescriptor, EnumVariant, FieldDescriptor,
+    Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES, ManagedService, SectionStore, ServiceHealth,
+    ServiceState, ServiceSummary, StatusWriter, Unit, Value, ValueKind, WriteError,
 };
 
 use super::config::DEFAULT_SCAN_TIMEOUT_MS;
@@ -63,6 +63,69 @@ impl WifiProbe for () {
     fn now_ms(&self) -> Option<u64> {
         None
     }
+}
+
+/// Id of the `wifi` service.
+pub const SERVICE_ID: u32 = 1;
+
+/// Ids of the actions of the `wifi` service.
+pub mod action {
+    /// Scans for networks.
+    pub const SCAN: u32 = 1;
+    /// Stores a network and connects to it.
+    pub const CONNECT: u32 = 2;
+    /// Drops the connection and connects again.
+    pub const RECONNECT: u32 = 3;
+    /// Disconnects and stays idle.
+    pub const DISCONNECT: u32 = 4;
+}
+
+/// Issue codes of the `wifi` service.
+pub mod issue {
+    use rohi_service::FIRST_SERVICE_ISSUE as BASE;
+
+    /// Wi-Fi is not configured.
+    pub const NOT_CONFIGURED: u32 = BASE;
+    /// The Wi-Fi manager is busy.
+    pub const BUSY: u32 = BASE + 1;
+    /// A Wi-Fi operation timed out.
+    pub const TIMEOUT: u32 = BASE + 2;
+    /// A scan failed.
+    pub const SCAN_FAILED: u32 = BASE + 3;
+    /// The configured network was not found.
+    pub const NETWORK_NOT_FOUND: u32 = BASE + 4;
+    /// The access point rejected the credentials.
+    pub const AUTHENTICATION_FAILED: u32 = BASE + 5;
+    /// Association with the access point failed.
+    pub const ASSOCIATION_FAILED: u32 = BASE + 6;
+    /// The link was lost.
+    pub const DISCONNECTED: u32 = BASE + 7;
+    /// The Wi-Fi configuration is invalid.
+    pub const INVALID_CONFIG: u32 = BASE + 8;
+    /// The Wi-Fi driver failed.
+    pub const DRIVER_ERROR: u32 = BASE + 9;
+}
+
+/// Values of the `security` result of the `scan` action.
+pub mod security {
+    /// No encryption.
+    pub const OPEN: u32 = 0;
+    /// WEP.
+    pub const WEP: u32 = 1;
+    /// WPA.
+    pub const WPA: u32 = 2;
+    /// WPA2.
+    pub const WPA2: u32 = 3;
+    /// WPA and WPA2.
+    pub const WPA_WPA2: u32 = 4;
+    /// WPA3.
+    pub const WPA3: u32 = 5;
+    /// WPA2 and WPA3.
+    pub const WPA2_WPA3: u32 = 6;
+    /// Enterprise.
+    pub const ENTERPRISE: u32 = 7;
+    /// Not known.
+    pub const UNKNOWN: u32 = 8;
 }
 
 /// Field ids of the `wifi` service status. Only ever added.
@@ -107,80 +170,69 @@ pub mod connect_field {
     pub const PASSWORD: u32 = 2;
 }
 
-const SECURITY_VARIANTS: &[&str] = &[
-    "open",
-    "wep",
-    "wpa",
-    "wpa2",
-    "wpa_wpa2",
-    "wpa3",
-    "wpa2_wpa3",
-    "enterprise",
-    "unknown",
+const SECURITY_ENUM: u32 = 1;
+
+const ENUMS: &[EnumDescriptor] = &[EnumDescriptor::new(
+    SECURITY_ENUM,
+    &[
+        EnumVariant::new(security::OPEN, "open"),
+        EnumVariant::new(security::WEP, "wep"),
+        EnumVariant::new(security::WPA, "wpa"),
+        EnumVariant::new(security::WPA2, "wpa2"),
+        EnumVariant::new(security::WPA_WPA2, "wpa_wpa2"),
+        EnumVariant::new(security::WPA3, "wpa3"),
+        EnumVariant::new(security::WPA2_WPA3, "wpa2_wpa3"),
+        EnumVariant::new(security::ENTERPRISE, "enterprise"),
+        EnumVariant::new(security::UNKNOWN, "unknown"),
+    ],
+)];
+
+const ISSUES: &[IssueDescriptor] = &[
+    IssueDescriptor::new(issue::NOT_CONFIGURED, "not_configured"),
+    IssueDescriptor::new(issue::BUSY, "busy"),
+    IssueDescriptor::new(issue::TIMEOUT, "timeout"),
+    IssueDescriptor::new(issue::SCAN_FAILED, "scan_failed"),
+    IssueDescriptor::new(issue::NETWORK_NOT_FOUND, "network_not_found"),
+    IssueDescriptor::new(issue::AUTHENTICATION_FAILED, "authentication_failed"),
+    IssueDescriptor::new(issue::ASSOCIATION_FAILED, "association_failed"),
+    IssueDescriptor::new(issue::DISCONNECTED, "disconnected"),
+    IssueDescriptor::new(issue::INVALID_CONFIG, "invalid_config"),
+    IssueDescriptor::new(issue::DRIVER_ERROR, "driver_error"),
 ];
 
-fn security_name(security: WifiSecurity) -> &'static str {
+fn security_value(security: WifiSecurity) -> u32 {
     match security {
-        WifiSecurity::Open => "open",
-        WifiSecurity::Wep => "wep",
-        WifiSecurity::Wpa => "wpa",
-        WifiSecurity::Wpa2 => "wpa2",
-        WifiSecurity::WpaWpa2 => "wpa_wpa2",
-        WifiSecurity::Wpa3 => "wpa3",
-        WifiSecurity::Wpa2Wpa3 => "wpa2_wpa3",
-        WifiSecurity::Enterprise => "enterprise",
-        WifiSecurity::Unknown => "unknown",
+        WifiSecurity::Open => security::OPEN,
+        WifiSecurity::Wep => security::WEP,
+        WifiSecurity::Wpa => security::WPA,
+        WifiSecurity::Wpa2 => security::WPA2,
+        WifiSecurity::WpaWpa2 => security::WPA_WPA2,
+        WifiSecurity::Wpa3 => security::WPA3,
+        WifiSecurity::Wpa2Wpa3 => security::WPA2_WPA3,
+        WifiSecurity::Enterprise => security::ENTERPRISE,
+        WifiSecurity::Unknown => security::UNKNOWN,
     }
 }
 
 /// The issue behind a link error, `None` for the errors of the IP layer
 /// (see the `network` service).
 fn issue(error: WifiError) -> Option<Issue> {
-    let (severity, code, message) = match error {
-        WifiError::NotConfigured => (
-            IssueSeverity::Info,
-            "not_configured",
-            "Wi-Fi is not configured",
-        ),
-        WifiError::Busy => (IssueSeverity::Warning, "busy", "Wi-Fi manager is busy"),
-        WifiError::Timeout => (
-            IssueSeverity::Warning,
-            "timeout",
-            "Wi-Fi operation timed out",
-        ),
-        WifiError::ScanFailed => (IssueSeverity::Warning, "scan_failed", "Wi-Fi scan failed"),
-        WifiError::NetworkNotFound => (
-            IssueSeverity::Warning,
-            "network_not_found",
-            "The configured network was not found",
-        ),
-        WifiError::AuthenticationFailed => (
-            IssueSeverity::Error,
-            "authentication_failed",
-            "The access point rejected the credentials",
-        ),
-        WifiError::AssociationFailed => (
-            IssueSeverity::Warning,
-            "association_failed",
-            "Association with the access point failed",
-        ),
+    let (severity, code) = match error {
+        WifiError::NotConfigured => (IssueSeverity::Info, issue::NOT_CONFIGURED),
+        WifiError::Busy => (IssueSeverity::Warning, issue::BUSY),
+        WifiError::Timeout => (IssueSeverity::Warning, issue::TIMEOUT),
+        WifiError::ScanFailed => (IssueSeverity::Warning, issue::SCAN_FAILED),
+        WifiError::NetworkNotFound => (IssueSeverity::Warning, issue::NETWORK_NOT_FOUND),
+        WifiError::AuthenticationFailed => (IssueSeverity::Error, issue::AUTHENTICATION_FAILED),
+        WifiError::AssociationFailed => (IssueSeverity::Warning, issue::ASSOCIATION_FAILED),
         WifiError::DhcpFailed => return None,
-        WifiError::Disconnected => (IssueSeverity::Warning, "disconnected", "The link was lost"),
-        WifiError::InvalidConfig => (
-            IssueSeverity::Error,
-            "invalid_config",
-            "The Wi-Fi configuration is invalid",
-        ),
-        WifiError::DriverError => (
-            IssueSeverity::Critical,
-            "driver_error",
-            "The Wi-Fi driver failed",
-        ),
+        WifiError::Disconnected => (IssueSeverity::Warning, issue::DISCONNECTED),
+        WifiError::InvalidConfig => (IssueSeverity::Error, issue::INVALID_CONFIG),
+        WifiError::DriverError => (IssueSeverity::Critical, issue::DRIVER_ERROR),
     };
     Some(Issue {
         severity,
         code,
-        message,
         age_ms: None,
     })
 }
@@ -212,7 +264,7 @@ pub(crate) fn summary_of(state: WifiState) -> ServiceSummary {
 }
 
 const fn bytes(descriptor: FieldDescriptor) -> FieldDescriptor {
-    descriptor.unit("B")
+    descriptor.unit(Unit::Bytes)
 }
 
 /// The Wi-Fi link as a `wifi` service: the connection, the radio heap, and
@@ -293,61 +345,53 @@ impl<'a, M: RawMutex, D: DelayNs + Clone, P: WifiProbe, S: SectionStore<WifiConf
 impl<M: RawMutex, D: DelayNs + Clone, P: WifiProbe, S: SectionStore<WifiConfig>> ManagedService
     for WifiService<'_, M, D, P, S>
 {
+    const ID: u32 = SERVICE_ID;
     const NAME: &'static str = "wifi";
     const VERSION: u16 = 1;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
-        FieldDescriptor::new(status_field::SSID, "ssid", ValueKind::String)
-            .describe("Connected network"),
-        FieldDescriptor::new(status_field::RSSI, "rssi", ValueKind::I64)
-            .describe("Signal strength")
-            .unit("dBm"),
-        FieldDescriptor::new(status_field::CHANNEL, "channel", ValueKind::U64)
-            .describe("Channel of the access point"),
-        FieldDescriptor::new(status_field::MAC, "mac", ValueKind::String)
-            .describe("Hardware address of the station"),
-        FieldDescriptor::new(status_field::RECONNECTS, "reconnects", ValueKind::U64)
-            .describe("Reconnect attempts since boot"),
+        FieldDescriptor::new(status_field::SSID, "ssid", ValueKind::String),
+        FieldDescriptor::new(status_field::RSSI, "rssi", ValueKind::I64).unit(Unit::Dbm),
+        FieldDescriptor::new(status_field::CHANNEL, "channel", ValueKind::U64),
+        FieldDescriptor::new(status_field::MAC, "mac", ValueKind::String),
+        FieldDescriptor::new(status_field::RECONNECTS, "reconnects", ValueKind::U64),
         FieldDescriptor::new(status_field::LINK_UPTIME, "link_uptime", ValueKind::U64)
-            .describe("Time since the link came up")
-            .unit("ms"),
-        bytes(
-            FieldDescriptor::new(status_field::HEAP_SIZE, "heap_size", ValueKind::U64)
-                .describe("Size of the radio heap"),
-        ),
-        bytes(
-            FieldDescriptor::new(status_field::HEAP_FREE, "heap_free", ValueKind::U64)
-                .describe("Free radio heap"),
-        ),
-        bytes(
-            FieldDescriptor::new(status_field::HEAP_MIN_FREE, "heap_min_free", ValueKind::U64)
-                .describe("Lowest free radio heap since boot"),
-        ),
+            .unit(Unit::Ms),
+        bytes(FieldDescriptor::new(
+            status_field::HEAP_SIZE,
+            "heap_size",
+            ValueKind::U64,
+        )),
+        bytes(FieldDescriptor::new(
+            status_field::HEAP_FREE,
+            "heap_free",
+            ValueKind::U64,
+        )),
+        bytes(FieldDescriptor::new(
+            status_field::HEAP_MIN_FREE,
+            "heap_min_free",
+            ValueKind::U64,
+        )),
     ];
+    const ENUMS: &'static [EnumDescriptor] = ENUMS;
+    const ISSUES: &'static [IssueDescriptor] = ISSUES;
     const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new("scan")
-            .describe("Scan for networks, strongest first")
+        ActionDescriptor::new(action::SCAN, "scan")
             .results(&[
                 FieldDescriptor::new(scan_field::SSID, "ssid", ValueKind::String),
-                FieldDescriptor::new(scan_field::RSSI, "rssi", ValueKind::I64).unit("dBm"),
+                FieldDescriptor::new(scan_field::RSSI, "rssi", ValueKind::I64).unit(Unit::Dbm),
                 FieldDescriptor::new(scan_field::CHANNEL, "channel", ValueKind::U64),
                 FieldDescriptor::new(scan_field::SECURITY, "security", ValueKind::Enum)
-                    .variants(SECURITY_VARIANTS),
-            ]),
-        ActionDescriptor::new("connect")
-            .describe("Store a network and connect to it")
+                    .with_enum(SECURITY_ENUM),
+            ])
+            .enums(ENUMS),
+        ActionDescriptor::new(action::CONNECT, "connect")
             .args(&[
-                FieldDescriptor::new(connect_field::SSID, "ssid", ValueKind::String)
-                    .describe("Network name, 1 to 32 bytes"),
-                FieldDescriptor::new(connect_field::PASSWORD, "password", ValueKind::String)
-                    .describe("Passphrase; empty if open"),
+                FieldDescriptor::new(connect_field::SSID, "ssid", ValueKind::String),
+                FieldDescriptor::new(connect_field::PASSWORD, "password", ValueKind::String),
             ])
             .secret(),
-        ActionDescriptor::new("reconnect")
-            .describe("Drop the connection and connect again")
-            .privileged(),
-        ActionDescriptor::new("disconnect")
-            .describe("Disconnect and stay idle")
-            .privileged(),
+        ActionDescriptor::new(action::RECONNECT, "reconnect").privileged(),
+        ActionDescriptor::new(action::DISCONNECT, "disconnect").privileged(),
     ];
 
     async fn summary(&self) -> ServiceSummary {
@@ -399,12 +443,12 @@ impl<M: RawMutex, D: DelayNs + Clone, P: WifiProbe, S: SectionStore<WifiConfig>>
 
     async fn invoke(
         &self,
-        action: &str,
+        action: u32,
         args: &[(u32, Value)],
         out: &mut impl ActionOutput,
     ) -> Result<(), ActionError> {
         match action {
-            "scan" => {
+            action::SCAN => {
                 let scan = self.handle.scan();
                 let mut delay = self.delay.clone();
                 let timeout = delay.delay_ms(self.scan_timeout_ms());
@@ -424,7 +468,7 @@ impl<M: RawMutex, D: DelayNs + Clone, P: WifiProbe, S: SectionStore<WifiConfig>>
                         .and_then(|()| out.i64(scan_field::RSSI, i64::from(network.rssi_dbm)))
                         .and_then(|()| out.u64(scan_field::CHANNEL, u64::from(network.channel)))
                         .and_then(|()| {
-                            out.variant(scan_field::SECURITY, security_name(network.security))
+                            out.variant(scan_field::SECURITY, security_value(network.security))
                         });
                     if written.is_err() {
                         return Err(ActionError::Internal);
@@ -432,9 +476,9 @@ impl<M: RawMutex, D: DelayNs + Clone, P: WifiProbe, S: SectionStore<WifiConfig>>
                 }
                 Ok(())
             }
-            "connect" => self.connect(args).await,
-            "reconnect" => self.handle.reconnect().map_err(action_error),
-            "disconnect" => self.handle.disconnect().map_err(action_error),
+            action::CONNECT => self.connect(args).await,
+            action::RECONNECT => self.handle.reconnect().map_err(action_error),
+            action::DISCONNECT => self.handle.disconnect().map_err(action_error),
             _ => Err(ActionError::UnknownAction),
         }
     }
@@ -618,7 +662,6 @@ mod tests {
         assert_eq!(ids.len(), schema.len());
         for field in schema {
             assert!(field.name.len() <= 24, "{}", field.name);
-            assert!(field.description.len() <= 40, "{}", field.name);
         }
     }
 
@@ -639,13 +682,14 @@ mod tests {
             ]
         );
         assert_eq!(actions[0].results.len(), 4);
-        assert!(actions[0].results[3].variants.contains(&"wpa2"));
+        assert!(actions[0].enums[0].contains(security::WPA2));
+        assert_eq!(actions[0].results[3].enum_id, actions[0].enums[0].id);
         let args: std::vec::Vec<_> = actions[1].args.iter().map(|arg| arg.name).collect();
         assert_eq!(args, ["ssid", "password"]);
         for action in actions {
-            assert!(action.name.len() <= 24 && action.description.len() <= 40);
+            assert!(action.name.len() <= 24);
             for field in action.args.iter().chain(action.results) {
-                assert!(field.name.len() <= 24 && field.description.len() <= 40);
+                assert!(field.name.len() <= 24);
             }
         }
     }
@@ -656,9 +700,12 @@ mod tests {
         let store = Store::new(shared.handle());
         let service = WifiService::new(shared.handle(), NoDelay, (), &store);
         let mut out = Collect::default();
-        assert_eq!(block_on(service.invoke("reconnect", &[], &mut out)), Ok(()));
         assert_eq!(
-            block_on(service.invoke("explode", &[], &mut out)),
+            block_on(service.invoke(action::RECONNECT, &[], &mut out)),
+            Ok(())
+        );
+        assert_eq!(
+            block_on(service.invoke(99, &[], &mut out)),
             Err(ActionError::UnknownAction)
         );
     }
@@ -765,7 +812,10 @@ mod tests {
         let mut out = Collect::default();
 
         let args = connect_args("office", "hunter2hunter2");
-        assert_eq!(block_on(service.invoke("connect", &args, &mut out)), Ok(()));
+        assert_eq!(
+            block_on(service.invoke(action::CONNECT, &args, &mut out)),
+            Ok(())
+        );
         let stored = store.value.borrow().clone().unwrap();
         assert_eq!(stored.ssid.as_str(), Some("office"));
         assert_eq!(
@@ -794,7 +844,10 @@ mod tests {
 
         let args = connect_args("cafe", "");
         let mut out = Collect::default();
-        assert_eq!(block_on(service.invoke("connect", &args, &mut out)), Ok(()));
+        assert_eq!(
+            block_on(service.invoke(action::CONNECT, &args, &mut out)),
+            Ok(())
+        );
         let stored = store.value.borrow().clone().unwrap();
         assert_eq!(stored.ssid.as_str(), Some("cafe"));
         assert_eq!(stored.password, None);
@@ -819,13 +872,13 @@ mod tests {
         let mut out = Collect::default();
         let args = connect_args("office", "hunter2hunter2");
 
-        block_on(service.invoke("connect", &args, &mut out)).unwrap();
+        block_on(service.invoke(action::CONNECT, &args, &mut out)).unwrap();
         block_on(manager.step());
         block_on(manager.step());
         assert_eq!(handle.status().state, WifiState::Connected);
 
         // Nothing changed, so the store is not what restarts the link.
-        block_on(service.invoke("connect", &args, &mut out)).unwrap();
+        block_on(service.invoke(action::CONNECT, &args, &mut out)).unwrap();
         assert_eq!(*store.writes.borrow(), 2);
         block_on(manager.step());
         block_on(manager.step());
@@ -845,17 +898,17 @@ mod tests {
             connect_args(&"a".repeat(33), ""),
         ] {
             assert_eq!(
-                block_on(service.invoke("connect", &args, &mut out)),
+                block_on(service.invoke(action::CONNECT, &args, &mut out)),
                 Err(ActionError::InvalidArgument)
             );
         }
         assert_eq!(
-            block_on(service.invoke("connect", &[], &mut out)),
+            block_on(service.invoke(action::CONNECT, &[], &mut out)),
             Err(ActionError::InvalidArgument)
         );
         assert_eq!(
             block_on(service.invoke(
-                "connect",
+                action::CONNECT,
                 &[(connect_field::SSID, Value::U64(1)), (2, text(""))],
                 &mut out
             )),
@@ -873,7 +926,7 @@ mod tests {
         let service = WifiService::new(shared.handle(), NoDelay, (), &store);
         let mut out = Collect::default();
         assert_eq!(
-            block_on(service.invoke("connect", &connect_args("office", ""), &mut out)),
+            block_on(service.invoke(action::CONNECT, &connect_args("office", ""), &mut out)),
             Err(ActionError::Unavailable)
         );
     }

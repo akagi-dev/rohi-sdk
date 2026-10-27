@@ -21,9 +21,10 @@ use rohi_location::{LocationConfig, LocationService, LocationShared};
 use rohi_net::WifiConfig;
 use rohi_net::{BleConnectionInfo, BleError, BleState, BleTransport};
 use rohi_service::{
-    ActionDescriptor, ActionError, ActionOutput, ConfigField, FieldDescriptor, FieldError, Issue,
-    IssueSeverity, ManagedConfig, ManagedSection, ManagedService, SectionStore, ServiceHealth,
-    ServiceState, ServiceSummary, StatusWriter, StoreError, Tracked, Value, ValueKind, WriteError,
+    ActionDescriptor, ActionError, ActionOutput, Bounds, ConfigField, EnumDescriptor, EnumVariant,
+    FIRST_SERVICE_ISSUE, FieldDescriptor, FieldError, Issue, IssueDescriptor, IssueSeverity,
+    ManagedConfig, ManagedSection, ManagedService, SectionStore, ServiceHealth, ServiceState,
+    ServiceSummary, StatusWriter, StoreError, Tracked, Unit, Value, ValueKind, WriteError,
 };
 use tokio::sync::mpsc;
 
@@ -117,26 +118,27 @@ impl<C: Clone> SectionStore<C> for Mem<C> {
 pub struct Gadget {
     pub label: String,
     pub level: u64,
-    pub mode: Option<String>,
+    pub mode: Option<u32>,
 }
 
 impl ManagedConfig for Gadget {
+    const SECTION_ID: u64 = 9;
     const NAME: &'static str = "gadget";
     const VERSION: u16 = 3;
     const FIELDS: &'static [ConfigField] = &[
-        ConfigField::new(1, "label", ValueKind::String).describe("What it is called"),
+        ConfigField::new(1, "label", ValueKind::String),
         ConfigField::new(2, "level", ValueKind::U64)
-            .describe("How much")
-            .unit("%")
-            .range(0.0, 100.0),
+            .unit(Unit::Percent)
+            .bounds(Bounds::U64(0, 100)),
         ConfigField::new(3, "mode", ValueKind::Enum)
-            .describe("How it behaves")
-            .variants(&["fast", "slow"])
+            .with_enum(1)
             .optional(),
-        ConfigField::new(4, "serial", ValueKind::String)
-            .describe("Burned in")
-            .read_only(),
+        ConfigField::new(4, "serial", ValueKind::String).read_only(),
     ];
+    const ENUMS: &'static [EnumDescriptor] = &[EnumDescriptor::new(
+        1,
+        &[EnumVariant::new(0, "fast"), EnumVariant::new(1, "slow")],
+    )];
 
     fn defaults() -> Self {
         Self {
@@ -150,7 +152,7 @@ impl ManagedConfig for Gadget {
         Ok(match id {
             1 => Value::text(&self.label),
             2 => Some(Value::U64(self.level)),
-            3 => self.mode.as_deref().and_then(Value::variant),
+            3 => self.mode.map(Value::Enum),
             4 => Value::text("SN-1"),
             _ => return Err(FieldError::UnknownField),
         })
@@ -160,7 +162,7 @@ impl ManagedConfig for Gadget {
         match id {
             1 => self.label = value.as_str().unwrap().to_owned(),
             2 => self.level = value.as_u64().unwrap(),
-            3 => self.mode = Some(value.as_str().unwrap().to_owned()),
+            3 => self.mode = value.as_enum(),
             _ => return Err(FieldError::UnknownField),
         }
         Ok(())
@@ -193,30 +195,38 @@ pub struct Radio {
 }
 
 impl ManagedService for &Radio {
+    const ID: u32 = 3;
     const NAME: &'static str = "radio";
     const VERSION: u16 = 2;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
-        FieldDescriptor::new(1, "ssid", ValueKind::String).describe("Connected network"),
-        FieldDescriptor::new(2, "rssi", ValueKind::I64)
-            .describe("Signal strength")
-            .unit("dBm"),
-        FieldDescriptor::new(3, "mode", ValueKind::Enum).variants(&["sta", "ap"]),
+        FieldDescriptor::new(1, "ssid", ValueKind::String),
+        FieldDescriptor::new(2, "rssi", ValueKind::I64).unit(Unit::Dbm),
+        FieldDescriptor::new(3, "mode", ValueKind::Enum).with_enum(1),
     ];
+    const ENUMS: &'static [EnumDescriptor] = &[EnumDescriptor::new(
+        1,
+        &[EnumVariant::new(0, "sta"), EnumVariant::new(1, "ap")],
+    )];
+    const ISSUES: &'static [IssueDescriptor] =
+        &[IssueDescriptor::new(FIRST_SERVICE_ISSUE, "link_lost")];
     const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new("scan")
-            .describe("Scan for networks")
+        ActionDescriptor::new(1, "scan")
             .results(&[
                 FieldDescriptor::new(1, "ssid", ValueKind::String),
-                FieldDescriptor::new(2, "rssi", ValueKind::I64).unit("dBm"),
-                FieldDescriptor::new(3, "security", ValueKind::Enum).variants(&["open", "wpa2"]),
-            ]),
-        ActionDescriptor::new("reconnect")
-            .describe("Connect again")
-            .privileged(),
-        ActionDescriptor::new("tune")
-            .describe("Set the channel")
-            .args(&[FieldDescriptor::new(1, "channel", ValueKind::U64)]),
-        ActionDescriptor::new("explode").describe("Always refused"),
+                FieldDescriptor::new(2, "rssi", ValueKind::I64).unit(Unit::Dbm),
+                FieldDescriptor::new(3, "security", ValueKind::Enum).with_enum(1),
+            ])
+            .enums(&[EnumDescriptor::new(
+                1,
+                &[EnumVariant::new(0, "open"), EnumVariant::new(1, "wpa2")],
+            )]),
+        ActionDescriptor::new(2, "reconnect").privileged(),
+        ActionDescriptor::new(3, "tune").args(&[FieldDescriptor::new(
+            1,
+            "channel",
+            ValueKind::U64,
+        )]),
+        ActionDescriptor::new(4, "explode"),
     ];
 
     async fn summary(&self) -> ServiceSummary {
@@ -233,8 +243,7 @@ impl ManagedService for &Radio {
         if self.degraded.get() {
             let _ = out.push(Issue {
                 severity: IssueSeverity::Warning,
-                code: "link_lost",
-                message: "The link was lost",
+                code: FIRST_SERVICE_ISSUE,
                 age_ms: None,
             });
         }
@@ -245,19 +254,23 @@ impl ManagedService for &Radio {
             out.text(1, "office")?;
             out.i64(2, -61)?;
         }
-        out.variant(3, "sta")
+        out.variant(3, 0)
     }
 
     async fn invoke(
         &self,
-        action: &str,
+        action: u32,
         args: &[(u32, Value)],
         out: &mut impl ActionOutput,
     ) -> Result<(), ActionError> {
-        self.calls.borrow_mut().push(action.to_owned());
+        let name = Self::ACTIONS
+            .iter()
+            .find(|a| a.id == action)
+            .map(|a| a.name);
+        self.calls.borrow_mut().push(name.unwrap_or("?").to_owned());
         match action {
-            "scan" => {
-                for (ssid, rssi, security) in [("office", -50, "wpa2"), ("guest", -70, "open")] {
+            1 => {
+                for (ssid, rssi, security) in [("office", -50, 1), ("guest", -70, 0)] {
                     out.next_record().map_err(|_| ActionError::Internal)?;
                     out.text(1, ssid).map_err(|_| ActionError::Internal)?;
                     out.i64(2, rssi).map_err(|_| ActionError::Internal)?;
@@ -266,14 +279,14 @@ impl ManagedService for &Radio {
                 }
                 Ok(())
             }
-            "reconnect" => Ok(()),
-            "tune" => {
+            2 => Ok(()),
+            3 => {
                 self.calls
                     .borrow_mut()
                     .push(format!("channel={}", args[0].1.as_u64().unwrap()));
                 Ok(())
             }
-            "explode" => Err(ActionError::Rejected("not_today")),
+            4 => Err(ActionError::Rejected("not_today")),
             _ => Err(ActionError::UnknownAction),
         }
     }

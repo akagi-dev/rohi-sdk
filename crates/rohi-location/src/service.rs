@@ -19,11 +19,29 @@
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use heapless::Vec;
 use rohi_service::{
-    FieldDescriptor, Issue, IssueSeverity, MAX_ISSUES, ManagedService, ServiceHealth, ServiceState,
-    ServiceSummary, StatusWriter, ValueKind, WriteError,
+    EnumDescriptor, EnumVariant, FIRST_SERVICE_ISSUE, FieldDescriptor, Issue, IssueDescriptor,
+    IssueSeverity, MAX_ISSUES, ManagedService, ServiceHealth, ServiceState, ServiceSummary,
+    StatusWriter, Unit, ValueKind, WriteError,
 };
 
 use crate::{LocationShared, LocationSourceKind};
+
+/// Id of the `location` service.
+pub const SERVICE_ID: u32 = 7;
+
+/// Issue codes of the `location` service.
+pub mod issue {
+    /// No location is set; `rohi config set location latitude=.. longitude=..`.
+    pub const NOT_SET: u32 = super::FIRST_SERVICE_ISSUE;
+}
+
+/// Values of the `source` status field.
+pub mod source {
+    /// Set through the config section.
+    pub const CONFIGURED: u32 = 0;
+    /// Reported by a GPS receiver.
+    pub const GPS: u32 = 1;
+}
 
 /// Field ids of the `location` service status.
 pub mod status_field {
@@ -45,22 +63,25 @@ pub mod status_field {
 pub struct LocationService<'a, M: RawMutex>(pub &'a LocationShared<M>);
 
 impl<M: RawMutex> ManagedService for LocationService<'_, M> {
+    const ID: u32 = SERVICE_ID;
     const NAME: &'static str = "location";
     const VERSION: u16 = 1;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
-        FieldDescriptor::new(status_field::LATITUDE, "latitude", ValueKind::F64)
-            .describe("Latitude, WGS84")
-            .unit("deg"),
-        FieldDescriptor::new(status_field::LONGITUDE, "longitude", ValueKind::F64)
-            .describe("Longitude, WGS84")
-            .unit("deg"),
-        FieldDescriptor::new(status_field::HEIGHT_M, "height_m", ValueKind::F64)
-            .describe("Height above mean sea level")
-            .unit("m"),
-        FieldDescriptor::new(status_field::SOURCE, "source", ValueKind::Enum)
-            .describe("Where the location comes from")
-            .variants(&["configured", "gps"]),
+        FieldDescriptor::new(status_field::LATITUDE, "latitude", ValueKind::F32)
+            .unit(Unit::Degrees),
+        FieldDescriptor::new(status_field::LONGITUDE, "longitude", ValueKind::F32)
+            .unit(Unit::Degrees),
+        FieldDescriptor::new(status_field::HEIGHT_M, "height_m", ValueKind::F32).unit(Unit::Meters),
+        FieldDescriptor::new(status_field::SOURCE, "source", ValueKind::Enum).with_enum(1),
     ];
+    const ENUMS: &'static [EnumDescriptor] = &[EnumDescriptor::new(
+        1,
+        &[
+            EnumVariant::new(source::CONFIGURED, "configured"),
+            EnumVariant::new(source::GPS, "gps"),
+        ],
+    )];
+    const ISSUES: &'static [IssueDescriptor] = &[IssueDescriptor::new(issue::NOT_SET, "not_set")];
     const ESSENTIAL: bool = false;
 
     async fn summary(&self) -> ServiceSummary {
@@ -75,8 +96,7 @@ impl<M: RawMutex> ManagedService for LocationService<'_, M> {
         if self.0.current().is_none() {
             let _ = out.push(Issue {
                 severity: IssueSeverity::Info,
-                code: "not_set",
-                message: "No location is set; `rohi config set location latitude=.. longitude=..`",
+                code: issue::NOT_SET,
                 age_ms: None,
             });
         }
@@ -86,16 +106,16 @@ impl<M: RawMutex> ManagedService for LocationService<'_, M> {
         let Some(location) = self.0.current() else {
             return Ok(());
         };
-        out.f64(status_field::LATITUDE, location.latitude)?;
-        out.f64(status_field::LONGITUDE, location.longitude)?;
+        out.f32(status_field::LATITUDE, location.latitude as f32)?;
+        out.f32(status_field::LONGITUDE, location.longitude as f32)?;
         if let Some(height) = location.height_m {
-            out.f64(status_field::HEIGHT_M, height)?;
+            out.f32(status_field::HEIGHT_M, height as f32)?;
         }
         out.variant(
             status_field::SOURCE,
             match location.source {
-                LocationSourceKind::Configured => "configured",
-                LocationSourceKind::Gps => "gps",
+                LocationSourceKind::Configured => source::CONFIGURED,
+                LocationSourceKind::Gps => source::GPS,
             },
         )
     }

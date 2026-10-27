@@ -15,9 +15,13 @@
 //  limitations under the License.
 //
 //! High-level typed device API.
+//! High-level typed device API.
 //!
 //! Every method is generic: sections, services and actions are named by
 //! strings the device lists, so a new firmware module needs no change here.
+//! The wire addresses them by number; the device is asked for the numbers once
+//! (discovery) and the answers are cached for the life of the connection, as
+//! are the schemas that name enum values and issues.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -34,16 +38,20 @@ use crate::session::{ClientTransport, Session};
 /// Wi-Fi scans and similar actions run on the device and take a while.
 const ACTION_TIMEOUT: Duration = Duration::from_secs(40);
 
-fn name<const N: usize>(value: &str) -> Result<heapless::String<N>> {
-    heapless::String::try_from(value)
-        .map_err(|_| Error::InvalidInput(format!("the name {value:?} is too long")))
+/// What a name that the device does not list is answered with.
+fn not_found() -> Error {
+    Error::Device(ErrorCode::NotFound)
 }
 
 /// A connected ROHI device.
 ///
-/// Schemas are fetched on demand and cached for the life of the connection.
+/// Discovery and schemas are fetched on demand and cached for the life of
+/// the connection.
 pub struct Device<T> {
     session: Session<T>,
+    sections: Option<Vec<SectionInfo>>,
+    services: Option<Vec<ServiceInfo>>,
+    actions: Option<Vec<ActionInfo>>,
     config_schemas: HashMap<String, ConfigSchema>,
     service_schemas: HashMap<String, ServiceSchema>,
     action_schemas: HashMap<(String, String), ActionSchema>,
@@ -54,6 +62,9 @@ impl<T: ClientTransport> Device<T> {
     pub fn new(transport: T) -> Self {
         Self {
             session: Session::new(transport),
+            sections: None,
+            services: None,
+            actions: None,
             config_schemas: HashMap::new(),
             service_schemas: HashMap::new(),
             action_schemas: HashMap::new(),
@@ -89,10 +100,24 @@ impl<T: ClientTransport> Device<T> {
         let call = Call::ListConfigSections(pb::ListConfigSectionsRequest {});
         match self.call(call).await? {
             Reply::ListConfigSections(list) => {
-                Ok(list.sections.iter().map(convert::section).collect())
+                let sections: Vec<_> = list.sections.iter().map(convert::section).collect();
+                self.sections = Some(sections.clone());
+                Ok(sections)
             }
             other => Err(unexpected(&other)),
         }
+    }
+
+    async fn section_id(&mut self, section: &str) -> Result<u64> {
+        if self.sections.is_none() {
+            self.config_sections().await?;
+        }
+        self.sections
+            .iter()
+            .flatten()
+            .find(|info| info.name == section)
+            .map(|info| info.id)
+            .ok_or_else(not_found)
     }
 
     /// Schema of a section; cached.
@@ -100,39 +125,13 @@ impl<T: ClientTransport> Device<T> {
         if let Some(schema) = self.config_schemas.get(section) {
             return Ok(schema.clone());
         }
-        // Schemas come in pages that keep every response small.
-        let mut schema: Option<ConfigSchema> = None;
-        loop {
-            let offset = schema.as_ref().map_or(0, |schema| schema.fields.len());
-            let call = Call::GetConfigSchema(pb::GetConfigSchemaRequest {
-                section: name(section)?,
-                offset: offset as u32,
-            });
-            let (page, total) = match self.call(call).await? {
-                Reply::GetConfigSchema(response) => (
-                    response
-                        .schema()
-                        .and_then(convert::config_schema)
-                        .ok_or_else(|| Error::Protocol("empty config schema".into()))?,
-                    response.total as usize,
-                ),
-                other => return Err(unexpected(&other)),
-            };
-            let advanced = !page.fields.is_empty();
-            let merged = match schema.take() {
-                None => page,
-                Some(mut schema) => {
-                    schema.fields.extend(page.fields);
-                    schema
-                }
-            };
-            let done = merged.fields.len() >= total || !advanced;
-            schema = Some(merged);
-            if done {
-                break;
-            }
-        }
-        let schema = schema.expect("the loop ran at least once");
+        let section_id = self.section_id(section).await?;
+        let call = Call::GetConfigSchema(pb::GetConfigSchemaRequest { section_id });
+        let schema = match self.call(call).await? {
+            Reply::GetConfigSchema(response) => convert::config_schema(&response)
+                .ok_or_else(|| Error::Protocol("empty config schema".into()))?,
+            other => return Err(unexpected(&other)),
+        };
         self.config_schemas
             .insert(section.to_owned(), schema.clone());
         Ok(schema)
@@ -140,11 +139,12 @@ impl<T: ClientTransport> Device<T> {
 
     /// Readable content of a section. Secrets are only reported as set.
     pub async fn config_get(&mut self, section: &str) -> Result<ConfigValues> {
+        let schema = self.config_schema(section).await?;
         let call = Call::GetConfigSection(pb::GetConfigSectionRequest {
-            section: name(section)?,
+            section_id: schema.section.id,
         });
         match self.call(call).await? {
-            Reply::GetConfigSection(response) => Ok(convert::config_values(&response)),
+            Reply::GetConfigSection(response) => Ok(convert::config_values(&response, &schema)),
             other => Err(unexpected(&other)),
         }
     }
@@ -158,14 +158,15 @@ impl<T: ClientTransport> Device<T> {
         expected_revision: Option<u32>,
         dry_run: bool,
     ) -> Result<Applied> {
+        let schema = self.config_schema(section).await?;
         let mut list = heapless::Vec::new();
         for mutation in mutations {
-            let wire = convert::mutation(mutation)
+            let wire = convert::mutation(mutation, &schema)
                 .ok_or_else(|| Error::InvalidInput("a value does not fit the protocol".into()))?;
             list.push(wire).map_err(|_| Error::TooLarge)?;
         }
         let mut request = pb::PatchConfigSectionRequest {
-            section: name(section)?,
+            section_id: schema.section.id,
             mutations: list,
             dry_run,
             ..Default::default()
@@ -185,7 +186,7 @@ impl<T: ClientTransport> Device<T> {
     /// Removes the persisted section and restores the defaults.
     pub async fn config_reset(&mut self, section: &str, dry_run: bool) -> Result<Applied> {
         let call = Call::ResetConfigSection(pb::ResetConfigSectionRequest {
-            section: name(section)?,
+            section_id: self.section_id(section).await?,
             dry_run,
         });
         match self.call(call).await? {
@@ -221,35 +222,59 @@ impl<T: ClientTransport> Device<T> {
 
     // -- status ---------------------------------------------------------------
 
-    /// The services of the device.
+    /// The services of the device, as discovered by [`Self::services_status`].
     pub async fn services(&mut self) -> Result<Vec<ServiceInfo>> {
-        match self
-            .call(Call::ListServices(pb::ListServicesRequest {}))
+        Ok(self
+            .services_status()
             .await?
-        {
-            Reply::ListServices(list) => Ok(list
-                .services
-                .iter()
-                .map(|info| ServiceInfo {
-                    name: info.name.as_str().to_owned(),
-                    version: info.version,
-                })
-                .collect()),
+            .services
+            .iter()
+            .map(|summary| ServiceInfo {
+                id: summary.id,
+                name: summary.service.clone(),
+                version: summary.version,
+            })
+            .collect())
+    }
+
+    /// Discovery and compact status of every service and the device health,
+    /// in one request.
+    pub async fn services_status(&mut self) -> Result<ServicesStatus> {
+        let call = Call::GetServicesStatus(pb::GetServicesStatusRequest {});
+        match self.call(call).await? {
+            Reply::GetServicesStatus(response) => {
+                let status = ServicesStatus {
+                    uptime_ms: response.uptime_ms,
+                    health: DeviceHealth::from_proto(response.health),
+                    services: response.services.iter().map(convert::summary).collect(),
+                };
+                self.services = Some(
+                    status
+                        .services
+                        .iter()
+                        .map(|summary| ServiceInfo {
+                            id: summary.id,
+                            name: summary.service.clone(),
+                            version: summary.version,
+                        })
+                        .collect(),
+                );
+                Ok(status)
+            }
             other => Err(unexpected(&other)),
         }
     }
 
-    /// Compact status of every service and the device health, in one request.
-    pub async fn services_status(&mut self) -> Result<ServicesStatus> {
-        let call = Call::GetServicesStatus(pb::GetServicesStatusRequest {});
-        match self.call(call).await? {
-            Reply::GetServicesStatus(response) => Ok(ServicesStatus {
-                uptime_ms: response.uptime_ms,
-                health: DeviceHealth::from_proto(response.health),
-                services: response.services.iter().map(convert::summary).collect(),
-            }),
-            other => Err(unexpected(&other)),
+    async fn service_id(&mut self, service: &str) -> Result<u32> {
+        if self.services.is_none() {
+            self.services_status().await?;
         }
+        self.services
+            .iter()
+            .flatten()
+            .find(|info| info.name == service)
+            .map(|info| info.id)
+            .ok_or_else(not_found)
     }
 
     /// Status schema of a service; cached.
@@ -257,120 +282,108 @@ impl<T: ClientTransport> Device<T> {
         if let Some(schema) = self.service_schemas.get(service) {
             return Ok(schema.clone());
         }
-        let mut schema: Option<ServiceSchema> = None;
-        loop {
-            let offset = schema.as_ref().map_or(0, |schema| schema.fields.len());
-            let call = Call::GetServiceSchema(pb::GetServiceSchemaRequest {
-                service: name(service)?,
-                offset: offset as u32,
-            });
-            let (page, total) = match self.call(call).await? {
-                Reply::GetServiceSchema(response) => (
-                    ServiceSchema {
-                        service: ServiceInfo {
-                            name: response.service.as_str().to_owned(),
-                            version: response.version,
-                        },
-                        fields: response.fields.iter().map(convert::field).collect(),
-                    },
-                    response.total as usize,
-                ),
-                other => return Err(unexpected(&other)),
-            };
-            let advanced = !page.fields.is_empty();
-            let merged = match schema.take() {
-                None => page,
-                Some(mut schema) => {
-                    schema.fields.extend(page.fields);
-                    schema
-                }
-            };
-            let done = merged.fields.len() >= total || !advanced;
-            schema = Some(merged);
-            if done {
-                break;
-            }
-        }
-        let schema = schema.expect("the loop ran at least once");
+        let service_id = self.service_id(service).await?;
+        let call = Call::GetServiceSchema(pb::GetServiceSchemaRequest { service_id });
+        let schema = match self.call(call).await? {
+            Reply::GetServiceSchema(response) => ServiceSchema {
+                service: ServiceInfo {
+                    id: response.service_id,
+                    name: response.name.as_str().to_owned(),
+                    version: response.version,
+                },
+                fields: response
+                    .fields
+                    .iter()
+                    .map(|field| convert::field(field, &response.enums))
+                    .collect(),
+                issues: response
+                    .issues
+                    .iter()
+                    .map(|issue| IssueInfo {
+                        code: issue.code,
+                        name: issue.name.as_str().to_owned(),
+                    })
+                    .collect(),
+            },
+            other => return Err(unexpected(&other)),
+        };
         self.service_schemas
             .insert(service.to_owned(), schema.clone());
         Ok(schema)
     }
 
-    /// Detailed status of a service.
+    /// Detailed status of a service: its compact status, values and active
+    /// issues. The compact status is a separate request, the detailed one does
+    /// not repeat it.
     pub async fn service_status(&mut self, service: &str) -> Result<ServiceStatus> {
-        // Values come in pages; the summary and the issues are in every page,
-        // the last one is the freshest.
-        let mut status: Option<ServiceStatus> = None;
-        loop {
-            let offset = status.as_ref().map_or(0, |status| status.fields.len());
-            let call = Call::GetServiceStatus(pb::GetServiceStatusRequest {
-                service: name(service)?,
-                offset: offset as u32,
-            });
-            let (page, total) = match self.call(call).await? {
-                Reply::GetServiceStatus(response) => (
-                    ServiceStatus {
-                        summary: response
-                            .summary()
-                            .map(convert::summary)
-                            .ok_or_else(|| Error::Protocol("status without a summary".into()))?,
-                        fields: response
-                            .fields
-                            .iter()
-                            .filter_map(convert::field_value)
-                            .collect(),
-                        issues: response.issues.iter().map(convert::issue).collect(),
-                    },
-                    response.total as usize,
-                ),
-                other => return Err(unexpected(&other)),
-            };
-            let advanced = !page.fields.is_empty();
-            let merged = match status.take() {
-                None => page,
-                Some(mut status) => {
-                    status.fields.extend(page.fields);
-                    ServiceStatus {
-                        fields: status.fields,
-                        ..page
-                    }
-                }
-            };
-            let done = merged.fields.len() >= total || !advanced;
-            status = Some(merged);
-            if done {
-                break;
-            }
+        let schema = self.service_schema(service).await?;
+        let summary = self
+            .services_status()
+            .await?
+            .services
+            .into_iter()
+            .find(|summary| summary.id == schema.service.id)
+            .ok_or_else(not_found)?;
+        let call = Call::GetServiceStatus(pb::GetServiceStatusRequest {
+            service_id: schema.service.id,
+        });
+        match self.call(call).await? {
+            Reply::GetServiceStatus(response) => Ok(ServiceStatus {
+                summary,
+                fields: response
+                    .fields
+                    .iter()
+                    .filter_map(|field| convert::field_value(field, &schema.fields))
+                    .collect(),
+                issues: response
+                    .issues
+                    .iter()
+                    .map(|issue| convert::issue(issue, &schema.issues))
+                    .collect(),
+            }),
+            other => Err(unexpected(&other)),
         }
-        Ok(status.expect("the loop ran at least once"))
     }
 
     // -- actions --------------------------------------------------------------
 
     /// The actions of all services.
     pub async fn actions(&mut self) -> Result<Vec<ActionInfo>> {
-        let mut actions: Vec<ActionInfo> = Vec::new();
-        loop {
-            let call = Call::ListActions(pb::ListActionsRequest {
-                offset: actions.len() as u32,
-            });
-            let (page, total) = match self.call(call).await? {
-                Reply::ListActions(list) => (
-                    list.actions
-                        .iter()
-                        .map(convert::action_info)
-                        .collect::<Vec<_>>(),
-                    list.total as usize,
-                ),
-                other => return Err(unexpected(&other)),
-            };
-            let advanced = !page.is_empty();
-            actions.extend(page);
-            if actions.len() >= total || !advanced {
-                return Ok(actions);
-            }
+        if self.services.is_none() {
+            self.services_status().await?;
         }
+        let call = Call::ListActions(pb::ListActionsRequest {});
+        match self.call(call).await? {
+            Reply::ListActions(list) => {
+                let services = self.services.as_deref().unwrap_or_default();
+                let actions: Vec<_> = list
+                    .actions
+                    .iter()
+                    .map(|info| {
+                        let service = services
+                            .iter()
+                            .find(|service| service.id == info.service_id)
+                            .map_or("", |service| service.name.as_str());
+                        convert::action_info(info, service)
+                    })
+                    .collect();
+                self.actions = Some(actions.clone());
+                Ok(actions)
+            }
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    async fn action_ids(&mut self, service: &str, action: &str) -> Result<(u32, u32)> {
+        if self.actions.is_none() {
+            self.actions().await?;
+        }
+        self.actions
+            .iter()
+            .flatten()
+            .find(|info| info.service == service && info.name == action)
+            .map(|info| (info.service_id, info.id))
+            .ok_or_else(not_found)
     }
 
     /// Schema of an action; cached.
@@ -379,18 +392,29 @@ impl<T: ClientTransport> Device<T> {
         if let Some(schema) = self.action_schemas.get(&key) {
             return Ok(schema.clone());
         }
+        let (service_id, action_id) = self.action_ids(service, action).await?;
         let call = Call::GetActionSchema(pb::GetActionSchemaRequest {
-            service: name(service)?,
-            action: name(action)?,
+            service_id,
+            action_id,
         });
         let schema = match self.call(call).await? {
             Reply::GetActionSchema(response) => ActionSchema {
-                action: response
-                    .action()
-                    .map(convert::action_info)
-                    .ok_or_else(|| Error::Protocol("action schema without an action".into()))?,
-                args: response.args.iter().map(convert::field).collect(),
-                results: response.results.iter().map(convert::field).collect(),
+                action: convert::action_info(
+                    response
+                        .action()
+                        .ok_or_else(|| Error::Protocol("action schema without an action".into()))?,
+                    service,
+                ),
+                args: response
+                    .args
+                    .iter()
+                    .map(|field| convert::field(field, &response.enums))
+                    .collect(),
+                results: response
+                    .results
+                    .iter()
+                    .map(|field| convert::field(field, &response.enums))
+                    .collect(),
             },
             other => return Err(unexpected(&other)),
         };
@@ -406,22 +430,16 @@ impl<T: ClientTransport> Device<T> {
         action: &str,
         args: &[FieldValue],
     ) -> Result<Vec<Record>> {
+        let schema = self.action_schema(service, action).await?;
         let mut list = heapless::Vec::new();
         for arg in args {
-            let mut wire = pb::FieldValue {
-                field_id: arg.field_id,
-                ..Default::default()
-            };
-            wire.set_value(
-                convert::to_proto(&arg.value).ok_or_else(|| {
-                    Error::InvalidInput("a value does not fit the protocol".into())
-                })?,
-            );
+            let wire = convert::to_action_arg(arg, &schema.args)
+                .ok_or_else(|| Error::InvalidInput("a value does not fit the protocol".into()))?;
             list.push(wire).map_err(|_| Error::TooLarge)?;
         }
         let request = pb::InvokeActionRequest {
-            service: name(service)?,
-            action: name(action)?,
+            service_id: schema.action.service_id,
+            action_id: schema.action.id,
             args: list,
         };
         // Scans and similar actions take a while on the device.
@@ -437,7 +455,7 @@ impl<T: ClientTransport> Device<T> {
                     record
                         .fields
                         .iter()
-                        .filter_map(convert::field_value)
+                        .filter_map(|field| convert::field_value(field, &schema.results))
                         .collect()
                 })
                 .collect()),

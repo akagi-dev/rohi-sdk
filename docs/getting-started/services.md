@@ -42,7 +42,6 @@ frames_without_location  212
 
 Issues:
   WARNING  no_location  (34s)
-           No location is set; telemetry is sent without it
 ```
 
 ## The device summary
@@ -146,12 +145,12 @@ Status never changes anything. Operations are **actions**, listed and described 
 
 ```console
 $ rohi action list
-SERVICE   ACTION      ACCESS  DESCRIPTION
-network   scan        read    Scan for networks, strongest first
-network   reconnect   write   Drop the connection and connect again
-network   disconnect  write   Disconnect and stay idle
-identity  provision   write   Install the device identity; fails if one exists
-identity  erase       write   Remove the device identity
+SERVICE   ACTION      ACCESS
+network   scan        read
+network   reconnect   write
+network   disconnect  write
+identity  provision   write
+identity  erase       write
 
 $ rohi action describe network scan
 $ rohi action run network scan

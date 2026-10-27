@@ -112,9 +112,17 @@ fn text<const N: usize>(value: &str) -> heapless::String<N> {
     value.try_into().unwrap()
 }
 
-fn string_value(value: &str) -> Value {
-    Value {
-        value: Some(Value_::Value::StringValue(text(value))),
+fn string_field(id: u32, value: &str) -> FieldValue {
+    FieldValue {
+        field_id: id,
+        value: Some(FieldValue_::Value::StringValue(text(value))),
+    }
+}
+
+fn number_field(id: u32, value: FieldValue_::Value) -> FieldValue {
+    FieldValue {
+        field_id: id,
+        value: Some(value),
     }
 }
 
@@ -124,7 +132,7 @@ fn patch_request_round_trips_and_keeps_values_out_of_debug() {
     mutations
         .push(ConfigMutation {
             field_id: 2,
-            operation: Some(ConfigMutation_::Operation::Set(string_value(
+            operation: Some(ConfigMutation_::Operation::StringValue(text(
                 "hunter2hunter2",
             ))),
         })
@@ -138,7 +146,7 @@ fn patch_request_round_trips_and_keeps_values_out_of_debug() {
         .ok()
         .unwrap();
     let mut patch = PatchConfigSectionRequest {
-        section: text("wifi"),
+        section_id: 1,
         mutations,
         dry_run: true,
         ..Default::default()
@@ -169,7 +177,7 @@ fn unset_is_distinct_from_an_empty_value() {
     };
     let empty = ConfigMutation {
         field_id: 1,
-        operation: Some(ConfigMutation_::Operation::Set(string_value(""))),
+        operation: Some(ConfigMutation_::Operation::StringValue(text(""))),
     };
     let mut a = [0u8; 16];
     let mut b = [0u8; 16];
@@ -184,147 +192,243 @@ fn unset_is_distinct_from_an_empty_value() {
 
 #[test]
 fn oversized_value_is_rejected_with_capacity() {
-    // string_value (field 5) of 65 bytes.
+    // string_value (field 6) of 65 bytes in a request, of 33 in a response.
     let mut wire = [b'a'; 67];
-    wire[0] = 0x2a;
+    wire[0] = 0x32;
     wire[1] = 65;
-    assert_eq!(decode::<Value>(&wire).err(), Some(DecodeError::Capacity));
+    assert_eq!(
+        decode::<ActionArg>(&wire).err(),
+        Some(DecodeError::Capacity)
+    );
     wire[1] = 64;
-    assert!(decode::<Value>(&wire[..66]).is_ok());
+    assert!(decode::<ActionArg>(&wire[..66]).is_ok());
+    wire[1] = 33;
+    assert_eq!(
+        decode::<FieldValue>(&wire[..35]).err(),
+        Some(DecodeError::Capacity)
+    );
+    wire[1] = 32;
+    assert!(decode::<FieldValue>(&wire[..34]).is_ok());
 }
 
-fn full_field() -> FieldDescriptor {
-    full_field_with(2)
+#[test]
+fn floats_are_single_precision_on_the_wire() {
+    let field = number_field(1, FieldValue_::Value::F32Value(1.5));
+    let mut buf = [0u8; 16];
+    let len = encode(&field, &mut buf).unwrap();
+    // field 1 = 1, field 5 (fixed32) = 1.5f32.
+    assert_eq!(&buf[..len], &[0x08, 0x01, 0x2d, 0x00, 0x00, 0xc0, 0x3f]);
 }
 
-fn full_field_with(variant_count: usize) -> FieldDescriptor {
-    let mut variants = Vec::new();
-    for _ in 0..variant_count {
-        variants
-            .push(text(&"v".repeat(limits::MAX_VARIANT_LEN)))
-            .unwrap();
-    }
+fn full_field(id: u32) -> FieldDescriptor {
     FieldDescriptor {
-        id: u32::MAX,
+        id,
         name: text(&"n".repeat(limits::MAX_NAME_LEN)),
         kind: ValueKind::Enum,
-        description: text(&"d".repeat(limits::MAX_DESCRIPTION_LEN)),
-        unit: text(&"u".repeat(limits::MAX_UNIT_LEN)),
+        unit: Unit::MicrosievertsPerHour,
+        enum_id: u32::MAX,
+    }
+}
+
+fn full_enum() -> EnumDescriptor {
+    let mut variants = Vec::new();
+    for value in 0..limits::MAX_ENUM_VARIANTS {
+        variants
+            .push(EnumVariant {
+                value: u32::MAX - value as u32,
+                name: text(&"v".repeat(limits::MAX_VARIANT_NAME_LEN)),
+            })
+            .ok()
+            .unwrap();
+    }
+    EnumDescriptor {
+        id: u32::MAX,
         variants,
+    }
+}
+
+fn full_enums<const N: usize>() -> Vec<EnumDescriptor, N> {
+    let mut enums = Vec::new();
+    for _ in 0..N {
+        enums.push(full_enum()).ok().unwrap();
+    }
+    enums
+}
+
+fn round_trip(response: Response) -> usize {
+    let mut buf = [0u8; limits::MAX_RESPONSE_LEN];
+    let len = encode(&response, &mut buf).unwrap();
+    assert!(decode::<Response>(&buf[..len]).unwrap() == response);
+    len
+}
+
+fn response(response: Response_::Response) -> Response {
+    Response {
+        protocol_version: PROTOCOL_VERSION,
+        request_id: u32::MAX,
+        response: Some(response),
     }
 }
 
 #[test]
 fn full_config_schema_fits_the_response_limit() {
     let mut fields = Vec::new();
-    for _ in 0..limits::MAX_SCHEMA_PAGE {
-        let mut field = ConfigField {
+    for id in 0..limits::MAX_CONFIG_FIELDS {
+        let mut field = ConfigFieldDescriptor {
             writable: true,
             secret: true,
             optional: true,
             ..Default::default()
         };
-        field.set_field(full_field());
-        field.set_min(f64::MIN);
-        field.set_max(f64::MAX);
+        field.set_field(full_field(u32::MAX - id as u32));
         fields.push(field).ok().unwrap();
     }
-    let mut schema = ConfigSectionSchema {
+    let mut schema = GetConfigSchemaResponse {
         fields,
+        enums: full_enums(),
         ..Default::default()
     };
     schema.set_section(ConfigSectionInfo {
+        id: u64::MAX,
         name: text(&"s".repeat(limits::MAX_NAME_LEN)),
         version: u32::MAX,
         revision: u32::MAX,
     });
-    let mut schema_response = GetConfigSchemaResponse::default();
-    schema_response.set_schema(schema);
-    let response = Response {
-        protocol_version: PROTOCOL_VERSION,
-        request_id: u32::MAX,
-        response: Some(Response_::Response::GetConfigSchema(schema_response)),
-    };
-    let mut buf = [0u8; limits::MAX_RESPONSE_LEN];
-    let len = encode(&response, &mut buf).unwrap();
-    assert!(decode::<Response>(&buf[..len]).unwrap() == response);
+    round_trip(response(Response_::Response::GetConfigSchema(schema)));
+}
+
+#[test]
+fn full_service_schema_fits_the_response_limit() {
+    let mut fields = Vec::new();
+    for id in 0..limits::MAX_SCHEMA_FIELDS {
+        fields.push(full_field(u32::MAX - id as u32)).ok().unwrap();
+    }
+    let mut issues = Vec::new();
+    for code in 0..limits::MAX_ISSUE_DESCRIPTORS {
+        issues
+            .push(IssueDescriptor {
+                code: u32::MAX - code as u32,
+                name: text(&"i".repeat(limits::MAX_NAME_LEN)),
+            })
+            .ok()
+            .unwrap();
+    }
+    round_trip(response(Response_::Response::GetServiceSchema(
+        GetServiceSchemaResponse {
+            service_id: u32::MAX,
+            name: text(&"s".repeat(limits::MAX_NAME_LEN)),
+            version: u32::MAX,
+            fields,
+            enums: full_enums(),
+            issues,
+        },
+    )));
 }
 
 #[test]
 fn full_service_status_fits_the_response_limit() {
     let mut fields = Vec::new();
-    for id in 0..limits::MAX_STATUS_PAGE {
-        let mut field = FieldValue {
-            field_id: u32::MAX - id as u32,
-            ..Default::default()
-        };
-        field.set_value(string_value(&"x".repeat(limits::MAX_VALUE_LEN)));
-        fields.push(field).ok().unwrap();
-    }
-    let mut issues = Vec::new();
-    for _ in 0..limits::MAX_ISSUES {
-        issues
-            .push(ServiceIssue {
-                severity: IssueSeverity::Critical,
-                code: text(&"c".repeat(limits::MAX_CODE_LEN)),
-                message: text(&"m".repeat(limits::MAX_ISSUE_MESSAGE_LEN)),
-                age_ms: u64::MAX,
-            })
+    for id in 0..limits::MAX_STATUS_FIELDS {
+        fields
+            .push(string_field(
+                u32::MAX - id as u32,
+                &"x".repeat(limits::MAX_FIELD_VALUE_LEN),
+            ))
+            .ok()
             .unwrap();
     }
-    let mut summary = ServiceStatusSummary {
-        service: text(&"s".repeat(limits::MAX_NAME_LEN)),
-        state: ServiceState::Running,
-        health: ServiceHealth::Degraded,
-        ready: true,
-        revision: u32::MAX,
-        state_age_ms: u64::MAX,
-        ..Default::default()
-    };
-    summary.set_reason(text(&"r".repeat(limits::MAX_CODE_LEN)));
-    let mut status = GetServiceStatusResponse {
-        fields,
-        issues,
-        ..Default::default()
-    };
-    status.set_summary(summary);
-    let response = Response {
-        protocol_version: PROTOCOL_VERSION,
-        request_id: u32::MAX,
-        response: Some(Response_::Response::GetServiceStatus(status)),
-    };
-    let mut buf = [0u8; limits::MAX_RESPONSE_LEN];
-    let len = encode(&response, &mut buf).unwrap();
-    assert!(decode::<Response>(&buf[..len]).unwrap() == response);
+    let mut issues = Vec::new();
+    for code in 0..limits::MAX_ISSUES {
+        issues
+            .push(ServiceIssue {
+                code: u32::MAX - code as u32,
+                severity: IssueSeverity::Critical,
+                age_ms: u32::MAX,
+            })
+            .ok()
+            .unwrap();
+    }
+    round_trip(response(Response_::Response::GetServiceStatus(
+        GetServiceStatusResponse {
+            service_id: u32::MAX,
+            revision: u32::MAX,
+            fields,
+            issues,
+        },
+    )));
 }
 
 #[test]
 fn services_summary_with_every_service_fits_the_response_limit() {
     let mut services = Vec::new();
     for _ in 0..limits::MAX_SERVICES {
-        let mut summary = ServiceStatusSummary {
-            service: text(&"s".repeat(limits::MAX_NAME_LEN)),
-            state_age_ms: u64::MAX,
-            revision: u32::MAX,
-            ..Default::default()
-        };
-        summary.set_reason(text(&"r".repeat(limits::MAX_CODE_LEN)));
-        services.push(summary).unwrap();
+        services
+            .push(ServiceStatusSummary {
+                service_id: u32::MAX,
+                name: text(&"s".repeat(limits::MAX_NAME_LEN)),
+                version: u32::MAX,
+                state: ServiceState::Failed,
+                health: ServiceHealth::Error,
+                ready: true,
+                revision: u32::MAX,
+                state_age_ms: u32::MAX,
+            })
+            .ok()
+            .unwrap();
     }
-    let response = Response {
-        protocol_version: PROTOCOL_VERSION,
-        request_id: u32::MAX,
-        response: Some(Response_::Response::GetServicesStatus(
-            GetServicesStatusResponse {
-                uptime_ms: u64::MAX,
-                health: DeviceHealth::Error,
-                services,
-            },
-        )),
+    round_trip(response(Response_::Response::GetServicesStatus(
+        GetServicesStatusResponse {
+            uptime_ms: u64::MAX,
+            health: DeviceHealth::Error,
+            services,
+        },
+    )));
+}
+
+#[test]
+fn every_action_listed_fits_the_response_limit() {
+    let mut actions = Vec::new();
+    for _ in 0..limits::MAX_ACTIONS {
+        actions
+            .push(ActionInfo {
+                service_id: u32::MAX,
+                id: u32::MAX,
+                name: text(&"a".repeat(limits::MAX_NAME_LEN)),
+                privileged: true,
+                secret_args: true,
+            })
+            .ok()
+            .unwrap();
+    }
+    round_trip(response(Response_::Response::ListActions(
+        ListActionsResponse { actions },
+    )));
+}
+
+#[test]
+fn a_full_action_schema_fits_the_response_limit() {
+    let mut args = Vec::new();
+    for id in 0..limits::MAX_ACTION_ARGS {
+        args.push(full_field(id as u32)).ok().unwrap();
+    }
+    let mut results = Vec::new();
+    for id in 0..limits::MAX_RECORD_FIELDS {
+        results.push(full_field(id as u32)).ok().unwrap();
+    }
+    let mut schema = GetActionSchemaResponse {
+        args,
+        results,
+        enums: full_enums(),
+        ..Default::default()
     };
-    let mut buf = [0u8; limits::MAX_RESPONSE_LEN];
-    let len = encode(&response, &mut buf).unwrap();
-    assert!(decode::<Response>(&buf[..len]).unwrap() == response);
+    schema.set_action(ActionInfo {
+        service_id: u32::MAX,
+        id: u32::MAX,
+        name: text(&"a".repeat(limits::MAX_NAME_LEN)),
+        privileged: true,
+        secret_args: true,
+    });
+    round_trip(response(Response_::Response::GetActionSchema(schema)));
 }
 
 #[test]
@@ -345,21 +449,15 @@ fn list_config_sections_request_golden_bytes() {
 #[test]
 fn invoke_action_round_trips_and_keeps_arguments_out_of_debug() {
     let mut args = Vec::new();
-    args.push({
-        let mut arg = FieldValue {
-            field_id: 1,
-            ..Default::default()
-        };
-        arg.set_value(Value {
-            value: Some(Value_::Value::BytesValue(bytes(&[0x5a; 32]))),
-        });
-        arg
+    args.push(ActionArg {
+        field_id: 1,
+        value: Some(ActionArg_::Value::BytesValue(bytes(&[0x5a; 32]))),
     })
     .ok()
     .unwrap();
     let invoke = InvokeActionRequest {
-        service: text("identity"),
-        action: text("provision"),
+        service_id: 3,
+        action_id: 1,
         args,
     };
     let debug = std::format!("{invoke:?}");
@@ -376,51 +474,24 @@ fn invoke_action_round_trips_and_keeps_arguments_out_of_debug() {
 
 #[test]
 fn a_full_action_result_fits_the_response_limit_with_typical_values() {
-    // Eight scan results: SSID (32 bytes), rssi, channel, security.
+    // Scan results: SSID (32 bytes), rssi, channel, security.
     let mut records = Vec::new();
     for _ in 0..limits::MAX_RECORDS {
         let mut fields = Vec::new();
-        for (id, value) in [
-            (1, string_value(&"s".repeat(32))),
-            (
-                2,
-                Value {
-                    value: Some(Value_::Value::I64Value(-60)),
-                },
-            ),
-            (
-                3,
-                Value {
-                    value: Some(Value_::Value::U64Value(11)),
-                },
-            ),
-            (
-                4,
-                Value {
-                    value: Some(Value_::Value::EnumValue(text("wpa2"))),
-                },
-            ),
+        for field in [
+            string_field(1, &"s".repeat(32)),
+            number_field(2, FieldValue_::Value::I64Value(-60)),
+            number_field(3, FieldValue_::Value::U64Value(11)),
+            number_field(4, FieldValue_::Value::EnumValue(3)),
         ] {
-            let mut field = FieldValue {
-                field_id: id,
-                ..Default::default()
-            };
-            field.set_value(value);
             fields.push(field).ok().unwrap();
         }
         records.push(ActionRecord { fields }).ok().unwrap();
     }
-    let response = Response {
-        protocol_version: PROTOCOL_VERSION,
-        request_id: u32::MAX,
-        response: Some(Response_::Response::InvokeAction(InvokeActionResponse {
-            records,
-        })),
-    };
-    let mut buf = [0u8; limits::MAX_RESPONSE_LEN];
-    let len = encode(&response, &mut buf).unwrap();
+    let len = round_trip(response(Response_::Response::InvokeAction(
+        InvokeActionResponse { records },
+    )));
     assert!(len < limits::MAX_RESPONSE_LEN / 2, "{len}");
-    assert!(decode::<Response>(&buf[..len]).unwrap() == response);
 }
 
 #[test]
@@ -440,22 +511,44 @@ fn a_rejection_carries_a_reason() {
     assert!(decode::<Response>(&buf[..len]).unwrap() == response);
 }
 
-#[test]
-fn a_field_with_every_variant_fits() {
-    let field = full_field_with(limits::MAX_VARIANTS);
-    let mut buf = [0u8; limits::MAX_RESPONSE_LEN];
-    let len = encode(&field, &mut buf).unwrap();
-    assert_eq!(decode::<FieldDescriptor>(&buf[..len]).unwrap(), field);
-}
+// Memory budgets of the generated types. The control task builds and moves
+// these on the stack of a microcontroller, so growth must fail here and not
+// as a stack overflow on the device. Raising a budget is a deliberate
+// decision: measure the control task again and update `resource-budget.md`.
+// Measured: 736, 1824, 48, 56, 536 and 1192 bytes, with a few percent of
+// headroom. Before the compact layout: 760, 2616, 352, 88, 792 and 1272 (the
+// last one for a page of eight values).
+const REQUEST_BUDGET: usize = 768;
+const RESPONSE_BUDGET: usize = 1900;
+const FIELD_DESCRIPTOR_BUDGET: usize = 56;
+const FIELD_VALUE_BUDGET: usize = 64;
+const SERVICES_STATUS_BUDGET: usize = 576;
+const SERVICE_STATUS_BUDGET: usize = 1280;
 
 #[test]
-fn messages_stay_small_in_memory() {
-    // A response is built, moved and encoded on the stack of the control task
-    // of a microcontroller: every page, list and record bound is chosen so
-    // that the largest variant stays within this budget.
-    const BUDGET: usize = 2700;
-    let response = core::mem::size_of::<Response>();
-    let request = core::mem::size_of::<Request>();
-    assert!(response <= BUDGET, "Response is {response} bytes");
-    assert!(request <= BUDGET, "Request is {request} bytes");
+fn generated_types_stay_within_their_memory_budgets() {
+    use core::mem::size_of;
+    for (name, size, budget) in [
+        ("Request", size_of::<Request>(), REQUEST_BUDGET),
+        ("Response", size_of::<Response>(), RESPONSE_BUDGET),
+        (
+            "FieldDescriptor",
+            size_of::<FieldDescriptor>(),
+            FIELD_DESCRIPTOR_BUDGET,
+        ),
+        ("FieldValue", size_of::<FieldValue>(), FIELD_VALUE_BUDGET),
+        (
+            "GetServicesStatusResponse",
+            size_of::<GetServicesStatusResponse>(),
+            SERVICES_STATUS_BUDGET,
+        ),
+        (
+            "GetServiceStatusResponse",
+            size_of::<GetServiceStatusResponse>(),
+            SERVICE_STATUS_BUDGET,
+        ),
+    ] {
+        std::println!("size_of::<{name}>() = {size}");
+        assert!(size <= budget, "{name} is {size} bytes, budget {budget}");
+    }
 }

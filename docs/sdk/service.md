@@ -7,7 +7,7 @@ module by name:
 | Plane | Question | Owner type | Wire operations |
 |-------|----------|------------|-----------------|
 | **Config** | what is the device *set up* to do? (desired, persistent) | [`ManagedConfig`](#config-sections) | `ListConfigSections`, `GetConfigSchema`, `GetConfigSection`, `PatchConfigSection`, `ResetConfigSection` |
-| **Status** | what is happening *now*? (observed, read-only) | [`ManagedService`](#status) | `ListServices`, `GetServicesStatus`, `GetServiceSchema`, `GetServiceStatus` |
+| **Status** | what is happening *now*? (observed, read-only) | [`ManagedService`](#status) | `GetServicesStatus`, `GetServiceSchema`, `GetServiceStatus` |
 | **Actions** | what can I *ask it to do*? (explicit operations) | [`ManagedService::ACTIONS`](#actions) | `ListActions`, `GetActionSchema`, `InvokeAction` |
 
 Capabilities, config and status are separate on purpose: a service can exist without a config section, a section
@@ -30,17 +30,24 @@ any feature crate; each feature crate implements the traits for its own types (`
 
 ## Values and fields
 
-Everything crossing the boundary is a `Value`: `Bool`, `I64`, `U64`, `F64`, `String`, `Bytes` or `Enum`. A
-`FieldDescriptor { id, name, kind, description, unit, variants }` describes one field once, as a `const`:
+Everything crossing the boundary is a `Value`: `Bool`, `I64`, `U64`, `F32`, `String`, `Bytes` or `Enum`. Floats are
+single precision; a counter, a timestamp or an id is an integer. An `Enum` value is a **number** (`u32`). A
+`FieldDescriptor { id, name, kind, unit, enum_id }` describes one field once, as a `const`:
 
 ```rust,ignore
-FieldDescriptor::new(2, "rssi", ValueKind::I64)
-    .describe("Signal strength")
-    .unit("dBm")
+FieldDescriptor::new(2, "rssi", ValueKind::I64).unit(Unit::Dbm)
 ```
 
+The `Unit` is a code, not text, and there is no description: documentation belongs to these pages, not to every
+response of the firmware. The named variants of an enum field are listed once per section, service or action as
+`EnumDescriptor::new(id, &[EnumVariant::new(value, "name"), ..])` (`ManagedConfig::ENUMS`, `ManagedService::ENUMS`,
+`ActionDescriptor::enums`) and the field refers to the table with `.with_enum(id)`; checked values must be one of its
+variants.
+
 Field **ids are stable and only ever added**; names use dotted paths for nested fields (`bmx280.temperature`). Config
-fields extend the descriptor (`ConfigField`) with `writable`, `secret`, `optional` and a numeric `range`. `Value`'s
+fields extend the descriptor (`ConfigField`) with `writable`, `secret`, `optional` and typed `Bounds` (`Bounds::U64(min,
+max)`, `I64`, `F32`): the bounds are checked by the device with the integers staying integers and are not sent to
+clients; the typed `validate()` stays authoritative. `Value`'s
 `Debug` shows only its kind, so a secret never reaches a log by accident.
 
 ## Config sections
@@ -49,10 +56,11 @@ A module implements `ManagedConfig` for its **typed** section and keeps all know
 
 ```rust,ignore
 impl ManagedConfig for ConnectivityConfig {
+    const SECTION_ID: u64 = <Self as ConfigSection>::ID.0; // the stored section id, the address of requests
     const NAME: &'static str = "connectivity";
     const VERSION: u16 = 1;
     const FIELDS: &'static [ConfigField] = &[
-        ConfigField::new(3, "interval_s", ValueKind::U64).unit("s").range(10.0, 86_400.0),
+        ConfigField::new(3, "interval_s", ValueKind::U64).unit(Unit::S).bounds(Bounds::U64(10, 86_400)),
         // ...
     ];
     fn defaults() -> Self { /* base of a patch when nothing is stored */ }
@@ -100,6 +108,7 @@ A module implements `ManagedService` on top of its **live** state. There is no s
 
 ```rust,ignore
 impl ManagedService for WifiService<'_, M, D> {
+    const ID: u32 = 1;                              // stable numeric id, the address of requests
     const NAME: &'static str = "wifi";
     const VERSION: u16 = 1;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[ /* ssid, rssi, ip, ... */ ];
@@ -121,8 +130,10 @@ Examples: a connecting Wi-Fi is `starting / unknown / not ready`; a telemetry se
 `running / degraded / not ready`; an optional GPS turned off is `disabled / unknown / not ready`, which is **not an
 error**.
 
-**Issues** are the currently active problems, each with a stable machine-readable `code`, a severity
-(`info`, `warning`, `error`, `critical`), a message and an age. History does not belong here.
+**Issues** are the currently active problems, each with a stable numeric `code`, a severity (`info`, `warning`,
+`error`, `critical`) and an age. The names of the codes are listed once in `ManagedService::ISSUES` and sent with the
+schema, never with every status; there is no message text. Codes below 256 are reserved for the SDK (`Startup` reports
+`ISSUE_STARTUP_FAILED`), services start at `FIRST_SERVICE_ISSUE`. History does not belong here.
 
 `Tracked<S, M>` wraps a service and adds what every service needs without its cooperation: a **status revision**
 that changes when state, health, readiness or the active issues change (values that vary all the time, such as
@@ -140,13 +151,12 @@ Status is read-only. Everything that *does* something is an action declared by t
 
 ```rust,ignore
 const ACTIONS: &'static [ActionDescriptor] = &[
-    ActionDescriptor::new("scan")
-        .describe("Scan for networks, strongest first")
+    ActionDescriptor::new(1, "scan")
         .results(&[ /* ssid, rssi, channel, security */ ]),
-    ActionDescriptor::new("reconnect").privileged(),
+    ActionDescriptor::new(2, "reconnect").privileged(),
 ];
 
-async fn invoke(&self, action: &str, args: &[(u32, Value)], out: &mut impl ActionOutput)
+async fn invoke(&self, action: u32, args: &[(u32, Value)], out: &mut impl ActionOutput)
     -> Result<(), ActionError> { /* ... */ }
 ```
 
@@ -160,7 +170,9 @@ reason such as `already_provisioned`.
 ## Registries
 
 `ServiceRegistry` is a tuple of `Tracked` services, like the config registry. Both traits are implemented for `()`
-(a device with no sections or services) and for tuples of up to 8. Names must be unique: the first match wins.
+(a device with no sections or services) and for tuples of up to 8. Requests address sections, services and actions
+by their numeric ids, which must be unique within a registry (`ids_are_unique()`, checked by the firmware at start);
+names are for discovery.
 
 ## What lives where
 

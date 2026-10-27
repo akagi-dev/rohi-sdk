@@ -18,7 +18,7 @@
 
 use minicbor::{CborLen, Decode, Encode};
 use rohi_config::ConfigSection;
-use rohi_service::{ConfigField, FieldError, ManagedConfig, Value, ValueKind};
+use rohi_service::{Bounds, ConfigField, FieldError, ManagedConfig, Unit, Value, ValueKind};
 
 use crate::{Location, LocationSourceKind};
 
@@ -80,21 +80,19 @@ impl LocationConfig {
 }
 
 impl ManagedConfig for LocationConfig {
+    const SECTION_ID: u64 = <Self as ConfigSection>::ID.0;
     const NAME: &'static str = "location";
     const VERSION: u16 = <Self as ConfigSection>::VERSION;
     const FIELDS: &'static [ConfigField] = &[
-        ConfigField::new(field::LATITUDE, "latitude", ValueKind::F64)
-            .describe("Latitude, WGS84")
-            .unit("deg")
-            .range(-90.0, 90.0),
-        ConfigField::new(field::LONGITUDE, "longitude", ValueKind::F64)
-            .describe("Longitude, WGS84")
-            .unit("deg")
-            .range(-180.0, 180.0),
-        ConfigField::new(field::HEIGHT_M, "height_m", ValueKind::F64)
-            .describe("Height above mean sea level")
-            .unit("m")
-            .range(MIN_HEIGHT_M, MAX_HEIGHT_M)
+        ConfigField::new(field::LATITUDE, "latitude", ValueKind::F32)
+            .unit(Unit::Degrees)
+            .bounds(Bounds::F32(-90.0, 90.0)),
+        ConfigField::new(field::LONGITUDE, "longitude", ValueKind::F32)
+            .unit(Unit::Degrees)
+            .bounds(Bounds::F32(-180.0, 180.0)),
+        ConfigField::new(field::HEIGHT_M, "height_m", ValueKind::F32)
+            .unit(Unit::Meters)
+            .bounds(Bounds::F32(MIN_HEIGHT_M as f32, MAX_HEIGHT_M as f32))
             .optional(),
     ];
 
@@ -110,15 +108,15 @@ impl ManagedConfig for LocationConfig {
 
     fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
         match id {
-            field::LATITUDE => Ok(Some(Value::F64(self.latitude))),
-            field::LONGITUDE => Ok(Some(Value::F64(self.longitude))),
-            field::HEIGHT_M => Ok(self.height_m.map(Value::F64)),
+            field::LATITUDE => Ok(Some(Value::F32(self.latitude as f32))),
+            field::LONGITUDE => Ok(Some(Value::F32(self.longitude as f32))),
+            field::HEIGHT_M => Ok(self.height_m.map(|height| Value::F32(height as f32))),
             _ => Err(FieldError::UnknownField),
         }
     }
 
     fn set_field(&mut self, id: u32, value: Value) -> Result<(), FieldError> {
-        let number = value.as_f64().ok_or(FieldError::WrongKind)?;
+        let number = f64::from(value.as_f32().ok_or(FieldError::WrongKind)?);
         match id {
             field::LATITUDE => self.latitude = number,
             field::LONGITUDE => self.longitude = number,

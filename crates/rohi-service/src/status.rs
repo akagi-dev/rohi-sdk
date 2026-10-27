@@ -33,9 +33,10 @@ use heapless::Vec;
 use crate::action::{
     ActionDescriptor, ActionError, ActionOutput, RecordCollector, Records, check_args,
 };
-use crate::field::FieldDescriptor;
-use crate::value::{Value, ValueKind};
-use crate::{MAX_FIELDS, MAX_ISSUES, MAX_VALUE_LEN};
+use crate::action::{actions_fit, enum_ok};
+use crate::field::{EnumDescriptor, FieldDescriptor, enums_fit};
+use crate::value::Value;
+use crate::{MAX_FIELD_VALUE_LEN, MAX_FIELDS, MAX_ISSUE_DESCRIPTORS, MAX_ISSUES};
 
 /// Lifecycle state of a service.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,15 +92,37 @@ pub enum IssueSeverity {
     Critical,
 }
 
+/// Codes below this value are reserved for the SDK; services use codes from
+/// here on.
+pub const FIRST_SERVICE_ISSUE: u32 = 256;
+
+/// Issue code of a service whose runtime failed to start, see [`Startup`].
+pub const ISSUE_STARTUP_FAILED: u32 = 1;
+
+/// The name of an issue, listed once in the schema of its service.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IssueDescriptor {
+    /// Stable numeric code.
+    pub code: u32,
+    /// Stable machine-readable name, for example `connection_timeout`.
+    pub name: &'static str,
+}
+
+impl IssueDescriptor {
+    /// An issue description.
+    pub const fn new(code: u32, name: &'static str) -> Self {
+        Self { code, name }
+    }
+}
+
 /// A currently active problem of a service. History belongs to diagnostics.
+/// What the issue means is told by the [`IssueDescriptor`] of the schema.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Issue {
     /// How serious it is.
     pub severity: IssueSeverity,
-    /// Stable machine-readable identifier, for example `connection_timeout`.
-    pub code: &'static str,
-    /// Human-readable explanation.
-    pub message: &'static str,
+    /// Stable numeric code, described in [`ManagedService::ISSUES`].
+    pub code: u32,
     /// How long the issue has been active, if the service knows. Otherwise
     /// the registry reports the time since the set of active issues last
     /// changed.
@@ -115,19 +138,15 @@ pub struct ServiceSummary {
     pub health: ServiceHealth,
     /// Whether the service can currently perform its intended role.
     pub ready: bool,
-    /// Stable machine-readable short reason; defaults to the code of the
-    /// first active issue.
-    pub reason: Option<&'static str>,
 }
 
 impl ServiceSummary {
-    /// A summary without a reason.
+    /// A summary of the given state, health and readiness.
     pub const fn new(state: ServiceState, health: ServiceHealth, ready: bool) -> Self {
         Self {
             state,
             health,
             ready,
-            reason: None,
         }
     }
 }
@@ -167,14 +186,14 @@ pub trait StatusWriter {
     }
 
     /// Writes a float.
-    fn f64(&mut self, id: u32, value: f64) -> Result<(), WriteError> {
-        self.put(id, Value::F64(value))
+    fn f32(&mut self, id: u32, value: f32) -> Result<(), WriteError> {
+        self.put(id, Value::F32(value))
     }
 
     /// Writes text, truncated at a character boundary if it exceeds
-    /// [`MAX_VALUE_LEN`].
+    /// [`MAX_FIELD_VALUE_LEN`].
     fn text(&mut self, id: u32, value: &str) -> Result<(), WriteError> {
-        let mut end = value.len().min(MAX_VALUE_LEN);
+        let mut end = value.len().min(MAX_FIELD_VALUE_LEN);
         while !value.is_char_boundary(end) {
             end -= 1;
         }
@@ -182,19 +201,23 @@ pub trait StatusWriter {
         self.put(id, text)
     }
 
-    /// Writes bytes.
+    /// Writes bytes, at most [`MAX_FIELD_VALUE_LEN`].
     fn bytes(&mut self, id: u32, value: &[u8]) -> Result<(), WriteError> {
+        if value.len() > MAX_FIELD_VALUE_LEN {
+            return Err(WriteError::TooLong);
+        }
         self.put(id, Value::bytes(value).ok_or(WriteError::TooLong)?)
     }
 
     /// Writes a variant of an enum field.
-    fn variant(&mut self, id: u32, value: &str) -> Result<(), WriteError> {
-        self.put(id, Value::variant(value).ok_or(WriteError::TooLong)?)
+    fn variant(&mut self, id: u32, value: u32) -> Result<(), WriteError> {
+        self.put(id, Value::Enum(value))
     }
 }
 
 pub(crate) struct Collector {
     pub(crate) schema: &'static [FieldDescriptor],
+    pub(crate) enums: &'static [EnumDescriptor],
     pub(crate) fields: Vec<(u32, Value), MAX_FIELDS>,
 }
 
@@ -208,11 +231,7 @@ impl StatusWriter for Collector {
         if field.kind != value.kind() {
             return Err(WriteError::WrongKind);
         }
-        if field.kind == ValueKind::Enum
-            && value
-                .as_str()
-                .is_none_or(|variant| !field.variants.contains(&variant))
-        {
+        if !enum_ok(self.enums, field, &value) {
             return Err(WriteError::WrongKind);
         }
         self.fields.push((id, value)).map_err(|_| WriteError::Full)
@@ -225,6 +244,9 @@ impl StatusWriter for Collector {
 /// there is no stored status struct. Field ids are stable and only ever added.
 #[allow(async_fn_in_trait)]
 pub trait ManagedService {
+    /// Stable numeric id, the address of requests; unique within the
+    /// registry. Only ever added, never reused.
+    const ID: u32;
     /// Stable public service name, for example `connectivity`.
     const NAME: &'static str;
     /// Version of the status schema.
@@ -232,6 +254,11 @@ pub trait ManagedService {
     /// Metadata of the service-specific status fields, at most
     /// [`MAX_FIELDS`] entries.
     const STATUS_SCHEMA: &'static [FieldDescriptor];
+    /// The enums the status fields refer to, see [`EnumDescriptor`].
+    const ENUMS: &'static [EnumDescriptor] = &[];
+    /// The names of the issues the service reports, at most
+    /// [`MAX_ISSUE_DESCRIPTORS`].
+    const ISSUES: &'static [IssueDescriptor] = &[];
     /// Whether the device is impaired when this service is not working.
     /// Optional services degrade the device health at most.
     const ESSENTIAL: bool = true;
@@ -252,7 +279,7 @@ pub trait ManagedService {
     /// `out` as records.
     async fn invoke(
         &self,
-        _action: &str,
+        _action: u32,
         _args: &[(u32, Value)],
         _out: &mut impl ActionOutput,
     ) -> Result<(), ActionError> {
@@ -265,7 +292,7 @@ pub trait ManagedService {
 /// The runtime handles of a service that never started stay untouched and
 /// would read as a disabled service, which the default health policy ignores.
 /// A failed start is reported as a failed service with the issue
-/// `startup_failed` instead; everything else is forwarded.
+/// [`ISSUE_STARTUP_FAILED`] instead; everything else is forwarded.
 pub struct Startup<S> {
     service: S,
     failed: bool,
@@ -279,9 +306,12 @@ impl<S: ManagedService> Startup<S> {
 }
 
 impl<S: ManagedService> ManagedService for Startup<S> {
+    const ID: u32 = S::ID;
     const NAME: &'static str = S::NAME;
     const VERSION: u16 = S::VERSION;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = S::STATUS_SCHEMA;
+    const ENUMS: &'static [EnumDescriptor] = S::ENUMS;
+    const ISSUES: &'static [IssueDescriptor] = S::ISSUES;
     const ESSENTIAL: bool = S::ESSENTIAL;
     const ACTIONS: &'static [ActionDescriptor] = S::ACTIONS;
 
@@ -296,8 +326,7 @@ impl<S: ManagedService> ManagedService for Startup<S> {
         if self.failed {
             let _ = out.push(Issue {
                 severity: IssueSeverity::Error,
-                code: "startup_failed",
-                message: "The runtime of the service failed to start",
+                code: ISSUE_STARTUP_FAILED,
                 age_ms: None,
             });
         } else {
@@ -314,7 +343,7 @@ impl<S: ManagedService> ManagedService for Startup<S> {
 
     async fn invoke(
         &self,
-        action: &str,
+        action: u32,
         args: &[(u32, Value)],
         out: &mut impl ActionOutput,
     ) -> Result<(), ActionError> {
@@ -325,9 +354,11 @@ impl<S: ManagedService> ManagedService for Startup<S> {
     }
 }
 
-/// Name and version of a service.
+/// Id, name and version of a service.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ServiceInfo {
+    /// Stable numeric id.
+    pub id: u32,
     /// Stable public name.
     pub name: &'static str,
     /// Version of the status schema.
@@ -337,21 +368,23 @@ pub struct ServiceInfo {
 /// Compact status of one service, as listed for the whole device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ServiceStatusSummary {
+    /// Service id.
+    pub id: u32,
     /// Service name.
     pub name: &'static str,
+    /// Version of the status schema.
+    pub version: u32,
     /// Lifecycle state.
     pub state: ServiceState,
     /// Operational quality.
     pub health: ServiceHealth,
     /// Whether the service can currently perform its intended role.
     pub ready: bool,
-    /// Incremented whenever the state, health, readiness, reason or the active
+    /// Incremented whenever the state, health, readiness or the active
     /// issues change.
     pub revision: u32,
     /// Time spent in the current lifecycle state.
     pub state_age_ms: u64,
-    /// Stable machine-readable short reason.
-    pub reason: Option<&'static str>,
     /// Whether the device depends on the service, see
     /// [`ManagedService::ESSENTIAL`].
     pub essential: bool,
@@ -397,13 +430,9 @@ fn fnv(mut hash: u32, bytes: &[u8]) -> u32 {
 fn observable_hash(summary: &ServiceSummary, issues: &[Issue]) -> u32 {
     let mut hash = fnv(FNV_OFFSET, &[summary.state as u8, summary.health as u8]);
     hash = fnv(hash, &[u8::from(summary.ready)]);
-    if let Some(reason) = summary.reason {
-        hash = fnv(hash, reason.as_bytes());
-    }
     for issue in issues {
         hash = fnv(hash, &[issue.severity as u8]);
-        hash = fnv(hash, issue.code.as_bytes());
-        hash = fnv(hash, &[0]);
+        hash = fnv(hash, &issue.code.to_le_bytes());
     }
     hash
 }
@@ -423,7 +452,12 @@ pub struct Tracked<S, M: RawMutex> {
 impl<S: ManagedService, M: RawMutex> Tracked<S, M> {
     /// Tracks `service`.
     pub const fn new(service: S) -> Self {
-        const { assert!(S::STATUS_SCHEMA.len() <= MAX_FIELDS) };
+        const {
+            assert!(S::STATUS_SCHEMA.len() <= MAX_FIELDS);
+            assert!(S::ISSUES.len() <= MAX_ISSUE_DESCRIPTORS);
+            assert!(enums_fit(S::ENUMS));
+            assert!(actions_fit(S::ACTIONS));
+        };
         Self {
             service,
             track: Mutex::new(Cell::new(None)),
@@ -437,6 +471,7 @@ impl<S: ManagedService, M: RawMutex> Tracked<S, M> {
 
     fn info() -> ServiceInfo {
         ServiceInfo {
+            id: S::ID,
             name: S::NAME,
             version: S::VERSION as u32,
         }
@@ -446,10 +481,6 @@ impl<S: ManagedService, M: RawMutex> Tracked<S, M> {
         let summary = self.service.summary().await;
         let mut issues = Vec::new();
         self.service.issues(&mut issues).await;
-        let reason = summary
-            .reason
-            .or_else(|| issues.first().map(|issue| issue.code));
-        let summary = ServiceSummary { reason, ..summary };
         let hash = observable_hash(&summary, &issues);
 
         let track = self.track.lock(|cell| {
@@ -480,13 +511,14 @@ impl<S: ManagedService, M: RawMutex> Tracked<S, M> {
         }
         (
             ServiceStatusSummary {
+                id: S::ID,
                 name: S::NAME,
+                version: S::VERSION as u32,
                 state: summary.state,
                 health: summary.health,
                 ready: summary.ready,
                 revision: track.revision,
                 state_age_ms: now_ms.saturating_sub(track.state_since_ms),
-                reason: summary.reason,
                 essential: S::ESSENTIAL,
             },
             issues,
@@ -494,13 +526,26 @@ impl<S: ManagedService, M: RawMutex> Tracked<S, M> {
     }
 }
 
+/// The status schema of a service.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ServiceSchema {
+    /// Id, name and version.
+    pub info: ServiceInfo,
+    /// Status field metadata.
+    pub fields: &'static [FieldDescriptor],
+    /// The enums the fields refer to.
+    pub enums: &'static [EnumDescriptor],
+    /// The names of the issues the service reports.
+    pub issues: &'static [IssueDescriptor],
+}
+
 /// The generic operations of one tracked service.
 #[allow(async_fn_in_trait)]
 pub trait ServiceOps {
-    /// Name and version.
+    /// Id, name and version.
     fn info(&self) -> ServiceInfo;
-    /// Status field metadata.
-    fn schema(&self) -> &'static [FieldDescriptor];
+    /// Status schema.
+    fn schema(&self) -> ServiceSchema;
     /// Compact status.
     async fn summary(&self, now_ms: u64) -> ServiceStatusSummary;
     /// Detailed status.
@@ -508,7 +553,7 @@ pub trait ServiceOps {
     /// Action metadata.
     fn actions(&self) -> &'static [ActionDescriptor];
     /// Runs an action.
-    async fn invoke(&self, action: &str, args: &[(u32, Value)]) -> Result<Records, ActionError>;
+    async fn invoke(&self, action: u32, args: &[(u32, Value)]) -> Result<Records, ActionError>;
 }
 
 impl<S: ManagedService, M: RawMutex> ServiceOps for Tracked<S, M> {
@@ -516,8 +561,13 @@ impl<S: ManagedService, M: RawMutex> ServiceOps for Tracked<S, M> {
         Self::info()
     }
 
-    fn schema(&self) -> &'static [FieldDescriptor] {
-        S::STATUS_SCHEMA
+    fn schema(&self) -> ServiceSchema {
+        ServiceSchema {
+            info: Self::info(),
+            fields: S::STATUS_SCHEMA,
+            enums: S::ENUMS,
+            issues: S::ISSUES,
+        }
     }
 
     async fn summary(&self, now_ms: u64) -> ServiceStatusSummary {
@@ -528,6 +578,7 @@ impl<S: ManagedService, M: RawMutex> ServiceOps for Tracked<S, M> {
         let (summary, issues) = self.observe(now_ms).await;
         let mut collector = Collector {
             schema: S::STATUS_SCHEMA,
+            enums: S::ENUMS,
             fields: Vec::new(),
         };
         // A field the service fails to write is absent; the rest is still
@@ -544,13 +595,13 @@ impl<S: ManagedService, M: RawMutex> ServiceOps for Tracked<S, M> {
         S::ACTIONS
     }
 
-    async fn invoke(&self, action: &str, args: &[(u32, Value)]) -> Result<Records, ActionError> {
+    async fn invoke(&self, action: u32, args: &[(u32, Value)]) -> Result<Records, ActionError> {
         let descriptor = S::ACTIONS
             .iter()
-            .find(|descriptor| descriptor.name == action)
+            .find(|descriptor| descriptor.id == action)
             .ok_or(ActionError::UnknownAction)?;
         check_args(descriptor, args)?;
-        let mut out = RecordCollector::new(descriptor.results);
+        let mut out = RecordCollector::new(descriptor);
         self.service.invoke(action, args, &mut out).await?;
         Ok(out.records)
     }
@@ -565,26 +616,34 @@ impl<S: ManagedService, M: RawMutex> ServiceOps for Tracked<S, M> {
 pub trait ServiceRegistry {
     /// Number of services.
     fn service_count(&self) -> usize;
-    /// Name and version of the service at `index`.
+    /// Id, name and version of the service at `index`.
     fn service_info(&self, index: usize) -> Option<ServiceInfo>;
-    /// Name, version and status schema of the named service.
-    fn schema(&self, service: &str) -> Option<(ServiceInfo, &'static [FieldDescriptor])>;
+    /// Status schema of the service with the given id.
+    fn schema(&self, service: u32) -> Option<ServiceSchema>;
     /// Compact status of the service at `index`.
     async fn summary(&self, index: usize, now_ms: u64) -> Option<ServiceStatusSummary>;
-    /// Detailed status of the named service.
-    async fn status(&self, service: &str, now_ms: u64) -> Result<ServiceStatus, StatusError>;
+    /// Detailed status of the service with the given id.
+    async fn status(&self, service: u32, now_ms: u64) -> Result<ServiceStatus, StatusError>;
     /// Actions of the service at `index`.
     fn service_actions(&self, index: usize) -> &'static [ActionDescriptor];
-    /// Descriptor of an action of the named service.
-    fn action(&self, service: &str, action: &str)
-    -> Result<&'static ActionDescriptor, ActionError>;
-    /// Runs an action of the named service.
+    /// Descriptor of an action of the service with the given id.
+    fn action(&self, service: u32, action: u32) -> Result<&'static ActionDescriptor, ActionError>;
+    /// Runs an action of the service with the given id.
     async fn invoke(
         &self,
-        service: &str,
-        action: &str,
+        service: u32,
+        action: u32,
         args: &[(u32, Value)],
     ) -> Result<Records, ActionError>;
+
+    /// Whether no two services share an id. Firmware checks it once at
+    /// start, a clash would make requests reach the wrong service.
+    fn ids_are_unique(&self) -> bool {
+        (0..self.service_count()).all(|index| {
+            let id = self.service_info(index).map(|info| info.id);
+            (0..index).all(|other| self.service_info(other).map(|info| info.id) != id)
+        })
+    }
 }
 
 impl ServiceRegistry for () {
@@ -596,7 +655,7 @@ impl ServiceRegistry for () {
         None
     }
 
-    fn schema(&self, _: &str) -> Option<(ServiceInfo, &'static [FieldDescriptor])> {
+    fn schema(&self, _: u32) -> Option<ServiceSchema> {
         None
     }
 
@@ -604,7 +663,7 @@ impl ServiceRegistry for () {
         None
     }
 
-    async fn status(&self, _: &str, _: u64) -> Result<ServiceStatus, StatusError> {
+    async fn status(&self, _: u32, _: u64) -> Result<ServiceStatus, StatusError> {
         Err(StatusError::UnknownService)
     }
 
@@ -612,11 +671,11 @@ impl ServiceRegistry for () {
         &[]
     }
 
-    fn action(&self, _: &str, _: &str) -> Result<&'static ActionDescriptor, ActionError> {
+    fn action(&self, _: u32, _: u32) -> Result<&'static ActionDescriptor, ActionError> {
         Err(ActionError::UnknownService)
     }
 
-    async fn invoke(&self, _: &str, _: &str, _: &[(u32, Value)]) -> Result<Records, ActionError> {
+    async fn invoke(&self, _: u32, _: u32, _: &[(u32, Value)]) -> Result<Records, ActionError> {
         Err(ActionError::UnknownService)
     }
 }
@@ -635,9 +694,9 @@ macro_rules! tuple_service_registry {
                 }
             }
 
-            fn schema(&self, service: &str) -> Option<(ServiceInfo, &'static [FieldDescriptor])> {
-                $(if self.$index.info().name == service {
-                    return Some((self.$index.info(), self.$index.schema()));
+            fn schema(&self, service: u32) -> Option<ServiceSchema> {
+                $(if self.$index.info().id == service {
+                    return Some(self.$index.schema());
                 })+
                 None
             }
@@ -649,8 +708,8 @@ macro_rules! tuple_service_registry {
                 }
             }
 
-            async fn status(&self, service: &str, now_ms: u64) -> Result<ServiceStatus, StatusError> {
-                $(if self.$index.info().name == service {
+            async fn status(&self, service: u32, now_ms: u64) -> Result<ServiceStatus, StatusError> {
+                $(if self.$index.info().id == service {
                     return Ok(self.$index.status(now_ms).await);
                 })+
                 Err(StatusError::UnknownService)
@@ -665,15 +724,15 @@ macro_rules! tuple_service_registry {
 
             fn action(
                 &self,
-                service: &str,
-                action: &str,
+                service: u32,
+                action: u32,
             ) -> Result<&'static ActionDescriptor, ActionError> {
-                $(if self.$index.info().name == service {
+                $(if self.$index.info().id == service {
                     return self
                         .$index
                         .actions()
                         .iter()
-                        .find(|descriptor| descriptor.name == action)
+                        .find(|descriptor| descriptor.id == action)
                         .ok_or(ActionError::UnknownAction);
                 })+
                 Err(ActionError::UnknownService)
@@ -681,11 +740,11 @@ macro_rules! tuple_service_registry {
 
             async fn invoke(
                 &self,
-                service: &str,
-                action: &str,
+                service: u32,
+                action: u32,
                 args: &[(u32, Value)],
             ) -> Result<Records, ActionError> {
-                $(if self.$index.info().name == service {
+                $(if self.$index.info().id == service {
                     return self.$index.invoke(action, args).await;
                 })+
                 Err(ActionError::UnknownService)

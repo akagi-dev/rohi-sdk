@@ -23,8 +23,9 @@
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use heapless::Vec;
 use rohi_service::{
-    FieldDescriptor, Issue, IssueSeverity, MAX_ISSUES, ManagedService, ServiceHealth, ServiceState,
-    ServiceSummary, StatusWriter, ValueKind, WriteError,
+    FIRST_SERVICE_ISSUE, FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES,
+    ManagedService, ServiceHealth, ServiceState, ServiceSummary, StatusWriter, Unit, Value,
+    ValueKind, WriteError,
 };
 
 use crate::measurements::{Measurement, MeasurementsSnapshot};
@@ -37,61 +38,58 @@ use crate::units::{
 
 /// A typed unit value in the canonical unit of its measurement type.
 trait Canonical: Copy {
-    fn canonical(self) -> f64;
+    fn canonical(self) -> Value;
 }
 
 macro_rules! canonical {
-    ($($unit:ty),+) => {$(
+    ($($unit:ty => $variant:ident($conversion:ty)),+) => {$(
         impl Canonical for $unit {
-            fn canonical(self) -> f64 {
-                f64::from(self.0)
+            fn canonical(self) -> Value {
+                Value::$variant(<$conversion>::from(self.0))
             }
         }
     )+};
 }
 
+// Counters and indices are integers on the wire, never floats.
 canonical!(
-    Celsius,
-    RelativeHumidity,
-    Pascal,
-    Ppm,
-    Ppb,
-    Decibels,
-    MicrogramsPerCubicMeter,
-    Aqi,
-    RadiationLevel,
-    PulseCount
+    Celsius => F32(f32),
+    RelativeHumidity => F32(f32),
+    Pascal => F32(f32),
+    Ppm => F32(f32),
+    Ppb => F32(f32),
+    Decibels => F32(f32),
+    MicrogramsPerCubicMeter => F32(f32),
+    Aqi => U64(u64),
+    RadiationLevel => F32(f32),
+    PulseCount => U64(u64)
 );
 
 macro_rules! measurement_fields {
-    ($($id:expr, $name:expr, $unit:expr, $description:expr;)+) => {
-        &[$(
-            FieldDescriptor::new($id, $name, ValueKind::F64)
-                .describe($description)
-                .unit($unit),
-        )+]
+    ($($id:expr, $name:expr, $kind:expr, $unit:expr;)+) => {
+        &[$(FieldDescriptor::new($id, $name, $kind).unit($unit)),+]
     };
 }
 
 /// Status fields of the `sensors` service: `<sensor>.<measurement>`.
 const FIELDS: &[FieldDescriptor] = measurement_fields! {
-    1, "bmx280.temperature", "C", "Temperature";
-    2, "bmx280.humidity", "%", "Relative humidity";
-    3, "bmx280.pressure", "Pa", "Pressure";
-    4, "scd4x.co2", "ppm", "CO2 concentration";
-    5, "scd4x.temperature", "C", "Temperature";
-    6, "scd4x.humidity", "%", "Relative humidity";
-    7, "sds011.pm2_5", "ug/m3", "PM2.5 mass concentration";
-    8, "sds011.pm10", "ug/m3", "PM10 mass concentration";
-    9, "microphone.average", "dB", "Average sound level";
-    10, "microphone.maximum", "dB", "Maximum sound level";
-    11, "zmod4510.o3", "ppb", "Ozone concentration";
-    12, "zmod4510.no2", "ppb", "Nitrogen dioxide concentration";
-    13, "zmod4510.aqi_fast", "", "Fast air quality index";
-    14, "zmod4510.aqi_epa", "", "EPA air quality index";
-    15, "ags3871.co", "ppm", "Carbon monoxide concentration";
-    16, "radsens.radiation", "uSv/h", "Ionizing radiation dose rate";
-    17, "radsens.pulses", "", "Detected radiation pulses";
+    1, "bmx280.temperature", ValueKind::F32, Unit::Celsius;
+    2, "bmx280.humidity", ValueKind::F32, Unit::Percent;
+    3, "bmx280.pressure", ValueKind::F32, Unit::Pascal;
+    4, "scd4x.co2", ValueKind::F32, Unit::Ppm;
+    5, "scd4x.temperature", ValueKind::F32, Unit::Celsius;
+    6, "scd4x.humidity", ValueKind::F32, Unit::Percent;
+    7, "sds011.pm2_5", ValueKind::F32, Unit::MicrogramsPerCubicMeter;
+    8, "sds011.pm10", ValueKind::F32, Unit::MicrogramsPerCubicMeter;
+    9, "microphone.average", ValueKind::F32, Unit::Decibels;
+    10, "microphone.maximum", ValueKind::F32, Unit::Decibels;
+    11, "zmod4510.o3", ValueKind::F32, Unit::Ppb;
+    12, "zmod4510.no2", ValueKind::F32, Unit::Ppb;
+    13, "zmod4510.aqi_fast", ValueKind::U64, Unit::None;
+    14, "zmod4510.aqi_epa", ValueKind::U64, Unit::None;
+    15, "ags3871.co", ValueKind::F32, Unit::Ppm;
+    16, "radsens.radiation", ValueKind::F32, Unit::MicrosievertsPerHour;
+    17, "radsens.pulses", ValueKind::U64, Unit::None;
 };
 
 fn put<T: Canonical>(
@@ -100,7 +98,7 @@ fn put<T: Canonical>(
     measurement: &Measurement<T>,
 ) -> Result<(), WriteError> {
     match measurement.value {
-        Some(value) => out.f64(id, value.canonical()),
+        Some(value) => out.put(id, value.canonical()),
         None => Ok(()),
     }
 }
@@ -143,35 +141,28 @@ fn write(out: &mut impl StatusWriter, snapshot: &MeasurementsSnapshot) -> Result
     Ok(())
 }
 
-fn sensor_name(kind: SensorKind) -> &'static str {
-    match kind {
-        SensorKind::Bmx280 => "bmx280",
-        SensorKind::Scd4x => "scd4x",
-        SensorKind::Sds011 => "sds011",
-        SensorKind::Microphone => "microphone",
-        SensorKind::Zmod4510 => "zmod4510",
-        SensorKind::Ags3871 => "ags3871",
-        SensorKind::RadSens => "radsens",
-    }
-}
+/// One issue per sensor; its severity tells a failure from a degradation.
+const ISSUES: &[IssueDescriptor] = &[
+    IssueDescriptor::new(FIRST_SERVICE_ISSUE, "bmx280_fault"),
+    IssueDescriptor::new(FIRST_SERVICE_ISSUE + 1, "scd4x_fault"),
+    IssueDescriptor::new(FIRST_SERVICE_ISSUE + 2, "sds011_fault"),
+    IssueDescriptor::new(FIRST_SERVICE_ISSUE + 3, "microphone_fault"),
+    IssueDescriptor::new(FIRST_SERVICE_ISSUE + 4, "zmod4510_fault"),
+    IssueDescriptor::new(FIRST_SERVICE_ISSUE + 5, "ags3871_fault"),
+    IssueDescriptor::new(FIRST_SERVICE_ISSUE + 6, "radsens_fault"),
+];
 
-fn issue_code(kind: SensorKind, failed: bool) -> &'static str {
-    match (kind, failed) {
-        (SensorKind::Bmx280, true) => "bmx280_error",
-        (SensorKind::Bmx280, false) => "bmx280_degraded",
-        (SensorKind::Scd4x, true) => "scd4x_error",
-        (SensorKind::Scd4x, false) => "scd4x_degraded",
-        (SensorKind::Sds011, true) => "sds011_error",
-        (SensorKind::Sds011, false) => "sds011_degraded",
-        (SensorKind::Microphone, true) => "microphone_error",
-        (SensorKind::Microphone, false) => "microphone_degraded",
-        (SensorKind::Zmod4510, true) => "zmod4510_error",
-        (SensorKind::Zmod4510, false) => "zmod4510_degraded",
-        (SensorKind::Ags3871, true) => "ags3871_error",
-        (SensorKind::Ags3871, false) => "ags3871_degraded",
-        (SensorKind::RadSens, true) => "radsens_error",
-        (SensorKind::RadSens, false) => "radsens_degraded",
-    }
+fn issue_code(kind: SensorKind) -> u32 {
+    FIRST_SERVICE_ISSUE
+        + match kind {
+            SensorKind::Bmx280 => 0,
+            SensorKind::Scd4x => 1,
+            SensorKind::Sds011 => 2,
+            SensorKind::Microphone => 3,
+            SensorKind::Zmod4510 => 4,
+            SensorKind::Ags3871 => 5,
+            SensorKind::RadSens => 6,
+        }
 }
 
 fn summary(snapshot: &MeasurementsSnapshot) -> ServiceSummary {
@@ -215,9 +206,11 @@ fn summary(snapshot: &MeasurementsSnapshot) -> ServiceSummary {
 pub struct SensorsService<'a, M: RawMutex>(pub MeasurementHandle<'a, M>);
 
 impl<M: RawMutex> ManagedService for SensorsService<'_, M> {
+    const ID: u32 = 8;
     const NAME: &'static str = "sensors";
     const VERSION: u16 = 1;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = FIELDS;
+    const ISSUES: &'static [IssueDescriptor] = ISSUES;
     // A device without a working sensor still serves its other roles.
     const ESSENTIAL: bool = false;
 
@@ -244,8 +237,7 @@ impl<M: RawMutex> ManagedService for SensorsService<'_, M> {
                 } else {
                     IssueSeverity::Warning
                 },
-                code: issue_code(status.kind, failed),
-                message: sensor_name(status.kind),
+                code: issue_code(status.kind),
                 age_ms: None,
             };
             if out.push(issue).is_err() {
@@ -270,11 +262,11 @@ mod tests {
     };
 
     #[derive(Default)]
-    struct Collect(std::vec::Vec<(u32, f64)>);
+    struct Collect(std::vec::Vec<(u32, rohi_service::Value)>);
 
     impl StatusWriter for Collect {
         fn put(&mut self, id: u32, value: rohi_service::Value) -> Result<(), WriteError> {
-            self.0.push((id, value.as_f64().unwrap()));
+            self.0.push((id, value));
             Ok(())
         }
     }
@@ -296,7 +288,14 @@ mod tests {
     fn measurements_are_status_fields_of_the_present_sensors() {
         let mut out = Collect::default();
         write(&mut out, &snapshot()).unwrap();
-        assert_eq!(out.0, [(1, 21.5), (2, 45.0), (3, 100_800.0)]);
+        assert_eq!(
+            out.0,
+            [
+                (1, Value::F32(21.5)),
+                (2, Value::F32(45.0)),
+                (3, Value::F32(100_800.0))
+            ]
+        );
     }
 
     #[test]

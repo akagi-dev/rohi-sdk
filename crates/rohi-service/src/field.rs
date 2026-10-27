@@ -13,12 +13,113 @@
 //  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
-//
 use crate::config::FieldError;
 use crate::value::{Value, ValueKind};
 
-/// Static description of one field of a config section or a service.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Unit of a numeric field, a compact code instead of text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unit {
+    /// Unitless.
+    None,
+    /// Milliseconds.
+    Ms,
+    /// Seconds.
+    S,
+    /// Hertz.
+    Hz,
+    /// Decibel-milliwatts.
+    Dbm,
+    /// Bytes.
+    Bytes,
+    /// Percent.
+    Percent,
+    /// Degrees of an angle.
+    Degrees,
+    /// Meters.
+    Meters,
+    /// Degrees Celsius.
+    Celsius,
+    /// Pascals.
+    Pascal,
+    /// Parts per million.
+    Ppm,
+    /// Parts per billion.
+    Ppb,
+    /// Decibels.
+    Decibels,
+    /// Micrograms per cubic meter.
+    MicrogramsPerCubicMeter,
+    /// Microsieverts per hour.
+    MicrosievertsPerHour,
+}
+
+/// One named value of an enum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EnumVariant {
+    /// The number carried by [`Value::Enum`]. Stable: only ever added.
+    pub value: u32,
+    /// Stable machine-readable name.
+    pub name: &'static str,
+}
+
+impl EnumVariant {
+    /// A variant.
+    pub const fn new(value: u32, name: &'static str) -> Self {
+        Self { value, name }
+    }
+}
+
+/// The variants of an enum, referenced by [`FieldDescriptor::enum_id`].
+///
+/// Variants are not part of the field: a section, service or action lists
+/// its enums once and fields that are no enums carry nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EnumDescriptor {
+    /// Non-zero, unique within the section, service or action.
+    pub id: u32,
+    /// The named values.
+    pub variants: &'static [EnumVariant],
+}
+
+impl EnumDescriptor {
+    /// An enum with the given variants.
+    pub const fn new(id: u32, variants: &'static [EnumVariant]) -> Self {
+        Self { id, variants }
+    }
+
+    /// Whether `value` is a variant.
+    pub fn contains(&self, value: u32) -> bool {
+        self.variants.iter().any(|variant| variant.value == value)
+    }
+
+    /// The name of `value`.
+    pub fn name_of(&self, value: u32) -> Option<&'static str> {
+        self.variants
+            .iter()
+            .find(|variant| variant.value == value)
+            .map(|variant| variant.name)
+    }
+
+    /// The value named `name`.
+    pub fn value_of(&self, name: &str) -> Option<u32> {
+        self.variants
+            .iter()
+            .find(|variant| variant.name == name)
+            .map(|variant| variant.value)
+    }
+}
+
+/// Whether `value` is a variant of the enum `id` in `enums`.
+pub(crate) fn enum_allows(enums: &[EnumDescriptor], id: u32, value: u32) -> bool {
+    enums
+        .iter()
+        .find(|descriptor| descriptor.id == id)
+        .is_some_and(|descriptor| descriptor.contains(value))
+}
+
+/// Static description of one field of a config section, a service or an
+/// action.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FieldDescriptor {
     /// Stable within the section or service: only ever added, never reused.
     pub id: u32,
@@ -26,43 +127,59 @@ pub struct FieldDescriptor {
     pub name: &'static str,
     /// Type of the value.
     pub kind: ValueKind,
-    /// One line of presentation text.
-    pub description: &'static str,
-    /// Unit of the value, empty when unitless.
-    pub unit: &'static str,
-    /// Allowed values of an [`ValueKind::Enum`] field.
-    pub variants: &'static [&'static str],
+    /// Unit of the value.
+    pub unit: Unit,
+    /// The [`EnumDescriptor`] of an [`ValueKind::Enum`] field; 0 otherwise.
+    pub enum_id: u32,
 }
 
 impl FieldDescriptor {
-    /// A field with no description, unit or variants.
+    /// A unitless field that is no enum.
     pub const fn new(id: u32, name: &'static str, kind: ValueKind) -> Self {
         Self {
             id,
             name,
             kind,
-            description: "",
-            unit: "",
-            variants: &[],
+            unit: Unit::None,
+            enum_id: 0,
         }
     }
 
-    /// Sets the description.
-    pub const fn describe(mut self, description: &'static str) -> Self {
-        self.description = description;
-        self
-    }
-
     /// Sets the unit.
-    pub const fn unit(mut self, unit: &'static str) -> Self {
+    pub const fn unit(mut self, unit: Unit) -> Self {
         self.unit = unit;
         self
     }
 
-    /// Sets the allowed variants of an enum field.
-    pub const fn variants(mut self, variants: &'static [&'static str]) -> Self {
-        self.variants = variants;
+    /// Sets the enum of an [`ValueKind::Enum`] field.
+    pub const fn with_enum(mut self, enum_id: u32) -> Self {
+        self.enum_id = enum_id;
         self
+    }
+}
+
+/// Inclusive bounds of a numeric field, in the type of the field. They are
+/// checked by the device and never sent to clients; integers are never
+/// converted to floating point to be compared.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Bounds {
+    /// For [`ValueKind::I64`].
+    I64(i64, i64),
+    /// For [`ValueKind::U64`].
+    U64(u64, u64),
+    /// For [`ValueKind::F32`]; `NaN` is never within the bounds.
+    F32(f32, f32),
+}
+
+impl Bounds {
+    /// Whether `value` is of the bounded kind and within the bounds.
+    pub fn contains(&self, value: &Value) -> bool {
+        match (*self, value) {
+            (Self::I64(min, max), Value::I64(value)) => (min..=max).contains(value),
+            (Self::U64(min, max), Value::U64(value)) => (min..=max).contains(value),
+            (Self::F32(min, max), Value::F32(value)) => (min..=max).contains(value),
+            _ => false,
+        }
     }
 }
 
@@ -77,10 +194,8 @@ pub struct ConfigField {
     pub secret: bool,
     /// May be unset; unset is distinct from an empty string or zero.
     pub optional: bool,
-    /// Inclusive lower bound of a numeric field.
-    pub min: Option<f64>,
-    /// Inclusive upper bound of a numeric field.
-    pub max: Option<f64>,
+    /// Inclusive bounds of a numeric field.
+    pub bounds: Option<Bounds>,
 }
 
 impl ConfigField {
@@ -96,33 +211,25 @@ impl ConfigField {
             writable: true,
             secret: false,
             optional: false,
-            min: None,
-            max: None,
+            bounds: None,
         }
     }
 
-    /// Sets the description.
-    pub const fn describe(mut self, description: &'static str) -> Self {
-        self.field = self.field.describe(description);
-        self
-    }
-
     /// Sets the unit.
-    pub const fn unit(mut self, unit: &'static str) -> Self {
+    pub const fn unit(mut self, unit: Unit) -> Self {
         self.field = self.field.unit(unit);
         self
     }
 
-    /// Sets the allowed variants of an enum field.
-    pub const fn variants(mut self, variants: &'static [&'static str]) -> Self {
-        self.field = self.field.variants(variants);
+    /// Sets the enum of an enum field.
+    pub const fn with_enum(mut self, enum_id: u32) -> Self {
+        self.field = self.field.with_enum(enum_id);
         self
     }
 
     /// Bounds a numeric field, inclusive.
-    pub const fn range(mut self, min: f64, max: f64) -> Self {
-        self.min = Some(min);
-        self.max = Some(max);
+    pub const fn bounds(mut self, bounds: Bounds) -> Self {
+        self.bounds = Some(bounds);
         self
     }
 
@@ -144,65 +251,39 @@ impl ConfigField {
         self
     }
 
-    /// Checks what the schema can express: the kind, the enum variants and
-    /// the numeric range. Cross-field and domain rules belong to the typed
-    /// section.
-    pub fn check(&self, value: &Value) -> Result<(), FieldError> {
+    /// Checks what the schema can express: the kind, the enum variants in
+    /// `enums` and the bounds. Cross-field and domain rules belong to the
+    /// typed section.
+    pub fn check(&self, value: &Value, enums: &[EnumDescriptor]) -> Result<(), FieldError> {
         if value.kind() != self.field.kind {
             return Err(FieldError::WrongKind);
         }
         if let Value::Enum(variant) = value
-            && !self.field.variants.contains(&variant.as_str())
+            && !enum_allows(enums, self.field.enum_id, *variant)
         {
             return Err(FieldError::OutOfRange);
         }
-        let (below, above) = match *value {
-            Value::I64(value) => (
-                self.min.is_some_and(|min| int_below(value.into(), min)),
-                self.max.is_some_and(|max| int_above(value.into(), max)),
-            ),
-            Value::U64(value) => (
-                self.min.is_some_and(|min| int_below(value.into(), min)),
-                self.max.is_some_and(|max| int_above(value.into(), max)),
-            ),
-            Value::F64(value) => {
-                if value.is_nan() {
-                    return Err(FieldError::OutOfRange);
-                }
-                (
-                    self.min.is_some_and(|min| value < min),
-                    self.max.is_some_and(|max| value > max),
-                )
-            }
-            _ => (false, false),
-        };
-        if below || above {
+        if let Some(bounds) = &self.bounds
+            && !bounds.contains(value)
+        {
             return Err(FieldError::OutOfRange);
         }
         Ok(())
     }
 }
 
-/// `bound` rounded down, saturating outside the `i128` range.
-fn floor_i128(bound: f64) -> i128 {
-    let truncated = bound as i128;
-    if (truncated as f64) > bound {
-        truncated.saturating_sub(1)
-    } else {
-        truncated
-    }
-}
-
-/// Whether the integer `value` is below `bound`; `value` is never rounded.
-fn int_below(value: i128, bound: f64) -> bool {
-    if bound.is_nan() {
+/// Whether an enum table fits the limits of the control protocol and every
+/// enum has a non-zero id.
+pub(crate) const fn enums_fit(enums: &[EnumDescriptor]) -> bool {
+    if enums.len() > crate::MAX_ENUMS {
         return false;
     }
-    let floor = floor_i128(bound);
-    value < floor || (value == floor && (floor as f64) < bound)
-}
-
-/// Whether the integer `value` is above `bound`; `value` is never rounded.
-fn int_above(value: i128, bound: f64) -> bool {
-    !bound.is_nan() && value > floor_i128(bound)
+    let mut index = 0;
+    while index < enums.len() {
+        if enums[index].id == 0 || enums[index].variants.len() > crate::MAX_ENUM_VARIANTS {
+            return false;
+        }
+        index += 1;
+    }
+    true
 }

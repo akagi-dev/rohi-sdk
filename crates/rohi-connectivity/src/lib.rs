@@ -63,7 +63,9 @@ pub use config::{ConfigError, ConnectivityConfig, Endpoint, Host};
 pub use encoder::{EncodeError, EncodeStats, EncodedMessage, UrbanEncoder};
 pub use envelope::{BuildError, EnvelopeBuilder, EnvelopeFrame, FrameSigner, SignError};
 pub use http::HttpTransport;
-pub use managed::{ConnectivityStatusService, field as config_field, status_field};
+pub use managed::{
+    ConnectivityStatusService, SERVICE_ID, field as config_field, issue, status_field,
+};
 pub use outbox::{Outbox, OutboxFull};
 pub use service::{
     ConnectivityService, ConnectivityShared, ConnectivityState, ConnectivityStatus, Diagnostics,

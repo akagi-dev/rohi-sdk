@@ -23,9 +23,9 @@
 
 use heapless::Vec;
 use rohi_service::{
-    ActionDescriptor, ActionError, ActionOutput, FieldDescriptor, Issue, IssueSeverity, MAX_ISSUES,
-    ManagedService, ServiceHealth, ServiceState, ServiceSummary, StatusWriter, Value, ValueKind,
-    WriteError,
+    ActionDescriptor, ActionError, ActionOutput, FIRST_SERVICE_ISSUE, FieldDescriptor, Issue,
+    IssueDescriptor, IssueSeverity, MAX_ISSUES, ManagedService, ServiceHealth, ServiceState,
+    ServiceSummary, StatusWriter, Value, ValueKind, WriteError,
 };
 
 use crate::{Identity, PublicKey, SECRET_LEN};
@@ -63,6 +63,25 @@ pub trait IdentityStore {
     async fn erase(&self) -> Result<(), StoreError>;
 }
 
+/// Id of the `identity` service.
+pub const SERVICE_ID: u32 = 4;
+
+/// Ids of the actions of the `identity` service.
+pub mod action {
+    /// Installs the device identity.
+    pub const PROVISION: u32 = 1;
+    /// Removes the device identity.
+    pub const ERASE: u32 = 2;
+}
+
+/// Issue codes of the `identity` service.
+pub mod issue {
+    /// No identity is provisioned.
+    pub const NOT_PROVISIONED: u32 = super::FIRST_SERVICE_ISSUE;
+    /// The identity storage is unavailable.
+    pub const STORAGE_UNAVAILABLE: u32 = super::FIRST_SERVICE_ISSUE + 1;
+}
+
 /// Field ids of the `identity` service status.
 pub mod status_field {
     /// Whether an identity is provisioned.
@@ -84,30 +103,31 @@ pub mod action_field {
 pub struct IdentityService<S>(pub S);
 
 impl<S: IdentityStore> ManagedService for IdentityService<S> {
+    const ID: u32 = SERVICE_ID;
     const NAME: &'static str = "identity";
     const VERSION: u16 = 1;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
-        FieldDescriptor::new(status_field::PROVISIONED, "provisioned", ValueKind::Bool)
-            .describe("Whether an identity is provisioned"),
-        FieldDescriptor::new(status_field::PUBLIC_KEY, "public_key", ValueKind::Bytes)
-            .describe("Ed25519 public key"),
+        FieldDescriptor::new(status_field::PROVISIONED, "provisioned", ValueKind::Bool),
+        FieldDescriptor::new(status_field::PUBLIC_KEY, "public_key", ValueKind::Bytes),
+    ];
+    const ISSUES: &'static [IssueDescriptor] = &[
+        IssueDescriptor::new(issue::NOT_PROVISIONED, "not_provisioned"),
+        IssueDescriptor::new(issue::STORAGE_UNAVAILABLE, "storage_unavailable"),
     ];
     const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new("provision")
-            .describe("Install the device identity; fails if one exists")
-            .args(&[
-                FieldDescriptor::new(action_field::SECRET, "secret", ValueKind::Bytes)
-                    .describe("Ed25519 secret key, 32 bytes"),
-            ])
+        ActionDescriptor::new(action::PROVISION, "provision")
+            .args(&[FieldDescriptor::new(
+                action_field::SECRET,
+                "secret",
+                ValueKind::Bytes,
+            )])
             .results(&[FieldDescriptor::new(
                 action_field::PUBLIC_KEY,
                 "public_key",
                 ValueKind::Bytes,
             )])
             .secret(),
-        ActionDescriptor::new("erase")
-            .describe("Remove the device identity")
-            .privileged(),
+        ActionDescriptor::new(action::ERASE, "erase").privileged(),
     ];
 
     async fn summary(&self) -> ServiceSummary {
@@ -124,14 +144,12 @@ impl<S: IdentityStore> ManagedService for IdentityService<S> {
             Ok(Some(_)) => return,
             Ok(None) => Issue {
                 severity: IssueSeverity::Info,
-                code: "not_provisioned",
-                message: "The device has no identity",
+                code: issue::NOT_PROVISIONED,
                 age_ms: None,
             },
             Err(_) => Issue {
                 severity: IssueSeverity::Error,
-                code: "storage_unavailable",
-                message: "The identity storage is unavailable",
+                code: issue::STORAGE_UNAVAILABLE,
                 age_ms: None,
             },
         };
@@ -149,12 +167,12 @@ impl<S: IdentityStore> ManagedService for IdentityService<S> {
 
     async fn invoke(
         &self,
-        action: &str,
+        action: u32,
         args: &[(u32, Value)],
         out: &mut impl ActionOutput,
     ) -> Result<(), ActionError> {
         match action {
-            "provision" => {
+            action::PROVISION => {
                 let secret = args
                     .iter()
                     .find(|(id, _)| *id == action_field::SECRET)
@@ -178,7 +196,7 @@ impl<S: IdentityStore> ManagedService for IdentityService<S> {
                     _ => Err(ActionError::Internal),
                 }
             }
-            "erase" => Ok(self.0.erase().await?),
+            action::ERASE => Ok(self.0.erase().await?),
             _ => Err(ActionError::UnknownAction),
         }
     }
@@ -222,7 +240,8 @@ mod tests {
         let memory = Memory::default();
         let registry = (Tracked::<_, NoopRawMutex>::new(IdentityService(&memory)),);
         let records =
-            block_on(registry.invoke("identity", "provision", &secret(&[7; SECRET_LEN]))).unwrap();
+            block_on(registry.invoke(SERVICE_ID, action::PROVISION, &secret(&[7; SECRET_LEN])))
+                .unwrap();
         let expected = Identity::from_secret(&[7; SECRET_LEN])
             .unwrap()
             .public_key();
@@ -238,14 +257,16 @@ mod tests {
     fn an_existing_identity_is_never_replaced() {
         let memory = Memory::default();
         let registry = (Tracked::<_, NoopRawMutex>::new(IdentityService(&memory)),);
-        block_on(registry.invoke("identity", "provision", &secret(&[7; SECRET_LEN]))).unwrap();
+        block_on(registry.invoke(SERVICE_ID, action::PROVISION, &secret(&[7; SECRET_LEN])))
+            .unwrap();
         assert_eq!(
-            block_on(registry.invoke("identity", "provision", &secret(&[8; SECRET_LEN]))),
+            block_on(registry.invoke(SERVICE_ID, action::PROVISION, &secret(&[8; SECRET_LEN]))),
             Err(ActionError::Rejected("already_provisioned"))
         );
-        block_on(registry.invoke("identity", "erase", &[])).unwrap();
+        block_on(registry.invoke(SERVICE_ID, action::ERASE, &[])).unwrap();
         assert!(memory.0.borrow().is_none());
-        block_on(registry.invoke("identity", "provision", &secret(&[8; SECRET_LEN]))).unwrap();
+        block_on(registry.invoke(SERVICE_ID, action::PROVISION, &secret(&[8; SECRET_LEN])))
+            .unwrap();
     }
 
     #[test]
@@ -253,7 +274,7 @@ mod tests {
         let memory = Memory::default();
         let registry = (Tracked::<_, NoopRawMutex>::new(IdentityService(&memory)),);
         assert_eq!(
-            block_on(registry.invoke("identity", "provision", &secret(&[7; 5]))),
+            block_on(registry.invoke(SERVICE_ID, action::PROVISION, &secret(&[7; 5]))),
             Err(ActionError::InvalidArgument)
         );
         assert!(memory.0.borrow().is_none());
@@ -263,9 +284,9 @@ mod tests {
     fn status_never_contains_a_secret_and_the_actions_are_protected() {
         let memory = Memory::default();
         let registry = (Tracked::<_, NoopRawMutex>::new(IdentityService(&memory)),);
-        let status = block_on(registry.status("identity", 0)).unwrap();
+        let status = block_on(registry.status(SERVICE_ID, 0)).unwrap();
         assert_eq!(status.summary.state, ServiceState::Stopped);
-        assert_eq!(status.issues[0].code, "not_provisioned");
+        assert_eq!(status.issues[0].code, issue::NOT_PROVISIONED);
         assert_eq!(status.fields.len(), 1);
 
         let actions = registry.service_actions(0);

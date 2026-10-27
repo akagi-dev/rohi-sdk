@@ -103,7 +103,7 @@ pub fn duration(ms: u64) -> String {
 pub fn value(value: &Value, field: Option<&FieldDescriptor>) -> String {
     let unit = field.map(|field| field.unit.as_str()).unwrap_or_default();
     let text = match value {
-        Value::F64(number) => format!("{number:.3}")
+        Value::F32(number) => format!("{number:.3}")
             .trim_end_matches('0')
             .trim_end_matches('.')
             .to_owned(),
@@ -302,7 +302,6 @@ pub fn service_status(paint: Paint, status: &ServiceStatus, schema: &ServiceSche
                 issue.code,
                 duration(issue.age_ms)
             );
-            let _ = writeln!(out, "           {}", issue.message);
         }
     }
     out
@@ -322,12 +321,6 @@ pub fn config_sections(paint: Paint, sections: &[SectionInfo]) -> String {
 
 fn constraints(field: &ConfigField) -> String {
     let mut parts = Vec::new();
-    match (field.min, field.max) {
-        (Some(min), Some(max)) => parts.push(format!("{min}..{max}")),
-        (Some(min), None) => parts.push(format!(">= {min}")),
-        (None, Some(max)) => parts.push(format!("<= {max}")),
-        (None, None) => {}
-    }
     if !field.field.variants.is_empty() {
         parts.push(field.field.variants.join("|"));
     }
@@ -364,13 +357,12 @@ pub fn config_schema(paint: Paint, schema: &ConfigSchema) -> String {
                 kind,
                 access(field).to_owned(),
                 constraints(field),
-                field.field.description.clone(),
             ]
         })
         .collect();
     table(
         paint,
-        &["FIELD", "TYPE", "ACCESS", "CONSTRAINTS", "DESCRIPTION"],
+        &["FIELD", "TYPE", "ACCESS", "CONSTRAINTS"],
         &rows,
         &[],
     )
@@ -419,16 +411,10 @@ pub fn actions(paint: Paint, actions: &[ActionInfo]) -> String {
                 action.service.clone(),
                 action.name.clone(),
                 if action.privileged { "write" } else { "read" }.to_owned(),
-                action.description.clone(),
             ]
         })
         .collect();
-    table(
-        paint,
-        &["SERVICE", "ACTION", "ACCESS", "DESCRIPTION"],
-        &rows,
-        &[],
-    )
+    table(paint, &["SERVICE", "ACTION", "ACCESS"], &rows, &[])
 }
 
 fn field_table(paint: Paint, fields: &[FieldDescriptor]) -> String {
@@ -443,16 +429,10 @@ fn field_table(paint: Paint, fields: &[FieldDescriptor]) -> String {
                 } else {
                     field.variants.join("|")
                 },
-                field.description.clone(),
             ]
         })
         .collect();
-    table(
-        paint,
-        &["FIELD", "TYPE", "UNIT/VALUES", "DESCRIPTION"],
-        &rows,
-        &[],
-    )
+    table(paint, &["FIELD", "TYPE", "UNIT/VALUES"], &rows, &[])
 }
 
 /// The arguments and results of an action.
@@ -469,7 +449,6 @@ pub fn action_schema(paint: Paint, schema: &ActionSchema) -> String {
                 "Access:".to_owned(),
                 if action.privileged { "write" } else { "read" }.to_owned(),
             ),
-            ("About:".to_owned(), action.description.clone()),
         ],
     );
     if !schema.args.is_empty() {

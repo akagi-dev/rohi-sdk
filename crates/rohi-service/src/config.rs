@@ -35,7 +35,7 @@ use embassy_sync::blocking_mutex::raw::RawMutex;
 use embassy_sync::mutex::Mutex as AsyncMutex;
 use heapless::Vec;
 
-use crate::field::ConfigField;
+use crate::field::{ConfigField, EnumDescriptor, enums_fit};
 use crate::value::Value;
 use crate::{MAX_CONFIG_FIELDS, MAX_REGISTRY_ENTRIES};
 
@@ -63,12 +63,17 @@ pub enum FieldError {
 /// between [`Value`] and typed fields, and the validation. Field ids are
 /// stable and only ever added.
 pub trait ManagedConfig: Clone {
+    /// Stable numeric id, the address of requests; unique within the
+    /// registry. Only ever added, never reused.
+    const SECTION_ID: u64;
     /// Stable public section name, for example `connectivity`.
     const NAME: &'static str;
     /// Version of the section schema.
     const VERSION: u16;
     /// Field metadata, at most [`MAX_CONFIG_FIELDS`] entries.
     const FIELDS: &'static [ConfigField];
+    /// The enums the fields refer to, see [`EnumDescriptor`].
+    const ENUMS: &'static [EnumDescriptor] = &[];
 
     /// The module defaults: the base of a patch when nothing is persisted.
     fn defaults() -> Self;
@@ -149,9 +154,11 @@ impl From<StoreError> for ConfigError {
     }
 }
 
-/// Name, version and revision of a section.
+/// Id, name, version and revision of a section.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SectionInfo {
+    /// Stable numeric id.
+    pub id: u64,
     /// Stable section name.
     pub name: &'static str,
     /// Version of the section schema.
@@ -167,6 +174,8 @@ pub struct SectionSchema {
     pub section: SectionInfo,
     /// Field metadata.
     pub fields: &'static [ConfigField],
+    /// The enums the fields refer to.
+    pub enums: &'static [EnumDescriptor],
 }
 
 /// State of one field in [`SectionValues`].
@@ -235,8 +244,8 @@ pub struct FactoryReset {
 /// The generic operations of one section.
 #[allow(async_fn_in_trait)]
 pub trait ConfigSectionOps {
-    /// Stable section name.
-    fn name(&self) -> &'static str;
+    /// Stable section id.
+    fn id(&self) -> u64;
     /// Name, version and current revision.
     fn info(&self) -> SectionInfo;
     /// Field metadata.
@@ -269,7 +278,10 @@ pub struct ManagedSection<C, S, M: RawMutex> {
 impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ManagedSection<C, S, M> {
     /// A section persisted through `store`.
     pub const fn new(store: S) -> Self {
-        const { assert!(C::FIELDS.len() <= MAX_CONFIG_FIELDS) };
+        const {
+            assert!(C::FIELDS.len() <= MAX_CONFIG_FIELDS);
+            assert!(enums_fit(C::ENUMS));
+        };
         Self {
             store,
             revision: Mutex::new(Cell::new(0)),
@@ -304,7 +316,7 @@ impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ManagedSection<C, S, M> 
         }
         match &mutation.op {
             MutationOp::Set(value) => {
-                field.check(value)?;
+                field.check(value, C::ENUMS)?;
                 config.set_field(field.field.id, value.clone())
             }
             MutationOp::Unset if field.optional => config.unset_field(field.field.id),
@@ -323,12 +335,13 @@ impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ManagedSection<C, S, M> 
 impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ConfigSectionOps
     for ManagedSection<C, S, M>
 {
-    fn name(&self) -> &'static str {
-        C::NAME
+    fn id(&self) -> u64 {
+        C::SECTION_ID
     }
 
     fn info(&self) -> SectionInfo {
         SectionInfo {
+            id: C::SECTION_ID,
             name: C::NAME,
             version: u32::from(C::VERSION),
             revision: self.revision(),
@@ -339,6 +352,7 @@ impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ConfigSectionOps
         SectionSchema {
             section: self.info(),
             fields: C::FIELDS,
+            enums: C::ENUMS,
         }
     }
 
@@ -427,20 +441,29 @@ pub trait ConfigRegistry {
     fn section_count(&self) -> usize;
     /// Description of the section at `index`.
     fn section_info(&self, index: usize) -> Option<SectionInfo>;
-    /// Schema of the named section.
-    fn schema(&self, section: &str) -> Option<SectionSchema>;
-    /// Readable content of the named section.
-    async fn get(&self, section: &str) -> Result<SectionValues, ConfigError>;
-    /// Applies a patch to the named section.
+    /// Schema of the section with the given id.
+    fn schema(&self, section: u64) -> Option<SectionSchema>;
+    /// Readable content of the section with the given id.
+    async fn get(&self, section: u64) -> Result<SectionValues, ConfigError>;
+    /// Applies a patch to the section with the given id.
     async fn patch(
         &self,
-        section: &str,
+        section: u64,
         mutations: &[Mutation],
         expected_revision: Option<u32>,
         dry_run: bool,
     ) -> Result<Patched, ConfigError>;
-    /// Resets the named section.
-    async fn reset(&self, section: &str, dry_run: bool) -> Result<Patched, ConfigError>;
+    /// Resets the section with the given id.
+    async fn reset(&self, section: u64, dry_run: bool) -> Result<Patched, ConfigError>;
+
+    /// Whether no two sections share an id. Firmware checks it once at
+    /// start, a clash would make requests reach the wrong section.
+    fn ids_are_unique(&self) -> bool {
+        (0..self.section_count()).all(|index| {
+            let id = self.section_info(index).map(|info| info.id);
+            (0..index).all(|other| self.section_info(other).map(|info| info.id) != id)
+        })
+    }
 
     /// Returns the whole configuration storage to its factory state.
     ///
@@ -454,7 +477,7 @@ pub trait ConfigRegistry {
             let Some(info) = self.section_info(index) else {
                 continue;
             };
-            restart_required |= self.reset(info.name, false).await?.restart_required;
+            restart_required |= self.reset(info.id, false).await?.restart_required;
         }
         Ok(FactoryReset { restart_required })
     }
@@ -469,17 +492,17 @@ impl ConfigRegistry for () {
         None
     }
 
-    fn schema(&self, _: &str) -> Option<SectionSchema> {
+    fn schema(&self, _: u64) -> Option<SectionSchema> {
         None
     }
 
-    async fn get(&self, _: &str) -> Result<SectionValues, ConfigError> {
+    async fn get(&self, _: u64) -> Result<SectionValues, ConfigError> {
         Err(ConfigError::UnknownSection)
     }
 
     async fn patch(
         &self,
-        _: &str,
+        _: u64,
         _: &[Mutation],
         _: Option<u32>,
         _: bool,
@@ -487,7 +510,7 @@ impl ConfigRegistry for () {
         Err(ConfigError::UnknownSection)
     }
 
-    async fn reset(&self, _: &str, _: bool) -> Result<Patched, ConfigError> {
+    async fn reset(&self, _: u64, _: bool) -> Result<Patched, ConfigError> {
         Err(ConfigError::UnknownSection)
     }
 }
@@ -506,15 +529,15 @@ macro_rules! tuple_config_registry {
                 }
             }
 
-            fn schema(&self, section: &str) -> Option<SectionSchema> {
-                $(if self.$index.name() == section {
+            fn schema(&self, section: u64) -> Option<SectionSchema> {
+                $(if self.$index.id() == section {
                     return Some(self.$index.schema());
                 })+
                 None
             }
 
-            async fn get(&self, section: &str) -> Result<SectionValues, ConfigError> {
-                $(if self.$index.name() == section {
+            async fn get(&self, section: u64) -> Result<SectionValues, ConfigError> {
+                $(if self.$index.id() == section {
                     return self.$index.get().await;
                 })+
                 Err(ConfigError::UnknownSection)
@@ -522,19 +545,19 @@ macro_rules! tuple_config_registry {
 
             async fn patch(
                 &self,
-                section: &str,
+                section: u64,
                 mutations: &[Mutation],
                 expected_revision: Option<u32>,
                 dry_run: bool,
             ) -> Result<Patched, ConfigError> {
-                $(if self.$index.name() == section {
+                $(if self.$index.id() == section {
                     return self.$index.patch(mutations, expected_revision, dry_run).await;
                 })+
                 Err(ConfigError::UnknownSection)
             }
 
-            async fn reset(&self, section: &str, dry_run: bool) -> Result<Patched, ConfigError> {
-                $(if self.$index.name() == section {
+            async fn reset(&self, section: u64, dry_run: bool) -> Result<Patched, ConfigError> {
+                $(if self.$index.id() == section {
                     return self.$index.reset(dry_run).await;
                 })+
                 Err(ConfigError::UnknownSection)

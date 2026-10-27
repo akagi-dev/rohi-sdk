@@ -35,7 +35,7 @@ use embassy_time::Delay;
 use log::warn;
 use rohi_config::ConfigSection;
 use rohi_connectivity::{ConnectivityConfig, ConnectivityStatusService};
-use rohi_control::{Controller, Device, DeviceInfo, OpenPolicy};
+use rohi_control::{ControlBackend, Controller, Device, DeviceInfo, OpenPolicy};
 use rohi_control_ble::ControlBle;
 use rohi_hal::SensorsService;
 use rohi_hal_esp::EmbassyClock;
@@ -46,7 +46,8 @@ use rohi_net::{
 };
 use rohi_service::{
     ConfigError as RegistryError, ConfigRegistry, FactoryReset, ManagedSection, Mutation, Patched,
-    SectionInfo, SectionSchema, SectionStore, SectionValues, Startup, StoreError, Tracked,
+    SectionInfo, SectionSchema, SectionStore, SectionValues, ServiceRegistry, Startup, StoreError,
+    Tracked,
 };
 use rohi_time::TimeStatusService;
 use rohi_time_ntp::NtpServersConfig;
@@ -160,17 +161,17 @@ impl ConfigRegistry for UrbanConfig {
         self.sections.section_info(index)
     }
 
-    fn schema(&self, section: &str) -> Option<SectionSchema> {
+    fn schema(&self, section: u64) -> Option<SectionSchema> {
         self.sections.schema(section)
     }
 
-    async fn get(&self, section: &str) -> Result<SectionValues, RegistryError> {
+    async fn get(&self, section: u64) -> Result<SectionValues, RegistryError> {
         self.sections.get(section).await
     }
 
     async fn patch(
         &self,
-        section: &str,
+        section: u64,
         mutations: &[Mutation],
         expected_revision: Option<u32>,
         dry_run: bool,
@@ -180,7 +181,7 @@ impl ConfigRegistry for UrbanConfig {
             .await
     }
 
-    async fn reset(&self, section: &str, dry_run: bool) -> Result<Patched, RegistryError> {
+    async fn reset(&self, section: u64, dry_run: bool) -> Result<Patched, RegistryError> {
         self.sections.reset(section, dry_run).await
     }
 
@@ -234,7 +235,7 @@ pub fn device(
     ble: BleStatus,
 ) -> UrbanDevice {
     let network_failed = network.is_none();
-    Device::new(
+    let device = Device::new(
         DeviceInfo {
             firmware: FIRMWARE,
             board: BOARD,
@@ -280,7 +281,12 @@ pub fn device(
             Tracked::new(IdentityService(StoredIdentity(identity))),
         ),
     )
-    .with_reboot(reboot::request)
+    .with_reboot(reboot::request);
+    // Requests address sections and services by id: a clash would send them
+    // to the wrong one.
+    debug_assert!(device.config().ids_are_unique());
+    debug_assert!(device.services().ids_are_unique());
+    device
 }
 
 /// GATT layout of the ROHI Control Service.

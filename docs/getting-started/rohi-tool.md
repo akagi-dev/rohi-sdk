@@ -6,7 +6,7 @@ that a flashed device (see [First device](first-device.md)) is alive and talking
 
 `rohi` is a thin layer over the [`Device`](../sdk/control.md#rohi-desktop-client) API of the `rohi` library, and the
 command tree **knows no device module**: `status`, `config` and `action` take the names of services, sections and
-actions that the device lists, and parse values with the field descriptions the device sends. A new firmware module
+actions that the device lists, and parse values with the field descriptions the device sends (type, unit, enum variants; the wire carries ids and numbers, the tool translates them with the schema). A new firmware module
 appears in `rohi` without changing the tool. The tool owns only the terminal side: arguments, device selection,
 prompts, output formats and configuration files.
 
@@ -138,7 +138,7 @@ again by the device.
 
 ```bash
 rohi config list                                   # sections and their versions
-rohi config describe connectivity                  # fields: type, access, constraints, description
+rohi config describe connectivity                  # fields: type, access, unit, allowed values
 rohi config get connectivity                       # values; secrets are shown as <configured>
 rohi config get connectivity host                  # one field
 
@@ -160,12 +160,12 @@ rohi factory-reset --yes
 
 ```text
 $ rohi config describe connectivity
-FIELD       TYPE    ACCESS      CONSTRAINTS  DESCRIPTION
-enabled     bool    read-write               Produce and send telemetry
-node_id     u64     read-write               Robonomics CPS node identifier
-interval_s  u64     read-write  10..86400 s  Time between telemetry frames
-host        string  read-write               Ingress host name or IPv4 address
-port        u64     read-write  1..65535     Ingress TCP port
+FIELD       TYPE    ACCESS      CONSTRAINTS
+enabled     bool    read-write
+node_id     u64     read-write
+interval_s  u64     read-write  s
+host        string  read-write
+port        u64     read-write
 ```
 
 - **`set` is a patch**: fields that are not mentioned keep their value, and a section that is not stored yet starts
@@ -217,7 +217,7 @@ A file maps section names to their fields:
 ## Actions
 
 ```bash
-rohi action list                                   # all actions: service, name, read/write, description
+rohi action list                                   # all actions: service, name, read/write
 rohi action describe network scan                     # arguments and results
 rohi action run network scan                          # results as a table, one row per record
 rohi action run network reconnect

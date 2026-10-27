@@ -15,12 +15,12 @@ recipe. The wire contract is in [Control plane](../sdk/control.md), the model in
 
 Actions are declared by a service, so a new operation is one entry in its `ACTIONS` and one arm in `invoke`:
 
-1. **Describe it** in `ManagedService::ACTIONS` with `ActionDescriptor::new("name")`: a one-line `describe`, typed `args`
+1. **Describe it** in `ManagedService::ACTIONS` with `ActionDescriptor::new(id, "name")` (a stable numeric id, never reused), typed `args`
    (all required, at most 3) and `results` (the fields of each returned record, at most 4 fields, 6 records).
 2. **Privilege**: `.privileged()` if it changes anything (the link policy must grant write access), `.secret()` if an
    argument is a secret (implies privileged, requires the strongest privilege, and the argument is overwritten after the
    call). A read-only action such as a scan needs neither.
-3. **Implement it** in `invoke(action, args, out)`. The registry has already checked that the arguments exist and match
+3. **Implement it** in `invoke(action, args, out)`, where `action` is the numeric id. The registry has already checked that the arguments exist and match
    the declared kinds. Write each result record with `out.next_record()` and the typed writers (`out.text(id, ..)`,
    `out.i64(id, ..)`); a field that does not match its descriptor is refused. Return `ActionError::Rejected("code")` for a
    refusal a client may react to; the code is stable and machine readable (`already_provisioned`).

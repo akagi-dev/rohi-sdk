@@ -120,8 +120,8 @@ impl fmt::Debug for control::ConfigMutation {
             .field(
                 "operation",
                 &match &self.operation {
-                    Some(Operation::Set(_)) => "set <redacted>",
                     Some(Operation::Unset(_)) => "unset",
+                    Some(_) => "set <redacted>",
                     None => "<none>",
                 },
             )
@@ -133,8 +133,8 @@ impl fmt::Debug for control::InvokeActionRequest {
     // Arguments can be secrets, for example an identity seed: never shown.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("InvokeActionRequest")
-            .field("service", &self.service)
-            .field("action", &self.action)
+            .field("service_id", &self.service_id)
+            .field("action_id", &self.action_id)
             .field("args", &self.args.len())
             .finish()
     }

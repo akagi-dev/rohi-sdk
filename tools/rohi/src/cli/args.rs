@@ -246,7 +246,7 @@ Examples:
     List,
     /// Describe the fields of a section.
     ///
-    /// Shows the type, access, constraints and description of every field.
+    /// Shows the type, access, unit and allowed values of every field.
     #[command(after_help = "\
 Examples:
   rohi config describe connectivity")]

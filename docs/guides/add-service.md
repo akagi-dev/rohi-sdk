@@ -15,10 +15,11 @@ struct):
 pub struct LocationService<'a, M: RawMutex>(pub &'a LocationShared<M>);
 
 impl<M: RawMutex> ManagedService for LocationService<'_, M> {
+    const ID: u32 = 7;                              // stable numeric id, the address of requests
     const NAME: &'static str = "location";          // stable public name
     const VERSION: u16 = 1;                         // version of the status schema
     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
-        FieldDescriptor::new(1, "latitude", ValueKind::F64).describe("Latitude, WGS84").unit("deg"),
+        FieldDescriptor::new(1, "latitude", ValueKind::F32).unit(Unit::Degrees),
         // ...ids are stable: only ever add, never reuse or renumber
     ];
     const ESSENTIAL: bool = false;                  // does the device depend on it?
@@ -33,10 +34,11 @@ Rules that make the status useful:
 
 - **State, health and ready are separate.** `disabled` is not an error (turned off, or never set); `starting` is
   `unknown`/not ready; `running` + `degraded` means it works with reduced capability. Do not invent one status enum.
-- **Issues are active problems with a stable `code`** (`snake_case`, never reworded), a severity and a message. Only what is
-  wrong *now*; history is diagnostics. At most 4; put the most important first (the first becomes the `reason`).
+- **Issues are active problems with a stable numeric `code`** (named once in `ISSUES`, `snake_case`, never renumbered or
+  reworded) and a severity; there is no message text. Only what is wrong *now*; history is diagnostics. At most 4 active
+  and 12 described.
 - **Fields have stable ids and units.** A value that does not exist now is simply not written. At most 20 fields per
-  service; names are dotted paths for nesting (`bmx280.temperature`); strings and bytes are cut at 64 bytes.
+  service; names are dotted paths for nesting (`bmx280.temperature`); strings and bytes are cut at 32 bytes; floats are `f32`.
 - `ESSENTIAL = false` limits how much a failing service hurts the **device health**, which the firmware decides (the
   default policy: `rohi-service::default_device_health`).
 - Status is a snapshot of live state, cheap and non-blocking; do not wait on slow hardware inside it.

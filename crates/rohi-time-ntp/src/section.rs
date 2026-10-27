@@ -160,20 +160,14 @@ impl NtpServersConfig {
 }
 
 impl ManagedConfig for NtpServersConfig {
+    const SECTION_ID: u64 = <Self as ConfigSection>::ID.0;
     const NAME: &'static str = "time";
     const VERSION: u16 = <Self as ConfigSection>::VERSION;
     const FIELDS: &'static [ConfigField] = &[
-        ConfigField::new(field::SERVER1, "server1", ValueKind::String)
-            .describe("NTP server host name or IPv4 address"),
-        ConfigField::new(field::SERVER2, "server2", ValueKind::String)
-            .describe("Second NTP server, used after a failure")
-            .optional(),
-        ConfigField::new(field::SERVER3, "server3", ValueKind::String)
-            .describe("Third NTP server")
-            .optional(),
-        ConfigField::new(field::SERVER4, "server4", ValueKind::String)
-            .describe("Fourth NTP server")
-            .optional(),
+        ConfigField::new(field::SERVER1, "server1", ValueKind::String),
+        ConfigField::new(field::SERVER2, "server2", ValueKind::String).optional(),
+        ConfigField::new(field::SERVER3, "server3", ValueKind::String).optional(),
+        ConfigField::new(field::SERVER4, "server4", ValueKind::String).optional(),
     ];
 
     /// The public servers of [`DEFAULT_SERVERS`].

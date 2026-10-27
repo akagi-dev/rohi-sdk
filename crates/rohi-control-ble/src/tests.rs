@@ -382,6 +382,7 @@ struct Radio<'a> {
 }
 
 impl ManagedService for &Radio<'_> {
+    const ID: u32 = 1;
     const NAME: &'static str = "radio";
     const VERSION: u16 = 1;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
@@ -391,10 +392,14 @@ impl ManagedService for &Radio<'_> {
         FieldDescriptor::new(4, "d", ValueKind::String),
     ];
     const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new("scan"),
-        ActionDescriptor::new("reconnect"),
-        ActionDescriptor::new("disconnect").privileged(),
-        ActionDescriptor::new("store").args(&[FieldDescriptor::new(1, "data", ValueKind::Bytes)]),
+        ActionDescriptor::new(1, "scan"),
+        ActionDescriptor::new(2, "reconnect"),
+        ActionDescriptor::new(3, "disconnect").privileged(),
+        ActionDescriptor::new(4, "store").args(&[FieldDescriptor::new(
+            1,
+            "data",
+            ValueKind::Bytes,
+        )]),
     ];
 
     async fn summary(&self) -> ServiceSummary {
@@ -411,28 +416,28 @@ impl ManagedService for &Radio<'_> {
 
     async fn invoke(
         &self,
-        action: &str,
+        action: u32,
         _: &[(u32, Value)],
         _: &mut impl ActionOutput,
     ) -> Result<(), ActionError> {
         match action {
-            "scan" => {
+            1 => {
                 if *self.hold_scan.borrow() {
                     core::future::pending::<()>().await;
                 }
                 Ok(())
             }
-            "reconnect" => {
+            2 => {
                 self.calls.borrow_mut().push("reconnect");
                 // The central drops and reconnects while the request is handled.
                 self.shared.drop_link_and_reconnect();
                 Ok(())
             }
-            "disconnect" => {
+            3 => {
                 self.calls.borrow_mut().push("disconnect");
                 Ok(())
             }
-            "store" => Ok(()),
+            4 => Ok(()),
             _ => Err(ActionError::UnknownAction),
         }
     }
@@ -464,23 +469,20 @@ fn device<'a>(radio: &'a Radio<'a>) -> Bench<'a> {
     )
 }
 
-fn invoke(service: &str, action: &str, args: &[pb::FieldValue]) -> Call {
+fn invoke(service_id: u32, action_id: u32, args: &[pb::ActionArg]) -> Call {
     let mut list = heapless::Vec::new();
     for arg in args {
         list.push(arg.clone()).ok().unwrap();
     }
     Call::InvokeAction(pb::InvokeActionRequest {
-        service: service.try_into().unwrap(),
-        action: action.try_into().unwrap(),
+        service_id,
+        action_id,
         args: list,
     })
 }
 
 fn status_request() -> Call {
-    Call::GetServiceStatus(pb::GetServiceStatusRequest {
-        service: "radio".try_into().unwrap(),
-        ..Default::default()
-    })
+    Call::GetServiceStatus(pb::GetServiceStatusRequest { service_id: 1 })
 }
 
 fn request_bytes(id: u32, call: Call) -> Vec<u8> {
@@ -563,16 +565,13 @@ fn multi_fragment_response_preserves_the_protobuf_bytes() {
 }
 
 fn long_request() -> Vec<u8> {
-    let mut data = pb::FieldValue {
+    let data = pb::ActionArg {
         field_id: 1,
-        ..Default::default()
-    };
-    data.set_value(pb::Value {
-        value: Some(pb::Value_::Value::BytesValue(
+        value: Some(pb::ActionArg_::Value::BytesValue(
             heapless::Vec::from_slice(&[0x42; 60]).unwrap(),
         )),
-    });
-    request_bytes(3, invoke("radio", "store", &[data]))
+    };
+    request_bytes(3, invoke(1, 4, &[data]))
 }
 
 #[test]
@@ -688,7 +687,7 @@ fn response_is_dropped_when_the_link_changed_during_the_request() {
     let controller = Controller::new(device(&radio), OpenPolicy);
     shared.push_frames(frames(
         1,
-        &request_bytes(1, invoke("radio", "reconnect", &[])),
+        &request_bytes(1, invoke(1, 2, &[])),
         MAX_BLE_PAYLOAD,
     ));
     run(&shared, &controller, 1);
@@ -707,7 +706,7 @@ fn cancelled_step_abandons_the_request_and_the_next_one_works() {
 
     shared.push_frames(frames(
         1,
-        &request_bytes(1, invoke("radio", "scan", &[])),
+        &request_bytes(1, invoke(1, 1, &[])),
         MAX_BLE_PAYLOAD,
     ));
     {
@@ -759,7 +758,7 @@ fn link_security_reaches_the_policy() {
     let shared = Shared::new(MAX_BLE_PAYLOAD);
     let radio = radio(&shared);
     let controller = Controller::new(device(&radio), RequireEncryption);
-    let request = request_bytes(1, invoke("radio", "disconnect", &[]));
+    let request = request_bytes(1, invoke(1, 3, &[]));
 
     shared.push_frames(frames(1, &request, MAX_BLE_PAYLOAD));
     run(&shared, &controller, 1);

@@ -90,7 +90,7 @@ fn parse_inner(field: &FieldDescriptor, text: &str, echo: bool) -> Result<Value,
             .parse()
             .map(Value::U64)
             .map_err(|_| bad("a non-negative integer")),
-        ValueKind::F64 => text.parse().map(Value::F64).map_err(|_| bad("a number")),
+        ValueKind::F32 => text.parse().map(Value::F32).map_err(|_| bad("a number")),
         ValueKind::String => Ok(Value::String(text.to_owned())),
         ValueKind::Bytes => hex_bytes(text)
             .map(Value::Bytes)
@@ -125,9 +125,9 @@ pub fn from_json(field: &FieldDescriptor, json: &serde_json::Value) -> Result<Va
             .as_u64()
             .map(Value::U64)
             .ok_or_else(|| bad("a non-negative integer")),
-        (ValueKind::F64, Json::Number(number)) => number
+        (ValueKind::F32, Json::Number(number)) => number
             .as_f64()
-            .map(Value::F64)
+            .map(|number| Value::F32(number as f32))
             .ok_or_else(|| bad("a number")),
         (ValueKind::String, Json::String(text)) => Ok(Value::String(text.clone())),
         (ValueKind::Bytes, Json::String(text)) => hex_bytes(text)
@@ -140,7 +140,7 @@ pub fn from_json(field: &FieldDescriptor, json: &serde_json::Value) -> Result<Va
         (ValueKind::Bool, _) => Err(bad("true or false")),
         (ValueKind::I64, _) => Err(bad("an integer")),
         (ValueKind::U64, _) => Err(bad("a non-negative integer")),
-        (ValueKind::F64, _) => Err(bad("a number")),
+        (ValueKind::F32, _) => Err(bad("a number")),
         (ValueKind::String, _) => Err(bad("a string")),
         (ValueKind::Bytes, _) => Err(bad("hex bytes in a string")),
         (ValueKind::Unrecognized, _) => Err(bad("a value of a type this rohi does not know")),
@@ -180,9 +180,9 @@ mod tests {
             id: 1,
             name: "f".into(),
             kind,
-            description: String::new(),
             unit: String::new(),
             variants: vec!["a".into(), "b".into()],
+            variant_values: vec![0, 1],
         }
     }
 
@@ -198,8 +198,8 @@ mod tests {
         );
         assert_eq!(parse(&field(ValueKind::I64), "-5").unwrap(), Value::I64(-5));
         assert_eq!(
-            parse(&field(ValueKind::F64), "1.5").unwrap(),
-            Value::F64(1.5)
+            parse(&field(ValueKind::F32), "1.5").unwrap(),
+            Value::F32(1.5)
         );
         assert_eq!(
             parse(&field(ValueKind::Bytes), "0aff").unwrap(),
