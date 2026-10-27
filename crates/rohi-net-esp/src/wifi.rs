@@ -191,9 +191,12 @@ impl EspWifi {
             .set_config(&Config::Station(station))
             .map_err(|error| map_driver_error(&error))?;
 
-        self.controller
-            .connect_async()
+        // Only association is bounded by `connect_timeout_ms`; the wait below
+        // has its own `dhcp_timeout_ms`.
+        let connect_timeout = Duration::from_millis(config.wifi.connect_timeout_ms.into());
+        with_timeout(connect_timeout, self.controller.connect_async())
             .await
+            .map_err(|_| WifiError::Timeout)?
             .map_err(|error| match error {
                 ConnectionError::Failed(info) => map_connect_reason(info.reason),
                 ConnectionError::WifiError(error) => map_driver_error(&error),
@@ -244,18 +247,12 @@ impl WifiBackend for EspWifi {
     }
 
     async fn connect(&mut self, config: &LinkConfig) -> Result<NetworkInfo, WifiError> {
-        let timeout = Duration::from_millis(config.wifi.connect_timeout_ms.into());
-        match with_timeout(timeout, self.connect_inner(config)).await {
-            Ok(Ok(info)) => Ok(info),
-            Ok(Err(error)) => {
+        match self.connect_inner(config).await {
+            Ok(info) => Ok(info),
+            Err(error) => {
                 self.ssid = None;
                 let _ = self.disconnect().await;
                 Err(error)
-            }
-            Err(_) => {
-                self.ssid = None;
-                let _ = self.disconnect().await;
-                Err(WifiError::Timeout)
             }
         }
     }

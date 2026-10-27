@@ -56,8 +56,8 @@ pub async fn run<T: ClientTransport>(
                 )
             }
         };
-        if in_place {
-            ctx.io.redraw(&text)?;
+        // A screen that does not fit the terminal is printed like a plain watch.
+        if in_place && ctx.io.redraw(&text)? {
             printed += 1;
             if ctx.watch_limit.is_some_and(|limit| printed >= limit) {
                 return Ok(());

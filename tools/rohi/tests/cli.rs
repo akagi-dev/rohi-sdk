@@ -47,6 +47,7 @@ impl Write for Buf {
 struct Terminal<'a> {
     interactive: bool,
     screen: bool,
+    size: Option<(usize, usize)>,
     input: &'a [&'a str],
 }
 
@@ -108,6 +109,10 @@ async fn run_watching(
         terminal.input,
     )
     .with_screen(terminal.screen);
+    let io = match terminal.size {
+        Some((columns, rows)) => io.with_size(columns, rows),
+        None => io,
+    };
     let mut ctx = Ctx::new(io, cli.output);
     ctx.color(cli.color);
     ctx.uri = Some("ble://BENCH-1234".into());
@@ -487,6 +492,45 @@ async fn a_watch_on_a_terminal_redraws_in_place() {
     assert!(outcome.stdout.ends_with("\x1b[J"), "{:?}", outcome.stdout);
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn a_watch_redraws_in_place_only_while_it_fits_the_terminal() {
+    let bench = Bench::new();
+    let bench = &bench;
+    let watch = |size, limit| async move {
+        run_watching(
+            bench,
+            &["status", "--watch", "--interval", "0"],
+            Terminal {
+                screen: true,
+                size,
+                ..Terminal::default()
+            },
+            Some(limit),
+        )
+        .await
+    };
+
+    // Plenty of room: the last line has no newline, so a full screen would
+    // not scroll either.
+    let outcome = watch(Some((200, 100)), 2).await;
+    outcome.ok();
+    assert_eq!(outcome.stdout.matches("\x1b[H").count(), 2);
+    assert!(
+        !outcome.stdout.contains("\x1b[K\n\x1b[J"),
+        "{:?}",
+        outcome.stdout
+    );
+
+    // Too few rows: ordinary output.
+    let outcome = watch(Some((200, 2)), 1).await;
+    assert!(!outcome.stdout.contains("\x1b[H"), "{:?}", outcome.stdout);
+    assert!(outcome.stdout.contains("Device:"), "{:?}", outcome.stdout);
+
+    // Wrapping makes lines take more than one row.
+    let outcome = watch(Some((4, 20)), 1).await;
+    assert!(!outcome.stdout.contains("\x1b[H"), "{:?}", outcome.stdout);
+}
+
 // ---------------------------------------------------------------------------
 // config
 // ---------------------------------------------------------------------------
@@ -727,6 +771,18 @@ link_refresh     10000 ms\n"
     // Empty stdin is an error, never an empty secret.
     let outcome = run(&bench, &["config", "set", "wifi", "password=-"]).await;
     assert!(matches!(outcome.error(), CliError::PasswordRequired { .. }));
+
+    // An empty line is a value for the device to judge, not a missing one.
+    let terminal = Terminal {
+        input: &[""],
+        ..Default::default()
+    };
+    let outcome = run_with(&bench, &["config", "set", "wifi", "password=-"], terminal).await;
+    assert!(
+        !matches!(outcome.result, Err(CliError::PasswordRequired { .. })),
+        "{}",
+        outcome.stderr
+    );
 
     let outcome = run(&bench, &["config", "unset", "wifi", "password"]).await;
     outcome.ok();
