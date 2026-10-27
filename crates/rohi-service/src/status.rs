@@ -411,7 +411,11 @@ pub enum StatusError {
 #[derive(Clone, Copy)]
 struct Track {
     revision: u32,
+    // What the revision follows: state, health, readiness and issues.
     hash: u32,
+    // Only the active issues: their age restarts when the set changes, not
+    // when something else about the service does.
+    issues_hash: u32,
     state: ServiceState,
     state_since_ms: u64,
     issues_since_ms: u64,
@@ -427,14 +431,19 @@ fn fnv(mut hash: u32, bytes: &[u8]) -> u32 {
     hash
 }
 
-fn observable_hash(summary: &ServiceSummary, issues: &[Issue]) -> u32 {
-    let mut hash = fnv(FNV_OFFSET, &[summary.state as u8, summary.health as u8]);
-    hash = fnv(hash, &[u8::from(summary.ready)]);
+fn issues_hash(issues: &[Issue]) -> u32 {
+    let mut hash = FNV_OFFSET;
     for issue in issues {
         hash = fnv(hash, &[issue.severity as u8]);
         hash = fnv(hash, &issue.code.to_le_bytes());
     }
     hash
+}
+
+fn observable_hash(summary: &ServiceSummary, issues_hash: u32) -> u32 {
+    let mut hash = fnv(FNV_OFFSET, &[summary.state as u8, summary.health as u8]);
+    hash = fnv(hash, &[u8::from(summary.ready)]);
+    fnv(hash, &issues_hash.to_le_bytes())
 }
 
 /// A [`ManagedService`] with the bookkeeping the registry needs: the status
@@ -489,12 +498,14 @@ impl<S: ManagedService, M: RawMutex> Tracked<S, M> {
         let summary = self.service.summary().await;
         let mut issues = Vec::new();
         self.service.issues(&mut issues).await;
-        let hash = observable_hash(&summary, &issues);
+        let issues_hash = issues_hash(&issues);
+        let hash = observable_hash(&summary, issues_hash);
 
         let track = self.track.lock(|cell| {
             let mut track = cell.get().unwrap_or(Track {
                 revision: 1,
                 hash,
+                issues_hash,
                 state: summary.state,
                 state_since_ms: now_ms,
                 issues_since_ms: now_ms,
@@ -506,6 +517,9 @@ impl<S: ManagedService, M: RawMutex> Tracked<S, M> {
             if track.hash != hash {
                 track.hash = hash;
                 track.revision = track.revision.wrapping_add(1);
+            }
+            if track.issues_hash != issues_hash {
+                track.issues_hash = issues_hash;
                 track.issues_since_ms = now_ms;
             }
             cell.set(Some(track));

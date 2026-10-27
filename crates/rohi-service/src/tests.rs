@@ -1033,3 +1033,38 @@ mod schema_invariants {
         ]));
     }
 }
+
+#[test]
+fn issue_age_follows_the_set_of_active_issues_only() {
+    let probe = Probe::new();
+    let registry = (Tracked::<_, NoopRawMutex>::new(&probe),);
+    let age = |now| block_on(registry.status(7, now)).unwrap().issues[0].age_ms;
+    let revision = |now| block_on(registry.status(7, now)).unwrap().summary.revision;
+
+    let _ = block_on(registry.summary(0, 1_000));
+    *probe.issue.borrow_mut() = Some(FIRST_SERVICE_ISSUE);
+    assert_eq!(age(2_000), Some(0));
+    let before = revision(2_000);
+
+    // The state, health and readiness change while the same issue stays: a
+    // new revision, but the issue is as old as ever.
+    *probe.state.borrow_mut() = ServiceState::Failed;
+    *probe.health.borrow_mut() = ServiceHealth::Error;
+    assert_eq!(age(5_000), Some(3_000));
+    assert_eq!(revision(5_000), before + 1);
+    // The state age is its own clock.
+    let summary = block_on(registry.summary(0, 6_000));
+    assert_eq!(summary.unwrap().state_age_ms, 1_000);
+    assert_eq!(age(6_000), Some(4_000));
+
+    // Another issue replaces it: the set changed, so the age starts over.
+    *probe.issue.borrow_mut() = Some(FIRST_SERVICE_ISSUE + 1);
+    assert_eq!(age(9_000), Some(0));
+    assert_eq!(age(10_000), Some(1_000));
+
+    // Gone and back: a new issue.
+    *probe.issue.borrow_mut() = None;
+    let _ = block_on(registry.summary(0, 11_000));
+    *probe.issue.borrow_mut() = Some(FIRST_SERVICE_ISSUE + 1);
+    assert_eq!(age(12_000), Some(0));
+}
