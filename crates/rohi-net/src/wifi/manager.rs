@@ -28,7 +28,10 @@ use embedded_hal_async::delay::DelayNs;
 use log::{info, warn};
 
 use super::backoff::Backoff;
-use crate::network::{DEFAULT_BACKOFF_INITIAL_MS, DEFAULT_BACKOFF_MAX_MS, DEFAULT_LINK_REFRESH_MS};
+use super::config::{
+    DEFAULT_BACKOFF_INITIAL_MS, DEFAULT_BACKOFF_MAX_MS, DEFAULT_LINK_REFRESH_MS, LinkConfig,
+    WifiConfig,
+};
 use crate::{
     NetworkConfig, NetworkInfo, WIFI_COMMAND_QUEUE_DEPTH, WifiBackend, WifiError, WifiScanResults,
     WifiState, WifiStatus,
@@ -39,7 +42,7 @@ pub const STATUS_RECEIVERS: usize = 3;
 
 /// Transient, imperative requests. Persistent configuration is never a
 /// command: it is published as desired state, see
-/// [`WifiHandle::set_desired_config`].
+/// [`WifiHandle::set_wifi_config`].
 #[derive(Clone, Copy)]
 enum Command {
     Reconnect,
@@ -52,7 +55,17 @@ enum Command {
 /// coalesced into the last one.
 struct Desired {
     generation: u32,
-    config: Option<NetworkConfig>,
+    wifi: Option<WifiConfig>,
+    network: NetworkConfig,
+}
+
+impl Desired {
+    fn link(&self) -> Option<LinkConfig> {
+        self.wifi.clone().map(|wifi| LinkConfig {
+            wifi,
+            network: self.network.clone(),
+        })
+    }
 }
 
 /// Counters of the link since boot, published by the [`WifiManager`].
@@ -85,7 +98,8 @@ impl<M: RawMutex> WifiShared<M> {
         Self {
             desired: BlockingMutex::new(RefCell::new(Desired {
                 generation: 0,
-                config: None,
+                wifi: None,
+                network: NetworkConfig::new(),
             })),
             desired_changed: Signal::new(),
             metrics: BlockingMutex::new(Cell::new(LinkMetrics {
@@ -119,7 +133,8 @@ impl<M: RawMutex> Default for WifiShared<M> {
 /// Cheap, copyable interface to the Wi-Fi manager: the Wi-Fi control plane.
 ///
 /// The persistent configuration is published as desired state
-/// ([`set_desired_config`](Self::set_desired_config)); transient actions
+/// ([`set_wifi_config`](Self::set_wifi_config) and
+/// [`set_network_config`](Self::set_network_config)); transient actions
 /// (scan, reconnect, disconnect) are bounded commands. No handle method
 /// touches the platform driver. IP traffic (DNS, TCP) does not go through
 /// this handle, see [`NetworkHandle`](crate::NetworkHandle).
@@ -143,8 +158,8 @@ impl<M: RawMutex> WifiHandle<'_, M> {
             .map_err(|_| WifiError::Busy)
     }
 
-    /// Publishes the desired configuration: `Some` to use a network, `None`
-    /// when no network is configured (forgotten).
+    /// Publishes the desired Wi-Fi configuration: `Some` to use a network,
+    /// `None` when no network is configured (forgotten).
     ///
     /// Synchronous on purpose: there is no `.await`, so a caller that
     /// persisted the configuration cannot be cancelled before the manager
@@ -155,20 +170,38 @@ impl<M: RawMutex> WifiHandle<'_, M> {
     ///
     /// The manager validates the value again. Completion does not mean the
     /// access point was reached; follow [`status`](Self::status) for that.
-    pub fn set_desired_config(&self, config: Option<NetworkConfig>) {
+    pub fn set_wifi_config(&self, config: Option<WifiConfig>) {
+        self.publish_desired(|desired| desired.wifi = config);
+    }
+
+    /// Publishes the desired IPv4 configuration. A change reconnects, as
+    /// the address is obtained while joining the network.
+    pub fn set_network_config(&self, config: NetworkConfig) {
+        self.publish_desired(|desired| desired.network = config);
+    }
+
+    fn publish_desired(&self, update: impl FnOnce(&mut Desired)) {
         self.shared.desired.lock(|desired| {
             let mut desired = desired.borrow_mut();
             desired.generation = desired.generation.wrapping_add(1);
-            desired.config = config;
+            update(&mut desired);
         });
         self.shared.desired_changed.signal(());
     }
 
-    /// The latest desired configuration, as published.
-    pub fn desired_config(&self) -> Option<NetworkConfig> {
+    /// The latest desired Wi-Fi configuration, as published.
+    pub fn wifi_config(&self) -> Option<WifiConfig> {
         self.shared
             .desired
-            .lock(|desired| desired.borrow().config.clone())
+            .lock(|desired| desired.borrow().wifi.clone())
+    }
+
+    /// The latest desired IPv4 configuration, as published; the defaults
+    /// until one is published.
+    pub fn network_config(&self) -> NetworkConfig {
+        self.shared
+            .desired
+            .lock(|desired| desired.borrow().network.clone())
     }
 
     /// Counters of the link since boot.
@@ -176,11 +209,11 @@ impl<M: RawMutex> WifiHandle<'_, M> {
         self.shared.metrics.lock(|metrics| metrics.get())
     }
 
-    /// `true` if the latest desired configuration is `Some`.
+    /// `true` if the latest desired Wi-Fi configuration is `Some`.
     pub fn is_configured(&self) -> bool {
         self.shared
             .desired
-            .lock(|desired| desired.borrow().config.is_some())
+            .lock(|desired| desired.borrow().wifi.is_some())
     }
 
     /// Drops the current connection and connects again immediately.
@@ -265,7 +298,7 @@ impl ManagerConfig {
     };
 
     /// The same clock with the timing of `config`.
-    pub const fn with_network(self, config: &NetworkConfig) -> Self {
+    pub const fn with_wifi(self, config: &WifiConfig) -> Self {
         Self {
             backoff_initial_ms: config.backoff_initial_ms,
             backoff_max_ms: config.backoff_max_ms,
@@ -323,7 +356,7 @@ pub struct WifiManager<'a, B, D, M: RawMutex> {
     delay: D,
     shared: &'a WifiShared<M>,
     settings: ManagerConfig,
-    config: Option<NetworkConfig>,
+    config: Option<LinkConfig>,
     /// Generation of the last desired configuration taken into account.
     seen: u32,
     phase: Phase,
@@ -556,7 +589,7 @@ impl<'a, B: WifiBackend, D: DelayNs, M: RawMutex> WifiManager<'a, B, D, M> {
     async fn reconcile(&mut self) {
         let (generation, desired) = self.shared.desired.lock(|desired| {
             let desired = desired.borrow();
-            (desired.generation, desired.config.clone())
+            (desired.generation, desired.link())
         });
         self.seen = generation;
         match desired {
@@ -574,7 +607,7 @@ impl<'a, B: WifiBackend, D: DelayNs, M: RawMutex> WifiManager<'a, B, D, M> {
                 } else if self.config.as_ref() != Some(&config) {
                     let _ = self.backend.disconnect().await;
                     // Retry state belongs to the previous network.
-                    self.settings = self.settings.with_network(&config);
+                    self.settings = self.settings.with_wifi(&config.wifi);
                     self.backoff = Backoff::new(
                         self.settings.backoff_initial_ms,
                         self.settings.backoff_max_ms,
@@ -668,14 +701,14 @@ fn set_info<M: RawMutex>(shared: &WifiShared<M>, info: Option<NetworkInfo>) {
 fn desired_differs<M: RawMutex>(
     shared: &WifiShared<M>,
     seen: &mut u32,
-    current: &Option<NetworkConfig>,
+    current: &Option<LinkConfig>,
 ) -> bool {
     shared.desired.lock(|desired| {
         let desired = desired.borrow();
         if desired.generation == *seen {
             return false;
         }
-        if desired.config == *current {
+        if desired.link() == *current {
             *seen = desired.generation;
             return false;
         }

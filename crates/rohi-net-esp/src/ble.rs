@@ -31,7 +31,7 @@
 //! Every connection gets a new epoch; chunks of an earlier connection are
 //! never delivered to or sent for a later one.
 
-use core::cell::Cell;
+use core::cell::{Cell, RefCell};
 
 use embassy_futures::join::join;
 use embassy_futures::select::{Either, select};
@@ -43,8 +43,8 @@ use esp_radio::ble::controller::BleConnector;
 use heapless::Vec;
 use log::{debug, info, warn};
 use rohi_net::{
-    BleConfig, BleConnectionInfo, BleError, BleState, BleTransport, DEFAULT_BLE_PAYLOAD,
-    MAX_BLE_PAYLOAD,
+    BleConfig, BleConnectionInfo, BleError, BleName, BleProbe, BleState, BleTransport,
+    DEFAULT_BLE_PAYLOAD, MAX_BLE_PAYLOAD,
 };
 use trouble_host::prelude::*;
 
@@ -96,6 +96,8 @@ struct Shared<const RX_DEPTH: usize, const TX_DEPTH: usize> {
     rx: Channel<CriticalSectionRawMutex, RxEvent, RX_DEPTH>,
     tx: Channel<CriticalSectionRawMutex, Chunk, TX_DEPTH>,
     link: Mutex<CriticalSectionRawMutex, Cell<Link>>,
+    /// The advertised name, empty until the runner started.
+    name: Mutex<CriticalSectionRawMutex, RefCell<heapless::String<NAME_MAX>>>,
 }
 
 impl<const RX_DEPTH: usize, const TX_DEPTH: usize> Shared<RX_DEPTH, TX_DEPTH> {
@@ -109,6 +111,7 @@ impl<const RX_DEPTH: usize, const TX_DEPTH: usize> Shared<RX_DEPTH, TX_DEPTH> {
                 payload: DEFAULT_BLE_PAYLOAD,
                 info: None,
             })),
+            name: Mutex::new(RefCell::new(heapless::String::new())),
         }
     }
 
@@ -121,6 +124,14 @@ impl<const RX_DEPTH: usize, const TX_DEPTH: usize> Shared<RX_DEPTH, TX_DEPTH> {
             let mut value = cell.get();
             f(&mut value);
             cell.set(value);
+        });
+    }
+
+    fn set_name(&self, name: &str) {
+        self.name.lock(|cell| {
+            let mut stored = cell.borrow_mut();
+            stored.clear();
+            let _ = stored.push_str(name);
         });
     }
 }
@@ -195,6 +206,46 @@ impl<
 /// The connected central as a [`BleTransport`].
 pub struct EspBle<const RX_DEPTH: usize, const TX_DEPTH: usize> {
     shared: &'static Shared<RX_DEPTH, TX_DEPTH>,
+}
+
+impl<const RX_DEPTH: usize, const TX_DEPTH: usize> EspBle<RX_DEPTH, TX_DEPTH> {
+    /// A copyable view of the peripheral for the `ble` service. The transport
+    /// itself belongs to the control link, so take the view before handing it
+    /// over.
+    pub fn status(&self) -> EspBleStatus<RX_DEPTH, TX_DEPTH> {
+        EspBleStatus {
+            shared: self.shared,
+        }
+    }
+}
+
+/// Read-only view of the BLE peripheral, see [`EspBle::status`].
+pub struct EspBleStatus<const RX_DEPTH: usize, const TX_DEPTH: usize> {
+    shared: &'static Shared<RX_DEPTH, TX_DEPTH>,
+}
+
+impl<const RX_DEPTH: usize, const TX_DEPTH: usize> Clone for EspBleStatus<RX_DEPTH, TX_DEPTH> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<const RX_DEPTH: usize, const TX_DEPTH: usize> Copy for EspBleStatus<RX_DEPTH, TX_DEPTH> {}
+
+impl<const RX_DEPTH: usize, const TX_DEPTH: usize> BleProbe for EspBleStatus<RX_DEPTH, TX_DEPTH> {
+    fn state(&self) -> BleState {
+        self.shared.link().state
+    }
+
+    fn max_payload(&self) -> usize {
+        self.shared.link().payload
+    }
+
+    fn name(&self) -> Option<BleName> {
+        self.shared
+            .name
+            .lock(|cell| BleName::new(cell.borrow().as_str()))
+    }
 }
 
 impl<const RX_DEPTH: usize, const TX_DEPTH: usize> BleTransport for EspBle<RX_DEPTH, TX_DEPTH> {
@@ -302,9 +353,17 @@ pub(crate) fn new<
 /// Longest device name: the whole scan response minus its 2-byte header.
 const NAME_MAX: usize = 29;
 
-/// `<prefix>-<last two MAC bytes>`, for example `ALTRUIST-URBAN-A1B2`.
-fn device_name(prefix: &str) -> heapless::String<NAME_MAX> {
+/// The configured name, or `<prefix>-<last two MAC bytes>` by default, for
+/// example `ALTRUIST-URBAN-A1B2`.
+fn device_name(config: &BleConfig) -> heapless::String<NAME_MAX> {
     use core::fmt::Write;
+
+    if let Some(name) = &config.name {
+        let mut configured = heapless::String::new();
+        let _ = configured.push_str(name.as_str());
+        return configured;
+    }
+    let prefix = config.name_prefix;
 
     let mac = base_mac_address();
     let mac = mac.as_bytes();
@@ -356,7 +415,8 @@ impl<
         let mut peripheral = stack.peripheral();
         let mut runner = stack.runner();
 
-        let name = device_name(self.config.name_prefix);
+        let name = device_name(&self.config);
+        shared.set_name(name.as_str());
         info!("BLE: device name {}", name.as_str());
         let mut rx_store = [0u8; MAX_BLE_PAYLOAD];
         let mut tx_store = [0u8; MAX_BLE_PAYLOAD];

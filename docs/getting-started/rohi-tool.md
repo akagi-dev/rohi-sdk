@@ -144,8 +144,8 @@ rohi config get connectivity host                  # one field
 
 rohi config set connectivity host=ingress.example.org port=443 enabled=true
 rohi config set connectivity interval_s=120 --dry-run
-rohi config set network ssid=office password=-         # secret from stdin or a hidden prompt
-rohi config unset network password                    # optional field: no value (not "" or 0)
+rohi config set wifi ssid=office password=-            # secret from stdin or a hidden prompt
+rohi config unset wifi password                       # optional field: no value (not "" or 0)
 rohi config reset connectivity                     # remove the stored section, restore defaults
 ```
 
@@ -190,7 +190,7 @@ A file maps section names to their fields:
 
 ```json
 {
-  "network": { "ssid": "office" },
+  "wifi": { "ssid": "office" },
   "connectivity": { "enabled": true, "interval_s": 120, "host": "ingress.example.org", "port": 443 },
   "location": { "latitude": 52.52, "longitude": 13.405 }
 }
@@ -248,10 +248,10 @@ without echoing it.
 |--------|-----|
 | `rohi sensors` | `rohi status sensors` |
 | `rohi time` | `rohi status time` |
-| `rohi wifi` (status) | `rohi status network` |
-| `rohi wifi scan` | `rohi action run network scan` |
-| `rohi wifi reconnect`, `disconnect` | `rohi action run network reconnect` / `disconnect` |
-| `rohi wifi connect`, `configure`, `forget` | `rohi config set network ssid=.. password=-`, `rohi config reset network`, then `rohi status network` |
+| `rohi wifi` (status) | `rohi status wifi` |
+| `rohi wifi scan` | `rohi action run wifi scan` |
+| `rohi wifi reconnect`, `disconnect` | `rohi action run wifi reconnect` / `disconnect` |
+| `rohi wifi connect`, `configure`, `forget` | `rohi action run wifi connect ssid=- password=-`, `rohi config set wifi ssid=.. password=-`, `rohi config reset wifi`, then `rohi status wifi` |
 | `rohi config [wifi\|connectivity]` | `rohi config get <section>` |
 | `rohi connectivity set --host ..` | `rohi config set connectivity host=..` |
 | `rohi backup export` / `import` | `rohi config export` / `apply` |

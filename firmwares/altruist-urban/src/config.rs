@@ -45,9 +45,9 @@
 //! own: [`StorageMaintenance::factory_reset`] formats the whole region.
 //!
 //! Persistent Wi-Fi configuration is *state*: after the owner task committed a
-//! `NetworkConfig` section (and once at boot, from the stored value) it publishes
-//! the value to the Wi-Fi manager as the desired configuration, synchronously,
-//! in the same task step as the commit. The `Identity` section works the same
+//! `WifiConfig` or `NetworkConfig` section (and once at boot, from the stored
+//! values) it publishes the value to the Wi-Fi manager as the desired
+//! configuration, synchronously, in the same task step as the commit. The `Identity` section works the same
 //! way: the owner updates the signer in the commit step. So does
 //! `LocationConfig`: the shared location is updated for the telemetry frames and
 //! the `location` service. So does
@@ -80,7 +80,7 @@ use rohi_config_esp::{EspConfigStorage, EspStorageError};
 use rohi_connectivity::ConnectivityConfig;
 use rohi_identity::Identity;
 use rohi_location::LocationConfig;
-use rohi_net::{NetworkConfig, WifiHandle};
+use rohi_net::{NetworkConfig, WifiConfig, WifiHandle};
 use rohi_time_ntp::NtpServersConfig;
 
 use crate::tasks::RawMutex;
@@ -445,6 +445,7 @@ impl Owner {
                 warn!("Configuration: factory reset, region formatted");
                 *self = Self::Ready(store);
                 for id in [
+                    WifiConfig::ID,
                     NetworkConfig::ID,
                     Identity::ID,
                     ConnectivityConfig::ID,
@@ -568,7 +569,8 @@ async fn config_task(
 /// (unprovisioned) configuration. [`maintenance`] can format it.
 ///
 /// `wifi` receives the desired Wi-Fi configuration: the stored one now, and
-/// every later commit of the `NetworkConfig` section, see the module documentation.
+/// every later commit of the `WifiConfig` and `NetworkConfig` sections, see the
+/// module documentation.
 pub fn start(
     spawner: Spawner,
     flash: FLASH<'static>,
@@ -588,7 +590,8 @@ pub fn maintenance() -> StorageMaintenance {
 }
 
 /// Publishes a just committed (or removed) section to the runtime that
-/// depends on it: `NetworkConfig` becomes the desired Wi-Fi configuration,
+/// depends on it: `WifiConfig` and `NetworkConfig` become the desired Wi-Fi
+/// and IPv4 configuration,
 /// `Identity` becomes the signing identity, `ConnectivityConfig` is handed to
 /// the telemetry task, `NtpServersConfig` to the NTP task. Synchronous on
 /// purpose, see the module documentation. Other sections have no runtime consumer.
@@ -641,15 +644,28 @@ fn publish_committed(wifi: WifiHandle<'static, RawMutex>, id: SectionId, blob: O
         }
         return;
     }
+    if id == WifiConfig::ID {
+        match blob {
+            None => wifi.set_wifi_config(None),
+            Some(blob) => match WifiConfig::decode_versioned(blob.version, blob.payload()) {
+                Ok(config) => wifi.set_wifi_config(Some(config)),
+                Err(error) => warn!(
+                    "Wi-Fi: committed configuration cannot be decoded: {}",
+                    error
+                ),
+            },
+        }
+        return;
+    }
     if id != NetworkConfig::ID {
         return;
     }
     match blob {
-        None => wifi.set_desired_config(None),
+        None => wifi.set_network_config(NetworkConfig::new()),
         Some(blob) => match NetworkConfig::decode_versioned(blob.version, blob.payload()) {
-            Ok(config) => wifi.set_desired_config(Some(config)),
+            Ok(config) => wifi.set_network_config(config),
             Err(error) => warn!(
-                "Wi-Fi: committed configuration cannot be decoded: {}",
+                "Network: committed configuration cannot be decoded: {}",
                 error
             ),
         },
@@ -674,8 +690,9 @@ fn publish_stored_location(owner: &mut Owner, wifi: WifiHandle<'static, RawMutex
     }
 }
 
-/// Publishes the stored Wi-Fi configuration at boot. Without one the Wi-Fi
-/// manager stays `NotConfigured` and attempts nothing.
+/// Publishes the stored Wi-Fi and network configuration at boot. Without a
+/// Wi-Fi one the manager stays `NotConfigured` and attempts nothing; without a
+/// network one the address comes from DHCP.
 fn publish_stored_wifi(owner: &mut Owner, wifi: WifiHandle<'static, RawMutex>) {
     let Owner::Ready(store) = owner else {
         warn!("Wi-Fi: configuration unavailable, not configured");
@@ -687,6 +704,15 @@ fn publish_stored_wifi(owner: &mut Owner, wifi: WifiHandle<'static, RawMutex>) {
             blob.version = info.version;
             blob.len = info.length;
             publish_committed(wifi, NetworkConfig::ID, Some(&blob));
+        }
+        Ok(None) => info!("Network: default address settings"),
+        Err(error) => warn!("Network configuration unreadable: {}", error),
+    }
+    match store.read_raw(WifiConfig::ID, &mut blob.bytes) {
+        Ok(Some(info)) => {
+            blob.version = info.version;
+            blob.len = info.length;
+            publish_committed(wifi, WifiConfig::ID, Some(&blob));
         }
         Ok(None) => info!("Wi-Fi: not configured"),
         Err(error) => warn!("Wi-Fi configuration unreadable: {}", error),

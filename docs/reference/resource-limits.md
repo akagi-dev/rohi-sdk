@@ -36,8 +36,8 @@ the final value is **not yet measured** ([Hardware testing](../validation/hardwa
 | `MAX_WIFI_SCAN_RESULTS` | 16 (strongest first; the backend converts at most 48 raw entries per scan) |
 | `WIFI_COMMAND_QUEUE_DEPTH` | 4 (scan, reconnect, disconnect only; `Busy` when full) |
 | `STATUS_RECEIVERS` | 3 tasks waiting for status changes |
-| Backoff (`network` section: `backoff_initial`, `backoff_max`, `link_refresh`) | default 1 s doubling to 60 s; reset after the link stayed up for 10 s |
-| Timeouts (`network` section) | scan 20 s, connect 30 s, DHCP 20 s by default |
+| Backoff (`wifi` section: `backoff_initial`, `backoff_max`, `link_refresh`) | default 1 s doubling to 60 s; reset after the link stayed up for 10 s |
+| Timeouts (`wifi` section: scan, connect; `network` section: DHCP) | scan 20 s, connect 30 s, DHCP 20 s by default |
 
 The desired-configuration cell holds one value (latest wins); it is not a queue.
 

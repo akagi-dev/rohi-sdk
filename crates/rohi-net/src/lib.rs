@@ -42,11 +42,13 @@ mod limits;
 pub mod network;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
+mod text_codec;
 pub mod wifi;
 
 pub use ble::{
-    BleConfig, BleConnectionInfo, BleError, BleGattSpec, BleState, BleTransport,
-    DEFAULT_BLE_PAYLOAD, MAX_BLE_PAYLOAD,
+    BleConfig, BleConnectionInfo, BleError, BleGattSpec, BleName, BleProbe, BleService,
+    BleSettings, BleState, BleTransport, DEFAULT_BLE_PAYLOAD, MAX_BLE_NAME_LEN, MAX_BLE_PAYLOAD,
+    config_field as ble_config_field, status_field as ble_status_field,
 };
 pub use ip::{IpBackend, IpUsage, NetError, NetworkHandle, UdpSocket};
 pub use limits::{
@@ -54,12 +56,17 @@ pub use limits::{
     WIFI_COMMAND_QUEUE_DEPTH,
 };
 pub use network::{
-    ADDRESS_MODES, AddressMode, HeapStats, Hostname, Ipv4, NetworkConfig, NetworkProbe,
-    NetworkService, StaticIpv4, config_field as network_config_field,
-    scan_field as network_scan_field, status_field as network_status_field,
+    ADDRESS_MODES, AddressMode, DEFAULT_DHCP_TIMEOUT_MS, DHCP_TIMEOUT_RANGE_MS, Hostname, Ipv4,
+    MAX_HOSTNAME_LEN, NetworkConfig, NetworkProbe, NetworkService, StaticIpv4,
+    config_field as network_config_field, status_field as network_status_field,
 };
 pub use wifi::{
-    Backoff, LinkMetrics, ManagerConfig, NetworkInfo, STATUS_RECEIVERS, ScanCollector, WifiBackend,
-    WifiError, WifiHandle, WifiManager, WifiNetwork, WifiPassword, WifiScanResults, WifiSecurity,
-    WifiShared, WifiSsid, WifiState, WifiStatus,
+    BACKOFF_INITIAL_RANGE_MS, BACKOFF_MAX_RANGE_MS, Backoff, CONNECT_TIMEOUT_RANGE_MS,
+    DEFAULT_BACKOFF_INITIAL_MS, DEFAULT_BACKOFF_MAX_MS, DEFAULT_CONNECT_TIMEOUT_MS,
+    DEFAULT_LINK_REFRESH_MS, DEFAULT_SCAN_TIMEOUT_MS, HeapStats, LINK_REFRESH_RANGE_MS, LinkConfig,
+    LinkMetrics, ManagerConfig, NetworkInfo, SCAN_TIMEOUT_RANGE_MS, STATUS_RECEIVERS,
+    ScanCollector, WifiBackend, WifiConfig, WifiError, WifiHandle, WifiManager, WifiNetwork,
+    WifiPassword, WifiProbe, WifiScanResults, WifiSecurity, WifiService, WifiShared, WifiSsid,
+    WifiState, WifiStatus, config_field as wifi_config_field, connect_field as wifi_connect_field,
+    scan_field as wifi_scan_field, status_field as wifi_status_field,
 };

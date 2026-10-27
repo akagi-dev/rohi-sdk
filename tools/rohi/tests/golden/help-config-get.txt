@@ -55,4 +55,4 @@ Connection:
 Examples:
   rohi config get connectivity
   rohi config get connectivity host
-  rohi -o json config get network
+  rohi -o json config get wifi

@@ -58,5 +58,5 @@ Connection:
 Examples:
   rohi config set connectivity host=ingress.example.org port=443 enabled=true
   rohi config set connectivity interval_s=120 --dry-run
-  rohi config set network ssid=office password=-
-  echo 'hunter2hunter2' | rohi config set network password=-
+  rohi config set wifi ssid=office password=-
+  echo 'hunter2hunter2' | rohi config set wifi password=-

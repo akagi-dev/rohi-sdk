@@ -56,4 +56,4 @@ Connection:
           [default: 10]
 
 Examples:
-  rohi config unset network password
+  rohi config unset wifi password

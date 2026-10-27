@@ -76,7 +76,7 @@ boot (stored configuration is published once after opening the store).
 
 | API | Cancellation semantics |
 |-----|------------------------|
-| `WifiHandle::set_desired_config` | synchronous; nothing to cancel |
+| `WifiHandle::set_wifi_config` / `set_network_config` | synchronous; nothing to cancel |
 | `WifiHandle::scan` | dropping abandons the request. A scan already handed to the manager still runs; other callers get `Busy` until it finishes; its result is discarded and never delivered to a later caller. Capacity is not lost |
 | `WifiHandle::reconnect` / `disconnect` | synchronous commands; `Busy` when the bounded queue is full |
 | `WifiBackend::connect` / `wait_link_lost` | must be cancel-safe: the manager drops them when a command or configuration change preempts them |

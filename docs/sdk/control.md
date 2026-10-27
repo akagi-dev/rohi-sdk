@@ -33,7 +33,7 @@ exposes a generic byte pipe. `rohi-net*` never depends on `rohi-control*`.
 
 | Crate | Role |
 |-------|------|
-| `rohi-net` (`ble`) | `BleTransport`, `BleState`, `BleConnectionInfo`, `BleConfig`: portable BLE API, no vendor types |
+| `rohi-net` (`ble`) | `BleTransport`, `BleState`, `BleConnectionInfo`, `BleConfig`, the `ble` section (`BleSettings`) and service (`BleService`): portable BLE API, no vendor types |
 | `rohi-net-esp` | `EspWireless` (shared radio runtime), `EspWifi`, `EspIp`, `EspBle` |
 | `rohi-control-proto` | `control.proto`, bounded generated types (`micropb`), `PROTOCOL_VERSION`, `limits` |
 | `rohi-service` | the generic model: `Value`, `ManagedConfig`, `ManagedService`, registries; see [Service pipeline](service.md) |

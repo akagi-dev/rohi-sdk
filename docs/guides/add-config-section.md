@@ -24,7 +24,7 @@ before choosing names and field numbers.
    - Field numbers (`#[n(..)]`) are the schema: only append, never reuse or renumber.
    - Secrets: do not derive `Debug`; implement it by hand with redaction (see `WifiPassword`).
 2. **Pin the encoding** with a golden test (`assert_eq!` on the exact bytes, `T::ID` and `T::VERSION`); see
-   `cbor_encoding_is_stable` for `NetworkConfig`. Also test the round trip and the maximum-size value against
+   `the_cbor_encoding_is_stable` for `WifiConfig`. Also test the round trip and the maximum-size value against
    `MAX_SECTION_PAYLOAD`.
 3. **Validate** in the type (`validate()`), at the boundary that accepts new values and again in the consumer.
 4. **Use it** from the firmware through `ConfigHandle::{get, set, remove}`; the configuration task is the only owner of

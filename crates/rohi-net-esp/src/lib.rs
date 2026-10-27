@@ -50,7 +50,7 @@ mod wifi;
 mod wireless;
 
 #[cfg(any(feature = "esp32c3", feature = "esp32c6"))]
-pub use ble::{BleResources, BleRunner, EspBle};
+pub use ble::{BleResources, BleRunner, EspBle, EspBleStatus};
 #[cfg(any(feature = "esp32c3", feature = "esp32c6"))]
 pub use ip::{
     EspIp, EspTcpConnection, EspUdpSocket, NetResources, STACK_INTERNAL_SOCKETS, UDP_PACKETS,

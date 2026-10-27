@@ -171,7 +171,7 @@ Examples:
     #[command(after_help = "\
 Examples:
   rohi status
-  rohi status network
+  rohi status wifi
   rohi status --watch
   rohi status connectivity --watch --interval 5
   rohi -o json status sensors")]
@@ -261,7 +261,7 @@ Examples:
 Examples:
   rohi config get connectivity
   rohi config get connectivity host
-  rohi -o json config get network")]
+  rohi -o json config get wifi")]
     Get {
         /// The section.
         section: String,
@@ -279,8 +279,8 @@ Examples:
 Examples:
   rohi config set connectivity host=ingress.example.org port=443 enabled=true
   rohi config set connectivity interval_s=120 --dry-run
-  rohi config set network ssid=office password=-
-  echo 'hunter2hunter2' | rohi config set network password=-")]
+  rohi config set wifi ssid=office password=-
+  echo 'hunter2hunter2' | rohi config set wifi password=-")]
     Set {
         /// The section.
         section: String,
@@ -297,7 +297,7 @@ Examples:
     /// value afterwards.
     #[command(after_help = "\
 Examples:
-  rohi config unset network password")]
+  rohi config unset wifi password")]
     Unset {
         /// The section.
         section: String,
@@ -384,7 +384,7 @@ Examples:
     /// Describe the arguments and results of an action.
     #[command(after_help = "\
 Examples:
-  rohi action describe network scan")]
+  rohi action describe wifi scan")]
     Describe {
         /// The service.
         service: String,
@@ -400,11 +400,12 @@ Examples:
     /// table, one row per record.
     #[command(after_help = "\
 Examples:
-  rohi action run network scan
-  rohi action run network reconnect
+  rohi action run wifi scan
+  rohi action run wifi connect ssid=- password=-
+  rohi action run wifi reconnect
   rohi action run identity provision secret=-
   rohi action run identity erase
-  rohi -o json action run network scan")]
+  rohi -o json action run wifi scan")]
     Run {
         /// The service.
         service: String,

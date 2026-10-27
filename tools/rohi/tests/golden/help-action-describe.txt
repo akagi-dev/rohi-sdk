@@ -51,4 +51,4 @@ Connection:
           [default: 10]
 
 Examples:
-  rohi action describe network scan
+  rohi action describe wifi scan

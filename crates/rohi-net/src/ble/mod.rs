@@ -24,6 +24,14 @@
 
 use core::fmt;
 
+mod config;
+mod managed;
+mod service;
+
+pub use config::{BleName, BleSettings, MAX_BLE_NAME_LEN};
+pub use managed::field as config_field;
+pub use service::{BleProbe, BleService, status_field};
+
 /// Largest ATT payload a BLE transport ever has to carry (MTU 247 minus the
 /// 3-byte ATT header). Fragmenting layers must never exceed
 /// [`BleTransport::max_payload`], which is at most this value.
@@ -49,15 +57,28 @@ pub struct BleGattSpec {
 }
 
 /// BLE peripheral configuration.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BleConfig {
-    /// Prefix of the advertised and GAP device name. The backend appends `-`
-    /// and the last two bytes of the device MAC in upper-case hex, for example
+    /// Prefix of the default advertised and GAP device name, used while
+    /// [`name`](Self::name) is `None`. The backend appends `-` and the last
+    /// two bytes of the device MAC in upper-case hex, for example
     /// `ALTRUIST-URBAN` becomes `ALTRUIST-URBAN-A1B2`. Long prefixes are cut to
     /// fit the advertising data.
     pub name_prefix: &'static str,
+    /// The configured name, advertised as it is. Replaces the default name.
+    pub name: Option<BleName>,
     /// GATT layout of the byte pipe.
     pub gatt: BleGattSpec,
+}
+
+impl BleConfig {
+    /// The same configuration with the name of `settings`.
+    pub fn with_settings(self, settings: &BleSettings) -> Self {
+        Self {
+            name: settings.name.clone(),
+            ..self
+        }
+    }
 }
 
 /// Security properties of the current link.

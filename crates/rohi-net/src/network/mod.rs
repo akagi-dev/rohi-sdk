@@ -14,25 +14,21 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
-
 //! The `network` section and service of the management plane.
 //!
 //! The device has one network: a Wi-Fi station with an IPv4 stack. Its
-//! desired state is the persistent [`NetworkConfig`] (network, address mode,
-//! host name, timing); its observed state is the [`NetworkService`]: the link
-//! and the address, the radio heap and the socket usage, and the actions
-//! `scan`, `reconnect` and `disconnect`.
+//! desired state is the persistent [`NetworkConfig`] (address mode, host
+//! name, DHCP timing); the Wi-Fi station itself is the [`wifi`](crate::wifi)
+//! section and service. Its observed state is the [`NetworkService`]: the
+//! address and the socket usage.
 
 mod config;
 mod managed;
 mod service;
 
 pub use config::{
-    AddressMode, BACKOFF_INITIAL_RANGE_MS, BACKOFF_MAX_RANGE_MS, CONNECT_TIMEOUT_RANGE_MS,
-    DEFAULT_BACKOFF_INITIAL_MS, DEFAULT_BACKOFF_MAX_MS, DEFAULT_CONNECT_TIMEOUT_MS,
-    DEFAULT_DHCP_TIMEOUT_MS, DEFAULT_LINK_REFRESH_MS, DEFAULT_SCAN_TIMEOUT_MS,
-    DHCP_TIMEOUT_RANGE_MS, Hostname, Ipv4, LINK_REFRESH_RANGE_MS, MAX_HOSTNAME_LEN, NetworkConfig,
-    SCAN_TIMEOUT_RANGE_MS, StaticIpv4,
+    AddressMode, DEFAULT_DHCP_TIMEOUT_MS, DHCP_TIMEOUT_RANGE_MS, Hostname, Ipv4, MAX_HOSTNAME_LEN,
+    NetworkConfig, StaticIpv4,
 };
 pub use managed::{ADDRESS_MODES, field as config_field};
-pub use service::{HeapStats, NetworkProbe, NetworkService, scan_field, status_field};
+pub use service::{NetworkProbe, NetworkService, status_field};

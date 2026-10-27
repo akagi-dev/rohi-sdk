@@ -174,7 +174,9 @@ rules are in [Service pipeline](../sdk/service.md#config-sections).
 
 | Service | What it reports | Typical issue codes |
 |---------|-----------------|---------------------|
-| `network` | connection state, network, signal, addresses, radio heap, socket usage | `authentication_failed`, `network_not_found`, `dhcp_failed` |
+| `wifi` | connection state, network, signal, channel, radio heap | `authentication_failed`, `network_not_found`, `association_failed` |
+| `network` | IPv4 address, gateway, DNS, address mode, socket usage | `dhcp_failed` |
+| `ble` | peripheral state, advertised name, link security | `driver_error` |
 | `connectivity` | telemetry queue and counters, endpoint | `connection_timeout`, `unauthorized`, `no_identity`, `no_utc_time`, `no_location` |
 | `time` | wall-clock time, source, age, failures | `network_unavailable`, `timeout`, `implausible` |
 | `sensors` | `<sensor>.<measurement>` values in canonical units | `bmx280_error`, `sds011_degraded`, ... |

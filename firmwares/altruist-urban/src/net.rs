@@ -27,7 +27,7 @@ use embassy_time::{Delay, Duration, Instant, with_timeout};
 use log::{info, warn};
 use rohi_net::{
     HeapStats, IpUsage, ManagerConfig, NetworkHandle, NetworkProbe, WifiError, WifiHandle,
-    WifiManager, WifiShared, WifiState, WifiStatus,
+    WifiManager, WifiProbe, WifiShared, WifiState, WifiStatus,
 };
 use rohi_net_esp::{EspWifi, EspWireless, NetRunner, wireless_heap};
 use static_cell::StaticCell;
@@ -57,8 +57,8 @@ fn uptime_ms() -> u64 {
     Instant::now().as_millis()
 }
 
-/// What the `network` service reads from the platform: the wireless heap, the
-/// socket usage of the IP stack (when it started) and the clock.
+/// What the `wifi` and `network` services read from the platform: the wireless
+/// heap and the clock, and the socket usage of the IP stack (when it started).
 #[derive(Clone, Copy)]
 pub struct Probe {
     ip: Option<NetworkHandle<'static, Ip>>,
@@ -71,17 +71,19 @@ impl Probe {
     }
 }
 
-impl NetworkProbe for Probe {
+impl WifiProbe for Probe {
     fn heap(&self) -> Option<HeapStats> {
         Some(wireless_heap().stats())
     }
 
-    fn sockets(&self) -> Option<IpUsage> {
-        self.ip.map(|ip| ip.usage())
-    }
-
     fn now_ms(&self) -> Option<u64> {
         Some(uptime_ms())
+    }
+}
+
+impl NetworkProbe for Probe {
+    fn sockets(&self) -> Option<IpUsage> {
+        self.ip.map(|ip| ip.usage())
     }
 }
 

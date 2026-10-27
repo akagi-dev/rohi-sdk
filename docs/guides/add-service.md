@@ -48,7 +48,7 @@ or issues change) and the time in the current state. You do nothing for that.
 
 If users configure it, add a `ConfigSection` and implement `ManagedConfig` as in
 [Add a ConfigSection](add-config-section.md): the schema, typed conversion, whole-section validation.
-Name the section like the service when they belong together (`location`, `connectivity`, `network`).
+Name the section like the service when they belong together (`location`, `connectivity`, `wifi`).
 
 ## 3. Actions (optional)
 
@@ -61,7 +61,7 @@ In `firmwares/altruist-urban/src/control.rs` add the service to the `Services` t
 
 ```rust,ignore
 pub type Services = (
-    Tracked<NetworkService<'static, RawMutex, Delay, net::Probe>, RawMutex>,
+    Tracked<NetworkService<'static, RawMutex, net::Probe>, RawMutex>,
     // ...
     Tracked<LocationService<'static, RawMutex>, RawMutex>,
 );

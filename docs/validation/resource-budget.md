@@ -50,8 +50,8 @@ bounded: the largest `Request` or `Response` variant is kept under about 2.7 KB 
 instead of grown. The static future of `control_task` is about 11 KB of `.bss` (release build, ESP32-C3, measured with
 `nm -S` on `altruist_urban::control::control_task::POOL`). Stack depth under load is not measured yet. The stack is what the linker leaves after `.bss`, so every
 static byte and every deep frame on the config or control path costs stack: a decoder that builds a large section from
-temporaries (the `network` section, about 200 B) needed ~900 B of frame and overflowed the stack on a `rohi config` request;
-`NetworkConfig` is decoded in place for that reason. Check `_stack_end` and the frames of the config and control path
+temporaries (the `wifi` section, about 200 B) needed ~900 B of frame and overflowed the stack on a `rohi config` request;
+`WifiConfig` is decoded in place for that reason. Check `_stack_end` and the frames of the config and control path
 when a section or a static grows.
 
 

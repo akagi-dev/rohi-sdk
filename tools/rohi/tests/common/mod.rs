@@ -18,7 +18,7 @@ use rohi_control::{ControlBackend, Controller, Device as BackendDevice, DeviceIn
 use rohi_control_ble::ControlBle;
 use rohi_identity::{Identity, IdentityService, IdentityStore, IdentityStoreError, PublicKey};
 use rohi_location::{LocationConfig, LocationService, LocationShared};
-use rohi_net::NetworkConfig;
+use rohi_net::WifiConfig;
 use rohi_net::{BleConnectionInfo, BleError, BleState, BleTransport};
 use rohi_service::{
     ActionDescriptor, ActionError, ActionOutput, ConfigField, FieldDescriptor, FieldError, Issue,
@@ -326,7 +326,7 @@ impl SectionStore<LocationConfig> for LocationStore {
 /// The state of the fake device, kept by the test so it can look at it after
 /// the command ran.
 pub struct Bench {
-    pub network: Mem<NetworkConfig>,
+    pub wifi: Mem<WifiConfig>,
     pub telemetry: Mem<ConnectivityConfig>,
     pub gadget: Mem<Gadget>,
     pub location: LocationStore,
@@ -337,7 +337,7 @@ pub struct Bench {
 impl Bench {
     pub fn new() -> Self {
         let bench = Self {
-            network: Mem::new(Rc::default(), false),
+            wifi: Mem::new(Rc::default(), false),
             telemetry: Mem::new(Rc::default(), false),
             gadget: Mem::new(Rc::default(), true),
             location: LocationStore {
@@ -352,7 +352,7 @@ impl Bench {
     }
 
     pub fn writes(&self) -> u32 {
-        self.network.writes.get()
+        self.wifi.writes.get()
             + self.telemetry.writes.get()
             + self.gadget.writes.get()
             + self.location.mem.writes.get()
@@ -366,7 +366,7 @@ impl Default for Bench {
 }
 
 type Sections = (
-    ManagedSection<NetworkConfig, Mem<NetworkConfig>, NoopRawMutex>,
+    ManagedSection<WifiConfig, Mem<WifiConfig>, NoopRawMutex>,
     ManagedSection<ConnectivityConfig, Mem<ConnectivityConfig>, NoopRawMutex>,
     ManagedSection<Gadget, Mem<Gadget>, NoopRawMutex>,
     ManagedSection<LocationConfig, LocationStore, NoopRawMutex>,
@@ -405,7 +405,7 @@ pub fn backend(bench: &Bench) -> Backend<'_> {
         },
         uptime,
         (
-            ManagedSection::new(bench.network.clone()),
+            ManagedSection::new(bench.wifi.clone()),
             ManagedSection::new(bench.telemetry.clone()),
             ManagedSection::new(bench.gadget.clone()),
             ManagedSection::new(bench.location.clone()),

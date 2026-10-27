@@ -45,8 +45,8 @@ use esp_radio::wifi::{
 use log::{debug, warn};
 
 use rohi_net::{
-    NetworkConfig, NetworkInfo, ScanCollector, WifiBackend, WifiError, WifiNetwork,
-    WifiScanResults, WifiSecurity, WifiSsid,
+    LinkConfig, NetworkConfig, NetworkInfo, ScanCollector, WifiBackend, WifiConfig, WifiError,
+    WifiNetwork, WifiScanResults, WifiSecurity, WifiSsid,
 };
 
 /// Upper bound of raw scan entries converted per scan (bounds the vendor `Vec`).
@@ -180,13 +180,13 @@ impl EspWifi {
         Ok(())
     }
 
-    async fn connect_inner(&mut self, config: &NetworkConfig) -> Result<NetworkInfo, WifiError> {
-        self.apply_address(config)?;
+    async fn connect_inner(&mut self, config: &LinkConfig) -> Result<NetworkInfo, WifiError> {
+        self.apply_address(&config.network)?;
         // A static address is up at once; only a DHCP lease can be stale.
-        if config.static_settings().is_none() {
+        if config.network.static_settings().is_none() {
             self.wait_stale_config_cleared().await;
         }
-        let station = station_config(config)?;
+        let station = station_config(&config.wifi)?;
         self.controller
             .set_config(&Config::Station(station))
             .map_err(|error| map_driver_error(&error))?;
@@ -202,8 +202,8 @@ impl EspWifi {
 
         // Association alone is not network ready: wait for the DHCP lease, or
         // for the link when the address is static.
-        let wait = Duration::from_millis(config.dhcp_timeout_ms.into());
-        if config.static_settings().is_some() {
+        let wait = Duration::from_millis(config.network.dhcp_timeout_ms.into());
+        if config.network.static_settings().is_some() {
             with_timeout(wait, self.stack.wait_link_up())
                 .await
                 .map_err(|_| WifiError::Timeout)?;
@@ -213,7 +213,7 @@ impl EspWifi {
                 .map_err(|_| WifiError::DhcpFailed)?;
         }
 
-        self.ssid = Some(config.ssid.clone());
+        self.ssid = Some(config.wifi.ssid.clone());
         self.current_info().ok_or(WifiError::DhcpFailed)
     }
 }
@@ -243,8 +243,8 @@ impl WifiBackend for EspWifi {
         Ok(collector.finish())
     }
 
-    async fn connect(&mut self, config: &NetworkConfig) -> Result<NetworkInfo, WifiError> {
-        let timeout = Duration::from_millis(config.connect_timeout_ms.into());
+    async fn connect(&mut self, config: &LinkConfig) -> Result<NetworkInfo, WifiError> {
+        let timeout = Duration::from_millis(config.wifi.connect_timeout_ms.into());
         match with_timeout(timeout, self.connect_inner(config)).await {
             Ok(Ok(info)) => Ok(info),
             Ok(Err(error)) => {
@@ -281,7 +281,7 @@ impl WifiBackend for EspWifi {
     }
 }
 
-fn station_config(config: &NetworkConfig) -> Result<StationConfig, WifiError> {
+fn station_config(config: &WifiConfig) -> Result<StationConfig, WifiError> {
     let ssid = Ssid::try_from(config.ssid.as_bytes()).map_err(|_| WifiError::InvalidConfig)?;
     let authentication = match &config.password {
         None => AuthenticationMethodConfig::Open,

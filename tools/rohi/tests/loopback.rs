@@ -56,7 +56,7 @@ async fn info_and_discovery() {
         assert_eq!(
             sections,
             [
-                ("network".to_owned(), 1),
+                ("wifi".to_owned(), 1),
                 ("connectivity".to_owned(), 1),
                 ("gadget".to_owned(), 3),
                 ("location".to_owned(), 1)
@@ -113,7 +113,7 @@ async fn a_schema_describes_the_fields_of_a_section_the_client_has_never_seen() 
         assert_eq!(mode.field.variants, ["fast", "slow"]);
         assert!(!schema.fields[3].writable);
 
-        let wifi = device.config_schema("network").await.unwrap();
+        let wifi = device.config_schema("wifi").await.unwrap();
         let password = wifi
             .fields
             .iter()
@@ -131,13 +131,13 @@ async fn a_schema_describes_the_fields_of_a_section_the_client_has_never_seen() 
 async fn a_patch_is_stored_atomically_and_secrets_are_never_returned() {
     let bench = Bench::new();
     with_device(20, &bench, |mut device| async move {
-        let unconfigured = device.config_get("network").await.unwrap();
+        let unconfigured = device.config_get("wifi").await.unwrap();
         assert!(!unconfigured.configured);
         assert!(unconfigured.entries.is_empty());
 
         let applied = device
             .config_patch(
-                "network",
+                "wifi",
                 &[set(1, text("office")), set(2, text("hunter2hunter2"))],
                 Some(0),
                 false,
@@ -147,7 +147,7 @@ async fn a_patch_is_stored_atomically_and_secrets_are_never_returned() {
         assert_eq!(applied.revision, 1);
         assert!(!applied.restart_required);
 
-        let values = device.config_get("network").await.unwrap();
+        let values = device.config_get("wifi").await.unwrap();
         assert!(values.configured);
         assert_eq!(values.section.revision, 1);
         assert_eq!(entry(&values, 1), Some(&EntryState::Value(text("office"))));
@@ -155,13 +155,13 @@ async fn a_patch_is_stored_atomically_and_secrets_are_never_returned() {
 
         // Unset is not an empty value.
         device
-            .config_patch("network", &[unset(2)], None, false)
+            .config_patch("wifi", &[unset(2)], None, false)
             .await
             .unwrap();
-        assert_eq!(entry(&device.config_get("network").await.unwrap(), 2), None);
+        assert_eq!(entry(&device.config_get("wifi").await.unwrap(), 2), None);
     })
     .await;
-    let stored = bench.network.value.borrow().clone().unwrap();
+    let stored = bench.wifi.value.borrow().clone().unwrap();
     assert_eq!(stored.ssid.as_str(), Some("office"));
     assert!(stored.password.is_none());
 }

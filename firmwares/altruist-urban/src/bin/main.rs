@@ -115,9 +115,10 @@ async fn main(spawner: Spawner) -> ! {
         Err(error) => error!("Wi-Fi unavailable: {}", error),
     }
 
-    match wireless.ble(control::BLE_CONFIG, BLE_RESOURCES.init(Default::default())) {
+    let ble_config = control::ble_config(config).await;
+    match wireless.ble(ble_config, BLE_RESOURCES.init(Default::default())) {
         Ok((transport, runner)) => {
-            let device = control::device(config, identity, ip);
+            let device = control::device(config, identity, ip, transport.status());
             spawner.spawn(ble_task(runner).unwrap());
             spawner.spawn(control_task(transport, device).unwrap());
             info!(

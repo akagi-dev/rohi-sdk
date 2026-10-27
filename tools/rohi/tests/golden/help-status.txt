@@ -61,7 +61,7 @@ Connection:
 
 Examples:
   rohi status
-  rohi status network
+  rohi status wifi
   rohi status --watch
   rohi status connectivity --watch --interval 5
   rohi -o json status sensors

@@ -15,7 +15,7 @@
 //  limitations under the License.
 //
 
-use crate::{NetworkConfig, NetworkInfo, WifiError, WifiScanResults};
+use crate::{LinkConfig, NetworkInfo, WifiError, WifiScanResults};
 
 /// Platform Wi-Fi station driver driven by the [`WifiManager`](crate::WifiManager).
 ///
@@ -34,7 +34,7 @@ pub trait WifiBackend {
     ///
     /// Returns only when the network is ready; association alone is not
     /// success.
-    async fn connect(&mut self, config: &NetworkConfig) -> Result<NetworkInfo, WifiError>;
+    async fn connect(&mut self, config: &LinkConfig) -> Result<NetworkInfo, WifiError>;
 
     /// Leaves the network. Must be idempotent and succeed when not connected.
     async fn disconnect(&mut self) -> Result<(), WifiError>;
