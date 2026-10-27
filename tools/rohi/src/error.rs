@@ -42,6 +42,10 @@ pub enum Error {
     /// A frame could not be built or was rejected.
     #[error("framing: {0}")]
     Frame(FrameError),
+    /// A service kept changing while its status was read, so the compact and
+    /// the detailed status never described the same revision.
+    #[error("service {0} changed while its status was read; try again")]
+    StatusChanging(String),
     /// The request or response does not fit the protocol limits.
     #[error("message too large")]
     TooLarge,

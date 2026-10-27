@@ -107,18 +107,22 @@ async fn sensor_id<T: ClientTransport>(
 ) -> Result<Option<String>, CliError> {
     const SERVICE: &str = "identity";
     const FIELD: &str = "public_key";
-    if !status
+    let Some(summary) = status
         .services
         .iter()
-        .any(|service| service.service == SERVICE)
-    {
+        .find(|service| service.service == SERVICE)
+    else {
+        return Ok(None);
+    };
+    // Only a provisioned identity is ready: without one there is no key to ask for.
+    if !summary.ready {
         return Ok(None);
     }
     let schema = device.service_schema(SERVICE).await?;
     let Some(field) = schema.fields.iter().find(|field| field.name == FIELD) else {
         return Ok(None);
     };
-    let identity = device.service_status(SERVICE).await?;
+    let identity = device.service_status_after(SERVICE, summary).await?;
     let key = identity
         .fields
         .iter()

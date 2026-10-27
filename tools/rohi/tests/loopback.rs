@@ -488,3 +488,65 @@ async fn identity_is_an_ordinary_service_with_actions() {
     .await;
     assert!(bench.identity.0.borrow().is_none());
 }
+
+/// Lets the radio change as the `n`-th request is sent, so that the service
+/// moves on between the compact and the detailed status.
+struct Changing<'a> {
+    inner: ClientEnd,
+    radio: &'a Radio,
+    sent: usize,
+    from: usize,
+    every: bool,
+}
+
+impl ClientTransport for Changing<'_> {
+    fn max_payload(&self) -> usize {
+        self.inner.max_payload()
+    }
+
+    async fn send(&mut self, chunk: &[u8]) -> rohi::Result<()> {
+        self.sent += 1;
+        if self.sent == self.from || (self.every && self.sent > self.from) {
+            self.radio.degraded.set(!self.radio.degraded.get());
+        }
+        self.inner.send(chunk).await
+    }
+
+    async fn recv(&mut self) -> rohi::Result<Vec<u8>> {
+        self.inner.recv().await
+    }
+}
+
+async fn read_status_while_changing(every: bool) -> rohi::Result<ServiceStatus> {
+    let bench = Bench::new();
+    let (client, device) = link(244);
+    let controller = Controller::new(backend(&bench), OpenPolicy);
+    let mut server = ControlBle::new(device, &controller);
+    // Requests: services, schema, then the compact status (3rd) and the
+    // detailed one (4th), which is the one that changes the radio first.
+    let transport = Changing {
+        inner: client,
+        radio: &bench.radio,
+        sent: 0,
+        from: 4,
+        every,
+    };
+    tokio::select! {
+        () = async { server.run().await } => unreachable!(),
+        result = async { Device::new(transport).service_status("radio").await } => result,
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_service_changing_between_compact_and_detailed_status_is_read_again() {
+    let status = read_status_while_changing(false).await.unwrap();
+    // Never the old summary with the new details.
+    assert_eq!(status.summary.health, ServiceHealth::Degraded);
+    assert_eq!(status.issues[0].code, "link_lost");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_service_that_keeps_changing_is_an_error_not_a_mixed_status() {
+    let error = read_status_while_changing(true).await.unwrap_err();
+    assert!(matches!(error, Error::StatusChanging(service) if service == "radio"));
+}

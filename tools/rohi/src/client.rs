@@ -38,6 +38,10 @@ use crate::session::{ClientTransport, Session};
 /// Wi-Fi scans and similar actions run on the device and take a while.
 const ACTION_TIMEOUT: Duration = Duration::from_secs(40);
 
+/// How often the compact and the detailed status of a service are read again
+/// when the service changes between the two.
+const STATUS_ATTEMPTS: usize = 3;
+
 /// What a name that the device does not list is answered with.
 fn not_found() -> Error {
     Error::Device(ErrorCode::NotFound)
@@ -314,35 +318,64 @@ impl<T: ClientTransport> Device<T> {
 
     /// Detailed status of a service: its compact status, values and active
     /// issues. The compact status is a separate request, the detailed one does
-    /// not repeat it.
+    /// not repeat it, so the two are paired by revision: when the service
+    /// changed between them the pair is read again, a few times at most.
     pub async fn service_status(&mut self, service: &str) -> Result<ServiceStatus> {
+        self.read_status(service, None).await
+    }
+
+    /// [`Device::service_status`] that starts from a compact status the caller
+    /// has just read with [`Device::services_status`], saving that request
+    /// when the service has not changed since.
+    pub async fn service_status_after(
+        &mut self,
+        service: &str,
+        known: &ServiceSummary,
+    ) -> Result<ServiceStatus> {
+        self.read_status(service, Some(known.clone())).await
+    }
+
+    async fn read_status(
+        &mut self,
+        service: &str,
+        mut known: Option<ServiceSummary>,
+    ) -> Result<ServiceStatus> {
         let schema = self.service_schema(service).await?;
-        let summary = self
-            .services_status()
-            .await?
-            .services
-            .into_iter()
-            .find(|summary| summary.id == schema.service.id)
-            .ok_or_else(not_found)?;
-        let call = Call::GetServiceStatus(pb::GetServiceStatusRequest {
-            service_id: schema.service.id,
-        });
-        match self.call(call).await? {
-            Reply::GetServiceStatus(response) => Ok(ServiceStatus {
-                summary,
-                fields: response
-                    .fields
-                    .iter()
-                    .filter_map(|field| convert::field_value(field, &schema.fields))
-                    .collect(),
-                issues: response
-                    .issues
-                    .iter()
-                    .map(|issue| convert::issue(issue, &schema.issues))
-                    .collect(),
-            }),
-            other => Err(unexpected(&other)),
+        for _ in 0..STATUS_ATTEMPTS {
+            let summary = match known.take() {
+                Some(summary) if summary.id == schema.service.id => summary,
+                _ => self
+                    .services_status()
+                    .await?
+                    .services
+                    .into_iter()
+                    .find(|summary| summary.id == schema.service.id)
+                    .ok_or_else(not_found)?,
+            };
+            let call = Call::GetServiceStatus(pb::GetServiceStatusRequest {
+                service_id: schema.service.id,
+            });
+            match self.call(call).await? {
+                Reply::GetServiceStatus(response) if response.revision == summary.revision => {
+                    return Ok(ServiceStatus {
+                        summary,
+                        fields: response
+                            .fields
+                            .iter()
+                            .filter_map(|field| convert::field_value(field, &schema.fields))
+                            .collect(),
+                        issues: response
+                            .issues
+                            .iter()
+                            .map(|issue| convert::issue(issue, &schema.issues))
+                            .collect(),
+                    });
+                }
+                Reply::GetServiceStatus(_) => {}
+                other => return Err(unexpected(&other)),
+            }
         }
+        Err(Error::StatusChanging(service.to_owned()))
     }
 
     // -- actions --------------------------------------------------------------
