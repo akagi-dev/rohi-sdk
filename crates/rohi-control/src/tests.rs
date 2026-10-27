@@ -1026,3 +1026,12 @@ impl ManagedService for Many2 {
         Ok(())
     }
 }
+
+#[test]
+#[should_panic(expected = "two services share an id")]
+fn a_device_with_clashing_ids_does_not_start_in_any_build() {
+    let radio = radio();
+    let (a, b): (Tracked<_, NoopRawMutex>, Tracked<_, NoopRawMutex>) =
+        (Tracked::new(&radio), Tracked::new(&radio));
+    let _ = Device::new(INFO, uptime, (), (a, b));
+}

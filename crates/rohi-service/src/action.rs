@@ -206,19 +206,3 @@ pub(crate) fn enum_ok(enums: &[EnumDescriptor], field: &FieldDescriptor, value: 
         _ => true,
     }
 }
-
-/// Whether the actions fit the limits of the control protocol.
-pub(crate) const fn actions_fit(actions: &[ActionDescriptor]) -> bool {
-    let mut index = 0;
-    while index < actions.len() {
-        let action = &actions[index];
-        if action.args.len() > MAX_ACTION_ARGS
-            || action.results.len() > MAX_RECORD_FIELDS
-            || !crate::field::enums_fit(action.enums)
-        {
-            return false;
-        }
-        index += 1;
-    }
-    true
-}

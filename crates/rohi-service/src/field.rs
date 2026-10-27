@@ -271,19 +271,3 @@ impl ConfigField {
         Ok(())
     }
 }
-
-/// Whether an enum table fits the limits of the control protocol and every
-/// enum has a non-zero id.
-pub(crate) const fn enums_fit(enums: &[EnumDescriptor]) -> bool {
-    if enums.len() > crate::MAX_ENUMS {
-        return false;
-    }
-    let mut index = 0;
-    while index < enums.len() {
-        if enums[index].id == 0 || enums[index].variants.len() > crate::MAX_ENUM_VARIANTS {
-            return false;
-        }
-        index += 1;
-    }
-    true
-}

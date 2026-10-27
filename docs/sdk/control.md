@@ -168,7 +168,7 @@ dispatches, and responses leave through a bounded TX queue.
 | ATT payload | 20 – 244 B, header 6 B, at most 255 fragments |
 | `MAX_NAME_LEN` (section, service, field, action, issue) | 24 B |
 | `MAX_VALUE_LEN` (string and bytes of config values and action arguments) | 64 B |
-| `MAX_FIELD_VALUE_LEN` (string and bytes of status values and action results; longer text is cut) | 32 B |
+| `MAX_FIELD_VALUE_LEN` (string and bytes of status values and action results; a longer value is an error, never cut) | 32 B |
 | `MAX_ENUMS` / `MAX_ENUM_VARIANTS` / `MAX_VARIANT_NAME_LEN` | 1 / 9 / 16 B per schema response |
 | `MAX_SCHEMA_FIELDS` / `MAX_STATUS_FIELDS` | 20 / 20 per response |
 | `MAX_ACTIONS` | 12 per device |
@@ -178,6 +178,9 @@ dispatches, and responses leave through a bounded TX queue.
 | `MAX_ISSUES` / `MAX_ISSUE_DESCRIPTORS` | 4 active / 12 described |
 | `MAX_REASON_LEN` (reason of a rejected action) | 32 B |
 | `MAX_ACTION_ARGS` / `MAX_RECORDS` / `MAX_RECORD_FIELDS` | 3 / 6 / 4 |
+
+`MAX_ENUMS = 1` is a deliberate constraint of the compact protocol: a schema describes the variants of one enum once, so
+a section, service or action has at most one enum; more would need a flat variant table, a protocol change.
 
 The limits are defined once (`rohi-control-proto/build.rs`), applied to the generated types and checked by tests:
 requests must fit `MAX_REQUEST_LEN` in the worst case, full schema, status and action responses must encode within

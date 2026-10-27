@@ -79,7 +79,14 @@ pub struct Device<C, S> {
 impl<C: ConfigRegistry, S: ServiceRegistry> Device<C, S> {
     /// A device with the given registries; `uptime_ms` reads the monotonic
     /// clock.
-    pub const fn new(info: DeviceInfo, uptime_ms: fn() -> u64, config: C, services: S) -> Self {
+    ///
+    /// # Panics
+    ///
+    /// When two sections or two services share an id: requests would reach the
+    /// wrong one. This is checked in every build, once, at start.
+    pub fn new(info: DeviceInfo, uptime_ms: fn() -> u64, config: C, services: S) -> Self {
+        assert!(config.ids_are_unique(), "two config sections share an id");
+        assert!(services.ids_are_unique(), "two services share an id");
         Self {
             info,
             uptime_ms,

@@ -30,6 +30,7 @@ use rohi_service::{
 // limits; a model larger than the wire would silently truncate.
 const _: () = {
     assert!(rohi_service::MAX_VALUE_LEN == limits::MAX_VALUE_LEN);
+    assert!(rohi_service::MAX_NAME_LEN == limits::MAX_NAME_LEN);
     assert!(rohi_service::MAX_FIELD_VALUE_LEN == limits::MAX_FIELD_VALUE_LEN);
     assert!(rohi_service::MAX_FIELDS <= limits::MAX_STATUS_FIELDS);
     assert!(rohi_service::MAX_FIELDS <= limits::MAX_SCHEMA_FIELDS);
@@ -47,8 +48,9 @@ const _: () = {
     assert!(rohi_service::MAX_REGISTRY_ENTRIES <= limits::MAX_CONFIG_SECTIONS);
 };
 
-/// `text` cut to `N` bytes at a character boundary. Names are meant to fit;
-/// longer presentation text is shortened rather than failing a whole response.
+/// `text` cut to `N` bytes at a character boundary. Nothing is cut in practice:
+/// the names of schemas are checked when their section or service is built and
+/// values are bounded by the same limits as the wire.
 pub(crate) fn text<const N: usize>(text: &str) -> String<N> {
     let mut end = text.len().min(N);
     while !text.is_char_boundary(end) {

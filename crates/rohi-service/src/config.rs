@@ -35,7 +35,8 @@ use embassy_sync::blocking_mutex::raw::RawMutex;
 use embassy_sync::mutex::Mutex as AsyncMutex;
 use heapless::Vec;
 
-use crate::field::{ConfigField, EnumDescriptor, enums_fit};
+use crate::field::{ConfigField, EnumDescriptor};
+use crate::schema::{config_fields_valid, enums_valid, name_ok};
 use crate::value::Value;
 use crate::{MAX_CONFIG_FIELDS, MAX_REGISTRY_ENTRIES};
 
@@ -301,8 +302,16 @@ impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ManagedSection<C, S, M> 
     /// A section persisted through `store`.
     pub const fn new(store: S) -> Self {
         const {
-            assert!(C::FIELDS.len() <= MAX_CONFIG_FIELDS);
-            assert!(enums_fit(C::ENUMS));
+            assert!(name_ok(C::NAME), "section name is empty or too long");
+            assert!(
+                C::FIELDS.len() <= MAX_CONFIG_FIELDS,
+                "too many config fields"
+            );
+            assert!(enums_valid(C::ENUMS), "invalid section enums");
+            assert!(
+                config_fields_valid(C::FIELDS, C::ENUMS),
+                "invalid config fields: ids and names must be unique and fit"
+            );
         };
         Self {
             store,

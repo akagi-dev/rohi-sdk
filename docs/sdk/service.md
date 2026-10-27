@@ -171,8 +171,15 @@ reason such as `already_provisioned`.
 
 `ServiceRegistry` is a tuple of `Tracked` services, like the config registry. Both traits are implemented for `()`
 (a device with no sections or services) and for tuples of up to 8. Requests address sections, services and actions
-by their numeric ids, which must be unique within a registry (`ids_are_unique()`, checked by the firmware at start);
-names are for discovery.
+by their numeric ids, which must be unique within a registry: `Device::new` panics in every build, including release,
+when two sections or two services share an id. Names are for discovery.
+
+Schemas are validated when the section or service is built, as a compile-time error: section, service, action, field
+and issue names are not empty and at most 24 bytes (variant names 16), so nothing is ever truncated on the wire; field
+ids and names are unique within a schema, action ids and names within a service, issue codes and names within a service
+(codes from `FIRST_SERVICE_ISSUE`), enum ids are non-zero and unique, and variant values and names are unique within
+their enum. An enum field must refer to an enum of its table, no other field may.
+A section, service or action has at most one enum (`MAX_ENUMS`), a constraint of the compact protocol.
 
 ## What lives where
 

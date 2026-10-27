@@ -47,6 +47,7 @@
 pub mod action;
 pub mod config;
 mod field;
+mod schema;
 pub mod status;
 mod value;
 
@@ -71,12 +72,17 @@ pub use value::{Value, ValueKind};
 /// Maximum length of a string or bytes [`Value`], in bytes.
 pub const MAX_VALUE_LEN: usize = 64;
 /// Maximum length of a string or bytes status value or action result, in
-/// bytes; longer text is cut. Arguments and config values may be
-/// [`MAX_VALUE_LEN`] long.
+/// bytes; longer values are an error, never cut. Arguments and config values
+/// may be [`MAX_VALUE_LEN`] long.
 pub const MAX_FIELD_VALUE_LEN: usize = 32;
+/// Maximum length of a section, service, action, field or issue name, in
+/// bytes. Names are checked when a section or service is built.
+pub const MAX_NAME_LEN: usize = 24;
 /// Maximum length of an enum variant name, in bytes.
 pub const MAX_VARIANT_NAME_LEN: usize = 16;
-/// Maximum number of enums of a section, service or action.
+/// Maximum number of enums of a section, service or action. A hard constraint
+/// of the compact control protocol, which describes enum variants once per
+/// schema: a schema that needs more enums does not fit it.
 pub const MAX_ENUMS: usize = 1;
 /// Maximum number of variants of an enum.
 pub const MAX_ENUM_VARIANTS: usize = 9;

@@ -239,7 +239,7 @@ pub fn device(
     ble: BleStatus,
 ) -> UrbanDevice {
     let network_failed = network.is_none();
-    let device = Device::new(
+    Device::new(
         DeviceInfo {
             firmware: FIRMWARE,
             board: BOARD,
@@ -285,12 +285,7 @@ pub fn device(
             Tracked::new(IdentityService(StoredIdentity(identity))),
         ),
     )
-    .with_reboot(reboot::request);
-    // Requests address sections and services by id: a clash would send them
-    // to the wrong one.
-    debug_assert!(device.config().ids_are_unique());
-    debug_assert!(device.services().ids_are_unique());
-    device
+    .with_reboot(reboot::request)
 }
 
 /// GATT layout of the ROHI Control Service.

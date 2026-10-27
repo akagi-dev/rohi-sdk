@@ -899,3 +899,136 @@ fn a_restart_only_store_reports_it_for_every_change_and_factory_reset() {
     assert!(store.value.borrow().is_none());
     assert!(block_on(registry.factory_reset()).unwrap().restart_required);
 }
+
+mod schema_invariants {
+    use super::*;
+    use crate::schema::{
+        actions_valid, config_fields_valid, enums_valid, fields_valid, issues_valid, name_ok,
+    };
+
+    const MODE: &[EnumVariant] = &[EnumVariant::new(0, "fast"), EnumVariant::new(1, "slow")];
+
+    fn field(id: u32, name: &'static str) -> FieldDescriptor {
+        FieldDescriptor::new(id, name, ValueKind::U64)
+    }
+
+    #[test]
+    fn names_are_never_empty_or_longer_than_the_wire() {
+        assert!(name_ok("scan"));
+        assert!(name_ok("abcdefghijklmnopqrstuvwx"));
+        assert!(!name_ok(""));
+        assert!(!name_ok("abcdefghijklmnopqrstuvwxy"));
+    }
+
+    #[test]
+    fn field_ids_and_names_are_unique() {
+        assert!(fields_valid(&[field(1, "a"), field(2, "b")], &[]));
+        assert!(!fields_valid(&[field(1, "a"), field(1, "b")], &[]));
+        assert!(!fields_valid(&[field(1, "a"), field(2, "a")], &[]));
+        assert!(!fields_valid(&[field(1, "")], &[]));
+        assert!(!fields_valid(&[field(1, "abcdefghijklmnopqrstuvwxy")], &[]));
+        assert!(config_fields_valid(
+            &[ConfigField::new(1, "a", ValueKind::U64)],
+            &[]
+        ));
+        assert!(!config_fields_valid(
+            &[
+                ConfigField::new(1, "a", ValueKind::U64),
+                ConfigField::new(1, "b", ValueKind::U64),
+            ],
+            &[]
+        ));
+        assert!(!config_fields_valid(
+            &[
+                ConfigField::new(1, "a", ValueKind::U64),
+                ConfigField::new(2, "a", ValueKind::U64),
+            ],
+            &[]
+        ));
+    }
+
+    #[test]
+    fn an_enum_field_refers_to_a_known_enum_and_nothing_else_does() {
+        let enums = [EnumDescriptor::new(1, MODE)];
+        let mode = FieldDescriptor::new(1, "mode", ValueKind::Enum).with_enum(1);
+        assert!(fields_valid(&[mode], &enums));
+        assert!(!fields_valid(&[mode], &[]));
+        let unknown = FieldDescriptor::new(1, "mode", ValueKind::Enum).with_enum(2);
+        assert!(!fields_valid(&[unknown], &enums));
+        let stray = FieldDescriptor::new(1, "n", ValueKind::U64).with_enum(1);
+        assert!(!fields_valid(&[stray], &enums));
+    }
+
+    #[test]
+    fn enums_have_unique_ids_values_and_names_that_fit() {
+        assert!(enums_valid(&[EnumDescriptor::new(1, MODE)]));
+        assert!(!enums_valid(&[EnumDescriptor::new(0, MODE)]));
+        assert!(!enums_valid(&[
+            EnumDescriptor::new(1, MODE),
+            EnumDescriptor::new(1, MODE)
+        ]));
+        const SAME_VALUE: &[EnumVariant] =
+            &[EnumVariant::new(1, "fast"), EnumVariant::new(1, "slow")];
+        assert!(!enums_valid(&[EnumDescriptor::new(1, SAME_VALUE)]));
+        const SAME_NAME: &[EnumVariant] =
+            &[EnumVariant::new(1, "fast"), EnumVariant::new(2, "fast")];
+        assert!(!enums_valid(&[EnumDescriptor::new(1, SAME_NAME)]));
+        const EMPTY_NAME: &[EnumVariant] = &[EnumVariant::new(1, "")];
+        assert!(!enums_valid(&[EnumDescriptor::new(1, EMPTY_NAME)]));
+        const LONG_NAME: &[EnumVariant] = &[EnumVariant::new(1, "abcdefghijklmnopq")];
+        assert!(!enums_valid(&[EnumDescriptor::new(1, LONG_NAME)]));
+        // One enum per schema is a hard limit of the compact protocol.
+        assert!(!enums_valid(&[
+            EnumDescriptor::new(1, MODE),
+            EnumDescriptor::new(2, MODE)
+        ]));
+    }
+
+    #[test]
+    fn issue_codes_and_names_are_unique_and_outside_the_sdk_range() {
+        let first = crate::FIRST_SERVICE_ISSUE;
+        assert!(issues_valid(&[
+            IssueDescriptor::new(first, "a"),
+            IssueDescriptor::new(first + 1, "b"),
+            IssueDescriptor::new(crate::ISSUE_STARTUP_FAILED, "startup_failed"),
+        ]));
+        assert!(!issues_valid(&[
+            IssueDescriptor::new(first, "a"),
+            IssueDescriptor::new(first, "b"),
+        ]));
+        assert!(!issues_valid(&[
+            IssueDescriptor::new(first, "a"),
+            IssueDescriptor::new(first + 1, "a"),
+        ]));
+        assert!(!issues_valid(&[IssueDescriptor::new(2, "reserved")]));
+        assert!(!issues_valid(&[IssueDescriptor::new(0, "zero")]));
+    }
+
+    #[test]
+    fn actions_have_unique_ids_and_names_and_valid_fields() {
+        const ARGS: &[FieldDescriptor] = &[FieldDescriptor::new(1, "n", ValueKind::U64)];
+        const DUPLICATE_ARGS: &[FieldDescriptor] = &[
+            FieldDescriptor::new(1, "n", ValueKind::U64),
+            FieldDescriptor::new(1, "m", ValueKind::U64),
+        ];
+        assert!(actions_valid(&[
+            ActionDescriptor::new(1, "scan").args(ARGS),
+            ActionDescriptor::new(2, "stop"),
+        ]));
+        assert!(!actions_valid(&[
+            ActionDescriptor::new(1, "scan"),
+            ActionDescriptor::new(1, "stop"),
+        ]));
+        assert!(!actions_valid(&[
+            ActionDescriptor::new(1, "scan"),
+            ActionDescriptor::new(2, "scan"),
+        ]));
+        assert!(!actions_valid(&[ActionDescriptor::new(1, "")]));
+        assert!(!actions_valid(&[
+            ActionDescriptor::new(1, "scan").args(DUPLICATE_ARGS)
+        ]));
+        assert!(!actions_valid(&[
+            ActionDescriptor::new(1, "scan").results(DUPLICATE_ARGS)
+        ]));
+    }
+}

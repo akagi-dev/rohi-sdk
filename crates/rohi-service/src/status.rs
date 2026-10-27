@@ -30,13 +30,14 @@ use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use heapless::Vec;
 
+use crate::action::enum_ok;
 use crate::action::{
     ActionDescriptor, ActionError, ActionOutput, RecordCollector, Records, check_args,
 };
-use crate::action::{actions_fit, enum_ok};
-use crate::field::{EnumDescriptor, FieldDescriptor, enums_fit};
+use crate::field::{EnumDescriptor, FieldDescriptor};
+use crate::schema::{actions_valid, enums_valid, fields_valid, issues_valid, name_ok};
 use crate::value::Value;
-use crate::{MAX_FIELD_VALUE_LEN, MAX_FIELDS, MAX_ISSUE_DESCRIPTORS, MAX_ISSUES};
+use crate::{MAX_FIELD_VALUE_LEN, MAX_FIELDS, MAX_ISSUES};
 
 /// Lifecycle state of a service.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -453,10 +454,18 @@ impl<S: ManagedService, M: RawMutex> Tracked<S, M> {
     /// Tracks `service`.
     pub const fn new(service: S) -> Self {
         const {
-            assert!(S::STATUS_SCHEMA.len() <= MAX_FIELDS);
-            assert!(S::ISSUES.len() <= MAX_ISSUE_DESCRIPTORS);
-            assert!(enums_fit(S::ENUMS));
-            assert!(actions_fit(S::ACTIONS));
+            assert!(name_ok(S::NAME), "service name is empty or too long");
+            assert!(
+                S::STATUS_SCHEMA.len() <= MAX_FIELDS,
+                "too many status fields"
+            );
+            assert!(enums_valid(S::ENUMS), "invalid service enums");
+            assert!(
+                fields_valid(S::STATUS_SCHEMA, S::ENUMS),
+                "invalid status fields: ids and names must be unique and fit"
+            );
+            assert!(issues_valid(S::ISSUES), "invalid service issues");
+            assert!(actions_valid(S::ACTIONS), "invalid service actions");
         };
         Self {
             service,

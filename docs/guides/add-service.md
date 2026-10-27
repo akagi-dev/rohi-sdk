@@ -38,7 +38,7 @@ Rules that make the status useful:
   reworded) and a severity; there is no message text. Only what is wrong *now*; history is diagnostics. At most 4 active
   and 12 described.
 - **Fields have stable ids and units.** A value that does not exist now is simply not written. At most 20 fields per
-  service; names are dotted paths for nesting (`bmx280.temperature`); strings and bytes are cut at 32 bytes; floats are `f32`.
+  service; names are dotted paths for nesting (`bmx280.temperature`); strings and bytes are at most 32 bytes, a longer value is a write error; floats are `f32`.
 - `ESSENTIAL = false` limits how much a failing service hurts the **device health**, which the firmware decides (the
   default policy: `rohi-service::default_device_health`).
 - Status is a snapshot of live state, cheap and non-blocking; do not wait on slow hardware inside it.
