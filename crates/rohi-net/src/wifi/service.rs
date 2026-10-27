@@ -25,12 +25,18 @@ use embedded_hal_async::delay::DelayNs;
 use heapless::{String, Vec};
 use rohi_service::{
     ActionDescriptor, ActionError, ActionOutput, EnumDescriptor, EnumVariant, FieldDescriptor,
-    Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES, ManagedService, SectionStore, ServiceHealth,
-    ServiceState, ServiceSummary, StatusWriter, Unit, Value, ValueKind, WriteError,
+    Issue, IssueDescriptor, IssueSeverity, MAX_FIELD_VALUE_LEN, MAX_ISSUES, ManagedService,
+    SectionStore, ServiceHealth, ServiceState, ServiceSummary, StatusWriter, Unit, Value,
+    ValueKind, WriteError,
 };
 
 use super::config::DEFAULT_SCAN_TIMEOUT_MS;
 use crate::{WifiConfig, WifiError, WifiHandle, WifiPassword, WifiSecurity, WifiSsid, WifiState};
+
+// SSIDs and MAC addresses are status values and scan results, which are
+// never cut.
+const _: () = assert!(crate::MAX_SSID_LEN <= MAX_FIELD_VALUE_LEN);
+const _: () = assert!("00:00:00:00:00:00".len() <= MAX_FIELD_VALUE_LEN);
 
 /// Usage of the memory the radio drivers allocate from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

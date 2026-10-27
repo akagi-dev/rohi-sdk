@@ -409,7 +409,7 @@ impl ManagedService for &Radio<'_> {
     async fn status(&self, out: &mut impl StatusWriter) -> Result<(), WriteError> {
         // Long enough to need several fragments.
         for id in 1..=4 {
-            out.text(id, &"x".repeat(60))?;
+            out.text(id, &"x".repeat(32))?;
         }
         Ok(())
     }

@@ -620,9 +620,10 @@ fn the_writer_checks_the_schema() {
     assert_eq!(writer.u64(1, 1), Err(WriteError::WrongKind));
     assert_eq!(writer.variant(3, 9), Err(WriteError::WrongKind));
     assert_eq!(writer.bytes(1, &[0; 33]), Err(WriteError::TooLong));
-    // Text is cut at a character boundary.
-    let long = "é".repeat(40);
-    writer.text(1, &long).unwrap();
+    // Text is bounded like bytes: it is never cut.
+    assert_eq!(writer.text(1, &"é".repeat(17)), Err(WriteError::TooLong));
+    assert!(writer.fields.is_empty());
+    writer.text(1, &"é".repeat(16)).unwrap();
     assert_eq!(writer.fields[0].1.as_str().unwrap().len(), 32);
 }
 

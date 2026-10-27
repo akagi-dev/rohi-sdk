@@ -19,11 +19,14 @@
 use heapless::Vec;
 use rohi_service::{
     EnumDescriptor, EnumVariant, FieldDescriptor, Issue, IssueDescriptor, IssueSeverity,
-    MAX_ISSUES, ManagedService, ServiceHealth, ServiceState, ServiceSummary, StatusWriter, Unit,
-    ValueKind, WriteError,
+    MAX_FIELD_VALUE_LEN, MAX_ISSUES, ManagedService, ServiceHealth, ServiceState, ServiceSummary,
+    StatusWriter, Unit, ValueKind, WriteError,
 };
 
 use super::{BleError, BleName, BleState};
+
+// The name is a status value, which is never cut.
+const _: () = assert!(super::MAX_BLE_NAME_LEN <= MAX_FIELD_VALUE_LEN);
 
 /// What the [`BleService`] reads from the platform. The transport itself is
 /// owned by the control link, so the platform hands out a separate view of

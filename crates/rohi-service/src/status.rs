@@ -191,15 +191,14 @@ pub trait StatusWriter {
         self.put(id, Value::F32(value))
     }
 
-    /// Writes text, truncated at a character boundary if it exceeds
-    /// [`MAX_FIELD_VALUE_LEN`].
+    /// Writes text, at most [`MAX_FIELD_VALUE_LEN`] bytes: a longer value is
+    /// [`WriteError::TooLong`], never cut. Shortening for display is up to the
+    /// client.
     fn text(&mut self, id: u32, value: &str) -> Result<(), WriteError> {
-        let mut end = value.len().min(MAX_FIELD_VALUE_LEN);
-        while !value.is_char_boundary(end) {
-            end -= 1;
+        if value.len() > MAX_FIELD_VALUE_LEN {
+            return Err(WriteError::TooLong);
         }
-        let text = Value::text(&value[..end]).ok_or(WriteError::TooLong)?;
-        self.put(id, text)
+        self.put(id, Value::text(value).ok_or(WriteError::TooLong)?)
     }
 
     /// Writes bytes, at most [`MAX_FIELD_VALUE_LEN`].
