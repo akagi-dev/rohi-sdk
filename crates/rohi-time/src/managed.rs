@@ -25,7 +25,6 @@ use rohi_service::{
     ValueKind, WriteError,
 };
 
-use crate::service::MAX_SERVERS;
 use crate::{SyncFailure, TimeService, TimeSourceKind, TimeSyncState};
 
 /// Id of the `time` service.
@@ -73,14 +72,6 @@ pub mod status_field {
     pub const UNCERTAINTY_MS: u32 = 4;
     /// Failed attempts since the last accepted sample.
     pub const CONSECUTIVE_FAILURES: u32 = 5;
-    /// First time server; absent when none is reported.
-    pub const SERVER1: u32 = 6;
-    /// Second time server.
-    pub const SERVER2: u32 = 7;
-    /// Third time server.
-    pub const SERVER3: u32 = 8;
-    /// Fourth time server.
-    pub const SERVER4: u32 = 9;
 }
 
 fn failure_issue(failure: SyncFailure) -> Issue {
@@ -122,10 +113,6 @@ impl<C: Clock, M: RawMutex> ManagedService for TimeStatusService<'_, C, M> {
             "consecutive_failures",
             ValueKind::U64,
         ),
-        FieldDescriptor::new(status_field::SERVER1, "server1", ValueKind::String),
-        FieldDescriptor::new(status_field::SERVER2, "server2", ValueKind::String),
-        FieldDescriptor::new(status_field::SERVER3, "server3", ValueKind::String),
-        FieldDescriptor::new(status_field::SERVER4, "server4", ValueKind::String),
     ];
     const ENUMS: &'static [EnumDescriptor] = &[EnumDescriptor::new(
         1,
@@ -193,15 +180,6 @@ impl<C: Clock, M: RawMutex> ManagedService for TimeStatusService<'_, C, M> {
             status_field::CONSECUTIVE_FAILURES,
             u64::from(status.consecutive_failures),
         )?;
-        const SERVER_FIELDS: [u32; MAX_SERVERS] = [
-            status_field::SERVER1,
-            status_field::SERVER2,
-            status_field::SERVER3,
-            status_field::SERVER4,
-        ];
-        for (id, server) in SERVER_FIELDS.into_iter().zip(self.0.servers()) {
-            out.text(id, &server)?;
-        }
         Ok(())
     }
 }
@@ -227,37 +205,12 @@ mod tests {
         assert_eq!(status.summary.state, rohi_service::ServiceState::Starting);
         assert!(!status.summary.ready);
         assert!(status.issues.is_empty());
-        // No time, no source, no servers: only the failure counter.
+        // No time and no source: only the failure counter.
         assert_eq!(status.fields.len(), 1);
         assert_eq!(
             status.fields[0],
             (status_field::CONSECUTIVE_FAILURES, Value::U64(0))
         );
-    }
-
-    #[test]
-    fn the_status_lists_the_time_servers() {
-        let service = TimeService::<_, NoopRawMutex>::new(
-            ManualClock::default(),
-            TimeConfig::new(crate::UnixTime::from_secs(1_700_000_000)),
-        );
-        service.set_servers(&["ntp.example.org", "time.example.net"]);
-        let registry = (Tracked::<_, NoopRawMutex>::new(TimeStatusService(&service)),);
-        let status = block_on(registry.status(SERVICE_ID, 0)).unwrap();
-        let text = |id| {
-            status
-                .fields
-                .iter()
-                .find(|(field, _)| *field == id)
-                .and_then(|(_, value)| value.as_str())
-        };
-        assert_eq!(text(status_field::SERVER1), Some("ntp.example.org"));
-        assert_eq!(text(status_field::SERVER2), Some("time.example.net"));
-        assert_eq!(text(status_field::SERVER3), None);
-
-        service.set_servers(&["pool.ntp.org"]);
-        let status = block_on(registry.status(SERVICE_ID, 0)).unwrap();
-        assert_eq!(status.fields.len(), 2);
     }
 
     #[test]

@@ -78,8 +78,7 @@ mod testutil;
 
 pub use managed::{SERVICE_ID, TimeStatusService, issue, source_value, status_field};
 pub use service::{
-    DEFAULT_HORIZON, DEFAULT_MAX_UNCERTAINTY, DEFAULT_STALE_AFTER, MAX_SERVER_LEN, MAX_SERVERS,
-    TimeConfig, TimeService,
+    DEFAULT_HORIZON, DEFAULT_MAX_UNCERTAINTY, DEFAULT_STALE_AFTER, TimeConfig, TimeService,
 };
 pub use source::{SyncFailure, TimeSample, TimeSource, TimeSourceKind};
 pub use status::{TimeSnapshot, TimeStatus, TimeSyncState};

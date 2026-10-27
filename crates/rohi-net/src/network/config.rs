@@ -128,7 +128,7 @@ impl fmt::Debug for Hostname {
 /// only ever appended.
 #[derive(Clone, PartialEq, Eq, Debug, Encode, Decode, CborLen, ConfigSection)]
 #[cbor(array)]
-#[config(version = 2)]
+#[config(version = 1)]
 pub struct NetworkConfig {
     /// How the IPv4 address is obtained.
     #[n(0)]
@@ -269,7 +269,7 @@ mod tests {
     #[test]
     fn section_id_is_derived_from_the_type_name() {
         assert_eq!(NetworkConfig::ID, SectionId::from_name("NetworkConfig"));
-        assert_eq!(NetworkConfig::VERSION, 2);
+        assert_eq!(NetworkConfig::VERSION, 1);
         assert_eq!(NetworkConfig::ID, SectionId(0x48f8_9649_eb74_bec7));
     }
 
@@ -308,8 +308,7 @@ mod tests {
     #[test]
     fn a_record_of_another_version_is_not_decoded() {
         let bytes = encode(&NetworkConfig::new());
-        assert!(NetworkConfig::decode_versioned(1, &bytes).is_err());
-        assert!(NetworkConfig::decode_versioned(2, &bytes).is_ok());
+        assert!(NetworkConfig::decode_versioned(1, &bytes).is_ok());
     }
 
     #[test]

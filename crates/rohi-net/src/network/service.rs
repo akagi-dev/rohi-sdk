@@ -21,12 +21,10 @@ use core::fmt::Write as _;
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use heapless::{String, Vec};
 use rohi_service::{
-    EnumDescriptor, FIRST_SERVICE_ISSUE, FieldDescriptor, Issue, IssueDescriptor, IssueSeverity,
-    MAX_ISSUES, ManagedService, ServiceSummary, StatusWriter, ValueKind, WriteError,
+    FIRST_SERVICE_ISSUE, FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES,
+    ManagedService, ServiceSummary, StatusWriter, ValueKind, WriteError,
 };
 
-use super::config::AddressMode;
-use super::managed::{ADDRESS_MODE_ENUM, ADDRESS_MODES, address_mode};
 use crate::wifi::service_summary;
 use crate::{IpUsage, WifiError, WifiHandle, WifiState};
 
@@ -61,8 +59,6 @@ pub mod status_field {
     pub const GATEWAY: u32 = 2;
     /// IPv4 DNS server.
     pub const DNS: u32 = 3;
-    /// How the address is obtained, `dhcp` or `static`.
-    pub const ADDRESS_MODE: u32 = 4;
     /// TCP connections in use.
     pub const TCP_IN_USE: u32 = 5;
     /// TCP connections available in total.
@@ -73,7 +69,7 @@ pub mod status_field {
     pub const UDP_CAPACITY: u32 = 8;
 }
 
-/// The IP layer of the Wi-Fi link as a `network` service: address, mode and
+/// The IP layer of the Wi-Fi link as a `network` service: address and
 /// socket usage. It has no actions; the link is operated through `wifi`.
 pub struct NetworkService<'a, M: RawMutex, P> {
     handle: WifiHandle<'a, M>,
@@ -96,14 +92,11 @@ impl<M: RawMutex, P: NetworkProbe> ManagedService for NetworkService<'_, M, P> {
         FieldDescriptor::new(status_field::IP, "ip", ValueKind::String),
         FieldDescriptor::new(status_field::GATEWAY, "gateway", ValueKind::String),
         FieldDescriptor::new(status_field::DNS, "dns", ValueKind::String),
-        FieldDescriptor::new(status_field::ADDRESS_MODE, "address_mode", ValueKind::Enum)
-            .with_enum(ADDRESS_MODE_ENUM),
         FieldDescriptor::new(status_field::TCP_IN_USE, "tcp_in_use", ValueKind::U64),
         FieldDescriptor::new(status_field::TCP_CAPACITY, "tcp_capacity", ValueKind::U64),
         FieldDescriptor::new(status_field::UDP_IN_USE, "udp_in_use", ValueKind::U64),
         FieldDescriptor::new(status_field::UDP_CAPACITY, "udp_capacity", ValueKind::U64),
     ];
-    const ENUMS: &'static [EnumDescriptor] = ADDRESS_MODES;
     const ISSUES: &'static [IssueDescriptor] =
         &[IssueDescriptor::new(issue::DHCP_FAILED, "dhcp_failed")];
 
@@ -141,12 +134,6 @@ impl<M: RawMutex, P: NetworkProbe> ManagedService for NetworkService<'_, M, P> {
             }
         }
 
-        let mode = match self.handle.network_config().address_mode {
-            AddressMode::Dhcp => address_mode::DHCP,
-            AddressMode::Static => address_mode::STATIC,
-        };
-        out.variant(status_field::ADDRESS_MODE, mode)?;
-
         if let Some(sockets) = self.probe.sockets() {
             out.u64(status_field::TCP_IN_USE, sockets.tcp_in_use as u64)?;
             out.u64(status_field::TCP_CAPACITY, sockets.tcp_capacity as u64)?;
@@ -167,8 +154,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        ManagerConfig, NetworkConfig, NetworkInfo, WifiBackend, WifiConfig, WifiManager,
-        WifiScanResults, WifiShared, WifiSsid,
+        ManagerConfig, NetworkInfo, WifiBackend, WifiConfig, WifiManager, WifiScanResults,
+        WifiShared, WifiSsid,
     };
 
     #[derive(Clone)]
@@ -249,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn without_a_link_only_the_mode_and_the_sockets_are_reported() {
+    fn without_a_link_only_the_sockets_are_reported() {
         let shared = WifiShared::<NoopRawMutex>::new();
         let service = NetworkService::new(shared.handle(), Sockets(Some(USAGE)));
         let summary = block_on(service.summary());
@@ -262,10 +249,6 @@ mod tests {
         let mut out = Collect::default();
         block_on(service.status(&mut out)).unwrap();
         assert!(out.get(status_field::IP).is_none());
-        assert_eq!(
-            out.get(status_field::ADDRESS_MODE),
-            Some(&Value::Enum(address_mode::DHCP))
-        );
         assert_eq!(out.get(status_field::TCP_IN_USE), Some(&Value::U64(1)));
         assert_eq!(out.get(status_field::TCP_CAPACITY), Some(&Value::U64(2)));
         assert_eq!(out.get(status_field::UDP_IN_USE), Some(&Value::U64(0)));
@@ -278,25 +261,8 @@ mod tests {
         let service = NetworkService::new(shared.handle(), ());
         let mut out = Collect::default();
         block_on(service.status(&mut out)).unwrap();
-        assert_eq!(out.0.len(), 1);
+        assert!(out.0.is_empty());
         assert!(out.get(status_field::TCP_IN_USE).is_none());
-    }
-
-    #[test]
-    fn the_address_mode_follows_the_published_configuration() {
-        let shared = WifiShared::<NoopRawMutex>::new();
-        let handle = shared.handle();
-        let service = NetworkService::new(handle, ());
-        handle.set_network_config(NetworkConfig {
-            address_mode: AddressMode::Static,
-            ..NetworkConfig::new()
-        });
-        let mut out = Collect::default();
-        block_on(service.status(&mut out)).unwrap();
-        assert_eq!(
-            out.get(status_field::ADDRESS_MODE),
-            Some(&Value::Enum(address_mode::STATIC))
-        );
     }
 
     #[test]

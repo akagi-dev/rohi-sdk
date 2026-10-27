@@ -39,7 +39,7 @@ target; the Wi-Fi station and the IP layer are configured and observed separatel
 | | `wifi` | `network` | `ble` |
 |---|---|---|---|
 | Config | `ssid`, `password` (secret), `scan_timeout`, `connect_timeout`, `backoff_initial`, `backoff_max`, `link_refresh` (ms) | `address_mode` (`dhcp` or `static`), `ip`, `prefix_len`, `gateway`, `dns`, `hostname` (DHCP option 12), `dhcp_timeout` (ms). Static mode needs `ip`, `prefix_len` and `gateway` on the same link | `name` (1 to 29 bytes, optional; unset keeps the firmware default `<PREFIX>-<MAC>`). Read when the peripheral starts, so a change applies after a reboot |
-| Status | `ssid`, `rssi`, `channel`, `mac`, `reconnects`, `link_uptime`, `heap_size`, `heap_free`, `heap_min_free` (with `heap-stats`) | `ip`, `gateway`, `dns`, `address_mode`, `tcp_in_use`, `tcp_capacity`, `udp_in_use`, `udp_capacity` | `state` (`disabled`, `advertising`, `connected`, `error`), `name`, `encrypted`, `authenticated`, `max_payload` |
+| Status | `ssid`, `rssi`, `channel`, `mac`, `reconnects`, `link_uptime`, `heap_size`, `heap_free`, `heap_min_free` (with `heap-stats`) | `ip`, `gateway`, `dns`, `tcp_in_use`, `tcp_capacity`, `udp_in_use`, `udp_capacity` | `state` (`disabled`, `advertising`, `connected`, `error`), `name`, `encrypted`, `authenticated`, `max_payload` |
 | Actions | `scan`, `connect`, `reconnect`, `disconnect` | none | none |
 
 Fields that do not exist now are not reported. A change of the `wifi` or `network` section reconnects. Timings default

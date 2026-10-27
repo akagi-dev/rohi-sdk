@@ -135,7 +135,6 @@ pub async fn ntp_task(network: NetworkHandle<'static, Ip>, config: ConfigHandle)
         let stored = {
             let hosts = servers.servers();
             info!("Time: NTP servers {:?}", hosts.as_slice());
-            TIME.set_servers(&hosts);
             let source =
                 NtpTimeSource::new(network, Delay, NtpConfig::new(&hosts), || TIME.pivot());
             let mut synchronizer = Synchronizer::new(&TIME, source, Delay, SyncSchedule::DEFAULT);

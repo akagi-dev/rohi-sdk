@@ -37,7 +37,6 @@ frames_delivered         209
 send_retries             7
 frames_rejected          0
 queue_depth              3
-endpoint                 ingress.example.org:443
 frames_without_location  212
 
 Issues:
@@ -176,7 +175,7 @@ rules are in [Service pipeline](../sdk/service.md#config-sections).
 | `wifi` | connection state, network, signal, channel, radio heap | `authentication_failed`, `network_not_found`, `association_failed` |
 | `network` | IPv4 address, gateway, DNS, address mode, socket usage | `dhcp_failed` |
 | `ble` | peripheral state, advertised name, link security | `driver_error` |
-| `connectivity` | telemetry queue and counters, endpoint | `connection_timeout`, `unauthorized`, `no_identity`, `no_utc_time`, `no_location` |
+| `connectivity` | telemetry queue and counters | `connection_timeout`, `unauthorized`, `no_identity`, `no_utc_time`, `no_location` |
 | `time` | wall-clock time, source, age, failures | `network_unavailable`, `timeout`, `implausible` |
 | `sensors` | `<sensor>.<measurement>` values in canonical units | `bmx280_error`, `sds011_degraded`, ... |
 | `identity` | provisioned or not, public key | `not_provisioned` |

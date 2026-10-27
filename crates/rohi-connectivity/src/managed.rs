@@ -16,8 +16,6 @@
 //
 //! The telemetry configuration and status in the generic management plane.
 
-use core::fmt::Write as _;
-
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use heapless::Vec;
 use rohi_location::LocationSource;
@@ -27,7 +25,7 @@ use rohi_service::{
     StatusWriter, Unit, Value, ValueKind, WriteError,
 };
 
-use crate::config::{MAX_HOST_LEN, MAX_INTERVAL_S, MIN_INTERVAL_S};
+use crate::config::{MAX_INTERVAL_S, MIN_INTERVAL_S};
 use crate::service::{ConnectivityShared, ConnectivityState};
 use crate::transport::TransportError;
 use crate::{ConnectivityConfig, Host};
@@ -151,12 +149,8 @@ pub mod status_field {
     pub const FRAMES_REJECTED: u32 = 4;
     /// Frames waiting for delivery.
     pub const QUEUE_DEPTH: u32 = 5;
-    /// Ingress host of the effective configuration.
-    pub const HOST: u32 = 6;
     /// Frames created without a location.
-    pub const FRAMES_WITHOUT_LOCATION: u32 = 7;
-    /// Ingress port of the effective configuration.
-    pub const PORT: u32 = 8;
+    pub const FRAMES_WITHOUT_LOCATION: u32 = 6;
 }
 
 fn warning(code: u32) -> Issue {
@@ -183,7 +177,7 @@ fn transport_issue(error: TransportError) -> Issue {
 ///
 /// `effective` returns the configuration the service currently runs, or `None`
 /// while it is disabled or invalid; a disabled service is not an error. The
-/// endpoint of that configuration is part of the status.
+/// configuration itself is not repeated in the status.
 ///
 /// Telemetry without a location still flows but is incomplete: while the
 /// device does not know where it is, an otherwise healthy service is
@@ -239,7 +233,6 @@ impl<M: RawMutex> ManagedService for ConnectivityStatusService<'_, M> {
             ValueKind::U64,
         ),
         FieldDescriptor::new(status_field::QUEUE_DEPTH, "queue_depth", ValueKind::U64),
-        FieldDescriptor::new(status_field::HOST, "host", ValueKind::String),
         FieldDescriptor::new(
             status_field::FRAMES_WITHOUT_LOCATION,
             "frames_without_location",
@@ -325,14 +318,6 @@ impl<M: RawMutex> ManagedService for ConnectivityStatusService<'_, M> {
             status_field::FRAMES_WITHOUT_LOCATION,
             u64::from(counters.frames_without_location),
         )?;
-        if let Some(config) = (self.effective)() {
-            let endpoint = config.endpoint();
-            // Separate fields: host and port together can exceed the value limit.
-            let mut host = heapless::String::<MAX_HOST_LEN>::new();
-            let _ = write!(host, "{}", endpoint.host);
-            out.text(status_field::HOST, &host)?;
-            out.u64(status_field::PORT, u64::from(endpoint.port))?;
-        }
         Ok(())
     }
 }
@@ -493,31 +478,29 @@ mod tests {
         let summary = block_on(service.summary());
         assert_eq!(summary.state, ServiceState::Starting);
 
-        // The endpoint of the running configuration is reported as host and port.
-        struct Sink(std::vec::Vec<(u32, Value)>);
+        // The configuration is not repeated in the status.
+        struct Sink(std::vec::Vec<u32>);
         impl StatusWriter for Sink {
-            fn put(&mut self, id: u32, value: Value) -> Result<(), WriteError> {
-                self.0.push((id, value));
+            fn put(&mut self, id: u32, _: Value) -> Result<(), WriteError> {
+                self.0.push(id);
                 Ok(())
             }
         }
         let mut sink = Sink(std::vec::Vec::new());
         block_on(service.status(&mut sink)).unwrap();
-        assert!(sink.0.contains(&(
-            status_field::HOST,
-            Value::text("ingress.example.org").unwrap()
-        )));
-        assert!(sink.0.contains(&(status_field::PORT, Value::U64(443))));
+        assert_eq!(
+            sink.0,
+            [
+                status_field::FRAMES_CREATED,
+                status_field::FRAMES_DELIVERED,
+                status_field::SEND_RETRIES,
+                status_field::FRAMES_REJECTED,
+                status_field::QUEUE_DEPTH,
+                status_field::FRAMES_WITHOUT_LOCATION,
+            ]
+        );
 
         let off = ConnectivityStatusService::new(&shared, disabled, &NoLocation);
-        let mut sink = Sink(std::vec::Vec::new());
-        block_on(off.status(&mut sink)).unwrap();
-        // No effective configuration, no endpoint.
-        assert!(
-            sink.0
-                .iter()
-                .all(|(id, _)| *id != status_field::HOST && *id != status_field::PORT)
-        );
         let summary = block_on(off.summary());
         assert_eq!(summary.state, ServiceState::Disabled);
         assert!(!summary.ready);

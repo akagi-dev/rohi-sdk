@@ -20,7 +20,6 @@ use core::time::Duration;
 
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::RawMutex;
-use heapless::{String, Vec};
 use log::{info, warn};
 use rohi_hal::MonotonicTimestamp;
 use rohi_hal::runtime::Clock;
@@ -38,12 +37,6 @@ pub const DEFAULT_MAX_UNCERTAINTY: Duration = Duration::from_secs(5);
 
 /// Default distance between the plausibility floor and ceiling: 40 years.
 pub const DEFAULT_HORIZON: Duration = Duration::from_secs(40 * 365 * 24 * 60 * 60);
-
-/// Most time servers a [`TimeService`] reports.
-pub const MAX_SERVERS: usize = 4;
-
-/// Longest reported time server name, in bytes.
-pub const MAX_SERVER_LEN: usize = 64;
 
 /// Acceptance and staleness policy of a [`TimeService`].
 ///
@@ -102,7 +95,6 @@ struct Inner {
     anchor: Option<Anchor>,
     consecutive_failures: u32,
     last_failure: Option<SyncFailure>,
-    servers: Vec<String<MAX_SERVER_LEN>, MAX_SERVERS>,
 }
 
 /// The single source of wall-clock time of the firmware.
@@ -134,7 +126,6 @@ impl<C: Clock, M: RawMutex> TimeService<C, M> {
                 anchor: None,
                 consecutive_failures: 0,
                 last_failure: None,
-                servers: Vec::new(),
             })),
         }
     }
@@ -203,29 +194,6 @@ impl<C: Clock, M: RawMutex> TimeService<C, M> {
                 last_failure: inner.last_failure,
             }
         })
-    }
-
-    /// Sets the time servers reported by [`servers`](Self::servers), in
-    /// order of use. They are informational: the service never contacts
-    /// them; the source in use calls this when it starts or its servers
-    /// change. Names beyond [`MAX_SERVERS`] or longer than
-    /// [`MAX_SERVER_LEN`] are skipped.
-    pub fn set_servers(&self, servers: &[&str]) {
-        self.inner.lock(|inner| {
-            let list = &mut inner.borrow_mut().servers;
-            list.clear();
-            for server in servers {
-                if let Ok(name) = String::try_from(*server) {
-                    let _ = list.push(name);
-                }
-            }
-        });
-    }
-
-    /// The time servers the source in use synchronizes with, empty when
-    /// none was reported.
-    pub fn servers(&self) -> Vec<String<MAX_SERVER_LEN>, MAX_SERVERS> {
-        self.inner.lock(|inner| inner.borrow().servers.clone())
     }
 
     /// Validates `sample` and, when it is plausible, makes it the anchor:

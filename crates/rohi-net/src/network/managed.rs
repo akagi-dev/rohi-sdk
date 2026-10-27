@@ -58,7 +58,7 @@ pub mod address_mode {
 /// Id of the enum of the `address_mode` field.
 pub const ADDRESS_MODE_ENUM: u32 = 1;
 
-/// The enum of the `address_mode` field, in the config and in the status.
+/// The enum of the `address_mode` config field.
 pub const ADDRESS_MODES: &[EnumDescriptor] = &[EnumDescriptor::new(
     ADDRESS_MODE_ENUM,
     &[
@@ -198,7 +198,7 @@ mod tests {
 
     #[test]
     fn the_reported_version_is_the_stored_one() {
-        assert_eq!(<NetworkConfig as ManagedConfig>::VERSION, 2);
+        assert_eq!(<NetworkConfig as ManagedConfig>::VERSION, 1);
     }
 
     #[test]

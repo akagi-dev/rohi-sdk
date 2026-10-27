@@ -162,8 +162,7 @@ without any cooperation from the sending task:
 | `Backoff(error)` | `running` / degraded / no | `network_unavailable`, `dns_failed`, `connect_failed`, `connection_timeout`, `io_error`, `bad_response`, `delivery_rejected` |
 | `Unauthorized` | `running` / **error** / no | `unauthorized` |
 
-Status fields: `frames_created`, `frames_delivered`, `send_retries`, `frames_rejected`, `queue_depth`, `host` and
-`port` (the ingress of the running configuration) and `frames_without_location`. Without a location an otherwise healthy
+Status fields: `frames_created`, `frames_delivered`, `send_retries`, `frames_rejected`, `queue_depth` and `frames_without_location`; the ingress `host` and `port` are configuration, see `rohi config get connectivity`. Without a location an otherwise healthy
 service is `degraded` with the warning `no_location` (and so is the device health), because the frames are sent but
 incomplete; `rohi config set location latitude=.. longitude=..` fixes it, see [Location](location.md). The service is not
 essential for the device.
