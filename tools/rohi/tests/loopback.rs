@@ -56,7 +56,7 @@ async fn info_and_discovery() {
         assert_eq!(
             sections,
             [
-                ("network".to_owned(), 2),
+                ("network".to_owned(), 1),
                 ("connectivity".to_owned(), 1),
                 ("gadget".to_owned(), 3),
                 ("location".to_owned(), 1)

@@ -510,7 +510,7 @@ async fn sections_are_listed_and_described_from_the_device() {
     outcome.ok();
     assert_eq!(
         outcome.stdout,
-        "SECTION       VERSION\nnetwork       2\nconnectivity  1\ngadget        3\nlocation      1\n"
+        "SECTION       VERSION\nnetwork       1\nconnectivity  1\ngadget        3\nlocation      1\n"
     );
 
     let outcome = run(&bench, &["config", "describe", "gadget"]).await;
