@@ -124,6 +124,28 @@ pub trait SectionStore<C> {
     }
 }
 
+/// A [`SectionStore`] whose section is read once, when its owner starts: every
+/// change, a reset included, takes effect only after a restart.
+pub struct RestartRequired<S>(pub S);
+
+impl<C, S: SectionStore<C>> SectionStore<C> for RestartRequired<S> {
+    async fn load(&self) -> Result<Option<C>, StoreError> {
+        self.0.load().await
+    }
+
+    async fn store(&self, config: &C) -> Result<(), StoreError> {
+        self.0.store(config).await
+    }
+
+    async fn remove(&self) -> Result<(), StoreError> {
+        self.0.remove().await
+    }
+
+    fn restart_required(&self) -> bool {
+        true
+    }
+}
+
 /// Failure of a generic config operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConfigError {

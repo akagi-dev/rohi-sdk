@@ -46,8 +46,8 @@ use rohi_net::{
 };
 use rohi_service::{
     ConfigError as RegistryError, ConfigRegistry, FactoryReset, ManagedSection, Mutation, Patched,
-    SectionInfo, SectionSchema, SectionStore, SectionValues, ServiceRegistry, Startup, StoreError,
-    Tracked,
+    RestartRequired, SectionInfo, SectionSchema, SectionStore, SectionValues, ServiceRegistry,
+    Startup, StoreError, Tracked,
 };
 use rohi_time::TimeStatusService;
 use rohi_time_ntp::NtpServersConfig;
@@ -135,11 +135,15 @@ fn identity_error(error: ConfigError) -> IdentityStoreError {
 
 type Section<C> = ManagedSection<C, Stored<C>, RawMutex>;
 
+/// A section the firmware reads once at start: the BLE peripheral advertises
+/// its name from the configuration it was started with.
+type RestartSection<C> = ManagedSection<C, RestartRequired<Stored<C>>, RawMutex>;
+
 /// The config sections of the device.
 pub type ConfigSections = (
     Section<WifiConfig>,
     Section<NetworkConfig>,
-    Section<BleSettings>,
+    RestartSection<BleSettings>,
     Section<ConnectivityConfig>,
     Section<LocationConfig>,
     Section<NtpServersConfig>,
@@ -245,7 +249,7 @@ pub fn device(
             sections: (
                 ManagedSection::new(Stored::new(config)),
                 ManagedSection::new(Stored::new(config)),
-                ManagedSection::new(Stored::new(config)),
+                ManagedSection::new(RestartRequired(Stored::new(config))),
                 ManagedSection::new(Stored::new(config)),
                 ManagedSection::new(Stored::new(config)),
                 ManagedSection::new(Stored::new(config)),

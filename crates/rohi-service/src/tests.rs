@@ -882,3 +882,20 @@ fn enum_values_are_checked_against_the_enum_of_the_field() {
     assert_eq!(table.value_of("wpa2"), Some(4));
     assert_eq!(table.value_of("open"), None);
 }
+
+#[test]
+fn a_restart_only_store_reports_it_for_every_change_and_factory_reset() {
+    let store = MemoryStore::default();
+    let registry = (ManagedSection::<Demo, _, NoopRawMutex>::new(
+        RestartRequired(&store),
+    ),);
+
+    let patched = block_on(registry.patch(1, &[set(3, text("a.io"))], None, false)).unwrap();
+    assert!(patched.restart_required);
+    assert!(store.value.borrow().is_some());
+    let dry = block_on(registry.patch(1, &[set(3, text("b.io"))], None, true)).unwrap();
+    assert!(dry.restart_required);
+    assert!(block_on(registry.reset(1, false)).unwrap().restart_required);
+    assert!(store.value.borrow().is_none());
+    assert!(block_on(registry.factory_reset()).unwrap().restart_required);
+}
