@@ -59,6 +59,12 @@ scanning / reconnecting, minimum free wireless heap for each, MTU negotiation, a
 run exercising BLE connect/disconnect, sensor reads, config reads and updates, Wi-Fi status, scan and reconnect.
 Expected outcome: no panic, no allocator exhaustion, no deadlock, no permanent BLE or Wi-Fi failure.
 
+## Control plane stack
+
+The stack high-water mark of the control path (`rohi status` with Wi-Fi and identity configured and all services active,
+config and action requests, factory reset) is **not yet measured**. The procedure, the scenarios and the table for the
+results are in [Resource budget](resource-budget.md#measuring-the-control-task).
+
 ## Sensor stability test
 
 Run `altruist-urban` without networking for at least 24 h (preferably 72 h) with all sensors attached and record the

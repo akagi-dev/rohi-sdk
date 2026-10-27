@@ -35,7 +35,7 @@ use embassy_time::Delay;
 use log::warn;
 use rohi_config::ConfigSection;
 use rohi_connectivity::{ConnectivityConfig, ConnectivityStatusService};
-use rohi_control::{ControlBackend, Controller, Device, DeviceInfo, OpenPolicy};
+use rohi_control::{Controller, Device, DeviceInfo, OpenPolicy};
 use rohi_control_ble::ControlBle;
 use rohi_hal::SensorsService;
 use rohi_hal_esp::EmbassyClock;
@@ -46,8 +46,8 @@ use rohi_net::{
 };
 use rohi_service::{
     ConfigError as RegistryError, ConfigRegistry, FactoryReset, ManagedSection, Mutation, Patched,
-    RestartRequired, SectionInfo, SectionSchema, SectionStore, SectionValues, ServiceRegistry,
-    Startup, StoreError, Tracked,
+    RestartRequired, SectionInfo, SectionSchema, SectionStore, SectionValues, Startup, StoreError,
+    Tracked,
 };
 use rohi_time::TimeStatusService;
 use rohi_time_ntp::NtpServersConfig;

@@ -29,8 +29,14 @@
 //! ```text
 //! control protocol -> IdentityHandle -> ConfigHandle -> ConfigStore (Identity section)
 //!                          |
-//!                          +-> SIGNER cache -> IdentityHandle::sign (future signed telemetry)
+//!                          +-> STATE -> IdentityHandle::sign (future signed telemetry)
 //! ```
+//!
+//! `STATE` is the runtime view of the stored identity: read once at start and
+//! updated by the configuration owner task in the same step as every commit or
+//! removal. Asking whether the device is provisioned, and for its public key,
+//! reads only `STATE` and never the persistent store; the store is read again
+//! only while `STATE` is unknown because it was unreadable at start.
 //!
 //! The secret is never logged and never leaves this module except into the
 //! configuration store; only the public key is.
@@ -44,8 +50,42 @@ use rohi_identity::{Identity, IdentityError, IdentitySigner, PublicKey, Signatur
 use crate::config::{ConfigHandle, ServiceError};
 use crate::tasks::RawMutex;
 
-/// Signer of the stored identity; `None` while not provisioned.
-static SIGNER: Mutex<RawMutex, RefCell<Option<IdentitySigner>>> = Mutex::new(RefCell::new(None));
+/// What the runtime knows about the stored identity.
+#[derive(Clone)]
+// One static value that is as large as its signer anyway.
+#[allow(clippy::large_enum_variant)]
+enum IdentityState {
+    /// The stored identity could not be read yet: the storage is unavailable
+    /// or the section is unreadable. Not the same as not provisioned.
+    Unknown,
+    /// The device has no identity.
+    NotProvisioned,
+    /// The stored identity, ready to sign; its public key is the signer's.
+    Provisioned(IdentitySigner),
+}
+
+impl IdentityState {
+    /// The public key if the state is known: `Some(None)` when not
+    /// provisioned.
+    fn public_key(&self) -> Option<Option<PublicKey>> {
+        match self {
+            Self::Unknown => None,
+            Self::NotProvisioned => Some(None),
+            Self::Provisioned(signer) => Some(Some(signer.public_key())),
+        }
+    }
+
+    fn of(signer: Option<IdentitySigner>) -> Self {
+        match signer {
+            Some(signer) => Self::Provisioned(signer),
+            None => Self::NotProvisioned,
+        }
+    }
+}
+
+/// The runtime identity state, with the signer.
+static STATE: Mutex<RawMutex, RefCell<IdentityState>> =
+    Mutex::new(RefCell::new(IdentityState::Unknown));
 
 /// Makes `signer` the signing identity (`None`: not provisioned).
 ///
@@ -54,7 +94,7 @@ static SIGNER: Mutex<RawMutex, RefCell<Option<IdentitySigner>>> = Mutex::new(Ref
 /// between, so a cancelled caller cannot leave the signer out of step with the
 /// stored identity (see [`crate::config`]).
 pub(crate) fn set_signer(signer: Option<IdentitySigner>) {
-    SIGNER.lock(|cell| *cell.borrow_mut() = signer);
+    STATE.lock(|state| *state.borrow_mut() = IdentityState::of(signer));
 }
 
 /// Cloneable access to the device identity.
@@ -78,7 +118,10 @@ pub async fn start(config: ConfigHandle) -> IdentityHandle {
             );
             set_signer(Some(identity.signer()));
         }
-        Ok(None) => info!("Identity: not provisioned"),
+        Ok(None) => {
+            set_signer(None);
+            info!("Identity: not provisioned")
+        }
         Err(ServiceError::Unavailable(_)) => {
             warn!("Identity: configuration unavailable, identity state unknown")
         }
@@ -89,12 +132,30 @@ pub async fn start(config: ConfigHandle) -> IdentityHandle {
 
 impl IdentityHandle {
     /// Public key of the stored identity, `None` when not provisioned.
+    ///
+    /// Answered from the runtime state; the store is only read while that is
+    /// unknown, which is how a storage that was unavailable at start recovers.
     pub async fn public_key(&self) -> Result<Option<PublicKey>, ServiceError> {
-        Ok(self
+        match STATE.lock(|state| state.borrow().public_key()) {
+            Some(key) => Ok(key),
+            None => self.load().await,
+        }
+    }
+
+    async fn load(&self) -> Result<Option<PublicKey>, ServiceError> {
+        let signer = self
             .config
             .get::<Identity>()
             .await?
-            .map(|identity| identity.public_key()))
+            .map(|identity| identity.signer());
+        Ok(STATE.lock(|state| {
+            let mut state = state.borrow_mut();
+            // A commit that raced with the read has published a newer state.
+            if matches!(*state, IdentityState::Unknown) {
+                *state = IdentityState::of(signer);
+            }
+            state.public_key().flatten()
+        }))
     }
 
     /// Persists `identity`; the configuration owner task makes it the signing
@@ -127,9 +188,9 @@ impl IdentityHandle {
     /// Ed25519 signature over exactly `message`, or
     /// [`IdentityError::NotProvisioned`].
     pub async fn sign(&self, message: &[u8]) -> Result<Signature, IdentityError> {
-        match SIGNER.lock(|cell| cell.borrow().clone()) {
-            Some(signer) => signer.sign(message),
-            None => Err(IdentityError::NotProvisioned),
+        match STATE.lock(|state| state.borrow().clone()) {
+            IdentityState::Provisioned(signer) => signer.sign(message),
+            _ => Err(IdentityError::NotProvisioned),
         }
     }
 }
@@ -141,16 +202,18 @@ pub struct StaticSigner;
 
 impl rohi_connectivity::FrameSigner for StaticSigner {
     fn sensor_id(&self) -> Result<PublicKey, rohi_connectivity::SignError> {
-        SIGNER.lock(|cell| match cell.borrow().as_ref() {
-            Some(signer) => Ok(signer.public_key()),
-            None => Err(rohi_connectivity::SignError::NotProvisioned),
+        STATE.lock(|state| match &*state.borrow() {
+            IdentityState::Provisioned(signer) => Ok(signer.public_key()),
+            _ => Err(rohi_connectivity::SignError::NotProvisioned),
         })
     }
 
     fn sign_payload(&self, message: &[u8]) -> Result<Signature, rohi_connectivity::SignError> {
-        match SIGNER.lock(|cell| cell.borrow().clone()) {
-            Some(signer) => Signer::sign(&signer, message).map_err(Into::into),
-            None => Err(rohi_connectivity::SignError::NotProvisioned),
+        match STATE.lock(|state| state.borrow().clone()) {
+            IdentityState::Provisioned(signer) => {
+                Signer::sign(&signer, message).map_err(Into::into)
+            }
+            _ => Err(rohi_connectivity::SignError::NotProvisioned),
         }
     }
 }

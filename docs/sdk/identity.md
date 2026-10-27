@@ -51,6 +51,11 @@ On boot the firmware reads the `Identity` section. If it is absent the device is
 control and diagnostics keep working, and only operations that need the identity fail with `IdentityNotProvisioned`.
 There is no automatic generation fallback. The log shows only the public key, never the secret.
 
+The firmware keeps the result as runtime state (not provisioned, provisioned with its public key, or unknown when the
+storage could not be read) next to the signer. `provision` and `erase` update it in the same step as the commit, and the
+service reads only that state for its summary, issues and status: observing the identity does not read the persistent
+store. Only an unknown state reads the store again, so a storage that was unavailable at boot recovers.
+
 ## Derivation (provisioning ABI)
 
 The derived identity is the Substrate hard derivation of the master with the junction `//<number>`:

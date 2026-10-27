@@ -79,11 +79,60 @@ update this table.
 
 ### Measuring the control task
 
-The stack high-water mark of the control task has to be measured on a device (paint the stack, run, read the first
-touched word) in at least these cases: unconfigured device; Wi-Fi configured; identity provisioned; Wi-Fi and identity
-configured; `rohi status`; `rohi status <service>`; `rohi config get` and `set`; an action invocation. The result and
-the safety margin belong in this section. **Not measured yet**: no hardware was available for this change, so it is
-not established here that `rohi status` no longer overflows the stack; the type sizes above are what makes it likely.
+The stack high-water mark of the control path has to be measured on a device, so that a future change has a concrete
+baseline to be compared with. **Not measured yet**: the table below is the record to fill in. What is known without a
+measurement: `rohi status` completes with Wi-Fi configured, an identity provisioned and all services active (reported
+on the pull request that introduced the generic services); the previous stack overflow is not reproducible. How much
+headroom remains is not known.
+
+**Procedure.** Build the release profile of `altruist-urban` for the target (`cargo build --release -p altruist-urban
+--no-default-features --features esp32c3 --target riscv32imc-unknown-none-elf`, `esp32c6` with
+`riscv32imac-unknown-none-elf`) and read the stack size from the ELF (`_stack_start - _stack_end`, e.g. with
+`riscv32-esp-elf-nm` or `rust-nm`). Paint the stack with a known pattern at boot (fill the region between `_stack_end`
+and the current stack pointer, keeping a guard word at the bottom), run one scenario at a time from the table, then read
+the stack with a debugger or dump it from a debug-only command and find the lowest address whose pattern changed. Use
+the same firmware build for every row and reboot between scenarios. Maximum usage is `_stack_start - lowest touched
+address`; headroom is the stack size minus that.
+
+Scenarios, each with the device in the stated state (all services active, i.e. the Wi-Fi and BLE services running):
+
+1. unconfigured device (no Wi-Fi, no identity)
+2. Wi-Fi configured
+3. identity provisioned
+4. Wi-Fi and identity both configured: `rohi status` (**the regression scenario**) and `rohi status <service>` for
+   every service
+5. `rohi config get` and `rohi config set` of every section
+6. Wi-Fi scan and `wifi connect` action invocation
+7. identity `provision` and `erase` action invocation
+8. `rohi factory-reset`
+9. a reboot request
+
+Record per target:
+
+| Field | ESP32-C3 | ESP32-C6 |
+|-------|----------|----------|
+| Hardware (board, chip revision) | | |
+| Firmware build (commit, profile) | | |
+| Stack size (bytes) | | |
+| Static `control_task` future (bytes, `nm -S`) | | |
+
+| Scenario | ESP32-C3 max usage / headroom | ESP32-C6 max usage / headroom |
+|----------|-------------------------------|-------------------------------|
+| 1. unconfigured | | |
+| 2. Wi-Fi configured | | |
+| 3. identity provisioned | | |
+| 4. `rohi status`, Wi-Fi + identity | | |
+| 4. `rohi status <service>`, worst service | | |
+| 5. `config get` / `config set`, worst section | | |
+| 6. Wi-Fi scan / connect | | |
+| 7. identity provision / erase | | |
+| 8. factory reset | | |
+| 9. reboot request | | |
+
+**Safety margin (proposed).** Until measured, no margin is claimed. When the table is filled in, state the lowest headroom of any
+row and keep at least 25 % of the stack (or 4 KB, whichever is larger) free in the worst row; a change that cuts into it
+needs another measurement. The generated-type budgets in [Control protocol types](#control-protocol-types) stay in CI
+independently of this measurement.
 
 ## Configuration store
 
