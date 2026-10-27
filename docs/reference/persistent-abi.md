@@ -71,9 +71,8 @@ Golden values:
 > **Renaming a persisted `ConfigSection` type is a storage ABI change.** `NetworkConfig` renamed to `WirelessConfig`
 > gets a different ID and the stored data is no longer found.
 
-> **`NetworkConfig` is version 2.** It once held the Wi-Fi credentials and timing too; those moved to `WifiConfig` and
-> the section kept its ID with a new layout. A version 1 record is rejected (`UnsupportedSectionVersion`) and not
-> migrated: devices that stored one are re-provisioned (`rohi factory-reset`, then `rohi config set wifi ...`).
+> **`NetworkConfig` is version 1.** It stores IPv4 addressing and DHCP settings; Wi-Fi credentials and timing live in
+> `WifiConfig`.
 A raw identifier (`r#Type`) hashes as `Type`. Types with type or const parameters are rejected unless they give an
 explicit `id`: the name-derived ID would be shared by every instantiation (`Foo<A>`, `Foo<B>`).
 
