@@ -15,7 +15,7 @@
 //  limitations under the License.
 //
 
-use crate::{NetworkInfo, WifiConfig, WifiError, WifiScanResults};
+use crate::{LinkConfig, NetworkInfo, WifiError, WifiScanResults};
 
 /// Platform Wi-Fi station driver driven by the [`WifiManager`](crate::WifiManager).
 ///
@@ -29,11 +29,12 @@ pub trait WifiBackend {
     /// reduced with [`ScanCollector`](crate::ScanCollector).
     async fn scan(&mut self) -> Result<WifiScanResults, WifiError>;
 
-    /// Associates and waits for a usable IPv4 configuration (DHCP).
+    /// Associates and waits for a usable IPv4 configuration: a DHCP lease, or
+    /// the static settings of `config`. Its timeouts bound the attempt.
     ///
     /// Returns only when the network is ready; association alone is not
     /// success.
-    async fn connect(&mut self, config: &WifiConfig) -> Result<NetworkInfo, WifiError>;
+    async fn connect(&mut self, config: &LinkConfig) -> Result<NetworkInfo, WifiError>;
 
     /// Leaves the network. Must be idempotent and succeed when not connected.
     async fn disconnect(&mut self) -> Result<(), WifiError>;

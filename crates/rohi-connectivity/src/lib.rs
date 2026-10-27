@@ -53,6 +53,7 @@ pub mod config;
 pub mod encoder;
 pub mod envelope;
 pub mod http;
+mod managed;
 pub mod outbox;
 pub mod service;
 pub mod transport;
@@ -62,6 +63,9 @@ pub use config::{ConfigError, ConnectivityConfig, Endpoint, Host};
 pub use encoder::{EncodeError, EncodeStats, EncodedMessage, UrbanEncoder};
 pub use envelope::{BuildError, EnvelopeBuilder, EnvelopeFrame, FrameSigner, SignError};
 pub use http::HttpTransport;
+pub use managed::{
+    ConnectivityStatusService, SERVICE_ID, field as config_field, issue, status_field,
+};
 pub use outbox::{Outbox, OutboxFull};
 pub use service::{
     ConnectivityService, ConnectivityShared, ConnectivityState, ConnectivityStatus, Diagnostics,

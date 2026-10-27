@@ -47,6 +47,7 @@ use crate::encoder::{EncodeError, UrbanEncoder};
 use crate::envelope::{BuildError, EnvelopeBuilder, FrameSigner, SignError};
 use crate::outbox::Outbox;
 use crate::transport::{Disposition, EnvelopeTransport, TransportError};
+use rohi_location::LocationSource;
 
 /// Default depth of the outbox, in frames.
 pub const DEFAULT_OUTBOX_DEPTH: usize = 4;
@@ -118,6 +119,8 @@ pub struct Diagnostics {
     pub skipped_no_measurements: u32,
     /// Frames not created: signing or encoding failed.
     pub build_failures: u32,
+    /// Frames created without a location because none was known.
+    pub frames_without_location: u32,
     /// Valid measurements omitted because the schema has no representation.
     pub measurements_unsupported: u32,
     /// Valid measurements omitted because the value cannot be represented.
@@ -182,6 +185,7 @@ impl<M: RawMutex> ConnectivityShared<M> {
                     skipped_no_snapshot: 0,
                     skipped_no_measurements: 0,
                     build_failures: 0,
+                    frames_without_location: 0,
                     measurements_unsupported: 0,
                     measurements_out_of_range: 0,
                 },
@@ -200,7 +204,7 @@ impl<M: RawMutex> ConnectivityShared<M> {
         self.publish(ConnectivityStatus::default());
     }
 
-    fn publish(&self, status: ConnectivityStatus) {
+    pub(crate) fn publish(&self, status: ConnectivityStatus) {
         self.status.lock(|cell| cell.set(status));
     }
 }
@@ -232,6 +236,7 @@ pub struct ConnectivityService<
     config: ServiceConfig,
     shared: &'a ConnectivityShared<M>,
     source: S,
+    location: &'a dyn LocationSource,
     clock: C,
     utc: &'a U,
     signer: &'a G,
@@ -264,6 +269,7 @@ where
         config: ServiceConfig,
         shared: &'a ConnectivityShared<M>,
         source: S,
+        location: &'a dyn LocationSource,
         clock: C,
         utc: &'a U,
         signer: &'a G,
@@ -275,6 +281,7 @@ where
             config,
             shared,
             source,
+            location,
             clock,
             utc,
             signer,
@@ -365,8 +372,13 @@ where
             return;
         };
 
-        let message = match UrbanEncoder::encode_snapshot(&snapshot, self.config.node_id, timestamp)
-        {
+        let location = self.location.location();
+        let message = match UrbanEncoder::encode_snapshot_at(
+            &snapshot,
+            self.config.node_id,
+            timestamp,
+            location.as_ref(),
+        ) {
             Ok(message) => message,
             Err(EncodeError::NothingToSend) => {
                 bump!(d.skipped_no_measurements);
@@ -392,6 +404,9 @@ where
                 // pushes.
                 if self.outbox.push(frame).is_ok() {
                     bump!(d.frames_created);
+                    if !stats.location_included {
+                        bump!(d.frames_without_location);
+                    }
                     if matches!(
                         self.state,
                         ConnectivityState::WaitingForIdentity | ConnectivityState::WaitingForUtc

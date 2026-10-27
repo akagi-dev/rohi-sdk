@@ -3,35 +3,89 @@
 
 mod common;
 
-use std::net::Ipv4Addr;
 use std::time::Duration;
 
 use common::*;
 use rohi::model::*;
 use rohi::{ClientTransport, Device, Error, Session};
-use rohi_control::{Capabilities, Controller, OpenPolicy};
+use rohi_control::{Controller, OpenPolicy};
 use rohi_control_ble::ControlBle;
 use rohi_control_proto::control as pb;
 
+fn text(value: &str) -> Value {
+    Value::String(value.to_owned())
+}
+
+fn set(id: u32, value: Value) -> Mutation {
+    Mutation {
+        field_id: id,
+        op: MutationOp::Set(value),
+    }
+}
+
+fn unset(id: u32) -> Mutation {
+    Mutation {
+        field_id: id,
+        op: MutationOp::Unset,
+    }
+}
+
+fn entry(values: &ConfigValues, id: u32) -> Option<&EntryState> {
+    values
+        .entries
+        .iter()
+        .find(|entry| entry.field_id == id)
+        .map(|entry| &entry.state)
+}
+
 #[tokio::test(flavor = "current_thread")]
-async fn info_and_capabilities() {
-    with_device(20, Services::new(), |mut device| async move {
+async fn info_and_discovery() {
+    let bench = Bench::new();
+    with_device(20, &bench, |mut device| async move {
         let info = device.info().await.unwrap();
         assert_eq!(info.firmware, "fake-1.0.0");
         assert_eq!(info.board, "bench-esp32c3");
 
-        let capabilities = device.capabilities().await.unwrap();
+        let sections: Vec<_> = device
+            .config_sections()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| (s.name, s.version))
+            .collect();
         assert_eq!(
-            capabilities,
+            sections,
             [
-                Capability::Sensors,
-                Capability::Config,
-                Capability::WifiScan,
-                Capability::WifiStatus,
-                Capability::WifiControl,
-                Capability::Identity,
-                Capability::Time,
-                Capability::Connectivity
+                ("wifi".to_owned(), 1),
+                ("connectivity".to_owned(), 1),
+                ("gadget".to_owned(), 3),
+                ("location".to_owned(), 1)
+            ]
+        );
+        let services: Vec<_> = device
+            .services()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(services, ["radio", "identity", "location"]);
+        let actions: Vec<_> = device
+            .actions()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|a| format!("{}.{}", a.service, a.name))
+            .collect();
+        assert_eq!(
+            actions,
+            [
+                "radio.scan",
+                "radio.reconnect",
+                "radio.tune",
+                "radio.explode",
+                "identity.provision",
+                "identity.erase"
             ]
         );
     })
@@ -39,222 +93,251 @@ async fn info_and_capabilities() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn sensors_come_back_in_canonical_units() {
-    with_device(20, Services::new(), |mut device| async move {
-        let sensors = device.sensors().await.unwrap();
-        assert_eq!(sensors.uptime_ms, 5_000);
-        assert_eq!(sensors.sensors.len(), 2);
+async fn a_schema_describes_the_fields_of_a_section_the_client_has_never_seen() {
+    let bench = Bench::new();
+    with_device(20, &bench, |mut device| async move {
+        let schema = device.config_schema("gadget").await.unwrap();
+        assert_eq!(schema.section.version, 3);
+        let names: Vec<_> = schema
+            .fields
+            .iter()
+            .map(|f| f.field.name.as_str())
+            .collect();
+        assert_eq!(names, ["label", "level", "mode", "serial"]);
+        let level = &schema.fields[1];
+        assert_eq!(level.field.kind, ValueKind::U64);
+        assert_eq!(level.field.unit, "%");
+        let mode = &schema.fields[2];
+        assert!(mode.optional);
+        assert_eq!(mode.field.variants, ["fast", "slow"]);
+        assert!(!schema.fields[3].writable);
 
-        let bmx = &sensors.sensors[0];
-        assert_eq!(bmx.name, "bmx280");
-        let temperature = &bmx.measurements[0];
-        assert_eq!(temperature.kind, MeasurementType::Temperature);
-        assert_eq!(temperature.unit, "°C");
-        assert_eq!(temperature.value, Some(21.5));
-        assert_eq!(temperature.state, MeasurementState::Valid);
-        assert_eq!(temperature.age_ms, Some(4_000));
-        assert_eq!(bmx.measurements[2].unit, "Pa");
-        assert_eq!(bmx.measurements[2].value, Some(100_800.0));
+        let wifi = device.config_schema("wifi").await.unwrap();
+        let password = wifi
+            .fields
+            .iter()
+            .find(|f| f.field.name == "password")
+            .unwrap();
+        assert!(password.secret && password.optional);
 
-        let scd = &sensors.sensors[1];
-        assert_eq!(scd.measurements[0].kind, MeasurementType::Co2);
-        assert_eq!(scd.measurements[0].unit, "ppm");
-        assert_eq!(scd.measurements[0].age_ms, Some(3_000));
-
-        let text = rohi::format::sensors(&sensors);
-        assert!(text.contains("bmx280"), "{text}");
-        assert!(text.contains("21.5 °C"), "{text}");
-        assert!(text.contains("100800 Pa"), "{text}");
+        let error = device.config_schema("missing").await.unwrap_err();
+        assert!(matches!(error, Error::Device(ErrorCode::NotFound)));
     })
     .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn wifi_configuration_round_trip_never_exposes_the_password() {
-    let services = with_device(20, Services::new(), |mut device| async move {
-        assert_eq!(device.config().await.unwrap().wifi, None);
+async fn a_patch_is_stored_atomically_and_secrets_are_never_returned() {
+    let bench = Bench::new();
+    with_device(20, &bench, |mut device| async move {
+        let unconfigured = device.config_get("wifi").await.unwrap();
+        assert!(!unconfigured.configured);
+        assert!(unconfigured.entries.is_empty());
 
-        device
-            .update_wifi(&WifiUpdate {
-                ssid: Some(b"office".to_vec()),
-                password: PasswordChange::Set(b"hunter2hunter2".to_vec()),
-            })
+        let applied = device
+            .config_patch(
+                "wifi",
+                &[set(1, text("office")), set(2, text("hunter2hunter2"))],
+                Some(0),
+                false,
+            )
             .await
             .unwrap();
-        let config = device.config().await.unwrap();
-        let wifi = config.wifi.clone().unwrap();
-        assert_eq!(wifi.ssid.to_text(), "office");
-        assert!(wifi.password_configured);
-        assert!(!format!("{config:?}").contains("hunter2"));
-        assert!(!rohi::format::config(&config).contains("hunter2"));
+        assert_eq!(applied.revision, 1);
+        assert!(!applied.restart_required);
 
-        // Only the SSID changes: the password is kept.
+        let values = device.config_get("wifi").await.unwrap();
+        assert!(values.configured);
+        assert_eq!(values.section.revision, 1);
+        assert_eq!(entry(&values, 1), Some(&EntryState::Value(text("office"))));
+        assert_eq!(entry(&values, 2), Some(&EntryState::Redacted));
+
+        // Unset is not an empty value.
         device
-            .update_wifi(&WifiUpdate {
-                ssid: Some(b"cafe".to_vec()),
-                password: PasswordChange::Keep,
-            })
+            .config_patch("wifi", &[unset(2)], None, false)
             .await
             .unwrap();
-        let wifi = device.config().await.unwrap().wifi.unwrap();
-        assert_eq!(wifi.ssid.to_text(), "cafe");
-        assert!(wifi.password_configured);
+        assert_eq!(entry(&device.config_get("wifi").await.unwrap(), 2), None);
+    })
+    .await;
+    let stored = bench.wifi.value.borrow().clone().unwrap();
+    assert_eq!(stored.ssid.as_str(), Some("office"));
+    assert!(stored.password.is_none());
+}
 
-        // Explicit clear.
-        device
-            .update_wifi(&WifiUpdate {
-                ssid: None,
-                password: PasswordChange::Clear,
-            })
-            .await
-            .unwrap();
-        assert!(
-            !device
-                .config()
-                .await
-                .unwrap()
-                .wifi
-                .unwrap()
-                .password_configured
-        );
-
-        device.forget_wifi().await.unwrap();
-        assert_eq!(device.config().await.unwrap().wifi, None);
-
-        // Invalid updates are typed errors.
+#[tokio::test(flavor = "current_thread")]
+async fn an_invalid_mutation_stores_nothing() {
+    let bench = Bench::new();
+    with_device(20, &bench, |mut device| async move {
+        // The second mutation is out of range: the first must not be stored.
         let error = device
-            .update_wifi(&WifiUpdate {
-                ssid: None,
-                password: PasswordChange::Set(b"hunter2hunter2".to_vec()),
-            })
+            .config_patch(
+                "gadget",
+                &[set(1, text("lamp")), set(2, Value::U64(1_000))],
+                None,
+                false,
+            )
             .await
             .unwrap_err();
         assert!(matches!(error, Error::Device(ErrorCode::InvalidArgument)));
+        // A complete result that fails the typed validation is refused too.
         let error = device
-            .update_wifi(&WifiUpdate {
-                ssid: Some(vec![b'x'; 33]),
-                password: PasswordChange::Keep,
-            })
+            .config_patch("gadget", &[set(2, Value::U64(5))], None, false)
             .await
             .unwrap_err();
-        assert!(matches!(error, Error::InvalidInput(_)));
+        assert!(matches!(error, Error::Device(ErrorCode::InvalidArgument)));
+        // So are a read-only field and a required field that is unset.
+        assert!(
+            device
+                .config_patch("gadget", &[set(4, text("x"))], None, false)
+                .await
+                .is_err()
+        );
+        assert!(
+            device
+                .config_patch("gadget", &[unset(1)], None, false)
+                .await
+                .is_err()
+        );
     })
     .await;
-    // Each accepted update was persisted before it was applied.
-    let requests = services.requests.borrow().clone();
-    assert_eq!(requests, ["set", "set", "set", "set"]);
+    assert!(bench.gadget.value.borrow().is_none());
+    assert_eq!(bench.writes(), 0);
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn connectivity_configuration_round_trip() {
-    let services = with_device(20, Services::new(), |mut device| async move {
-        assert_eq!(device.config().await.unwrap().connectivity, None);
-
-        device
-            .update_connectivity(&ConnectivityUpdate {
-                host: Some("ingress.example".into()),
-                node_id: Some(7),
-                enabled: Some(true),
-                ..Default::default()
-            })
+async fn dry_runs_conflicts_restarts_and_reset() {
+    let bench = Bench::new();
+    with_device(20, &bench, |mut device| async move {
+        let dry = device
+            .config_patch("gadget", &[set(1, text("lamp"))], None, true)
             .await
             .unwrap();
-        let config = device.config().await.unwrap().connectivity.unwrap();
-        assert!(config.enabled);
-        assert_eq!(config.host, "ingress.example");
-        assert_eq!(
-            (config.node_id, config.port, config.interval_s),
-            (7, 80, 60)
-        );
+        assert_eq!(dry.revision, 0);
+        assert!(!device.config_get("gadget").await.unwrap().configured);
 
-        // Only the port changes.
-        device
-            .update_connectivity(&ConnectivityUpdate {
-                port: Some(8080),
-                ..Default::default()
-            })
+        // This section only takes effect after a restart.
+        let applied = device
+            .config_patch("gadget", &[set(1, text("lamp"))], Some(0), false)
             .await
             .unwrap();
-        let config = device.config().await.unwrap().connectivity.unwrap();
-        assert_eq!(
-            (config.port, config.node_id, config.enabled),
-            (8080, 7, true)
-        );
+        assert!(applied.restart_required);
 
-        // Several settings at once.
-        device
-            .update_connectivity(&ConnectivityUpdate {
-                host: Some("ok.example".into()),
-                interval_s: Some(10),
-                ..Default::default()
-            })
+        let error = device
+            .config_patch("gadget", &[set(2, Value::U64(7))], Some(0), false)
             .await
-            .unwrap();
-        assert_eq!(
+            .unwrap_err();
+        assert!(matches!(error, Error::Device(ErrorCode::Conflict)));
+
+        let reset = device.config_reset("gadget", None, false).await.unwrap();
+        assert_eq!(reset.revision, 2);
+        assert!(!device.config_get("gadget").await.unwrap().configured);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn services_report_state_health_readiness_and_issues() {
+    let bench = Bench::new();
+    with_device(20, &bench, |mut device| async move {
+        let all = device.services_status().await.unwrap();
+        assert_eq!(all.uptime_ms, 90_000);
+        assert_eq!(all.health, DeviceHealth::Ok);
+        let radio = &all.services[0];
+        assert_eq!(radio.service, "radio");
+        assert_eq!(radio.state, ServiceState::Running);
+        assert!(radio.ready);
+        let revision = radio.revision;
+
+        let schema = device.service_schema("radio").await.unwrap();
+        assert_eq!(schema.service.version, 2);
+        assert_eq!(schema.fields[1].unit, "dBm");
+        let status = device.service_status("radio").await.unwrap();
+        assert_eq!(status.fields[0].value, text("office"));
+        assert_eq!(status.fields[1].value, Value::I64(-61));
+        assert!(status.issues.is_empty());
+
+        assert!(matches!(
+            device.service_status("missing").await.unwrap_err(),
+            Error::Device(ErrorCode::NotFound)
+        ));
+        let _ = revision;
+    })
+    .await;
+
+    bench.radio.degraded.set(true);
+    with_device(20, &bench, |mut device| async move {
+        let all = device.services_status().await.unwrap();
+        assert_eq!(all.health, DeviceHealth::Degraded);
+        assert_eq!(all.services[0].health, ServiceHealth::Degraded);
+        let status = device.service_status("radio").await.unwrap();
+        assert_eq!(status.issues[0].code, "link_lost");
+        assert_eq!(status.issues[0].severity, IssueSeverity::Warning);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn actions_take_arguments_and_return_records() {
+    let bench = Bench::new();
+    with_device(20, &bench, |mut device| async move {
+        let schema = device.action_schema("radio", "scan").await.unwrap();
+        assert!(!schema.action.privileged);
+        assert_eq!(schema.results.len(), 3);
+        assert_eq!(schema.results[2].variants, ["open", "wpa2"]);
+        assert!(
             device
-                .config()
+                .action_schema("radio", "reconnect")
                 .await
                 .unwrap()
-                .connectivity
-                .unwrap()
-                .interval_s,
-            10
+                .action
+                .privileged
         );
 
-        device.forget_connectivity().await.unwrap();
-        assert_eq!(device.config().await.unwrap().connectivity, None);
+        let records = device.invoke("radio", "scan", &[]).await.unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[1][0].value, text("guest"));
+        assert_eq!(records[0][2].value, Value::Enum("wpa2".into()));
+
+        device
+            .invoke(
+                "radio",
+                "tune",
+                &[FieldValue {
+                    field_id: 1,
+                    value: Value::U64(11),
+                }],
+            )
+            .await
+            .unwrap();
+
+        // Missing arguments, unknown names and refusals are typed.
+        assert!(matches!(
+            device.invoke("radio", "tune", &[]).await.unwrap_err(),
+            Error::Device(ErrorCode::InvalidArgument)
+        ));
+        assert!(matches!(
+            device.invoke("radio", "missing", &[]).await.unwrap_err(),
+            Error::Device(ErrorCode::NotFound)
+        ));
+        let error = device.invoke("radio", "explode", &[]).await.unwrap_err();
+        assert!(matches!(&error, Error::Rejected(reason) if reason == "not_today"));
     })
     .await;
-    assert!(services.connectivity.borrow().is_none());
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn wifi_scan_status_and_control() {
-    with_device(20, Services::new(), |mut device| async move {
-        let networks = device.wifi_scan().await.unwrap();
-        assert_eq!(networks.len(), 16);
-        assert_eq!(networks[0].ssid.to_text(), "network-number-00");
-        assert_eq!(networks[0].security, WifiSecurity::Wpa2);
-        assert!(rohi::format::wifi_scan(&networks).contains("network-number-15"));
-
-        let status = device.wifi_status().await.unwrap();
-        assert_eq!(status.state, WifiState::Connected);
-        let connection = status.connection.unwrap();
-        assert_eq!(connection.ipv4, Ipv4Addr::new(10, 0, 0, 7));
-        assert_eq!(connection.gateway, Some(Ipv4Addr::new(10, 0, 0, 1)));
-        assert_eq!(connection.dns, None);
-
-        device.wifi_reconnect().await.unwrap();
-        let error = device.wifi_disconnect().await.unwrap_err();
-        assert!(matches!(error, Error::Device(ErrorCode::Busy)));
-    })
-    .await;
+    assert_eq!(
+        bench.radio.calls.borrow().as_slice(),
+        ["scan", "tune", "channel=11", "explode"]
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn works_with_a_large_mtu() {
-    with_device(244, Services::new(), |mut device| async move {
-        assert_eq!(device.wifi_scan().await.unwrap().len(), 16);
-        assert_eq!(device.sensors().await.unwrap().sensors.len(), 2);
+    let bench = Bench::new();
+    with_device(244, &bench, |mut device| async move {
+        assert_eq!(device.services_status().await.unwrap().services.len(), 3);
+        assert_eq!(device.invoke("radio", "scan", &[]).await.unwrap().len(), 2);
     })
     .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn missing_capabilities_fail_without_sending_the_request() {
-    let mut services = Services::new();
-    services.capabilities = Capabilities::SENSORS;
-    let services = with_device(20, services, |mut device| async move {
-        let error = device.wifi_scan().await.unwrap_err();
-        assert!(matches!(error, Error::Unsupported(Capability::WifiScan)));
-        assert!(matches!(
-            device.config().await.unwrap_err(),
-            Error::Unsupported(Capability::Config)
-        ));
-        assert_eq!(device.sensors().await.unwrap().sensors.len(), 2);
-    })
-    .await;
-    assert_eq!(services.requests.borrow().as_slice(), ["sensors"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -320,8 +403,9 @@ impl ClientTransport for StaleFirst {
 
 #[tokio::test(flavor = "current_thread")]
 async fn stale_responses_are_skipped() {
+    let bench = Bench::new();
     let (client, device) = link(244);
-    let controller = Controller::new(Services::new(), OpenPolicy);
+    let controller = Controller::new(backend(&bench), OpenPolicy);
     let mut server = ControlBle::new(device, &controller);
     let transport = StaleFirst {
         inner: client,
@@ -347,139 +431,122 @@ fn dev_identity(number: u64) -> rohi::DerivedIdentity {
     rohi::derive_identity(DEV_PHRASE, number).unwrap()
 }
 
-fn stored_key(services: &Services) -> Option<[u8; 32]> {
-    services
-        .identity
-        .borrow()
-        .as_ref()
-        .map(|identity| identity.public_key().to_bytes())
-}
-
 #[tokio::test(flavor = "current_thread")]
-async fn fresh_device_is_not_provisioned() {
-    with_device(244, Services::new(), |mut device| async move {
-        let identity = device.identity().await.unwrap();
-        assert_eq!(identity.state, IdentityState::NotProvisioned);
-        assert_eq!(identity.public_key, None);
-    })
-    .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn identity_lifecycle() {
-    let derived = dev_identity(42);
+async fn identity_is_an_ordinary_service_with_actions() {
+    let bench = Bench::new();
+    let derived = dev_identity(7);
+    let secret = derived.secret().expose_secret().to_vec();
     let expected = derived.public_key();
-    let services = with_device(20, Services::new(), |mut device| async move {
-        let key = device.provision_identity(&derived).await.unwrap();
-        assert_eq!(key, expected);
+    with_device(20, &bench, |mut device| async move {
+        let status = device.service_status("identity").await.unwrap();
+        assert_eq!(status.summary.state, ServiceState::Stopped);
+        assert_eq!(status.issues[0].code, "not_provisioned");
 
-        let identity = device.identity().await.unwrap();
-        assert_eq!(identity.state, IdentityState::Provisioned);
-        assert_eq!(identity.public_key, Some(expected));
-
-        // Never silently replaced, not even by the same identity.
-        for number in [42, 43] {
-            let error = device
-                .provision_identity(&dev_identity(number))
-                .await
-                .unwrap_err();
-            assert!(
-                matches!(error, Error::Device(ErrorCode::IdentityAlreadyProvisioned)),
-                "{error}"
-            );
-        }
-        assert_eq!(device.identity().await.unwrap().public_key, Some(expected));
-
-        device.erase_identity().await.unwrap();
+        let schema = device.action_schema("identity", "provision").await.unwrap();
+        assert!(schema.action.privileged);
+        let records = device
+            .invoke(
+                "identity",
+                "provision",
+                &[FieldValue {
+                    field_id: schema.args[0].id,
+                    value: Value::Bytes(secret.clone()),
+                }],
+            )
+            .await
+            .unwrap();
         assert_eq!(
-            device.identity().await.unwrap().state,
-            IdentityState::NotProvisioned
+            records[0][0].value,
+            Value::Bytes(expected.to_bytes().to_vec())
         );
-        // Erasing nothing is fine.
-        device.erase_identity().await.unwrap();
 
-        // The same master and number restore the same identity.
-        let again = device.provision_identity(&dev_identity(42)).await.unwrap();
-        assert_eq!(again, expected);
+        let status = device.service_status("identity").await.unwrap();
+        assert_eq!(status.summary.state, ServiceState::Running);
+        // The public key is reported, the secret never is.
+        assert!(
+            status
+                .fields
+                .iter()
+                .all(|f| f.value != Value::Bytes(secret.clone()))
+        );
+
+        let error = device
+            .invoke(
+                "identity",
+                "provision",
+                &[FieldValue {
+                    field_id: schema.args[0].id,
+                    value: Value::Bytes(secret.clone()),
+                }],
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(&error, Error::Rejected(reason) if reason == "already_provisioned"));
+
+        device.invoke("identity", "erase", &[]).await.unwrap();
     })
     .await;
-    assert_eq!(
-        stored_key(&services),
-        Some(dev_identity(42).public_key().to_bytes())
-    );
-    assert_eq!(
-        services.requests.borrow().as_slice(),
-        [
-            "store_identity",
-            "erase_identity",
-            "erase_identity",
-            "store_identity"
-        ]
-    );
+    assert!(bench.identity.0.borrow().is_none());
 }
 
-/// Corrupts the 32 bytes `needle` in chunks coming from the device.
-struct Tamper {
+/// Lets the radio change as the `n`-th request is sent, so that the service
+/// moves on between the compact and the detailed status.
+struct Changing<'a> {
     inner: ClientEnd,
-    needle: [u8; 32],
+    radio: &'a Radio,
+    sent: usize,
+    from: usize,
+    every: bool,
 }
 
-impl ClientTransport for Tamper {
+impl ClientTransport for Changing<'_> {
     fn max_payload(&self) -> usize {
         self.inner.max_payload()
     }
 
     async fn send(&mut self, chunk: &[u8]) -> rohi::Result<()> {
+        self.sent += 1;
+        if self.sent == self.from || (self.every && self.sent > self.from) {
+            self.radio.degraded.set(!self.radio.degraded.get());
+        }
         self.inner.send(chunk).await
     }
 
     async fn recv(&mut self) -> rohi::Result<Vec<u8>> {
-        let mut chunk = self.inner.recv().await?;
-        if let Some(at) = chunk.windows(32).position(|window| window == self.needle) {
-            chunk[at] ^= 0x01;
-        }
-        Ok(chunk)
+        self.inner.recv().await
     }
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn a_different_public_key_from_the_device_is_an_error() {
-    let derived = dev_identity(42);
+async fn read_status_while_changing(every: bool) -> rohi::Result<ServiceStatus> {
+    let bench = Bench::new();
     let (client, device) = link(244);
-    let controller = Controller::new(Services::new(), OpenPolicy);
+    let controller = Controller::new(backend(&bench), OpenPolicy);
     let mut server = ControlBle::new(device, &controller);
-    let transport = Tamper {
+    // Requests: services, schema, then the compact status (3rd) and the
+    // detailed one (4th), which is the one that changes the radio first.
+    let transport = Changing {
         inner: client,
-        needle: derived.public_key().to_bytes(),
+        radio: &bench.radio,
+        sent: 0,
+        from: 4,
+        every,
     };
     tokio::select! {
         () = async { server.run().await } => unreachable!(),
-        () = async {
-            let mut device = Device::new(transport);
-            let error = device.provision_identity(&derived).await.unwrap_err();
-            assert!(matches!(error, Error::PublicKeyMismatch { .. }), "{error}");
-            assert!(!error.to_string().contains("secret"));
-        } => {}
+        result = async { Device::new(transport).service_status("radio").await } => result,
     }
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn a_device_without_identity_support_is_reported() {
-    let mut services = Services::new();
-    services.capabilities = Capabilities::SENSORS | Capabilities::CONFIG;
-    with_device(244, services, |mut device| async move {
-        assert!(matches!(
-            device.identity().await,
-            Err(Error::Unsupported(Capability::Identity))
-        ));
-        assert!(matches!(
-            device.provision_identity(&dev_identity(1)).await,
-            Err(Error::Unsupported(Capability::Identity))
-        ));
-        assert!(matches!(
-            device.erase_identity().await,
-            Err(Error::Unsupported(Capability::Identity))
-        ));
-    })
-    .await;
+async fn a_service_changing_between_compact_and_detailed_status_is_read_again() {
+    let status = read_status_while_changing(false).await.unwrap();
+    // Never the old summary with the new details.
+    assert_eq!(status.summary.health, ServiceHealth::Degraded);
+    assert_eq!(status.issues[0].code, "link_lost");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_service_that_keeps_changing_is_an_error_not_a_mixed_status() {
+    let error = read_status_while_changing(true).await.unwrap_err();
+    assert!(matches!(error, Error::StatusChanging(service) if service == "radio"));
 }

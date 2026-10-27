@@ -14,36 +14,34 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
-use rohi_connectivity::{ConnectivityConfig, Host};
+use heapless::Vec;
 use rohi_control_proto::control::{
-    self as pb, Request_::Request as Call, Response_::Response as Reply, UpdateConfigRequest_,
-    WifiConfigUpdate_,
+    self as pb, Request_::Request as Call, Response_::Response as Reply,
 };
 use rohi_control_proto::{PROTOCOL_VERSION, decode, encode, limits};
-use rohi_identity::{Identity, PublicKey};
-use rohi_net::{WifiConfig, WifiPassword, WifiSsid};
-use zeroize::Zeroize;
-
-use crate::mapping;
-use crate::{
-    AuthorizationPolicy, Capabilities, ControlServices, LinkSecurity, Privilege, ServiceError,
+use rohi_service::{
+    ActionError, ConfigError, ConfigRegistry, MAX_ACTION_ARGS, MAX_MUTATIONS, Mutation,
+    ServiceRegistry, ServiceStatusSummary, StatusError, Value,
 };
 
-/// Dispatches control requests to [`ControlServices`].
-pub struct Controller<S, P> {
-    services: S,
+use crate::mapping;
+use crate::{AuthorizationPolicy, ControlBackend, LinkSecurity, Privilege};
+
+/// Dispatches control requests to a [`ControlBackend`].
+pub struct Controller<B, P> {
+    backend: B,
     policy: P,
 }
 
-impl<S: ControlServices, P: AuthorizationPolicy> Controller<S, P> {
-    /// A dispatcher over `services`, gated by `policy`.
-    pub const fn new(services: S, policy: P) -> Self {
-        Self { services, policy }
+impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
+    /// A dispatcher over `backend`, gated by `policy`.
+    pub const fn new(backend: B, policy: P) -> Self {
+        Self { backend, policy }
     }
 
-    /// The wrapped services.
-    pub fn services(&self) -> &S {
-        &self.services
+    /// The wrapped backend.
+    pub fn backend(&self) -> &B {
+        &self.backend
     }
 
     /// Handles one encoded request received on a link with the given
@@ -86,10 +84,24 @@ impl<S: ControlServices, P: AuthorizationPolicy> Controller<S, P> {
             return (id, error(pb::ErrorCode::NotSupported));
         };
 
-        let (needs, privilege) = requirements(&call);
-        if !self.services.capabilities().contains(needs) {
-            return (id, error(pb::ErrorCode::NotSupported));
-        }
+        let privilege = match &call {
+            Call::PatchConfigSection(_) | Call::ResetConfigSection(_) => Privilege::Mutate,
+            Call::FactoryReset(_) => Privilege::Provision,
+            Call::Reboot(_) => Privilege::Mutate,
+            Call::InvokeAction(invoke) => {
+                match self
+                    .backend
+                    .services()
+                    .action(invoke.service_id, invoke.action_id)
+                {
+                    Ok(action) if action.secret_args => Privilege::Provision,
+                    Ok(action) if action.privileged => Privilege::Mutate,
+                    Ok(_) => Privilege::Read,
+                    Err(e) => return (id, action_error(e)),
+                }
+            }
+            _ => Privilege::Read,
+        };
         if !self.policy.allows(privilege, link) {
             return (id, error(pb::ErrorCode::PermissionDenied));
         }
@@ -97,238 +109,311 @@ impl<S: ControlServices, P: AuthorizationPolicy> Controller<S, P> {
     }
 
     async fn execute(&self, call: Call) -> Reply {
-        let services = &self.services;
+        let backend = &self.backend;
         match call {
-            Call::GetInfo(_) => Reply::GetInfo(mapping::device_info(&services.device_info())),
-            Call::GetCapabilities(_) => Reply::GetCapabilities(pb::GetCapabilitiesResponse {
-                capabilities: services.capabilities().to_proto(),
-            }),
-            Call::GetSensors(_) => match services.measurements().await {
-                Ok(snapshot) => Reply::GetSensors(mapping::sensors(&snapshot)),
-                Err(e) => service_error(e),
-            },
-            Call::GetConfig(_) => match self.get_config().await {
-                Ok(config) => Reply::GetConfig(config),
-                Err(e) => service_error(e),
-            },
-            Call::UpdateConfig(update) => match self.update_config(update).await {
-                Ok(()) => Reply::UpdateConfig(pb::UpdateConfigResponse {}),
-                Err(e) => service_error(e),
-            },
-            Call::ScanWifi(_) => match services.wifi_scan().await {
-                Ok(results) => Reply::ScanWifi(mapping::wifi_scan(&results)),
-                Err(e) => service_error(e),
-            },
-            Call::GetWifiStatus(_) => Reply::GetWifiStatus(mapping::wifi_status(
-                &services.wifi_status(),
-                services.wifi_network_info().as_ref(),
-            )),
-            Call::ReconnectWifi(_) => match services.wifi_reconnect() {
-                Ok(()) => Reply::ReconnectWifi(pb::ReconnectWifiResponse {}),
-                Err(e) => service_error(e),
-            },
-            Call::DisconnectWifi(_) => match services.wifi_disconnect() {
-                Ok(()) => Reply::DisconnectWifi(pb::DisconnectWifiResponse {}),
-                Err(e) => service_error(e),
-            },
-            Call::GetTimeStatus(_) => {
-                Reply::GetTimeStatus(mapping::time_status(&services.time_status()))
+            Call::GetInfo(_) => {
+                let info = backend.device_info();
+                Reply::GetInfo(pb::GetInfoResponse {
+                    firmware: mapping::text(info.firmware),
+                    board: mapping::text(info.board),
+                })
             }
-            Call::GetIdentity(_) => match services.identity().await {
-                Ok(key) => Reply::GetIdentity(mapping::identity(key)),
-                Err(e) => service_error(e),
-            },
-            Call::ProvisionIdentity(request) => match self.provision_identity(request).await {
-                Ok(key) => Reply::ProvisionIdentity(pb::ProvisionIdentityResponse {
-                    public_key: mapping::public_key(&key),
-                }),
-                Err(e) => service_error(e),
-            },
-            Call::EraseIdentity(_) => match services.erase_identity().await {
-                Ok(()) => Reply::EraseIdentity(pb::EraseIdentityResponse {}),
-                Err(e) => service_error(e),
-            },
-        }
-    }
-
-    /// Installs the received secret as the device identity.
-    ///
-    /// Never replaces an existing identity: that needs an explicit erase
-    /// first. The stored identity is read back and its public key compared
-    /// before success is reported.
-    async fn provision_identity(
-        &self,
-        mut request: pb::ProvisionIdentityRequest,
-    ) -> Result<PublicKey, ServiceError> {
-        let identity = Identity::from_secret(&request.ed25519_secret);
-        request.ed25519_secret.as_mut_slice().zeroize();
-        let identity = identity.map_err(|_| ServiceError::InvalidArgument)?;
-        if self.services.identity().await?.is_some() {
-            return Err(ServiceError::IdentityAlreadyProvisioned);
-        }
-        self.services.store_identity(&identity).await?;
-        let expected = identity.public_key();
-        match self.services.identity().await? {
-            Some(stored) if stored == expected => Ok(expected),
-            _ => Err(ServiceError::Internal),
-        }
-    }
-
-    async fn get_config(&self) -> Result<pb::GetConfigResponse, ServiceError> {
-        let mut out = pb::GetConfigResponse::default();
-        if let Some(config) = self.services.wifi_config().await? {
-            out.set_wifi(mapping::wifi_config(&config));
-        }
-        if self
-            .services
-            .capabilities()
-            .contains(Capabilities::CONNECTIVITY)
-        {
-            match self.services.connectivity_config().await {
-                Ok(Some(config)) => {
-                    out.set_connectivity(mapping::connectivity_config(&config));
+            Call::ListConfigSections(_) => {
+                let config = backend.config();
+                let mut sections = Vec::new();
+                for index in 0..config.section_count() {
+                    if let Some(info) = config.section_info(index)
+                        && sections.push(mapping::section_info(&info)).is_err()
+                    {
+                        break;
+                    }
                 }
-                // A device that lists the capability but cannot read the
-                // section has nothing to report.
-                Ok(None) | Err(ServiceError::NotSupported) => {}
-                Err(e) => return Err(e),
+                Reply::ListConfigSections(pb::ListConfigSectionsResponse { sections })
             }
+            Call::GetConfigSchema(request) => match backend.config().schema(request.section_id) {
+                None => error(pb::ErrorCode::NotFound),
+                Some(schema) => {
+                    let mut fields = Vec::new();
+                    for field in schema.fields {
+                        if fields.push(mapping::config_field(field)).is_err() {
+                            break;
+                        }
+                    }
+                    let mut response = pb::GetConfigSchemaResponse {
+                        fields,
+                        enums: mapping::enums(schema.enums),
+                        ..Default::default()
+                    };
+                    response.set_section(mapping::section_info(&schema.section));
+                    Reply::GetConfigSchema(response)
+                }
+            },
+            Call::GetConfigSection(request) => {
+                match backend.config().get(request.section_id).await {
+                    Err(e) => config_error(e),
+                    Ok(values) => {
+                        let mut entries = Vec::new();
+                        for entry in &values.entries {
+                            if entries.push(mapping::config_entry(entry)).is_err() {
+                                break;
+                            }
+                        }
+                        Reply::GetConfigSection(pb::GetConfigSectionResponse {
+                            section_id: values.section.id,
+                            version: values.section.version,
+                            revision: values.section.revision,
+                            entries,
+                            configured: values.configured,
+                        })
+                    }
+                }
+            }
+            Call::PatchConfigSection(request) => self.patch(request).await,
+            Call::ResetConfigSection(request) => {
+                match backend
+                    .config()
+                    .reset(
+                        request.section_id,
+                        request.expected_revision().copied(),
+                        request.dry_run,
+                    )
+                    .await
+                {
+                    Ok(done) => Reply::ResetConfigSection(pb::ResetConfigSectionResponse {
+                        revision: done.revision,
+                        restart_required: done.restart_required,
+                    }),
+                    Err(e) => config_error(e),
+                }
+            }
+            Call::FactoryReset(_) => match backend.config().factory_reset().await {
+                Ok(done) => Reply::FactoryReset(pb::FactoryResetResponse {
+                    restart_required: done.restart_required,
+                }),
+                Err(e) => config_error(e),
+            },
+            Call::Reboot(_) if backend.reboot() => Reply::Reboot(pb::RebootResponse {}),
+            Call::Reboot(_) => error(pb::ErrorCode::NotSupported),
+            Call::GetServicesStatus(_) => {
+                let services = backend.services();
+                let now = backend.uptime_ms();
+                let mut summaries: Vec<
+                    ServiceStatusSummary,
+                    { rohi_service::MAX_REGISTRY_ENTRIES },
+                > = Vec::new();
+                for index in 0..services.service_count() {
+                    if let Some(summary) = services.summary(index, now).await
+                        && summaries.push(summary).is_err()
+                    {
+                        break;
+                    }
+                }
+                let mut wire = Vec::new();
+                for summary in &summaries {
+                    if wire.push(mapping::summary(summary)).is_err() {
+                        break;
+                    }
+                }
+                Reply::GetServicesStatus(pb::GetServicesStatusResponse {
+                    uptime_ms: now,
+                    health: mapping::device_health(backend.device_health(&summaries)),
+                    services: wire,
+                })
+            }
+            Call::GetServiceSchema(request) => {
+                match backend.services().schema(request.service_id) {
+                    None => error(pb::ErrorCode::NotFound),
+                    Some(schema) => Reply::GetServiceSchema(pb::GetServiceSchemaResponse {
+                        service_id: schema.info.id,
+                        name: mapping::text(schema.info.name),
+                        version: schema.info.version,
+                        fields: mapping::fields(schema.fields),
+                        enums: mapping::enums(schema.enums),
+                        issues: mapping::issue_descriptors(schema.issues),
+                    }),
+                }
+            }
+            Call::GetServiceStatus(request) => {
+                match backend
+                    .services()
+                    .status(request.service_id, backend.uptime_ms())
+                    .await
+                {
+                    Err(StatusError::UnknownService) => error(pb::ErrorCode::NotFound),
+                    Ok(status) => {
+                        let mut fields = Vec::new();
+                        for (id, value) in &status.fields {
+                            if fields.push(mapping::field_value(*id, value)).is_err() {
+                                break;
+                            }
+                        }
+                        let mut issues = Vec::new();
+                        for issue in &status.issues {
+                            if issues.push(mapping::issue(issue)).is_err() {
+                                break;
+                            }
+                        }
+                        Reply::GetServiceStatus(pb::GetServiceStatusResponse {
+                            service_id: status.summary.id,
+                            revision: status.summary.revision,
+                            fields,
+                            issues,
+                        })
+                    }
+                }
+            }
+            Call::ListActions(_) => {
+                let services = backend.services();
+                let mut actions = Vec::new();
+                'services: for index in 0..services.service_count() {
+                    let Some(info) = services.service_info(index) else {
+                        continue;
+                    };
+                    for action in services.service_actions(index) {
+                        if actions.push(mapping::action_info(info.id, action)).is_err() {
+                            break 'services;
+                        }
+                    }
+                }
+                Reply::ListActions(pb::ListActionsResponse { actions })
+            }
+            Call::GetActionSchema(request) => {
+                match backend
+                    .services()
+                    .action(request.service_id, request.action_id)
+                {
+                    Err(e) => action_error(e),
+                    Ok(action) => {
+                        let mut out = pb::GetActionSchemaResponse {
+                            args: mapping::fields(action.args),
+                            results: mapping::fields(action.results),
+                            enums: mapping::enums(action.enums),
+                            ..Default::default()
+                        };
+                        out.set_action(mapping::action_info(request.service_id, action));
+                        Reply::GetActionSchema(out)
+                    }
+                }
+            }
+            Call::InvokeAction(request) => self.invoke(request).await,
         }
-        Ok(out)
     }
 
-    /// Validate, then persist and publish as one service call per section.
-    /// Nothing is stored when validation of any section fails, and success
-    /// does not mean the network was reached.
-    async fn update_config(&self, update: pb::UpdateConfigRequest) -> Result<(), ServiceError> {
-        let capabilities = self.services.capabilities();
-        if update.wifi_update.is_some() && !capabilities.contains(Capabilities::WIFI_CONTROL) {
-            // Without a Wi-Fi runtime nothing would ever take the update.
-            return Err(ServiceError::NotSupported);
-        }
-        if update.connectivity_update.is_some()
-            && !capabilities.contains(Capabilities::CONNECTIVITY)
-        {
-            return Err(ServiceError::NotSupported);
-        }
-        // `None`: the section is not touched; `Some(None)`: it is removed.
-        let wifi = match update.wifi_update {
-            None => None,
-            Some(UpdateConfigRequest_::WifiUpdate::ClearWifi(_)) => Some(None),
-            Some(UpdateConfigRequest_::WifiUpdate::UpdateWifi(update)) => {
-                let current = self.services.wifi_config().await?;
-                Some(Some(merge_wifi(current, &update)?))
+    /// Converts, applies and wipes: the values of a patch may be secrets.
+    async fn patch(&self, mut request: pb::PatchConfigSectionRequest) -> Reply {
+        let mut mutations: Vec<Mutation, MAX_MUTATIONS> = Vec::new();
+        let mut valid = true;
+        for mutation in &request.mutations {
+            match mapping::mutation(mutation) {
+                Some(mutation) => valid &= mutations.push(mutation).is_ok(),
+                None => valid = false,
             }
+        }
+        let result = if valid {
+            self.backend
+                .config()
+                .patch(
+                    request.section_id,
+                    &mutations,
+                    request.expected_revision().copied(),
+                    request.dry_run,
+                )
+                .await
+        } else {
+            Err(ConfigError::Field(rohi_service::FieldError::Invalid))
         };
-        let connectivity = match update.connectivity_update {
-            None => None,
-            Some(UpdateConfigRequest_::ConnectivityUpdate::ClearConnectivity(_)) => Some(None),
-            Some(UpdateConfigRequest_::ConnectivityUpdate::UpdateConnectivity(update)) => {
-                let current = self.services.connectivity_config().await?;
-                Some(Some(merge_connectivity(current, &update)?))
+        for mutation in &mut mutations {
+            if let rohi_service::MutationOp::Set(value) = &mut mutation.op {
+                value.wipe();
             }
+        }
+        for mutation in &mut request.mutations {
+            mapping::wipe_mutation(mutation);
+        }
+        match result {
+            Ok(done) => Reply::PatchConfigSection(pb::PatchConfigSectionResponse {
+                revision: done.revision,
+                restart_required: done.restart_required,
+            }),
+            Err(e) => config_error(e),
+        }
+    }
+
+    async fn invoke(&self, mut request: pb::InvokeActionRequest) -> Reply {
+        let mut args: Vec<(u32, Value), MAX_ACTION_ARGS> = Vec::new();
+        let mut valid = true;
+        for arg in &request.args {
+            match mapping::from_arg(arg) {
+                Some(arg) => valid &= args.push(arg).is_ok(),
+                None => valid = false,
+            }
+        }
+        let result = if valid {
+            self.backend
+                .services()
+                .invoke(request.service_id, request.action_id, &args)
+                .await
+        } else {
+            Err(ActionError::InvalidArgument)
         };
-        if let Some(config) = wifi {
-            self.services.set_wifi_config(config.as_ref()).await?;
+        for (_, value) in &mut args {
+            value.wipe();
         }
-        if let Some(config) = connectivity {
-            self.services
-                .set_connectivity_config(config.as_ref())
-                .await?;
+        for arg in &mut request.args {
+            mapping::wipe_arg(arg);
         }
-        Ok(())
-    }
-}
-
-/// Applies a partial update to the stored telemetry configuration: omitted
-/// fields are preserved. Without a stored configuration the update starts
-/// from a disabled one, so a host is required.
-fn merge_connectivity(
-    current: Option<ConnectivityConfig>,
-    update: &pb::ConnectivityConfigUpdate,
-) -> Result<ConnectivityConfig, ServiceError> {
-    let mut config = current.unwrap_or_else(ConnectivityConfig::disabled);
-    if let Some(enabled) = update.enabled() {
-        config.enabled = *enabled;
-    }
-    if let Some(node_id) = update.node_id() {
-        config.node_id = *node_id;
-    }
-    if let Some(interval_s) = update.interval_s() {
-        config.interval_s = *interval_s;
-    }
-    if let Some(host) = update.host() {
-        config.host = Host::new(host).ok_or(ServiceError::InvalidArgument)?;
-    }
-    if let Some(port) = update.port() {
-        config.port = u16::try_from(*port).map_err(|_| ServiceError::InvalidArgument)?;
-    }
-    config
-        .validate()
-        .map_err(|_| ServiceError::InvalidArgument)?;
-    Ok(config)
-}
-
-/// Applies a partial update to the stored configuration: omitted fields are
-/// preserved, provided fields replace, explicit clear removes.
-fn merge_wifi(
-    current: Option<WifiConfig>,
-    update: &pb::WifiConfigUpdate,
-) -> Result<WifiConfig, ServiceError> {
-    let ssid = match update.ssid() {
-        Some(bytes) => WifiSsid::from_bytes(bytes).ok_or(ServiceError::InvalidArgument)?,
-        None => current
-            .as_ref()
-            .ok_or(ServiceError::InvalidArgument)?
-            .ssid
-            .clone(),
-    };
-    let password = match &update.password_update {
-        Some(WifiConfigUpdate_::PasswordUpdate::Password(bytes)) => {
-            Some(WifiPassword::from_bytes(bytes).ok_or(ServiceError::InvalidArgument)?)
-        }
-        Some(WifiConfigUpdate_::PasswordUpdate::ClearPassword(_)) => None,
-        None => current.and_then(|config| config.password),
-    };
-    let config = WifiConfig::new(ssid, password);
-    config
-        .validate()
-        .map_err(|_| ServiceError::InvalidArgument)?;
-    Ok(config)
-}
-
-fn requirements(call: &Call) -> (Capabilities, Privilege) {
-    match call {
-        Call::GetInfo(_) | Call::GetCapabilities(_) => (Capabilities::NONE, Privilege::Read),
-        Call::GetSensors(_) => (Capabilities::SENSORS, Privilege::Read),
-        Call::GetConfig(_) => (Capabilities::CONFIG, Privilege::Read),
-        Call::UpdateConfig(_) => (Capabilities::CONFIG, Privilege::Mutate),
-        Call::ScanWifi(_) => (Capabilities::WIFI_SCAN, Privilege::Read),
-        Call::GetWifiStatus(_) => (Capabilities::WIFI_STATUS, Privilege::Read),
-        Call::ReconnectWifi(_) | Call::DisconnectWifi(_) => {
-            (Capabilities::WIFI_CONTROL, Privilege::Mutate)
-        }
-        Call::GetIdentity(_) => (Capabilities::IDENTITY, Privilege::Read),
-        Call::GetTimeStatus(_) => (Capabilities::TIME, Privilege::Read),
-        Call::ProvisionIdentity(_) | Call::EraseIdentity(_) => {
-            (Capabilities::IDENTITY, Privilege::Provision)
+        match result {
+            Err(e) => action_error(e),
+            Ok(records) => {
+                let mut out = Vec::new();
+                for record in &records {
+                    let mut fields = Vec::new();
+                    for (id, value) in record {
+                        if fields.push(mapping::field_value(*id, value)).is_err() {
+                            break;
+                        }
+                    }
+                    if out.push(pb::ActionRecord { fields }).is_err() {
+                        break;
+                    }
+                }
+                Reply::InvokeAction(pb::InvokeActionResponse { records: out })
+            }
         }
     }
 }
 
 fn error(code: pb::ErrorCode) -> Reply {
-    Reply::Error(pb::Error { code })
+    Reply::Error(pb::Error {
+        code,
+        ..Default::default()
+    })
 }
 
-fn service_error(error: ServiceError) -> Reply {
-    self::error(match error {
-        ServiceError::InvalidArgument => pb::ErrorCode::InvalidArgument,
-        ServiceError::NotFound => pb::ErrorCode::NotFound,
-        ServiceError::NotSupported => pb::ErrorCode::NotSupported,
-        ServiceError::Busy => pb::ErrorCode::Busy,
-        ServiceError::Unavailable => pb::ErrorCode::Unavailable,
-        ServiceError::Internal => pb::ErrorCode::Internal,
-        ServiceError::IdentityNotProvisioned => pb::ErrorCode::IdentityNotProvisioned,
-        ServiceError::IdentityAlreadyProvisioned => pb::ErrorCode::IdentityAlreadyProvisioned,
+fn config_error(e: ConfigError) -> Reply {
+    error(match e {
+        ConfigError::UnknownSection => pb::ErrorCode::NotFound,
+        ConfigError::Field(_) => pb::ErrorCode::InvalidArgument,
+        ConfigError::Conflict => pb::ErrorCode::Conflict,
+        ConfigError::Unavailable => pb::ErrorCode::Unavailable,
+        ConfigError::Internal => pb::ErrorCode::Internal,
     })
+}
+
+fn action_error(e: ActionError) -> Reply {
+    match e {
+        ActionError::Rejected(reason) => {
+            let mut out = pb::Error {
+                code: pb::ErrorCode::Rejected,
+                ..Default::default()
+            };
+            out.set_reason(mapping::text(reason));
+            Reply::Error(out)
+        }
+        ActionError::UnknownService | ActionError::UnknownAction => error(pb::ErrorCode::NotFound),
+        ActionError::InvalidArgument => error(pb::ErrorCode::InvalidArgument),
+        ActionError::Busy => error(pb::ErrorCode::Busy),
+        ActionError::Unavailable => error(pb::ErrorCode::Unavailable),
+        ActionError::Internal => error(pb::ErrorCode::Internal),
+    }
 }

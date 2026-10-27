@@ -1,0 +1,47 @@
+List the actions of all services
+
+Usage: rohi action list [OPTIONS]
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Target:
+  -d, --device <DEVICE>
+          Target device: advertised name, ID, or a unique prefix or suffix of either; or a URI such as ble://NAME or tcp://HOST:PORT. Without it the only device found is used, or you choose among several
+          
+          [env: ROHI_DEVICE=]
+
+Output:
+  -o, --output <FORMAT>
+          Output format
+
+          Possible values:
+          - human: Text for people
+          - json:  JSON with a stable, versioned schema, for scripts
+          
+          [default: human]
+
+      --color <WHEN>
+          Color the text output
+
+          Possible values:
+          - auto:   Color when stdout is a terminal, unless `NO_COLOR` is set or `TERM` is `dumb`
+          - always: Always color
+          - never:  Never color
+          
+          [default: auto]
+
+Connection:
+      --scan-timeout <SECONDS>
+          How long to search for the target device
+          
+          [default: 10]
+
+      --timeout <SECONDS>
+          How long to wait for a device response
+          
+          [default: 10]
+
+Examples:
+  rohi action list

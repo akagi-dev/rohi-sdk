@@ -19,7 +19,7 @@ use core::net::{IpAddr, SocketAddr};
 
 use embedded_nal_async::{AddrType, Dns, TcpConnect};
 
-use super::{IpBackend, NetError};
+use super::{IpBackend, IpUsage, NetError};
 
 /// Cheap, copyable handle to the IP data plane: DNS, TCP and UDP.
 ///
@@ -63,6 +63,11 @@ impl<'a, B: IpBackend> NetworkHandle<'a, B> {
     /// `true` while the network can carry traffic.
     pub fn is_ready(&self) -> bool {
         self.backend.is_ready()
+    }
+
+    /// Socket slots in use and available.
+    pub fn usage(&self) -> IpUsage {
+        self.backend.usage()
     }
 
     fn ensure_ready(&self) -> Result<(), NetError> {

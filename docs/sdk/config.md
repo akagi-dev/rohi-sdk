@@ -4,6 +4,10 @@
 **independent typed sections**; there is no central `DeviceConfig`. A feature crate defines its own section and
 the store persists it without knowing anything about it.
 
+The store only persists bytes. How users see and change a section (`rohi config get/set/describe`, atomic patches,
+secret fields, revisions) is a separate, generic layer: a feature crate also implements `ManagedConfig` for its typed
+section, see [Service pipeline](service.md#config-sections).
+
 ```text
 feature crate
     ↓
@@ -30,7 +34,7 @@ Crates:
 | `rohi-config-derive`  | `#[derive(ConfigSection)]`, section IDs from struct names                          |
 | `rohi-config-esp`     | ESP32-C3 / ESP32-C6 flash backend, bounded flash region, partition lookup          |
 
-Each feature crate owns its own schema (for example `rohi-net` owns `WifiConfig`); `rohi-config` never learns
+Each feature crate owns its own schema (for example `rohi-net` owns `NetworkConfig`); `rohi-config` never learns
 the set of application sections.
 
 ## Defining a section
@@ -174,7 +178,7 @@ the partition is missing or committed configuration is corrupt the firmware keep
 with `ServiceError::Unavailable` (`status()` tells why) instead of behaving as if the configuration were empty.
 `status()` reports the store's current `state()`, so `Recovered` becomes `Valid` once an update repaired the slot.
 
-The owner task also publishes a committed `WifiConfig` to the Wi-Fi runtime as the desired configuration, in the same
+The owner task also publishes a committed `WifiConfig` or `NetworkConfig` to the Wi-Fi runtime as the desired configuration, in the same
 step as the commit and with no `.await` in between (and once at boot from the stored value). Cancelling a
 `ConfigHandle::set` or `remove` therefore either happens before the request was queued (nothing changed) or the
 operation is logically completed: see [Async and cancellation](../concepts/async-and-cancellation.md).
@@ -184,8 +188,10 @@ maintenance such as removing `WifiConfig` never touches unrelated or future prot
 identity). The way out of corruption without reflashing is the separate `config::maintenance()` handle:
 `StorageMaintenance::format_storage()` formats an unavailable store (corrupt or unreadable, partition present) with
 `ConfigStore::format` and the service becomes ready with an empty store. It refuses a ready store
-(`ServiceError::StorageHealthy`) and cannot help a missing partition. A full factory reset, if it ever exists, must
-be its own explicit, privileged operation.
+(`ServiceError::StorageHealthy`) and cannot help a missing partition. The factory reset is its own explicit,
+privileged operation: `StorageMaintenance::factory_reset()` formats the region whatever its state, so it also removes the
+identity, unknown sections and the generation counter, and it repairs corrupt storage. The control protocol exposes it as
+`FactoryReset` (`rohi factory-reset`).
 
 Flash erase and programming are synchronous, and `esp-storage` runs them in a critical section with the flash cache
 disabled. An update therefore stalls the whole CPU, not just the configuration task (each 4 KiB sector erase takes

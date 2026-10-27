@@ -1,0 +1,24 @@
+[package]
+name = "rohi-location"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Robonomics Open Hardware location: the current position of the device from the user or, later, a GNSS receiver"
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[dependencies]
+rohi-config.workspace = true
+rohi-service.workspace = true
+minicbor.workspace = true
+heapless.workspace = true
+embassy-sync.workspace = true
+
+[dev-dependencies]
+minicbor = { workspace = true, features = ["std"] }
+embassy-futures.workspace = true

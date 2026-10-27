@@ -42,7 +42,7 @@ for Altruist Urban `firmwares/altruist-urban/src/resources.rs`, see [Resource li
 - **Coexistence.** `esp-radio` runs with the `coex` feature so the radio arbitrates between the two protocols. Bringing
   the radio up, and the first Wi-Fi association in particular, keeps the core busy long enough to overrun the
   microphone DMA ring, so the firmware starts the sensor tasks after the first Wi-Fi attempt (bounded wait).
-- **Independent control.** The BLE control plane configures Wi-Fi through `ControlServices`; the Wi-Fi manager never
+- **Independent control.** The BLE control plane configures Wi-Fi through the generic `wifi` config section and service of `rohi-service`; the Wi-Fi manager never
   depends on BLE and BLE never touches the radio driver of Wi-Fi.
 - **Independent failure.** A BLE host error restarts advertising; a Wi-Fi failure backs off and retries. Neither stops
   the other or the sensors.

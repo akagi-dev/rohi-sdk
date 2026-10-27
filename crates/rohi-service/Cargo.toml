@@ -1,0 +1,21 @@
+[package]
+name = "rohi-service"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Robonomics Open Hardware service pipeline: generic values, typed config sections, runtime status and actions"
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[dependencies]
+heapless.workspace = true
+embassy-sync.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+embassy-futures.workspace = true

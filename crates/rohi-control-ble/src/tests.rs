@@ -4,24 +4,19 @@ use std::vec;
 use std::vec::Vec;
 
 use embassy_futures::block_on;
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use rohi_control::{
-    AuthorizationPolicy, Capabilities, ControlServices, Controller, DeviceInfo, DeviceTime,
-    OpenPolicy, RequireEncryption, ServiceError,
+    AuthorizationPolicy, Controller, Device, DeviceInfo, OpenPolicy, RequireEncryption,
 };
 use rohi_control_proto::control::{
     self as pb, Request_::Request as Call, Response_::Response as Reply,
 };
 use rohi_control_proto::limits::{MAX_REQUEST_LEN, MAX_RESPONSE_LEN};
 use rohi_control_proto::{PROTOCOL_VERSION, decode, encode};
-use rohi_hal::units::{Celsius, Pascal, RelativeHumidity};
-use rohi_hal::{
-    Bmx280Update, MeasurementStore, MeasurementUpdate, MeasurementsSnapshot, MonotonicTimestamp,
-    SensorEvent,
-};
-use rohi_identity::{Identity, PublicKey};
-use rohi_net::{
-    BleConnectionInfo, BleError, BleState, BleTransport, MAX_BLE_PAYLOAD, NetworkInfo, WifiConfig,
-    WifiScanResults, WifiState, WifiStatus,
+use rohi_net::{BleConnectionInfo, BleError, BleState, BleTransport, MAX_BLE_PAYLOAD};
+use rohi_service::{
+    ActionDescriptor, ActionError, ActionOutput, FieldDescriptor, ManagedService, ServiceHealth,
+    ServiceState, ServiceSummary, StatusWriter, Tracked, Value, ValueKind, WriteError,
 };
 
 use crate::ControlBle;
@@ -378,98 +373,116 @@ impl BleTransport for &Shared {
     }
 }
 
-struct Services<'a> {
-    snapshot: MeasurementsSnapshot,
+/// A device with one service that records the actions it ran.
+struct Radio<'a> {
     shared: &'a Shared,
     calls: RefCell<Vec<&'static str>>,
     /// Scans never complete while set.
     hold_scan: RefCell<bool>,
 }
 
-impl ControlServices for Services<'_> {
-    fn device_info(&self) -> DeviceInfo {
-        DeviceInfo {
-            firmware: "fake-0",
-            board: "bench-esp32c3",
+impl ManagedService for &Radio<'_> {
+    const ID: u32 = 1;
+    const NAME: &'static str = "radio";
+    const VERSION: u16 = 1;
+    const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
+        FieldDescriptor::new(1, "a", ValueKind::String),
+        FieldDescriptor::new(2, "b", ValueKind::String),
+        FieldDescriptor::new(3, "c", ValueKind::String),
+        FieldDescriptor::new(4, "d", ValueKind::String),
+    ];
+    const ACTIONS: &'static [ActionDescriptor] = &[
+        ActionDescriptor::new(1, "scan"),
+        ActionDescriptor::new(2, "reconnect"),
+        ActionDescriptor::new(3, "disconnect").privileged(),
+        ActionDescriptor::new(4, "store").args(&[FieldDescriptor::new(
+            1,
+            "data",
+            ValueKind::Bytes,
+        )]),
+    ];
+
+    async fn summary(&self) -> ServiceSummary {
+        ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true)
+    }
+
+    async fn status(&self, out: &mut impl StatusWriter) -> Result<(), WriteError> {
+        // Long enough to need several fragments.
+        for id in 1..=4 {
+            out.text(id, &"x".repeat(32))?;
         }
-    }
-
-    fn capabilities(&self) -> Capabilities {
-        Capabilities::ALL
-    }
-
-    async fn measurements(&self) -> Result<MeasurementsSnapshot, ServiceError> {
-        Ok(self.snapshot)
-    }
-
-    async fn wifi_config(&self) -> Result<Option<WifiConfig>, ServiceError> {
-        Ok(None)
-    }
-
-    async fn set_wifi_config(&self, _: Option<&WifiConfig>) -> Result<(), ServiceError> {
         Ok(())
     }
 
-    async fn wifi_scan(&self) -> Result<WifiScanResults, ServiceError> {
-        if *self.hold_scan.borrow() {
-            core::future::pending::<()>().await;
+    async fn invoke(
+        &self,
+        action: u32,
+        _: &[(u32, Value)],
+        _: &mut impl ActionOutput,
+    ) -> Result<(), ActionError> {
+        match action {
+            1 => {
+                if *self.hold_scan.borrow() {
+                    core::future::pending::<()>().await;
+                }
+                Ok(())
+            }
+            2 => {
+                self.calls.borrow_mut().push("reconnect");
+                // The central drops and reconnects while the request is handled.
+                self.shared.drop_link_and_reconnect();
+                Ok(())
+            }
+            3 => {
+                self.calls.borrow_mut().push("disconnect");
+                Ok(())
+            }
+            4 => Ok(()),
+            _ => Err(ActionError::UnknownAction),
         }
-        Ok(WifiScanResults::new())
-    }
-
-    fn wifi_status(&self) -> WifiStatus {
-        WifiStatus::new(WifiState::Idle)
-    }
-
-    fn wifi_network_info(&self) -> Option<NetworkInfo> {
-        None
-    }
-
-    fn wifi_reconnect(&self) -> Result<(), ServiceError> {
-        self.calls.borrow_mut().push("reconnect");
-        // The central drops and reconnects while the request is handled.
-        self.shared.drop_link_and_reconnect();
-        Ok(())
-    }
-
-    fn wifi_disconnect(&self) -> Result<(), ServiceError> {
-        self.calls.borrow_mut().push("disconnect");
-        Ok(())
-    }
-
-    fn time_status(&self) -> DeviceTime {
-        DeviceTime::UNSYNCHRONIZED
-    }
-
-    async fn identity(&self) -> Result<Option<PublicKey>, ServiceError> {
-        Ok(None)
-    }
-
-    async fn store_identity(&self, _: &Identity) -> Result<(), ServiceError> {
-        Ok(())
-    }
-
-    async fn erase_identity(&self) -> Result<(), ServiceError> {
-        Ok(())
     }
 }
 
-fn services(shared: &Shared) -> Services<'_> {
-    let mut store = MeasurementStore::new();
-    store.apply(SensorEvent::Measurements(MeasurementUpdate::Bmx280(
-        Bmx280Update::bme280(
-            Celsius(21.5),
-            RelativeHumidity(45.0),
-            Pascal(100_800.0),
-            MonotonicTimestamp::from_millis(100),
-        ),
-    )));
-    Services {
-        snapshot: store.snapshot(MonotonicTimestamp::from_millis(600)),
+type Bench<'a> = Device<(), (Tracked<&'a Radio<'a>, NoopRawMutex>,)>;
+
+fn uptime() -> u64 {
+    600
+}
+
+fn radio(shared: &Shared) -> Radio<'_> {
+    Radio {
         shared,
         calls: RefCell::new(Vec::new()),
         hold_scan: RefCell::new(false),
     }
+}
+
+fn device<'a>(radio: &'a Radio<'a>) -> Bench<'a> {
+    Device::new(
+        DeviceInfo {
+            firmware: "fake-0",
+            board: "bench-esp32c3",
+        },
+        uptime,
+        (),
+        (Tracked::new(radio),),
+    )
+}
+
+fn invoke(service_id: u32, action_id: u32, args: &[pb::ActionArg]) -> Call {
+    let mut list = heapless::Vec::new();
+    for arg in args {
+        list.push(arg.clone()).ok().unwrap();
+    }
+    Call::InvokeAction(pb::InvokeActionRequest {
+        service_id,
+        action_id,
+        args: list,
+    })
+}
+
+fn status_request() -> Call {
+    Call::GetServiceStatus(pb::GetServiceStatusRequest { service_id: 1 })
 }
 
 fn request_bytes(id: u32, call: Call) -> Vec<u8> {
@@ -488,7 +501,7 @@ fn request_bytes(id: u32, call: Call) -> Vec<u8> {
 
 fn run<P: AuthorizationPolicy>(
     shared: &Shared,
-    controller: &Controller<Services<'_>, P>,
+    controller: &Controller<Bench<'_>, P>,
     steps: usize,
 ) {
     let mut service = ControlBle::new(shared, controller);
@@ -504,7 +517,8 @@ fn response_bytes(frames: &[Vec<u8>]) -> (u8, Vec<u8>) {
 #[test]
 fn single_frame_request_gets_a_single_frame_response() {
     let shared = Shared::new(MAX_BLE_PAYLOAD);
-    let controller = Controller::new(services(&shared), OpenPolicy);
+    let radio = radio(&shared);
+    let controller = Controller::new(device(&radio), OpenPolicy);
     shared.push_frames(frames(
         7,
         &request_bytes(11, Call::GetInfo(pb::GetInfoRequest {})),
@@ -524,8 +538,9 @@ fn single_frame_request_gets_a_single_frame_response() {
 #[test]
 fn multi_fragment_response_preserves_the_protobuf_bytes() {
     let shared = Shared::new(20);
-    let controller = Controller::new(services(&shared), OpenPolicy);
-    let request = request_bytes(2, Call::GetSensors(pb::GetSensorsRequest {}));
+    let radio = radio(&shared);
+    let controller = Controller::new(device(&radio), OpenPolicy);
+    let request = request_bytes(2, status_request());
     let request_frames = frames(1, &request, 20);
     let count = request_frames.len();
     shared.push_frames(request_frames);
@@ -543,29 +558,27 @@ fn multi_fragment_response_preserves_the_protobuf_bytes() {
     assert_eq!(bytes, direct[..len]);
 
     let response: pb::Response = decode(&bytes).unwrap();
-    let Some(Reply::GetSensors(sensors)) = response.response else {
-        panic!("not sensors");
+    let Some(Reply::GetServiceStatus(status)) = response.response else {
+        panic!("not a status");
     };
-    assert_eq!(sensors.sensors[0].name.as_str(), "bmx280");
-    assert_eq!(sensors.sensors[0].measurements[0].value(), Some(&21.5));
+    assert_eq!(status.fields.len(), 4);
 }
 
 fn long_request() -> Vec<u8> {
-    let mut update = pb::WifiConfigUpdate::default();
-    update.set_ssid(heapless::Vec::from_slice(b"a-rather-long-network-name").unwrap());
-    request_bytes(
-        3,
-        Call::UpdateConfig(pb::UpdateConfigRequest {
-            wifi_update: Some(pb::UpdateConfigRequest_::WifiUpdate::UpdateWifi(update)),
-            ..Default::default()
-        }),
-    )
+    let data = pb::ActionArg {
+        field_id: 1,
+        value: Some(pb::ActionArg_::Value::BytesValue(
+            heapless::Vec::from_slice(&[0x42; 60]).unwrap(),
+        )),
+    };
+    request_bytes(3, invoke(1, 4, &[data]))
 }
 
 #[test]
 fn multi_fragment_request_is_reassembled() {
     let shared = Shared::new(20);
-    let controller = Controller::new(services(&shared), OpenPolicy);
+    let radio = radio(&shared);
+    let controller = Controller::new(device(&radio), OpenPolicy);
     let request = long_request();
     let request_frames = frames(8, &request, 20);
     assert!(request_frames.len() > 1);
@@ -578,13 +591,14 @@ fn multi_fragment_request_is_reassembled() {
     assert_eq!(id, 8);
     let response: pb::Response = decode(&bytes).unwrap();
     assert_eq!(response.request_id, 3);
-    assert!(matches!(response.response, Some(Reply::UpdateConfig(_))));
+    assert!(matches!(response.response, Some(Reply::InvokeAction(_))));
 }
 
 #[test]
 fn rejected_frames_get_a_typed_error_once() {
     let shared = Shared::new(20);
-    let controller = Controller::new(services(&shared), OpenPolicy);
+    let radio = radio(&shared);
+    let controller = Controller::new(device(&radio), OpenPolicy);
     let request = long_request();
     let mut broken = frames(6, &request, 20);
     broken.insert(2, broken[1].clone());
@@ -599,7 +613,8 @@ fn rejected_frames_get_a_typed_error_once() {
     assert!(matches!(
         response.response,
         Some(Reply::Error(pb::Error {
-            code: pb::ErrorCode::InvalidArgument
+            code: pb::ErrorCode::InvalidArgument,
+            ..
         }))
     ));
 
@@ -619,7 +634,8 @@ fn rejected_frames_get_a_typed_error_once() {
 #[test]
 fn oversized_request_is_rejected_with_an_error() {
     let shared = Shared::new(MAX_BLE_PAYLOAD);
-    let controller = Controller::new(services(&shared), OpenPolicy);
+    let radio = radio(&shared);
+    let controller = Controller::new(device(&radio), OpenPolicy);
     let message = pattern(MAX_REQUEST_LEN + 1);
     let oversized = frames(5, &message, MAX_BLE_PAYLOAD);
     let count = oversized.len();
@@ -635,7 +651,8 @@ fn oversized_request_is_rejected_with_an_error() {
 #[test]
 fn disconnect_discards_the_partial_request() {
     let shared = Shared::new(20);
-    let controller = Controller::new(services(&shared), OpenPolicy);
+    let radio = radio(&shared);
+    let controller = Controller::new(device(&radio), OpenPolicy);
     let request = long_request();
     let request_frames = frames(4, &request, 20);
     assert!(request_frames.len() > 2);
@@ -652,7 +669,7 @@ fn disconnect_discards_the_partial_request() {
     let (_, bytes) = response_bytes(&shared.take_sent());
     let response: pb::Response = decode(&bytes).unwrap();
     assert!(matches!(response.response, Some(Reply::Error(_))));
-    assert!(controller.services().calls.borrow().is_empty());
+    assert!(radio.calls.borrow().is_empty());
 
     // The state is clean: a complete request on the new link works.
     let count = request_frames.len();
@@ -660,37 +677,36 @@ fn disconnect_discards_the_partial_request() {
     run(&shared, &controller, count);
     let (_, bytes) = response_bytes(&shared.take_sent());
     let response: pb::Response = decode(&bytes).unwrap();
-    assert!(matches!(response.response, Some(Reply::UpdateConfig(_))));
+    assert!(matches!(response.response, Some(Reply::InvokeAction(_))));
 }
 
 #[test]
 fn response_is_dropped_when_the_link_changed_during_the_request() {
     let shared = Shared::new(MAX_BLE_PAYLOAD);
-    let controller = Controller::new(services(&shared), OpenPolicy);
+    let radio = radio(&shared);
+    let controller = Controller::new(device(&radio), OpenPolicy);
     shared.push_frames(frames(
         1,
-        &request_bytes(1, Call::ReconnectWifi(pb::ReconnectWifiRequest {})),
+        &request_bytes(1, invoke(1, 2, &[])),
         MAX_BLE_PAYLOAD,
     ));
     run(&shared, &controller, 1);
 
-    assert_eq!(
-        controller.services().calls.borrow().as_slice(),
-        ["reconnect"]
-    );
+    assert_eq!(radio.calls.borrow().as_slice(), ["reconnect"]);
     assert!(shared.take_sent().is_empty());
 }
 
 #[test]
 fn cancelled_step_abandons_the_request_and_the_next_one_works() {
     let shared = Shared::new(MAX_BLE_PAYLOAD);
-    let controller = Controller::new(services(&shared), OpenPolicy);
-    *controller.services().hold_scan.borrow_mut() = true;
+    let radio = radio(&shared);
+    let controller = Controller::new(device(&radio), OpenPolicy);
+    *radio.hold_scan.borrow_mut() = true;
     let mut service = ControlBle::new(&shared, &controller);
 
     shared.push_frames(frames(
         1,
-        &request_bytes(1, Call::ScanWifi(pb::ScanWifiRequest {})),
+        &request_bytes(1, invoke(1, 1, &[])),
         MAX_BLE_PAYLOAD,
     ));
     {
@@ -702,7 +718,7 @@ fn cancelled_step_abandons_the_request_and_the_next_one_works() {
 
     // The abandoned request leaves no partial state behind and no response is
     // ever sent for it.
-    *controller.services().hold_scan.borrow_mut() = false;
+    *radio.hold_scan.borrow_mut() = false;
     shared.push_frames(frames(
         2,
         &request_bytes(2, Call::GetInfo(pb::GetInfoRequest {})),
@@ -721,9 +737,10 @@ fn cancelled_step_abandons_the_request_and_the_next_one_works() {
 #[test]
 fn send_failure_resets_the_state() {
     let shared = Shared::new(20);
-    let controller = Controller::new(services(&shared), OpenPolicy);
+    let radio = radio(&shared);
+    let controller = Controller::new(device(&radio), OpenPolicy);
     *shared.fail_send.borrow_mut() = true;
-    let request = request_bytes(2, Call::GetSensors(pb::GetSensorsRequest {}));
+    let request = request_bytes(2, status_request());
     let request_frames = frames(1, &request, 20);
     let count = request_frames.len();
     shared.push_frames(request_frames.clone());
@@ -739,8 +756,9 @@ fn send_failure_resets_the_state() {
 #[test]
 fn link_security_reaches_the_policy() {
     let shared = Shared::new(MAX_BLE_PAYLOAD);
-    let controller = Controller::new(services(&shared), RequireEncryption);
-    let request = request_bytes(1, Call::DisconnectWifi(pb::DisconnectWifiRequest {}));
+    let radio = radio(&shared);
+    let controller = Controller::new(device(&radio), RequireEncryption);
+    let request = request_bytes(1, invoke(1, 3, &[]));
 
     shared.push_frames(frames(1, &request, MAX_BLE_PAYLOAD));
     run(&shared, &controller, 1);
@@ -749,10 +767,11 @@ fn link_security_reaches_the_policy() {
     assert!(matches!(
         response.response,
         Some(Reply::Error(pb::Error {
-            code: pb::ErrorCode::PermissionDenied
+            code: pb::ErrorCode::PermissionDenied,
+            ..
         }))
     ));
-    assert!(controller.services().calls.borrow().is_empty());
+    assert!(radio.calls.borrow().is_empty());
 
     *shared.info.borrow_mut() = BleConnectionInfo {
         encrypted: true,
@@ -762,17 +781,15 @@ fn link_security_reaches_the_policy() {
     run(&shared, &controller, 1);
     let (_, bytes) = response_bytes(&shared.take_sent());
     let response: pb::Response = decode(&bytes).unwrap();
-    assert!(matches!(response.response, Some(Reply::DisconnectWifi(_))));
-    assert_eq!(
-        controller.services().calls.borrow().as_slice(),
-        ["disconnect"]
-    );
+    assert!(matches!(response.response, Some(Reply::InvokeAction(_))));
+    assert_eq!(radio.calls.borrow().as_slice(), ["disconnect"]);
 }
 
 #[test]
 fn stray_frames_are_answered_without_panicking() {
     let shared = Shared::new(20);
-    let controller = Controller::new(services(&shared), OpenPolicy);
+    let radio = radio(&shared);
+    let controller = Controller::new(device(&radio), OpenPolicy);
     shared.push(Event::Frame(vec![]));
     shared.push(Event::Frame(vec![0xff; 20]));
     run(&shared, &controller, 2);

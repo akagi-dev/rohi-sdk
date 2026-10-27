@@ -15,11 +15,12 @@
 //  limitations under the License.
 //
 
-//! Wi-Fi control plane: station configuration, scan, status, reconnect and
-//! disconnect.
+//! Wi-Fi control plane: station configuration, scan, status, connect,
+//! reconnect and disconnect.
 //!
 //! [`WifiManager`] is the single owner of a platform [`WifiBackend`] and
-//! reconciles the radio towards the latest desired [`WifiConfig`]. Other tasks
+//! reconciles the radio towards the latest desired [`WifiConfig`] and
+//! [`NetworkConfig`](crate::NetworkConfig). Other tasks
 //! use the copyable [`WifiHandle`]. Nothing here carries IP traffic; that is
 //! the job of the [IP data plane](crate::ip).
 
@@ -27,16 +28,31 @@ mod backend;
 mod backoff;
 mod config;
 mod error;
+mod managed;
 mod manager;
 mod network;
 mod scan;
+mod service;
 mod state;
 
 pub use backend::WifiBackend;
 pub use backoff::Backoff;
-pub use config::{WifiConfig, WifiPassword, WifiSsid};
+pub use config::{
+    BACKOFF_INITIAL_RANGE_MS, BACKOFF_MAX_RANGE_MS, CONNECT_TIMEOUT_RANGE_MS,
+    DEFAULT_BACKOFF_INITIAL_MS, DEFAULT_BACKOFF_MAX_MS, DEFAULT_CONNECT_TIMEOUT_MS,
+    DEFAULT_LINK_REFRESH_MS, DEFAULT_SCAN_TIMEOUT_MS, LINK_REFRESH_RANGE_MS, LinkConfig,
+    SCAN_TIMEOUT_RANGE_MS, WifiConfig, WifiPassword, WifiSsid,
+};
 pub use error::WifiError;
-pub use manager::{ManagerConfig, STATUS_RECEIVERS, WifiHandle, WifiManager, WifiShared};
+pub use managed::field as config_field;
+pub use manager::{
+    LinkMetrics, ManagerConfig, STATUS_RECEIVERS, WifiHandle, WifiManager, WifiShared,
+};
 pub use network::NetworkInfo;
 pub use scan::{ScanCollector, WifiNetwork, WifiScanResults, WifiSecurity};
+pub(crate) use service::summary_of as service_summary;
+pub use service::{
+    HeapStats, SERVICE_ID, WifiProbe, WifiService, action, connect_field, issue, scan_field,
+    security, status_field,
+};
 pub use state::{WifiState, WifiStatus};

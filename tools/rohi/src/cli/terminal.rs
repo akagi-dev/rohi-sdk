@@ -43,6 +43,17 @@ pub struct Io {
     stderr: Box<dyn Write>,
     input: Input,
     interactive: bool,
+    /// Whether stdout is a terminal that can redraw in place.
+    screen: bool,
+    size: ScreenSize,
+}
+
+/// How [`Io::redraw`] learns the size of the terminal.
+enum ScreenSize {
+    /// Asked of the terminal at every redraw, as it can be resized.
+    Probe,
+    /// Prepared, for tests; `None` is unknown.
+    Fixed(Option<(usize, usize)>),
 }
 
 impl Io {
@@ -54,6 +65,8 @@ impl Io {
             stderr: Box::new(io::stderr()),
             input: Input::Stdin(None),
             interactive: io::stdin().is_terminal() && io::stderr().is_terminal(),
+            screen: io::stdout().is_terminal(),
+            size: ScreenSize::Probe,
         }
     }
 
@@ -70,7 +83,62 @@ impl Io {
             stderr: Box::new(stderr),
             input: Input::Script(input.iter().map(|line| (*line).to_owned()).collect()),
             interactive,
+            screen: false,
+            size: ScreenSize::Fixed(None),
         }
+    }
+
+    /// Pretends stdout is a terminal that redraws in place, for tests.
+    pub fn with_screen(mut self, screen: bool) -> Self {
+        self.screen = screen;
+        self
+    }
+
+    /// Pretends stdout is a terminal of `columns` by `rows`, for tests.
+    pub fn with_size(mut self, columns: usize, rows: usize) -> Self {
+        self.size = ScreenSize::Fixed(Some((columns, rows)));
+        self
+    }
+
+    /// Whether [`Io::redraw`] can replace the previous output.
+    pub fn screen(&self) -> bool {
+        self.screen
+    }
+
+    fn dimensions(&self) -> Option<(usize, usize)> {
+        match self.size {
+            ScreenSize::Probe => terminal_size::terminal_size_of(io::stdout())
+                .map(|(width, height)| (usize::from(width.0), usize::from(height.0))),
+            ScreenSize::Fixed(size) => size,
+        }
+    }
+
+    /// Replaces what the previous redraw showed instead of appending to it:
+    /// the cursor goes home, every line is overwritten and the rest of the
+    /// screen is erased, so a refresh neither flickers nor scrolls. The last
+    /// line has no newline, which would scroll a screen that is exactly full.
+    ///
+    /// Returns `false`, writing nothing, when `text` does not fit the
+    /// terminal, wrapped lines included: such a screen would scroll on every
+    /// refresh, so the caller has to print it as ordinary output.
+    pub fn redraw(&mut self, text: &str) -> Result<bool, CliError> {
+        if let Some((columns, rows)) = self.dimensions()
+            && screen_rows(text, columns) > rows
+        {
+            return Ok(false);
+        }
+        let mut frame = String::from("\x1b[H");
+        let mut lines = text.lines().peekable();
+        while let Some(line) = lines.next() {
+            frame.push_str(line);
+            frame.push_str("\x1b[K");
+            if lines.peek().is_some() {
+                frame.push('\n');
+            }
+        }
+        frame.push_str("\x1b[J");
+        self.result(&frame)?;
+        Ok(true)
     }
 
     /// Whether prompts can be shown and answered.
@@ -168,13 +236,15 @@ impl Io {
         }
     }
 
-    /// First line of stdin as a secret, for `--password-stdin`.
+    /// The next line of stdin as a secret. An empty line is an empty value,
+    /// which the device judges (an open network has an empty password); only
+    /// the end of input means nothing was provided.
     pub async fn secret_from_stdin(&mut self, what: &str) -> Result<Zeroizing<String>, CliError> {
         match self.line().await? {
-            Some(line) if !line.is_empty() => Ok(Zeroizing::new(line)),
-            _ => Err(CliError::PasswordRequired {
+            Some(line) => Ok(Zeroizing::new(line)),
+            None => Err(CliError::PasswordRequired {
                 what: what.to_owned(),
-                hint: "stdin was empty; pipe the password in".to_owned(),
+                hint: "stdin ended; pipe the value in, one line for each argument".to_owned(),
             }),
         }
     }
@@ -217,4 +287,30 @@ impl Io {
             }
         }
     }
+}
+
+/// The terminal rows `text` takes at `columns` wide: every line takes at least
+/// one, and a longer one wraps.
+fn screen_rows(text: &str, columns: usize) -> usize {
+    text.lines()
+        .map(|line| visible_width(line).div_ceil(columns.max(1)).max(1))
+        .sum()
+}
+
+/// The width of `line` without its ANSI escape sequences.
+fn visible_width(line: &str) -> usize {
+    let mut width = 0;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            width += 1;
+        } else if chars.next() == Some('[') {
+            for c in chars.by_ref() {
+                if ('\x40'..='\x7e').contains(&c) {
+                    break;
+                }
+            }
+        }
+    }
+    width
 }

@@ -23,13 +23,13 @@
 //! manager as desired state, published by the configuration owner task, see
 //! [`crate::config`].
 
-use embassy_time::{Delay, Duration, with_timeout};
+use embassy_time::{Delay, Duration, Instant, with_timeout};
 use log::{info, warn};
 use rohi_net::{
-    ManagerConfig, NetworkHandle, WifiError, WifiHandle, WifiManager, WifiShared, WifiState,
-    WifiStatus,
+    HeapStats, IpUsage, ManagerConfig, NetworkHandle, NetworkProbe, WifiError, WifiHandle,
+    WifiManager, WifiProbe, WifiShared, WifiState, WifiStatus,
 };
-use rohi_net_esp::{EspWifi, EspWireless, NetRunner};
+use rohi_net_esp::{EspWifi, EspWireless, NetRunner, wireless_heap};
 use static_cell::StaticCell;
 
 use crate::resources::{Ip, NetResources};
@@ -52,6 +52,41 @@ pub fn start(
     Ok((backend, runner, NetworkHandle::new(ip)))
 }
 
+/// Milliseconds since boot: the clock of the link uptime.
+fn uptime_ms() -> u64 {
+    Instant::now().as_millis()
+}
+
+/// What the `wifi` and `network` services read from the platform: the wireless
+/// heap and the clock, and the socket usage of the IP stack (when it started).
+#[derive(Clone, Copy)]
+pub struct Probe {
+    ip: Option<NetworkHandle<'static, Ip>>,
+}
+
+impl Probe {
+    /// `ip` is the IP data plane returned by [`start`], `None` if it did not start.
+    pub const fn new(ip: Option<NetworkHandle<'static, Ip>>) -> Self {
+        Self { ip }
+    }
+}
+
+impl WifiProbe for Probe {
+    fn heap(&self) -> Option<HeapStats> {
+        Some(wireless_heap().stats())
+    }
+
+    fn now_ms(&self) -> Option<u64> {
+        Some(uptime_ms())
+    }
+}
+
+impl NetworkProbe for Probe {
+    fn sockets(&self) -> Option<IpUsage> {
+        self.ip.map(|ip| ip.usage())
+    }
+}
+
 /// Handle to command the Wi-Fi manager and read its published state.
 pub fn handle() -> WifiHandle<'static, RawMutex> {
     WIFI.handle()
@@ -66,7 +101,12 @@ pub async fn net_runner_task(runner: NetRunner) {
 /// Runs the Wi-Fi connection manager.
 #[embassy_executor::task]
 pub async fn wifi_task(backend: EspWifi) {
-    let mut manager = WifiManager::new(backend, Delay, &WIFI, ManagerConfig::DEFAULT);
+    let mut manager = WifiManager::new(
+        backend,
+        Delay,
+        &WIFI,
+        ManagerConfig::DEFAULT.with_clock(uptime_ms),
+    );
     manager.run().await
 }
 

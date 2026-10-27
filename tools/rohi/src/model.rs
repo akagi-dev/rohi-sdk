@@ -16,17 +16,17 @@
 //
 //! Plain Rust model of the control protocol.
 //!
-//! These types are what applications use. They hold no protobuf types, spell
-//! out the canonical unit of every measurement and never contain a Wi-Fi
-//! password. With the `serde` feature they serialize to JSON.
+//! These types are what applications use. They hold no protobuf types and no
+//! device module is known by name: sections, services, actions and fields are
+//! whatever the device describes. With the `serde` feature they serialize to
+//! JSON.
 
 use core::fmt;
-use std::net::Ipv4Addr;
-
-pub use rohi_identity::PublicKey;
 
 #[cfg(feature = "serde")]
-use serde::Serialize;
+use serde::{Serialize, Serializer};
+
+use rohi_control_proto::control as pb;
 
 macro_rules! open_enum {
     (
@@ -68,8 +68,6 @@ macro_rules! open_enum {
     };
 }
 
-use rohi_control_proto::control as pb;
-
 open_enum! {
     /// Typed error of the control protocol.
     ErrorCode: pb::ErrorCode {
@@ -80,432 +78,398 @@ open_enum! {
         Unavailable = Unavailable => "unavailable",
         PermissionDenied = PermissionDenied => "permission denied",
         Internal = Internal => "internal error",
-        IdentityNotProvisioned = IdentityNotProvisioned => "identity not provisioned",
-        IdentityAlreadyProvisioned = IdentityAlreadyProvisioned => "identity already provisioned",
+        Conflict = Conflict => "conflict",
+        Rejected = Rejected => "rejected",
     }
 }
 
 open_enum! {
-    /// Feature of a device.
-    Capability: pb::Capability {
-        Sensors = Sensors => "sensors",
-        Config = Config => "config",
-        WifiScan = WifiScan => "wifi scan",
-        WifiStatus = WifiStatus => "wifi status",
-        WifiControl = WifiControl => "wifi control",
-        Identity = Identity => "identity",
-        Time = Time => "time",
-        Connectivity = Connectivity => "connectivity",
+    /// Lifecycle state of a service.
+    ServiceState: pb::ServiceState {
+        Disabled = Disabled => "disabled",
+        Stopped = Stopped => "stopped",
+        Starting = Starting => "starting",
+        Running = Running => "running",
+        Stopping = Stopping => "stopping",
+        Failed = Failed => "failed",
     }
 }
 
 open_enum! {
-    /// Whether the device has wall-clock time and how fresh it is.
-    TimeSyncState: pb::TimeSyncState {
-        Unsynchronized = Unsynchronized => "unsynchronized",
-        Synchronized = Synchronized => "synchronized",
-        Stale = Stale => "stale",
-    }
-}
-
-open_enum! {
-    /// Where the device got its time from.
-    TimeSource: pb::TimeSource {
-        Ntp = Ntp => "ntp",
-        Rtc = Rtc => "rtc",
-        External = External => "external",
-    }
-}
-
-open_enum! {
-    /// Why the last time synchronization attempt failed.
-    TimeSyncFailure: pb::TimeSyncFailure {
-        NetworkUnavailable = NetworkUnavailable => "network unavailable",
-        Resolve = Resolve => "name resolution failed",
-        Timeout = Timeout => "timeout",
-        InvalidResponse = InvalidResponse => "invalid response",
-        Rejected = Rejected => "rejected by the server",
-        Implausible = Implausible => "implausible time",
-        Source = Source => "source error",
-    }
-}
-
-open_enum! {
-    /// Whether the device holds a cryptographic identity.
-    IdentityState: pb::IdentityState {
-        NotProvisioned = NotProvisioned => "not provisioned",
-        Provisioned = Provisioned => "provisioned",
-    }
-}
-
-open_enum! {
-    /// Physical quantity of a measurement; the canonical unit is fixed per type.
-    MeasurementType: pb::MeasurementType {
-        Temperature = Temperature => "temperature",
-        Humidity = Humidity => "humidity",
-        Pressure = Pressure => "pressure",
-        Co2 = Co2 => "co2",
-        Pm25 = Pm25 => "pm2.5",
-        Pm10 = Pm10 => "pm10",
-        NoiseAverage = NoiseAverage => "noise average",
-        NoiseMaximum = NoiseMaximum => "noise maximum",
-        O3 = O3 => "o3",
-        No2 = No2 => "no2",
-        AqiFast = AqiFast => "aqi fast",
-        AqiEpa = AqiEpa => "aqi epa",
-        Co = Co => "co",
-        Radiation = Radiation => "radiation",
-        PulseCount = PulseCount => "pulse count",
-    }
-}
-
-impl MeasurementType {
-    /// Canonical unit symbol.
-    pub const fn unit(&self) -> &'static str {
-        match self {
-            Self::Temperature => "°C",
-            Self::Humidity => "%",
-            Self::Pressure => "Pa",
-            Self::Co2 | Self::Co => "ppm",
-            Self::Pm25 | Self::Pm10 => "µg/m³",
-            Self::NoiseAverage | Self::NoiseMaximum => "dB",
-            Self::O3 | Self::No2 => "ppb",
-            Self::AqiFast | Self::AqiEpa => "AQI",
-            Self::Radiation => "µSv/h",
-            Self::PulseCount => "pulses",
-            Self::Unrecognized => "",
-        }
-    }
-}
-
-open_enum! {
-    /// State of one measurement.
-    MeasurementState: pb::MeasurementState {
-        Unavailable = Unavailable => "unavailable",
-        WarmingUp = WarmingUp => "warming up",
-        Valid = Valid => "valid",
-        Stale = Stale => "stale",
-        Error = Error => "error",
-    }
-}
-
-open_enum! {
-    /// Runtime state of a sensor.
-    SensorState: pb::SensorState {
-        NotDetected = NotDetected => "not detected",
-        Initializing = Initializing => "initializing",
-        WarmingUp = WarmingUp => "warming up",
-        Ready = Ready => "ready",
+    /// Operational quality of a service.
+    ServiceHealth: pb::ServiceHealth {
+        Unknown = Unknown => "unknown",
+        Ok = Ok => "ok",
         Degraded = Degraded => "degraded",
         Error = Error => "error",
     }
 }
 
 open_enum! {
-    /// Last error of a sensor.
-    SensorError: pb::SensorError {
-        Timeout = Timeout => "timeout",
-        Bus = Bus => "bus error",
-        Crc = Crc => "crc mismatch",
-        InvalidData = InvalidData => "invalid data",
-        NotReady = NotReady => "not ready",
-        Calibration = Calibration => "calibration",
-        Unknown = Unknown => "unknown error",
-    }
-}
-
-open_enum! {
-    /// Authentication mode of a scanned network.
-    WifiSecurity: pb::WifiSecurity {
-        Open = Open => "open",
-        Wep = Wep => "wep",
-        Wpa = Wpa => "wpa",
-        Wpa2 = Wpa2 => "wpa2",
-        WpaWpa2 = WpaWpa2 => "wpa/wpa2",
-        Wpa3 = Wpa3 => "wpa3",
-        Wpa2Wpa3 = Wpa2Wpa3 => "wpa2/wpa3",
-        Enterprise = Enterprise => "enterprise",
-    }
-}
-
-open_enum! {
-    /// Wi-Fi runtime state.
-    WifiState: pb::WifiState {
-        NotConfigured = NotConfigured => "not configured",
-        Idle = Idle => "idle",
-        Scanning = Scanning => "scanning",
-        Connecting = Connecting => "connecting",
-        Connected = Connected => "connected",
-        Disconnected = Disconnected => "disconnected",
+    /// Health of the whole device, decided by the firmware.
+    DeviceHealth: pb::DeviceHealth {
+        Ok = Ok => "ok",
+        Degraded = Degraded => "degraded",
         Error = Error => "error",
     }
 }
 
 open_enum! {
-    /// Why the last Wi-Fi attempt failed.
-    WifiFailure: pb::WifiFailure {
-        NotConfigured = NotConfigured => "not configured",
-        Busy = Busy => "busy",
-        Timeout = Timeout => "timeout",
-        ScanFailed = ScanFailed => "scan failed",
-        NetworkNotFound = NetworkNotFound => "network not found",
-        AuthenticationFailed = AuthenticationFailed => "authentication failed",
-        AssociationFailed = AssociationFailed => "association failed",
-        DhcpFailed = DhcpFailed => "dhcp failed",
-        Disconnected = Disconnected => "disconnected",
-        InvalidConfig = InvalidConfig => "invalid configuration",
-        DriverError = DriverError => "driver error",
+    /// Severity of an active issue.
+    IssueSeverity: pb::IssueSeverity {
+        Info = Info => "info",
+        Warning = Warning => "warning",
+        Error = Error => "error",
+        Critical = Critical => "critical",
     }
+}
+
+open_enum! {
+    /// Type of a value.
+    ValueKind: pb::ValueKind {
+        Bool = Bool => "bool",
+        I64 = I64 => "i64",
+        U64 = U64 => "u64",
+        F32 = F32 => "f32",
+        String = String => "string",
+        Bytes = Bytes => "bytes",
+        Enum = Enum => "enum",
+    }
+}
+
+/// A generic typed value of a config field, a status field or an action.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Value {
+    /// `true` or `false`.
+    Bool(bool),
+    /// Signed integer.
+    I64(i64),
+    /// Unsigned integer.
+    U64(u64),
+    /// Single-precision float.
+    F32(f32),
+    /// Text.
+    String(String),
+    /// Bytes; text and JSON use lower-case hex.
+    Bytes(Vec<u8>),
+    /// A variant of an enum field, by the name the schema gives it. The wire
+    /// carries a number; the client translates with the schema.
+    Enum(String),
+}
+
+impl Value {
+    /// The kind of the value.
+    pub fn kind(&self) -> ValueKind {
+        match self {
+            Self::Bool(_) => ValueKind::Bool,
+            Self::I64(_) => ValueKind::I64,
+            Self::U64(_) => ValueKind::U64,
+            Self::F32(_) => ValueKind::F32,
+            Self::String(_) => ValueKind::String,
+            Self::Bytes(_) => ValueKind::Bytes,
+            Self::Enum(_) => ValueKind::Enum,
+        }
+    }
+}
+
+/// Lower-case hex of `bytes`.
+pub fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Bool(value) => write!(f, "{value}"),
+            Self::I64(value) => write!(f, "{value}"),
+            Self::U64(value) => write!(f, "{value}"),
+            Self::F32(value) => write!(f, "{value}"),
+            Self::String(value) | Self::Enum(value) => f.write_str(value),
+            Self::Bytes(value) => f.write_str(&hex(value)),
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl Serialize for Value {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Bool(value) => serializer.serialize_bool(*value),
+            Self::I64(value) => serializer.serialize_i64(*value),
+            Self::U64(value) => serializer.serialize_u64(*value),
+            // The shortest decimal of the f32, not its binary expansion as f64.
+            Self::F32(value) => match value.to_string().parse::<f64>() {
+                Ok(number) if value.is_finite() => serializer.serialize_f64(number),
+                _ => serializer.serialize_none(),
+            },
+            Self::String(value) | Self::Enum(value) => serializer.serialize_str(value),
+            Self::Bytes(value) => serializer.serialize_str(&hex(value)),
+        }
+    }
+}
+
+/// Description of one field.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub struct FieldDescriptor {
+    /// Stable id within the section, service or action.
+    pub id: u32,
+    /// Name; nested fields use dotted paths.
+    pub name: String,
+    /// Type.
+    pub kind: ValueKind,
+    /// Unit symbol, empty when unitless.
+    pub unit: String,
+    /// Names of the allowed values of an enum field.
+    pub variants: Vec<String>,
+    /// The number of each of `variants` on the wire.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub(crate) variant_values: Vec<u32>,
+}
+
+/// A field value together with the id of its field.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub struct FieldValue {
+    /// Field id.
+    pub field_id: u32,
+    /// The value.
+    pub value: Value,
 }
 
 /// Static description of the device.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct DeviceInfo {
-    /// Firmware name and version, for example `altruist-urban-0.1.0`.
+    /// Firmware name and version.
     pub firmware: String,
-    /// Board and chip, for example `urban-esp32c3`.
+    /// Board and chip.
     pub board: String,
 }
 
-/// One measurement in the canonical unit of its type.
-#[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize))]
-pub struct Measurement {
-    /// Quantity.
-    #[cfg_attr(feature = "serde", serde(rename = "type"))]
-    pub kind: MeasurementType,
-    /// Canonical unit of [`Measurement::kind`].
-    pub unit: &'static str,
-    /// Last valid value; absent when never measured.
-    pub value: Option<f64>,
-    /// State.
-    pub state: MeasurementState,
-    /// Age of the value when the device answered, in milliseconds.
-    pub age_ms: Option<u64>,
-}
+// -- config -------------------------------------------------------------------
 
-/// A sensor and its measurements.
-#[derive(Clone, Debug, PartialEq)]
+/// A config section as listed by the device.
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
-pub struct Sensor {
-    /// Identifies the physical sensor.
+pub struct SectionInfo {
+    /// Numeric id, the address of requests.
+    pub id: u64,
+    /// Section name.
     pub name: String,
-    /// Runtime state.
-    pub state: SensorState,
-    /// Last error.
-    pub error: Option<SensorError>,
-    /// Measurements.
-    pub measurements: Vec<Measurement>,
+    /// Version of the section schema.
+    pub version: u32,
+    /// Changes after every successful write or reset.
+    pub revision: u32,
 }
 
-/// Snapshot of all sensors.
+/// A config field.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
-pub struct Sensors {
-    /// Device uptime when the snapshot was generated, in milliseconds.
+pub struct ConfigField {
+    /// Common description.
+    pub field: FieldDescriptor,
+    /// Whether clients may change it.
+    pub writable: bool,
+    /// Write-only: never returned.
+    pub secret: bool,
+    /// May be unset.
+    pub optional: bool,
+}
+
+/// Schema of a config section.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub struct ConfigSchema {
+    /// The section.
+    pub section: SectionInfo,
+    /// Its fields.
+    pub fields: Vec<ConfigField>,
+}
+
+/// State of a field in [`ConfigValues`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum EntryState {
+    /// The current value.
+    Value(Value),
+    /// A set secret.
+    Redacted,
+}
+
+/// One set field.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConfigEntry {
+    /// Field id.
+    pub field_id: u32,
+    /// Value or redaction.
+    pub state: EntryState,
+}
+
+/// The readable content of a config section.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConfigValues {
+    /// The section.
+    pub section: SectionInfo,
+    /// Whether anything is persisted.
+    pub configured: bool,
+    /// The fields that are set.
+    pub entries: Vec<ConfigEntry>,
+}
+
+/// What a mutation does.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MutationOp {
+    /// Sets the field.
+    Set(Value),
+    /// Unsets the field.
+    Unset,
+}
+
+/// One change of a patch.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Mutation {
+    /// Field id.
+    pub field_id: u32,
+    /// The change.
+    pub op: MutationOp,
+}
+
+/// Outcome of a patch or reset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub struct Applied {
+    /// Revision after the change.
+    pub revision: u32,
+    /// Whether the change needs a restart.
+    pub restart_required: bool,
+}
+
+// -- status -------------------------------------------------------------------
+
+/// A service as listed by the device.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub struct ServiceInfo {
+    /// Numeric id, the address of requests.
+    pub id: u32,
+    /// Service name.
+    pub name: String,
+    /// Version of the status schema.
+    pub version: u32,
+}
+
+/// Compact status of a service.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub struct ServiceSummary {
+    /// Numeric id, the address of requests.
+    pub id: u32,
+    /// Service name.
+    pub service: String,
+    /// Version of the status schema.
+    pub version: u32,
+    /// Lifecycle state.
+    pub state: ServiceState,
+    /// Operational quality.
+    pub health: ServiceHealth,
+    /// Whether the service can currently do its job.
+    pub ready: bool,
+    /// Changes when state, health, readiness or issues change.
+    pub revision: u32,
+    /// Time in the current state.
+    pub state_age_ms: u64,
+}
+
+/// Compact status of the whole device.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub struct ServicesStatus {
+    /// Device uptime.
     pub uptime_ms: u64,
-    /// Present sensors.
-    pub sensors: Vec<Sensor>,
+    /// Health decided by the firmware.
+    pub health: DeviceHealth,
+    /// All services.
+    pub services: Vec<ServiceSummary>,
 }
 
-/// Wi-Fi network name: arbitrary bytes, usually UTF-8.
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct Ssid(pub Vec<u8>);
-
-impl Ssid {
-    /// Text of the SSID, lossy for non UTF-8 names.
-    pub fn to_text(&self) -> String {
-        String::from_utf8_lossy(&self.0).into_owned()
-    }
+/// Status schema of a service.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub struct ServiceSchema {
+    /// The service.
+    pub service: ServiceInfo,
+    /// Status fields.
+    pub fields: Vec<FieldDescriptor>,
+    /// The issues the service can report.
+    pub issues: Vec<IssueInfo>,
 }
 
-impl fmt::Debug for Ssid {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self.to_text())
-    }
-}
-
-impl fmt::Display for Ssid {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.to_text())
-    }
-}
-
-#[cfg(feature = "serde")]
-impl Serialize for Ssid {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.to_text())
-    }
-}
-
-/// Cryptographic identity of a device. Only the public key is ever available.
+/// The name of an issue code, from the schema of its service.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
-pub struct IdentityInfo {
-    /// Whether the device is provisioned.
-    pub state: IdentityState,
-    /// Ed25519 public key, set only when provisioned.
-    #[cfg_attr(feature = "serde", serde(serialize_with = "serialize_public_key"))]
-    pub public_key: Option<PublicKey>,
+pub struct IssueInfo {
+    /// Numeric code.
+    pub code: u32,
+    /// Stable machine-readable name.
+    pub name: String,
 }
 
-#[cfg(feature = "serde")]
-fn serialize_public_key<S: serde::Serializer>(
-    key: &Option<PublicKey>,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    match key {
-        Some(key) => serializer.serialize_str(&key.to_string()),
-        None => serializer.serialize_none(),
-    }
-}
-
-/// Stored Wi-Fi configuration. The password is never available.
+/// An active issue of a service.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
-pub struct WifiConfig {
-    /// Configured network.
-    pub ssid: Ssid,
-    /// Whether a password is stored.
-    pub password_configured: bool,
+pub struct Issue {
+    /// Severity.
+    pub severity: IssueSeverity,
+    /// Numeric code.
+    pub id: u32,
+    /// Stable machine-readable name of the code, from the service schema.
+    pub code: String,
+    /// How long it has been active.
+    pub age_ms: u64,
 }
 
-/// Stored telemetry configuration.
+/// Detailed status of a service.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ServiceStatus {
+    /// Compact status.
+    pub summary: ServiceSummary,
+    /// Service-specific values.
+    pub fields: Vec<FieldValue>,
+    /// Active issues.
+    pub issues: Vec<Issue>,
+}
+
+// -- actions ------------------------------------------------------------------
+
+/// An action as listed by the device.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
-pub struct ConnectivityConfig {
-    /// Telemetry is only produced and sent when enabled.
-    pub enabled: bool,
-    /// Robonomics CPS node identifier.
-    pub node_id: u64,
-    /// Seconds between telemetry frames.
-    pub interval_s: u32,
-    /// Ingress host name or IPv4 address.
-    pub host: String,
-    /// Ingress TCP port.
-    pub port: u16,
+pub struct ActionInfo {
+    /// Id of the service that offers it.
+    pub service_id: u32,
+    /// Name of the service that offers it.
+    pub service: String,
+    /// Numeric id within the service, the address of requests.
+    pub id: u32,
+    /// Action name.
+    pub name: String,
+    /// Whether the link must satisfy the write policy.
+    pub privileged: bool,
+    /// Whether the arguments are secrets; they must be read with `NAME=-`.
+    pub secret_args: bool,
 }
 
-/// Device configuration.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Schema of an action.
+#[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
-pub struct Config {
-    /// Wi-Fi, `None` when not configured.
-    pub wifi: Option<WifiConfig>,
-    /// Telemetry, `None` when not configured or not supported by the device.
-    pub connectivity: Option<ConnectivityConfig>,
+pub struct ActionSchema {
+    /// The action.
+    pub action: ActionInfo,
+    /// Arguments; all are required.
+    pub args: Vec<FieldDescriptor>,
+    /// Fields of every result record.
+    pub results: Vec<FieldDescriptor>,
 }
 
-/// A network found by a Wi-Fi scan.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize))]
-pub struct WifiNetwork {
-    /// Network name.
-    pub ssid: Ssid,
-    /// Signal strength in dBm.
-    pub rssi_dbm: i32,
-    /// Channel.
-    pub channel: u32,
-    /// Authentication mode.
-    pub security: WifiSecurity,
-}
-
-/// Details of an established Wi-Fi connection.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize))]
-pub struct WifiConnection {
-    /// Network name.
-    pub ssid: Ssid,
-    /// Signal strength in dBm.
-    pub rssi_dbm: i32,
-    /// IPv4 address.
-    pub ipv4: Ipv4Addr,
-    /// Gateway.
-    pub gateway: Option<Ipv4Addr>,
-    /// DNS server.
-    pub dns: Option<Ipv4Addr>,
-}
-
-/// Wi-Fi status of the device.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize))]
-pub struct WifiStatus {
-    /// Runtime state.
-    pub state: WifiState,
-    /// Error of the last failed attempt.
-    pub failure: Option<WifiFailure>,
-    /// Connection details while connected.
-    pub connection: Option<WifiConnection>,
-}
-
-/// Wall-clock time and synchronization state of the device.
-///
-/// The time is absent until a source delivered a plausible sample, it is
-/// never invented, and it may step when a later sample corrects it. It is not
-/// authenticated.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize))]
-pub struct TimeStatus {
-    /// Synchronization state.
-    pub state: TimeSyncState,
-    /// Milliseconds since the Unix epoch, `None` while unsynchronized.
-    pub unix_time_ms: Option<u64>,
-    /// Where the time came from.
-    pub source: Option<TimeSource>,
-    /// Milliseconds since the time was last accepted.
-    pub sync_age_ms: Option<u64>,
-    /// Uncertainty of the time when it was accepted, in milliseconds.
-    pub uncertainty_ms: Option<u32>,
-    /// Failed attempts since the last accepted sample.
-    pub consecutive_failures: u32,
-    /// Most recent failure.
-    pub last_failure: Option<TimeSyncFailure>,
-}
-
-/// Change of the Wi-Fi password in a [`WifiUpdate`].
-#[derive(Clone, PartialEq, Eq, Default)]
-pub enum PasswordChange {
-    /// Keep the stored password.
-    #[default]
-    Keep,
-    /// Replace the password.
-    Set(Vec<u8>),
-    /// Remove the password (open network).
-    Clear,
-}
-
-impl fmt::Debug for PasswordChange {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Keep => "Keep",
-            Self::Set(_) => "Set(<redacted>)",
-            Self::Clear => "Clear",
-        })
-    }
-}
-
-/// Partial update of the Wi-Fi configuration: omitted fields are preserved.
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
-pub struct WifiUpdate {
-    /// New SSID; required while nothing is stored.
-    pub ssid: Option<Vec<u8>>,
-    /// Password change.
-    pub password: PasswordChange,
-}
-
-/// Partial update of the telemetry configuration: omitted fields are
-/// preserved.
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
-pub struct ConnectivityUpdate {
-    /// Switches telemetry on or off.
-    pub enabled: Option<bool>,
-    /// Robonomics CPS node identifier.
-    pub node_id: Option<u64>,
-    /// Seconds between telemetry frames.
-    pub interval_s: Option<u32>,
-    /// Ingress host; required while nothing is stored.
-    pub host: Option<String>,
-    /// Ingress TCP port.
-    pub port: Option<u16>,
-}
+/// One result record of an action.
+pub type Record = Vec<FieldValue>;

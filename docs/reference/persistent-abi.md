@@ -62,11 +62,17 @@ Golden values:
 |----------------------|------------------------|
 | `Identity`           | `0x94d63573d312fe9b`   |
 | `WifiConfig`         | `0x335246ad20248b26`   |
+| `NetworkConfig`      | `0x48f89649eb74bec7`   |
+| `BleSettings`        | `0xcba3fd7b3d5ad5ef`   |
 | `ConnectivityConfig` | `0x9c57015a40662d0c`   |
+| `LocationConfig`     | `0xce098b4a3e381f40`   |
+| `NtpServersConfig`   | `0x2feb7d230f6ed989`   |
 
-> **Renaming a persisted `ConfigSection` type is a storage ABI change.** `WifiConfig` renamed to `WirelessConfig`
+> **Renaming a persisted `ConfigSection` type is a storage ABI change.** `NetworkConfig` renamed to `WirelessConfig`
 > gets a different ID and the stored data is no longer found.
 
+> **`NetworkConfig` is version 1.** It stores IPv4 addressing and DHCP settings; Wi-Fi credentials and timing live in
+> `WifiConfig`.
 A raw identifier (`r#Type`) hashes as `Type`. Types with type or const parameters are rejected unless they give an
 explicit `id`: the name-derived ID would be shared by every instantiation (`Foo<A>`, `Foo<B>`).
 
@@ -74,7 +80,7 @@ The explicit `id` is the escape hatch for the cases where the ID must stay fixed
 
 ```rust,ignore
 #[derive(Encode, Decode, CborLen, ConfigSection)]
-#[config(id = 0x335246ad20248b26, version = 2)] // formerly named `WifiConfig`
+#[config(id = 0x48f89649eb74bec7, version = 1)] // formerly named `NetworkConfig`
 pub struct WirelessConfig { /* ... */ }
 ```
 

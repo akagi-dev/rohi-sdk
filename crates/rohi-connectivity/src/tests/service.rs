@@ -18,6 +18,7 @@ use std::collections::VecDeque;
 use std::vec::Vec;
 
 use embassy_futures::poll_once;
+use rohi_location::LocationSource;
 
 use super::*;
 
@@ -79,8 +80,27 @@ fn accepted() -> Result<TransportAck, TransportError> {
 struct Fixture {
     clock: FakeClock,
     source: FakeSource,
+    location: FakeLocation,
     sent: RefCell<Vec<Vec<u8>>>,
     shared: Shared,
+}
+
+/// A location the test sets and clears.
+struct FakeLocation(Cell<Option<rohi_location::Location>>);
+
+impl LocationSource for FakeLocation {
+    fn location(&self) -> Option<rohi_location::Location> {
+        self.0.get()
+    }
+}
+
+fn berlin() -> rohi_location::Location {
+    rohi_location::Location {
+        latitude: 52.52,
+        longitude: 13.405,
+        height_m: Some(34.0),
+        source: rohi_location::LocationSourceKind::Configured,
+    }
 }
 
 impl Fixture {
@@ -95,6 +115,7 @@ impl Fixture {
                 ))),
                 calls: Cell::new(0),
             },
+            location: FakeLocation(Cell::new(None)),
             sent: RefCell::new(Vec::new()),
             shared: Shared::new(),
         }
@@ -113,6 +134,7 @@ impl Fixture {
             ServiceConfig::new(42, 10_000),
             &self.shared,
             &self.source,
+            &self.location,
             &self.clock,
             utc,
             signer,
@@ -409,6 +431,7 @@ fn the_run_loop_never_spins_and_keeps_producing_while_the_uplink_is_down() {
         ServiceConfig::new(1, 10_000),
         &fx.shared,
         &fx.source,
+        &fx.location,
         &fx.clock,
         &utc,
         &signer,
@@ -441,4 +464,41 @@ fn the_run_loop_never_spins_and_keeps_producing_while_the_uplink_is_down() {
     assert!(service.diagnostics().skipped_outbox_full > 0);
     // Backoff bounded: far fewer attempts than waits-at-1ms would imply.
     assert!(sent.len() < 40);
+}
+
+#[test]
+fn a_frame_without_a_location_is_still_sent_and_counted() {
+    let fx = Fixture::new();
+    let mut service = fx.ok_service([]);
+    block_on(service.produce());
+    assert_eq!(service.queued(), 1);
+    let d = service.diagnostics();
+    assert_eq!(d.frames_created, 1);
+    assert_eq!(d.frames_without_location, 1);
+}
+
+#[test]
+fn a_known_location_goes_into_the_frame() {
+    let fx = Fixture::new();
+    fx.location.0.set(Some(berlin()));
+    let mut service = fx.ok_service([]);
+    block_on(service.produce());
+    assert_eq!(service.queued(), 1);
+    assert_eq!(service.diagnostics().frames_without_location, 0);
+
+    let frame = service.front().unwrap();
+    let envelope: rohi_connectivity_proto::crypto_v1::SignedEnvelope =
+        rohi_connectivity_proto::decode(frame.as_bytes()).unwrap();
+    let message: rohi_connectivity_proto::core_v1::Message =
+        rohi_connectivity_proto::decode(&envelope.message).unwrap();
+    let Some(rohi_connectivity_proto::core_v1::Message_::Payload::Urban(urban)) = message.payload
+    else {
+        panic!("not an urban payload");
+    };
+    let Some(rohi_connectivity_proto::device_v1::UrbanSensor_::Sensor::Gps(gps)) =
+        &urban.public[0].sensor
+    else {
+        panic!("the location is the first entry");
+    };
+    assert_eq!((gps.lat, gps.lon, gps.height_m), (52.52, 13.405, 34.0));
 }

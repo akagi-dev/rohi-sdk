@@ -29,7 +29,10 @@
 
 use core::net::Ipv4Addr;
 
-use embassy_net::{Config as IpConfig, Runner, Stack, StackResources};
+use embassy_net::{
+    Config as IpConfig, ConfigV4, DhcpConfig, HardwareAddress, Ipv4Address, Ipv4Cidr, Runner,
+    Stack, StackResources, StaticConfigV4,
+};
 use embassy_time::{Duration, Timer, with_timeout};
 use esp_hal::peripherals::WIFI;
 use esp_hal::rng::Rng;
@@ -42,15 +45,13 @@ use esp_radio::wifi::{
 use log::{debug, warn};
 
 use rohi_net::{
-    NetworkInfo, ScanCollector, WifiBackend, WifiConfig, WifiError, WifiNetwork, WifiScanResults,
-    WifiSecurity, WifiSsid,
+    LinkConfig, NetworkConfig, NetworkInfo, ScanCollector, WifiBackend, WifiConfig, WifiError,
+    WifiNetwork, WifiScanResults, WifiSecurity, WifiSsid,
 };
 
 /// Upper bound of raw scan entries converted per scan (bounds the vendor `Vec`).
 const MAX_RAW_SCAN_RESULTS: usize = 48;
 
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-const DHCP_TIMEOUT: Duration = Duration::from_secs(20);
 const STALE_CONFIG_POLL: Duration = Duration::from_millis(50);
 const STALE_CONFIG_LIMIT: u32 = 40;
 
@@ -112,9 +113,17 @@ impl EspWifi {
             .ok()
             .and_then(|rssi| i8::try_from(rssi).ok())
             .unwrap_or(i8::MIN);
+        let channel = self
+            .controller
+            .ap_info()
+            .ok()
+            .map(|access_point| access_point.channel);
+        let HardwareAddress::Ethernet(mac) = self.stack.hardware_address();
         Some(NetworkInfo {
             ssid,
             rssi_dbm,
+            channel,
+            mac: Some(mac.0),
             ipv4: Ipv4Addr::from(config.address.address().octets()),
             gateway: config
                 .gateway
@@ -137,28 +146,77 @@ impl EspWifi {
         }
     }
 
-    async fn connect_inner(&mut self, config: &WifiConfig) -> Result<NetworkInfo, WifiError> {
-        self.wait_stale_config_cleared().await;
-        let station = station_config(config)?;
+    /// Hands the address settings of `config` to the IP stack: the static
+    /// address, or a DHCP client that announces the host name.
+    fn apply_address(&self, config: &NetworkConfig) -> Result<(), WifiError> {
+        let ipv4 = match config.static_settings() {
+            Some(settings) => {
+                let address = Ipv4Cidr::new(
+                    Ipv4Address::from(settings.address.octets()),
+                    settings.prefix_len,
+                );
+                let mut dns_servers = heapless::Vec::new();
+                if let Some(dns) = settings.dns {
+                    let _ = dns_servers.push(Ipv4Address::from(dns.octets()));
+                }
+                ConfigV4::Static(StaticConfigV4 {
+                    address,
+                    gateway: Some(Ipv4Address::from(settings.gateway.octets())),
+                    dns_servers,
+                })
+            }
+            None => {
+                let mut dhcp = DhcpConfig::default();
+                if let Some(hostname) = &config.hostname {
+                    dhcp.hostname = Some(
+                        heapless::String::try_from(hostname.as_str())
+                            .map_err(|_| WifiError::InvalidConfig)?,
+                    );
+                }
+                ConfigV4::Dhcp(dhcp)
+            }
+        };
+        self.stack.set_config_v4(ipv4);
+        Ok(())
+    }
+
+    async fn connect_inner(&mut self, config: &LinkConfig) -> Result<NetworkInfo, WifiError> {
+        self.apply_address(&config.network)?;
+        // A static address is up at once; only a DHCP lease can be stale.
+        if config.network.static_settings().is_none() {
+            self.wait_stale_config_cleared().await;
+        }
+        let station = station_config(&config.wifi)?;
         self.controller
             .set_config(&Config::Station(station))
             .map_err(|error| map_driver_error(&error))?;
 
-        self.controller
-            .connect_async()
+        // Only association is bounded by `connect_timeout_ms`; the wait below
+        // has its own `dhcp_timeout_ms`.
+        let connect_timeout = Duration::from_millis(config.wifi.connect_timeout_ms.into());
+        with_timeout(connect_timeout, self.controller.connect_async())
             .await
+            .map_err(|_| WifiError::Timeout)?
             .map_err(|error| match error {
                 ConnectionError::Failed(info) => map_connect_reason(info.reason),
                 ConnectionError::WifiError(error) => map_driver_error(&error),
                 _ => WifiError::DriverError,
             })?;
 
-        // Association alone is not network ready: wait for DHCP.
-        with_timeout(DHCP_TIMEOUT, self.stack.wait_config_up())
-            .await
-            .map_err(|_| WifiError::DhcpFailed)?;
+        // Association alone is not network ready: wait for the DHCP lease, or
+        // for the link when the address is static.
+        let wait = Duration::from_millis(config.network.dhcp_timeout_ms.into());
+        if config.network.static_settings().is_some() {
+            with_timeout(wait, self.stack.wait_link_up())
+                .await
+                .map_err(|_| WifiError::Timeout)?;
+        } else {
+            with_timeout(wait, self.stack.wait_config_up())
+                .await
+                .map_err(|_| WifiError::DhcpFailed)?;
+        }
 
-        self.ssid = Some(config.ssid.clone());
+        self.ssid = Some(config.wifi.ssid.clone());
         self.current_info().ok_or(WifiError::DhcpFailed)
     }
 }
@@ -188,18 +246,13 @@ impl WifiBackend for EspWifi {
         Ok(collector.finish())
     }
 
-    async fn connect(&mut self, config: &WifiConfig) -> Result<NetworkInfo, WifiError> {
-        match with_timeout(CONNECT_TIMEOUT, self.connect_inner(config)).await {
-            Ok(Ok(info)) => Ok(info),
-            Ok(Err(error)) => {
+    async fn connect(&mut self, config: &LinkConfig) -> Result<NetworkInfo, WifiError> {
+        match self.connect_inner(config).await {
+            Ok(info) => Ok(info),
+            Err(error) => {
                 self.ssid = None;
                 let _ = self.disconnect().await;
                 Err(error)
-            }
-            Err(_) => {
-                self.ssid = None;
-                let _ = self.disconnect().await;
-                Err(WifiError::Timeout)
             }
         }
     }

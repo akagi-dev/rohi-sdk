@@ -34,7 +34,7 @@ mod error;
 mod handle;
 mod udp;
 
-pub use backend::IpBackend;
+pub use backend::{IpBackend, IpUsage};
 pub use error::NetError;
 pub use handle::NetworkHandle;
 pub use udp::UdpSocket;

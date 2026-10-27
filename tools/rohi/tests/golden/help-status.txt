@@ -1,10 +1,24 @@
-Show device information, capabilities, and current status.
+Show the runtime status of the device and its services.
 
-Displays the connection, firmware and board information, supported capabilities, and available runtime status such as Wi-Fi connectivity, the wall-clock time and identity. Sections the device does not support are omitted.
+Without a service this is one compact request: the device health set by the firmware and the state, health and readiness of every service. With a service name it shows that service in detail: its service-specific values and the active issues, each with a stable code. Services are discovered from the device; `rohi status` lists them.
 
-Usage: rohi status [OPTIONS]
+Status is what is happening now. What the device is set up to do is `rohi config`.
+
+Usage: rohi status [OPTIONS] [SERVICE]
+
+Arguments:
+  [SERVICE]
+          The service to show in detail
 
 Options:
+  -w, --watch
+          Poll the device and print again whenever something changed, until interrupted. On a terminal the screen is refreshed in place instead
+
+      --interval <SECONDS>
+          Pause between polls of --watch
+          
+          [default: 2]
+
   -h, --help
           Print help (see a summary with '-h')
 
@@ -24,6 +38,16 @@ Output:
           
           [default: human]
 
+      --color <WHEN>
+          Color the text output
+
+          Possible values:
+          - auto:   Color when stdout is a terminal, unless `NO_COLOR` is set or `TERM` is `dumb`
+          - always: Always color
+          - never:  Never color
+          
+          [default: auto]
+
 Connection:
       --scan-timeout <SECONDS>
           How long to search for the target device
@@ -37,5 +61,7 @@ Connection:
 
 Examples:
   rohi status
-  rohi -d A12F status
-  rohi -d A12F -o json status
+  rohi status wifi
+  rohi status --watch
+  rohi status connectivity --watch --interval 5
+  rohi -o json status sensors

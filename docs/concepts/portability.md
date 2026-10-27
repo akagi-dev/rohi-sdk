@@ -13,7 +13,7 @@ reused on another MCU.
 ## How portability is achieved
 
 - **Traits at the seams.** `SensorDriver` + `embedded-hal(-async)` for sensors; `ConfigStorage` for flash; `WifiBackend`,
-  `IpBackend` and `BleTransport` for the radio and IP stack; `ControlServices` for the control plane. Portable code is
+  `IpBackend` and `BleTransport` for the radio and IP stack; `ControlBackend` and the `rohi-service` registries for the control plane. Portable code is
   generic over them and ships a fake or in-memory implementation for tests (`MemoryStorage`, `rohi_net::testing::FakeIp`,
   mocks in the test modules).
 - **ROHI types in public APIs.** Vendor types and errors are converted into ROHI types inside the platform crate; a

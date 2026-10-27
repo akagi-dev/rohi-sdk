@@ -327,6 +327,15 @@ impl<const SLOTS: usize, const BUF: usize> IpBackend for FakeIp<SLOTS, BUF> {
         self.state.borrow().ready
     }
 
+    fn usage(&self) -> crate::IpUsage {
+        crate::IpUsage {
+            tcp_in_use: self.open_connections(),
+            tcp_capacity: SLOTS,
+            udp_in_use: self.open_udp_sockets(),
+            udp_capacity: UDP_SOCKETS,
+        }
+    }
+
     async fn resolve(&self, host: &str, addr_type: AddrType) -> Result<IpAddr, NetError> {
         self.state.borrow_mut().dns_queries += 1;
         self.wait_released(|state| state.hold_dns).await;

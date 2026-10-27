@@ -31,9 +31,11 @@
 //! configuration is disabled or invalid. Frames still queued in the outbox of
 //! the replaced service are dropped.
 
+use core::cell::RefCell;
 use core::convert::Infallible;
 
 use embassy_futures::select::{Either, select};
+use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::Delay;
 use esp_hal::rng::Rng;
@@ -51,7 +53,7 @@ use crate::config::{ConfigHandle, ServiceError};
 use crate::identity::StaticSigner;
 use crate::resources::{CONNECTIVITY_OUTBOX_DEPTH, Ip};
 use crate::tasks::RawMutex;
-use crate::time;
+use crate::{location, time};
 
 static SHARED: ConnectivityShared<RawMutex> = ConnectivityShared::new();
 
@@ -65,6 +67,20 @@ static UPDATES: Signal<RawMutex, Option<ConnectivityConfig>> = Signal::new();
 pub fn publish(stored: Option<ConnectivityConfig>) {
     UPDATES.signal(stored);
 }
+
+/// Status published by the telemetry service.
+pub fn shared() -> &'static ConnectivityShared<RawMutex> {
+    &SHARED
+}
+
+/// The configuration the telemetry service currently runs; `None` while it is
+/// disabled or the configuration is invalid.
+pub fn effective_config() -> Option<ConnectivityConfig> {
+    EFFECTIVE.lock(|cell| cell.borrow().clone())
+}
+
+static EFFECTIVE: BlockingMutex<RawMutex, RefCell<Option<ConnectivityConfig>>> =
+    BlockingMutex::new(RefCell::new(None));
 
 /// Diagnostics of the telemetry service.
 pub fn status() -> ConnectivityStatus {
@@ -169,6 +185,7 @@ async fn serve(
         ServiceConfig::new(config.node_id, config.interval_ms()),
         &SHARED,
         measurements,
+        location::shared(),
         EmbassyClock,
         time::service(),
         &signer,
@@ -189,6 +206,7 @@ pub async fn connectivity_task(
 ) {
     let mut current = load_config(config).await;
     loop {
+        EFFECTIVE.lock(|cell| *cell.borrow_mut() = current.clone());
         let stored = match &current {
             Some(config) => {
                 match select(serve(network, measurements, config), UPDATES.wait()).await {

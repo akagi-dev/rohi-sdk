@@ -36,8 +36,8 @@ the final value is **not yet measured** ([Hardware testing](../validation/hardwa
 | `MAX_WIFI_SCAN_RESULTS` | 16 (strongest first; the backend converts at most 48 raw entries per scan) |
 | `WIFI_COMMAND_QUEUE_DEPTH` | 4 (scan, reconnect, disconnect only; `Busy` when full) |
 | `STATUS_RECEIVERS` | 3 tasks waiting for status changes |
-| Backoff (`ManagerConfig::DEFAULT`) | 1 s doubling to 60 s; reset after the link stayed up for 10 s (`info_refresh_ms`) |
-| ESP backend timeouts | connect 30 s, DHCP 20 s |
+| Backoff (`wifi` section: `backoff_initial`, `backoff_max`, `link_refresh`) | default 1 s doubling to 60 s; reset after the link stayed up for 10 s |
+| Timeouts (`wifi` section: scan, connect; `network` section: DHCP) | scan 20 s, connect 30 s, DHCP 20 s by default |
 
 The desired-configuration cell holds one value (latest wins); it is not a queue.
 
@@ -58,7 +58,7 @@ Queue depths, connections and attribute count are product constants (table above
 
 ## Control protocol
 
-Protocol limits (`MAX_REQUEST_LEN` 256 B, `MAX_RESPONSE_LEN` 2048 B, `MAX_SENSORS` 8, `MAX_MEASUREMENTS_PER_SENSOR` 4,
+Protocol limits (`MAX_REQUEST_LEN` 768 B, `MAX_RESPONSE_LEN` 2048 B, `MAX_SENSORS` 8, `MAX_MEASUREMENTS_PER_SENSOR` 4,
 text/SSID/password lengths, ATT payload) are defined once in `rohi-control-proto/build.rs` and tabulated in
 [Control plane › Limits](../sdk/control.md#limits).
 

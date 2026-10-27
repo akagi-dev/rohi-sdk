@@ -49,7 +49,7 @@ transient requested action ──►  bounded command
 
 | Interaction | Kind | Mechanism |
 |-------------|------|-----------|
-| Desired `WifiConfig` | state | `WifiHandle::set_desired_config` (latest value wins, synchronous) |
+| Desired `WifiConfig` and `NetworkConfig` | state | `WifiHandle::set_wifi_config` / `set_network_config` (latest value wins, synchronous) |
 | Latest system / Wi-Fi status | state | published `WifiStatus` (`Watch`) |
 | Scan, reconnect, disconnect | command | bounded queue, `Busy` when full |
 | One-shot request (snapshot, config read) | command | bounded request/response |

@@ -1,0 +1,1170 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Copyright 2025-2026 Akagi Engineering <admin@akagi.dev>
+//
+//  Licensed under the Apache License, Version 2.0 (the "License");
+//  you may not use this file except in compliance with the License.
+//  You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+//  Unless required by applicable law or agreed to in writing, software
+//  distributed under the License is distributed on an "AS IS" BASIS,
+//  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+//  See the License for the specific language governing permissions and
+//  limitations under the License.
+//
+use core::cell::RefCell;
+
+use embassy_futures::block_on;
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+
+use crate::*;
+
+#[derive(Clone, Debug, PartialEq)]
+struct Demo {
+    enabled: bool,
+    interval_s: u64,
+    host: heapless::String<16>,
+    token: Option<heapless::String<16>>,
+}
+
+const DEMO_FIELDS: &[ConfigField] = &[
+    ConfigField::new(1, "enabled", ValueKind::Bool),
+    ConfigField::new(2, "interval_s", ValueKind::U64)
+        .bounds(Bounds::U64(10, 100))
+        .unit(Unit::S),
+    ConfigField::new(3, "host", ValueKind::String),
+    ConfigField::new(4, "token", ValueKind::String)
+        .secret()
+        .optional(),
+    ConfigField::new(5, "mode", ValueKind::Enum)
+        .with_enum(1)
+        .read_only(),
+];
+
+const MODES: &[EnumDescriptor] = &[EnumDescriptor::new(
+    1,
+    &[EnumVariant::new(0, "fast"), EnumVariant::new(1, "slow")],
+)];
+
+impl ManagedConfig for Demo {
+    const SECTION_ID: u64 = 1;
+    const NAME: &'static str = "demo";
+    const VERSION: u16 = 3;
+    const FIELDS: &'static [ConfigField] = DEMO_FIELDS;
+    const ENUMS: &'static [EnumDescriptor] = MODES;
+
+    fn defaults() -> Self {
+        Self {
+            enabled: false,
+            interval_s: 60,
+            host: heapless::String::new(),
+            token: None,
+        }
+    }
+
+    fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
+        Ok(match id {
+            1 => Some(Value::Bool(self.enabled)),
+            2 => Some(Value::U64(self.interval_s)),
+            3 => Some(Value::text(&self.host).unwrap()),
+            4 => self.token.as_deref().and_then(Value::text),
+            5 => Some(Value::Enum(0)),
+            _ => return Err(FieldError::UnknownField),
+        })
+    }
+
+    fn set_field(&mut self, id: u32, value: Value) -> Result<(), FieldError> {
+        match (id, value) {
+            (1, Value::Bool(v)) => self.enabled = v,
+            (2, Value::U64(v)) => self.interval_s = v,
+            (3, Value::String(v)) => {
+                self.host =
+                    heapless::String::try_from(v.as_str()).map_err(|_| FieldError::Invalid)?
+            }
+            (4, Value::String(v)) => {
+                self.token =
+                    Some(heapless::String::try_from(v.as_str()).map_err(|_| FieldError::Invalid)?)
+            }
+            _ => return Err(FieldError::UnknownField),
+        }
+        Ok(())
+    }
+
+    fn field_is_set(&self, id: u32) -> Result<bool, FieldError> {
+        match id {
+            4 => Ok(self.token.is_some()),
+            _ => Ok(self.read_field(id)?.is_some()),
+        }
+    }
+
+    fn unset_field(&mut self, id: u32) -> Result<(), FieldError> {
+        match id {
+            4 => {
+                self.token = None;
+                Ok(())
+            }
+            _ => Err(FieldError::NotOptional),
+        }
+    }
+
+    fn validate(&self) -> Result<(), FieldError> {
+        if self.enabled && self.host.is_empty() {
+            return Err(FieldError::Invalid);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct MemoryStore {
+    value: RefCell<Option<Demo>>,
+    writes: RefCell<u32>,
+    unavailable: RefCell<bool>,
+}
+
+impl SectionStore<Demo> for &MemoryStore {
+    async fn load(&self) -> Result<Option<Demo>, StoreError> {
+        // Lets another task run between a load and the following store.
+        embassy_futures::yield_now().await;
+        if *self.unavailable.borrow() {
+            return Err(StoreError::Unavailable);
+        }
+        Ok(self.value.borrow().clone())
+    }
+
+    async fn store(&self, config: &Demo) -> Result<(), StoreError> {
+        *self.value.borrow_mut() = Some(config.clone());
+        *self.writes.borrow_mut() += 1;
+        Ok(())
+    }
+
+    async fn remove(&self) -> Result<(), StoreError> {
+        *self.value.borrow_mut() = None;
+        *self.writes.borrow_mut() += 1;
+        Ok(())
+    }
+}
+
+fn set(id: u32, value: Value) -> Mutation {
+    Mutation {
+        field_id: id,
+        op: MutationOp::Set(value),
+    }
+}
+
+fn unset(id: u32) -> Mutation {
+    Mutation {
+        field_id: id,
+        op: MutationOp::Unset,
+    }
+}
+
+fn section(store: &MemoryStore) -> ManagedSection<Demo, &MemoryStore, NoopRawMutex> {
+    ManagedSection::new(store)
+}
+
+fn text(value: &str) -> Value {
+    Value::text(value).unwrap()
+}
+
+#[test]
+fn patch_applies_all_mutations_and_bumps_the_revision() {
+    let store = MemoryStore::default();
+    let section = section(&store);
+    let patched = block_on(section.patch(
+        &[
+            set(1, Value::Bool(true)),
+            set(3, text("a.io")),
+            set(2, Value::U64(30)),
+        ],
+        Some(0),
+        false,
+    ))
+    .unwrap();
+    assert_eq!(patched.revision, 1);
+    assert!(!patched.restart_required);
+    let stored = store.value.borrow().clone().unwrap();
+    assert!(stored.enabled);
+    assert_eq!(stored.host.as_str(), "a.io");
+    assert_eq!(stored.interval_s, 30);
+}
+
+#[test]
+fn a_patch_keeps_untouched_fields() {
+    let store = MemoryStore::default();
+    let section = section(&store);
+    block_on(section.patch(&[set(3, text("a.io")), set(2, Value::U64(20))], None, false)).unwrap();
+    block_on(section.patch(&[set(3, text("b.io"))], None, false)).unwrap();
+    let stored = store.value.borrow().clone().unwrap();
+    assert_eq!(stored.host.as_str(), "b.io");
+    assert_eq!(stored.interval_s, 20);
+}
+
+#[test]
+fn an_invalid_mutation_changes_nothing() {
+    let store = MemoryStore::default();
+    let section = section(&store);
+    block_on(section.patch(&[set(3, text("a.io"))], None, false)).unwrap();
+    let before = store.value.borrow().clone();
+    let result = block_on(section.patch(
+        &[set(3, text("b.io")), set(2, Value::U64(1_000))],
+        None,
+        false,
+    ));
+    assert_eq!(result, Err(ConfigError::Field(FieldError::OutOfRange)));
+    assert_eq!(*store.value.borrow(), before);
+    assert_eq!(*store.writes.borrow(), 1);
+    assert_eq!(section.info().revision, 1);
+}
+
+#[test]
+fn the_complete_result_is_validated() {
+    let store = MemoryStore::default();
+    let section = section(&store);
+    // `enabled` needs a host: a cross-field rule of the typed section.
+    assert_eq!(
+        block_on(section.patch(&[set(1, Value::Bool(true))], None, false)),
+        Err(ConfigError::Field(FieldError::Invalid))
+    );
+    assert!(store.value.borrow().is_none());
+}
+
+#[test]
+fn field_errors_are_distinguished() {
+    let store = MemoryStore::default();
+    let section = section(&store);
+    let patch = |mutation| block_on(section.patch(&[mutation], None, false));
+    assert_eq!(
+        patch(set(99, Value::Bool(true))),
+        Err(FieldError::UnknownField.into())
+    );
+    assert_eq!(
+        patch(set(1, text("yes"))),
+        Err(FieldError::WrongKind.into())
+    );
+    assert_eq!(
+        patch(set(5, Value::Enum(0))),
+        Err(FieldError::ReadOnly.into())
+    );
+    assert_eq!(patch(unset(3)), Err(FieldError::NotOptional.into()));
+    assert_eq!(patch(unset(99)), Err(FieldError::UnknownField.into()));
+    assert!(store.value.borrow().is_none());
+}
+
+#[test]
+fn unset_is_distinct_from_an_empty_value() {
+    let store = MemoryStore::default();
+    let section = section(&store);
+    block_on(section.patch(&[set(3, text("a.io")), set(4, text(""))], None, false)).unwrap();
+    assert_eq!(
+        store.value.borrow().clone().unwrap().token.as_deref(),
+        Some("")
+    );
+    block_on(section.patch(&[unset(4)], None, false)).unwrap();
+    assert_eq!(store.value.borrow().clone().unwrap().token, None);
+}
+
+#[test]
+fn dry_run_validates_without_persisting() {
+    let store = MemoryStore::default();
+    let section = section(&store);
+    let patched = block_on(section.patch(&[set(3, text("a.io"))], None, true)).unwrap();
+    assert_eq!(patched.revision, 0);
+    assert!(store.value.borrow().is_none());
+    assert_eq!(*store.writes.borrow(), 0);
+    assert_eq!(
+        block_on(section.patch(&[set(1, Value::Bool(true))], None, true)),
+        Err(FieldError::Invalid.into())
+    );
+    block_on(section.reset(None, true)).unwrap();
+    assert_eq!(*store.writes.borrow(), 0);
+}
+
+#[test]
+fn a_stale_revision_is_a_conflict() {
+    let store = MemoryStore::default();
+    let section = section(&store);
+    block_on(section.patch(&[set(3, text("a.io"))], Some(0), false)).unwrap();
+    assert_eq!(
+        block_on(section.patch(&[set(3, text("b.io"))], Some(0), false)),
+        Err(ConfigError::Conflict)
+    );
+    assert_eq!(store.value.borrow().clone().unwrap().host.as_str(), "a.io");
+    block_on(section.patch(&[set(3, text("b.io"))], Some(1), false)).unwrap();
+}
+
+#[test]
+fn concurrent_patches_are_serialized() {
+    let store = MemoryStore::default();
+    let section = section(&store);
+    let (a, b) = block_on(embassy_futures::join::join(
+        section.patch(&[set(3, text("a.io"))], Some(0), false),
+        section.patch(&[set(4, text("s3cret"))], Some(0), false),
+    ));
+    assert_eq!(a.map(|patched| patched.revision), Ok(1));
+    assert_eq!(b, Err(ConfigError::Conflict));
+
+    let (a, b) = block_on(embassy_futures::join::join(
+        section.patch(&[set(3, text("b.io"))], None, false),
+        section.patch(&[set(4, text("t0ken"))], None, false),
+    ));
+    assert!(a.is_ok() && b.is_ok());
+    let stored = store.value.borrow().clone().unwrap();
+    assert_eq!(stored.host.as_str(), "b.io");
+    assert_eq!(stored.token.as_deref(), Some("t0ken"));
+}
+
+#[test]
+fn get_redacts_secrets_and_omits_unset_fields() {
+    let store = MemoryStore::default();
+    let section = section(&store);
+    let empty = block_on(section.get()).unwrap();
+    assert!(!empty.configured);
+    assert!(empty.entries.is_empty());
+
+    block_on(section.patch(&[set(3, text("a.io")), set(4, text("s3cret"))], None, false)).unwrap();
+    let values = block_on(section.get()).unwrap();
+    assert!(values.configured);
+    let state = |id| {
+        values
+            .entries
+            .iter()
+            .find(|entry| entry.field_id == id)
+            .map(|entry| entry.state.clone())
+    };
+    assert_eq!(state(3), Some(EntryState::Value(text("a.io"))));
+    assert_eq!(state(4), Some(EntryState::Redacted));
+    assert!(!std::format!("{values:?}").contains("s3cret"));
+
+    block_on(section.patch(&[unset(4)], None, false)).unwrap();
+    assert_eq!(
+        block_on(section.get())
+            .unwrap()
+            .entries
+            .iter()
+            .find(|e| e.field_id == 4),
+        None
+    );
+}
+
+#[test]
+fn reset_removes_the_persisted_section() {
+    let store = MemoryStore::default();
+    let section = section(&store);
+    block_on(section.patch(&[set(3, text("a.io"))], None, false)).unwrap();
+    let patched = block_on(section.reset(None, false)).unwrap();
+    assert_eq!(patched.revision, 2);
+    assert!(store.value.borrow().is_none());
+    assert!(!block_on(section.get()).unwrap().configured);
+}
+
+#[test]
+fn an_unavailable_store_is_reported() {
+    let store = MemoryStore::default();
+    *store.unavailable.borrow_mut() = true;
+    let section = section(&store);
+    assert_eq!(block_on(section.get()), Err(ConfigError::Unavailable));
+    assert_eq!(
+        block_on(section.patch(&[], None, false)),
+        Err(ConfigError::Unavailable)
+    );
+}
+
+#[test]
+fn the_schema_describes_the_fields() {
+    let store = MemoryStore::default();
+    let section = section(&store);
+    let schema = section.schema();
+    assert_eq!(schema.section.name, "demo");
+    assert_eq!(schema.section.version, 3);
+    assert_eq!(schema.fields.len(), 5);
+    assert!(schema.fields[3].secret && schema.fields[3].optional);
+}
+
+#[test]
+fn a_tuple_of_sections_is_a_registry() {
+    let a = MemoryStore::default();
+    let b = MemoryStore::default();
+
+    #[derive(Clone)]
+    struct Other(Demo);
+    // A second section type with another name.
+    impl ManagedConfig for Other {
+        const SECTION_ID: u64 = 2;
+        const NAME: &'static str = "other";
+        const VERSION: u16 = 1;
+        const FIELDS: &'static [ConfigField] = DEMO_FIELDS;
+        const ENUMS: &'static [EnumDescriptor] = MODES;
+        fn defaults() -> Self {
+            Self(Demo::defaults())
+        }
+        fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
+            self.0.read_field(id)
+        }
+        fn field_is_set(&self, id: u32) -> Result<bool, FieldError> {
+            self.0.field_is_set(id)
+        }
+        fn set_field(&mut self, id: u32, value: Value) -> Result<(), FieldError> {
+            self.0.set_field(id, value)
+        }
+        fn unset_field(&mut self, id: u32) -> Result<(), FieldError> {
+            self.0.unset_field(id)
+        }
+        fn validate(&self) -> Result<(), FieldError> {
+            self.0.validate()
+        }
+    }
+    #[derive(Default)]
+    struct OtherStore(RefCell<Option<Demo>>);
+    impl SectionStore<Other> for &OtherStore {
+        async fn load(&self) -> Result<Option<Other>, StoreError> {
+            Ok(self.0.borrow().clone().map(Other))
+        }
+        async fn store(&self, config: &Other) -> Result<(), StoreError> {
+            *self.0.borrow_mut() = Some(config.0.clone());
+            Ok(())
+        }
+        async fn remove(&self) -> Result<(), StoreError> {
+            *self.0.borrow_mut() = None;
+            Ok(())
+        }
+        fn restart_required(&self) -> bool {
+            true
+        }
+    }
+    let other_store = OtherStore::default();
+
+    let registry = (
+        section(&a),
+        ManagedSection::<Other, _, NoopRawMutex>::new(&other_store),
+    );
+    let _ = &b;
+    assert_eq!(registry.section_count(), 2);
+    assert_eq!(registry.section_info(0).unwrap().name, "demo");
+    assert_eq!(registry.section_info(1).unwrap().name, "other");
+    assert_eq!(registry.section_info(2), None);
+    assert!(registry.schema(2).is_some());
+    assert!(registry.schema(99).is_none());
+
+    let patched = block_on(registry.patch(2, &[set(3, text("x.io"))], None, false)).unwrap();
+    assert!(patched.restart_required);
+    assert!(other_store.0.borrow().is_some());
+    assert!(a.value.borrow().is_none());
+    assert_eq!(block_on(registry.get(99)), Err(ConfigError::UnknownSection));
+    assert_eq!(block_on(().get(1)), Err(ConfigError::UnknownSection));
+    block_on(registry.reset(2, None, false)).unwrap();
+    assert!(other_store.0.borrow().is_none());
+}
+
+#[test]
+fn check_enforces_kind_variants_and_range() {
+    let field = ConfigField::new(1, "n", ValueKind::U64).bounds(Bounds::U64(1, 10));
+    assert_eq!(field.check(&Value::U64(5), &[]), Ok(()));
+    assert_eq!(
+        field.check(&Value::U64(0), &[]),
+        Err(FieldError::OutOfRange)
+    );
+    assert_eq!(
+        field.check(&Value::U64(11), &[]),
+        Err(FieldError::OutOfRange)
+    );
+    assert_eq!(field.check(&Value::I64(5), &[]), Err(FieldError::WrongKind));
+    let float = ConfigField::new(1, "f", ValueKind::F32).bounds(Bounds::F32(0.0, 1.0));
+    assert_eq!(float.check(&Value::F32(0.5), &[]), Ok(()));
+    assert_eq!(
+        float.check(&Value::F32(f32::NAN), &[]),
+        Err(FieldError::OutOfRange)
+    );
+    assert_eq!(
+        float.check(&Value::F32(1.5), &[]),
+        Err(FieldError::OutOfRange)
+    );
+    let variant = ConfigField::new(1, "e", ValueKind::Enum).with_enum(1);
+    assert_eq!(variant.check(&Value::Enum(0), MODES), Ok(()));
+    assert_eq!(
+        variant.check(&Value::Enum(7), MODES),
+        Err(FieldError::OutOfRange)
+    );
+}
+
+#[test]
+fn value_debug_never_shows_the_content() {
+    assert_eq!(std::format!("{:?}", text("hunter2")), "Value(String)");
+}
+
+// --- status -----------------------------------------------------------------
+
+struct Probe {
+    state: RefCell<ServiceState>,
+    health: RefCell<ServiceHealth>,
+    issue: RefCell<Option<u32>>,
+    queue: RefCell<u64>,
+}
+
+impl Probe {
+    fn new() -> Self {
+        Self {
+            state: RefCell::new(ServiceState::Running),
+            health: RefCell::new(ServiceHealth::Ok),
+            issue: RefCell::new(None),
+            queue: RefCell::new(0),
+        }
+    }
+}
+
+impl ManagedService for &Probe {
+    const ID: u32 = 7;
+    const NAME: &'static str = "probe";
+    const VERSION: u16 = 2;
+    const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
+        FieldDescriptor::new(1, "endpoint", ValueKind::String),
+        FieldDescriptor::new(2, "queue_depth", ValueKind::U64),
+        FieldDescriptor::new(3, "mode", ValueKind::Enum).with_enum(1),
+    ];
+    const ENUMS: &'static [EnumDescriptor] = &[EnumDescriptor::new(
+        1,
+        &[EnumVariant::new(0, "a"), EnumVariant::new(1, "b")],
+    )];
+    const ISSUES: &'static [IssueDescriptor] = &[IssueDescriptor::new(
+        FIRST_SERVICE_ISSUE,
+        "connection_timeout",
+    )];
+
+    async fn summary(&self) -> ServiceSummary {
+        let health = *self.health.borrow();
+        ServiceSummary::new(*self.state.borrow(), health, health == ServiceHealth::Ok)
+    }
+
+    async fn issues(&self, out: &mut heapless::Vec<Issue, MAX_ISSUES>) {
+        if let Some(code) = *self.issue.borrow() {
+            let _ = out.push(Issue {
+                severity: IssueSeverity::Warning,
+                code,
+                age_ms: None,
+            });
+        }
+    }
+
+    async fn status(&self, out: &mut impl StatusWriter) -> Result<(), WriteError> {
+        out.text(1, "ingress.example.org:443")?;
+        out.u64(2, *self.queue.borrow())?;
+        out.variant(3, 1)
+    }
+}
+
+#[test]
+fn the_status_revision_follows_observable_changes_only() {
+    let probe = Probe::new();
+    let service = Tracked::<_, NoopRawMutex>::new(&probe);
+
+    let first = block_on(service.summary(1_000));
+    assert_eq!(first.revision, 1);
+    assert_eq!(first.name, "probe");
+    assert!(first.essential);
+
+    // A service-specific value is not observable state.
+    *probe.queue.borrow_mut() = 17;
+    assert_eq!(block_on(service.summary(2_000)).revision, 1);
+
+    *probe.health.borrow_mut() = ServiceHealth::Degraded;
+    *probe.issue.borrow_mut() = Some(FIRST_SERVICE_ISSUE);
+    let degraded = block_on(service.summary(3_000));
+    assert_eq!(degraded.revision, 2);
+
+    assert_eq!(block_on(service.summary(4_000)).revision, 2);
+    *probe.issue.borrow_mut() = None;
+    *probe.health.borrow_mut() = ServiceHealth::Ok;
+    assert_eq!(block_on(service.summary(5_000)).revision, 3);
+}
+
+#[test]
+fn state_age_counts_from_the_last_state_change() {
+    let probe = Probe::new();
+    let service = Tracked::<_, NoopRawMutex>::new(&probe);
+    assert_eq!(block_on(service.summary(1_000)).state_age_ms, 0);
+    assert_eq!(block_on(service.summary(4_000)).state_age_ms, 3_000);
+    *probe.state.borrow_mut() = ServiceState::Failed;
+    assert_eq!(block_on(service.summary(5_000)).state_age_ms, 0);
+    assert_eq!(block_on(service.summary(6_500)).state_age_ms, 1_500);
+}
+
+#[test]
+fn detailed_status_has_fields_and_active_issues_with_age() {
+    let probe = Probe::new();
+    *probe.queue.borrow_mut() = 17;
+    let registry = (Tracked::<_, NoopRawMutex>::new(&probe),);
+    *probe.issue.borrow_mut() = Some(FIRST_SERVICE_ISSUE);
+    let _ = block_on(registry.summary(0, 1_000));
+    let status = block_on(registry.status(7, 35_000)).unwrap();
+    assert_eq!(status.issues.len(), 1);
+    assert_eq!(status.issues[0].code, FIRST_SERVICE_ISSUE);
+    assert_eq!(status.issues[0].age_ms, Some(34_000));
+    assert_eq!(status.fields.len(), 3);
+    assert_eq!(status.fields[0], (1, text("ingress.example.org:443")));
+    assert_eq!(status.fields[1], (2, Value::U64(17)));
+    assert_eq!(status.fields[2], (3, Value::Enum(1)));
+    assert_eq!(
+        block_on(registry.status(99, 0)),
+        Err(StatusError::UnknownService)
+    );
+    let schema = registry.schema(7).unwrap();
+    assert_eq!(
+        (schema.info.id, schema.info.name, schema.info.version),
+        (7, "probe", 2)
+    );
+    assert_eq!(schema.fields.len(), 3);
+    assert_eq!(schema.enums.len(), 1);
+    assert_eq!(schema.issues[0].name, "connection_timeout");
+}
+
+#[test]
+fn the_writer_checks_the_schema() {
+    let mut writer = status::Collector {
+        schema: <&Probe as ManagedService>::STATUS_SCHEMA,
+        enums: <&Probe as ManagedService>::ENUMS,
+        fields: heapless::Vec::new(),
+    };
+    assert_eq!(writer.u64(99, 1), Err(WriteError::UnknownField));
+    assert_eq!(writer.u64(1, 1), Err(WriteError::WrongKind));
+    assert_eq!(writer.variant(3, 9), Err(WriteError::WrongKind));
+    assert_eq!(writer.bytes(1, &[0; 33]), Err(WriteError::TooLong));
+    // Text is bounded like bytes: it is never cut.
+    assert_eq!(writer.text(1, &"é".repeat(17)), Err(WriteError::TooLong));
+    assert!(writer.fields.is_empty());
+    writer.text(1, &"é".repeat(16)).unwrap();
+    assert_eq!(writer.fields[0].1.as_str().unwrap().len(), 32);
+}
+
+fn summary(
+    state: ServiceState,
+    health: ServiceHealth,
+    ready: bool,
+    essential: bool,
+) -> ServiceStatusSummary {
+    ServiceStatusSummary {
+        id: 1,
+        name: "s",
+        version: 1,
+        state,
+        health,
+        ready,
+        revision: 1,
+        state_age_ms: 0,
+        essential,
+    }
+}
+
+#[test]
+fn the_default_device_health_policy() {
+    use DeviceHealth::*;
+    use ServiceHealth as H;
+    use ServiceState as S;
+    assert_eq!(default_device_health(&[]), Ok);
+    assert_eq!(
+        default_device_health(&[summary(S::Disabled, H::Unknown, false, true)]),
+        Ok
+    );
+    assert_eq!(
+        default_device_health(&[summary(S::Running, H::Ok, true, true)]),
+        Ok
+    );
+    assert_eq!(
+        default_device_health(&[summary(S::Running, H::Degraded, false, true)]),
+        Degraded
+    );
+    assert_eq!(
+        default_device_health(&[summary(S::Running, H::Ok, false, true)]),
+        Degraded
+    );
+    assert_eq!(
+        default_device_health(&[summary(S::Failed, H::Error, false, true)]),
+        Error
+    );
+    assert_eq!(
+        default_device_health(&[
+            summary(S::Failed, H::Error, false, false),
+            summary(S::Running, H::Ok, true, true),
+        ]),
+        Degraded
+    );
+}
+
+// --- actions ----------------------------------------------------------------
+
+struct Scanner;
+
+impl ManagedService for Scanner {
+    const ID: u32 = 3;
+    const NAME: &'static str = "scanner";
+    const VERSION: u16 = 1;
+    const STATUS_SCHEMA: &'static [FieldDescriptor] = &[];
+    const ACTIONS: &'static [ActionDescriptor] = &[
+        ActionDescriptor::new(1, "scan")
+            .args(&[FieldDescriptor::new(1, "limit", ValueKind::U64)])
+            .results(&[
+                FieldDescriptor::new(1, "name", ValueKind::String),
+                FieldDescriptor::new(2, "rssi", ValueKind::I64).unit(Unit::Dbm),
+            ]),
+        ActionDescriptor::new(2, "reset"),
+        ActionDescriptor::new(3, "provision")
+            .args(&[FieldDescriptor::new(1, "secret", ValueKind::Bytes)])
+            .secret(),
+    ];
+
+    async fn summary(&self) -> ServiceSummary {
+        ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true)
+    }
+
+    async fn status(&self, _: &mut impl StatusWriter) -> Result<(), WriteError> {
+        Ok(())
+    }
+
+    async fn invoke(
+        &self,
+        action: u32,
+        args: &[(u32, Value)],
+        out: &mut impl ActionOutput,
+    ) -> Result<(), ActionError> {
+        match action {
+            1 => {
+                let limit = args[0].1.as_u64().ok_or(ActionError::InvalidArgument)?;
+                for index in 0..limit {
+                    out.next_record().map_err(|_| ActionError::Internal)?;
+                    out.text(1, "net").map_err(|_| ActionError::Internal)?;
+                    out.i64(2, -(index as i64))
+                        .map_err(|_| ActionError::Internal)?;
+                }
+                Ok(())
+            }
+            2 => Err(ActionError::Rejected("busy_resetting")),
+            _ => Err(ActionError::UnknownAction),
+        }
+    }
+}
+
+fn scanner() -> (Tracked<Scanner, NoopRawMutex>,) {
+    (Tracked::new(Scanner),)
+}
+
+#[test]
+fn an_action_returns_records() {
+    let registry = scanner();
+    let records = block_on(registry.invoke(3, 1, &[(1, Value::U64(3))])).unwrap();
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[1][0], (1, text("net")));
+    assert_eq!(records[2][1], (2, Value::I64(-2)));
+
+    let none = block_on(registry.invoke(3, 1, &[(1, Value::U64(0))])).unwrap();
+    assert!(none.is_empty());
+}
+
+#[test]
+fn too_many_records_fail_instead_of_truncating() {
+    let registry = scanner();
+    let result = block_on(registry.invoke(3, 1, &[(1, Value::U64(7))]));
+    assert_eq!(result, Err(ActionError::Internal));
+}
+
+#[test]
+fn arguments_are_checked_against_the_descriptor() {
+    let registry = scanner();
+    let call = |args: &[(u32, Value)]| block_on(registry.invoke(3, 1, args));
+    assert_eq!(call(&[]), Err(ActionError::InvalidArgument));
+    assert_eq!(call(&[(1, text("3"))]), Err(ActionError::InvalidArgument));
+    assert_eq!(
+        call(&[(2, Value::U64(3))]),
+        Err(ActionError::InvalidArgument)
+    );
+    assert_eq!(
+        call(&[(1, Value::U64(1)), (1, Value::U64(1))]),
+        Err(ActionError::InvalidArgument)
+    );
+}
+
+#[test]
+fn unknown_targets_and_rejections_are_distinguished() {
+    let registry = scanner();
+    assert_eq!(
+        block_on(registry.invoke(99, 1, &[])),
+        Err(ActionError::UnknownService)
+    );
+    assert_eq!(
+        block_on(registry.invoke(3, 99, &[])),
+        Err(ActionError::UnknownAction)
+    );
+    assert_eq!(
+        block_on(registry.invoke(3, 2, &[])),
+        Err(ActionError::Rejected("busy_resetting"))
+    );
+}
+
+#[test]
+fn action_metadata_is_exposed() {
+    let registry = scanner();
+    let actions = registry.service_actions(0);
+    assert_eq!(actions.len(), 3);
+    assert!(!actions[0].privileged);
+    assert!(actions[2].privileged && actions[2].secret_args);
+    assert!(registry.service_actions(1).is_empty());
+}
+
+#[test]
+fn wipe_clears_secret_values() {
+    let mut value = Value::bytes(&[7; 8]).unwrap();
+    value.wipe();
+    assert_eq!(value.as_bytes(), Some(&[][..]));
+    let mut value = text("hunter2");
+    value.wipe();
+    assert_eq!(value.as_str(), Some(""));
+}
+
+#[test]
+fn integer_bounds_hold_over_the_whole_64_bit_range() {
+    let upper = ConfigField::new(1, "n", ValueKind::U64).bounds(Bounds::U64(0, u64::MAX - 1));
+    assert_eq!(upper.check(&Value::U64(u64::MAX - 1), &[]), Ok(()));
+    assert_eq!(
+        upper.check(&Value::U64(u64::MAX), &[]),
+        Err(FieldError::OutOfRange)
+    );
+    let lower = ConfigField::new(1, "n", ValueKind::I64).bounds(Bounds::I64(i64::MIN + 1, 0));
+    assert_eq!(lower.check(&Value::I64(i64::MIN + 1), &[]), Ok(()));
+    assert_eq!(
+        lower.check(&Value::I64(i64::MIN), &[]),
+        Err(FieldError::OutOfRange)
+    );
+    // A bound of another kind never matches: integers are not compared as
+    // floats.
+    let mismatched = ConfigField::new(1, "n", ValueKind::U64).bounds(Bounds::I64(0, 10));
+    assert_eq!(
+        mismatched.check(&Value::U64(5), &[]),
+        Err(FieldError::OutOfRange)
+    );
+}
+
+#[test]
+fn a_failed_startup_is_a_failed_service() {
+    let probe = Probe::new();
+    let service = Tracked::<_, NoopRawMutex>::new(Startup::new(&probe, true));
+    let summary = block_on(service.summary(0));
+    assert_eq!(summary.state, ServiceState::Failed);
+    assert!(
+        block_on(service.status(0))
+            .issues
+            .iter()
+            .any(|issue| issue.code == ISSUE_STARTUP_FAILED)
+    );
+    assert!(block_on(service.status(0)).fields.is_empty());
+
+    let service = Tracked::<_, NoopRawMutex>::new(Startup::new(&probe, false));
+    assert_eq!(block_on(service.summary(0)).state, ServiceState::Running);
+    assert_eq!(block_on(service.status(0)).fields.len(), 3);
+}
+
+#[test]
+fn registries_detect_clashing_ids() {
+    let probe = Probe::new();
+    let mixed = (
+        Tracked::<_, NoopRawMutex>::new(&probe),
+        Tracked::<_, NoopRawMutex>::new(Scanner),
+    );
+    assert!(mixed.ids_are_unique());
+    let twice = (
+        Tracked::<_, NoopRawMutex>::new(&probe),
+        Tracked::<_, NoopRawMutex>::new(&probe),
+    );
+    assert!(!twice.ids_are_unique());
+
+    let store = MemoryStore::default();
+    assert!((section(&store),).ids_are_unique());
+    let (a, b) = (MemoryStore::default(), MemoryStore::default());
+    assert!(!(section(&a), section(&b)).ids_are_unique());
+}
+
+#[test]
+fn enum_values_are_checked_against_the_enum_of_the_field() {
+    let descriptor = Scanner::ACTIONS[0];
+    assert_eq!(descriptor.enums.len(), 0);
+    const VARIANTS: &[EnumVariant] = &[EnumVariant::new(4, "wpa2")];
+    let table = EnumDescriptor::new(1, VARIANTS);
+    assert!(table.contains(4) && !table.contains(5));
+    assert_eq!(table.name_of(4), Some("wpa2"));
+    assert_eq!(table.value_of("wpa2"), Some(4));
+    assert_eq!(table.value_of("open"), None);
+}
+
+#[test]
+fn a_restart_only_store_reports_it_for_every_change_and_factory_reset() {
+    let store = MemoryStore::default();
+    let registry = (ManagedSection::<Demo, _, NoopRawMutex>::new(
+        RestartRequired(&store),
+    ),);
+
+    let patched = block_on(registry.patch(1, &[set(3, text("a.io"))], None, false)).unwrap();
+    assert!(patched.restart_required);
+    assert!(store.value.borrow().is_some());
+    let dry = block_on(registry.patch(1, &[set(3, text("b.io"))], None, true)).unwrap();
+    assert!(dry.restart_required);
+    assert!(
+        block_on(registry.reset(1, None, false))
+            .unwrap()
+            .restart_required
+    );
+    assert!(store.value.borrow().is_none());
+    assert!(block_on(registry.factory_reset()).unwrap().restart_required);
+}
+
+mod schema_invariants {
+    use super::*;
+    use crate::schema::{
+        actions_valid, config_fields_valid, enums_valid, fields_valid, issues_valid, name_ok,
+    };
+
+    const MODE: &[EnumVariant] = &[EnumVariant::new(0, "fast"), EnumVariant::new(1, "slow")];
+
+    fn field(id: u32, name: &'static str) -> FieldDescriptor {
+        FieldDescriptor::new(id, name, ValueKind::U64)
+    }
+
+    #[test]
+    fn names_are_never_empty_or_longer_than_the_wire() {
+        assert!(name_ok("scan"));
+        assert!(name_ok("abcdefghijklmnopqrstuvwx"));
+        assert!(!name_ok(""));
+        assert!(!name_ok("abcdefghijklmnopqrstuvwxy"));
+    }
+
+    #[test]
+    fn field_ids_and_names_are_unique() {
+        assert!(fields_valid(&[field(1, "a"), field(2, "b")], &[]));
+        assert!(!fields_valid(&[field(1, "a"), field(1, "b")], &[]));
+        assert!(!fields_valid(&[field(1, "a"), field(2, "a")], &[]));
+        assert!(!fields_valid(&[field(1, "")], &[]));
+        assert!(!fields_valid(&[field(1, "abcdefghijklmnopqrstuvwxy")], &[]));
+        assert!(config_fields_valid(
+            &[ConfigField::new(1, "a", ValueKind::U64)],
+            &[]
+        ));
+        assert!(!config_fields_valid(
+            &[
+                ConfigField::new(1, "a", ValueKind::U64),
+                ConfigField::new(1, "b", ValueKind::U64),
+            ],
+            &[]
+        ));
+        assert!(!config_fields_valid(
+            &[
+                ConfigField::new(1, "a", ValueKind::U64),
+                ConfigField::new(2, "a", ValueKind::U64),
+            ],
+            &[]
+        ));
+    }
+
+    #[test]
+    fn an_enum_field_refers_to_a_known_enum_and_nothing_else_does() {
+        let enums = [EnumDescriptor::new(1, MODE)];
+        let mode = FieldDescriptor::new(1, "mode", ValueKind::Enum).with_enum(1);
+        assert!(fields_valid(&[mode], &enums));
+        assert!(!fields_valid(&[mode], &[]));
+        let unknown = FieldDescriptor::new(1, "mode", ValueKind::Enum).with_enum(2);
+        assert!(!fields_valid(&[unknown], &enums));
+        let stray = FieldDescriptor::new(1, "n", ValueKind::U64).with_enum(1);
+        assert!(!fields_valid(&[stray], &enums));
+    }
+
+    #[test]
+    fn enums_have_unique_ids_values_and_names_that_fit() {
+        assert!(enums_valid(&[EnumDescriptor::new(1, MODE)]));
+        assert!(!enums_valid(&[EnumDescriptor::new(0, MODE)]));
+        assert!(!enums_valid(&[
+            EnumDescriptor::new(1, MODE),
+            EnumDescriptor::new(1, MODE)
+        ]));
+        const SAME_VALUE: &[EnumVariant] =
+            &[EnumVariant::new(1, "fast"), EnumVariant::new(1, "slow")];
+        assert!(!enums_valid(&[EnumDescriptor::new(1, SAME_VALUE)]));
+        const SAME_NAME: &[EnumVariant] =
+            &[EnumVariant::new(1, "fast"), EnumVariant::new(2, "fast")];
+        assert!(!enums_valid(&[EnumDescriptor::new(1, SAME_NAME)]));
+        const EMPTY_NAME: &[EnumVariant] = &[EnumVariant::new(1, "")];
+        assert!(!enums_valid(&[EnumDescriptor::new(1, EMPTY_NAME)]));
+        const LONG_NAME: &[EnumVariant] = &[EnumVariant::new(1, "abcdefghijklmnopq")];
+        assert!(!enums_valid(&[EnumDescriptor::new(1, LONG_NAME)]));
+        // One enum per schema is a hard limit of the compact protocol.
+        assert!(!enums_valid(&[
+            EnumDescriptor::new(1, MODE),
+            EnumDescriptor::new(2, MODE)
+        ]));
+    }
+
+    #[test]
+    fn issue_codes_and_names_are_unique_and_outside_the_sdk_range() {
+        let first = crate::FIRST_SERVICE_ISSUE;
+        assert!(issues_valid(&[
+            IssueDescriptor::new(first, "a"),
+            IssueDescriptor::new(first + 1, "b"),
+            IssueDescriptor::new(crate::ISSUE_STARTUP_FAILED, "startup_failed"),
+        ]));
+        assert!(!issues_valid(&[
+            IssueDescriptor::new(first, "a"),
+            IssueDescriptor::new(first, "b"),
+        ]));
+        assert!(!issues_valid(&[
+            IssueDescriptor::new(first, "a"),
+            IssueDescriptor::new(first + 1, "a"),
+        ]));
+        assert!(!issues_valid(&[IssueDescriptor::new(2, "reserved")]));
+        assert!(!issues_valid(&[IssueDescriptor::new(0, "zero")]));
+    }
+
+    #[test]
+    fn actions_have_unique_ids_and_names_and_valid_fields() {
+        const ARGS: &[FieldDescriptor] = &[FieldDescriptor::new(1, "n", ValueKind::U64)];
+        const DUPLICATE_ARGS: &[FieldDescriptor] = &[
+            FieldDescriptor::new(1, "n", ValueKind::U64),
+            FieldDescriptor::new(1, "m", ValueKind::U64),
+        ];
+        assert!(actions_valid(&[
+            ActionDescriptor::new(1, "scan").args(ARGS),
+            ActionDescriptor::new(2, "stop"),
+        ]));
+        assert!(!actions_valid(&[
+            ActionDescriptor::new(1, "scan"),
+            ActionDescriptor::new(1, "stop"),
+        ]));
+        assert!(!actions_valid(&[
+            ActionDescriptor::new(1, "scan"),
+            ActionDescriptor::new(2, "scan"),
+        ]));
+        assert!(!actions_valid(&[ActionDescriptor::new(1, "")]));
+        assert!(!actions_valid(&[
+            ActionDescriptor::new(1, "scan").args(DUPLICATE_ARGS)
+        ]));
+        assert!(!actions_valid(&[
+            ActionDescriptor::new(1, "scan").results(DUPLICATE_ARGS)
+        ]));
+    }
+}
+
+#[test]
+fn issue_age_follows_the_set_of_active_issues_only() {
+    let probe = Probe::new();
+    let registry = (Tracked::<_, NoopRawMutex>::new(&probe),);
+    let age = |now| block_on(registry.status(7, now)).unwrap().issues[0].age_ms;
+    let revision = |now| block_on(registry.status(7, now)).unwrap().summary.revision;
+
+    let _ = block_on(registry.summary(0, 1_000));
+    *probe.issue.borrow_mut() = Some(FIRST_SERVICE_ISSUE);
+    assert_eq!(age(2_000), Some(0));
+    let before = revision(2_000);
+
+    // The state, health and readiness change while the same issue stays: a
+    // new revision, but the issue is as old as ever.
+    *probe.state.borrow_mut() = ServiceState::Failed;
+    *probe.health.borrow_mut() = ServiceHealth::Error;
+    assert_eq!(age(5_000), Some(3_000));
+    assert_eq!(revision(5_000), before + 1);
+    // The state age is its own clock.
+    let summary = block_on(registry.summary(0, 6_000));
+    assert_eq!(summary.unwrap().state_age_ms, 1_000);
+    assert_eq!(age(6_000), Some(4_000));
+
+    // Another issue replaces it: the set changed, so the age starts over.
+    *probe.issue.borrow_mut() = Some(FIRST_SERVICE_ISSUE + 1);
+    assert_eq!(age(9_000), Some(0));
+    assert_eq!(age(10_000), Some(1_000));
+
+    // Gone and back: a new issue.
+    *probe.issue.borrow_mut() = None;
+    let _ = block_on(registry.summary(0, 11_000));
+    *probe.issue.borrow_mut() = Some(FIRST_SERVICE_ISSUE + 1);
+    assert_eq!(age(12_000), Some(0));
+}
+
+#[derive(Clone)]
+struct Vault {
+    token: Option<heapless::String<16>>,
+}
+
+impl ManagedConfig for Vault {
+    const SECTION_ID: u64 = 9;
+    const NAME: &'static str = "vault";
+    const VERSION: u16 = 1;
+    const FIELDS: &'static [ConfigField] = &[
+        ConfigField::new(1, "label", ValueKind::String).optional(),
+        ConfigField::new(2, "token", ValueKind::String)
+            .secret()
+            .optional(),
+    ];
+
+    fn defaults() -> Self {
+        Self { token: None }
+    }
+
+    fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
+        match id {
+            1 => Ok(Some(Value::text("main").unwrap())),
+            2 => panic!("a secret must never be read"),
+            _ => Err(FieldError::UnknownField),
+        }
+    }
+
+    fn field_is_set(&self, id: u32) -> Result<bool, FieldError> {
+        match id {
+            1 => Ok(true),
+            2 => Ok(self.token.is_some()),
+            _ => Err(FieldError::UnknownField),
+        }
+    }
+
+    fn set_field(&mut self, _: u32, _: Value) -> Result<(), FieldError> {
+        Err(FieldError::ReadOnly)
+    }
+
+    fn unset_field(&mut self, _: u32) -> Result<(), FieldError> {
+        Err(FieldError::NotOptional)
+    }
+
+    fn validate(&self) -> Result<(), FieldError> {
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct VaultStore(RefCell<Option<Vault>>);
+
+impl SectionStore<Vault> for &VaultStore {
+    async fn load(&self) -> Result<Option<Vault>, StoreError> {
+        Ok(self.0.borrow().clone())
+    }
+    async fn store(&self, config: &Vault) -> Result<(), StoreError> {
+        *self.0.borrow_mut() = Some(config.clone());
+        Ok(())
+    }
+    async fn remove(&self) -> Result<(), StoreError> {
+        *self.0.borrow_mut() = None;
+        Ok(())
+    }
+}
+
+#[test]
+fn reading_a_section_never_reads_a_secret() {
+    let store = VaultStore::default();
+    let section = ManagedSection::<Vault, _, NoopRawMutex>::new(&store);
+
+    // A configured secret is reported as configured.
+    *store.0.borrow_mut() = Some(Vault {
+        token: Some(heapless::String::try_from("hunter2").unwrap()),
+    });
+    let values = block_on(section.get()).unwrap();
+    assert_eq!(values.entries.len(), 2);
+    assert_eq!(values.entries[1].state, EntryState::Redacted);
+
+    // An unset optional secret is absent.
+    *store.0.borrow_mut() = Some(Vault { token: None });
+    let values = block_on(section.get()).unwrap();
+    assert_eq!(values.entries.len(), 1);
+    assert_eq!(values.entries[0].field_id, 1);
+}

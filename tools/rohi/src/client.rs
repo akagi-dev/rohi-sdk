@@ -15,30 +15,50 @@
 //  limitations under the License.
 //
 //! High-level typed device API.
+//! High-level typed device API.
+//!
+//! Every method is generic: sections, services and actions are named by
+//! strings the device lists, so a new firmware module needs no change here.
+//! The wire addresses them by number; the device is asked for the numbers once
+//! (discovery) and the answers are cached for the life of the connection, as
+//! are the schemas that name enum values and issues.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use rohi_control_proto::control::{
-    self as pb, Request_::Request as Call, Response_::Response as Reply, UpdateConfigRequest_,
+    self as pb, Request_::Request as Call, Response_::Response as Reply,
 };
 
 use crate::convert;
 use crate::error::{Error, Result};
 use crate::model::*;
-use crate::provision::DerivedIdentity;
 use crate::session::{ClientTransport, Session};
 
-/// Wi-Fi scans run on the device and take a while.
-const SCAN_TIMEOUT: Duration = Duration::from_secs(40);
+/// Wi-Fi scans and similar actions run on the device and take a while.
+const ACTION_TIMEOUT: Duration = Duration::from_secs(40);
+
+/// How often the compact and the detailed status of a service are read again
+/// when the service changes between the two.
+const STATUS_ATTEMPTS: usize = 3;
+
+/// What a name that the device does not list is answered with.
+fn not_found() -> Error {
+    Error::Device(ErrorCode::NotFound)
+}
 
 /// A connected ROHI device.
 ///
-/// Every method checks the capability it needs first, so a device without
-/// Wi-Fi answers [`Error::Unsupported`] without a round trip of the request
-/// itself. Capabilities are read once, on first use.
+/// Discovery and schemas are fetched on demand and cached for the life of
+/// the connection.
 pub struct Device<T> {
     session: Session<T>,
-    capabilities: Option<Vec<Capability>>,
+    sections: Option<Vec<SectionInfo>>,
+    services: Option<Vec<ServiceInfo>>,
+    actions: Option<Vec<ActionInfo>>,
+    config_schemas: HashMap<String, ConfigSchema>,
+    service_schemas: HashMap<String, ServiceSchema>,
+    action_schemas: HashMap<(String, String), ActionSchema>,
 }
 
 impl<T: ClientTransport> Device<T> {
@@ -46,7 +66,12 @@ impl<T: ClientTransport> Device<T> {
     pub fn new(transport: T) -> Self {
         Self {
             session: Session::new(transport),
-            capabilities: None,
+            sections: None,
+            services: None,
+            actions: None,
+            config_schemas: HashMap::new(),
+            service_schemas: HashMap::new(),
+            action_schemas: HashMap::new(),
         }
     }
 
@@ -64,15 +89,6 @@ impl<T: ClientTransport> Device<T> {
         self.session.call(call).await
     }
 
-    async fn require(&mut self, capability: Capability) -> Result<()> {
-        let capabilities = self.capabilities().await?;
-        if capabilities.contains(&capability) {
-            Ok(())
-        } else {
-            Err(Error::Unsupported(capability))
-        }
-    }
-
     /// Device description.
     pub async fn info(&mut self) -> Result<DeviceInfo> {
         match self.call(Call::GetInfo(pb::GetInfoRequest {})).await? {
@@ -81,246 +97,423 @@ impl<T: ClientTransport> Device<T> {
         }
     }
 
-    /// Features of the device; cached after the first call.
-    pub async fn capabilities(&mut self) -> Result<Vec<Capability>> {
-        if let Some(capabilities) = &self.capabilities {
-            return Ok(capabilities.clone());
-        }
-        let reply = self
-            .call(Call::GetCapabilities(pb::GetCapabilitiesRequest {}))
-            .await?;
-        let Reply::GetCapabilities(response) = reply else {
-            return Err(unexpected(&reply));
-        };
-        let capabilities = convert::capabilities(&response);
-        self.capabilities = Some(capabilities.clone());
-        Ok(capabilities)
-    }
+    // -- config ---------------------------------------------------------------
 
-    /// Current measurements of all sensors.
-    pub async fn sensors(&mut self) -> Result<Sensors> {
-        self.require(Capability::Sensors).await?;
-        match self
-            .call(Call::GetSensors(pb::GetSensorsRequest {}))
-            .await?
-        {
-            Reply::GetSensors(response) => Ok(convert::sensors(&response)),
+    /// The config sections of the device.
+    pub async fn config_sections(&mut self) -> Result<Vec<SectionInfo>> {
+        let call = Call::ListConfigSections(pb::ListConfigSectionsRequest {});
+        match self.call(call).await? {
+            Reply::ListConfigSections(list) => {
+                let sections: Vec<_> = list.sections.iter().map(convert::section).collect();
+                self.sections = Some(sections.clone());
+                Ok(sections)
+            }
             other => Err(unexpected(&other)),
         }
     }
 
-    /// Stored configuration. Secrets are never included.
-    pub async fn config(&mut self) -> Result<Config> {
-        self.require(Capability::Config).await?;
-        match self.call(Call::GetConfig(pb::GetConfigRequest {})).await? {
-            Reply::GetConfig(response) => convert::config(&response),
-            other => Err(unexpected(&other)),
+    async fn section_id(&mut self, section: &str) -> Result<u64> {
+        if self.sections.is_none() {
+            self.config_sections().await?;
         }
+        self.sections
+            .iter()
+            .flatten()
+            .find(|info| info.name == section)
+            .map(|info| info.id)
+            .ok_or_else(not_found)
     }
 
-    /// Applies a partial Wi-Fi update: omitted fields keep their value.
-    ///
-    /// Success means the device stored the configuration and handed it to its
-    /// Wi-Fi runtime, not that the network was reached; follow
-    /// [`Device::wifi_status`] for that.
-    pub async fn update_wifi(&mut self, update: &WifiUpdate) -> Result<()> {
-        self.require(Capability::Config).await?;
-        let update = convert::wifi_update(update)?;
-        let request = pb::UpdateConfigRequest {
-            wifi_update: Some(UpdateConfigRequest_::WifiUpdate::UpdateWifi(update)),
-            ..Default::default()
-        };
-        self.update_config(request).await
-    }
-
-    /// Removes the stored Wi-Fi configuration; the device disconnects.
-    pub async fn forget_wifi(&mut self) -> Result<()> {
-        self.require(Capability::Config).await?;
-        let request = pb::UpdateConfigRequest {
-            wifi_update: Some(UpdateConfigRequest_::WifiUpdate::ClearWifi(pb::Empty {})),
-            ..Default::default()
-        };
-        self.update_config(request).await
-    }
-
-    /// Applies a partial telemetry update: omitted fields keep their value, a
-    /// host is required while nothing is stored.
-    ///
-    /// The device applies a stored configuration at once, without a restart.
-    pub async fn update_connectivity(&mut self, update: &ConnectivityUpdate) -> Result<()> {
-        self.require(Capability::Config).await?;
-        self.require(Capability::Connectivity).await?;
-        let update = convert::connectivity_update(update)?;
-        let request = pb::UpdateConfigRequest {
-            connectivity_update: Some(
-                UpdateConfigRequest_::ConnectivityUpdate::UpdateConnectivity(update),
-            ),
-            ..Default::default()
-        };
-        self.update_config(request).await
-    }
-
-    /// Removes the stored telemetry configuration; the device falls back to
-    /// its build-time defaults.
-    pub async fn forget_connectivity(&mut self) -> Result<()> {
-        self.require(Capability::Config).await?;
-        self.require(Capability::Connectivity).await?;
-        let request = pb::UpdateConfigRequest {
-            connectivity_update: Some(UpdateConfigRequest_::ConnectivityUpdate::ClearConnectivity(
-                pb::Empty {},
-            )),
-            ..Default::default()
-        };
-        self.update_config(request).await
-    }
-
-    async fn update_config(&mut self, request: pb::UpdateConfigRequest) -> Result<()> {
-        match self.call(Call::UpdateConfig(request)).await? {
-            Reply::UpdateConfig(_) => Ok(()),
-            other => Err(unexpected(&other)),
+    /// Schema of a section; cached.
+    pub async fn config_schema(&mut self, section: &str) -> Result<ConfigSchema> {
+        if let Some(schema) = self.config_schemas.get(section) {
+            return Ok(schema.clone());
         }
-    }
-
-    /// Scans for Wi-Fi networks, strongest first.
-    pub async fn wifi_scan(&mut self) -> Result<Vec<WifiNetwork>> {
-        self.require(Capability::WifiScan).await?;
-        let reply = self.session_with_timeout(SCAN_TIMEOUT, Call::ScanWifi(pb::ScanWifiRequest {}));
-        match reply.await? {
-            Reply::ScanWifi(response) => Ok(convert::scan(&response)),
-            other => Err(unexpected(&other)),
-        }
-    }
-
-    async fn session_with_timeout(&mut self, timeout: Duration, call: Call) -> Result<Reply> {
-        let normal = self.session.timeout();
-        self.session.set_timeout(timeout.max(normal));
-        let reply = self.session.call(call).await;
-        self.session.set_timeout(normal);
-        reply
-    }
-
-    /// Wi-Fi status.
-    pub async fn wifi_status(&mut self) -> Result<WifiStatus> {
-        self.require(Capability::WifiStatus).await?;
-        match self
-            .call(Call::GetWifiStatus(pb::GetWifiStatusRequest {}))
-            .await?
-        {
-            Reply::GetWifiStatus(response) => Ok(convert::wifi_status(&response)),
-            other => Err(unexpected(&other)),
-        }
-    }
-
-    /// Wall-clock time and synchronization state of the device.
-    ///
-    /// `unix_time_ms` is `None` while the device has no time; the device never
-    /// reports uptime or a placeholder date instead.
-    pub async fn time_status(&mut self) -> Result<TimeStatus> {
-        self.require(Capability::Time).await?;
-        match self
-            .call(Call::GetTimeStatus(pb::GetTimeStatusRequest {}))
-            .await?
-        {
-            Reply::GetTimeStatus(response) => Ok(convert::time_status(&response)),
-            other => Err(unexpected(&other)),
-        }
-    }
-
-    /// Asks the device to reconnect now.
-    pub async fn wifi_reconnect(&mut self) -> Result<()> {
-        self.require(Capability::WifiControl).await?;
-        match self
-            .call(Call::ReconnectWifi(pb::ReconnectWifiRequest {}))
-            .await?
-        {
-            Reply::ReconnectWifi(_) => Ok(()),
-            other => Err(unexpected(&other)),
-        }
-    }
-
-    /// Identity state and public key of the device. The secret is never
-    /// available.
-    pub async fn identity(&mut self) -> Result<IdentityInfo> {
-        self.require(Capability::Identity).await?;
-        match self
-            .call(Call::GetIdentity(pb::GetIdentityRequest {}))
-            .await?
-        {
-            Reply::GetIdentity(response) => convert::identity(&response),
-            other => Err(unexpected(&other)),
-        }
-    }
-
-    /// Installs the derived identity on a device that has none.
-    ///
-    /// Only the derived secret is sent. The device refuses to replace an
-    /// existing identity ([`ErrorCode::IdentityAlreadyProvisioned`]), and the
-    /// public key it reports must equal the one derived on the host, otherwise
-    /// [`Error::PublicKeyMismatch`] is returned.
-    pub async fn provision_identity(&mut self, identity: &DerivedIdentity) -> Result<PublicKey> {
-        self.require(Capability::Identity).await?;
-        let request = pb::ProvisionIdentityRequest {
-            ed25519_secret: heapless::Vec::from_slice(identity.secret().expose_secret())
-                .map_err(|_| Error::InvalidInput("identity secret is not 32 bytes".into()))?,
-        };
-        let reply = self.call(Call::ProvisionIdentity(request)).await;
-        let reported = match reply? {
-            Reply::ProvisionIdentity(response) => convert::public_key(&response.public_key)?,
+        let section_id = self.section_id(section).await?;
+        let call = Call::GetConfigSchema(pb::GetConfigSchemaRequest { section_id });
+        let schema = match self.call(call).await? {
+            Reply::GetConfigSchema(response) => convert::config_schema(&response)
+                .ok_or_else(|| Error::Protocol("empty config schema".into()))?,
             other => return Err(unexpected(&other)),
         };
-        if reported != identity.public_key() {
-            return Err(Error::PublicKeyMismatch {
-                expected: identity.public_key(),
-                reported,
-            });
-        }
-        Ok(reported)
+        self.config_schemas
+            .insert(section.to_owned(), schema.clone());
+        Ok(schema)
     }
 
-    /// Removes the identity of the device; the device can then be provisioned
-    /// again. Succeeds when there is no identity.
-    pub async fn erase_identity(&mut self) -> Result<()> {
-        self.require(Capability::Identity).await?;
-        match self
-            .call(Call::EraseIdentity(pb::EraseIdentityRequest {}))
-            .await?
-        {
-            Reply::EraseIdentity(_) => Ok(()),
+    /// Readable content of a section. Secrets are only reported as set.
+    pub async fn config_get(&mut self, section: &str) -> Result<ConfigValues> {
+        let schema = self.config_schema(section).await?;
+        let call = Call::GetConfigSection(pb::GetConfigSectionRequest {
+            section_id: schema.section.id,
+        });
+        match self.call(call).await? {
+            Reply::GetConfigSection(response) => Ok(convert::config_values(&response, &schema)),
             other => Err(unexpected(&other)),
         }
     }
 
-    /// Asks the device to disconnect and stay idle.
-    pub async fn wifi_disconnect(&mut self) -> Result<()> {
-        self.require(Capability::WifiControl).await?;
+    /// Applies `mutations` to a section atomically; with `dry_run` the
+    /// device only validates.
+    pub async fn config_patch(
+        &mut self,
+        section: &str,
+        mutations: &[Mutation],
+        expected_revision: Option<u32>,
+        dry_run: bool,
+    ) -> Result<Applied> {
+        let schema = self.config_schema(section).await?;
+        let mut list = heapless::Vec::new();
+        for mutation in mutations {
+            let wire = convert::mutation(mutation, &schema)
+                .ok_or_else(|| Error::InvalidInput("a value does not fit the protocol".into()))?;
+            list.push(wire).map_err(|_| Error::TooLarge)?;
+        }
+        let mut request = pb::PatchConfigSectionRequest {
+            section_id: schema.section.id,
+            mutations: list,
+            dry_run,
+            ..Default::default()
+        };
+        if let Some(revision) = expected_revision {
+            request.set_expected_revision(revision);
+        }
+        match self.call(Call::PatchConfigSection(request)).await? {
+            Reply::PatchConfigSection(done) => Ok(Applied {
+                revision: done.revision,
+                restart_required: done.restart_required,
+            }),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Removes the persisted section and restores the defaults. With
+    /// `expected_revision` it fails with a conflict when the section changed
+    /// since that revision.
+    pub async fn config_reset(
+        &mut self,
+        section: &str,
+        expected_revision: Option<u32>,
+        dry_run: bool,
+    ) -> Result<Applied> {
+        let mut request = pb::ResetConfigSectionRequest {
+            section_id: self.section_id(section).await?,
+            dry_run,
+            ..Default::default()
+        };
+        if let Some(revision) = expected_revision {
+            request.set_expected_revision(revision);
+        }
+        let call = Call::ResetConfigSection(request);
+        match self.call(call).await? {
+            Reply::ResetConfigSection(done) => Ok(Applied {
+                revision: done.revision,
+                restart_required: done.restart_required,
+            }),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Formats the configuration storage of the device: every section, the
+    /// identity included, is removed. Returns whether a restart is required.
+    pub async fn factory_reset(&mut self) -> Result<bool> {
         match self
-            .call(Call::DisconnectWifi(pb::DisconnectWifiRequest {}))
+            .call(Call::FactoryReset(pb::FactoryResetRequest {}))
             .await?
         {
-            Reply::DisconnectWifi(_) => Ok(()),
+            Reply::FactoryReset(done) => Ok(done.restart_required),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Asks the device to reboot. The device answers first and reboots shortly
+    /// after, so the link is lost. Devices that cannot reboot answer
+    /// `NotSupported`.
+    pub async fn reboot(&mut self) -> Result<()> {
+        match self.call(Call::Reboot(pb::RebootRequest {})).await? {
+            Reply::Reboot(_) => Ok(()),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    // -- status ---------------------------------------------------------------
+
+    /// The services of the device, as discovered by [`Self::services_status`].
+    pub async fn services(&mut self) -> Result<Vec<ServiceInfo>> {
+        Ok(self
+            .services_status()
+            .await?
+            .services
+            .iter()
+            .map(|summary| ServiceInfo {
+                id: summary.id,
+                name: summary.service.clone(),
+                version: summary.version,
+            })
+            .collect())
+    }
+
+    /// Discovery and compact status of every service and the device health,
+    /// in one request.
+    pub async fn services_status(&mut self) -> Result<ServicesStatus> {
+        let call = Call::GetServicesStatus(pb::GetServicesStatusRequest {});
+        match self.call(call).await? {
+            Reply::GetServicesStatus(response) => {
+                let status = ServicesStatus {
+                    uptime_ms: response.uptime_ms,
+                    health: DeviceHealth::from_proto(response.health),
+                    services: response.services.iter().map(convert::summary).collect(),
+                };
+                self.services = Some(
+                    status
+                        .services
+                        .iter()
+                        .map(|summary| ServiceInfo {
+                            id: summary.id,
+                            name: summary.service.clone(),
+                            version: summary.version,
+                        })
+                        .collect(),
+                );
+                Ok(status)
+            }
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    async fn service_id(&mut self, service: &str) -> Result<u32> {
+        if self.services.is_none() {
+            self.services_status().await?;
+        }
+        self.services
+            .iter()
+            .flatten()
+            .find(|info| info.name == service)
+            .map(|info| info.id)
+            .ok_or_else(not_found)
+    }
+
+    /// Status schema of a service; cached.
+    pub async fn service_schema(&mut self, service: &str) -> Result<ServiceSchema> {
+        if let Some(schema) = self.service_schemas.get(service) {
+            return Ok(schema.clone());
+        }
+        let service_id = self.service_id(service).await?;
+        let call = Call::GetServiceSchema(pb::GetServiceSchemaRequest { service_id });
+        let schema = match self.call(call).await? {
+            Reply::GetServiceSchema(response) => ServiceSchema {
+                service: ServiceInfo {
+                    id: response.service_id,
+                    name: response.name.as_str().to_owned(),
+                    version: response.version,
+                },
+                fields: response
+                    .fields
+                    .iter()
+                    .map(|field| convert::field(field, &response.enums))
+                    .collect(),
+                issues: response
+                    .issues
+                    .iter()
+                    .map(|issue| IssueInfo {
+                        code: issue.code,
+                        name: issue.name.as_str().to_owned(),
+                    })
+                    .collect(),
+            },
+            other => return Err(unexpected(&other)),
+        };
+        self.service_schemas
+            .insert(service.to_owned(), schema.clone());
+        Ok(schema)
+    }
+
+    /// Detailed status of a service: its compact status, values and active
+    /// issues. The compact status is a separate request, the detailed one does
+    /// not repeat it, so the two are paired by revision: when the service
+    /// changed between them the pair is read again, a few times at most.
+    pub async fn service_status(&mut self, service: &str) -> Result<ServiceStatus> {
+        self.read_status(service, None).await
+    }
+
+    /// [`Device::service_status`] that starts from a compact status the caller
+    /// has just read with [`Device::services_status`], saving that request
+    /// when the service has not changed since.
+    pub async fn service_status_after(
+        &mut self,
+        service: &str,
+        known: &ServiceSummary,
+    ) -> Result<ServiceStatus> {
+        self.read_status(service, Some(known.clone())).await
+    }
+
+    async fn read_status(
+        &mut self,
+        service: &str,
+        mut known: Option<ServiceSummary>,
+    ) -> Result<ServiceStatus> {
+        let schema = self.service_schema(service).await?;
+        for _ in 0..STATUS_ATTEMPTS {
+            let summary = match known.take() {
+                Some(summary) if summary.id == schema.service.id => summary,
+                _ => self
+                    .services_status()
+                    .await?
+                    .services
+                    .into_iter()
+                    .find(|summary| summary.id == schema.service.id)
+                    .ok_or_else(not_found)?,
+            };
+            let call = Call::GetServiceStatus(pb::GetServiceStatusRequest {
+                service_id: schema.service.id,
+            });
+            match self.call(call).await? {
+                Reply::GetServiceStatus(response) if response.revision == summary.revision => {
+                    return Ok(ServiceStatus {
+                        summary,
+                        fields: response
+                            .fields
+                            .iter()
+                            .filter_map(|field| convert::field_value(field, &schema.fields))
+                            .collect(),
+                        issues: response
+                            .issues
+                            .iter()
+                            .map(|issue| convert::issue(issue, &schema.issues))
+                            .collect(),
+                    });
+                }
+                Reply::GetServiceStatus(_) => {}
+                other => return Err(unexpected(&other)),
+            }
+        }
+        Err(Error::StatusChanging(service.to_owned()))
+    }
+
+    // -- actions --------------------------------------------------------------
+
+    /// The actions of all services.
+    pub async fn actions(&mut self) -> Result<Vec<ActionInfo>> {
+        if self.services.is_none() {
+            self.services_status().await?;
+        }
+        let call = Call::ListActions(pb::ListActionsRequest {});
+        match self.call(call).await? {
+            Reply::ListActions(list) => {
+                let services = self.services.as_deref().unwrap_or_default();
+                let actions: Vec<_> = list
+                    .actions
+                    .iter()
+                    .map(|info| {
+                        let service = services
+                            .iter()
+                            .find(|service| service.id == info.service_id)
+                            .map_or("", |service| service.name.as_str());
+                        convert::action_info(info, service)
+                    })
+                    .collect();
+                self.actions = Some(actions.clone());
+                Ok(actions)
+            }
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    async fn action_ids(&mut self, service: &str, action: &str) -> Result<(u32, u32)> {
+        if self.actions.is_none() {
+            self.actions().await?;
+        }
+        self.actions
+            .iter()
+            .flatten()
+            .find(|info| info.service == service && info.name == action)
+            .map(|info| (info.service_id, info.id))
+            .ok_or_else(not_found)
+    }
+
+    /// Schema of an action; cached.
+    pub async fn action_schema(&mut self, service: &str, action: &str) -> Result<ActionSchema> {
+        let key = (service.to_owned(), action.to_owned());
+        if let Some(schema) = self.action_schemas.get(&key) {
+            return Ok(schema.clone());
+        }
+        let (service_id, action_id) = self.action_ids(service, action).await?;
+        let call = Call::GetActionSchema(pb::GetActionSchemaRequest {
+            service_id,
+            action_id,
+        });
+        let schema = match self.call(call).await? {
+            Reply::GetActionSchema(response) => ActionSchema {
+                action: convert::action_info(
+                    response
+                        .action()
+                        .ok_or_else(|| Error::Protocol("action schema without an action".into()))?,
+                    service,
+                ),
+                args: response
+                    .args
+                    .iter()
+                    .map(|field| convert::field(field, &response.enums))
+                    .collect(),
+                results: response
+                    .results
+                    .iter()
+                    .map(|field| convert::field(field, &response.enums))
+                    .collect(),
+            },
+            other => return Err(unexpected(&other)),
+        };
+        self.action_schemas.insert(key, schema.clone());
+        Ok(schema)
+    }
+
+    /// Runs an action with the given arguments (all required) and returns
+    /// its result records.
+    pub async fn invoke(
+        &mut self,
+        service: &str,
+        action: &str,
+        args: &[FieldValue],
+    ) -> Result<Vec<Record>> {
+        let schema = self.action_schema(service, action).await?;
+        let mut list = heapless::Vec::new();
+        for arg in args {
+            let wire = convert::to_action_arg(arg, &schema.args)
+                .ok_or_else(|| Error::InvalidInput("a value does not fit the protocol".into()))?;
+            list.push(wire).map_err(|_| Error::TooLarge)?;
+        }
+        let request = pb::InvokeActionRequest {
+            service_id: schema.action.service_id,
+            action_id: schema.action.id,
+            args: list,
+        };
+        // Scans and similar actions take a while on the device.
+        let normal = self.session.timeout();
+        self.session.set_timeout(normal.max(ACTION_TIMEOUT));
+        let reply = self.call(Call::InvokeAction(request)).await;
+        self.session.set_timeout(normal);
+        match reply? {
+            Reply::InvokeAction(done) => Ok(done
+                .records
+                .iter()
+                .map(|record| {
+                    record
+                        .fields
+                        .iter()
+                        .filter_map(|field| convert::field_value(field, &schema.results))
+                        .collect()
+                })
+                .collect()),
             other => Err(unexpected(&other)),
         }
     }
 }
 
 fn unexpected(reply: &Reply) -> Error {
-    Error::Protocol(format!(
-        "response of the wrong type: {}",
-        match reply {
-            Reply::Error(_) => "error",
-            Reply::GetInfo(_) => "get_info",
-            Reply::GetCapabilities(_) => "get_capabilities",
-            Reply::GetSensors(_) => "get_sensors",
-            Reply::GetConfig(_) => "get_config",
-            Reply::UpdateConfig(_) => "update_config",
-            Reply::ScanWifi(_) => "scan_wifi",
-            Reply::GetWifiStatus(_) => "get_wifi_status",
-            Reply::ReconnectWifi(_) => "reconnect_wifi",
-            Reply::DisconnectWifi(_) => "disconnect_wifi",
-            Reply::GetIdentity(_) => "get_identity",
-            Reply::ProvisionIdentity(_) => "provision_identity",
-            Reply::EraseIdentity(_) => "erase_identity",
-            Reply::GetTimeStatus(_) => "get_time_status",
-        }
-    ))
+    let kind = match reply {
+        Reply::Error(_) => "error",
+        Reply::GetInfo(_) => "info",
+        _ => "another response",
+    };
+    Error::Protocol(format!("unexpected response: {kind}"))
 }

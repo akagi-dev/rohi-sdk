@@ -44,7 +44,10 @@ pub mod connectivity;
 pub mod control;
 /// Device identity runtime.
 pub mod identity;
+pub mod location;
 pub mod net;
+/// Deferred device reboot.
+pub mod reboot;
 /// Static resource budget of the wireless stack.
 pub mod resources;
 

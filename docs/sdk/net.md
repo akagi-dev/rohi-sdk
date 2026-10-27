@@ -30,6 +30,35 @@ data plane has its own readiness (link up and DHCP complete) and its own typed e
 no `esp-radio`, `esp-hal` or `embassy-net` type appears in a public signature of `rohi-net`; vendor types and errors are
 converted inside `rohi-net-esp`. `rohi-net` has no ESP dependency and builds and tests on the host.
 
+## The `wifi`, `network` and `ble` sections and services
+
+The management plane sees the radio side of the device as three config sections and three services, named `wifi`,
+`network` and `ble` (`rohi config get wifi`, `rohi status network`). Each section holds only the properties of its own
+target; the Wi-Fi station and the IP layer are configured and observed separately.
+
+| | `wifi` | `network` | `ble` |
+|---|---|---|---|
+| Config | `ssid`, `password` (secret), `scan_timeout`, `connect_timeout`, `backoff_initial`, `backoff_max`, `link_refresh` (ms) | `address_mode` (`dhcp` or `static`), `ip`, `prefix_len`, `gateway`, `dns`, `hostname` (DHCP option 12), `dhcp_timeout` (ms). Static mode needs `ip`, `prefix_len` and `gateway` on the same link | `name` (1 to 29 bytes, optional; unset keeps the firmware default `<PREFIX>-<MAC>`). Read when the peripheral starts, so a change applies after a reboot |
+| Status | `ssid`, `rssi`, `channel`, `mac`, `reconnects`, `link_uptime`, `heap_size`, `heap_free`, `heap_min_free` (with `heap-stats`) | `ip`, `gateway`, `dns`, `tcp_in_use`, `tcp_capacity`, `udp_in_use`, `udp_capacity` | `state` (`disabled`, `advertising`, `connected`, `error`), `name`, `encrypted`, `authenticated`, `max_payload` |
+| Actions | `scan`, `connect`, `reconnect`, `disconnect` | none | none |
+
+Fields that do not exist now are not reported. A change of the `wifi` or `network` section reconnects. Timings default
+to the former constants. The `wifi` and `network` services share the link: `network` is `running` when the link is up
+and reports `dhcp_failed` as its issue; every other link error is an issue of `wifi`.
+
+The heap, clock and socket numbers come from a `WifiProbe` and a `NetworkProbe` the firmware passes to `WifiService` and
+`NetworkService`, and the BLE state from a `BleProbe` passed to `BleService`, so `rohi-net` stays free of platform types.
+Socket counts and buffer sizes stay compile-time (they size static memory), see [Resource limits](../reference/resource-limits.md).
+
+### `connect`
+
+`rohi action run wifi connect ssid=- password=-` stores a network and joins it. It takes the `ssid` and the `password`
+(empty for an open network), keeps the timing of the stored `wifi` section, validates the result, persists it through the
+`SectionStore<WifiConfig>` given to `WifiService`, and, when the manager would otherwise ignore the unchanged
+configuration, requests a reconnect. It is privileged and its arguments are secret, so the `rohi` tool reads every
+argument from stdin or a prompt. Use `rohi config set wifi ssid=office password=-` to change the section without
+connecting at once.
+
 ## Wi-Fi control plane
 
 `WifiHandle` is a cheap, copyable handle to the `WifiManager`, the single owner of the Wi-Fi backend. It does **not**
@@ -37,7 +66,9 @@ carry DNS, sockets, TLS or HTTP.
 
 | Type | Role |
 |------|------|
-| `WifiConfig` | Persistent CBOR section `WifiConfig` (`ssid`, optional `password`); open network = `password: None` |
+| `WifiConfig` | Persistent CBOR section: `ssid`, optional `password` (open network = `None`), scan and connect timeouts, reconnect backoff and link refresh |
+| `NetworkConfig` | Persistent CBOR section: DHCP or static IPv4, host name, DHCP timeout |
+| `LinkConfig` | The two together, as the manager and the backend see them |
 | `WifiState` / `WifiStatus` | `NotConfigured`, `Idle`, `Scanning`, `Connecting`, `Connected`, `Disconnected`, `Error` (+ last `WifiError`) |
 | `NetworkInfo` | SSID, RSSI, IPv4, gateway, DNS. Never contains credentials |
 | `WifiNetwork` / `WifiScanResults` | Bounded scan result (`heapless::Vec`), strongest first |
@@ -52,12 +83,12 @@ The persistent configuration is **state**, the rest are **transient actions** (s
 [State versus command](../concepts/runtime-ownership.md#state-versus-command)):
 
 ```text
-persistent WifiConfig ──► desired Wi-Fi config ──► WifiManager ──► actual Wi-Fi state
-                           (latest value wins)      reconciles
+persistent WifiConfig + NetworkConfig ──► desired link config ──► WifiManager ──► actual Wi-Fi state
+                                     (latest value wins)      reconciles
 Scan · Reconnect · Disconnect ──► bounded command queue ──► WifiManager
 ```
 
-- `WifiHandle::set_desired_config(Option<WifiConfig>)` publishes the desired configuration. It is **synchronous**: no
+- `WifiHandle::set_wifi_config(Option<WifiConfig>)` and `WifiHandle::set_network_config(NetworkConfig)` publish the desired configuration. They are **synchronous**: no
   `.await`, no queue, never `Busy`. The latest value wins; updates published before the manager ran are coalesced, so
   rapid updates A, B, C converge directly on C instead of causing a connect/disconnect cycle for A and B.
 - `scan()`, `reconnect()` and `disconnect()` are commands in a bounded queue (`WIFI_COMMAND_QUEUE_DEPTH`). They return
@@ -71,9 +102,9 @@ Scan · Reconnect · Disconnect ──► bounded command queue ──► WifiMa
 | Desired update | Behaviour |
 |----------------|-----------|
 | `None` | disconnect if necessary, `NotConfigured`, **no** automatic reconnect |
-| new `Some(config)` | abort the running attempt or backoff, disconnect, connect with the new config and a **fresh backoff** |
+| new `Some(config)`, or a changed `NetworkConfig` | abort the running attempt or backoff, disconnect, connect with the new config and a **fresh backoff** |
 | same config again | nothing: attempt, backoff timer, idle state or link continue (use `reconnect` to force a new attempt) |
-| invalid config | disconnect, `NotConfigured` with `WifiError::InvalidConfig` |
+| invalid `WifiConfig` or `NetworkConfig` | disconnect, `NotConfigured` with `WifiError::InvalidConfig` |
 
 The same rules hold in every phase (connecting, backing off, connected, idle). An update published while a scan runs
 is applied after the scan. A new configuration invalidates retry state of the previous one: if AP A had a wrong
@@ -88,6 +119,26 @@ Other behaviour:
   running.
 - Scans never abort or delay reconnection: a scan requested while connecting is served after the attempt, and a scan
   during the backoff wait or while connected does not restart the backoff or refresh timer.
+
+### Wi-Fi in the service pipeline
+
+`rohi-net` exposes Wi-Fi to clients through the generic [service pipeline](service.md), with no protocol of its own:
+
+| Plane | What | `rohi` |
+|-------|------|--------|
+| config section `wifi` | `ssid` (text, 1 to 32 bytes) and `password` (write-only secret, 8 to 64 bytes, optional: unset means an open network) | `rohi config set wifi ssid=office password=-` |
+| service `wifi` | state, `ssid`, `rssi` (dBm), `channel`, `mac` | `rohi status wifi` |
+| action `scan` | one record per network, strongest first: `ssid`, `rssi`, `channel`, `security` | `rohi action run wifi scan` |
+| action `connect` (privileged, secret arguments) | store a network and join it | `rohi action run wifi connect ssid=- password=-` |
+| actions `reconnect`, `disconnect` (privileged) | drop the link and connect again / stay idle | `rohi action run wifi reconnect` |
+
+The service maps `WifiState` to lifecycle and health: `NotConfigured` is `disabled` (not an error), `Idle` is `stopped`,
+`Scanning` and `Connecting` are `starting`, `Connected` is `running`/`ok`/ready, `Disconnected` is `running`/`degraded`
+(not ready) and `Error` is `failed`/`error`. The last error is the active issue (`authentication_failed`,
+`network_not_found`, `dhcp_failed`, `association_failed`, `disconnected`, `driver_error`, ...). A scan is bounded by the
+configured `scan_timeout` of `WifiService` (20 s by default) and lists at most six networks; networks whose name is not UTF-8 are not
+listed. Storing a configuration means it is stored and handed to the manager, not that the access point was reached: watch
+`rohi status wifi`. SSIDs that are not UTF-8 keep working but are not shown by `config get`.
 
 ## IP data plane
 

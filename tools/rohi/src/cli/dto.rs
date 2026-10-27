@@ -14,11 +14,15 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
-//! The JSON written by `-o json`. These types are owned by the command line
-//! and versioned with `schema_version`; they are deliberately not the model
-//! types of the library, which may change independently.
+//! The JSON written by `-o json`. These documents are owned by the command
+//! line and versioned with `schema_version`; they are deliberately not the
+//! model types of the library, which may change independently.
+//!
+//! Values are keyed by field name. Secrets are never present: a set secret
+//! is `{"secret": true}`.
 
 use serde::Serialize;
+use serde_json::{Map, Value as Json, json};
 
 use crate::DiscoveredDevice;
 use crate::model::*;
@@ -40,20 +44,6 @@ impl<T> Versioned<T> {
             body,
         }
     }
-}
-
-/// Identifier of a capability in JSON: its name with underscores.
-pub fn capability_id(capability: &Capability) -> String {
-    capability.as_str().replace(' ', "_")
-}
-
-#[derive(Serialize)]
-pub struct Done {
-    pub ok: bool,
-}
-
-pub fn done() -> Versioned<Done> {
-    Versioned::new(Done { ok: true })
 }
 
 #[derive(Serialize)]
@@ -90,243 +80,120 @@ impl Scan {
     }
 }
 
-#[derive(Serialize)]
-pub struct Connection {
-    pub uri: String,
+fn json<T: Serialize>(value: &T) -> Json {
+    serde_json::to_value(value).unwrap_or(Json::Null)
 }
 
-#[derive(Serialize)]
-pub struct Device {
-    pub firmware: String,
-    pub board: String,
+fn field_name(fields: &[FieldDescriptor], id: u32) -> String {
+    fields
+        .iter()
+        .find(|field| field.id == id)
+        .map(|field| field.name.clone())
+        .unwrap_or_else(|| format!("#{id}"))
 }
 
-#[derive(Serialize)]
-pub struct Wifi {
-    pub state: &'static str,
-    pub failure: Option<&'static str>,
-    pub ssid: Option<String>,
-    pub signal_dbm: Option<i32>,
-    pub address: Option<String>,
-    pub gateway: Option<String>,
-    pub dns: Option<String>,
+/// Field values keyed by field name.
+pub fn values(fields: &[FieldValue], schema: &[FieldDescriptor]) -> Json {
+    let mut map = Map::new();
+    for field in fields {
+        map.insert(field_name(schema, field.field_id), json(&field.value));
+    }
+    Json::Object(map)
 }
 
-impl Wifi {
-    pub fn new(status: &WifiStatus) -> Self {
-        let connection = status.connection.as_ref();
-        Self {
-            state: status.state.as_str(),
-            failure: status.failure.map(|failure| failure.as_str()),
-            ssid: connection.map(|c| c.ssid.to_text()),
-            signal_dbm: connection.map(|c| c.rssi_dbm),
-            address: connection.map(|c| c.ipv4.to_string()),
-            gateway: connection.and_then(|c| c.gateway).map(|a| a.to_string()),
-            dns: connection.and_then(|c| c.dns).map(|a| a.to_string()),
+fn units(schema: &[FieldDescriptor]) -> Json {
+    let mut map = Map::new();
+    for field in schema.iter().filter(|field| !field.unit.is_empty()) {
+        map.insert(field.name.clone(), json(&field.unit));
+    }
+    Json::Object(map)
+}
+
+pub fn summary(summary: &ServiceSummary) -> Json {
+    json(summary)
+}
+
+pub fn services_status(
+    info: &DeviceInfo,
+    status: &ServicesStatus,
+    sensor_id: Option<&str>,
+) -> Json {
+    json!({
+        "device": info,
+        "sensor_id": sensor_id,
+        "uptime_ms": status.uptime_ms,
+        "health": status.health,
+        "services": status.services,
+    })
+}
+
+pub fn service_status(status: &ServiceStatus, schema: &ServiceSchema) -> Json {
+    json!({
+        "service": summary(&status.summary),
+        "values": values(&status.fields, &schema.fields),
+        "units": units(&schema.fields),
+        "issues": status.issues,
+    })
+}
+
+pub fn sections(sections: &[SectionInfo]) -> Json {
+    json!({ "sections": sections })
+}
+
+pub fn config_schema(schema: &ConfigSchema) -> Json {
+    json!({ "section": schema.section, "fields": schema.fields })
+}
+
+/// The values of a section, keyed by field name; a set secret is
+/// `{"secret": true}`.
+pub fn config_values(values: &ConfigValues, schema: &ConfigSchema, only: Option<&str>) -> Json {
+    let mut map = Map::new();
+    for field in &schema.fields {
+        if only.is_some_and(|name| name != field.field.name) {
+            continue;
+        }
+        let entry = values
+            .entries
+            .iter()
+            .find(|entry| entry.field_id == field.field.id);
+        match entry.map(|entry| &entry.state) {
+            Some(EntryState::Value(value)) => {
+                map.insert(field.field.name.clone(), json(value));
+            }
+            Some(EntryState::Redacted) => {
+                map.insert(field.field.name.clone(), json!({ "secret": true }));
+            }
+            None => {}
         }
     }
+    json!({
+        "section": values.section,
+        "configured": values.configured,
+        "values": Json::Object(map),
+    })
 }
 
-#[derive(Serialize)]
-pub struct Time {
-    pub state: &'static str,
-    pub unix_time_ms: Option<u64>,
-    pub source: Option<&'static str>,
-    pub sync_age_ms: Option<u64>,
-    pub uncertainty_ms: Option<u32>,
-    pub consecutive_failures: u32,
-    pub last_failure: Option<&'static str>,
+pub fn applied(section: &str, applied: &Applied, dry_run: bool) -> Json {
+    json!({
+        "section": section,
+        "revision": applied.revision,
+        "restart_required": applied.restart_required,
+        "dry_run": dry_run,
+    })
 }
 
-impl Time {
-    pub fn new(status: &TimeStatus) -> Self {
-        Self {
-            state: status.state.as_str(),
-            unix_time_ms: status.unix_time_ms,
-            source: status.source.map(|source| source.as_str()),
-            sync_age_ms: status.sync_age_ms,
-            uncertainty_ms: status.uncertainty_ms,
-            consecutive_failures: status.consecutive_failures,
-            last_failure: status.last_failure.map(|failure| failure.as_str()),
-        }
-    }
+pub fn actions(actions: &[ActionInfo]) -> Json {
+    json!({ "actions": actions })
 }
 
-#[derive(Serialize)]
-pub struct Identity {
-    pub state: &'static str,
-    /// The public key as a Robonomics (SS58) address.
-    pub address: Option<String>,
-    /// The public key, hex.
-    pub public_key: Option<String>,
+pub fn action_schema(schema: &ActionSchema) -> Json {
+    json!({ "action": schema.action, "args": schema.args, "results": schema.results })
 }
 
-impl Identity {
-    pub fn new(identity: &IdentityInfo) -> Self {
-        Self {
-            state: identity.state.as_str(),
-            address: identity.public_key.as_ref().map(super::identity::address),
-            public_key: identity.public_key.as_ref().map(|key| key.to_string()),
-        }
-    }
-}
-
-#[derive(Serialize)]
-pub struct Status {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub connection: Option<Connection>,
-    pub device: Device,
-    pub capabilities: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub wifi: Option<Wifi>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub time: Option<Time>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub identity: Option<Identity>,
-}
-
-#[derive(Serialize)]
-pub struct Measurement {
-    #[serde(rename = "type")]
-    pub kind: &'static str,
-    pub unit: &'static str,
-    pub value: Option<f64>,
-    pub state: &'static str,
-    pub age_ms: Option<u64>,
-}
-
-#[derive(Serialize)]
-pub struct Sensor {
-    pub name: String,
-    pub state: &'static str,
-    pub error: Option<&'static str>,
-    pub measurements: Vec<Measurement>,
-}
-
-#[derive(Serialize)]
-pub struct Sensors {
-    pub uptime_ms: u64,
-    pub sensors: Vec<Sensor>,
-}
-
-impl Sensors {
-    pub fn new(sensors: &crate::model::Sensors) -> Self {
-        Self {
-            uptime_ms: sensors.uptime_ms,
-            sensors: sensors
-                .sensors
-                .iter()
-                .map(|sensor| Sensor {
-                    name: sensor.name.clone(),
-                    state: sensor.state.as_str(),
-                    error: sensor.error.map(|error| error.as_str()),
-                    measurements: sensor
-                        .measurements
-                        .iter()
-                        .map(|m| Measurement {
-                            kind: m.kind.as_str(),
-                            unit: m.unit,
-                            value: m.value,
-                            state: m.state.as_str(),
-                            age_ms: m.age_ms,
-                        })
-                        .collect(),
-                })
-                .collect(),
-        }
-    }
-}
-
-#[derive(Serialize)]
-pub struct WifiConfig {
-    pub ssid: String,
-    pub password_configured: bool,
-}
-
-#[derive(Serialize)]
-pub struct ConnectivityConfig {
-    pub enabled: bool,
-    pub node_id: u64,
-    pub interval_s: u32,
-    pub host: String,
-    pub port: u16,
-}
-
-#[derive(Serialize)]
-pub struct Config {
-    pub wifi: Option<WifiConfig>,
-    pub connectivity: Option<ConnectivityConfig>,
-}
-
-impl Config {
-    pub fn new(config: &crate::model::Config) -> Self {
-        Self {
-            wifi: config.wifi.as_ref().map(|wifi| WifiConfig {
-                ssid: wifi.ssid.to_text(),
-                password_configured: wifi.password_configured,
-            }),
-            connectivity: config
-                .connectivity
-                .as_ref()
-                .map(|connectivity| ConnectivityConfig {
-                    enabled: connectivity.enabled,
-                    node_id: connectivity.node_id,
-                    interval_s: connectivity.interval_s,
-                    host: connectivity.host.clone(),
-                    port: connectivity.port,
-                }),
-        }
-    }
-}
-
-#[derive(Serialize)]
-pub struct Network {
-    pub ssid: String,
-    pub signal_dbm: i32,
-    pub channel: u32,
-    pub security: &'static str,
-}
-
-#[derive(Serialize)]
-pub struct Networks {
-    pub networks: Vec<Network>,
-}
-
-impl Networks {
-    pub fn new(networks: &[WifiNetwork]) -> Self {
-        Self {
-            networks: networks
-                .iter()
-                .map(|network| Network {
-                    ssid: network.ssid.to_text(),
-                    signal_dbm: network.rssi_dbm,
-                    channel: network.channel,
-                    security: network.security.as_str(),
-                })
-                .collect(),
-        }
-    }
-}
-
-#[derive(Serialize)]
-pub struct Provisioned {
-    pub ok: bool,
-    pub address: String,
-    pub public_key: String,
-}
-
-#[derive(Serialize)]
-pub struct Connected {
-    pub ok: bool,
-    /// The configuration is stored on the device.
-    pub stored: bool,
-    /// The device reported being connected.
-    pub connected: bool,
-    pub wifi: Option<Wifi>,
-}
-
-#[derive(Serialize)]
-pub struct Written {
-    pub ok: bool,
-    pub file: String,
+pub fn records(records: &[Record], schema: &ActionSchema) -> Json {
+    let records: Vec<Json> = records
+        .iter()
+        .map(|record| values(record, &schema.results))
+        .collect();
+    json!({ "records": records, "units": units(&schema.results) })
 }

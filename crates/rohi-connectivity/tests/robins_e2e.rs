@@ -100,6 +100,10 @@ impl IpBackend for StdIp {
         true
     }
 
+    fn usage(&self) -> rohi_net::IpUsage {
+        rohi_net::IpUsage::default()
+    }
+
     async fn resolve(&self, _: &str, _: AddrType) -> Result<core::net::IpAddr, NetError> {
         Err(NetError::DnsFailed)
     }
@@ -262,6 +266,7 @@ fn a_rohi_frame_is_accepted_by_the_robins_ingress() {
             ServiceConfig::new(7, 60_000),
             &shared,
             Fixed(snapshot()),
+            &rohi_location::NoLocation,
             &uptime,
             &utc,
             &signer,

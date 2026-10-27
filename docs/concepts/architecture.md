@@ -31,7 +31,7 @@ Rules that keep this picture true:
    `rohi-net-esp` or on `rohi-control*`; `rohi-hal` never depends on `rohi-net`; portable crates never depend on
    `esp-*` crates. See [Portability](portability.md).
 2. **Feature crates own their own `ConfigSection`.** `rohi-config` never learns the set of application sections:
-   `rohi-net` owns `WifiConfig`, `rohi-identity` owns the `Identity` section. A section type lives next to the code that
+   `rohi-net` owns `WifiConfig`, `NetworkConfig` and `BleSettings`, `rohi-identity` owns the `Identity` section. A section type lives next to the code that
    interprets it, and the firmware only wires the section to its runtime. See
    [Add a ConfigSection](../guides/add-config-section.md).
 3. **Stateful services have one owner task** and are reached through bounded handles:
@@ -51,8 +51,8 @@ sensor tasks ─► SensorEvent ─► EVENTS (bounded) ─► store task ─►
 
 BLE write ─► rohi-net-esp (EspBle, bounded RX) ─► rohi-control-ble (reassemble) ─► Controller
           ◄─ bounded TX ◄─ fragment ◄─ response ◄─────────────────────────────────┘
-                                           │ ControlServices (firmware adapter)
-                      MeasurementHandle · ConfigHandle · WifiHandle
+                                           │ ControlBackend (registries of rohi-service)
+                  config sections (ConfigHandle) · services (MeasurementHandle, WifiHandle, ...)
 
 ConfigHandle::set(WifiConfig) ─► config owner task ─ commit ─► publish desired Wi-Fi config ─► WifiManager
                                                                                                  │

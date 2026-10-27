@@ -24,6 +24,7 @@ use minicbor::encode::{self, Encoder, Write};
 use minicbor::{CborLen, Decode, Encode};
 use rohi_config::ConfigSection;
 
+use crate::network::NetworkConfig;
 use crate::{MAX_SSID_LEN, MAX_WIFI_PASSWORD_LEN, MIN_WIFI_PASSWORD_LEN, WifiError};
 
 /// CBOR codec of a bounded byte vector: a CBOR byte string.
@@ -147,47 +148,109 @@ impl fmt::Debug for WifiPassword {
     }
 }
 
-/// Persistent Wi-Fi station configuration (section `WifiConfig`).
+/// Default first delay before a reconnect attempt.
+pub const DEFAULT_BACKOFF_INITIAL_MS: u32 = 1_000;
+/// Default longest delay between reconnect attempts.
+pub const DEFAULT_BACKOFF_MAX_MS: u32 = 60_000;
+/// Default interval of refreshing the connection details while connected.
+pub const DEFAULT_LINK_REFRESH_MS: u32 = 10_000;
+/// Default bound of a network scan.
+pub const DEFAULT_SCAN_TIMEOUT_MS: u32 = 20_000;
+/// Default bound of associating with the access point.
+pub const DEFAULT_CONNECT_TIMEOUT_MS: u32 = 30_000;
+
+/// Inclusive bounds of the timing fields, in milliseconds.
+pub const BACKOFF_INITIAL_RANGE_MS: (u32, u32) = (100, 600_000);
+/// See [`BACKOFF_INITIAL_RANGE_MS`].
+pub const BACKOFF_MAX_RANGE_MS: (u32, u32) = (100, 3_600_000);
+/// See [`BACKOFF_INITIAL_RANGE_MS`].
+pub const LINK_REFRESH_RANGE_MS: (u32, u32) = (1_000, 600_000);
+/// See [`BACKOFF_INITIAL_RANGE_MS`].
+pub const SCAN_TIMEOUT_RANGE_MS: (u32, u32) = (1_000, 120_000);
+/// See [`BACKOFF_INITIAL_RANGE_MS`].
+pub const CONNECT_TIMEOUT_RANGE_MS: (u32, u32) = (5_000, 120_000);
+
+fn within(value: u32, (min, max): (u32, u32)) -> bool {
+    (min..=max).contains(&value)
+}
+
+/// Persistent Wi-Fi configuration (section `WifiConfig`, shown to clients as
+/// `wifi`): the network to join and the timing of joining it.
 ///
 /// An open network is represented by `password == None`, never by an empty
 /// password.
 ///
-/// The CBOR representation is persistent ABI and declared explicitly
-/// (`#[cbor(array)]`); see `cbor_encoding_is_stable`.
+/// Persistent ABI: the CBOR array is pinned by a golden test; fields are
+/// only ever appended.
 #[derive(Clone, PartialEq, Eq, Encode, Decode, CborLen, ConfigSection)]
 #[cbor(array)]
 #[config(version = 1)]
 pub struct WifiConfig {
+    /// Network name.
     #[n(0)]
     pub ssid: WifiSsid,
+    /// Passphrase, `None` for an open network.
     #[n(1)]
     pub password: Option<WifiPassword>,
+    /// Bound of a network scan.
+    #[n(2)]
+    pub scan_timeout_ms: u32,
+    /// Bound of associating with the access point.
+    #[n(3)]
+    pub connect_timeout_ms: u32,
+    /// First delay before a reconnect attempt, doubling up to `backoff_max_ms`.
+    #[n(4)]
+    pub backoff_initial_ms: u32,
+    /// Longest delay between reconnect attempts.
+    #[n(5)]
+    pub backoff_max_ms: u32,
+    /// Interval of refreshing the connection details while connected; the
+    /// link counts as stable after one such interval.
+    #[n(6)]
+    pub link_refresh_ms: u32,
 }
 
 impl WifiConfig {
+    /// A configuration for `ssid` and `password` with the default timing.
     pub const fn new(ssid: WifiSsid, password: Option<WifiPassword>) -> Self {
-        Self { ssid, password }
+        Self {
+            ssid,
+            password,
+            scan_timeout_ms: DEFAULT_SCAN_TIMEOUT_MS,
+            connect_timeout_ms: DEFAULT_CONNECT_TIMEOUT_MS,
+            backoff_initial_ms: DEFAULT_BACKOFF_INITIAL_MS,
+            backoff_max_ms: DEFAULT_BACKOFF_MAX_MS,
+            link_refresh_ms: DEFAULT_LINK_REFRESH_MS,
+        }
     }
 
     /// Checks the configuration before it is persisted or applied.
     pub fn validate(&self) -> Result<(), WifiError> {
-        if self.ssid.is_empty() {
-            return Err(WifiError::InvalidConfig);
-        }
-        match &self.password {
-            None => Ok(()),
-            Some(password) if password.len() >= MIN_WIFI_PASSWORD_LEN => Ok(()),
-            Some(_) => Err(WifiError::InvalidConfig),
+        let valid = !self.ssid.is_empty()
+            && self
+                .password
+                .as_ref()
+                .is_none_or(|password| password.len() >= MIN_WIFI_PASSWORD_LEN)
+            && within(self.scan_timeout_ms, SCAN_TIMEOUT_RANGE_MS)
+            && within(self.connect_timeout_ms, CONNECT_TIMEOUT_RANGE_MS)
+            && within(self.backoff_initial_ms, BACKOFF_INITIAL_RANGE_MS)
+            && within(self.backoff_max_ms, BACKOFF_MAX_RANGE_MS)
+            && self.backoff_initial_ms <= self.backoff_max_ms
+            && within(self.link_refresh_ms, LINK_REFRESH_RANGE_MS);
+        if valid {
+            Ok(())
+        } else {
+            Err(WifiError::InvalidConfig)
         }
     }
 
-    /// Replaces the SSID and keeps the stored password.
+    /// Replaces the SSID and keeps the rest.
     pub fn with_ssid(mut self, ssid: WifiSsid) -> Self {
         self.ssid = ssid;
         self
     }
 
-    /// Replaces (`Some`) or clears (`None`) the password and keeps the SSID.
+    /// Replaces (`Some`) or clears (`None`) the password and keeps the rest.
     pub fn with_password(mut self, password: Option<WifiPassword>) -> Self {
         self.password = password;
         self
@@ -199,7 +262,30 @@ impl fmt::Debug for WifiConfig {
         f.debug_struct("WifiConfig")
             .field("ssid", &self.ssid)
             .field("password", &self.password)
+            .field("scan_timeout_ms", &self.scan_timeout_ms)
+            .field("connect_timeout_ms", &self.connect_timeout_ms)
+            .field("backoff_initial_ms", &self.backoff_initial_ms)
+            .field("backoff_max_ms", &self.backoff_max_ms)
+            .field("link_refresh_ms", &self.link_refresh_ms)
             .finish()
+    }
+}
+
+/// Everything the radio needs to join a network and get an address: the
+/// [`WifiConfig`] and the IPv4 settings of the [`NetworkConfig`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LinkConfig {
+    /// Network, credentials and timing.
+    pub wifi: WifiConfig,
+    /// How the address is obtained.
+    pub network: NetworkConfig,
+}
+
+impl LinkConfig {
+    /// Checks both parts.
+    pub fn validate(&self) -> Result<(), WifiError> {
+        self.wifi.validate()?;
+        self.network.validate()
     }
 }
 
@@ -207,73 +293,9 @@ impl fmt::Debug for WifiConfig {
 mod tests {
     extern crate std;
 
-    use std::format;
-
-    use rohi_config::{ConfigStore, MemoryStorage};
+    use rohi_config::{ConfigStore, MemoryStorage, SectionId};
 
     use super::*;
-
-    fn ssid(value: &str) -> WifiSsid {
-        WifiSsid::from_bytes(value.as_bytes()).unwrap()
-    }
-
-    fn password(value: &str) -> WifiPassword {
-        WifiPassword::from_bytes(value.as_bytes()).unwrap()
-    }
-
-    const BUFFER: usize = 128;
-
-    fn roundtrip(config: WifiConfig) -> WifiConfig {
-        let mut buffer = [0u8; BUFFER];
-        let used = rohi_config::encode_to_slice(&config, &mut buffer).unwrap();
-        assert_eq!(used, minicbor::len(config));
-        rohi_config::decode_exact(&buffer[..used]).unwrap()
-    }
-
-    #[test]
-    fn section_id_and_version() {
-        use rohi_config::{ConfigSection, SectionId};
-        // Struct name, no module path: renaming the type changes persisted data.
-        assert_eq!(WifiConfig::ID, SectionId::from_name("WifiConfig"));
-        assert_eq!(WifiConfig::ID, SectionId(0x3352_46ad_2024_8b26));
-        assert_eq!(WifiConfig::VERSION, 1);
-    }
-
-    #[test]
-    fn cbor_encoding_is_stable() {
-        let mut buffer = [0u8; BUFFER];
-        let config = WifiConfig::new(ssid("ab"), None);
-        let used = rohi_config::encode_to_slice(&config, &mut buffer).unwrap();
-        // A trailing `None` is omitted from the array.
-        assert_eq!(&buffer[..used], [0x81, 0x42, 0x61, 0x62]);
-        let config = WifiConfig::new(ssid("ab"), Some(password("pw")));
-        let used = rohi_config::encode_to_slice(&config, &mut buffer).unwrap();
-        assert_eq!(&buffer[..used], [0x82, 0x42, 0x61, 0x62, 0x42, 0x70, 0x77]);
-    }
-
-    #[test]
-    fn roundtrip_with_password() {
-        let config = WifiConfig::new(ssid("office"), Some(password("hunter2hunter2")));
-        assert_eq!(roundtrip(config.clone()), config);
-    }
-
-    #[test]
-    fn roundtrip_open_network() {
-        let config = WifiConfig::new(ssid("guest"), None);
-        assert_eq!(roundtrip(config).password, None);
-    }
-
-    #[test]
-    fn boundary_lengths_roundtrip() {
-        let long_ssid = WifiSsid::from_bytes(&[b'a'; MAX_SSID_LEN]).unwrap();
-        let long_password = WifiPassword::from_bytes(&[b'p'; MAX_WIFI_PASSWORD_LEN]).unwrap();
-        let config = WifiConfig::new(long_ssid, Some(long_password));
-        let mut buffer = [0u8; BUFFER];
-        let used = rohi_config::encode_to_slice(&config, &mut buffer).unwrap();
-        // array(2), ssid (2 byte head + 32), password (2 byte head + 64).
-        assert_eq!(used, 1 + 2 + MAX_SSID_LEN + 2 + MAX_WIFI_PASSWORD_LEN);
-        assert_eq!(roundtrip(config.clone()), config);
-    }
 
     #[test]
     fn oversized_values_are_rejected() {
@@ -287,50 +309,148 @@ mod tests {
         assert!(rohi_config::decode_exact::<WifiSsid>(&payload[..34]).is_err());
     }
 
+    fn ssid(value: &str) -> WifiSsid {
+        WifiSsid::from_bytes(value.as_bytes()).unwrap()
+    }
+
+    fn password(value: &str) -> WifiPassword {
+        WifiPassword::from_bytes(value.as_bytes()).unwrap()
+    }
+
+    fn encode(config: &WifiConfig) -> std::vec::Vec<u8> {
+        let mut buffer = [0u8; 256];
+        let used = rohi_config::encode_to_slice(config, &mut buffer).unwrap();
+        assert_eq!(used, minicbor::len(config));
+        buffer[..used].to_vec()
+    }
+
+    fn roundtrip(config: &WifiConfig) -> WifiConfig {
+        rohi_config::decode_exact(&encode(config)).unwrap()
+    }
+
     #[test]
-    fn debug_never_prints_password() {
+    fn the_section_id_is_derived_from_the_type_name() {
+        assert_eq!(WifiConfig::ID, SectionId::from_name("WifiConfig"));
+        assert_eq!(WifiConfig::VERSION, 1);
+        assert_eq!(WifiConfig::ID, SectionId(0x3352_46ad_2024_8b26));
+    }
+
+    #[test]
+    fn the_cbor_encoding_is_stable() {
+        assert_eq!(
+            encode(&WifiConfig::new(ssid("ab"), None)),
+            [
+                0x87, // array(7)
+                0x42, 0x61, 0x62, // ssid
+                0xf6, // password
+                0x19, 0x4e, 0x20, // scan_timeout_ms 20000
+                0x19, 0x75, 0x30, // connect_timeout_ms 30000
+                0x19, 0x03, 0xe8, // backoff_initial_ms 1000
+                0x19, 0xea, 0x60, // backoff_max_ms 60000
+                0x19, 0x27, 0x10, // link_refresh_ms 10000
+            ]
+        );
+    }
+
+    #[test]
+    fn other_layouts_and_trailing_bytes_are_rejected() {
+        assert!(rohi_config::decode_exact::<WifiConfig>(&[0x81, 0x42, 0x61, 0x62]).is_err());
+        let mut bytes = encode(&WifiConfig::new(ssid("ab"), None));
+        bytes.push(0x00);
+        assert!(rohi_config::decode_exact::<WifiConfig>(&bytes).is_err());
+    }
+
+    #[test]
+    fn the_largest_value_fits_a_section() {
+        let mut config = WifiConfig::new(
+            WifiSsid::from_bytes(&[b'a'; MAX_SSID_LEN]).unwrap(),
+            Some(WifiPassword::from_bytes(&[b'p'; MAX_WIFI_PASSWORD_LEN]).unwrap()),
+        );
+        config.backoff_max_ms = u32::MAX;
+        assert!(minicbor::len(&config) <= rohi_config::MAX_SECTION_PAYLOAD);
+        assert_eq!(roundtrip(&config), config);
+    }
+
+    #[test]
+    fn debug_never_prints_the_password() {
         let config = WifiConfig::new(ssid("office"), Some(password("super-secret-pass")));
-        let text = format!("{config:?} {:?}", config.password);
+        let text = std::format!("{config:?}");
         assert!(!text.contains("super-secret-pass"));
         assert!(text.contains("<redacted>"));
         assert!(text.contains("office"));
     }
 
     #[test]
-    fn validate_rules() {
+    fn the_defaults_validate_once_a_network_is_set() {
         assert_eq!(
             WifiConfig::new(WifiSsid::empty(), None).validate(),
             Err(WifiError::InvalidConfig)
         );
+        assert_eq!(WifiConfig::new(ssid("a"), None).validate(), Ok(()));
         assert_eq!(
             WifiConfig::new(ssid("a"), Some(password("short"))).validate(),
             Err(WifiError::InvalidConfig)
         );
-        assert!(WifiConfig::new(ssid("a"), None).validate().is_ok());
-        assert!(
-            WifiConfig::new(ssid("a"), Some(password("longenough")))
-                .validate()
-                .is_ok()
+        assert_eq!(
+            WifiConfig::new(ssid("a"), Some(password("longenough"))).validate(),
+            Ok(())
         );
     }
 
     #[test]
-    fn partial_update_preserves_password() {
-        let config = WifiConfig::new(ssid("old"), Some(password("hunter2hunter2")));
+    fn the_timing_is_bounded_and_ordered() {
+        let base = WifiConfig::new(ssid("a"), None);
+        let invalid = |config: WifiConfig| config.validate() == Err(WifiError::InvalidConfig);
+        assert!(invalid(WifiConfig {
+            backoff_initial_ms: 0,
+            ..base.clone()
+        }));
+        assert!(invalid(WifiConfig {
+            backoff_max_ms: 500,
+            ..base.clone()
+        }));
+        assert!(invalid(WifiConfig {
+            backoff_max_ms: u32::MAX,
+            ..base.clone()
+        }));
+        assert!(invalid(WifiConfig {
+            link_refresh_ms: 0,
+            ..base.clone()
+        }));
+        assert!(invalid(WifiConfig {
+            scan_timeout_ms: 0,
+            ..base.clone()
+        }));
+        assert!(invalid(WifiConfig {
+            connect_timeout_ms: 1_000,
+            ..base.clone()
+        }));
+        let equal = WifiConfig {
+            backoff_initial_ms: 5_000,
+            backoff_max_ms: 5_000,
+            ..base
+        };
+        assert_eq!(equal.validate(), Ok(()));
+    }
+
+    #[test]
+    fn a_partial_update_preserves_the_rest() {
+        let config = WifiConfig {
+            scan_timeout_ms: 5_000,
+            ..WifiConfig::new(ssid("old"), Some(password("hunter2hunter2")))
+        };
         let updated = config.clone().with_ssid(ssid("new"));
         assert_eq!(updated.ssid, ssid("new"));
         assert_eq!(updated.password, config.password);
+        assert_eq!(updated.scan_timeout_ms, 5_000);
 
-        let replaced = updated.with_password(Some(password("another-password")));
-        assert_eq!(replaced.password, Some(password("another-password")));
-
-        let cleared = replaced.with_password(None);
+        let cleared = updated.with_password(None);
         assert_eq!(cleared.password, None);
         assert_eq!(cleared.ssid, ssid("new"));
     }
 
     #[test]
-    fn persists_in_config_store_and_can_be_removed() {
+    fn it_persists_in_the_config_store_and_can_be_removed() {
         let mut store = ConfigStore::open(MemoryStorage::<16384>::new()).unwrap();
         let config = WifiConfig::new(ssid("office"), Some(password("hunter2hunter2")));
         store.set(&config).unwrap();

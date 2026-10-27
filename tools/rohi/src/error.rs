@@ -20,7 +20,9 @@ use rohi_control_ble::frame::FrameError;
 use rohi_control_proto::{DecodeError, EncodeError};
 use thiserror::Error;
 
-use crate::model::{Capability, ErrorCode, PublicKey};
+use rohi_identity::PublicKey;
+
+use crate::model::ErrorCode;
 
 /// Everything that can go wrong talking to a device.
 #[derive(Debug, Error)]
@@ -40,15 +42,20 @@ pub enum Error {
     /// A frame could not be built or was rejected.
     #[error("framing: {0}")]
     Frame(FrameError),
+    /// A service kept changing while its status was read, so the compact and
+    /// the detailed status never described the same revision.
+    #[error("service {0} changed while its status was read; try again")]
+    StatusChanging(String),
     /// The request or response does not fit the protocol limits.
     #[error("message too large")]
     TooLarge,
     /// The device answered with a typed protocol error.
     #[error("device error: {0}")]
     Device(ErrorCode),
-    /// The device does not offer the needed capability.
-    #[error("the device does not support {0}")]
-    Unsupported(Capability),
+    /// The action ran and was refused for a stable reason, for example
+    /// `already_provisioned`.
+    #[error("rejected by the device: {0}")]
+    Rejected(String),
     /// A value given by the caller is invalid.
     #[error("invalid input: {0}")]
     InvalidInput(String),

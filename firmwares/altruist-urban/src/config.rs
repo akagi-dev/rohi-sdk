@@ -41,16 +41,19 @@
 //! There is deliberately no generic "erase every section" operation on
 //! [`ConfigHandle`]: ordinary configuration maintenance (`remove` of one
 //! section) must never touch unrelated or future protected sections such as an
-//! identity. A full factory reset, if ever needed, has to be an explicit,
-//! privileged operation of its own.
+//! identity. The full factory reset is an explicit, privileged operation of its
+//! own: [`StorageMaintenance::factory_reset`] formats the whole region.
 //!
 //! Persistent Wi-Fi configuration is *state*: after the owner task committed a
-//! `WifiConfig` section (and once at boot, from the stored value) it publishes
-//! the value to the Wi-Fi manager as the desired configuration, synchronously,
-//! in the same task step as the commit. The `Identity` section works the same
+//! `WifiConfig` or `NetworkConfig` section (and once at boot, from the stored
+//! values) it publishes the value to the Wi-Fi manager as the desired
+//! configuration, synchronously, in the same task step as the commit. The `Identity` section works the same
 //! way: the owner updates the signer in the commit step. So does
+//! `LocationConfig`: the shared location is updated for the telemetry frames and
+//! the `location` service. So does
 //! `ConnectivityConfig`: the telemetry task is signalled and restarts with the
-//! new values. There is no `.await` between commit and
+//! new values. So does `NtpServersConfig`: the NTP task restarts with the new
+//! servers. There is no `.await` between commit and
 //! publication, so a caller that is cancelled while waiting for the response
 //! cannot leave a stored configuration unknown to the runtime.
 //!
@@ -76,10 +79,12 @@ use rohi_config_esp::{EspConfigStorage, EspStorageError};
 
 use rohi_connectivity::ConnectivityConfig;
 use rohi_identity::Identity;
-use rohi_net::{WifiConfig, WifiHandle};
+use rohi_location::LocationConfig;
+use rohi_net::{NetworkConfig, WifiConfig, WifiHandle};
+use rohi_time_ntp::NtpServersConfig;
 
 use crate::tasks::RawMutex;
-use crate::{connectivity, identity};
+use crate::{connectivity, identity, location, time};
 
 /// Configuration storage of the Altruist Urban.
 pub type Storage = EspConfigStorage<FlashStorage<'static>>;
@@ -183,6 +188,7 @@ enum Command {
     Set { id: SectionId, blob: Blob },
     Remove(SectionId),
     FormatStorage,
+    FactoryReset,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -272,7 +278,7 @@ impl ConfigHandle {
     ///
     /// Cancellation: dropping the future before the request is queued leaves
     /// the store unchanged; afterwards the owner task still commits it (and
-    /// publishes a `WifiConfig` to the Wi-Fi runtime), so the operation is
+    /// publishes a `NetworkConfig` to the Wi-Fi runtime), so the operation is
     /// logically completed and the caller only misses the result.
     pub async fn set<T: ConfigSection>(&self, value: &T) -> Result<(), ServiceError> {
         let mut blob = Blob::empty();
@@ -299,10 +305,12 @@ impl ConfigHandle {
     }
 }
 
-/// Low-level recovery of unusable storage.
+/// Low-level operations on the whole configuration storage: recovery of
+/// unusable storage and factory reset.
 ///
-/// Kept apart from [`ConfigHandle`] on purpose: it is not a configuration
-/// mutation and must never be reachable from the normal (future control) API.
+/// Kept apart from [`ConfigHandle`] on purpose: they are not configuration
+/// mutations of one section and must not be reachable from ordinary section
+/// maintenance.
 #[derive(Clone, Copy)]
 pub struct StorageMaintenance {
     service: &'static ConfigService,
@@ -326,6 +334,24 @@ impl StorageMaintenance {
             _ => unreachable!("format request answered with another outcome"),
         }
     }
+
+    /// Factory reset: formats the configuration region whatever its state,
+    /// healthy or not, and returns every runtime consumer (Wi-Fi, identity,
+    /// connectivity, NTP, location) to its defaults in the same step.
+    ///
+    /// Everything is discarded: the sections of this firmware, the identity,
+    /// sections it does not know and the generation counter. A missing
+    /// partition cannot be formatted and fails with [`ServiceError::Unavailable`].
+    pub async fn factory_reset(&self) -> Result<(), ServiceError> {
+        let handle = ConfigHandle {
+            service: self.service,
+        };
+        match handle.call(Command::FactoryReset).await {
+            Outcome::Done => Ok(()),
+            Outcome::Failed(error) => Err(error),
+            _ => unreachable!("factory reset request answered with another outcome"),
+        }
+    }
 }
 
 /// What the owner task holds.
@@ -344,6 +370,9 @@ impl Owner {
     fn handle(&mut self, command: Command, wifi: WifiHandle<'static, RawMutex>) -> Outcome {
         if let Command::FormatStorage = command {
             return self.format_storage();
+        }
+        if let Command::FactoryReset = command {
+            return self.factory_reset(wifi);
         }
         match self {
             Self::Unavailable { reason, .. } => match command {
@@ -380,8 +409,62 @@ impl Owner {
                     }
                     Err(error) => Outcome::Failed(ServiceError::Store(error)),
                 },
-                Command::FormatStorage => unreachable!("handled above"),
+                Command::FormatStorage | Command::FactoryReset => unreachable!("handled above"),
             },
+        }
+    }
+
+    /// Formats the region whatever its state, then returns the runtime to the
+    /// defaults. Unlike [`Self::format_storage`] it also acts on a healthy
+    /// store, so it erases the identity and sections unknown to this firmware.
+    fn factory_reset(&mut self, wifi: WifiHandle<'static, RawMutex>) -> Outcome {
+        if let Self::Unavailable {
+            reason,
+            storage: None,
+        } = self
+        {
+            return Outcome::Failed(ServiceError::Unavailable(reason.clone()));
+        }
+        // Every path below puts a real state back.
+        let taken = core::mem::replace(
+            self,
+            Self::Unavailable {
+                reason: Unavailable::Partition(PartitionError::NotFound),
+                storage: None,
+            },
+        );
+        let raw = match taken {
+            Self::Ready(store) => store.into_storage(),
+            Self::Unavailable {
+                storage: Some(raw), ..
+            } => raw,
+            Self::Unavailable { .. } => unreachable!("checked above"),
+        };
+        match ConfigStore::format(raw) {
+            Ok(store) => {
+                warn!("Configuration: factory reset, region formatted");
+                *self = Self::Ready(store);
+                for id in [
+                    WifiConfig::ID,
+                    NetworkConfig::ID,
+                    Identity::ID,
+                    ConnectivityConfig::ID,
+                    NtpServersConfig::ID,
+                    LocationConfig::ID,
+                ] {
+                    publish_committed(wifi, id, None);
+                }
+                Outcome::Done
+            }
+            Err(failure) => {
+                error!("Configuration: factory reset failed: {}", failure.error);
+                let error = failure.error.clone();
+                *self = Self::Unavailable {
+                    reason: Unavailable::Open(failure.error),
+                    storage: Some(failure.storage),
+                };
+                Outcome::Failed(ServiceError::Store(error))
+            }
         }
     }
 
@@ -486,7 +569,8 @@ async fn config_task(
 /// (unprovisioned) configuration. [`maintenance`] can format it.
 ///
 /// `wifi` receives the desired Wi-Fi configuration: the stored one now, and
-/// every later commit of the `WifiConfig` section, see the module documentation.
+/// every later commit of the `WifiConfig` and `NetworkConfig` sections, see the
+/// module documentation.
 pub fn start(
     spawner: Spawner,
     flash: FLASH<'static>,
@@ -494,6 +578,7 @@ pub fn start(
 ) -> ConfigHandle {
     let mut owner = open(flash);
     publish_stored_wifi(&mut owner, wifi);
+    publish_stored_location(&mut owner, wifi);
     spawner.spawn(config_task(&SERVICE, owner, wifi).unwrap());
     ConfigHandle { service: &SERVICE }
 }
@@ -505,10 +590,11 @@ pub fn maintenance() -> StorageMaintenance {
 }
 
 /// Publishes a just committed (or removed) section to the runtime that
-/// depends on it: `WifiConfig` becomes the desired Wi-Fi configuration,
+/// depends on it: `WifiConfig` and `NetworkConfig` become the desired Wi-Fi
+/// and IPv4 configuration,
 /// `Identity` becomes the signing identity, `ConnectivityConfig` is handed to
-/// the telemetry task. Synchronous on purpose, see the
-/// module documentation. Other sections have no runtime consumer.
+/// the telemetry task, `NtpServersConfig` to the NTP task. Synchronous on
+/// purpose, see the module documentation. Other sections have no runtime consumer.
 fn publish_committed(wifi: WifiHandle<'static, RawMutex>, id: SectionId, blob: Option<&Blob>) {
     if id == Identity::ID {
         match blob {
@@ -535,29 +621,93 @@ fn publish_committed(wifi: WifiHandle<'static, RawMutex>, id: SectionId, blob: O
         }
         return;
     }
-    if id != WifiConfig::ID {
+    if id == NtpServersConfig::ID {
+        match blob {
+            None => time::publish(None),
+            Some(blob) => match NtpServersConfig::decode_versioned(blob.version, blob.payload()) {
+                Ok(config) => time::publish(Some(config)),
+                Err(error) => warn!("Time: committed NTP servers cannot be decoded: {}", error),
+            },
+        }
+        return;
+    }
+    if id == LocationConfig::ID {
+        match blob {
+            None => location::shared().publish_configured(None),
+            Some(blob) => match LocationConfig::decode_versioned(blob.version, blob.payload()) {
+                Ok(config) => location::shared().publish_configured(Some(&config)),
+                Err(error) => warn!(
+                    "Location: committed configuration cannot be decoded: {}",
+                    error
+                ),
+            },
+        }
+        return;
+    }
+    if id == WifiConfig::ID {
+        match blob {
+            None => wifi.set_wifi_config(None),
+            Some(blob) => match WifiConfig::decode_versioned(blob.version, blob.payload()) {
+                Ok(config) => wifi.set_wifi_config(Some(config)),
+                Err(error) => warn!(
+                    "Wi-Fi: committed configuration cannot be decoded: {}",
+                    error
+                ),
+            },
+        }
+        return;
+    }
+    if id != NetworkConfig::ID {
         return;
     }
     match blob {
-        None => wifi.set_desired_config(None),
-        Some(blob) => match WifiConfig::decode_versioned(blob.version, blob.payload()) {
-            Ok(config) => wifi.set_desired_config(Some(config)),
+        None => wifi.set_network_config(NetworkConfig::new()),
+        Some(blob) => match NetworkConfig::decode_versioned(blob.version, blob.payload()) {
+            Ok(config) => wifi.set_network_config(config),
             Err(error) => warn!(
-                "Wi-Fi: committed configuration cannot be decoded: {}",
+                "Network: committed configuration cannot be decoded: {}",
                 error
             ),
         },
     }
 }
 
-/// Publishes the stored Wi-Fi configuration at boot. Without one the Wi-Fi
-/// manager stays `NotConfigured` and attempts nothing.
+/// Publishes the stored location at boot; without one the device does not
+/// know where it is and telemetry reports that.
+fn publish_stored_location(owner: &mut Owner, wifi: WifiHandle<'static, RawMutex>) {
+    let Owner::Ready(store) = owner else {
+        return;
+    };
+    let mut blob = Blob::empty();
+    match store.read_raw(LocationConfig::ID, &mut blob.bytes) {
+        Ok(Some(info)) => {
+            blob.version = info.version;
+            blob.len = info.length;
+            publish_committed(wifi, LocationConfig::ID, Some(&blob));
+        }
+        Ok(None) => info!("Location: not set"),
+        Err(error) => warn!("Location configuration unreadable: {}", error),
+    }
+}
+
+/// Publishes the stored Wi-Fi and network configuration at boot. Without a
+/// Wi-Fi one the manager stays `NotConfigured` and attempts nothing; without a
+/// network one the address comes from DHCP.
 fn publish_stored_wifi(owner: &mut Owner, wifi: WifiHandle<'static, RawMutex>) {
     let Owner::Ready(store) = owner else {
         warn!("Wi-Fi: configuration unavailable, not configured");
         return;
     };
     let mut blob = Blob::empty();
+    match store.read_raw(NetworkConfig::ID, &mut blob.bytes) {
+        Ok(Some(info)) => {
+            blob.version = info.version;
+            blob.len = info.length;
+            publish_committed(wifi, NetworkConfig::ID, Some(&blob));
+        }
+        Ok(None) => info!("Network: default address settings"),
+        Err(error) => warn!("Network configuration unreadable: {}", error),
+    }
     match store.read_raw(WifiConfig::ID, &mut blob.bytes) {
         Ok(Some(info)) => {
             blob.version = info.version;

@@ -40,9 +40,9 @@ generation tracking, CRC validation and power-loss recovery. There is no separat
 
 * Section type `Identity`, ID `0x94d63573d312fe9b` (FNV-1a of the struct name), version 1.
 * CBOR: `[bytes(32)]` (`#[cbor(array)]`), pinned by a golden byte test. This is persistent ABI.
-* The generic configuration API (`GetConfig` / `UpdateConfig`) only knows Wi-Fi; the identity section is unreachable
-  through it.
-* Ordinary configuration changes, removing another section and OTA never touch it. Only `EraseIdentity` removes it.
+* The identity is **not** a config section of the generic configuration API: `identity` is a service whose secret is a
+  write-only action argument, so no config request can read, patch or reset it.
+* Ordinary configuration changes, removing another section and OTA never touch it. Only the `erase` action removes it.
 * A corrupted store is reported as unavailable, never as "not provisioned".
 
 ## Boot behaviour
@@ -50,6 +50,11 @@ generation tracking, CRC validation and power-loss recovery. There is no separat
 On boot the firmware reads the `Identity` section. If it is absent the device is *not provisioned*: sensors, BLE
 control and diagnostics keep working, and only operations that need the identity fail with `IdentityNotProvisioned`.
 There is no automatic generation fallback. The log shows only the public key, never the secret.
+
+The firmware keeps the result as runtime state (not provisioned, provisioned with its public key, or unknown when the
+storage could not be read) next to the signer. `provision` and `erase` update it in the same step as the commit, and the
+service reads only that state for its summary, issues and status: observing the identity does not read the persistent
+store. Only an unknown state reads the store again, so a storage that was unavailable at boot recovers.
 
 ## Derivation (provisioning ABI)
 
@@ -79,22 +84,27 @@ walk`, never a production master) live in `tools/rohi/src/provision/tests.rs`:
 | 2 | `0x276b9ce3c58b9f009f4f1f2ae5c7e9a599796246165df52f2d8b857fcecb1a40` |
 | 42 | `0x8743ca72162320542b15ef0e66995fac97cd295626627046c41f64f796bcf2f3` |
 
-## Control protocol
+## Control plane
 
-| Request | Capability | Link privilege | Effect |
-|---------|------------|----------------|--------|
-| `GetIdentity` | `IDENTITY` | read | `IdentityInfo { state, public_key? }` |
-| `ProvisionIdentity { ed25519_secret }` | `IDENTITY` | provision | stores the identity, returns its public key |
-| `EraseIdentity` | `IDENTITY` | provision | removes the identity section; no-op when absent |
+The identity is the `identity` [service](service.md) of `rohi-identity` (`IdentityService` over an `IdentityStore` that
+the firmware implements on its configuration handle):
 
-* `IdentityState`: `NOT_PROVISIONED` (no public key) or `PROVISIONED` (32-byte public key).
-* `ProvisionIdentity` succeeds only when not provisioned, otherwise `IDENTITY_ALREADY_PROVISIONED`. An existing
-  identity is never silently replaced; erase it explicitly first.
+| Request | Link privilege | Effect |
+|---------|----------------|--------|
+| `GetServiceStatus identity` | read | `provisioned` and the 32-byte `public_key` (absent when not provisioned) |
+| `InvokeAction identity.provision { secret }` | provision (secret argument) | stores the identity, returns its public key |
+| `InvokeAction identity.erase` | mutate | removes the identity section; no-op when absent |
+
+`rohi status identity` shows the state; `rohi action run identity provision secret=-` runs the action.
+
+* A status of `stopped` with the informational issue `not_provisioned` is the normal state of a fresh device.
+* `provision` succeeds only when not provisioned, otherwise it is *rejected* with the reason `already_provisioned`. An
+  existing identity is never silently replaced; erase it explicitly first.
 * A secret that is not exactly 32 bytes is `INVALID_ARGUMENT`. After storing, the device reads the identity back and
   compares the public key before answering.
-* No response ever carries the secret. The request type has no `Debug` output so the secret cannot reach a log.
-* Errors: `IDENTITY_NOT_PROVISIONED`, `IDENTITY_ALREADY_PROVISIONED` (plus `INVALID_ARGUMENT`, `UNAVAILABLE`,
-  `INTERNAL`, `PERMISSION_DENIED`).
+* No response or status ever carries the secret. The invoke request type has no `Debug` output and its arguments are
+  overwritten after the call, so the secret cannot reach a log.
+* Errors: `REJECTED` (`already_provisioned`), `INVALID_ARGUMENT`, `UNAVAILABLE`, `INTERNAL`, `PERMISSION_DENIED`.
 * The master seed, the number and the derivation path are never sent to the device.
 
 ### Security status
@@ -108,30 +118,18 @@ in a trusted place until then.
 
 ## `rohi` command line
 
-`id` is a full alias of `identity`.
+There is no identity command: the generic `status` and `action` commands are used.
 
 ```bash
-rohi identity                                          # state and public key; never the secret
-rohi identity provision -n 42 --seed master.suri       # -n, --number and --seed are required
-rohi identity erase [--yes]                            # asks for confirmation unless --yes
+rohi status identity                          # state and public key; never the secret
+rohi action run identity provision secret=-   # 32-byte secret as hex, read from stdin or a hidden prompt
+rohi action run identity erase
 ```
 
-`provision` reads the master through the same derivation as above, derives `//<number>`, sends only the derived
-secret and **fails unless the public key reported by the device equals the one derived locally**. The seed file is
-read on the host and never sent, stored, logged or printed; neither is the derived secret. A bad seed fails before any
-device is contacted.
-
-```text
-$ rohi id
-State: not provisioned
-$ rohi id provision -n 42 --seed master.suri
-Identity provisioned
-
-Public key: 0x8743…f2f3
-$ rohi id
-State:      provisioned
-Public key: 0x8743…f2f3
-```
+The secret is derived on the host with `rohi::derive_identity(suri, number)` (the library of the `rohi` crate) and only
+the derived secret is sent. The master seed, the number and the derivation path are never sent, stored or logged, and
+a malformed secret is not echoed in the error. Compare the public key reported by `status identity` with
+`DerivedIdentity::public_key()` after provisioning. `rohi factory-reset` formats the configuration storage and so erases the identity too.
 
 ## Firmware
 
@@ -149,10 +147,10 @@ scrubbed after use.
 
 ## Validation checklist (hardware)
 
-1. Fresh Altruist Urban: `rohi id` reports *not provisioned*; sensors and BLE diagnostics work.
-2. `rohi id provision -n 42 --seed <test-master>`: host and device public keys match.
-3. Reboot: `rohi id` returns the same public key. Change unrelated configuration, reboot: unchanged.
-4. `rohi id erase`: state becomes *not provisioned*, signing returns `IdentityNotProvisioned`, sensors keep running.
+1. Fresh Altruist Urban: `rohi status identity` reports *not provisioned*; sensors and BLE diagnostics work.
+2. `rohi action run identity provision secret=-` with the secret derived from `<test-master>`: host and device public keys match.
+3. Reboot: `rohi status identity` returns the same public key. Change unrelated configuration, reboot: unchanged.
+4. `rohi action run identity erase`: state becomes *not provisioned*, signing returns `IdentityNotProvisioned`, sensors keep running.
 5. Provision again with the same master and number: the original public key is restored.
 
 ## Out of scope

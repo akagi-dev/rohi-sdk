@@ -21,9 +21,13 @@ mock = []
 
 [dependencies]
 rohi-config.workspace = true
+rohi-service.workspace = true
+heapless.workspace = true
 minicbor.workspace = true
 ed25519-zebra.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+embassy-futures.workspace = true
+embassy-sync.workspace = true
 minicbor = { workspace = true, features = ["std"] }

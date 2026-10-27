@@ -31,16 +31,16 @@ cli = [
   "dep:chrono",
   "dep:clap",
   "dep:rpassword",
+  "dep:terminal_size",
   "dep:serde_json",
   "provision",
 ]
-# Derivation of a device identity from a master SURI (`rohi identity provision`).
+# Derivation of a device identity from a master SURI (`rohi::derive_identity`).
 provision = ["dep:sp-core"]
 
 [dependencies]
 rohi-control-proto.workspace = true
 rohi-control-ble.workspace = true
-rohi-connectivity.workspace = true
 rohi-net.workspace = true
 rohi-identity = { workspace = true, features = ["std"] }
 zeroize = { workspace = true, features = ["std"] }
@@ -56,11 +56,14 @@ clap = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 rpassword = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
+terminal_size = { workspace = true, optional = true }
 
 [dev-dependencies]
 rohi-control.workspace = true
-rohi-time.workspace = true
-rohi-hal.workspace = true
+rohi-service.workspace = true
+rohi-connectivity.workspace = true
+rohi-location.workspace = true
+embassy-sync.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "time", "sync"] }
 
 [[test]]

@@ -142,7 +142,12 @@ impl<T: ClientTransport> Session<T> {
                 continue;
             }
             return match response.response {
-                Some(Reply::Error(error)) => Err(Error::Device(ErrorCode::from_proto(error.code))),
+                Some(Reply::Error(error)) => Err(match error.reason() {
+                    Some(reason) if error.code == pb::ErrorCode::Rejected => {
+                        Error::Rejected(reason.as_str().to_owned())
+                    }
+                    _ => Error::Device(ErrorCode::from_proto(error.code)),
+                }),
                 Some(reply) => Ok(reply),
                 None => Err(Error::Protocol("empty response".into())),
             };

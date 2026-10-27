@@ -19,7 +19,7 @@ rohi-net.workspace = true
 log.workspace = true
 
 [dev-dependencies]
-rohi-hal.workspace = true
-rohi-identity.workspace = true
+rohi-service.workspace = true
+embassy-sync.workspace = true
 embassy-futures.workspace = true
 heapless.workspace = true

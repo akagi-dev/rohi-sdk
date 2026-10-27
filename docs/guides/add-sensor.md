@@ -22,9 +22,10 @@ spawns one task. Drivers know nothing about networks or serialization. Backgroun
 5. **Spawn a task** in `firmwares/altruist-urban/src/tasks/sensors.rs`: build the driver, wrap it in
    `Runner::new(driver, reporter(SensorKind::X), Delay, RunnerConfig::DEFAULT)` and `runner.run().await`; start it in
    `main.rs` with the other sensor tasks. I²C sensors share one bus through `i2c_handle`.
-6. **Expose it** to the control plane if it should be visible: extend the mapping from the typed snapshot to the
-   protobuf `Sensor` list in `rohi-control` and the canonical unit table in [Control plane](../sdk/control.md#sensors)
-   (see [Add a control operation](add-control-operation.md) for schema rules).
+6. **Expose it** to the control plane if it should be visible: add its measurements as status fields (stable ids, names
+   `<sensor>.<measurement>`, canonical units) and its issue codes in `rohi-hal/src/sensors_service.rs`; the table in
+   [Sensors](../sdk/sensors.md#status-and-the-control-plane) lists them. The protocol and the `rohi` tool need no change
+   (see [Add a service](add-service.md)).
 7. **Add a hardware example** in `examples/src/bin/` if useful, and record the validation in
    [Hardware testing](../validation/hardware-testing.md).
 8. **Update the docs** ([policy](../contributing/docs-style.md)): the sensor's page section in
