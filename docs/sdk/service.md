@@ -65,6 +65,7 @@ impl ManagedConfig for ConnectivityConfig {
     ];
     fn defaults() -> Self { /* base of a patch when nothing is stored */ }
     fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> { /* typed -> Value */ }
+    fn field_is_set(&self, id: u32) -> Result<bool, FieldError> { /* without reading a secret */ }
     fn set_field(&mut self, id: u32, value: Value) -> Result<(), FieldError> { /* Value -> typed */ }
     fn unset_field(&mut self, id: u32) -> Result<(), FieldError> { /* optional fields */ }
     fn validate(&self) -> Result<(), FieldError> { /* the whole section, across fields */ }

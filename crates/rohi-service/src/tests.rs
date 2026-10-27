@@ -92,6 +92,13 @@ impl ManagedConfig for Demo {
         Ok(())
     }
 
+    fn field_is_set(&self, id: u32) -> Result<bool, FieldError> {
+        match id {
+            4 => Ok(self.token.is_some()),
+            _ => Ok(self.read_field(id)?.is_some()),
+        }
+    }
+
     fn unset_field(&mut self, id: u32) -> Result<(), FieldError> {
         match id {
             4 => {
@@ -395,6 +402,9 @@ fn a_tuple_of_sections_is_a_registry() {
         }
         fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
             self.0.read_field(id)
+        }
+        fn field_is_set(&self, id: u32) -> Result<bool, FieldError> {
+            self.0.field_is_set(id)
         }
         fn set_field(&mut self, id: u32, value: Value) -> Result<(), FieldError> {
             self.0.set_field(id, value)
@@ -1067,4 +1077,90 @@ fn issue_age_follows_the_set_of_active_issues_only() {
     let _ = block_on(registry.summary(0, 11_000));
     *probe.issue.borrow_mut() = Some(FIRST_SERVICE_ISSUE + 1);
     assert_eq!(age(12_000), Some(0));
+}
+
+#[derive(Clone)]
+struct Vault {
+    token: Option<heapless::String<16>>,
+}
+
+impl ManagedConfig for Vault {
+    const SECTION_ID: u64 = 9;
+    const NAME: &'static str = "vault";
+    const VERSION: u16 = 1;
+    const FIELDS: &'static [ConfigField] = &[
+        ConfigField::new(1, "label", ValueKind::String).optional(),
+        ConfigField::new(2, "token", ValueKind::String)
+            .secret()
+            .optional(),
+    ];
+
+    fn defaults() -> Self {
+        Self { token: None }
+    }
+
+    fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
+        match id {
+            1 => Ok(Some(Value::text("main").unwrap())),
+            2 => panic!("a secret must never be read"),
+            _ => Err(FieldError::UnknownField),
+        }
+    }
+
+    fn field_is_set(&self, id: u32) -> Result<bool, FieldError> {
+        match id {
+            1 => Ok(true),
+            2 => Ok(self.token.is_some()),
+            _ => Err(FieldError::UnknownField),
+        }
+    }
+
+    fn set_field(&mut self, _: u32, _: Value) -> Result<(), FieldError> {
+        Err(FieldError::ReadOnly)
+    }
+
+    fn unset_field(&mut self, _: u32) -> Result<(), FieldError> {
+        Err(FieldError::NotOptional)
+    }
+
+    fn validate(&self) -> Result<(), FieldError> {
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct VaultStore(RefCell<Option<Vault>>);
+
+impl SectionStore<Vault> for &VaultStore {
+    async fn load(&self) -> Result<Option<Vault>, StoreError> {
+        Ok(self.0.borrow().clone())
+    }
+    async fn store(&self, config: &Vault) -> Result<(), StoreError> {
+        *self.0.borrow_mut() = Some(config.clone());
+        Ok(())
+    }
+    async fn remove(&self) -> Result<(), StoreError> {
+        *self.0.borrow_mut() = None;
+        Ok(())
+    }
+}
+
+#[test]
+fn reading_a_section_never_reads_a_secret() {
+    let store = VaultStore::default();
+    let section = ManagedSection::<Vault, _, NoopRawMutex>::new(&store);
+
+    // A configured secret is reported as configured.
+    *store.0.borrow_mut() = Some(Vault {
+        token: Some(heapless::String::try_from("hunter2").unwrap()),
+    });
+    let values = block_on(section.get()).unwrap();
+    assert_eq!(values.entries.len(), 2);
+    assert_eq!(values.entries[1].state, EntryState::Redacted);
+
+    // An unset optional secret is absent.
+    *store.0.borrow_mut() = Some(Vault { token: None });
+    let values = block_on(section.get()).unwrap();
+    assert_eq!(values.entries.len(), 1);
+    assert_eq!(values.entries[0].field_id, 1);
 }

@@ -94,6 +94,13 @@ impl ManagedConfig for Net {
         Ok(())
     }
 
+    fn field_is_set(&self, id: u32) -> Result<bool, FieldError> {
+        match id {
+            4 => Ok(self.token.is_some()),
+            _ => Ok(self.read_field(id)?.is_some()),
+        }
+    }
+
     fn unset_field(&mut self, id: u32) -> Result<(), FieldError> {
         match id {
             4 => self.token = None,

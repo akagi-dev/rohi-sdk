@@ -79,9 +79,15 @@ pub trait ManagedConfig: Clone {
     /// The module defaults: the base of a patch when nothing is persisted.
     fn defaults() -> Self;
 
-    /// The current value of a field, `None` when it is unset. Called for
-    /// secret fields too; the registry never returns their value.
+    /// The current value of a field, `None` when it is unset. Never called for
+    /// secret fields: the registry only asks whether they are set.
     fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError>;
+
+    /// Whether a field has a value. A secret field must answer without
+    /// producing its value, so that a generic read never copies a secret into a
+    /// [`Value`] only to discard it. For any other field it is
+    /// `read_field(id)?.is_some()`.
+    fn field_is_set(&self, id: u32) -> Result<bool, FieldError>;
 
     /// Sets a field. The registry has already checked that the field exists,
     /// is writable and that the value matches kind, variants and range.
@@ -394,14 +400,18 @@ impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ConfigSectionOps
         if let Some(config) = &stored {
             for field in C::FIELDS {
                 // A value the generic model cannot express (for example a
-                // non-UTF-8 SSID) is simply not reported.
-                let Ok(Some(value)) = config.read_field(field.field.id) else {
-                    continue;
-                };
+                // non-UTF-8 SSID) is simply not reported. A secret is only
+                // asked whether it is set, its value is never read.
                 let state = if field.secret {
-                    EntryState::Redacted
+                    match config.field_is_set(field.field.id) {
+                        Ok(true) => EntryState::Redacted,
+                        _ => continue,
+                    }
                 } else {
-                    EntryState::Value(value)
+                    match config.read_field(field.field.id) {
+                        Ok(Some(value)) => EntryState::Value(value),
+                        _ => continue,
+                    }
                 };
                 // At most `FIELDS.len() <= MAX_CONFIG_FIELDS` entries.
                 let _ = entries.push(ConfigEntry {

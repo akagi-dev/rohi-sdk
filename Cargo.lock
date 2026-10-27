@@ -3845,6 +3845,7 @@ dependencies = [
  "heapless 0.9.3",
  "rohi-control-proto",
  "rohi-service",
+ "zeroize",
 ]
 
 [[package]]

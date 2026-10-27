@@ -25,6 +25,7 @@ use rohi_service::{
     FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, Mutation, MutationOp, SectionInfo,
     ServiceHealth, ServiceState, ServiceStatusSummary, Unit, Value, ValueKind,
 };
+use zeroize::Zeroize;
 
 // The service model and the wire bounds are two definitions of the same
 // limits; a model larger than the wire would silently truncate.
@@ -101,15 +102,12 @@ macro_rules! value_codec {
             type V = $oneof;
             match value {
                 V::StringValue(text) => {
-                    let len = text.len();
-                    text.clear();
-                    for _ in 0..len {
-                        let _ = text.push('\0');
-                    }
+                    // SAFETY: only zero bytes are written, which are valid UTF-8.
+                    unsafe { text.as_mut_vec() }.as_mut_slice().zeroize();
                     text.clear();
                 }
                 V::BytesValue(bytes) => {
-                    bytes.iter_mut().for_each(|byte| *byte = 0);
+                    bytes.as_mut_slice().zeroize();
                     bytes.clear();
                 }
                 _ => {}

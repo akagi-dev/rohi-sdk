@@ -132,6 +132,14 @@ impl ManagedConfig for WifiConfig {
         Ok(())
     }
 
+    fn field_is_set(&self, id: u32) -> Result<bool, FieldError> {
+        match id {
+            // The password is only asked whether it exists, never read.
+            field::PASSWORD => Ok(self.password.is_some()),
+            _ => Ok(self.read_field(id)?.is_some()),
+        }
+    }
+
     fn unset_field(&mut self, id: u32) -> Result<(), FieldError> {
         match id {
             field::PASSWORD => self.password = None,

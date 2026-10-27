@@ -32,12 +32,11 @@ before choosing names and field numbers.
    owner task right after the commit, with no `.await` in between
    ([Durable mutation](../concepts/async-and-cancellation.md#durable-mutation)).
 5. **Expose it to clients** (optional, but this is how users set it): implement `ManagedConfig` for the type in the same crate
-   (`NAME`, `VERSION`, `FIELDS`, `defaults`, `read_field`, `set_field`, `unset_field`, `validate`; see
+   (`NAME`, `VERSION`, `FIELDS`, `defaults`, `read_field`, `field_is_set`, `set_field`, `unset_field`, `validate`; see
    [Service pipeline](../sdk/service.md#config-sections)), implement `SectionStore` over the configuration handle in the
    firmware and add `ManagedSection<C, Store<C>, RawMutex>` to the config registry tuple in `control.rs`. The protocol,
    the client and the `rohi` CLI need **no change**: `rohi config describe/get/set` work at once. Make a `defaults()` that
-   is not a valid value when fields must be given together (see `LocationConfig`), mark secrets `secret()`: `read_field` may return the value (the registry
-   never sends it to a client), but never log it.
+   is not a valid value when fields must be given together (see `LocationConfig`), mark secrets `secret()`: the registry never calls `read_field` for them, it only asks `field_is_set`, so a secret is never copied into a generic value to be discarded; answer `field_is_set` from the typed field and never log the secret.
 6. **Versioning**: changing the layout later means bumping `version` and, if old data must stay readable, adding a
    `decode_versioned` hook (`rohi_config::decode_exact` decodes older layouts strictly).
 7. **Docs**: add the section to the persistent ABI examples if it introduces a new rule, and note it in

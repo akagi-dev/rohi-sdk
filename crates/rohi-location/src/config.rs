@@ -126,6 +126,10 @@ impl ManagedConfig for LocationConfig {
         Ok(())
     }
 
+    fn field_is_set(&self, id: u32) -> Result<bool, FieldError> {
+        Ok(self.read_field(id)?.is_some())
+    }
+
     fn unset_field(&mut self, id: u32) -> Result<(), FieldError> {
         match id {
             field::HEIGHT_M => {
