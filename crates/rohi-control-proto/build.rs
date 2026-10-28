@@ -77,12 +77,12 @@ const LIMITS: &[(&str, usize, &str)] = &[
     ),
     (
         "MAX_CONFIG_SECTIONS",
-        8,
+        12,
         "Maximum number of config sections a device lists.",
     ),
     (
         "MAX_SERVICES",
-        8,
+        12,
         "Maximum number of services a device lists.",
     ),
     (

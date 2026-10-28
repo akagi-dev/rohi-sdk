@@ -69,7 +69,7 @@ summary in the detailed status, no pagination):
 | `Response` | 2 616 | 1 824 | 1 900 |
 | `FieldDescriptor` | 352 | 48 | 56 |
 | `FieldValue` | 88 | 56 | 64 |
-| `GetServicesStatusResponse` | 792 | 536 | 576 |
+| `GetServicesStatusResponse` | 792 | 792 (12 services; 536 for 8) | 832 |
 | `GetServiceStatusResponse` | 1 272 (8 values) | 1 192 (20 values) | 1 280 |
 | `GetConfigSectionResponse` | n/a | 1 504 | 1 536 |
 | `PatchConfigSectionRequest` | n/a | 728 | 768 |

@@ -541,7 +541,7 @@ fn a_rejection_carries_a_reason() {
 // these on the stack of a microcontroller, so growth must fail here and not
 // as a stack overflow on the device. Raising a budget is a deliberate
 // decision: measure the control task again and update `resource-budget.md`.
-// Measured: 736, 1824, 48, 56, 536, 1192, 1504 (config read) and 728 (config
+// Measured: 736, 1824, 48, 56, 792 (twelve services), 1192, 1504 (config read) and 728 (config
 // patch) bytes, with a few percent of
 // headroom. Before the compact layout: 760, 2616, 352, 88, 792 and 1272 (the
 // last one for a page of eight values).
@@ -549,7 +549,7 @@ const REQUEST_BUDGET: usize = 768;
 const RESPONSE_BUDGET: usize = 1900;
 const FIELD_DESCRIPTOR_BUDGET: usize = 56;
 const FIELD_VALUE_BUDGET: usize = 64;
-const SERVICES_STATUS_BUDGET: usize = 576;
+const SERVICES_STATUS_BUDGET: usize = 832;
 const SERVICE_STATUS_BUDGET: usize = 1280;
 const CONFIG_SECTION_BUDGET: usize = 1536;
 const PATCH_BUDGET: usize = 768;
