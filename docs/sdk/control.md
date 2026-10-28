@@ -46,7 +46,7 @@ Everything except `rohi-net-esp`, the firmware and `tools/rohi` builds and is te
 ## Protocol
 
 One protobuf request, one protobuf response, correlated by `request_id`. The schema is
-`crates/rohi-control-proto/proto/rohi/control/v1/control.proto`. `protocol_version` is `1` in every message; the
+`crates/control-proto/proto/rohi/control/v1/control.proto`. `protocol_version` is `1` in every message; the
 protocol is still under development and changes without a version bump, so keep the tool and the firmware on the
 same revision. Unknown requests, a wrong version or an unknown name return a typed error; the link is never dropped
 because of a bad request.

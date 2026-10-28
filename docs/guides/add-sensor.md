@@ -8,13 +8,13 @@ spawns one task. Drivers know nothing about networks or serialization. Backgroun
    `MeasurementUpdate` (units from `units.rs`: `Celsius`, `Ppm`, ...). Measurements are grouped by the physical sensor;
    never merge readings of different sensors. Give the sensor a freshness policy
    (`FreshnessPolicy::default_for`) that outlasts its worst healthy cadence: a test in `sensors/mod.rs` enforces it.
-2. **Write the driver** in `crates/rohi-hal/src/sensors/<name>.rs` and implement `SensorDriver`:
+2. **Write the driver** in `crates/hal/src/sensors/<name>.rs` and implement `SensorDriver`:
    `init` (probe and configure; called again to recover), `sample` (wait for and read the next observation,
    `Ok(None)` = no data yet), `poll_interval_ms`, optionally `initial_delay_ms`, plus `KIND` and `WARMS_UP`. Map the bus
    error into `DriverError` (`code`, and `is_absent` for "does not answer", which makes the state `NotDetected`
    instead of `Error`).
 3. **Test on the host.** In the driver module, drive the driver with `MockI2c` / a fake UART from the crate-internal
-   `testutil` (`crates/rohi-hal/src/testutil.rs`), and the runner with
+   `testutil` (`crates/hal/src/testutil.rs`), and the runner with
    a recording delay. Cover detection, a failing bus, recovery, warm-up and the exact decoding of datasheet examples.
    See [Host testing](../validation/host-testing.md).
 4. **Wire the bus** (platform). If the sensor needs pins or a new peripheral, add them to the board module in

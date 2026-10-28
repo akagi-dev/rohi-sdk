@@ -72,5 +72,5 @@ its warm-up wait.
 ## Book examples
 
 Rust code shown in the book is either compiled by `cargo test` and included with `\{{#include file:anchor}}` (for example
-`crates/rohi-net/tests/network_example.rs`) or marked `ignore`/`text` when it cannot run on the host (hardware snippets).
+`crates/net/tests/network_example.rs`) or marked `ignore`/`text` when it cannot run on the host (hardware snippets).
 `mdbook test docs` runs plain snippets. See [Documentation style and policy](../contributing/docs-style.md).
