@@ -890,6 +890,7 @@ fn value_debug_never_shows_the_content() {
 
 // --- status -----------------------------------------------------------------
 
+#[derive(Service)]
 struct Probe {
     state: RefCell<ServiceState>,
     health: RefCell<ServiceHealth>,
@@ -908,9 +909,7 @@ impl Probe {
     }
 }
 
-impl ManagedService for &Probe {
-    const ID: u32 = 7;
-    const NAME: &'static str = "probe";
+impl Status for Probe {
     const VERSION: u16 = 2;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
         FieldDescriptor::new(1, "endpoint", ValueKind::String),
@@ -951,47 +950,49 @@ impl ManagedService for &Probe {
 #[test]
 fn the_status_revision_follows_observable_changes_only() {
     let probe = Probe::new();
-    let service = Tracked::<_, NoopRawMutex>::new(&probe);
+    let registry = Statuses::<NoopRawMutex, _>::new((&probe,));
+    let summary = |now| block_on(registry.summary(0, now)).unwrap();
 
-    let first = block_on(service.summary(1_000));
+    let first = summary(1_000);
     assert_eq!(first.revision, 1);
     assert_eq!(first.name, "probe");
     assert!(first.essential);
 
     // A service-specific value is not observable state.
     *probe.queue.borrow_mut() = 17;
-    assert_eq!(block_on(service.summary(2_000)).revision, 1);
+    assert_eq!(summary(2_000).revision, 1);
 
     *probe.health.borrow_mut() = ServiceHealth::Degraded;
     *probe.issue.borrow_mut() = Some(FIRST_SERVICE_ISSUE);
-    let degraded = block_on(service.summary(3_000));
+    let degraded = summary(3_000);
     assert_eq!(degraded.revision, 2);
 
-    assert_eq!(block_on(service.summary(4_000)).revision, 2);
+    assert_eq!(summary(4_000).revision, 2);
     *probe.issue.borrow_mut() = None;
     *probe.health.borrow_mut() = ServiceHealth::Ok;
-    assert_eq!(block_on(service.summary(5_000)).revision, 3);
+    assert_eq!(summary(5_000).revision, 3);
 }
 
 #[test]
 fn state_age_counts_from_the_last_state_change() {
     let probe = Probe::new();
-    let service = Tracked::<_, NoopRawMutex>::new(&probe);
-    assert_eq!(block_on(service.summary(1_000)).state_age_ms, 0);
-    assert_eq!(block_on(service.summary(4_000)).state_age_ms, 3_000);
+    let registry = Statuses::<NoopRawMutex, _>::new((&probe,));
+    let summary = |now| block_on(registry.summary(0, now)).unwrap();
+    assert_eq!(summary(1_000).state_age_ms, 0);
+    assert_eq!(summary(4_000).state_age_ms, 3_000);
     *probe.state.borrow_mut() = ServiceState::Failed;
-    assert_eq!(block_on(service.summary(5_000)).state_age_ms, 0);
-    assert_eq!(block_on(service.summary(6_500)).state_age_ms, 1_500);
+    assert_eq!(summary(5_000).state_age_ms, 0);
+    assert_eq!(summary(6_500).state_age_ms, 1_500);
 }
 
 #[test]
 fn detailed_status_has_fields_and_active_issues_with_age() {
     let probe = Probe::new();
     *probe.queue.borrow_mut() = 17;
-    let registry = (Tracked::<_, NoopRawMutex>::new(&probe),);
+    let registry = Statuses::<NoopRawMutex, _>::new((&probe,));
     *probe.issue.borrow_mut() = Some(FIRST_SERVICE_ISSUE);
     let _ = block_on(registry.summary(0, 1_000));
-    let status = block_on(registry.status(7, 35_000)).unwrap();
+    let status = block_on(registry.status(Probe::ID, 35_000)).unwrap();
     assert_eq!(status.issues.len(), 1);
     assert_eq!(status.issues[0].code, FIRST_SERVICE_ISSUE);
     assert_eq!(status.issues[0].age_ms, Some(34_000));
@@ -1003,10 +1004,10 @@ fn detailed_status_has_fields_and_active_issues_with_age() {
         block_on(registry.status(99, 0)),
         Err(StatusError::UnknownService)
     );
-    let schema = registry.schema(7).unwrap();
+    let schema = registry.schema(Probe::ID).unwrap();
     assert_eq!(
         (schema.info.id, schema.info.name, schema.info.version),
-        (7, "probe", 2)
+        (Probe::ID, "probe", 2)
     );
     assert_eq!(schema.fields.len(), 3);
     assert_eq!(schema.enums.len(), 1);
@@ -1016,8 +1017,8 @@ fn detailed_status_has_fields_and_active_issues_with_age() {
 #[test]
 fn the_writer_checks_the_schema() {
     let mut writer = status::Collector {
-        schema: <&Probe as ManagedService>::STATUS_SCHEMA,
-        enums: <&Probe as ManagedService>::ENUMS,
+        schema: <Probe as Status>::STATUS_SCHEMA,
+        enums: <Probe as Status>::ENUMS,
         fields: heapless::Vec::new(),
     };
     assert_eq!(writer.u64(99, 1), Err(WriteError::UnknownField));
@@ -1087,13 +1088,10 @@ fn the_default_device_health_policy() {
 
 // --- actions ----------------------------------------------------------------
 
+#[derive(Service)]
 struct Scanner;
 
-impl ManagedService for Scanner {
-    const ID: u32 = 3;
-    const NAME: &'static str = "scanner";
-    const VERSION: u16 = 1;
-    const STATUS_SCHEMA: &'static [FieldDescriptor] = &[];
+impl Action for Scanner {
     const ACTIONS: &'static [ActionDescriptor] = &[
         ActionDescriptor::new(1, "scan")
             .args(&[FieldDescriptor::new(1, "limit", ValueKind::U64)])
@@ -1106,14 +1104,6 @@ impl ManagedService for Scanner {
             .args(&[FieldDescriptor::new(1, "secret", ValueKind::Bytes)])
             .secret(),
     ];
-
-    async fn summary(&self) -> ServiceSummary {
-        ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true)
-    }
-
-    async fn status(&self, _: &mut impl StatusWriter) -> Result<(), WriteError> {
-        Ok(())
-    }
 
     async fn invoke(
         &self,
@@ -1138,33 +1128,33 @@ impl ManagedService for Scanner {
     }
 }
 
-fn scanner() -> (Tracked<Scanner, NoopRawMutex>,) {
-    (Tracked::new(Scanner),)
+fn scanner() -> (&'static Scanner,) {
+    (&Scanner,)
 }
 
 #[test]
 fn an_action_returns_records() {
     let registry = scanner();
-    let records = block_on(registry.invoke(3, 1, &[(1, Value::U64(3))])).unwrap();
+    let records = block_on(registry.invoke(Scanner::ID, 1, &[(1, Value::U64(3))])).unwrap();
     assert_eq!(records.len(), 3);
     assert_eq!(records[1][0], (1, text("net")));
     assert_eq!(records[2][1], (2, Value::I64(-2)));
 
-    let none = block_on(registry.invoke(3, 1, &[(1, Value::U64(0))])).unwrap();
+    let none = block_on(registry.invoke(Scanner::ID, 1, &[(1, Value::U64(0))])).unwrap();
     assert!(none.is_empty());
 }
 
 #[test]
 fn too_many_records_fail_instead_of_truncating() {
     let registry = scanner();
-    let result = block_on(registry.invoke(3, 1, &[(1, Value::U64(7))]));
+    let result = block_on(registry.invoke(Scanner::ID, 1, &[(1, Value::U64(7))]));
     assert_eq!(result, Err(ActionError::Internal));
 }
 
 #[test]
 fn arguments_are_checked_against_the_descriptor() {
     let registry = scanner();
-    let call = |args: &[(u32, Value)]| block_on(registry.invoke(3, 1, args));
+    let call = |args: &[(u32, Value)]| block_on(registry.invoke(Scanner::ID, 1, args));
     assert_eq!(call(&[]), Err(ActionError::InvalidArgument));
     assert_eq!(call(&[(1, text("3"))]), Err(ActionError::InvalidArgument));
     assert_eq!(
@@ -1185,11 +1175,11 @@ fn unknown_targets_and_rejections_are_distinguished() {
         Err(ActionError::UnknownService)
     );
     assert_eq!(
-        block_on(registry.invoke(3, 99, &[])),
+        block_on(registry.invoke(Scanner::ID, 99, &[])),
         Err(ActionError::UnknownAction)
     );
     assert_eq!(
-        block_on(registry.invoke(3, 2, &[])),
+        block_on(registry.invoke(Scanner::ID, 2, &[])),
         Err(ActionError::Rejected("busy_resetting"))
     );
 }
@@ -1198,6 +1188,7 @@ fn unknown_targets_and_rejections_are_distinguished() {
 fn action_metadata_is_exposed() {
     let registry = scanner();
     let actions = registry.service_actions(0);
+    assert_eq!(registry.service_identity(0).unwrap().name, "scanner");
     assert_eq!(actions.len(), 3);
     assert!(!actions[0].privileged);
     assert!(actions[2].privileged && actions[2].secret_args);
@@ -1238,38 +1229,7 @@ fn integer_bounds_hold_over_the_whole_64_bit_range() {
 }
 
 #[test]
-fn a_failed_startup_is_a_failed_service() {
-    let probe = Probe::new();
-    let service = Tracked::<_, NoopRawMutex>::new(Startup::new(&probe, true));
-    let summary = block_on(service.summary(0));
-    assert_eq!(summary.state, ServiceState::Failed);
-    assert!(
-        block_on(service.status(0))
-            .issues
-            .iter()
-            .any(|issue| issue.code == ISSUE_STARTUP_FAILED)
-    );
-    assert!(block_on(service.status(0)).fields.is_empty());
-
-    let service = Tracked::<_, NoopRawMutex>::new(Startup::new(&probe, false));
-    assert_eq!(block_on(service.summary(0)).state, ServiceState::Running);
-    assert_eq!(block_on(service.status(0)).fields.len(), 3);
-}
-
-#[test]
-fn registries_detect_clashing_ids() {
-    let probe = Probe::new();
-    let mixed = (
-        Tracked::<_, NoopRawMutex>::new(&probe),
-        Tracked::<_, NoopRawMutex>::new(Scanner),
-    );
-    assert!(mixed.ids_are_unique());
-    let twice = (
-        Tracked::<_, NoopRawMutex>::new(&probe),
-        Tracked::<_, NoopRawMutex>::new(&probe),
-    );
-    assert!(!twice.ids_are_unique());
-
+fn config_registries_detect_clashing_ids() {
     let store = MemoryStore::default();
     assert!((section(&store),).ids_are_unique());
     let (a, b) = (MemoryStore::default(), MemoryStore::default());
@@ -1445,9 +1405,14 @@ mod schema_invariants {
 #[test]
 fn issue_age_follows_the_set_of_active_issues_only() {
     let probe = Probe::new();
-    let registry = (Tracked::<_, NoopRawMutex>::new(&probe),);
-    let age = |now| block_on(registry.status(7, now)).unwrap().issues[0].age_ms;
-    let revision = |now| block_on(registry.status(7, now)).unwrap().summary.revision;
+    let registry = Statuses::<NoopRawMutex, _>::new((&probe,));
+    let age = |now| block_on(registry.status(Probe::ID, now)).unwrap().issues[0].age_ms;
+    let revision = |now| {
+        block_on(registry.status(Probe::ID, now))
+            .unwrap()
+            .summary
+            .revision
+    };
 
     let _ = block_on(registry.summary(0, 1_000));
     *probe.issue.borrow_mut() = Some(FIRST_SERVICE_ISSUE);

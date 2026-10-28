@@ -21,8 +21,8 @@ use heapless::Vec;
 use rohi_hal::runtime::Clock;
 use rohi_service::{
     EnumDescriptor, EnumVariant, FieldDescriptor, Issue, IssueDescriptor, IssueSeverity,
-    MAX_ISSUES, ServiceHealth, ServiceState, ServiceSummary, Status, StatusWriter, Unit,
-    ValueKind, WriteError,
+    MAX_ISSUES, ServiceHealth, ServiceState, ServiceSummary, Status, StatusWriter, Unit, ValueKind,
+    WriteError,
 };
 
 use crate::{SyncFailure, TimeService, TimeSourceKind, TimeSyncState};
