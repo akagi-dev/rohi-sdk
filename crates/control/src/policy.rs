@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 /// What an operation needs from the link.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Privilege {

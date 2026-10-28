@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! The `network` section and service of the management plane.
 //!
 //! The device has one network: a Wi-Fi station with an IPv4 stack. Its

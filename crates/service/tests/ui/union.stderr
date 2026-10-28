@@ -1,5 +1,5 @@
 error: `Service` can only be derived for a struct or an enum
- --> tests/ui/union.rs:4:1
-  |
-4 | union Raw {
-  | ^^^^^
+  --> tests/ui/union.rs:22:1
+   |
+22 | union Raw {
+   | ^^^^^

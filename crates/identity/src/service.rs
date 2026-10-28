@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! The device identity in the generic service pipeline.
 //!
 //! The device holds at most one Ed25519 identity. It is provisioned from the

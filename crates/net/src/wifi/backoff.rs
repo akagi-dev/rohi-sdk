@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 
 /// Bounded exponential reconnect backoff: doubles from `initial_ms` up to
 /// `max_ms` and is reset by a successful connection.

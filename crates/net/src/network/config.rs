@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! The persistent `network` section: how the device gets its IPv4 address.
 
 use core::fmt;

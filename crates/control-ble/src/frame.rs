@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! Request/response framing over BLE chunks.
 //!
 //! A control message (an opaque byte string, protobuf in practice) is split

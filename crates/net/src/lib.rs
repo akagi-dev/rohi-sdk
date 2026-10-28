@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 #![no_std]
 
 //! Platform-independent networking for Robonomics Open Hardware.

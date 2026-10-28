@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 
 //! The schema, the defaults and the persisted overrides of every managed
 //! config section of the device, pinned.

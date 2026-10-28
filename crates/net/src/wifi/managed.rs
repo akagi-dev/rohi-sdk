@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! The `wifi` config section in the generic management plane: the field codecs
 //! of the domain types and the validation of the section. The fields, their
 //! ids and the persisted overrides are declared once, on [`WifiConfig`].

@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! Terminal interaction. stdout carries only the requested result; prompts,
 //! progress, warnings and diagnostics go to stderr. Everything that reads or
 //! writes goes through [`Io`], so tests can script a session.

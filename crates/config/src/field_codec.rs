@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 
 //! Conversion between the typed fields of a managed config (`rohi_service::Config`)
 //! and the generic [`Value`].

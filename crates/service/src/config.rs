@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! Typed configuration sections behind a generic, schema-driven interface.
 //!
 //! A module implements [`Config`] for its typed section and a

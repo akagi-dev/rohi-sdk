@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! `rohi`: command line client of ROHI devices over BLE, see [`rohi::cli`].
 
 use std::process::ExitCode;

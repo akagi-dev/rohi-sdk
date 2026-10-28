@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! The `network` service: the address and the socket usage of the IP layer.
 
 use core::fmt::Write as _;

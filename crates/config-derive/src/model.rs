@@ -15,6 +15,7 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
 //! The parsed declaration of a managed config: the container attributes, the
 //! fields and their `#[config(...)]` keys. Everything `#[derive(Config)]`
 //! generates, the field metadata, the field access and the persisted

@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! Command line definition: the public interface of `rohi`, including its
 //! `--help` texts. Help examples are parsed by the tests, so they cannot go
 //! stale.

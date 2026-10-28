@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! The location as a service of the status plane.
 
 use embassy_sync::blocking_mutex::raw::RawMutex;

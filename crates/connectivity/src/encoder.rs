@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! Mapping of a measurement snapshot to a `core.v1.Message`.
 //!
 //! Policy:

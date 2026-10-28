@@ -1,5 +1,5 @@
 error: invalid service name `Wi-Fi`: it must match `[a-z][a-z0-9_]*`
- --> tests/ui/name_not_snake_case.rs:4:18
-  |
-4 | #[service(name = "Wi-Fi")]
-  |                  ^^^^^^^
+  --> tests/ui/name_not_snake_case.rs:22:18
+   |
+22 | #[service(name = "Wi-Fi")]
+   |                  ^^^^^^^

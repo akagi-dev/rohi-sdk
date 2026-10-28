@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! Human readable rendering of the model.
 //!
 //! Everything is driven by the schemas the device sends: nothing here knows

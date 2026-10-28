@@ -1,12 +1,12 @@
 error[E0308]: mismatched types
- --> tests/ui/config_bad_validate.rs:7:26
-  |
-7 | #[derive(Clone, Default, Config)]
-  |                          ^^^^^^
-  |                          |
-  |                          expected `Result<(), FieldError>`, found `bool`
-  |                          expected `Result<(), FieldError>` because of return type
-  |
-  = note: expected enum `Result<(), FieldError>`
-             found type `bool`
-  = note: this error originates in the derive macro `Config` (in Nightly builds, run with -Z macro-backtrace for more info)
+  --> tests/ui/config_bad_validate.rs:25:26
+   |
+25 | #[derive(Clone, Default, Config)]
+   |                          ^^^^^^
+   |                          |
+   |                          expected `Result<(), FieldError>`, found `bool`
+   |                          expected `Result<(), FieldError>` because of return type
+   |
+   = note: expected enum `Result<(), FieldError>`
+              found type `bool`
+   = note: this error originates in the derive macro `Config` (in Nightly builds, run with -Z macro-backtrace for more info)

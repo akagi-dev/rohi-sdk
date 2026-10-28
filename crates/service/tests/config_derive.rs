@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 
 //! `#[derive(Config)]`: the field metadata and the generic field access
 //! generated from one declaration, end to end through a [`Section`].

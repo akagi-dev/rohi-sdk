@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! The persistent `location` section and its generic config interface.
 
 use rohi_config::{Codec, FieldError, Value, ValueKind};

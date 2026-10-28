@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! ESP32 BLE peripheral backend.
 //!
 //! `esp-radio` provides the HCI controller, TrouBLE the host stack and GATT

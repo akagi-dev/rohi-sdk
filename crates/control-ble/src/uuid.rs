@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! GATT identifiers of the ROHI Control Service.
 //!
 //! One service with two characteristics:

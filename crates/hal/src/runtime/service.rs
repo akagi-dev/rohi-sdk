@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! On-demand access to measurement snapshots.
 //!
 //! The `MeasurementStore` has exactly one owner task. Other tasks (the future

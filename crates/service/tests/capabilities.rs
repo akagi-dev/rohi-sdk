@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 
 //! Services with every subset of the capabilities, composed with explicit
 //! tuples and dispatched by the static registries.

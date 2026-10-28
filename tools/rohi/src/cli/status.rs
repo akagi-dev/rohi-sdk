@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! `rohi status`: the runtime state of the device and its services.
 
 use std::time::Duration;

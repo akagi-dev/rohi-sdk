@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! The `wifi` service: the link, the radio heap and the actions `scan`,
 //! `connect`, `reconnect` and `disconnect`.
 

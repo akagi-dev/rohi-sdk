@@ -1,21 +1,21 @@
 error[E0277]: `Standard` has no conversion between `Hostname` and a config value
- --> tests/ui/config_unsupported_type.rs:8:26
-  |
-8 | #[derive(Clone, Default, Config)]
-  |                          ^^^^^^ this type needs its own codec
-  |
-  = help: the trait `Codec<Hostname>` is not implemented for `Standard`
-  = note: implement `rohi_config::Codec<Hostname>` for a codec type and name it on the field: `#[config(with = MyCodec)]`
-  = help: `Standard` implements trait `Codec<T>`:
-            Codec<bool>
-            Codec<f32>
-            Codec<heapless::string::StringInner<usize, heapless::vec::storage::VecStorageInner<[MaybeUninit<u8>; N]>>>
-            Codec<i16>
-            Codec<i32>
-            Codec<i64>
-            Codec<i8>
-            Codec<u16>
-            Codec<u32>
-            Codec<u64>
-            Codec<u8>
-  = note: this error originates in the derive macro `Config` (in Nightly builds, run with -Z macro-backtrace for more info)
+  --> tests/ui/config_unsupported_type.rs:26:26
+   |
+26 | #[derive(Clone, Default, Config)]
+   |                          ^^^^^^ this type needs its own codec
+   |
+   = help: the trait `Codec<Hostname>` is not implemented for `Standard`
+   = note: implement `rohi_config::Codec<Hostname>` for a codec type and name it on the field: `#[config(with = MyCodec)]`
+   = help: `Standard` implements trait `Codec<T>`:
+             Codec<bool>
+             Codec<f32>
+             Codec<heapless::string::StringInner<usize, heapless::vec::storage::VecStorageInner<[MaybeUninit<u8>; N]>>>
+             Codec<i16>
+             Codec<i32>
+             Codec<i64>
+             Codec<i8>
+             Codec<u16>
+             Codec<u32>
+             Codec<u64>
+             Codec<u8>
+   = note: this error originates in the derive macro `Config` (in Nightly builds, run with -Z macro-backtrace for more info)

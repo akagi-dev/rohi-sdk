@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! Local control plane: the Altruist Urban side of `rohi-control`.
 
 //! Device identity runtime.

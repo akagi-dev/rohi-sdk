@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! Telemetry uplink: signed `connectivity-protocol` frames over HTTP.
 //!
 //! The service runs in its own task and only reads measurement snapshots, so

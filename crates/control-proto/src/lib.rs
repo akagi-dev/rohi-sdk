@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 #![no_std]
 
 //! Bounded protobuf schema of the ROHI local control protocol.

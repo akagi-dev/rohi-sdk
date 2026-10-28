@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! The [`TimeService`]: the anchored wall-clock time and its `time` status in the
 //! generic service pipeline.
 

@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! `rohi config`: generic configuration, driven by the schemas of the device.
 
 use std::collections::BTreeMap;

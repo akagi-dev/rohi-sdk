@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! CBOR codecs of the bounded containers the persisted types are made of, for
 //! `#[cbor(encode_with = "...", decode_with = "...", cbor_len = "...")]`.
 //!

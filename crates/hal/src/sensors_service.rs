@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! The sensors in the generic service pipeline.
 //!
 //! Every measurement of a present sensor is a status field named

@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! The telemetry configuration and status in the generic management plane.
 
 use embassy_sync::blocking_mutex::raw::RawMutex;

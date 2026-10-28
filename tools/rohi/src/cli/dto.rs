@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! The JSON written by `-o json`. These documents are owned by the command
 //! line and versioned with `schema_version`; they are deliberately not the
 //! model types of the library, which may change independently.

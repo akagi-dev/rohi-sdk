@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 
 //! Host-compiled example of the IP data plane, included in the SDK book
 //! (`docs/sdk/net.md`, `docs/guides/use-network.md`). Keep the anchored

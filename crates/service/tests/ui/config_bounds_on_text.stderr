@@ -1,13 +1,13 @@
 error[E0080]: evaluation panicked: `min` and `max` need a numeric field
-  --> tests/ui/config_bounds_on_text.rs:18:26
+  --> tests/ui/config_bounds_on_text.rs:36:26
    |
-18 | #[derive(Clone, Default, Config)]
+36 | #[derive(Clone, Default, Config)]
    |                          ^^^^^^ evaluation of `<Demo as rohi_service::Config>::FIELDS` failed here
 
 note: erroneous constant encountered
-  --> tests/ui/config_bounds_on_text.rs:18:26
+  --> tests/ui/config_bounds_on_text.rs:36:26
    |
-18 | #[derive(Clone, Default, Config)]
+36 | #[derive(Clone, Default, Config)]
    |                          ^^^^^^
    |
    = note: this note originates in the derive macro `Config` (in Nightly builds, run with -Z macro-backtrace for more info)

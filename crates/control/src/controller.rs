@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 use heapless::Vec;
 use rohi_control_proto::control::{
     self as pb, Request_::Request as Call, Response_::Response as Reply,

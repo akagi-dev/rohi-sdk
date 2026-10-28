@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! Plain Rust model of the control protocol.
 //!
 //! These types are what applications use. They hold no protobuf types and no

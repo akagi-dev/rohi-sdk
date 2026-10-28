@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 
 //! Wi-Fi control plane: station configuration, scan, status, connect,
 //! reconnect and disconnect.

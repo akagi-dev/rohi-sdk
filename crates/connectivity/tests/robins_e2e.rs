@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! End-to-end: a frame produced by `rohi-connectivity` is accepted by the
 //! reference ingress (`airalab/robins`, `edge gateway`).
 //!

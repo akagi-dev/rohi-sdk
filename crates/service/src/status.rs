@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! Read-only runtime status of services behind a generic interface.
 //!
 //! A service implements [`Status`] on top of its live runtime state; no

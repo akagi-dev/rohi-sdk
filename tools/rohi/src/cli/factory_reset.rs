@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! `rohi factory-reset`: formats the configuration storage of the device.
 
 use super::diagnostic::CliError;
