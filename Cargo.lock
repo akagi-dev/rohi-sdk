@@ -3771,6 +3771,7 @@ dependencies = [
  "rohi-location",
  "rohi-net",
  "rohi-service",
+ "rohi-time-ntp",
  "rpassword",
  "serde",
  "serde_json",
