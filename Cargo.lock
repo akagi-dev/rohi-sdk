@@ -3787,9 +3787,11 @@ dependencies = [
 name = "rohi-config"
 version = "0.5.0"
 dependencies = [
+ "heapless 0.9.3",
  "minicbor",
  "proptest",
  "rohi-config-derive",
+ "zeroize",
 ]
 
 [[package]]

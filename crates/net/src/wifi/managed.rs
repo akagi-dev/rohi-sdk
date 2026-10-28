@@ -18,7 +18,8 @@
 //! of the domain types and the validation of the section. The fields, their
 //! ids and the persisted overrides are declared once, on [`WifiConfig`].
 
-use rohi_service::{Codec, FieldError, Value, ValueKind};
+use rohi_config::TextValue;
+use rohi_service::FieldError;
 
 use super::config::WifiConfig;
 use crate::{WifiPassword, WifiSsid};
@@ -28,39 +29,25 @@ use crate::{WifiPassword, WifiSsid};
 /// An SSID that is not UTF-8 cannot be expressed as text and is reported as
 /// invalid; it is not shown, but it keeps working. An empty name is not a
 /// network: `none` disables Wi-Fi instead.
-pub struct SsidCodec;
-
-impl Codec<WifiSsid> for SsidCodec {
-    const KIND: ValueKind = ValueKind::String;
-
-    fn encode(ssid: &WifiSsid) -> Result<Option<Value>, FieldError> {
-        ssid.as_str()
-            .and_then(Value::text)
-            .map(Some)
-            .ok_or(FieldError::Invalid)
+impl TextValue for WifiSsid {
+    fn from_text(text: &str) -> Option<Self> {
+        Self::from_bytes(text.as_bytes()).filter(|ssid| !ssid.is_empty())
     }
 
-    fn decode(value: &Value) -> Result<WifiSsid, FieldError> {
-        let text = value.as_str().ok_or(FieldError::WrongKind)?;
-        WifiSsid::from_bytes(text.as_bytes())
-            .filter(|ssid| !ssid.is_empty())
-            .ok_or(FieldError::Invalid)
+    fn as_text(&self) -> Option<&str> {
+        self.as_str()
     }
 }
 
-/// The passphrase as text. It is write-only: it is never converted to a value.
-pub struct PasswordCodec;
-
-impl Codec<WifiPassword> for PasswordCodec {
-    const KIND: ValueKind = ValueKind::String;
-
-    fn encode(_: &WifiPassword) -> Result<Option<Value>, FieldError> {
-        Err(FieldError::Secret)
+/// The passphrase as text. It is a secret: it has no text to show, and the
+/// generic interface never converts it to a value.
+impl TextValue for WifiPassword {
+    fn from_text(text: &str) -> Option<Self> {
+        Self::from_bytes(text.as_bytes())
     }
 
-    fn decode(value: &Value) -> Result<WifiPassword, FieldError> {
-        let text = value.as_str().ok_or(FieldError::WrongKind)?;
-        WifiPassword::from_bytes(text.as_bytes()).ok_or(FieldError::Invalid)
+    fn as_text(&self) -> Option<&str> {
+        None
     }
 }
 
@@ -79,6 +66,7 @@ mod tests {
 
     use super::*;
     use crate::WifiOverrides;
+    use rohi_service::Value;
 
     const SSID: u32 = 1;
     const PASSWORD: u32 = 2;
@@ -141,10 +129,8 @@ mod tests {
         // Neither a read nor the presence check yields it.
         assert_eq!(config.read_field(PASSWORD), Err(FieldError::Secret));
         assert_eq!(config.field_is_set(PASSWORD), Ok(true));
-        assert_eq!(
-            PasswordCodec::encode(&config.password.clone().unwrap()),
-            Err(FieldError::Secret)
-        );
+        // The password has no text to show, so even its codec cannot produce one.
+        assert_eq!(config.password.as_ref().unwrap().as_text(), None);
         assert!(
             WifiConfig::FIELDS
                 .iter()

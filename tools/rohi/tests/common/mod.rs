@@ -13,6 +13,7 @@ use std::rc::Rc;
 
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use rohi::{ClientTransport, Device, Error};
+use rohi_config::{Text, Variant};
 use rohi_connectivity::{ConnectivityConfig, ConnectivityOverrides};
 use rohi_control::{ControlBackend, Controller, Device as BackendDevice, DeviceInfo, OpenPolicy};
 use rohi_control_ble::ControlBle;
@@ -22,10 +23,10 @@ use rohi_location::{LocationOverrides, LocationService, LocationShared};
 use rohi_net::{BleConnectionInfo, BleError, BleState, BleTransport};
 use rohi_net::{WifiConfig, WifiOverrides};
 use rohi_service::{
-    Action, ActionDescriptor, ActionError, ActionOutput, Codec, Config, EnumDescriptor,
-    EnumVariant, FIRST_SERVICE_ISSUE, FieldDescriptor, FieldError, Issue, IssueDescriptor,
-    IssueSeverity, Section, SectionStore, Service, ServiceHealth, ServiceState, ServiceSummary,
-    Status, StatusWriter, Statuses, StoreError, Unit, Value, ValueKind, WriteError,
+    Action, ActionDescriptor, ActionError, ActionOutput, Config, EnumDescriptor, EnumVariant,
+    FIRST_SERVICE_ISSUE, FieldDescriptor, FieldError, Issue, IssueDescriptor, IssueSeverity,
+    Section, SectionStore, Service, ServiceHealth, ServiceState, ServiceSummary, Status,
+    StatusWriter, Statuses, StoreError, Unit, Value, ValueKind, WriteError,
 };
 use tokio::sync::mpsc;
 
@@ -129,43 +130,10 @@ impl<C: Config + Default> SectionStore<C> for Mem<C::Overrides> {
     }
 }
 
-/// Text of any length the generic value holds.
-pub struct Text;
-
-impl Codec<String> for Text {
-    const KIND: ValueKind = ValueKind::String;
-
-    fn encode(value: &String) -> Result<Option<Value>, FieldError> {
-        Ok(Value::text(value))
-    }
-
-    fn decode(value: &Value) -> Result<String, FieldError> {
-        value
-            .as_str()
-            .map(str::to_owned)
-            .ok_or(FieldError::WrongKind)
-    }
-}
-
 const GADGET_MODES: &[EnumDescriptor] = &[EnumDescriptor::new(
     1,
     &[EnumVariant::new(0, "fast"), EnumVariant::new(1, "slow")],
 )];
-
-/// The mode number as the enum [`GADGET_MODES`].
-pub struct ModeNumber;
-
-impl Codec<u32> for ModeNumber {
-    const KIND: ValueKind = ValueKind::Enum;
-
-    fn encode(mode: &u32) -> Result<Option<Value>, FieldError> {
-        Ok(Some(Value::Enum(*mode)))
-    }
-
-    fn decode(value: &Value) -> Result<u32, FieldError> {
-        value.as_enum().ok_or(FieldError::WrongKind)
-    }
-}
 
 /// The defaults are valid; a mode belongs to a labelled gadget.
 fn gadget_is_valid(gadget: &Gadget) -> Result<(), FieldError> {
@@ -183,7 +151,7 @@ pub struct Gadget {
     pub label: String,
     #[config(id = 2, unit = Percent, min = 0, max = 100)]
     pub level: u64,
-    #[config(id = 3, with = ModeNumber, enum_id = 1)]
+    #[config(id = 3, with = Variant, enum_id = 1)]
     pub mode: Option<u32>,
     /// Shown, never changed and never stored.
     #[config(id = 4, read_only, with = Text)]

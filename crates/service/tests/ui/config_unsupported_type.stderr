@@ -5,7 +5,7 @@ error[E0277]: `Standard` has no conversion between `Hostname` and a config value
   |                          ^^^^^^ this type needs its own codec
   |
   = help: the trait `Codec<Hostname>` is not implemented for `Standard`
-  = note: implement `rohi_service::Codec<Hostname>` for a codec type and name it on the field: `#[config(with = MyCodec)]`
+  = note: implement `rohi_config::Codec<Hostname>` for a codec type and name it on the field: `#[config(with = MyCodec)]`
   = help: `Standard` implements trait `Codec<T>`:
             Codec<bool>
             Codec<f32>

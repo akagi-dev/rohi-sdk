@@ -19,56 +19,24 @@ use core::cell::{Cell, RefCell};
 use embassy_futures::block_on;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use heapless::{String, Vec};
+use rohi_config::{Text, Variant};
 use rohi_control_proto::control::{
     self as pb, Request_::Request as Call, Response_::Response as Reply,
 };
 use rohi_control_proto::{PROTOCOL_VERSION, decode, encode, limits};
 use rohi_service::{
-    Action, ActionDescriptor, ActionError, ActionOutput, Codec, Config, EnumDescriptor,
-    EnumVariant, FIRST_SERVICE_ISSUE, FieldDescriptor, FieldError, Issue, IssueDescriptor,
-    IssueSeverity, Section, SectionStore, Service, ServiceHealth, ServiceState, ServiceSummary,
-    Status, StatusWriter, Statuses, StoreError, Unit, Value, ValueKind, WriteError,
+    Action, ActionDescriptor, ActionError, ActionOutput, Config, EnumDescriptor, EnumVariant,
+    FIRST_SERVICE_ISSUE, FieldDescriptor, FieldError, Issue, IssueDescriptor, IssueSeverity,
+    Section, SectionStore, Service, ServiceHealth, ServiceState, ServiceSummary, Status,
+    StatusWriter, Statuses, StoreError, Unit, Value, ValueKind, WriteError,
 };
 
 use crate::*;
-
-/// Text of any length the generic value holds.
-struct Text;
-
-impl Codec<std::string::String> for Text {
-    const KIND: ValueKind = ValueKind::String;
-
-    fn encode(value: &std::string::String) -> Result<Option<Value>, FieldError> {
-        Ok(Value::text(value))
-    }
-
-    fn decode(value: &Value) -> Result<std::string::String, FieldError> {
-        value
-            .as_str()
-            .map(std::string::String::from)
-            .ok_or(FieldError::WrongKind)
-    }
-}
 
 const MODES: &[EnumDescriptor] = &[EnumDescriptor::new(
     1,
     &[EnumVariant::new(0, "auto"), EnumVariant::new(5, "manual")],
 )];
-
-/// The mode number as the enum [`MODES`].
-struct ModeNumber;
-
-impl Codec<u32> for ModeNumber {
-    const KIND: ValueKind = ValueKind::Enum;
-
-    fn encode(mode: &u32) -> Result<Option<Value>, FieldError> {
-        Ok(Some(Value::Enum(*mode)))
-    }
-
-    fn decode(value: &Value) -> Result<u32, FieldError> {
-        value.as_enum().ok_or(FieldError::WrongKind)
-    }
-}
 
 fn net_is_valid(net: &Net) -> Result<(), FieldError> {
     if net.enabled && net.host.is_empty() {
@@ -88,7 +56,7 @@ struct Net {
     host: std::string::String,
     #[config(id = 4, secret, with = Text)]
     token: Option<std::string::String>,
-    #[config(id = 5, with = ModeNumber, enum_id = 1)]
+    #[config(id = 5, with = Variant, enum_id = 1)]
     mode: Option<u32>,
 }
 

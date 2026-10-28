@@ -52,15 +52,17 @@
 //! The on-flash CBOR documents and the section ID hash are a persistent ABI,
 //! documented in the `config-store` chapter of the SDK book.
 
-#[cfg(test)]
+#[cfg(any(test, feature = "std"))]
 extern crate std;
 
 // Lets the derive macro refer to this crate as `::rohi_config` in its own tests.
 extern crate self as rohi_config;
 
+pub mod cbor;
 mod codec;
 mod crc;
 mod error;
+mod field_codec;
 mod format;
 mod id;
 mod memory;
@@ -69,11 +71,13 @@ mod section;
 mod slot;
 mod storage;
 mod store;
+mod value;
 mod writer;
 
 pub use codec::{decode_exact, encode_to_slice};
 pub use crc::Crc32;
 pub use error::{ConfigError, Corruption, DecodeFailure, DecodeKind, EncodeError, SectionError};
+pub use field_codec::{Codec, Standard, Text, TextValue, Variant, VariantValue};
 pub use format::{
     COMMIT_WORD, COMMIT_WORD_SIZE, FORMAT_VERSION, MAX_SECTION_PAYLOAD, MAX_SECTIONS, MAX_SLOT_SIZE,
 };
@@ -84,6 +88,7 @@ pub use overrides::{HasOverrides, Override, RedactedOverride, materialize};
 pub use section::ConfigSection;
 pub use storage::ConfigStorage;
 pub use store::{ConfigOpenState, ConfigStore, OpenFailure, SectionInfo};
+pub use value::{FieldError, MAX_VALUE_LEN, Value, ValueKind};
 
 /// Derive macro generating the [`ConfigSection`] implementation of a private
 /// persisted section. The managed config derive, `Config`, is in `rohi-service`,

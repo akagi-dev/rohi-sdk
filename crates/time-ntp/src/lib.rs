@@ -61,7 +61,5 @@ mod tests;
 
 pub use config::{DEFAULT_SERVERS, DEFAULT_TIMEOUT_MS, MAX_SERVERS, NTP_PORT, NtpConfig};
 pub use error::NtpError;
-pub use section::{
-    MAX_NAME_LEN, NtpServersConfig, NtpServersOverrides, ServerName, ServerNameCodec,
-};
+pub use section::{MAX_NAME_LEN, NtpServersConfig, NtpServersOverrides, ServerName};
 pub use source::NtpTimeSource;

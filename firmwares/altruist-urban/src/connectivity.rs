@@ -19,9 +19,9 @@
 //! The service runs in its own task and only reads measurement snapshots, so
 //! Wi-Fi, DNS, TCP, server, time or authorization failures never reach the
 //! sensors. Configuration is `ConnectivityConfig::default()`, the build-time
-//! [`firmware_overrides`] (`ROHI_CONNECTIVITY_HOST`, `ROHI_CONNECTIVITY_PORT`,
-//! `ROHI_CONNECTIVITY_NODE_ID`, `ROHI_CONNECTIVITY_INTERVAL_S`; without a host
-//! nothing is enabled) and the overrides of the persistent
+//! [`firmware_overrides`] (`ROHI_CONNECTIVITY_ENDPOINT`, an
+//! `http://host[:port]` URI, `ROHI_CONNECTIVITY_NODE_ID`,
+//! `ROHI_CONNECTIVITY_INTERVAL_S`; without an endpoint nothing is enabled) and the overrides of the persistent
 //! `ConnectivityConfig` section.
 //!
 //! The task is always running once the network is up and follows the
@@ -44,7 +44,8 @@ use log::{info, warn};
 use rohi_config::Override;
 use rohi_connectivity::{
     ConnectivityConfig, ConnectivityOverrides, ConnectivityService, ConnectivityShared,
-    ConnectivityStatus, Host, HttpTransport, NONCE_LEN, NonceError, NonceSource, ServiceConfig,
+    ConnectivityStatus, EndpointUri, HttpTransport, NONCE_LEN, NonceError, NonceSource,
+    ServiceConfig,
 };
 use rohi_hal::runtime::MeasurementHandle;
 use rohi_hal_esp::EmbassyClock;
@@ -105,19 +106,17 @@ fn env_number<T: core::str::FromStr>(value: Option<&str>) -> Option<T> {
     value.and_then(|value| value.parse().ok())
 }
 
-/// Policy compiled into the firmware: nothing is enabled unless a valid host is
-/// set, and the other variables are ignored without one. It is the firmware
+/// Policy compiled into the firmware: nothing is enabled unless a valid endpoint
+/// (`http://host[:port]`) is set, and the other variables are ignored without
+/// one. It is the firmware
 /// layer under the overrides of the user.
 pub fn firmware_overrides() -> ConnectivityOverrides {
     let mut out = ConnectivityOverrides::default();
-    let Some(host) = option_env!("ROHI_CONNECTIVITY_HOST").and_then(Host::new) else {
+    let Some(endpoint) = option_env!("ROHI_CONNECTIVITY_ENDPOINT").and_then(EndpointUri::new)
+    else {
         return out;
     };
-    out.enabled = Override::Value(true);
-    out.host = Override::Value(host);
-    if let Some(port) = env_number(option_env!("ROHI_CONNECTIVITY_PORT")) {
-        out.port = Override::Value(port);
-    }
+    out.endpoint = Override::Value(Some(endpoint));
     if let Some(node_id) = env_number(option_env!("ROHI_CONNECTIVITY_NODE_ID")) {
         out.node_id = Override::Value(node_id);
     }
@@ -127,9 +126,9 @@ pub fn firmware_overrides() -> ConnectivityOverrides {
     out
 }
 
-/// `None` when `loaded` is disabled or invalid.
+/// `None` when `loaded` is disabled (it has no endpoint) or invalid.
 fn effective(loaded: ConnectivityConfig) -> Option<ConnectivityConfig> {
-    if !loaded.enabled {
+    if !loaded.is_enabled() {
         info!("Connectivity: disabled");
         return None;
     }
@@ -148,14 +147,16 @@ async fn serve(
     measurements: MeasurementHandle<'static, RawMutex>,
     config: &ConnectivityConfig,
 ) -> Infallible {
+    let Some(endpoint) = config.endpoint() else {
+        // `effective` only hands over a valid, enabled configuration.
+        return core::future::pending().await;
+    };
     info!(
         "Connectivity: {}:{} every {} s",
-        config.host.as_str(),
-        config.port,
-        config.interval_s
+        endpoint.host, endpoint.port, config.interval_s
     );
     let signer = StaticSigner;
-    let transport = HttpTransport::new(network, config.endpoint(), Delay);
+    let transport = HttpTransport::new(network, endpoint, Delay);
     let mut service: ConnectivityService<
         '_,
         RawMutex,

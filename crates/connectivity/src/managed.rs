@@ -20,42 +20,18 @@ use embassy_sync::blocking_mutex::raw::RawMutex;
 use heapless::Vec;
 use rohi_location::LocationSource;
 use rohi_service::{
-    Codec, FieldDescriptor, FieldError, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES, Service,
-    ServiceHealth, ServiceState, ServiceSummary, Status, StatusWriter, Value, ValueKind,
-    WriteError,
+    FieldDescriptor, FieldError, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES, Service,
+    ServiceHealth, ServiceState, ServiceSummary, Status, StatusWriter, ValueKind, WriteError,
 };
 
+use crate::ConnectivityConfig;
 use crate::service::{ConnectivityShared, ConnectivityState};
 use crate::transport::TransportError;
-use crate::{ConnectivityConfig, Host};
 
-/// The ingress host as text.
-///
-/// The fields, their ids and the persisted overrides of the `connectivity`
-/// section are declared once, on [`ConnectivityConfig`].
-pub struct HostCodec;
-
-impl Codec<Host> for HostCodec {
-    const KIND: ValueKind = ValueKind::String;
-
-    fn encode(host: &Host) -> Result<Option<Value>, FieldError> {
-        Value::text(host.as_str())
-            .map(Some)
-            .ok_or(FieldError::Invalid)
-    }
-
-    fn decode(value: &Value) -> Result<Host, FieldError> {
-        let text = value.as_str().ok_or(FieldError::WrongKind)?;
-        Host::new(text).ok_or(FieldError::Invalid)
-    }
-}
-
-/// A disabled section is valid whatever it holds: telemetry is off. An
-/// enabled one must be usable.
+/// A section without an endpoint is valid: telemetry is disabled. The fields, their
+/// ids and the persisted overrides of the `connectivity` section are declared
+/// once, on [`ConnectivityConfig`].
 pub(crate) fn validate_section(config: &ConnectivityConfig) -> Result<(), FieldError> {
-    if !config.enabled {
-        return Ok(());
-    }
     ConnectivityConfig::validate(config).map_err(|_| FieldError::Invalid)
 }
 
@@ -278,61 +254,85 @@ mod tests {
     use embassy_sync::blocking_mutex::raw::NoopRawMutex;
     use rohi_config::ConfigOverrides;
     use rohi_location::NoLocation;
-    use rohi_service::{Bounds, Config, Unit};
+    use rohi_service::{Bounds, Config, Unit, Value};
 
     use super::*;
     use crate::ConnectivityOverrides;
+    use crate::EndpointUri;
     use crate::config::{MAX_INTERVAL_S, MIN_INTERVAL_S};
 
-    const ENABLED: u32 = 1;
     const NODE_ID: u32 = 2;
     const INTERVAL_S: u32 = 3;
-    const HOST: u32 = 4;
-    const PORT: u32 = 5;
+    const ENDPOINT: u32 = 4;
 
     fn text(value: &str) -> Value {
         Value::text(value).unwrap()
     }
 
     #[test]
-    fn enabling_the_defaults_needs_a_host() {
+    fn an_endpoint_enables_telemetry_and_none_disables_it() {
         let mut config = ConnectivityConfig::default();
-        // Disabled is a valid state, with or without a host.
+        // Disabled is a valid state, without any endpoint.
+        assert!(!config.is_enabled());
         assert_eq!(Config::validate(&config), Ok(()));
-        config.set_field(ENABLED, Value::Bool(true)).unwrap();
-        assert_eq!(Config::validate(&config), Err(FieldError::Invalid));
-        config.set_field(HOST, text("ingress.example.org")).unwrap();
-        config.set_field(PORT, Value::U64(443)).unwrap();
+        assert_eq!(config.read_field(ENDPOINT), Ok(None));
+        assert_eq!(config.field_is_set(ENDPOINT), Ok(false));
+
+        config
+            .set_field(ENDPOINT, text("http://ingress.example.org:8080"))
+            .unwrap();
         config.set_field(NODE_ID, Value::U64(42)).unwrap();
         config.set_field(INTERVAL_S, Value::U64(120)).unwrap();
+        assert!(config.is_enabled());
         assert_eq!(Config::validate(&config), Ok(()));
         assert_eq!(
-            config.read_field(HOST),
-            Ok(Some(text("ingress.example.org")))
+            config.read_field(ENDPOINT),
+            Ok(Some(text("http://ingress.example.org:8080")))
         );
-        assert_eq!(config.read_field(PORT), Ok(Some(Value::U64(443))));
         assert_eq!(config.interval_s, 120);
+
+        // `none` disables telemetry again.
+        assert_eq!(config.set_none(ENDPOINT), Ok(()));
+        assert!(!config.is_enabled());
+        assert_eq!(config.read_field(ENDPOINT), Ok(None));
     }
 
     #[test]
     fn typed_conversions_reject_what_does_not_fit() {
         let mut config = ConnectivityConfig::default();
+        for refused in [
+            "ingress.example.org",
+            "https://ingress.example.org",
+            "http://ingress.example.org/v1",
+            "http://bad host!",
+            "http://a.io:70000",
+        ] {
+            assert_eq!(
+                config.set_field(ENDPOINT, text(refused)),
+                Err(FieldError::Invalid),
+                "{refused}"
+            );
+        }
         assert_eq!(
-            config.set_field(PORT, Value::U64(70_000)),
-            Err(FieldError::OutOfRange)
-        );
-        assert_eq!(
-            config.set_field(HOST, text("bad host!")),
-            Err(FieldError::Invalid)
-        );
-        assert_eq!(
-            config.set_field(ENABLED, Value::U64(1)),
+            config.set_field(ENDPOINT, Value::U64(80)),
             Err(FieldError::WrongKind)
         );
+        assert_eq!(
+            config.set_field(INTERVAL_S, Value::Bool(true)),
+            Err(FieldError::WrongKind)
+        );
+        assert_eq!(config.set_none(NODE_ID), Err(FieldError::NotOptional));
         assert_eq!(
             config.set_field(99, Value::U64(1)),
             Err(FieldError::UnknownField)
         );
+        // The removed fields are unknown: there is no `enabled` and no port.
+        for retired in [1, 5] {
+            assert_eq!(
+                config.set_field(retired, Value::U64(1)),
+                Err(FieldError::UnknownField)
+            );
+        }
     }
 
     #[test]
@@ -379,9 +379,7 @@ mod tests {
 
     fn enabled() -> Option<ConnectivityConfig> {
         Some(ConnectivityConfig {
-            host: Host::new("ingress.example.org").unwrap(),
-            port: 443,
-            enabled: true,
+            endpoint: EndpointUri::new("http://ingress.example.org:443"),
             ..ConnectivityConfig::default()
         })
     }

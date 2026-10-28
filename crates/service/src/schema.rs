@@ -26,10 +26,10 @@
 use crate::action::{ActionDescriptor, MAX_ACTION_ARGS, MAX_RECORD_FIELDS};
 use crate::field::{ConfigField, EnumDescriptor, FieldDescriptor};
 use crate::status::{FIRST_SERVICE_ISSUE, ISSUE_STARTUP_FAILED, IssueDescriptor};
-use crate::value::ValueKind;
 use crate::{
     MAX_ENUM_VARIANTS, MAX_ENUMS, MAX_ISSUE_DESCRIPTORS, MAX_NAME_LEN, MAX_VARIANT_NAME_LEN,
 };
+use rohi_config::ValueKind;
 
 const fn same(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());

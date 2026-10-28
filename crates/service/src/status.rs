@@ -34,8 +34,8 @@ use crate::action::enum_ok;
 use crate::action::{Action, ActionDescriptor, ActionError, ActionOutput};
 use crate::field::{EnumDescriptor, FieldDescriptor};
 use crate::service::Service;
-use crate::value::Value;
 use crate::{MAX_FIELD_VALUE_LEN, MAX_FIELDS, MAX_ISSUES};
+use rohi_config::Value;
 
 /// Lifecycle state of a service.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

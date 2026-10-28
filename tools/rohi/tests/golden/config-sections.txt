@@ -42,19 +42,15 @@
   default valid=Ok(())
   cbor a101f6
 [connectivity] id=0x9c57015a40662d0c version=1
-  field 1 "enabled" Bool unit=None enum=0 writable=true secret=false optional=false bounds=None
   field 2 "node_id" U64 unit=None enum=0 writable=true secret=false optional=false bounds=None
   field 3 "interval_s" U64 unit=S enum=0 writable=true secret=false optional=false bounds=Some(U64(10, 86400))
-  field 4 "host" String unit=None enum=0 writable=true secret=false optional=false bounds=None
-  field 5 "port" U64 unit=None enum=0 writable=true secret=false optional=false bounds=Some(U64(1, 65535))
-  overridable [1, 2, 3, 4, 5]
-  default 1: bool false
+  field 4 "endpoint" String unit=None enum=0 writable=true secret=false optional=true bounds=None
+  overridable [2, 3, 4]
   default 2: u64 0
   default 3: u64 60
-  default 4: string ""
-  default 5: u64 80
+  default 4: none
   default valid=Ok(())
-  cbor a501f4020003183c0440051850
+  cbor a3020003183c04f6
 [location] id=0xce098b4a3e381f40 version=1
   field 1 "latitude" F32 unit=Degrees enum=0 writable=true secret=false optional=false bounds=Some(F32(-90.0, 90.0))
   field 2 "longitude" F32 unit=Degrees enum=0 writable=true secret=false optional=false bounds=Some(F32(-180.0, 180.0))

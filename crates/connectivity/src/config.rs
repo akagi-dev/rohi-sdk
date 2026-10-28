@@ -18,17 +18,16 @@
 
 use core::fmt;
 
-use heapless::Vec;
-use minicbor::bytes::ByteSlice;
-use minicbor::decode::{self, Decoder};
-use minicbor::encode::{self, Encoder, Write};
+use heapless::String;
 use minicbor::{CborLen, Decode, Encode};
+use rohi_config::{Text, TextValue};
 use rohi_service::Config;
 
-use crate::managed::{HostCodec, validate_section};
+use crate::managed::validate_section;
 
-/// Maximum length of the configured host name, in bytes.
-pub const MAX_HOST_LEN: usize = 64;
+/// Maximum length of the endpoint URI, in bytes: the longest text a config
+/// value can hold.
+pub const MAX_ENDPOINT_LEN: usize = 64;
 /// Shortest allowed telemetry interval, in seconds.
 pub const MIN_INTERVAL_S: u32 = 10;
 /// Longest allowed telemetry interval, in seconds.
@@ -38,39 +37,13 @@ pub const DEFAULT_INTERVAL_S: u32 = 60;
 /// Default HTTP port.
 pub const DEFAULT_PORT: u16 = 80;
 
-mod bytes_codec {
-    use super::*;
-
-    pub fn encode<C, W: Write, const N: usize>(
-        value: &Vec<u8, N>,
-        e: &mut Encoder<W>,
-        _: &mut C,
-    ) -> Result<(), encode::Error<W::Error>> {
-        e.bytes(value)?;
-        Ok(())
-    }
-
-    pub fn decode<C, const N: usize>(
-        d: &mut Decoder<'_>,
-        _: &mut C,
-    ) -> Result<Vec<u8, N>, decode::Error> {
-        let position = d.position();
-        Vec::from_slice(d.bytes()?)
-            .map_err(|_| decode::Error::message("byte string too long").at(position))
-    }
-
-    pub fn cbor_len<C, const N: usize>(value: &Vec<u8, N>, ctx: &mut C) -> usize {
-        <&ByteSlice>::from(value.as_slice()).cbor_len(ctx)
-    }
-}
+const SCHEME: &str = "http://";
 
 /// Invalid telemetry configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigError {
-    /// The host is empty, too long or not a plain host name or IP address.
-    InvalidHost,
-    /// The port is zero.
-    InvalidPort,
+    /// The endpoint is not a valid `http://host[:port]` URI.
+    InvalidEndpoint,
     /// The interval is outside `MIN_INTERVAL_S..=MAX_INTERVAL_S`.
     InvalidInterval,
 }
@@ -78,8 +51,7 @@ pub enum ConfigError {
 impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::InvalidHost => "invalid telemetry host",
-            Self::InvalidPort => "invalid telemetry port",
+            Self::InvalidEndpoint => "invalid telemetry endpoint",
             Self::InvalidInterval => "invalid telemetry interval",
         })
     }
@@ -87,60 +59,7 @@ impl fmt::Display for ConfigError {
 
 impl core::error::Error for ConfigError {}
 
-/// Host name of the telemetry ingress.
-///
-/// Letters, digits, `.` and `-` only (a DNS name or an IPv4 address): the value is written into the
-/// HTTP `Host` header, so it can never carry spaces or line breaks.
-#[derive(Clone, PartialEq, Eq, Encode, Decode, CborLen)]
-#[cbor(transparent)]
-pub struct Host(
-    #[n(0)]
-    #[cbor(
-        encode_with = "bytes_codec::encode",
-        decode_with = "bytes_codec::decode",
-        cbor_len = "bytes_codec::cbor_len"
-    )]
-    Vec<u8, MAX_HOST_LEN>,
-);
-
-impl Host {
-    /// The empty (invalid) host.
-    pub const fn empty() -> Self {
-        Self(Vec::new())
-    }
-
-    /// `None` if `host` is empty, too long or has forbidden characters.
-    pub fn new(host: &str) -> Option<Self> {
-        let valid = !host.is_empty()
-            && host
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'));
-        if !valid {
-            return None;
-        }
-        Vec::from_slice(host.as_bytes()).ok().map(Self)
-    }
-
-    /// The host as text.
-    pub fn as_str(&self) -> &str {
-        // Validated ASCII on construction and on `ConnectivityConfig::validate`.
-        core::str::from_utf8(&self.0).unwrap_or("")
-    }
-
-    fn is_valid(&self) -> bool {
-        core::str::from_utf8(&self.0)
-            .ok()
-            .is_some_and(|host| Self::new(host).is_some())
-    }
-}
-
-impl fmt::Debug for Host {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(self.as_str(), f)
-    }
-}
-
-/// Where telemetry is sent.
+/// Where telemetry is sent, split into its parts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Endpoint<'a> {
     /// Host name or IPv4 address, also the HTTP `Host` header.
@@ -149,11 +68,101 @@ pub struct Endpoint<'a> {
     pub port: u16,
 }
 
+impl<'a> Endpoint<'a> {
+    /// Splits `http://host[:port]`; `None` for anything else.
+    ///
+    /// The scheme is required and the port defaults to [`DEFAULT_PORT`]. The
+    /// host is letters, digits, `.` and `-` only (a DNS name or an IPv4
+    /// address): it is written into the HTTP `Host` header, so it can never
+    /// carry spaces or line breaks. There is no user information, path, query
+    /// or fragment: the path of the ingress is fixed by the protocol.
+    pub fn parse(uri: &'a str) -> Option<Self> {
+        let authority = uri.strip_prefix(SCHEME)?;
+        let (host, port) = match authority.split_once(':') {
+            Some((host, port)) => (host, Some(port)),
+            None => (authority, None),
+        };
+        let host_is_valid = !host.is_empty()
+            && host
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'));
+        if !host_is_valid {
+            return None;
+        }
+        let port = match port {
+            None => DEFAULT_PORT,
+            Some(digits) => {
+                if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                    return None;
+                }
+                match digits.parse::<u16>() {
+                    Ok(port) if port != 0 => port,
+                    _ => return None,
+                }
+            }
+        };
+        Some(Self { host, port })
+    }
+}
+
+/// The URI of the telemetry ingress: `http://host[:port]`, at most
+/// [`MAX_ENDPOINT_LEN`] bytes.
+///
+/// See [`Endpoint::parse`] for the accepted form. A value that is not valid is
+/// refused by [`new`](Self::new); one that was decoded from storage is checked
+/// by [`ConnectivityConfig::validate`].
+#[derive(Clone, PartialEq, Eq, Encode, Decode, CborLen)]
+#[cbor(transparent)]
+pub struct EndpointUri(
+    #[n(0)]
+    #[cbor(
+        encode_with = "rohi_config::cbor::text::encode",
+        decode_with = "rohi_config::cbor::text::decode",
+        cbor_len = "rohi_config::cbor::text::cbor_len"
+    )]
+    String<MAX_ENDPOINT_LEN>,
+);
+
+impl EndpointUri {
+    /// `None` if `uri` is not a valid endpoint or too long.
+    pub fn new(uri: &str) -> Option<Self> {
+        Endpoint::parse(uri)?;
+        String::try_from(uri).ok().map(Self)
+    }
+
+    /// The URI as text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The parts of the endpoint; `None` if the stored text is not valid.
+    pub fn endpoint(&self) -> Option<Endpoint<'_>> {
+        Endpoint::parse(&self.0)
+    }
+}
+
+impl TextValue for EndpointUri {
+    fn from_text(text: &str) -> Option<Self> {
+        Self::new(text)
+    }
+
+    fn as_text(&self) -> Option<&str> {
+        Some(self.as_str())
+    }
+}
+
+impl fmt::Debug for EndpointUri {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self.as_str(), f)
+    }
+}
+
 /// Effective telemetry configuration (section `connectivity`).
 ///
-/// `ConnectivityConfig::default()` is [`disabled`](Self::disabled): no host
-/// and not valid on its own. What is stored are the explicit user overrides
-/// of it, [`ConnectivityOverrides`].
+/// Telemetry is sent only while an [`endpoint`](Self::endpoint) is set: without
+/// one the service is disabled, and that is a valid state.
+/// `ConnectivityConfig::default()` is [`disabled`](Self::disabled). What is
+/// stored are the explicit user overrides of it, [`ConnectivityOverrides`].
 #[derive(Clone, PartialEq, Eq, Debug, Config)]
 #[config(
     name = "connectivity",
@@ -162,42 +171,40 @@ pub struct Endpoint<'a> {
     validate = validate_section
 )]
 pub struct ConnectivityConfig {
-    /// Telemetry is only produced and sent when enabled.
-    #[config(id = 1)]
-    pub enabled: bool,
     /// Robonomics CPS node identifier (`core.v1.Meta.node_id`).
     #[config(id = 2)]
     pub node_id: u64,
     /// Seconds between telemetry frames.
     #[config(id = 3, unit = S, min = MIN_INTERVAL_S, max = MAX_INTERVAL_S)]
     pub interval_s: u32,
-    /// Ingress host.
-    #[config(id = 4, with = HostCodec)]
-    pub host: Host,
-    /// Ingress TCP port.
-    #[config(id = 5, min = 1, max = 65535)]
-    pub port: u16,
+    /// Ingress URI, `http://host[:port]`. `None` (the default) disables
+    /// telemetry.
+    #[config(id = 4, with = Text)]
+    pub endpoint: Option<EndpointUri>,
 }
 
 impl ConnectivityConfig {
-    /// A disabled configuration with default interval and port, and no host.
+    /// No endpoint, so telemetry is disabled, with the default interval.
     pub const fn disabled() -> Self {
         Self {
-            enabled: false,
             node_id: 0,
             interval_s: DEFAULT_INTERVAL_S,
-            host: Host::empty(),
-            port: DEFAULT_PORT,
+            endpoint: None,
         }
     }
 
-    /// Checks the configuration before it is persisted or applied.
+    /// Whether telemetry is sent: an endpoint is set.
+    pub const fn is_enabled(&self) -> bool {
+        self.endpoint.is_some()
+    }
+
+    /// Checks the configuration before it is persisted or applied. A disabled
+    /// configuration is valid.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        if !self.host.is_valid() {
-            return Err(ConfigError::InvalidHost);
-        }
-        if self.port == 0 {
-            return Err(ConfigError::InvalidPort);
+        if let Some(uri) = &self.endpoint
+            && uri.endpoint().is_none()
+        {
+            return Err(ConfigError::InvalidEndpoint);
         }
         if !(MIN_INTERVAL_S..=MAX_INTERVAL_S).contains(&self.interval_s) {
             return Err(ConfigError::InvalidInterval);
@@ -205,12 +212,10 @@ impl ConnectivityConfig {
         Ok(())
     }
 
-    /// The ingress endpoint.
-    pub fn endpoint(&self) -> Endpoint<'_> {
-        Endpoint {
-            host: self.host.as_str(),
-            port: self.port,
-        }
+    /// The ingress endpoint, `None` while telemetry is disabled or the stored
+    /// URI is not valid.
+    pub fn endpoint(&self) -> Option<Endpoint<'_>> {
+        self.endpoint.as_ref()?.endpoint()
     }
 
     /// Telemetry interval in milliseconds.
@@ -233,22 +238,22 @@ mod tests {
 
     extern crate std;
 
+    fn uri(text: &str) -> EndpointUri {
+        EndpointUri::new(text).unwrap()
+    }
+
     fn config() -> ConnectivityConfig {
         ConnectivityConfig {
-            enabled: true,
             node_id: 5,
             interval_s: 60,
-            host: Host::new("a.io").unwrap(),
-            port: 8080,
+            endpoint: Some(uri("http://a.io:8080")),
         }
     }
 
     fn overrides() -> ConnectivityOverrides {
         ConnectivityOverrides {
-            enabled: Override::Value(true),
             node_id: Override::Value(5),
-            host: Override::Value(Host::new("a.io").unwrap()),
-            port: Override::Value(8080),
+            endpoint: Override::Value(Some(uri("http://a.io:8080"))),
             ..ConnectivityOverrides::default()
         }
     }
@@ -260,11 +265,11 @@ mod tests {
         assert_eq!(
             &buffer[..used],
             [
-                0xa4, // map(4)
-                0x01, 0xf5, // 1: enabled
+                0xa2, // map(2)
                 0x02, 0x05, // 2: node_id
-                0x04, 0x44, b'a', b'.', b'i', b'o', // 4: host
-                0x05, 0x19, 0x1f, 0x90, // 5: port
+                0x04, 0x70, // 4: endpoint, text(16)
+                b'h', b't', b't', b'p', b':', b'/', b'/', b'a', b'.', b'i', b'o', b':', b'8', b'0',
+                b'8', b'0',
             ]
         );
         assert_eq!(ConnectivityOverrides::VERSION, 1);
@@ -281,30 +286,23 @@ mod tests {
     fn overrides_apply_to_the_defaults() {
         let effective =
             rohi_config::materialize::<ConnectivityConfig>(&Default::default(), &overrides());
-        assert_eq!(effective, config_of_overrides());
-        // The interval is not overridden: it is the default.
-        assert_eq!(effective.interval_s, DEFAULT_INTERVAL_S);
-    }
-
-    fn config_of_overrides() -> ConnectivityConfig {
-        ConnectivityConfig {
-            enabled: true,
-            node_id: 5,
-            interval_s: DEFAULT_INTERVAL_S,
-            host: Host::new("a.io").unwrap(),
-            port: 8080,
-        }
+        assert_eq!(
+            effective,
+            ConnectivityConfig {
+                interval_s: DEFAULT_INTERVAL_S,
+                ..config()
+            }
+        );
     }
 
     #[test]
     fn round_trips_and_fits_a_section() {
         let mut buffer = [0u8; MAX_SECTION_PAYLOAD];
+        let longest = std::format!("http://{}", "a".repeat(MAX_ENDPOINT_LEN - SCHEME.len()));
         let overrides = ConnectivityOverrides {
-            enabled: Override::Value(true),
             node_id: Override::Value(u64::MAX),
             interval_s: Override::Value(u32::MAX),
-            host: Override::Value(Host::new(&"a".repeat(MAX_HOST_LEN)).unwrap()),
-            port: Override::Value(u16::MAX),
+            endpoint: Override::Value(Some(uri(&longest))),
         };
         let used = rohi_config::encode_to_slice(&overrides, &mut buffer).unwrap();
         let decoded: ConnectivityOverrides = rohi_config::decode_exact(&buffer[..used]).unwrap();
@@ -312,41 +310,102 @@ mod tests {
     }
 
     #[test]
+    fn no_endpoint_is_a_valid_disabled_configuration() {
+        let disabled = ConnectivityConfig::disabled();
+        assert!(!disabled.is_enabled());
+        assert_eq!(disabled.endpoint(), None);
+        assert_eq!(disabled.validate(), Ok(()));
+        assert!(config().is_enabled());
+    }
+
+    #[test]
     fn validation() {
         assert_eq!(config().validate(), Ok(()));
-        assert_eq!(
-            ConnectivityConfig::disabled().validate(),
-            Err(ConfigError::InvalidHost)
-        );
-        let mut c = config();
-        c.port = 0;
-        assert_eq!(c.validate(), Err(ConfigError::InvalidPort));
         let mut c = config();
         c.interval_s = MIN_INTERVAL_S - 1;
         assert_eq!(c.validate(), Err(ConfigError::InvalidInterval));
         c.interval_s = MAX_INTERVAL_S + 1;
         assert_eq!(c.validate(), Err(ConfigError::InvalidInterval));
+        // Stored text that is no endpoint, for example a host of an older
+        // firmware, is invalid rather than guessed.
+        let stored = ConnectivityConfig {
+            endpoint: Some(EndpointUri(
+                String::try_from("ingress.example.org").unwrap(),
+            )),
+            ..config()
+        };
+        assert_eq!(stored.validate(), Err(ConfigError::InvalidEndpoint));
+        assert_eq!(stored.endpoint(), None);
     }
 
     #[test]
-    fn host_cannot_inject_header_bytes() {
-        assert!(Host::new("ok.example").is_some());
-        assert!(Host::new("ok.example:80").is_none());
-        assert!(Host::new("").is_none());
-        assert!(Host::new("a b").is_none());
-        assert!(Host::new("a\r\nX: 1").is_none());
-        assert!(Host::new(&"a".repeat(MAX_HOST_LEN + 1)).is_none());
+    fn the_endpoint_is_an_http_uri_with_an_optional_port() {
+        let parsed = |text| Endpoint::parse(text);
+        assert_eq!(
+            parsed("http://a.io"),
+            Some(Endpoint {
+                host: "a.io",
+                port: 80
+            })
+        );
+        assert_eq!(
+            parsed("http://192.168.1.5:8080"),
+            Some(Endpoint {
+                host: "192.168.1.5",
+                port: 8080
+            })
+        );
+        assert_eq!(
+            parsed("http://ingress-1.example.org:65535"),
+            Some(Endpoint {
+                host: "ingress-1.example.org",
+                port: 65535
+            })
+        );
+        for refused in [
+            "",
+            "a.io",
+            "a.io:80",
+            "https://a.io",
+            "HTTP://a.io",
+            "http://",
+            "http://:80",
+            "http://a.io:",
+            "http://a.io:0",
+            "http://a.io:65536",
+            "http://a.io:+80",
+            "http://a.io:8x",
+            "http://a.io/",
+            "http://a.io/v1/telemetry",
+            "http://a.io?x=1",
+            "http://a.io#frag",
+            "http://user@a.io",
+            "http://a b",
+            "http://a.io:80:81",
+            "http://[::1]:80",
+        ] {
+            assert_eq!(parsed(refused), None, "{refused:?}");
+        }
     }
 
     #[test]
-    fn endpoint_borrows_the_config() {
+    fn a_uri_cannot_inject_header_bytes_or_overflow() {
+        assert!(EndpointUri::new("http://ok.example").is_some());
+        assert!(EndpointUri::new("http://a.io\r\nX: 1").is_none());
+        assert!(EndpointUri::new("http://a b").is_none());
+        let too_long = std::format!("http://{}", "a".repeat(MAX_ENDPOINT_LEN));
+        assert!(EndpointUri::new(&too_long).is_none());
+    }
+
+    #[test]
+    fn the_endpoint_borrows_the_config() {
         let config = config();
         assert_eq!(
             config.endpoint(),
-            Endpoint {
+            Some(Endpoint {
                 host: "a.io",
                 port: 8080
-            }
+            })
         );
         assert_eq!(config.interval_ms(), 60_000);
     }

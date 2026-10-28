@@ -59,11 +59,13 @@ pub mod service;
 pub mod transport;
 
 pub use clock::{ClockError, NONCE_LEN, NonceError, NonceSource, UtcClock};
-pub use config::{ConfigError, ConnectivityConfig, ConnectivityOverrides, Endpoint, Host};
+pub use config::{
+    ConfigError, ConnectivityConfig, ConnectivityOverrides, Endpoint, EndpointUri, MAX_ENDPOINT_LEN,
+};
 pub use encoder::{EncodeError, EncodeStats, EncodedMessage, UrbanEncoder};
 pub use envelope::{BuildError, EnvelopeBuilder, EnvelopeFrame, FrameSigner, SignError};
 pub use http::HttpTransport;
-pub use managed::{ConnectivityStatusService, HostCodec, issue, status_field};
+pub use managed::{ConnectivityStatusService, issue, status_field};
 pub use outbox::{Outbox, OutboxFull};
 pub use service::{
     ConnectivityService, ConnectivityShared, ConnectivityState, ConnectivityStatus, Diagnostics,

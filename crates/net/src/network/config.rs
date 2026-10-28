@@ -21,11 +21,10 @@ use core::net::Ipv4Addr;
 
 use heapless::String;
 use minicbor::{CborLen, Decode, Encode};
+use rohi_config::{Text, Variant};
 use rohi_service::Config;
 
-use super::managed::{
-    ADDRESS_MODE_ENUM, ADDRESS_MODES, AddressModeCodec, HostnameCodec, Ipv4Codec, validate_section,
-};
+use super::managed::{ADDRESS_MODE_ENUM, ADDRESS_MODES, Ipv4Codec, validate_section};
 
 use crate::WifiError;
 
@@ -88,9 +87,9 @@ pub enum AddressMode {
 pub struct Hostname(
     #[n(0)]
     #[cbor(
-        encode_with = "crate::text_codec::encode",
-        decode_with = "crate::text_codec::decode",
-        cbor_len = "crate::text_codec::cbor_len"
+        encode_with = "rohi_config::cbor::text::encode",
+        decode_with = "rohi_config::cbor::text::decode",
+        cbor_len = "rohi_config::cbor::text::cbor_len"
     )]
     String<MAX_HOSTNAME_LEN>,
 );
@@ -140,7 +139,7 @@ impl fmt::Debug for Hostname {
 )]
 pub struct NetworkConfig {
     /// How the IPv4 address is obtained.
-    #[config(id = 1, with = AddressModeCodec, enum_id = ADDRESS_MODE_ENUM)]
+    #[config(id = 1, with = Variant, enum_id = ADDRESS_MODE_ENUM)]
     pub address_mode: AddressMode,
     /// Static IPv4 address.
     #[config(id = 2, name = "ip", with = Ipv4Codec)]
@@ -155,7 +154,7 @@ pub struct NetworkConfig {
     #[config(id = 5, with = Ipv4Codec)]
     pub dns: Option<Ipv4>,
     /// Host name announced to the DHCP server.
-    #[config(id = 6, with = HostnameCodec)]
+    #[config(id = 6, with = Text)]
     pub hostname: Option<Hostname>,
     /// Bound of obtaining an address from DHCP.
     #[config(

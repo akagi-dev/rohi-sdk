@@ -20,9 +20,8 @@ use core::fmt;
 
 use heapless::String;
 use minicbor::{CborLen, Decode, Encode};
+use rohi_config::Text;
 use rohi_service::Config;
-
-use super::managed::NameCodec;
 
 /// Longest advertised name, in bytes: the whole scan response minus its
 /// 2-byte header.
@@ -35,9 +34,9 @@ pub const MAX_BLE_NAME_LEN: usize = 29;
 pub struct BleName(
     #[n(0)]
     #[cbor(
-        encode_with = "crate::text_codec::encode",
-        decode_with = "crate::text_codec::decode",
-        cbor_len = "crate::text_codec::cbor_len"
+        encode_with = "rohi_config::cbor::text::encode",
+        decode_with = "rohi_config::cbor::text::decode",
+        cbor_len = "rohi_config::cbor::text::cbor_len"
     )]
     String<MAX_BLE_NAME_LEN>,
 );
@@ -73,7 +72,7 @@ impl fmt::Debug for BleName {
 pub struct BleSettings {
     /// Advertised and GAP device name. `None` keeps the firmware default,
     /// see [`BleConfig::name_prefix`](crate::BleConfig::name_prefix).
-    #[config(id = 1, with = NameCodec)]
+    #[config(id = 1, with = Text)]
     pub name: Option<BleName>,
 }
 

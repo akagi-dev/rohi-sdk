@@ -13,8 +13,8 @@
 //  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
-use crate::config::FieldError;
-use crate::value::{Value, ValueKind};
+use rohi_config::FieldError;
+use rohi_config::{Value, ValueKind};
 
 /// Unit of a numeric field, a compact code instead of text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

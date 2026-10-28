@@ -30,7 +30,7 @@ use heapless::Vec;
 use crate::field::{EnumDescriptor, FieldDescriptor, enum_allows};
 use crate::service::Service;
 use crate::status::{StatusWriter, WriteError};
-use crate::value::Value;
+use rohi_config::Value;
 
 /// Maximum number of arguments of an action.
 pub const MAX_ACTION_ARGS: usize = 3;

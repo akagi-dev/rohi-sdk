@@ -45,33 +45,12 @@ use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embassy_sync::mutex::Mutex as AsyncMutex;
 use heapless::Vec;
-use rohi_config::{ConfigOverrides, ConfigSection, HasOverrides, materialize};
+use rohi_config::{ConfigOverrides, ConfigSection, FieldError, HasOverrides, materialize};
 
 use crate::field::{ConfigField, EnumDescriptor};
 use crate::schema::{config_fields_valid, enums_valid, field_ids_match, name_ok};
-use crate::value::Value;
 use crate::{MAX_CONFIG_FIELDS, MAX_REGISTRY_ENTRIES};
-
-/// Why a field access or a whole-section validation failed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FieldError {
-    /// The section has no field with this id.
-    UnknownField,
-    /// The field cannot be changed by clients.
-    ReadOnly,
-    /// The value has the wrong kind.
-    WrongKind,
-    /// The value is outside the range or variants of the field.
-    OutOfRange,
-    /// The value or the resulting section is rejected by the typed
-    /// validation.
-    Invalid,
-    /// The field is required: it cannot be set to "no value".
-    NotOptional,
-    /// The field is a write-only secret: its value is never read, only
-    /// whether it is set.
-    Secret,
-}
+use rohi_config::Value;
 
 /// The typed configuration of one managed section.
 ///

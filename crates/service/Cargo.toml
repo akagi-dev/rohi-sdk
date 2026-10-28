@@ -21,6 +21,7 @@ rohi-config-derive.workspace = true
 rohi-service-derive.workspace = true
 
 [dev-dependencies]
+rohi-config = { workspace = true, features = ["std"] }
 trybuild = "1"
 embassy-futures.workspace = true
 minicbor = { workspace = true, features = ["std"] }

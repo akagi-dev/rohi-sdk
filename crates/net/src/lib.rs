@@ -42,7 +42,6 @@ mod limits;
 pub mod network;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
-mod text_codec;
 pub mod wifi;
 
 pub use ble::{

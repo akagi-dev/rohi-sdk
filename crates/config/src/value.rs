@@ -17,7 +17,8 @@
 use heapless::{String, Vec};
 use zeroize::Zeroize;
 
-use crate::MAX_VALUE_LEN;
+/// Maximum length of a string or bytes [`Value`], in bytes.
+pub const MAX_VALUE_LEN: usize = 64;
 
 /// Primitive type of a [`Value`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -163,4 +164,25 @@ impl Value {
             Self::Enum(_) | Self::Bool(_) | Self::I64(_) | Self::U64(_) | Self::F32(_) => {}
         }
     }
+}
+
+/// Why a field access or a whole-section validation failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldError {
+    /// The section has no field with this id.
+    UnknownField,
+    /// The field cannot be changed by clients.
+    ReadOnly,
+    /// The value has the wrong kind.
+    WrongKind,
+    /// The value is outside the range or variants of the field.
+    OutOfRange,
+    /// The value or the resulting section is rejected by the typed
+    /// validation.
+    Invalid,
+    /// The field is required: it cannot be set to "no value".
+    NotOptional,
+    /// The field is a write-only secret: its value is never read, only
+    /// whether it is set.
+    Secret,
 }

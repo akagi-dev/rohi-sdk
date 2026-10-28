@@ -58,27 +58,25 @@
 extern crate self as rohi_service;
 
 pub mod action;
-pub mod codec;
 pub mod config;
 mod field;
 pub mod registry;
 mod schema;
 pub mod service;
 pub mod status;
-mod value;
 
 pub use action::{
     Action, ActionDescriptor, ActionError, ActionOutput, MAX_ACTION_ARGS, MAX_RECORD_FIELDS,
     MAX_RECORDS, Records,
 };
-pub use codec::{Codec, Standard};
 pub use config::{
     Config, ConfigEntry, ConfigError, ConfigRegistry, ConfigSectionOps, ConfigUpdate, EntryState,
-    FactoryReset, FieldError, Mutation, MutationOp, Patched, RestartRequired, Section, SectionInfo,
+    FactoryReset, Mutation, MutationOp, Patched, RestartRequired, Section, SectionInfo,
     SectionSchema, SectionStore, SectionValues, StoreError,
 };
 pub use field::{Bounds, ConfigField, EnumDescriptor, EnumVariant, FieldDescriptor, Unit};
 pub use registry::{ActionRegistry, ServiceIdentity, StatusRegistry, StatusSet, Statuses, Tracker};
+pub use rohi_config::{FieldError, MAX_VALUE_LEN, Value, ValueKind};
 pub use rohi_config_derive::Config;
 pub use rohi_service_derive::Service;
 pub use service::{Service, assert_service_name, distinct_ids, service_id, service_name_is_valid};
@@ -87,10 +85,7 @@ pub use status::{
     ServiceHealth, ServiceInfo, ServiceSchema, ServiceState, ServiceStatus, ServiceStatusSummary,
     ServiceSummary, Startup, Status, StatusError, StatusWriter, WriteError, default_device_health,
 };
-pub use value::{Value, ValueKind};
 
-/// Maximum length of a string or bytes [`Value`], in bytes.
-pub const MAX_VALUE_LEN: usize = 64;
 /// Maximum length of a string or bytes status value or action result, in
 /// bytes; longer values are an error, never cut. Arguments and config values
 /// may be [`MAX_VALUE_LEN`] long.

@@ -18,42 +18,13 @@
 use core::fmt;
 
 use heapless::Vec;
-use minicbor::bytes::ByteSlice;
-use minicbor::decode::{self, Decoder};
-use minicbor::encode::{self, Encoder, Write};
 use minicbor::{CborLen, Decode, Encode};
+use rohi_config::Text;
 use rohi_service::Config;
 
-use super::managed::{PasswordCodec, SsidCodec, validate_section};
+use super::managed::validate_section;
 use crate::network::NetworkConfig;
 use crate::{MAX_SSID_LEN, MAX_WIFI_PASSWORD_LEN, MIN_WIFI_PASSWORD_LEN, WifiError};
-
-/// CBOR codec of a bounded byte vector: a CBOR byte string.
-mod bytes_codec {
-    use super::*;
-
-    pub fn encode<C, W: Write, const N: usize>(
-        value: &Vec<u8, N>,
-        e: &mut Encoder<W>,
-        _: &mut C,
-    ) -> Result<(), encode::Error<W::Error>> {
-        e.bytes(value)?;
-        Ok(())
-    }
-
-    pub fn decode<C, const N: usize>(
-        d: &mut Decoder<'_>,
-        _: &mut C,
-    ) -> Result<Vec<u8, N>, decode::Error> {
-        let position = d.position();
-        Vec::from_slice(d.bytes()?)
-            .map_err(|_| decode::Error::message("byte string too long").at(position))
-    }
-
-    pub fn cbor_len<C, const N: usize>(value: &Vec<u8, N>, ctx: &mut C) -> usize {
-        <&ByteSlice>::from(value.as_slice()).cbor_len(ctx)
-    }
-}
 
 /// Wi-Fi network name: 0..=[`MAX_SSID_LEN`] arbitrary bytes.
 #[derive(Clone, PartialEq, Eq, Encode, Decode, CborLen)]
@@ -61,9 +32,9 @@ mod bytes_codec {
 pub struct WifiSsid(
     #[n(0)]
     #[cbor(
-        encode_with = "bytes_codec::encode",
-        decode_with = "bytes_codec::decode",
-        cbor_len = "bytes_codec::cbor_len"
+        encode_with = "rohi_config::cbor::bytes::encode",
+        decode_with = "rohi_config::cbor::bytes::decode",
+        cbor_len = "rohi_config::cbor::bytes::cbor_len"
     )]
     Vec<u8, MAX_SSID_LEN>,
 );
@@ -116,9 +87,9 @@ impl fmt::Display for WifiSsid {
 pub struct WifiPassword(
     #[n(0)]
     #[cbor(
-        encode_with = "bytes_codec::encode",
-        decode_with = "bytes_codec::decode",
-        cbor_len = "bytes_codec::cbor_len"
+        encode_with = "rohi_config::cbor::bytes::encode",
+        decode_with = "rohi_config::cbor::bytes::decode",
+        cbor_len = "rohi_config::cbor::bytes::cbor_len"
     )]
     Vec<u8, MAX_WIFI_PASSWORD_LEN>,
 );
@@ -189,10 +160,10 @@ fn within(value: u32, (min, max): (u32, u32)) -> bool {
 pub struct WifiConfig {
     /// Network name. `None` (the default) disables Wi-Fi; a network name
     /// enables it.
-    #[config(id = 1, with = SsidCodec)]
+    #[config(id = 1, with = Text)]
     pub ssid: Option<WifiSsid>,
     /// Passphrase, `None` for an open network.
-    #[config(id = 2, secret, with = PasswordCodec)]
+    #[config(id = 2, secret, with = Text)]
     pub password: Option<WifiPassword>,
     /// Bound of a network scan.
     #[config(

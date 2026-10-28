@@ -51,8 +51,8 @@ use crate::status::{
     Collector, Issue, ServiceInfo, ServiceSchema, ServiceStatus, ServiceStatusSummary, Status,
     StatusError, TrackCell, track_observation,
 };
-use crate::value::Value;
 use crate::{MAX_FIELDS, MAX_ISSUES};
+use rohi_config::Value;
 
 /// Id and name of a service, as listed by an [`ActionRegistry`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

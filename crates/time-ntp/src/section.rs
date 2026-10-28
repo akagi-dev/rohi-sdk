@@ -20,41 +20,14 @@
 use core::fmt;
 
 use heapless::{String, Vec};
-use minicbor::decode::{self, Decoder};
-use minicbor::encode::{self, Encoder, Write};
 use minicbor::{CborLen, Decode, Encode};
-use rohi_service::{Codec, Config, FieldError, Value, ValueKind};
+use rohi_config::{Text, TextValue};
+use rohi_service::{Config, FieldError};
 
 use crate::{DEFAULT_SERVERS, MAX_SERVERS};
 
 /// Longest configured server name, in bytes.
 pub const MAX_NAME_LEN: usize = 64;
-
-mod text_codec {
-    use super::*;
-
-    pub fn encode<C, W: Write, const N: usize>(
-        value: &String<N>,
-        e: &mut Encoder<W>,
-        _: &mut C,
-    ) -> Result<(), encode::Error<W::Error>> {
-        e.str(value)?;
-        Ok(())
-    }
-
-    pub fn decode<C, const N: usize>(
-        d: &mut Decoder<'_>,
-        _: &mut C,
-    ) -> Result<String<N>, decode::Error> {
-        let position = d.position();
-        String::try_from(d.str()?)
-            .map_err(|_| decode::Error::message("server name too long").at(position))
-    }
-
-    pub fn cbor_len<C, const N: usize>(value: &String<N>, ctx: &mut C) -> usize {
-        <&str as CborLen<C>>::cbor_len(&value.as_str(), ctx)
-    }
-}
 
 /// Host name or IPv4 address of an NTP server.
 ///
@@ -64,9 +37,9 @@ mod text_codec {
 pub struct ServerName(
     #[n(0)]
     #[cbor(
-        encode_with = "text_codec::encode",
-        decode_with = "text_codec::decode",
-        cbor_len = "text_codec::cbor_len"
+        encode_with = "rohi_config::cbor::text::encode",
+        decode_with = "rohi_config::cbor::text::decode",
+        cbor_len = "rohi_config::cbor::text::cbor_len"
     )]
     String<MAX_NAME_LEN>,
 );
@@ -118,16 +91,16 @@ impl fmt::Debug for ServerName {
 )]
 pub struct NtpServersConfig {
     /// First server.
-    #[config(id = 1, required, with = ServerNameCodec)]
+    #[config(id = 1, required, with = Text)]
     pub server1: Option<ServerName>,
     /// Second server.
-    #[config(id = 2, with = ServerNameCodec)]
+    #[config(id = 2, with = Text)]
     pub server2: Option<ServerName>,
     /// Third server.
-    #[config(id = 3, with = ServerNameCodec)]
+    #[config(id = 3, with = Text)]
     pub server3: Option<ServerName>,
     /// Fourth server.
-    #[config(id = 4, with = ServerNameCodec)]
+    #[config(id = 4, with = Text)]
     pub server4: Option<ServerName>,
 }
 
@@ -156,20 +129,13 @@ impl NtpServersConfig {
 }
 
 /// A server name as text.
-pub struct ServerNameCodec;
-
-impl Codec<ServerName> for ServerNameCodec {
-    const KIND: ValueKind = ValueKind::String;
-
-    fn encode(name: &ServerName) -> Result<Option<Value>, FieldError> {
-        Value::text(name.as_str())
-            .map(Some)
-            .ok_or(FieldError::Invalid)
+impl TextValue for ServerName {
+    fn from_text(text: &str) -> Option<Self> {
+        Self::new(text)
     }
 
-    fn decode(value: &Value) -> Result<ServerName, FieldError> {
-        let text = value.as_str().ok_or(FieldError::WrongKind)?;
-        ServerName::new(text).ok_or(FieldError::Invalid)
+    fn as_text(&self) -> Option<&str> {
+        Some(self.as_str())
     }
 }
 
@@ -193,7 +159,7 @@ fn validate_section(config: &NtpServersConfig) -> Result<(), FieldError> {
 
 #[cfg(test)]
 mod tests {
-    use rohi_config::{ConfigOverrides, ConfigSection, MAX_SECTION_PAYLOAD, Override};
+    use rohi_config::{ConfigOverrides, ConfigSection, MAX_SECTION_PAYLOAD, Override, Value};
 
     use super::*;
 

@@ -19,7 +19,7 @@ use std::string::String;
 
 use embassy_futures::block_on;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use rohi_config::{ConfigOverrides, Override};
+use rohi_config::{Codec, ConfigOverrides, Override, Text, Variant, VariantValue};
 
 use crate::*;
 
@@ -34,42 +34,20 @@ const MODES: &[EnumDescriptor] = &[EnumDescriptor::new(
     &[EnumVariant::new(0, "fast"), EnumVariant::new(1, "slow")],
 )];
 
-struct ModeCodec;
-
-impl Codec<Mode> for ModeCodec {
-    const KIND: ValueKind = ValueKind::Enum;
-
-    fn encode(mode: &Mode) -> Result<Option<Value>, FieldError> {
-        Ok(Some(Value::Enum(match mode {
+impl VariantValue for Mode {
+    fn variant(&self) -> u32 {
+        match self {
             Mode::Fast => 0,
             Mode::Slow => 1,
-        })))
-    }
-
-    fn decode(value: &Value) -> Result<Mode, FieldError> {
-        match value.as_enum().ok_or(FieldError::WrongKind)? {
-            0 => Ok(Mode::Fast),
-            1 => Ok(Mode::Slow),
-            _ => Err(FieldError::OutOfRange),
         }
     }
-}
 
-/// Text of any length the generic value holds.
-struct Text;
-
-impl Codec<String> for Text {
-    const KIND: ValueKind = ValueKind::String;
-
-    fn encode(value: &String) -> Result<Option<Value>, FieldError> {
-        Value::text(value).map(Some).ok_or(FieldError::Invalid)
-    }
-
-    fn decode(value: &Value) -> Result<String, FieldError> {
-        value
-            .as_str()
-            .map(String::from)
-            .ok_or(FieldError::WrongKind)
+    fn from_variant(variant: u32) -> Option<Self> {
+        match variant {
+            0 => Some(Mode::Fast),
+            1 => Some(Mode::Slow),
+            _ => None,
+        }
     }
 }
 
@@ -103,7 +81,7 @@ struct Demo {
     host: String,
     #[config(id = 4, secret, with = Text)]
     token: Option<String>,
-    #[config(id = 5, read_only, with = ModeCodec, enum_id = 1)]
+    #[config(id = 5, read_only, with = Variant, enum_id = 1)]
     mode: Mode,
 }
 
@@ -770,7 +748,7 @@ fn a_tuple_of_sections_is_a_registry() {
         host: String,
         #[config(id = 4, secret, with = Text)]
         token: Option<String>,
-        #[config(id = 5, read_only, with = ModeCodec, enum_id = 1)]
+        #[config(id = 5, read_only, with = Variant, enum_id = 1)]
         mode: Mode,
     }
     impl Default for Other {

@@ -16,7 +16,8 @@
 //
 //! The persistent `location` section and its generic config interface.
 
-use rohi_service::{Codec, Config, FieldError, Value, ValueKind};
+use rohi_config::{Codec, FieldError, Value, ValueKind};
+use rohi_service::Config;
 
 use crate::{Location, LocationSourceKind};
 

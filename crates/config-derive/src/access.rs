@@ -39,16 +39,17 @@ fn service_path() -> TokenStream {
 
 /// The codec of a field: the one it names, or the standard one. The span is
 /// that of the field type, so that a type without a codec is reported there.
-fn codec(field: &Field<'_>, svc: &TokenStream) -> TokenStream {
+fn codec(field: &Field<'_>) -> TokenStream {
+    let cfg = crate::crate_path();
     let value_type = field.value_type();
     match &field.with {
-        Some(with) => quote_spanned!(with.span()=> <#with as #svc::Codec<#value_type>>),
-        None => quote_spanned!(value_type.span()=> <#svc::Standard as #svc::Codec<#value_type>>),
+        Some(with) => quote_spanned!(with.span()=> <#with as #cfg::Codec<#value_type>>),
+        None => quote_spanned!(value_type.span()=> <#cfg::Standard as #cfg::Codec<#value_type>>),
     }
 }
 
 fn descriptor(field: &Field<'_>, svc: &TokenStream) -> TokenStream {
-    let codec = codec(field, svc);
+    let codec = codec(field);
     let (id, name) = (field.id, &field.name);
     let mut out = quote!(#svc::ConfigField::new(#id, #name, #codec::KIND));
     if let Some(unit) = &field.unit {
@@ -94,7 +95,7 @@ pub(crate) fn expand(input: &DeriveInput, model: &Model<'_>) -> TokenStream {
 
     let reads = fields.iter().map(|f| {
         let (id, ident) = (f.id, f.ident);
-        let codec = codec(f, &svc);
+        let codec = codec(f);
         if f.secret {
             quote!(#id => ::core::result::Result::Err(#svc::FieldError::Secret),)
         } else if f.inner.is_some() {
@@ -111,7 +112,7 @@ pub(crate) fn expand(input: &DeriveInput, model: &Model<'_>) -> TokenStream {
 
     let writes = fields.iter().map(|f| {
         let (id, ident) = (f.id, f.ident);
-        let codec = codec(f, &svc);
+        let codec = codec(f);
         if f.read_only {
             return quote!(#id => ::core::result::Result::Err(#svc::FieldError::ReadOnly),);
         }

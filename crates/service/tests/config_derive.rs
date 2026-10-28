@@ -26,10 +26,11 @@ use std::string::String;
 
 use embassy_futures::block_on;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use rohi_config::{Codec, Variant, VariantValue};
 use rohi_service::{
-    Bounds, Codec, Config, ConfigError, ConfigField, ConfigSectionOps, ConfigUpdate,
-    EnumDescriptor, EnumVariant, FieldError, Mutation, MutationOp, Section, SectionStore,
-    StoreError, Unit, Value, ValueKind,
+    Bounds, Config, ConfigError, ConfigField, ConfigSectionOps, ConfigUpdate, EnumDescriptor,
+    EnumVariant, FieldError, Mutation, MutationOp, Section, SectionStore, StoreError, Unit, Value,
+    ValueKind,
 };
 
 // --- codecs ------------------------------------------------------------------
@@ -48,23 +49,19 @@ const MODES: &[EnumDescriptor] = &[EnumDescriptor::new(
     &[EnumVariant::new(0, "fast"), EnumVariant::new(1, "slow")],
 )];
 
-struct ModeCodec;
-
-impl Codec<Mode> for ModeCodec {
-    const KIND: ValueKind = ValueKind::Enum;
-
-    fn encode(value: &Mode) -> Result<Option<Value>, FieldError> {
-        Ok(Some(Value::Enum(match value {
+impl VariantValue for Mode {
+    fn variant(&self) -> u32 {
+        match self {
             Mode::Fast => 0,
             Mode::Slow => 1,
-        })))
+        }
     }
 
-    fn decode(value: &Value) -> Result<Mode, FieldError> {
-        match value.as_enum().ok_or(FieldError::WrongKind)? {
-            0 => Ok(Mode::Fast),
-            1 => Ok(Mode::Slow),
-            _ => Err(FieldError::OutOfRange),
+    fn from_variant(variant: u32) -> Option<Self> {
+        match variant {
+            0 => Some(Mode::Fast),
+            1 => Some(Mode::Slow),
+            _ => None,
         }
     }
 }
@@ -160,7 +157,7 @@ struct Gadget {
     level_percent: u8,
     #[config(id = 4)]
     offset: Option<i32>,
-    #[config(id = 5, with = ModeCodec, enum_id = 1)]
+    #[config(id = 5, with = Variant, enum_id = 1)]
     mode: Mode,
     #[config(id = 6, secret, with = TokenCodec)]
     token: Option<Token>,

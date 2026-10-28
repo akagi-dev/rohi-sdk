@@ -209,8 +209,8 @@ fn the_config_implementation_is_generated_from_the_same_declaration() {
     assert!(out.contains("Bounds :: U64"));
     // An `Option` field is optional, the codec converts the inner type.
     assert!(out.contains(". optional ()"));
-    assert!(out.contains("< SsidCodec as :: rohi_service :: Codec < Ssid >> :: KIND"));
-    assert!(out.contains("< :: rohi_service :: Standard as :: rohi_service :: Codec < u32 >>"));
+    assert!(out.contains("< SsidCodec as :: rohi_config :: Codec < Ssid >> :: KIND"));
+    assert!(out.contains("< :: rohi_config :: Standard as :: rohi_config :: Codec < u32 >>"));
     // Without `validate` every section is valid.
     assert!(out.contains("fn validate"));
 }

@@ -16,36 +16,28 @@
 //
 //! The `ble` config section in the generic management plane.
 
-use rohi_service::{Codec, FieldError, Value, ValueKind};
+use rohi_config::TextValue;
 
 use super::config::BleName;
 
 /// The advertised name as text. A name is 1 to 29 bytes of UTF-8 without
 /// control characters; the section's fields and ids are declared on
 /// [`BleSettings`](super::BleSettings).
-pub struct NameCodec;
-
-impl Codec<BleName> for NameCodec {
-    const KIND: ValueKind = ValueKind::String;
-
-    fn encode(name: &BleName) -> Result<Option<Value>, FieldError> {
-        Value::text(name.as_str())
-            .map(Some)
-            .ok_or(FieldError::Invalid)
+impl TextValue for BleName {
+    fn from_text(text: &str) -> Option<Self> {
+        Self::new(text)
     }
 
-    fn decode(value: &Value) -> Result<BleName, FieldError> {
-        let text = value.as_str().ok_or(FieldError::WrongKind)?;
-        BleName::new(text).ok_or(FieldError::Invalid)
+    fn as_text(&self) -> Option<&str> {
+        Some(self.as_str())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use rohi_config::ConfigOverrides;
-    use rohi_service::{Config, MAX_CONFIG_FIELDS};
+    use rohi_service::{Config, FieldError, MAX_CONFIG_FIELDS, Value};
 
-    use super::*;
     use crate::{BleOverrides, BleSettings};
 
     const NAME: u32 = 1;

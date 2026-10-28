@@ -24,7 +24,8 @@ use core::net::Ipv4Addr;
 use core::str::FromStr;
 
 use heapless::String;
-use rohi_service::{Codec, EnumDescriptor, EnumVariant, FieldError, Value, ValueKind};
+use rohi_config::{Codec, TextValue, VariantValue};
+use rohi_service::{EnumDescriptor, EnumVariant, FieldError, Value, ValueKind};
 
 use super::config::{AddressMode, Hostname, Ipv4, NetworkConfig};
 
@@ -49,24 +50,19 @@ pub const ADDRESS_MODES: &[EnumDescriptor] = &[EnumDescriptor::new(
 )];
 
 /// The address mode as the enum [`ADDRESS_MODES`].
-pub struct AddressModeCodec;
-
-impl Codec<AddressMode> for AddressModeCodec {
-    const KIND: ValueKind = ValueKind::Enum;
-
-    fn encode(mode: &AddressMode) -> Result<Option<Value>, FieldError> {
-        Ok(Some(Value::Enum(match mode {
-            AddressMode::Dhcp => address_mode::DHCP,
-            AddressMode::Static => address_mode::STATIC,
-        })))
+impl VariantValue for AddressMode {
+    fn variant(&self) -> u32 {
+        match self {
+            Self::Dhcp => address_mode::DHCP,
+            Self::Static => address_mode::STATIC,
+        }
     }
 
-    fn decode(value: &Value) -> Result<AddressMode, FieldError> {
-        match value {
-            Value::Enum(address_mode::DHCP) => Ok(AddressMode::Dhcp),
-            Value::Enum(address_mode::STATIC) => Ok(AddressMode::Static),
-            Value::Enum(_) => Err(FieldError::OutOfRange),
-            _ => Err(FieldError::WrongKind),
+    fn from_variant(variant: u32) -> Option<Self> {
+        match variant {
+            address_mode::DHCP => Some(Self::Dhcp),
+            address_mode::STATIC => Some(Self::Static),
+            _ => None,
         }
     }
 }
@@ -92,20 +88,13 @@ impl Codec<Ipv4> for Ipv4Codec {
 }
 
 /// A DHCP host name as text.
-pub struct HostnameCodec;
-
-impl Codec<Hostname> for HostnameCodec {
-    const KIND: ValueKind = ValueKind::String;
-
-    fn encode(name: &Hostname) -> Result<Option<Value>, FieldError> {
-        Value::text(name.as_str())
-            .map(Some)
-            .ok_or(FieldError::Invalid)
+impl TextValue for Hostname {
+    fn from_text(text: &str) -> Option<Self> {
+        Self::new(text)
     }
 
-    fn decode(value: &Value) -> Result<Hostname, FieldError> {
-        let text = value.as_str().ok_or(FieldError::WrongKind)?;
-        Hostname::new(text).ok_or(FieldError::Invalid)
+    fn as_text(&self) -> Option<&str> {
+        Some(self.as_str())
     }
 }
 
