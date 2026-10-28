@@ -6,7 +6,7 @@ recipe. The wire contract is in [Control plane](../sdk/control.md), the model in
 
 | You want a client to... | It is a... | Recipe |
 |-------------------------|-----------|--------|
-| set how a module behaves, persistently | **config section** | [Add a ConfigSection](add-config-section.md), step 5 |
+| set how a module behaves, persistently | **config section** | [Add a ConfigSection](add-config-section.md), step 6 |
 | see what a module is doing now | **service status** | [Add a service](add-service.md) |
 | make a module do something (scan, reconnect, provision) | **action** | below, and [Add a service](add-service.md#3-actions-optional) |
 | something that fits none of these | a new protocol operation | [A new request](#a-new-request) |
@@ -29,7 +29,7 @@ Actions are declared by a service, so a new operation is one entry in its `ACTIO
    Long-running actions bound their own wait (see the Wi-Fi scan timeout) and are cancellation safe.
 5. **Tests**: the action against the registry (`ServiceRegistry::invoke`: arguments checked, records, refusals), and
    through the dispatcher if the privilege matters (`rohi-control` tests show the policy gate).
-6. **Docs**: nothing in the protocol; add the action to the service's page. `rohi action list` shows it.
+6. **Docs**: nothing in the protocol; add the action to the service's page. `rohi action <service>` lists it.
 
 No protocol, dispatcher, client or CLI change is needed.
 

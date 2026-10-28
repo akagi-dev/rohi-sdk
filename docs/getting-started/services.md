@@ -18,7 +18,7 @@ Diagnostics   what happened before?               logs, history                 
 The same service appears in several places, never mixed:
 
 ```console
-$ rohi config get connectivity      # desired: what it is set up to do
+$ rohi config connectivity          # desired: what it is set up to do (defaults + your overrides)
 enabled     true
 node_id     42
 interval_s  60 s
@@ -143,30 +143,32 @@ stays cheap. Values that vary all the time (counters, signal strength) do not ch
 Status never changes anything. Operations are **actions**, listed and described by the device:
 
 ```console
-$ rohi action list
-SERVICE   ACTION      ACCESS
-network   scan        read
-network   reconnect   write
-network   disconnect  write
-identity  provision   write
-identity  erase       write
+$ rohi action
+SERVICE   ACTION      PRIVILEGED
+network   scan        no
+network   reconnect   yes
+network   disconnect  yes
+identity  provision   yes
+identity  erase       yes
 
-$ rohi action describe network scan
-$ rohi action run network scan
+$ rohi action network                  # the actions of one service, with their arguments
+$ rohi action network scan --help      # arguments and results, from the device schema
+$ rohi action network scan
 SSID    RSSI     CHANNEL  SECURITY
 office  -50 dBm  6        wpa2
 guest   -70 dBm  11       open
 ```
 
-`write` actions need a link that satisfies the device's authorization policy. Arguments are `NAME=VALUE` pairs; use
+Privileged actions need a link that satisfies the device's authorization policy. Arguments are `NAME=VALUE` pairs; use
 `NAME=-` to read a value from stdin so it stays out of the shell history. Secret arguments, like the one of identity
-provisioning, are always read from stdin or a hidden prompt: `rohi action run identity provision secret=-`.
+provisioning, are always read from stdin or a hidden prompt: `rohi action identity provision secret=-`.
 
 ## Configuration
 
-`rohi config` lists the sections of the device, describes their fields, and changes them with patches that are applied
-atomically per section. Secrets are write-only. It is covered on [The rohi tool](rohi-tool.md#configuration); the
-rules are in [Service pipeline](../sdk/service.md#config-sections).
+`rohi config` lists the sections of the device, shows the **effective** configuration of a section (the firmware
+defaults with your explicit **overrides** applied) and changes overrides with patches that are applied atomically per
+section. Secrets are write-only. It is covered on [The rohi tool](rohi-tool.md#configuration); the rules are in
+[Service pipeline](../sdk/service.md#config-sections).
 
 ## What the services are
 

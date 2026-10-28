@@ -20,7 +20,7 @@ use core::fmt;
 
 use heapless::String;
 use minicbor::{CborLen, Decode, Encode};
-use rohi_config::ConfigSection;
+use rohi_config::config_overrides;
 
 /// Longest advertised name, in bytes: the whole scan response minus its
 /// 2-byte header.
@@ -61,77 +61,105 @@ impl fmt::Debug for BleName {
     }
 }
 
-/// Persistent BLE configuration (section `BleSettings`, shown to clients as
-/// `ble`).
+/// Effective BLE configuration (shown to clients as the `ble` section).
 ///
 /// The name is read when the peripheral starts: a change takes effect after
-/// a restart.
-///
-/// Persistent ABI: the CBOR array is pinned by a golden test; fields are
-/// only ever appended.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Encode, Decode, CborLen, ConfigSection)]
-#[cbor(array)]
-#[config(version = 1)]
+/// a restart. What is stored are the explicit user overrides of it,
+/// [`BleOverrides`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BleSettings {
     /// Advertised and GAP device name. `None` keeps the firmware default,
     /// see [`BleConfig::name_prefix`](crate::BleConfig::name_prefix).
-    #[n(0)]
     pub name: Option<BleName>,
+}
+
+config_overrides! {
+    /// Persisted overrides of the [`BleSettings`] section (section
+    /// `BleSettings`).
+    ///
+    /// Persistent ABI: a CBOR map keyed by the field ids below, which are only
+    /// ever added; a field that is not overridden is absent. The map is pinned
+    /// by a golden test.
+    pub struct BleOverrides for BleSettings, version 1 {
+        1 => name: Option<BleName>,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     extern crate std;
 
-    use rohi_config::{ConfigStore, MemoryStorage, SectionId};
+    use rohi_config::{
+        ConfigOverrides, ConfigSection, ConfigStore, MemoryStorage, Override, SectionId,
+    };
 
     use super::*;
 
-    fn encode(settings: &BleSettings) -> std::vec::Vec<u8> {
+    fn encode(overrides: &BleOverrides) -> std::vec::Vec<u8> {
         let mut buffer = [0u8; 64];
-        let used = rohi_config::encode_to_slice(settings, &mut buffer).unwrap();
-        assert_eq!(used, minicbor::len(settings));
+        let used = rohi_config::encode_to_slice(overrides, &mut buffer).unwrap();
+        assert_eq!(used, minicbor::len(overrides));
         buffer[..used].to_vec()
     }
 
     #[test]
     fn the_section_id_is_derived_from_the_type_name() {
-        assert_eq!(BleSettings::ID, SectionId::from_name("BleSettings"));
-        assert_eq!(BleSettings::VERSION, 1);
-        assert_eq!(BleSettings::ID, SectionId(0xcba3_fd7b_3d5a_d5ef));
+        assert_eq!(BleOverrides::ID, SectionId::from_name("BleSettings"));
+        assert_eq!(BleOverrides::VERSION, 1);
+        assert_eq!(BleOverrides::ID, SectionId(0xcba3_fd7b_3d5a_d5ef));
     }
 
     #[test]
     fn the_cbor_encoding_is_stable() {
-        // A trailing `None` is not written.
-        assert_eq!(encode(&BleSettings::default()), [0x80]);
+        // Nothing overridden is an empty map.
+        assert_eq!(encode(&BleOverrides::default()), [0xa0]);
         assert_eq!(
-            rohi_config::decode_exact::<BleSettings>(&[0x80]).unwrap(),
-            BleSettings::default()
+            rohi_config::decode_exact::<BleOverrides>(&[0xa0]).unwrap(),
+            BleOverrides::default()
         );
-        let settings = BleSettings {
-            name: BleName::new("urban"),
+        let overrides = BleOverrides {
+            name: Override::Value(BleName::new("urban")),
         };
         assert_eq!(
-            encode(&settings),
-            [0x81, 0x65, b'u', b'r', b'b', b'a', b'n']
+            encode(&overrides),
+            [0xa1, 0x01, 0x65, b'u', b'r', b'b', b'a', b'n']
         );
         assert_eq!(
-            rohi_config::decode_exact::<BleSettings>(&encode(&settings)).unwrap(),
-            settings
+            rohi_config::decode_exact::<BleOverrides>(&encode(&overrides)).unwrap(),
+            overrides
+        );
+        assert_eq!(
+            overrides.over_default(),
+            BleSettings {
+                name: BleName::new("urban")
+            }
         );
     }
 
     #[test]
+    fn the_name_has_three_states() {
+        let mut overrides = BleOverrides::default();
+        assert_eq!(overrides.over_default().name, None);
+        // An explicit `None` is stored as null, distinct from not overridden.
+        overrides.name = Override::Value(None);
+        assert_eq!(encode(&overrides), [0xa1, 0x01, 0xf6]);
+        assert_eq!(
+            rohi_config::decode_exact::<BleOverrides>(&[0xa1, 0x01, 0xf6]).unwrap(),
+            overrides
+        );
+        assert!(!overrides.is_empty());
+    }
+
+    #[test]
     fn other_layouts_and_trailing_bytes_are_rejected() {
-        assert!(rohi_config::decode_exact::<BleSettings>(&[0xa0]).is_err());
-        let mut bytes = encode(&BleSettings::default());
+        assert!(rohi_config::decode_exact::<BleOverrides>(&[0x80]).is_err());
+        let mut bytes = encode(&BleOverrides::default());
         bytes.push(0x00);
-        assert!(rohi_config::decode_exact::<BleSettings>(&bytes).is_err());
+        assert!(rohi_config::decode_exact::<BleOverrides>(&bytes).is_err());
         // A stored name longer than the limit must not panic.
-        let mut long = std::vec![0x81, 0x78, 30];
+        let mut long = std::vec![0xa1, 0x01, 0x78, 30];
         long.extend([b'a'; 30]);
-        assert!(rohi_config::decode_exact::<BleSettings>(&long).is_err());
+        assert!(rohi_config::decode_exact::<BleOverrides>(&long).is_err());
     }
 
     #[test]
@@ -147,12 +175,12 @@ mod tests {
     #[test]
     fn it_persists_in_the_config_store_and_can_be_removed() {
         let mut store = ConfigStore::open(MemoryStorage::<16384>::new()).unwrap();
-        let settings = BleSettings {
-            name: BleName::new("urban"),
+        let overrides = BleOverrides {
+            name: Override::Value(BleName::new("urban")),
         };
-        store.set(&settings).unwrap();
-        assert_eq!(store.get::<BleSettings>().unwrap(), Some(settings));
-        store.remove::<BleSettings>().unwrap();
-        assert_eq!(store.get::<BleSettings>().unwrap(), None);
+        store.set(&overrides).unwrap();
+        assert_eq!(store.get::<BleOverrides>().unwrap(), Some(overrides));
+        store.remove::<BleOverrides>().unwrap();
+        assert_eq!(store.get::<BleOverrides>().unwrap(), None);
     }
 }

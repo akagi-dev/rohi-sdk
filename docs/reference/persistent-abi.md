@@ -27,7 +27,18 @@ What is covered:
 >
 > **Explicit representation.** Every production `ConfigSection` must declare its CBOR representation with
 > `#[cbor(array)]` or `#[cbor(map)]` instead of relying on the `minicbor` derive default, and pin the encoded bytes
-> with a golden test (see `WifiConfig` in `rohi-net`). The encoding is persistent ABI.
+> with a golden test (see `Identity` in `rohi-identity`). The encoding is persistent ABI.
+>
+> **User-configurable sections store overrides.** The typed struct of a configurable section (`WifiConfig`) is the
+> *effective* configuration and is never persisted. What is persisted is its generated overrides struct
+> (`WifiOverrides`, from `rohi_config::config_overrides!`): a CBOR **map** keyed by the stable field ids, where an
+> absent key is `Override::Default` (the field follows the firmware default) and a present key is an explicit
+> `Override::Value`. Nullable fields are `Override<Option<T>>`: `null` is the explicit value *none*, an absent key is
+> the default. A section without overrides is the empty map `a0` (the section is removed from the store instead).
+> The effective configuration is the **firmware defaults** (supplied by the firmware, not necessarily `C::default()`)
+> with the overrides applied, so a changed firmware default reaches every field the user did not override, and an
+> explicit override survives it. The three states of a nullable field are `Default` (absent key), `Value(None)`
+> (`null`) and `Value(Some(v))` (the value).
 >
 > **Strict decode.** `get` requires the decoder to consume the whole payload. A valid value followed by extra
 > bytes fails with `SectionError::TrailingBytes`, never with an unrelated error.
@@ -37,7 +48,15 @@ What is covered:
 
 ## Section versioning
 
+The overrides sections `WifiConfig`, `NetworkConfig`, `BleSettings`, `ConnectivityConfig`, `LocationConfig` and
+`NtpServersConfig` keep **version 1** and their section IDs, although the stored layout changed from the complete
+section as a CBOR array to a CBOR map of overrides. Data written in the old layout is not migrated and does not decode;
+reset the section (`rohi config reset SECTION`) to clear it.
+
 ### `#[config(...)]` attributes
+
+`config_overrides!` sets the version in its header (`version 1`); the attributes below are for hand written sections
+such as `Identity`.
 
 | Attribute                        | Meaning                                                                         |
 |----------------------------------|---------------------------------------------------------------------------------|
@@ -54,7 +73,8 @@ tolerance of unknown fields never replaces this explicit version policy. A migra
 ## Section ID ABI
 
 `SectionId(u64)` is the **FNV-1a 64-bit** hash (offset basis `0xcbf29ce484222325`, prime `0x100000001b3`) of the
-UTF-8 bytes of the Rust **struct name**. The module path and crate name are not hashed, so moving a type between
+UTF-8 bytes of the Rust **struct name**; for an overrides struct that is the name of the *section type* (`WifiConfig`
+for `WifiOverrides`). The module path and crate name are not hashed, so moving a type between
 modules does not change its identity. The algorithm is part of the persistent storage ABI and must never change.
 Golden values:
 
@@ -68,11 +88,13 @@ Golden values:
 | `LocationConfig`     | `0xce098b4a3e381f40`   |
 | `NtpServersConfig`   | `0x2feb7d230f6ed989`   |
 
-> **Renaming a persisted `ConfigSection` type is a storage ABI change.** `NetworkConfig` renamed to `WirelessConfig`
-> gets a different ID and the stored data is no longer found.
+> **Renaming a persisted section type is a storage ABI change.** `NetworkConfig` renamed to `WirelessConfig`
+> gets a different ID and the stored data is no longer found. The same holds for the section type behind an overrides
+> struct.
 
-> **`NetworkConfig` is version 1.** It stores IPv4 addressing and DHCP settings; Wi-Fi credentials and timing live in
-> `WifiConfig`.
+> **`NetworkConfig` holds IPv4 addressing and DHCP settings** (version 1, overrides); Wi-Fi credentials and timing live
+> in `WifiConfig`.
+
 A raw identifier (`r#Type`) hashes as `Type`. Types with type or const parameters are rejected unless they give an
 explicit `id`: the name-derived ID would be shared by every instantiation (`Foo<A>`, `Foo<B>`).
 
@@ -85,7 +107,21 @@ pub struct WirelessConfig { /* ... */ }
 ```
 
 Use it only to keep an existing ID across a rename, to resolve a (very unlikely) hash collision or to import a
-legacy ID.
+legacy ID. `config_overrides!` has no `id` option: the ID of an overrides struct is always the hash of its section type name.
+
+### Overrides golden example
+
+`WifiOverrides` with `ssid = "ab"` and `scan_timeout_ms = 5000` and nothing else overridden:
+
+```text
+a2                 map(2)
+01 42 61 62        1: ssid = bstr "ab"
+03 19 13 88        3: scan_timeout_ms = 5000
+```
+
+An explicit "no password" is `a1 02 f6` (key 2, `null`); a section without overrides is `a0`. The map keys are the
+field ids declared in `config_overrides!` (`WifiOverrides`: 1 `ssid`, 2 `password`, 3 `scan_timeout_ms` … 7
+`link_refresh_ms`); they are only ever added.
 
 ## Container format
 
@@ -149,7 +185,7 @@ fails the test suite instead of silently orphaning stored data:
 
 - `rohi-config` tests pin the container (envelope, payload, record bytes, CRC) and the section ID hash values listed
   above.
-- Every production section pins its encoded bytes; `WifiConfig` in `rohi-net` and `Identity` in `rohi-identity` (`[bytes(32)]`) are the reference examples. The section ID golden values above include both.
+- Every production section pins its encoded bytes; `WifiOverrides` in `rohi-net` (a map of overrides) and `Identity` in `rohi-identity` (`[bytes(32)]`) are the reference examples. The section ID golden values above include both.
 - A new section must add its own golden test before it is persisted by a release, see
   [Add a ConfigSection](../guides/add-config-section.md).
 

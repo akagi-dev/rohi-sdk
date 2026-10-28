@@ -18,11 +18,11 @@
 //!
 //! The service runs in its own task and only reads measurement snapshots, so
 //! Wi-Fi, DNS, TCP, server, time or authorization failures never reach the
-//! sensors. Configuration comes from the persistent `ConnectivityConfig`
-//! section; when none is stored, the build-time defaults apply
+//! sensors. Configuration is the build-time [`defaults`]
 //! (`ROHI_CONNECTIVITY_HOST`, `ROHI_CONNECTIVITY_PORT`,
-//! `ROHI_CONNECTIVITY_NODE_ID`, `ROHI_CONNECTIVITY_INTERVAL_S`). Without a
-//! host nothing is enabled.
+//! `ROHI_CONNECTIVITY_NODE_ID`, `ROHI_CONNECTIVITY_INTERVAL_S`; without a host
+//! nothing is enabled) with the overrides of the persistent
+//! `ConnectivityConfig` section applied.
 //!
 //! The task is always running once the network is up and follows the
 //! configuration: every commit or removal of the section is published by the
@@ -40,10 +40,11 @@ use embassy_sync::signal::Signal;
 use embassy_time::Delay;
 use esp_hal::rng::Rng;
 use log::{info, warn};
+use rohi_config::ConfigOverrides;
 use rohi_connectivity::config::{DEFAULT_INTERVAL_S, DEFAULT_PORT};
 use rohi_connectivity::{
-    ConnectivityConfig, ConnectivityService, ConnectivityShared, ConnectivityStatus, Host,
-    HttpTransport, NONCE_LEN, NonceError, NonceSource, ServiceConfig,
+    ConnectivityConfig, ConnectivityOverrides, ConnectivityService, ConnectivityShared,
+    ConnectivityStatus, Host, HttpTransport, NONCE_LEN, NonceError, NonceSource, ServiceConfig,
 };
 use rohi_hal::runtime::MeasurementHandle;
 use rohi_hal_esp::EmbassyClock;
@@ -57,15 +58,15 @@ use crate::{location, time};
 
 static SHARED: ConnectivityShared<RawMutex> = ConnectivityShared::new();
 
-/// The latest stored configuration (`None`: the section is absent), see
-/// [`publish`].
-static UPDATES: Signal<RawMutex, Option<ConnectivityConfig>> = Signal::new();
+/// The latest effective configuration, see [`publish`].
+static UPDATES: Signal<RawMutex, ConnectivityConfig> = Signal::new();
 
-/// Hands a committed (or removed) `ConnectivityConfig` section to the running
-/// task. Synchronous, so the configuration owner can call it in the commit
-/// step; only the latest value matters.
-pub fn publish(stored: Option<ConnectivityConfig>) {
-    UPDATES.signal(stored);
+/// Hands the effective `ConnectivityConfig` (the [`defaults`] with the
+/// committed overrides, or the defaults after a removal) to the running task.
+/// Synchronous, so the configuration owner can call it in the commit step;
+/// only the latest value matters.
+pub fn publish(config: ConnectivityConfig) {
+    UPDATES.signal(config);
 }
 
 /// Status published by the telemetry service.
@@ -106,8 +107,9 @@ fn env_number<T: core::str::FromStr>(value: Option<&str>) -> Option<T> {
 }
 
 /// Configuration compiled into the firmware: disabled unless a host is set.
-fn build_defaults() -> ConnectivityConfig {
-    let mut config = ConnectivityConfig::disabled();
+/// It is the base the overrides of the user are applied to.
+pub fn defaults() -> ConnectivityConfig {
+    let mut config = ConnectivityConfig::default();
     let Some(host) = option_env!("ROHI_CONNECTIVITY_HOST").and_then(Host::new) else {
         return config;
     };
@@ -120,25 +122,17 @@ fn build_defaults() -> ConnectivityConfig {
     config
 }
 
-/// The stored configuration, or the build-time defaults. `None` when
-/// telemetry is disabled or the configuration is invalid.
+/// The [`defaults`] with the stored overrides. `None` when telemetry is
+/// disabled or the configuration is invalid.
 async fn load_config(config: ConfigHandle) -> Option<ConnectivityConfig> {
-    let loaded = match config.get::<ConnectivityConfig>().await {
-        Ok(Some(stored)) => stored,
-        Ok(None) => build_defaults(),
-        Err(ServiceError::Unavailable(_)) => build_defaults(),
-        Err(error) => {
-            warn!("Connectivity: stored configuration unusable: {}", error);
-            build_defaults()
-        }
-    };
+    let mut loaded = defaults();
+    match config.get::<ConnectivityOverrides>().await {
+        Ok(Some(overrides)) => overrides.apply_to(&mut loaded),
+        Ok(None) => {}
+        Err(ServiceError::Unavailable(_)) => {}
+        Err(error) => warn!("Connectivity: stored configuration unusable: {}", error),
+    }
     effective(loaded)
-}
-
-/// The configuration to run for a stored section, the build-time defaults
-/// when there is none.
-fn resolve(stored: Option<ConnectivityConfig>) -> Option<ConnectivityConfig> {
-    effective(stored.unwrap_or_else(build_defaults))
 }
 
 /// `None` when `loaded` is disabled or invalid.
@@ -207,17 +201,17 @@ pub async fn connectivity_task(
     let mut current = load_config(config).await;
     loop {
         EFFECTIVE.lock(|cell| *cell.borrow_mut() = current.clone());
-        let stored = match &current {
+        let published = match &current {
             Some(config) => {
                 match select(serve(network, measurements, config), UPDATES.wait()).await {
                     Either::First(never) => match never {},
-                    Either::Second(stored) => stored,
+                    Either::Second(published) => published,
                 }
             }
             None => UPDATES.wait().await,
         };
         info!("Connectivity: configuration changed");
         SHARED.reset();
-        current = resolve(stored);
+        current = effective(published);
     }
 }

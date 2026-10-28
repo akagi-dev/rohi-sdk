@@ -27,8 +27,9 @@
 //! control plane and Wi-Fi run without wall-clock time. [`ntp_task`] samples
 //! NTP in the background once the network is ready and keeps resynchronizing;
 //! failures are retried with bounded backoff and only recorded in the status.
-//! The servers are the `time` configuration section (the public defaults
-//! when there is none) and follow its changes, see [`publish`].
+//! The servers are the `time` configuration section (the firmware defaults,
+//! the public servers, with the stored overrides) and follow its changes, see
+//! [`publish`].
 //! Components read the time through [`service`] and never touch NTP.
 //!
 //! Wall-clock time may step when a new sample corrects it; durations and
@@ -40,13 +41,15 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::Delay;
 use log::{info, warn};
+use rohi_config::ConfigOverrides;
 use rohi_hal_esp::EmbassyClock;
 use rohi_net::NetworkHandle;
 use rohi_service::ManagedConfig;
 use rohi_time::{SyncSchedule, Synchronizer, TimeConfig, TimeService, UnixTime};
-use rohi_time_ntp::{NtpConfig, NtpServersConfig, NtpTimeSource};
+use rohi_time_ntp::{NtpConfig, NtpServersConfig, NtpServersOverrides, NtpTimeSource};
 
 use crate::config::ConfigHandle;
+use crate::defaults;
 use crate::resources::Ip;
 use crate::tasks::RawMutex;
 
@@ -90,25 +93,23 @@ pub fn service() -> &'static Time {
 }
 
 /// Servers the next synchronization rounds use, see [`publish`].
-static UPDATES: Signal<RawMutex, Option<NtpServersConfig>> = Signal::new();
+static UPDATES: Signal<RawMutex, NtpServersConfig> = Signal::new();
 
-/// Hands a committed (or removed) `NtpServersConfig` section to the running
+/// Hands the effective `NtpServersConfig` (the firmware defaults with the
+/// committed overrides, or the defaults after a removal) to the running
 /// [`ntp_task`]. Synchronous, so the configuration owner can call it in the
 /// commit step; only the latest value matters.
-pub fn publish(stored: Option<NtpServersConfig>) {
-    UPDATES.signal(stored);
+pub fn publish(servers: NtpServersConfig) {
+    UPDATES.signal(servers);
 }
 
-/// The stored servers, or the defaults when none are stored or the stored
-/// section is unusable.
-fn resolve(stored: Option<NtpServersConfig>) -> NtpServersConfig {
-    match stored {
-        Some(config) if config.validate().is_ok() => config,
-        Some(_) => {
-            warn!("Time: stored NTP servers are invalid, using the defaults");
-            NtpServersConfig::defaults()
-        }
-        None => NtpServersConfig::defaults(),
+/// The effective servers, or the firmware defaults when they are unusable.
+fn resolve(servers: NtpServersConfig) -> NtpServersConfig {
+    if servers.validate().is_ok() {
+        servers
+    } else {
+        warn!("Time: NTP servers are invalid, using the firmware defaults");
+        defaults::time()
     }
 }
 
@@ -124,15 +125,15 @@ fn resolve(stored: Option<NtpServersConfig>) -> NtpServersConfig {
 /// samples at once.
 #[embassy_executor::task]
 pub async fn ntp_task(network: NetworkHandle<'static, Ip>, config: ConfigHandle) {
-    let mut servers = match config.get::<NtpServersConfig>().await {
-        Ok(stored) => resolve(stored),
-        Err(error) => {
-            warn!("Time: stored NTP servers unreadable: {}", error);
-            NtpServersConfig::defaults()
-        }
-    };
+    let mut servers = defaults::time();
+    match config.get::<NtpServersOverrides>().await {
+        Ok(Some(overrides)) => overrides.apply_to(&mut servers),
+        Ok(None) => {}
+        Err(error) => warn!("Time: stored NTP servers unreadable: {}", error),
+    }
+    let mut servers = resolve(servers);
     loop {
-        let stored = {
+        let published = {
             let hosts = servers.servers();
             info!("Time: NTP servers {:?}", hosts.as_slice());
             let source =
@@ -140,10 +141,10 @@ pub async fn ntp_task(network: NetworkHandle<'static, Ip>, config: ConfigHandle)
             let mut synchronizer = Synchronizer::new(&TIME, source, Delay, SyncSchedule::DEFAULT);
             match select(synchronizer.run(), UPDATES.wait()).await {
                 Either::First(never) => match never {},
-                Either::Second(stored) => stored,
+                Either::Second(published) => published,
             }
         };
         info!("Time: NTP servers changed");
-        servers = resolve(stored);
+        servers = resolve(published);
     }
 }

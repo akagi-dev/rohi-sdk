@@ -64,6 +64,7 @@ mod error;
 mod format;
 mod id;
 mod memory;
+mod overrides;
 mod section;
 mod slot;
 mod storage;
@@ -78,6 +79,7 @@ pub use format::{
 };
 pub use id::SectionId;
 pub use memory::{MemoryError, MemoryStorage};
+pub use overrides::{ConfigOverrides, Override};
 pub use section::ConfigSection;
 pub use storage::ConfigStorage;
 pub use store::{ConfigOpenState, ConfigStore, OpenFailure, SectionInfo};

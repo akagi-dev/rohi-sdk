@@ -8,9 +8,9 @@ Every production workspace crate, what it is for, whether it is portable and the
 |-------|---------|-----------|------------------|---------------------------|---------------|------------------|
 | `rohi-hal` | Typed units and measurements, sensor drivers, sensor runtime, `MeasurementStore` | portable | `no_std` | `MeasurementStore`, `MeasurementsSnapshot`, `SensorDriver`, `Runner`, `EventBus`, `MeasurementHandle` | `embedded-hal(-async)`, Embassy sync, `rohi-service` | MCU peripherals, board pins, networking, serialization |
 | `rohi-hal-esp` | ESP32 backend of the HAL: boards, I²C/UART/I²S setup, clock | ESP | `no_std` | `board::altruist_urban::{Hardware, AltruistUrban}` | `rohi-hal`, `esp-hal` | Sensor logic, application tasks |
-| `rohi-config` | Transactional CBOR configuration store | portable | `no_std` | `ConfigSection`, `ConfigStore`, `ConfigStorage`, `MemoryStorage` | `minicbor` | Any concrete section, flash access |
+| `rohi-config` | Transactional CBOR configuration store | portable | `no_std` | `ConfigSection`, `ConfigStore`, `ConfigStorage`, `MemoryStorage`, `Override`, `ConfigOverrides`, `config_overrides!` | `minicbor` | Any concrete section, flash access |
 | `rohi-config-derive` | `#[derive(ConfigSection)]` | portable (proc-macro) | `std` (build time) | derive macro | `syn`, `quote` | Runtime behaviour |
-| `rohi-service` | The generic service pipeline: `Value`, `ManagedConfig` sections with atomic patch, `ManagedService` status with state/health/issues/revisions, actions, tuple registries | portable | `no_std` | `ManagedConfig`, `ManagedSection`, `ConfigRegistry`, `ManagedService`, `Tracked`, `ServiceRegistry`, `ActionDescriptor`, `Value` | `heapless`, Embassy sync | Any concrete section or service, the protocol |
+| `rohi-service` | The generic service pipeline: `Value`, `ManagedConfig` sections with atomic patch, `ManagedService` status with state/health/issues/revisions, actions, tuple registries | portable | `no_std` | `ManagedConfig`, `ManagedSection`, `ConfigRegistry`, `ManagedService`, `Tracked`, `ServiceRegistry`, `ActionDescriptor`, `Value` | `rohi-config` (the `ConfigOverrides` bound), `heapless`, Embassy sync | Any concrete section or service, the protocol |
 | `rohi-config-esp` | Flash backend of the store | ESP | `no_std` | `EspConfigStorage`, `FlashRegion`, `layout` | `rohi-config`, `esp-storage` | CBOR, sections, any feature's configuration |
 | `rohi-identity` | Device identity: Ed25519 `Identity` config section, `Secret`, `Signer`, `IdentitySigner` | portable | `no_std` | `Identity`, `Secret`, `Signer`, `IdentitySigner`, `PublicKey`, `Signature` | `rohi-config`, `rohi-service`, `ed25519-zebra` | Provisioning transport, key derivation (done on the host by `rohi`), protocol semantics of signed messages |
 | `rohi-net` | Wi-Fi control plane, IP data plane (DNS, TCP, UDP), BLE transport traits, `WifiConfig`, `NetworkConfig` and `BleSettings` sections and the `wifi`, `network` and `ble` services | portable | `no_std` | `WifiManager`, `WifiHandle`, `WifiBackend`, `NetworkHandle`, `IpBackend`, `UdpSocket`, `NetError`, `BleTransport` | `rohi-config`, `rohi-service`, Embassy sync, `embedded-nal-async`, `embedded-io-async` | Radio drivers, the IP stack, control protocol |
@@ -34,10 +34,10 @@ altruist-urban ──► rohi-*-esp ──► rohi-* (portable) ──► embedd
                                                       └─► never esp-*
 rohi-control-ble ──► rohi-control ──► rohi-control-proto
 rohi-control ──► rohi-control-proto, rohi-service   (nothing else: it knows no module)
-rohi-service ──► (nothing of the SDK)       (generic model: Value, ManagedConfig, ManagedService, registries)
+rohi-service ──► rohi-config                (generic model: Value, ManagedConfig, ManagedService, registries)
 rohi-net, rohi-connectivity, rohi-time, rohi-hal, rohi-identity, rohi-location ──► rohi-service   (each implements the traits for its own types)
-rohi-location ──► rohi-config, rohi-service   (owns the LocationConfig section)
-rohi-net ──► rohi-config                   (owns the WifiConfig, NetworkConfig, BleSettings sections)
+rohi-location ──► rohi-config, rohi-service   (owns the LocationConfig section and its overrides)
+rohi-net ──► rohi-config                   (owns the WifiConfig, NetworkConfig, BleSettings sections and their overrides)
 rohi-identity ──► rohi-config              (owns the Identity section)
 rohi-time-ntp ──► rohi-time, rohi-net, rohi-config, rohi-service   (a source: DNS + UDP samples, owns the `time` section; rohi-time never depends on it)
 rohi-connectivity ──► rohi-connectivity-proto, rohi-hal, rohi-identity, rohi-location, rohi-net, rohi-time   (snapshots, location, signing, NetworkHandle, UtcClock)

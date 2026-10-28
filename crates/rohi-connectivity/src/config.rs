@@ -23,7 +23,7 @@ use minicbor::bytes::ByteSlice;
 use minicbor::decode::{self, Decoder};
 use minicbor::encode::{self, Encoder, Write};
 use minicbor::{CborLen, Decode, Encode};
-use rohi_config::ConfigSection;
+use rohi_config::config_overrides;
 
 /// Maximum length of the configured host name, in bytes.
 pub const MAX_HOST_LEN: usize = 64;
@@ -147,29 +147,39 @@ pub struct Endpoint<'a> {
     pub port: u16,
 }
 
-/// Persistent telemetry configuration (section `ConnectivityConfig`).
+/// Effective telemetry configuration (section `connectivity`).
 ///
-/// The CBOR representation is persistent ABI and declared explicitly
-/// (`#[cbor(array)]`); see `cbor_encoding_is_stable`.
-#[derive(Clone, PartialEq, Eq, Debug, Encode, Decode, CborLen, ConfigSection)]
-#[cbor(array)]
-#[config(version = 1)]
+/// `ConnectivityConfig::default()` is [`disabled`](Self::disabled): no host
+/// and not valid on its own. What is stored are the explicit user overrides
+/// of it, [`ConnectivityOverrides`].
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ConnectivityConfig {
     /// Telemetry is only produced and sent when enabled.
-    #[n(0)]
     pub enabled: bool,
     /// Robonomics CPS node identifier (`core.v1.Meta.node_id`).
-    #[n(1)]
     pub node_id: u64,
     /// Seconds between telemetry frames.
-    #[n(2)]
     pub interval_s: u32,
     /// Ingress host.
-    #[n(3)]
     pub host: Host,
     /// Ingress TCP port.
-    #[n(4)]
     pub port: u16,
+}
+
+config_overrides! {
+    /// Persisted overrides of the [`ConnectivityConfig`] section (section
+    /// `ConnectivityConfig`).
+    ///
+    /// Persistent ABI: a CBOR map keyed by the field ids below, which are only
+    /// ever added; a field that is not overridden is absent. The map is pinned
+    /// by a golden test.
+    pub struct ConnectivityOverrides for ConnectivityConfig, version 1 {
+        1 => enabled: bool,
+        2 => node_id: u64,
+        3 => interval_s: u32,
+        4 => host: Host,
+        5 => port: u16,
+    }
 }
 
 impl ConnectivityConfig {
@@ -220,7 +230,7 @@ impl Default for ConnectivityConfig {
 
 #[cfg(test)]
 mod tests {
-    use rohi_config::{ConfigSection, MAX_SECTION_PAYLOAD};
+    use rohi_config::{ConfigOverrides, ConfigSection, MAX_SECTION_PAYLOAD, Override};
 
     use super::*;
 
@@ -236,32 +246,71 @@ mod tests {
         }
     }
 
+    fn overrides() -> ConnectivityOverrides {
+        ConnectivityOverrides {
+            enabled: Override::Value(true),
+            node_id: Override::Value(5),
+            host: Override::Value(Host::new("a.io").unwrap()),
+            port: Override::Value(8080),
+            ..ConnectivityOverrides::default()
+        }
+    }
+
     #[test]
     fn cbor_encoding_is_stable() {
         let mut buffer = [0u8; 64];
-        let used = rohi_config::encode_to_slice(&config(), &mut buffer).unwrap();
+        let used = rohi_config::encode_to_slice(&overrides(), &mut buffer).unwrap();
         assert_eq!(
             &buffer[..used],
             [
-                0x85, 0xf5, 0x05, 0x18, 0x3c, 0x44, b'a', b'.', b'i', b'o', 0x19, 0x1f, 0x90
+                0xa4, // map(4)
+                0x01, 0xf5, // 1: enabled
+                0x02, 0x05, // 2: node_id
+                0x04, 0x44, b'a', b'.', b'i', b'o', // 4: host
+                0x05, 0x19, 0x1f, 0x90, // 5: port
             ]
         );
-        assert_eq!(ConnectivityConfig::VERSION, 1);
+        assert_eq!(ConnectivityOverrides::VERSION, 1);
         assert_eq!(
-            ConnectivityConfig::ID,
+            ConnectivityOverrides::ID,
             rohi_config::SectionId::from_name("ConnectivityConfig")
         );
+        let used =
+            rohi_config::encode_to_slice(&ConnectivityOverrides::default(), &mut buffer).unwrap();
+        assert_eq!(&buffer[..used], [0xa0]);
+    }
+
+    #[test]
+    fn overrides_apply_to_the_defaults() {
+        let effective = overrides().over_default();
+        assert_eq!(effective, config_of_overrides());
+        // The interval is not overridden: it is the default.
+        assert_eq!(effective.interval_s, DEFAULT_INTERVAL_S);
+    }
+
+    fn config_of_overrides() -> ConnectivityConfig {
+        ConnectivityConfig {
+            enabled: true,
+            node_id: 5,
+            interval_s: DEFAULT_INTERVAL_S,
+            host: Host::new("a.io").unwrap(),
+            port: 8080,
+        }
     }
 
     #[test]
     fn round_trips_and_fits_a_section() {
         let mut buffer = [0u8; MAX_SECTION_PAYLOAD];
-        let mut config = config();
-        config.host = Host::new(&"a".repeat(MAX_HOST_LEN)).unwrap();
-        config.node_id = u64::MAX;
-        let used = rohi_config::encode_to_slice(&config, &mut buffer).unwrap();
-        let decoded: ConnectivityConfig = rohi_config::decode_exact(&buffer[..used]).unwrap();
-        assert_eq!(decoded, config);
+        let overrides = ConnectivityOverrides {
+            enabled: Override::Value(true),
+            node_id: Override::Value(u64::MAX),
+            interval_s: Override::Value(u32::MAX),
+            host: Override::Value(Host::new(&"a".repeat(MAX_HOST_LEN)).unwrap()),
+            port: Override::Value(u16::MAX),
+        };
+        let used = rohi_config::encode_to_slice(&overrides, &mut buffer).unwrap();
+        let decoded: ConnectivityOverrides = rohi_config::decode_exact(&buffer[..used]).unwrap();
+        assert_eq!(decoded, overrides);
     }
 
     #[test]

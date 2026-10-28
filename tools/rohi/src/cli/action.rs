@@ -16,20 +16,33 @@
 //
 //! `rohi action`: the generic operations of the services.
 
-use super::args::ActionCommand;
 use super::diagnostic::CliError;
 use super::{Ctx, dto, values};
-use crate::model::{FieldValue, Value};
-use crate::{ClientTransport, Device, format};
+use crate::model::{ErrorCode, FieldValue, Value};
+use crate::{ClientTransport, Device, Error, format};
 use zeroize::Zeroize;
+
+/// What `rohi action ...` asks for.
+pub struct Request {
+    pub service: Option<String>,
+    pub action: Option<String>,
+    pub args: Vec<String>,
+    pub help: bool,
+}
 
 pub async fn run<T: ClientTransport>(
     device: &mut Device<T>,
-    command: ActionCommand,
+    request: Request,
     ctx: &mut Ctx,
 ) -> Result<(), CliError> {
-    match command {
-        ActionCommand::List => {
+    let Request {
+        service,
+        action,
+        args,
+        help,
+    } = request;
+    match (service, action) {
+        (None, _) => {
             let actions = device.actions().await?;
             ctx.io.emit(
                 ctx.format,
@@ -37,60 +50,90 @@ pub async fn run<T: ClientTransport>(
                 || format::actions(ctx.paint, &actions),
             )
         }
-        ActionCommand::Describe { service, action } => {
+        (Some(service), None) => list(device, &service, ctx).await,
+        (Some(service), Some(action)) if help => {
             let schema = device.action_schema(&service, &action).await?;
             ctx.io.emit(
                 ctx.format,
                 &dto::Versioned::new(dto::action_schema(&schema)),
-                || format::action_schema(ctx.paint, &schema),
+                || format::action_help(ctx.paint, &schema),
             )
         }
-        ActionCommand::Run {
-            service,
-            action,
-            args,
-        } => {
-            let schema = device.action_schema(&service, &action).await?;
-            let secret = schema.action.secret_args;
-            let mut given = Arguments::default();
-            for arg in &args {
-                let (name, text) = values::assignment(arg)?;
-                let field =
-                    values::lookup(schema.args.iter(), &format!("{service} {action}"), name)?;
-                if given.0.iter().any(|given| given.field_id == field.id) {
-                    return Err(CliError::Usage(format!("{name} is given twice")));
-                }
-                if secret && text != "-" {
-                    return Err(CliError::Usage(format!(
-                        "{service} {action} takes secrets: do not put {name} on the command line, use {name}=- to read it from stdin"
-                    )));
-                }
-                let value = values::argument(ctx, field, text).await?;
-                given.0.push(FieldValue {
-                    field_id: field.id,
-                    value,
-                });
-            }
-            let missing: Vec<&str> = schema
-                .args
-                .iter()
-                .filter(|field| !given.0.iter().any(|given| given.field_id == field.id))
-                .map(|field| field.name.as_str())
-                .collect();
-            if !missing.is_empty() {
-                return Err(CliError::Usage(format!(
-                    "{service} {action} needs: {}",
-                    missing.join(", ")
-                )));
-            }
-            let records = device.invoke(&service, &action, &given.0).await?;
-            ctx.io.emit(
-                ctx.format,
-                &dto::Versioned::new(dto::records(&records, &schema)),
-                || format::records(ctx.paint, &records, &schema),
-            )
-        }
+        (Some(service), Some(action)) => run_action(device, &service, &action, &args, ctx).await,
     }
+}
+
+/// The actions of one service with their arguments.
+async fn list<T: ClientTransport>(
+    device: &mut Device<T>,
+    service: &str,
+    ctx: &mut Ctx,
+) -> Result<(), CliError> {
+    let actions: Vec<_> = device
+        .actions()
+        .await?
+        .into_iter()
+        .filter(|action| action.service == service)
+        .collect();
+    if actions.is_empty() {
+        return Err(CliError::Device(Error::Device(ErrorCode::NotFound)));
+    }
+    let mut schemas = Vec::new();
+    for action in &actions {
+        schemas.push(device.action_schema(service, &action.name).await?);
+    }
+    ctx.io.emit(
+        ctx.format,
+        &dto::Versioned::new(dto::actions(&actions)),
+        || format::service_actions(ctx.paint, &schemas),
+    )
+}
+
+async fn run_action<T: ClientTransport>(
+    device: &mut Device<T>,
+    service: &str,
+    action: &str,
+    args: &[String],
+    ctx: &mut Ctx,
+) -> Result<(), CliError> {
+    let schema = device.action_schema(service, action).await?;
+    let secret = schema.action.secret_args;
+    let mut given = Arguments::default();
+    for arg in args {
+        let (name, text) = values::assignment(arg)?;
+        let field = values::lookup(schema.args.iter(), &format!("{service} {action}"), name)?;
+        if given.0.iter().any(|given| given.field_id == field.id) {
+            return Err(CliError::Usage(format!("{name} is given twice")));
+        }
+        if secret && text != "-" {
+            return Err(CliError::Usage(format!(
+                "{service} {action} takes secrets: do not put {name} on the command line, use {name}=- to read it from stdin"
+            )));
+        }
+        let value = values::argument(ctx, field, text).await?;
+        given.0.push(FieldValue {
+            field_id: field.id,
+            value,
+        });
+    }
+    let missing: Vec<&str> = schema
+        .args
+        .iter()
+        .filter(|field| !given.0.iter().any(|given| given.field_id == field.id))
+        .map(|field| field.name.as_str())
+        .collect();
+    if !missing.is_empty() {
+        return Err(CliError::Usage(format!(
+            "{service} {action} needs: {}",
+            missing.join(", ")
+        )));
+    }
+    let records = device.invoke(service, action, &given.0).await?;
+    ctx.io.emit(
+        ctx.format,
+        &dto::Versioned::new(dto::records(&records, &schema)),
+        || format::records(ctx.paint, &records, &schema),
+    )
 }
 
 /// The arguments of an action. They can be secrets, so they are overwritten

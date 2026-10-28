@@ -30,8 +30,8 @@ Rules that keep this picture true:
 1. **Dependencies point from platform and product towards portable crates.** `rohi-net` never depends on
    `rohi-net-esp` or on `rohi-control*`; `rohi-hal` never depends on `rohi-net`; portable crates never depend on
    `esp-*` crates. See [Portability](portability.md).
-2. **Feature crates own their own `ConfigSection`.** `rohi-config` never learns the set of application sections:
-   `rohi-net` owns `WifiConfig`, `NetworkConfig` and `BleSettings`, `rohi-identity` owns the `Identity` section. A section type lives next to the code that
+2. **Feature crates own their own config sections.** `rohi-config` never learns the set of application sections:
+   `rohi-net` owns `WifiConfig`, `NetworkConfig` and `BleSettings` (each the effective configuration, persisted as generated overrides), `rohi-identity` owns the `Identity` section. A section type lives next to the code that
    interprets it, and the firmware only wires the section to its runtime. See
    [Add a ConfigSection](../guides/add-config-section.md).
 3. **Stateful services have one owner task** and are reached through bounded handles:

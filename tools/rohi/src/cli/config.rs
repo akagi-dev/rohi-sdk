@@ -28,88 +28,111 @@ use crate::format::{self, Paint};
 use crate::model::*;
 use crate::{ClientTransport, Device, Error};
 
+/// What `rohi config ...` asks for besides the fixed commands.
+pub struct Request {
+    pub section: Option<String>,
+    pub assignments: Vec<String>,
+    pub dry_run: bool,
+    pub help: bool,
+}
+
 pub async fn run<T: ClientTransport>(
     device: &mut Device<T>,
-    action: ConfigAction,
+    action: Option<ConfigAction>,
+    request: Request,
     ctx: &mut Ctx,
 ) -> Result<(), CliError> {
     match action {
-        ConfigAction::List => {
-            let sections = device.config_sections().await?;
-            ctx.io.emit(
-                ctx.format,
-                &dto::Versioned::new(dto::sections(&sections)),
-                || format::config_sections(ctx.paint, &sections),
-            )
-        }
-        ConfigAction::Describe { section } => {
-            let schema = device.config_schema(&section).await?;
-            ctx.io.emit(
-                ctx.format,
-                &dto::Versioned::new(dto::config_schema(&schema)),
-                || format::config_schema(ctx.paint, &schema),
-            )
-        }
-        ConfigAction::Get { section, field } => get(device, &section, field.as_deref(), ctx).await,
-        ConfigAction::Set {
-            section,
-            assignments,
-            dry_run,
-        } => set(device, &section, &assignments, dry_run, ctx).await,
-        ConfigAction::Unset {
-            section,
-            fields,
-            dry_run,
-        } => unset(device, &section, &fields, dry_run, ctx).await,
-        ConfigAction::Reset {
+        Some(ConfigAction::Reset {
             section,
             yes,
             dry_run,
-        } => {
+        }) => {
             // Validate the name before asking anybody anything.
             device.config_schema(&section).await?;
             if !dry_run {
                 ctx.io
                     .confirm(
                         &format!(
-                            "The `{section}` section will be removed and its defaults restored.\n\nContinue?"
+                            "Every override of the `{section}` section will be removed: it will follow the defaults again.\n\nContinue?"
                         ),
                         yes,
                     )
                     .await?;
             }
             let applied = device.config_reset(&section, None, dry_run).await?;
-            report(ctx, &section, &applied, dry_run)
+            report(ctx, &section, &applied, dry_run, "reset to the defaults")
         }
-        ConfigAction::Export { file } => export(device, file, ctx).await,
-        ConfigAction::Diff { file } => diff(device, &file, ctx).await,
-        ConfigAction::Apply { file, dry_run, yes } => apply(device, &file, dry_run, yes, ctx).await,
+        Some(ConfigAction::Export { file }) => export(device, file, ctx).await,
+        Some(ConfigAction::Diff { file }) => diff(device, &file, ctx).await,
+        Some(ConfigAction::Apply { file, dry_run, yes }) => {
+            apply(device, &file, dry_run, yes, ctx).await
+        }
+        None => match request.section {
+            None => {
+                if !request.assignments.is_empty() || request.dry_run {
+                    return Err(CliError::Usage("name the section to change".into()));
+                }
+                let sections = device.config_sections().await?;
+                ctx.io.emit(
+                    ctx.format,
+                    &dto::Versioned::new(dto::sections(&sections)),
+                    || format::config_sections(ctx.paint, &sections),
+                )
+            }
+            Some(section) if request.help => {
+                let schema = device.config_schema(&section).await?;
+                ctx.io.emit(
+                    ctx.format,
+                    &dto::Versioned::new(dto::config_schema(&schema)),
+                    || format::config_help(ctx.paint, &schema),
+                )
+            }
+            Some(section) if request.assignments.is_empty() => {
+                if request.dry_run {
+                    return Err(CliError::Usage(
+                        "--dry-run needs FIELD=VALUE to validate".into(),
+                    ));
+                }
+                show(device, &section, false, ctx).await
+            }
+            Some(section) => {
+                set(device, &section, &request.assignments, request.dry_run, ctx).await
+            }
+        },
     }
 }
 
-async fn get<T: ClientTransport>(
+/// Reads the section again and prints what the device reports: the effective
+/// configuration. After a change it also says whether a restart is needed.
+async fn show<T: ClientTransport>(
     device: &mut Device<T>,
     section: &str,
-    only: Option<&str>,
+    restart_required: bool,
     ctx: &mut Ctx,
 ) -> Result<(), CliError> {
     let schema = device.config_schema(section).await?;
-    if let Some(name) = only {
-        values::lookup(
-            schema.fields.iter().map(|field| &field.field),
-            section,
-            name,
-        )?;
-    }
     let current = device.config_get(section).await?;
-    ctx.io.emit(
-        ctx.format,
-        &dto::Versioned::new(dto::config_values(&current, &schema, only)),
-        || format::config_values(ctx.paint, &current, &schema, only),
-    )
+    let mut body = dto::config_values(&current, &schema);
+    if restart_required {
+        body["restart_required"] = Json::Bool(true);
+    }
+    ctx.io.emit(ctx.format, &dto::Versioned::new(body), || {
+        let mut text = format::config_values(ctx.paint, &current, &schema);
+        if restart_required {
+            text.push_str("\nA restart is required for the change to take effect\n");
+        }
+        text
+    })
 }
 
-fn report(ctx: &mut Ctx, section: &str, applied: &Applied, dry_run: bool) -> Result<(), CliError> {
+fn report(
+    ctx: &mut Ctx,
+    section: &str,
+    applied: &Applied,
+    dry_run: bool,
+    done: &str,
+) -> Result<(), CliError> {
     ctx.io.emit(
         ctx.format,
         &dto::Versioned::new(dto::applied(section, applied, dry_run)),
@@ -117,7 +140,7 @@ fn report(ctx: &mut Ctx, section: &str, applied: &Applied, dry_run: bool) -> Res
             let mut text = if dry_run {
                 format!("`{section}` is valid; nothing was changed\n")
             } else {
-                format!("`{section}` stored (revision {})\n", applied.revision)
+                format!("`{section}` {done} (revision {})\n", applied.revision)
             };
             if applied.restart_required && !dry_run {
                 text.push_str("A restart is required for the change to take effect\n");
@@ -148,6 +171,9 @@ fn writable<'a>(
     Ok(config)
 }
 
+/// `FIELD=VALUE` sets an override, `FIELD=none` overrides an optional field
+/// with no value and `FIELD=null` removes the override. Afterwards the section
+/// is read again and printed as the device reports it.
 async fn set<T: ClientTransport>(
     device: &mut Device<T>,
     section: &str,
@@ -156,58 +182,54 @@ async fn set<T: ClientTransport>(
     ctx: &mut Ctx,
 ) -> Result<(), CliError> {
     let schema = device.config_schema(section).await?;
-    let mut mutations = Vec::new();
+    let mut mutations: Vec<Mutation> = Vec::new();
     for assignment in assignments {
         let (name, text) = values::assignment(assignment)?;
         let field = writable(&schema, section, name)?;
-        if field.secret && text != "-" {
-            return Err(CliError::Usage(format!(
-                "{name} is a secret: do not put it on the command line, use {name}=- to read it from stdin"
-            )));
+        if mutations
+            .iter()
+            .any(|mutation| mutation.field_id == field.field.id)
+        {
+            return Err(CliError::Usage(format!("{name} is given twice")));
         }
-        let value = values::argument(ctx, &field.field, text).await?;
+        let op = if text == "null" {
+            MutationOp::Clear
+        } else if text == "none" {
+            if !field.optional {
+                return Err(CliError::Usage(format!(
+                    "{name} is not nullable: it always has a value; use {name}=null to follow the default"
+                )));
+            }
+            MutationOp::None
+        } else {
+            if field.secret && text != "-" {
+                return Err(CliError::Usage(format!(
+                    "{name} is a secret: do not put it on the command line, use {name}=- to read it from stdin"
+                )));
+            }
+            MutationOp::Set(values::argument(ctx, &field.field, text).await?)
+        };
         mutations.push(Mutation {
             field_id: field.field.id,
-            op: MutationOp::Set(value),
+            op,
         });
     }
     let applied = device
         .config_patch(section, &mutations, None, dry_run)
         .await?;
-    report(ctx, section, &applied, dry_run)
-}
-
-async fn unset<T: ClientTransport>(
-    device: &mut Device<T>,
-    section: &str,
-    fields: &[String],
-    dry_run: bool,
-    ctx: &mut Ctx,
-) -> Result<(), CliError> {
-    let schema = device.config_schema(section).await?;
-    let mut mutations = Vec::new();
-    for name in fields {
-        let field = writable(&schema, section, name)?;
-        if !field.optional {
-            return Err(CliError::Usage(format!(
-                "{section}.{name} is required and cannot be unset"
-            )));
-        }
-        mutations.push(Mutation {
-            field_id: field.field.id,
-            op: MutationOp::Unset,
-        });
+    if dry_run {
+        return report(ctx, section, &applied, true, "");
     }
-    let applied = device
-        .config_patch(section, &mutations, None, dry_run)
-        .await?;
-    report(ctx, section, &applied, dry_run)
+    show(device, section, applied.restart_required, ctx).await
 }
 
 // -- files ----------------------------------------------------------------------
 
-/// The configuration of every configured section, without secrets and
-/// read-only fields.
+/// The explicit overrides of every section that has some, without secrets and
+/// read-only fields. A field that follows the defaults is not part of it: the
+/// file says what the user chose, not what the firmware defaults are today. An
+/// explicit "no value" is `{"none": true}`, distinct from `null`, which clears
+/// an override.
 async fn snapshot<T: ClientTransport>(
     device: &mut Device<T>,
 ) -> Result<BTreeMap<String, Map<String, Json>>, CliError> {
@@ -215,29 +237,48 @@ async fn snapshot<T: ClientTransport>(
     for info in device.config_sections().await? {
         let schema = device.config_schema(&info.name).await?;
         let current = device.config_get(&info.name).await?;
-        if !current.configured {
-            continue;
-        }
         let mut fields = Map::new();
         for field in schema.fields.iter().filter(|f| f.writable && !f.secret) {
+            if !current.is_overridden(field.field.id) {
+                continue;
+            }
             let entry = current
                 .entries
                 .iter()
                 .find(|entry| entry.field_id == field.field.id);
-            if let Some(ConfigEntry {
-                state: EntryState::Value(value),
-                ..
-            }) = entry
-            {
-                fields.insert(
-                    field.field.name.clone(),
-                    serde_json::to_value(value).unwrap_or(Json::Null),
-                );
+            match entry {
+                Some(ConfigEntry {
+                    state: EntryState::Value(value),
+                    ..
+                }) => {
+                    fields.insert(
+                        field.field.name.clone(),
+                        serde_json::to_value(value).unwrap_or(Json::Null),
+                    );
+                }
+                // Overridden without a value: an explicit none.
+                None if field.optional => {
+                    fields.insert(field.field.name.clone(), none_json());
+                }
+                _ => {}
             }
         }
-        out.insert(info.name, fields);
+        // A section with only secret overrides has nothing to say here.
+        if !fields.is_empty() {
+            out.insert(info.name, fields);
+        }
     }
     Ok(out)
+}
+
+/// The file representation of an explicit none.
+fn none_json() -> Json {
+    serde_json::json!({ "none": true })
+}
+
+/// Whether `json` is the explicit none of a file.
+fn is_none_json(json: &Json) -> bool {
+    json == &none_json()
 }
 
 async fn export<T: ClientTransport>(
@@ -267,6 +308,17 @@ async fn export<T: ClientTransport>(
             )
         }
     }
+}
+
+/// The state of a field before a file is applied.
+#[derive(PartialEq)]
+enum Was {
+    /// Not overridden: the firmware default applies.
+    Default,
+    /// Explicitly overridden with no value.
+    None,
+    /// Explicitly overridden with a value.
+    Value(Value),
 }
 
 /// One difference of a section.
@@ -337,7 +389,7 @@ async fn plan<T: ClientTransport>(
         };
         match body {
             Json::Null => {
-                if current.configured {
+                if !current.overridden.is_empty() {
                     plan.reset = true;
                     plan.changes.push(Change {
                         marker: '-',
@@ -369,61 +421,62 @@ async fn plan<T: ClientTransport>(
                     if config.secret {
                         return Err(CliError::File(format!(
                             "{section}.{name} is a secret and cannot be part of a file; \
-                             use `rohi config set {section} {name}=-`"
+                             use `rohi config {section} {name}=-`"
                         )));
                     }
-                    let old = current
-                        .entries
-                        .iter()
-                        .find(|entry| entry.field_id == config.field.id)
-                        .and_then(|entry| match &entry.state {
-                            EntryState::Value(value) => Some(value.clone()),
-                            EntryState::Redacted => None,
-                        });
-                    if json.is_null() {
+                    // The explicit override of the field, if there is one. The
+                    // file is compared with what the user chose, not with the
+                    // effective value: a value that equals the default is
+                    // still a new override, and an explicit none is not the
+                    // default.
+                    let was = if !current.is_overridden(config.field.id) {
+                        Was::Default
+                    } else {
+                        match current
+                            .entries
+                            .iter()
+                            .find(|entry| entry.field_id == config.field.id)
+                            .map(|entry| &entry.state)
+                        {
+                            Some(EntryState::Value(value)) => Was::Value(value.clone()),
+                            _ => Was::None,
+                        }
+                    };
+                    let describe = |was: &Was| match was {
+                        Was::Default => "(default)".to_owned(),
+                        Was::None => "(none)".to_owned(),
+                        Was::Value(value) => format::value(value, Some(&config.field)),
+                    };
+                    let (op, now) = if json.is_null() {
+                        (MutationOp::Clear, Was::Default)
+                    } else if is_none_json(json) {
                         if !config.optional {
                             return Err(CliError::File(format!(
-                                "{section}.{name} is required and cannot be null"
+                                "{section}.{name} is not nullable: it always has a value"
                             )));
                         }
-                        if let Some(old) = old {
-                            plan.changes.push(Change {
-                                marker: '-',
-                                name: name.clone(),
-                                text: format!(
-                                    "{} -> (unset)",
-                                    format::value(&old, Some(&config.field))
-                                ),
-                            });
-                            plan.mutations.push(Mutation {
-                                field_id: config.field.id,
-                                op: MutationOp::Unset,
-                            });
-                        }
+                        (MutationOp::None, Was::None)
                     } else {
                         let new = values::from_json(&config.field, json)?;
-                        if old.as_ref() != Some(&new) {
-                            let shown = format::value(&new, Some(&config.field));
-                            plan.changes.push(match &old {
-                                Some(old) => Change {
-                                    marker: '~',
-                                    name: name.clone(),
-                                    text: format!(
-                                        "{} -> {shown}",
-                                        format::value(old, Some(&config.field))
-                                    ),
-                                },
-                                None => Change {
-                                    marker: '+',
-                                    name: name.clone(),
-                                    text: shown,
-                                },
-                            });
-                            plan.mutations.push(Mutation {
-                                field_id: config.field.id,
-                                op: MutationOp::Set(new),
-                            });
-                        }
+                        (MutationOp::Set(new.clone()), Was::Value(new))
+                    };
+                    if was != now {
+                        plan.changes.push(Change {
+                            marker: match (&was, &now) {
+                                (_, Was::Default) => '-',
+                                (Was::Default, _) => '+',
+                                _ => '~',
+                            },
+                            name: name.clone(),
+                            text: match &was {
+                                Was::Default => describe(&now),
+                                _ => format!("{} -> {}", describe(&was), describe(&now)),
+                            },
+                        });
+                        plan.mutations.push(Mutation {
+                            field_id: config.field.id,
+                            op,
+                        });
                     }
                 }
             }

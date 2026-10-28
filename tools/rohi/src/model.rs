@@ -273,7 +273,7 @@ pub struct ConfigField {
     pub writable: bool,
     /// Write-only: never returned.
     pub secret: bool,
-    /// May be unset.
+    /// May have no value: its default is none.
     pub optional: bool,
 }
 
@@ -290,13 +290,13 @@ pub struct ConfigSchema {
 /// State of a field in [`ConfigValues`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum EntryState {
-    /// The current value.
+    /// The effective value.
     Value(Value),
     /// A set secret.
     Redacted,
 }
 
-/// One set field.
+/// One field that has an effective value.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConfigEntry {
     /// Field id.
@@ -305,24 +305,37 @@ pub struct ConfigEntry {
     pub state: EntryState,
 }
 
-/// The readable content of a config section.
+/// The readable content of a config section: the effective configuration,
+/// the defaults of the firmware with the explicit overrides applied.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConfigValues {
     /// The section.
     pub section: SectionInfo,
-    /// Whether anything is persisted.
-    pub configured: bool,
-    /// The fields that are set.
+    /// The effective value of every field that has one. A field without a
+    /// value (default none) is absent.
     pub entries: Vec<ConfigEntry>,
+    /// The ids of the fields that are overridden explicitly. The override of
+    /// such a field is its effective value.
+    pub overridden: Vec<u32>,
+}
+
+impl ConfigValues {
+    /// Whether the field is overridden explicitly.
+    pub fn is_overridden(&self, field_id: u32) -> bool {
+        self.overridden.contains(&field_id)
+    }
 }
 
 /// What a mutation does.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MutationOp {
-    /// Sets the field.
+    /// Creates or replaces the override of the field.
     Set(Value),
-    /// Unsets the field.
-    Unset,
+    /// Overrides an optional field with an explicit "no value": the default
+    /// no longer applies. Not the same as [`Clear`](Self::Clear).
+    None,
+    /// Removes the override of the field: the default applies again.
+    Clear,
 }
 
 /// One change of a patch.

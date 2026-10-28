@@ -1,7 +1,7 @@
 # Add a service
 
 A service makes a runtime part of the device visible and controllable: its **state** (`rohi status <name>`), optionally
-its **configuration** (`rohi config ... <name>`) and its **actions** (`rohi action run <name> ...`). It needs
+its **configuration** (`rohi config <name> ...`) and its **actions** (`rohi action <name> ...`). It needs
 **no change** to the protocol, the dispatcher, the client or the CLI: you implement `rohi-service` traits in the crate
 that owns the runtime and add the result to the firmware's tuples. [Location](../sdk/location.md) is a small complete
 example (config section, service, shared state, telemetry); [Service pipeline](../sdk/service.md) explains the model.
@@ -48,8 +48,8 @@ or issues change) and the time in the current state. You do nothing for that.
 
 ## 2. Config (optional)
 
-If users configure it, add a `ConfigSection` and implement `ManagedConfig` as in
-[Add a ConfigSection](add-config-section.md): the schema, typed conversion, whole-section validation.
+If users configure it, add a typed section with its `config_overrides!` struct and implement `ManagedConfig` as in
+[Add a ConfigSection](add-config-section.md): the schema, typed conversion, whole-section validation of the effective configuration.
 Name the section like the service when they belong together (`location`, `connectivity`, `wifi`).
 
 ## 3. Actions (optional)
@@ -70,15 +70,15 @@ pub type Services = (
 // device(): (..., Tracked::new(LocationService(location::shared())), ...)
 ```
 
-If the runtime must react to a stored section, the configuration owner publishes it in the commit step
+If the runtime must react to a stored section, the configuration owner publishes its effective config in the commit step
 (`config.rs`, `publish_committed`, and once at boot).
 
 ## 5. Tests
 
 - The feature crate: the status of every state (summary, issues, values), the schema (ids unique, names fit 24 bytes,
-  at most 20 fields), and for a section the typed validation and a golden test of the stored bytes.
+  at most 20 fields), and for a section the typed validation and a golden test of the stored overrides.
 - End to end: `tools/rohi/tests/common/mod.rs` builds the fake device from the **real** sections and services; add yours
-  there and test `rohi config set`, `rohi status <name>` against it.
+  there and test `rohi config <name> FIELD=VALUE`, `rohi status <name>` against it.
 
 ## 6. Docs
 

@@ -75,7 +75,7 @@ impl Mock {
 
 fn info_for(config: &LinkConfig) -> NetworkInfo {
     NetworkInfo {
-        ssid: config.wifi.ssid.clone(),
+        ssid: config.wifi.ssid.clone().unwrap(),
         rssi_dbm: -50,
         channel: Some(6),
         mac: Some([2, 0, 0, 0, 0, 1]),
@@ -229,7 +229,7 @@ fn configured_connects_after_dhcp() {
     assert_eq!(f.state(), WifiState::Connected);
     assert!(f.handle.status().is_network_ready());
     let info = f.handle.network_info().unwrap();
-    assert_eq!(info.ssid, cfg.ssid);
+    assert_eq!(Some(info.ssid), cfg.ssid);
     assert_eq!(info.ipv4, Ipv4Addr::new(192, 168, 1, 41));
 }
 
@@ -418,7 +418,10 @@ fn config_change_reconnects_with_new_config() {
         Some(&config("new"))
     );
     assert_eq!(f.state(), WifiState::Connected);
-    assert_eq!(f.handle.network_info().unwrap().ssid, config("new").ssid);
+    assert_eq!(
+        Some(f.handle.network_info().unwrap().ssid),
+        config("new").ssid
+    );
 }
 
 #[test]

@@ -28,7 +28,7 @@ mod service;
 
 pub use config::{
     AddressMode, DEFAULT_DHCP_TIMEOUT_MS, DHCP_TIMEOUT_RANGE_MS, Hostname, Ipv4, MAX_HOSTNAME_LEN,
-    NetworkConfig, StaticIpv4,
+    NetworkConfig, NetworkOverrides, StaticIpv4,
 };
 pub use managed::{ADDRESS_MODE_ENUM, ADDRESS_MODES, address_mode, field as config_field};
 pub use service::{NetworkProbe, NetworkService, SERVICE_ID, issue, status_field};

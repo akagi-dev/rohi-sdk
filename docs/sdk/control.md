@@ -63,7 +63,7 @@ because of a bad request.
 | actions | `InvokeAction` | depends on the action: open, `privileged` (**Mutate**) or secret arguments (**Provision**) |
 
 Sections, services and actions have a stable **name** and a stable numeric **id**. The id of a section is the `u64` id of its
-stored `ConfigSection` (derived from the type name, see [persistent ABI](../reference/persistent-abi.md)); the ids of
+persisted section (derived from the name of the section type, see [persistent ABI](../reference/persistent-abi.md)); the ids of
 services and actions are `u32` declared by the module that owns them. Names are for discovery and for people; every request after discovery addresses by id (`section_id`,
 `service_id`, `action_id`), which keeps requests small. There is no capability list of modules: whether something
 exists is answered by `ListConfigSections`, `GetServicesStatus` (which carries id, name and version of every service)
@@ -100,11 +100,16 @@ snapshot semantics.
 
 ### Config
 
-A section has a name, a schema version and a **revision**. `GetConfigSection` returns the fields that are set (unset
-fields are absent, secrets are `redacted`, never their value) and `configured`, whether anything is stored.
-`PatchConfigSection` carries `set` / `unset` mutations by field id, an optional `expected_revision` and `dry_run`; it is
-atomic per section and validated as a whole, see [Service pipeline](service.md#config-sections).
-`ResetConfigSection` removes the stored section; like a patch it takes an optional `expected_revision`. The response carries the new `revision` and `restart_required`.
+A section has a name, a schema version and a **revision**. `GetConfigSection` returns the **effective** values
+(`effective`: the firmware defaults with the user's overrides applied; a field without a value is absent, secrets are
+`redacted`, never their value) and `overridden`, the ids of the fields the user has explicitly overridden (the override
+value of such a field is its entry in `effective`).
+`PatchConfigSection` carries mutations by field id (a value, `none` or `clear`), an optional `expected_revision` and
+`dry_run`. A value sets an explicit override; `none` overrides an **optional** field with no value (refused for a
+required field); `clear` removes the override of any writable field so the field follows the firmware default again. They
+are three distinct operations on the wire (`none = 9`, `clear = 10`). The patch is atomic per section and the complete
+effective result (firmware defaults + overrides) is validated, see [Service pipeline](service.md#config-sections).
+`ResetConfigSection` removes every override of the section; like a patch it takes an optional `expected_revision`. The response carries the new `revision` and `restart_required`.
 `FactoryReset` formats the configuration storage: every section, sections the firmware does not know and the identity are
 removed and the runtime returns to the defaults. The response carries `restart_required`.
 `Reboot` asks the device to reboot: it answers first and reboots shortly after (the Altruist Urban about 1.5 s later), so

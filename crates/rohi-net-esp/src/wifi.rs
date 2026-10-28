@@ -216,7 +216,7 @@ impl EspWifi {
                 .map_err(|_| WifiError::DhcpFailed)?;
         }
 
-        self.ssid = Some(config.wifi.ssid.clone());
+        self.ssid = config.wifi.ssid.clone();
         self.current_info().ok_or(WifiError::DhcpFailed)
     }
 }
@@ -279,7 +279,8 @@ impl WifiBackend for EspWifi {
 }
 
 fn station_config(config: &WifiConfig) -> Result<StationConfig, WifiError> {
-    let ssid = Ssid::try_from(config.ssid.as_bytes()).map_err(|_| WifiError::InvalidConfig)?;
+    let ssid = config.ssid.as_ref().ok_or(WifiError::InvalidConfig)?;
+    let ssid = Ssid::try_from(ssid.as_bytes()).map_err(|_| WifiError::InvalidConfig)?;
     let authentication = match &config.password {
         None => AuthenticationMethodConfig::Open,
         Some(password) => AuthenticationMethodConfig::WpaWpa2Personal(

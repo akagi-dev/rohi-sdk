@@ -8,9 +8,11 @@ use std::time::Duration;
 use common::*;
 use rohi::model::*;
 use rohi::{ClientTransport, Device, Error, Session};
+use rohi_config::Override;
 use rohi_control::{Controller, OpenPolicy};
 use rohi_control_ble::ControlBle;
 use rohi_control_proto::control as pb;
+use rohi_net::WifiSsid;
 
 fn text(value: &str) -> Value {
     Value::String(value.to_owned())
@@ -23,10 +25,17 @@ fn set(id: u32, value: Value) -> Mutation {
     }
 }
 
-fn unset(id: u32) -> Mutation {
+fn none(id: u32) -> Mutation {
     Mutation {
         field_id: id,
-        op: MutationOp::Unset,
+        op: MutationOp::None,
+    }
+}
+
+fn clear(id: u32) -> Mutation {
+    Mutation {
+        field_id: id,
+        op: MutationOp::Clear,
     }
 }
 
@@ -130,9 +139,15 @@ async fn a_schema_describes_the_fields_of_a_section_the_client_has_never_seen() 
 async fn a_patch_is_stored_atomically_and_secrets_are_never_returned() {
     let bench = Bench::new();
     with_device(20, &bench, |mut device| async move {
-        let unconfigured = device.config_get("wifi").await.unwrap();
-        assert!(!unconfigured.configured);
-        assert!(unconfigured.entries.is_empty());
+        // Nothing is overridden: the effective values are the defaults.
+        let defaults = device.config_get("wifi").await.unwrap();
+        assert!(defaults.overridden.is_empty());
+        assert_eq!(entry(&defaults, 1), None);
+        assert_eq!(entry(&defaults, 2), None);
+        assert_eq!(
+            entry(&defaults, 3),
+            Some(&EntryState::Value(Value::U64(20_000)))
+        );
 
         let applied = device
             .config_patch(
@@ -147,22 +162,77 @@ async fn a_patch_is_stored_atomically_and_secrets_are_never_returned() {
         assert!(!applied.restart_required);
 
         let values = device.config_get("wifi").await.unwrap();
-        assert!(values.configured);
+        assert_eq!(values.overridden, [1, 2]);
         assert_eq!(values.section.revision, 1);
         assert_eq!(entry(&values, 1), Some(&EntryState::Value(text("office"))));
         assert_eq!(entry(&values, 2), Some(&EntryState::Redacted));
+        // The timing is not overridden: it is the default.
+        assert!(!values.is_overridden(3));
+        assert_eq!(
+            entry(&values, 3),
+            Some(&EntryState::Value(Value::U64(20_000)))
+        );
 
-        // Unset is not an empty value.
+        // Clearing the override of the password restores its default, none.
         device
-            .config_patch("wifi", &[unset(2)], None, false)
+            .config_patch("wifi", &[clear(2)], None, false)
             .await
             .unwrap();
-        assert_eq!(entry(&device.config_get("wifi").await.unwrap(), 2), None);
+        let values = device.config_get("wifi").await.unwrap();
+        assert_eq!(entry(&values, 2), None);
+        assert_eq!(values.overridden, [1]);
     })
     .await;
     let stored = bench.wifi.value.borrow().clone().unwrap();
-    assert_eq!(stored.ssid.as_str(), Some("office"));
-    assert!(stored.password.is_none());
+    assert_eq!(
+        stored.ssid,
+        Override::Value(Some(WifiSsid::from_bytes(b"office").unwrap()))
+    );
+    assert_eq!(stored.password, Override::Default);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn none_is_an_explicit_override_that_clear_removes() {
+    let bench = Bench::new();
+    with_device(20, &bench, |mut device| async move {
+        // An open network is an explicit choice: no password, overridden.
+        device
+            .config_patch("wifi", &[set(1, text("office")), none(2)], None, false)
+            .await
+            .unwrap();
+        let values = device.config_get("wifi").await.unwrap();
+        assert_eq!(values.overridden, [1, 2]);
+        assert_eq!(entry(&values, 2), None);
+
+        // A required field has no "none"; nothing changes.
+        let error = device
+            .config_patch("wifi", &[none(3)], None, false)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Device(ErrorCode::InvalidArgument)));
+
+        // A value replaces it, clear follows the default again.
+        device
+            .config_patch("wifi", &[set(2, text("hunter2hunter2"))], None, false)
+            .await
+            .unwrap();
+        assert_eq!(
+            entry(&device.config_get("wifi").await.unwrap(), 2),
+            Some(&EntryState::Redacted)
+        );
+        device
+            .config_patch("wifi", &[none(2)], None, false)
+            .await
+            .unwrap();
+        device
+            .config_patch("wifi", &[clear(2)], None, false)
+            .await
+            .unwrap();
+        assert_eq!(device.config_get("wifi").await.unwrap().overridden, [1]);
+    })
+    .await;
+    let stored = bench.wifi.value.borrow().clone().unwrap();
+    assert_eq!(stored.password, Override::Default);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -182,11 +252,11 @@ async fn an_invalid_mutation_stores_nothing() {
         assert!(matches!(error, Error::Device(ErrorCode::InvalidArgument)));
         // A complete result that fails the typed validation is refused too.
         let error = device
-            .config_patch("gadget", &[set(2, Value::U64(5))], None, false)
+            .config_patch("gadget", &[set(3, Value::Enum("fast".into()))], None, false)
             .await
             .unwrap_err();
         assert!(matches!(error, Error::Device(ErrorCode::InvalidArgument)));
-        // So are a read-only field and a required field that is unset.
+        // So are a read-only field and an unknown one.
         assert!(
             device
                 .config_patch("gadget", &[set(4, text("x"))], None, false)
@@ -195,7 +265,13 @@ async fn an_invalid_mutation_stores_nothing() {
         );
         assert!(
             device
-                .config_patch("gadget", &[unset(1)], None, false)
+                .config_patch("gadget", &[clear(4)], None, false)
+                .await
+                .is_err()
+        );
+        assert!(
+            device
+                .config_patch("gadget", &[clear(99)], None, false)
                 .await
                 .is_err()
         );
@@ -214,7 +290,14 @@ async fn dry_runs_conflicts_restarts_and_reset() {
             .await
             .unwrap();
         assert_eq!(dry.revision, 0);
-        assert!(!device.config_get("gadget").await.unwrap().configured);
+        assert!(
+            device
+                .config_get("gadget")
+                .await
+                .unwrap()
+                .overridden
+                .is_empty()
+        );
 
         // This section only takes effect after a restart.
         let applied = device
@@ -231,7 +314,14 @@ async fn dry_runs_conflicts_restarts_and_reset() {
 
         let reset = device.config_reset("gadget", None, false).await.unwrap();
         assert_eq!(reset.revision, 2);
-        assert!(!device.config_get("gadget").await.unwrap().configured);
+        assert!(
+            device
+                .config_get("gadget")
+                .await
+                .unwrap()
+                .overridden
+                .is_empty()
+        );
     })
     .await;
 }

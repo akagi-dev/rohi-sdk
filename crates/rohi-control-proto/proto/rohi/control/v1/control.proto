@@ -256,7 +256,8 @@ message ConfigFieldDescriptor {
   bool writable = 2;
   // Never returned by `GetConfigSection` (reported as `redacted`).
   bool secret = 3;
-  // May be unset; unset is distinct from an empty string or zero.
+  // May have no value: its default is "none". Such a field is absent from
+  // the effective entries; that is distinct from an empty string or zero.
   bool optional = 4;
 }
 
@@ -276,7 +277,8 @@ message GetConfigSchemaResponse {
   repeated EnumDescriptor enums = 3;
 }
 
-// Fields that are not set (and not secret) are absent from `entries`.
+// The effective value of a field. A field that has no value (an optional
+// field whose default is "none") is absent from the entries.
 message ConfigEntry {
   uint32 field_id = 1;
 
@@ -288,7 +290,7 @@ message ConfigEntry {
     string string_value = 6;
     bytes bytes_value = 7;
     uint32 enum_value = 8;
-    // A secret field that is configured.
+    // A secret field that is set.
     Empty redacted = 9;
   }
 }
@@ -297,13 +299,23 @@ message GetConfigSectionRequest {
   uint64 section_id = 1;
 }
 
+// The effective configuration of a section is always defined: the firmware
+// defaults with the explicit overrides of the user applied. There is no
+// "not configured" state.
 message GetConfigSectionResponse {
   uint64 section_id = 1;
   uint32 version = 2;
   uint32 revision = 3;
-  repeated ConfigEntry entries = 4;
-  // False while nothing is persisted for the section.
-  bool configured = 5;
+  // The effective value of every field that has one: what the device runs
+  // with. Secrets are `redacted`.
+  repeated ConfigEntry effective = 4;
+  // The ids of the fields the user overrides explicitly. The override value
+  // of such a field is its entry in `effective`, so these two lists carry
+  // both the effective configuration and the user's overrides.
+  repeated uint32 overridden = 6;
+  // The former `configured` flag; there is no such state any more.
+  reserved 5;
+  reserved "configured";
 }
 
 message ConfigMutation {
@@ -317,13 +329,21 @@ message ConfigMutation {
     string string_value = 6;
     bytes bytes_value = 7;
     uint32 enum_value = 8;
-    // Removes the value of an optional field.
-    Empty unset = 9;
+    // Overrides an optional field with an explicit "no value" (an open
+    // network, a disabled second server). The firmware default no longer
+    // applies. Refused for a field that is not optional.
+    Empty none = 9;
+    // Removes the override of the field: the firmware default applies again.
+    // It does not set an optional field to "none".
+    Empty clear = 10;
   }
 }
 
-// All mutations are applied to a temporary copy, the complete result is
-// validated, and only then persisted. If anything is invalid nothing changes.
+// A value creates or replaces the override of the field, `none` overrides an
+// optional field with no value, `clear` removes the override. All mutations
+// are applied to a temporary copy of the overrides, the complete effective
+// result (the firmware defaults with the overrides applied) is validated, and
+// only then persisted. If anything is invalid nothing changes.
 message PatchConfigSectionRequest {
   uint64 section_id = 1;
   repeated ConfigMutation mutations = 2;
@@ -339,7 +359,8 @@ message PatchConfigSectionResponse {
   bool restart_required = 2;
 }
 
-// Removes the persisted section and restores the module defaults.
+// Removes every override of the section: the effective configuration is the
+// firmware defaults.
 message ResetConfigSectionRequest {
   uint64 section_id = 1;
   bool dry_run = 2;

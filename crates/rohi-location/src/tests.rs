@@ -16,7 +16,7 @@
 //
 use embassy_futures::block_on;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use rohi_config::ConfigSection;
+use rohi_config::{ConfigOverrides, ConfigSection, Override};
 use rohi_service::{
     Bounds, ConfigField, FieldError, ManagedConfig, ManagedService, ServiceRegistry, ServiceState,
     Tracked, Unit, Value,
@@ -32,42 +32,56 @@ fn config() -> LocationConfig {
     }
 }
 
+fn overrides() -> LocationOverrides {
+    LocationOverrides {
+        latitude: Override::Value(52.52),
+        longitude: Override::Value(13.405),
+        height_m: Override::Value(Some(34.0)),
+    }
+}
+
 #[test]
 fn cbor_encoding_is_stable() {
     let mut buffer = [0u8; 64];
-    let used = rohi_config::encode_to_slice(&config(), &mut buffer).unwrap();
-    // array(3), then three float64 (0xfb + 8 bytes).
-    assert_eq!(used, 1 + 3 * 9);
-    assert_eq!(buffer[0], 0x83);
-    assert_eq!(buffer[1], 0xfb);
-    assert_eq!(&buffer[2..10], &52.52f64.to_be_bytes());
-    assert_eq!(&buffer[11..19], &13.405f64.to_be_bytes());
-    assert_eq!(&buffer[20..28], &34.0f64.to_be_bytes());
+    let used = rohi_config::encode_to_slice(&overrides(), &mut buffer).unwrap();
+    // map(3): key, then float64 (0xfb + 8 bytes), three times.
+    assert_eq!(used, 1 + 3 * 10);
+    assert_eq!(buffer[0], 0xa3);
+    assert_eq!(&buffer[1..3], [0x01, 0xfb]);
+    assert_eq!(&buffer[3..11], &52.52f64.to_be_bytes());
+    assert_eq!(&buffer[11..13], [0x02, 0xfb]);
+    assert_eq!(&buffer[13..21], &13.405f64.to_be_bytes());
+    assert_eq!(&buffer[21..23], [0x03, 0xfb]);
+    assert_eq!(&buffer[23..31], &34.0f64.to_be_bytes());
+    let decoded: LocationOverrides = rohi_config::decode_exact(&buffer[..used]).unwrap();
+    assert_eq!(decoded, overrides());
+    assert_eq!(decoded.over_default(), config());
 
-    // Without a height the trailing element is omitted.
-    let open = LocationConfig {
-        height_m: None,
-        ..config()
+    // Without a height override the entry is omitted.
+    let open = LocationOverrides {
+        height_m: Override::Default,
+        ..overrides()
     };
     let used = rohi_config::encode_to_slice(&open, &mut buffer).unwrap();
-    assert_eq!(buffer[0], 0x82);
-    assert_eq!(used, 1 + 2 * 9);
-    let decoded: LocationConfig = rohi_config::decode_exact(&buffer[..used]).unwrap();
+    assert_eq!(buffer[0], 0xa2);
+    assert_eq!(used, 1 + 2 * 10);
+    let decoded: LocationOverrides = rohi_config::decode_exact(&buffer[..used]).unwrap();
     assert_eq!(decoded, open);
+    assert_eq!(decoded.over_default().height_m, None);
 }
 
 #[test]
 fn section_id_and_version() {
-    // The name of the struct is part of the persistent ABI.
+    // The name of the section type is part of the persistent ABI.
     assert_eq!(
-        LocationConfig::ID,
+        LocationOverrides::ID,
         rohi_config::SectionId::from_name("LocationConfig")
     );
     assert_eq!(
-        LocationConfig::ID,
+        LocationOverrides::ID,
         rohi_config::SectionId(0xce09_8b4a_3e38_1f40)
     );
-    assert_eq!(<LocationConfig as ConfigSection>::VERSION, 1);
+    assert_eq!(<LocationOverrides as ConfigSection>::VERSION, 1);
 }
 
 #[test]
@@ -118,7 +132,7 @@ fn validation_rejects_what_is_not_a_position() {
 #[test]
 fn a_patch_needs_both_coordinates() {
     // A first `set height_m=...` must not store "0, 0".
-    let mut section = LocationConfig::defaults();
+    let mut section = LocationConfig::default();
     section
         .set_field(field::HEIGHT_M, Value::F32(10.0))
         .unwrap();
@@ -133,16 +147,69 @@ fn a_patch_needs_both_coordinates() {
         section.read_field(field::LATITUDE),
         Ok(Some(Value::F32(1.5)))
     );
-    section.unset_field(field::HEIGHT_M).unwrap();
-    assert_eq!(section.read_field(field::HEIGHT_M), Ok(None));
+    let mut overrides = LocationOverrides::default();
+    overrides.capture(&section, field::HEIGHT_M);
+    overrides.clear(field::HEIGHT_M);
     assert_eq!(
-        section.unset_field(field::LATITUDE),
-        Err(FieldError::NotOptional)
+        overrides.over_default().read_field(field::HEIGHT_M),
+        Ok(None)
     );
     assert_eq!(
         section.set_field(field::LATITUDE, Value::U64(1)),
         Err(FieldError::WrongKind)
     );
+}
+
+#[test]
+fn the_default_is_no_position_and_reads_as_unset() {
+    let defaults = LocationConfig::default();
+    assert!(!defaults.is_valid());
+    assert_eq!(defaults.read_field(field::LATITUDE), Ok(None));
+    assert_eq!(defaults.read_field(field::LONGITUDE), Ok(None));
+    assert_eq!(defaults.read_field(field::HEIGHT_M), Ok(None));
+    assert!(LocationOverrides::default().is_empty());
+}
+
+#[test]
+fn an_unconfigured_section_is_valid_but_half_a_position_is_not() {
+    let mut section = LocationConfig::default();
+    assert!(section.is_unset());
+    assert_eq!(ManagedConfig::validate(&section), Ok(()));
+    section
+        .set_field(field::LATITUDE, Value::F32(52.5))
+        .unwrap();
+    assert!(!section.is_unset());
+    assert_eq!(ManagedConfig::validate(&section), Err(FieldError::Invalid));
+    section
+        .set_field(field::LONGITUDE, Value::F32(13.4))
+        .unwrap();
+    assert_eq!(ManagedConfig::validate(&section), Ok(()));
+}
+
+#[test]
+fn none_applies_to_the_height_only() {
+    let mut section = config();
+    section
+        .set_field(field::HEIGHT_M, Value::F32(34.0))
+        .unwrap();
+    assert_eq!(section.set_none(field::HEIGHT_M), Ok(()));
+    assert_eq!(section.height_m, None);
+    assert_eq!(
+        section.set_none(field::LATITUDE),
+        Err(FieldError::NotOptional)
+    );
+    assert_eq!(
+        section.set_none(field::LONGITUDE),
+        Err(FieldError::NotOptional)
+    );
+    assert_eq!(section.set_none(9), Err(FieldError::UnknownField));
+}
+
+#[test]
+fn every_field_can_be_overridden() {
+    let mut ids: std::vec::Vec<_> = LocationConfig::FIELDS.iter().map(|f| f.field.id).collect();
+    ids.sort_unstable();
+    assert_eq!(ids, LocationOverrides::FIELD_IDS);
 }
 
 #[test]

@@ -190,7 +190,7 @@ pub struct ConfigField {
     pub field: FieldDescriptor,
     /// Whether clients may change the field.
     pub writable: bool,
-    /// Write-only: never returned, only reported as configured.
+    /// Write-only: never returned, only reported as set.
     pub secret: bool,
     /// May be unset; unset is distinct from an empty string or zero.
     pub optional: bool,

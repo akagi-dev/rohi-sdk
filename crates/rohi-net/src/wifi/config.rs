@@ -22,7 +22,7 @@ use minicbor::bytes::ByteSlice;
 use minicbor::decode::{self, Decoder};
 use minicbor::encode::{self, Encoder, Write};
 use minicbor::{CborLen, Decode, Encode};
-use rohi_config::ConfigSection;
+use rohi_config::config_overrides;
 
 use crate::network::NetworkConfig;
 use crate::{MAX_SSID_LEN, MAX_WIFI_PASSWORD_LEN, MIN_WIFI_PASSWORD_LEN, WifiError};
@@ -174,47 +174,71 @@ fn within(value: u32, (min, max): (u32, u32)) -> bool {
     (min..=max).contains(&value)
 }
 
-/// Persistent Wi-Fi configuration (section `WifiConfig`, shown to clients as
-/// `wifi`): the network to join and the timing of joining it.
+/// Effective Wi-Fi configuration (shown to clients as the `wifi` section):
+/// the network to join and the timing of joining it.
+///
+/// `WifiConfig::default()` is the firmware default: no network (an empty
+/// SSID, not valid on its own) and the default timing. What is stored are the
+/// explicit user overrides of it, [`WifiOverrides`].
 ///
 /// An open network is represented by `password == None`, never by an empty
 /// password.
-///
-/// Persistent ABI: the CBOR array is pinned by a golden test; fields are
-/// only ever appended.
-#[derive(Clone, PartialEq, Eq, Encode, Decode, CborLen, ConfigSection)]
-#[cbor(array)]
-#[config(version = 1)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct WifiConfig {
-    /// Network name.
-    #[n(0)]
-    pub ssid: WifiSsid,
+    /// Network name. `None` (the default) disables Wi-Fi; a network name
+    /// enables it.
+    pub ssid: Option<WifiSsid>,
     /// Passphrase, `None` for an open network.
-    #[n(1)]
     pub password: Option<WifiPassword>,
     /// Bound of a network scan.
-    #[n(2)]
     pub scan_timeout_ms: u32,
     /// Bound of associating with the access point.
-    #[n(3)]
     pub connect_timeout_ms: u32,
     /// First delay before a reconnect attempt, doubling up to `backoff_max_ms`.
-    #[n(4)]
     pub backoff_initial_ms: u32,
     /// Longest delay between reconnect attempts.
-    #[n(5)]
     pub backoff_max_ms: u32,
     /// Interval of refreshing the connection details while connected; the
     /// link counts as stable after one such interval.
-    #[n(6)]
     pub link_refresh_ms: u32,
+}
+
+config_overrides! {
+    /// Persisted overrides of the [`WifiConfig`] section (section `WifiConfig`).
+    ///
+    /// Persistent ABI: a CBOR map keyed by the field ids below, which are only
+    /// ever added; a field that is not overridden is absent. The map is pinned
+    /// by a golden test.
+    pub struct WifiOverrides for WifiConfig, version 1 {
+        1 => ssid: Option<WifiSsid>,
+        2 => password: Option<WifiPassword>,
+        3 => scan_timeout_ms: u32,
+        4 => connect_timeout_ms: u32,
+        5 => backoff_initial_ms: u32,
+        6 => backoff_max_ms: u32,
+        7 => link_refresh_ms: u32,
+    }
+}
+
+impl Default for WifiConfig {
+    fn default() -> Self {
+        Self {
+            ssid: None,
+            password: None,
+            scan_timeout_ms: DEFAULT_SCAN_TIMEOUT_MS,
+            connect_timeout_ms: DEFAULT_CONNECT_TIMEOUT_MS,
+            backoff_initial_ms: DEFAULT_BACKOFF_INITIAL_MS,
+            backoff_max_ms: DEFAULT_BACKOFF_MAX_MS,
+            link_refresh_ms: DEFAULT_LINK_REFRESH_MS,
+        }
+    }
 }
 
 impl WifiConfig {
     /// A configuration for `ssid` and `password` with the default timing.
     pub const fn new(ssid: WifiSsid, password: Option<WifiPassword>) -> Self {
         Self {
-            ssid,
+            ssid: Some(ssid),
             password,
             scan_timeout_ms: DEFAULT_SCAN_TIMEOUT_MS,
             connect_timeout_ms: DEFAULT_CONNECT_TIMEOUT_MS,
@@ -224,9 +248,30 @@ impl WifiConfig {
         }
     }
 
-    /// Checks the configuration before it is persisted or applied.
+    /// Whether a network is configured. Without an SSID Wi-Fi is disabled and
+    /// the radio stays idle.
+    pub fn is_configured(&self) -> bool {
+        self.ssid.is_some()
+    }
+
+    /// The configuration the radio is given: `None` while Wi-Fi is disabled.
+    pub fn configured(self) -> Option<Self> {
+        self.is_configured().then_some(self)
+    }
+
+    /// Checks the configuration before it is applied by the radio: a network
+    /// must be configured.
     pub fn validate(&self) -> Result<(), WifiError> {
-        let valid = !self.ssid.is_empty()
+        if !self.is_configured() {
+            return Err(WifiError::InvalidConfig);
+        }
+        self.validate_settings()
+    }
+
+    /// Checks the SSID, the credentials and the timing, which may belong to a
+    /// section with Wi-Fi disabled (see [`is_configured`](Self::is_configured)).
+    pub fn validate_settings(&self) -> Result<(), WifiError> {
+        let valid = self.ssid.as_ref().is_none_or(|ssid| !ssid.is_empty())
             && self
                 .password
                 .as_ref()
@@ -244,9 +289,9 @@ impl WifiConfig {
         }
     }
 
-    /// Replaces the SSID and keeps the rest.
+    /// Replaces the SSID, which enables Wi-Fi, and keeps the rest.
     pub fn with_ssid(mut self, ssid: WifiSsid) -> Self {
-        self.ssid = ssid;
+        self.ssid = Some(ssid);
         self
     }
 
@@ -293,7 +338,9 @@ impl LinkConfig {
 mod tests {
     extern crate std;
 
-    use rohi_config::{ConfigStore, MemoryStorage, SectionId};
+    use rohi_config::{
+        ConfigOverrides, ConfigSection, ConfigStore, MemoryStorage, Override, SectionId,
+    };
 
     use super::*;
 
@@ -317,58 +364,107 @@ mod tests {
         WifiPassword::from_bytes(value.as_bytes()).unwrap()
     }
 
-    fn encode(config: &WifiConfig) -> std::vec::Vec<u8> {
+    fn encode(overrides: &WifiOverrides) -> std::vec::Vec<u8> {
         let mut buffer = [0u8; 256];
-        let used = rohi_config::encode_to_slice(config, &mut buffer).unwrap();
-        assert_eq!(used, minicbor::len(config));
+        let used = rohi_config::encode_to_slice(overrides, &mut buffer).unwrap();
+        assert_eq!(used, minicbor::len(overrides));
         buffer[..used].to_vec()
     }
 
-    fn roundtrip(config: &WifiConfig) -> WifiConfig {
-        rohi_config::decode_exact(&encode(config)).unwrap()
+    fn roundtrip(overrides: &WifiOverrides) -> WifiOverrides {
+        rohi_config::decode_exact(&encode(overrides)).unwrap()
     }
 
     #[test]
     fn the_section_id_is_derived_from_the_type_name() {
-        assert_eq!(WifiConfig::ID, SectionId::from_name("WifiConfig"));
-        assert_eq!(WifiConfig::VERSION, 1);
-        assert_eq!(WifiConfig::ID, SectionId(0x3352_46ad_2024_8b26));
+        assert_eq!(WifiOverrides::ID, SectionId::from_name("WifiConfig"));
+        assert_eq!(WifiOverrides::VERSION, 1);
+        assert_eq!(WifiOverrides::ID, SectionId(0x3352_46ad_2024_8b26));
+    }
+
+    #[test]
+    fn nothing_is_stored_for_the_defaults() {
+        let overrides = WifiOverrides::default();
+        assert!(overrides.is_empty());
+        assert_eq!(encode(&overrides), [0xa0]);
+        assert_eq!(overrides.over_default(), WifiConfig::default());
     }
 
     #[test]
     fn the_cbor_encoding_is_stable() {
+        let overrides = WifiOverrides {
+            ssid: Override::Value(Some(ssid("ab"))),
+            scan_timeout_ms: Override::Value(5_000),
+            ..WifiOverrides::default()
+        };
         assert_eq!(
-            encode(&WifiConfig::new(ssid("ab"), None)),
+            encode(&overrides),
             [
-                0x87, // array(7)
-                0x42, 0x61, 0x62, // ssid
-                0xf6, // password
-                0x19, 0x4e, 0x20, // scan_timeout_ms 20000
-                0x19, 0x75, 0x30, // connect_timeout_ms 30000
-                0x19, 0x03, 0xe8, // backoff_initial_ms 1000
-                0x19, 0xea, 0x60, // backoff_max_ms 60000
-                0x19, 0x27, 0x10, // link_refresh_ms 10000
+                0xa2, // map(2)
+                0x01, 0x42, 0x61, 0x62, // 1: ssid
+                0x03, 0x19, 0x13, 0x88, // 3: scan_timeout_ms 5000
             ]
         );
     }
 
     #[test]
+    fn the_ssid_has_three_states() {
+        let none = WifiOverrides {
+            ssid: Override::Value(None),
+            ..WifiOverrides::default()
+        };
+        // {1: null}: Wi-Fi explicitly disabled, not "follow the default".
+        assert_eq!(encode(&none), [0xa1, 0x01, 0xf6]);
+        assert_eq!(roundtrip(&none), none);
+        assert_eq!(WifiOverrides::default().ssid, Override::Default);
+        assert_eq!(WifiConfig::default().ssid, None);
+        let mut config = WifiConfig::new(ssid("base"), None);
+        none.apply_to(&mut config);
+        assert!(!config.is_configured());
+    }
+
+    #[test]
+    fn the_password_has_three_states() {
+        let mut overrides = WifiOverrides::default();
+        // Not overridden: the default, no password.
+        assert_eq!(overrides.over_default().password, None);
+        assert_eq!(encode(&overrides), [0xa0]);
+        // An explicit `None` is stored as null.
+        overrides.password = Override::Value(None);
+        assert_eq!(encode(&overrides), [0xa1, 0x02, 0xf6]);
+        assert_eq!(roundtrip(&overrides), overrides);
+        // An explicit password.
+        overrides.password = Override::Value(Some(password("hunter2hunter2")));
+        assert_eq!(roundtrip(&overrides), overrides);
+        assert_eq!(
+            overrides.over_default().password,
+            Some(password("hunter2hunter2"))
+        );
+    }
+
+    #[test]
     fn other_layouts_and_trailing_bytes_are_rejected() {
-        assert!(rohi_config::decode_exact::<WifiConfig>(&[0x81, 0x42, 0x61, 0x62]).is_err());
-        let mut bytes = encode(&WifiConfig::new(ssid("ab"), None));
+        assert!(rohi_config::decode_exact::<WifiOverrides>(&[0x81, 0x42, 0x61, 0x62]).is_err());
+        let mut bytes = encode(&WifiOverrides::default());
         bytes.push(0x00);
-        assert!(rohi_config::decode_exact::<WifiConfig>(&bytes).is_err());
+        assert!(rohi_config::decode_exact::<WifiOverrides>(&bytes).is_err());
     }
 
     #[test]
     fn the_largest_value_fits_a_section() {
-        let mut config = WifiConfig::new(
-            WifiSsid::from_bytes(&[b'a'; MAX_SSID_LEN]).unwrap(),
-            Some(WifiPassword::from_bytes(&[b'p'; MAX_WIFI_PASSWORD_LEN]).unwrap()),
-        );
-        config.backoff_max_ms = u32::MAX;
-        assert!(minicbor::len(&config) <= rohi_config::MAX_SECTION_PAYLOAD);
-        assert_eq!(roundtrip(&config), config);
+        let overrides = WifiOverrides {
+            ssid: Override::Value(Some(WifiSsid::from_bytes(&[b'a'; MAX_SSID_LEN]).unwrap())),
+            password: Override::Value(Some(
+                WifiPassword::from_bytes(&[b'p'; MAX_WIFI_PASSWORD_LEN]).unwrap(),
+            )),
+            scan_timeout_ms: Override::Value(u32::MAX),
+            connect_timeout_ms: Override::Value(u32::MAX),
+            backoff_initial_ms: Override::Value(u32::MAX),
+            backoff_max_ms: Override::Value(u32::MAX),
+            link_refresh_ms: Override::Value(u32::MAX),
+        };
+        assert!(minicbor::len(&overrides) <= rohi_config::MAX_SECTION_PAYLOAD);
+        assert_eq!(roundtrip(&overrides), overrides);
     }
 
     #[test]
@@ -440,22 +536,42 @@ mod tests {
             ..WifiConfig::new(ssid("old"), Some(password("hunter2hunter2")))
         };
         let updated = config.clone().with_ssid(ssid("new"));
-        assert_eq!(updated.ssid, ssid("new"));
+        assert_eq!(updated.ssid, Some(ssid("new")));
         assert_eq!(updated.password, config.password);
         assert_eq!(updated.scan_timeout_ms, 5_000);
 
         let cleared = updated.with_password(None);
         assert_eq!(cleared.password, None);
-        assert_eq!(cleared.ssid, ssid("new"));
+        assert_eq!(cleared.ssid, Some(ssid("new")));
     }
 
     #[test]
-    fn it_persists_in_the_config_store_and_can_be_removed() {
+    fn overrides_persist_in_the_config_store_and_can_be_removed() {
         let mut store = ConfigStore::open(MemoryStorage::<16384>::new()).unwrap();
-        let config = WifiConfig::new(ssid("office"), Some(password("hunter2hunter2")));
-        store.set(&config).unwrap();
-        assert_eq!(store.get::<WifiConfig>().unwrap(), Some(config));
-        store.remove::<WifiConfig>().unwrap();
-        assert_eq!(store.get::<WifiConfig>().unwrap(), None);
+        let overrides = WifiOverrides {
+            ssid: Override::Value(Some(ssid("office"))),
+            password: Override::Value(Some(password("hunter2hunter2"))),
+            ..WifiOverrides::default()
+        };
+        store.set(&overrides).unwrap();
+        assert_eq!(store.get::<WifiOverrides>().unwrap(), Some(overrides));
+        store.remove::<WifiOverrides>().unwrap();
+        assert_eq!(store.get::<WifiOverrides>().unwrap(), None);
+    }
+
+    #[test]
+    fn a_changed_default_reaches_only_the_fields_without_an_override() {
+        let overrides = WifiOverrides {
+            ssid: Override::Value(Some(ssid("office"))),
+            scan_timeout_ms: Override::Value(5_000),
+            ..WifiOverrides::default()
+        };
+        let effective = overrides.over_default();
+        assert_eq!(effective.ssid, Some(ssid("office")));
+        assert_eq!(effective.scan_timeout_ms, 5_000);
+        // Not overridden: the field follows `WifiConfig::default()`.
+        assert_eq!(effective.connect_timeout_ms, DEFAULT_CONNECT_TIMEOUT_MS);
+        assert_eq!(effective.backoff_max_ms, DEFAULT_BACKOFF_MAX_MS);
+        assert_eq!(effective.validate(), Ok(()));
     }
 }

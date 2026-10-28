@@ -21,3 +21,5 @@ zeroize.workspace = true
 [dev-dependencies]
 embassy-futures.workspace = true
 embassy-sync.workspace = true
+rohi-config.workspace = true
+minicbor = { workspace = true, features = ["std"] }

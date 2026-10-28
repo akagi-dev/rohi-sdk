@@ -71,10 +71,12 @@ summary in the detailed status, no pagination):
 | `FieldValue` | 88 | 56 | 64 |
 | `GetServicesStatusResponse` | 792 | 536 | 576 |
 | `GetServiceStatusResponse` | 1 272 (8 values) | 1 192 (20 values) | 1 280 |
+| `GetConfigSectionResponse` | n/a | 1 504 | 1 536 |
+| `PatchConfigSectionRequest` | n/a | 728 | 768 |
 
 The `Response` is the largest of its variants (the service schema). The before column paged status values by eight, schemas by
 four; the after column holds a whole service status (20 values), a whole schema (20 fields, an enum table, 12 issue
-names) and 12 actions in one response. Raising a budget is a deliberate decision: measure the control task again and
+names) and 12 actions in one response. `GetConfigSectionResponse` carries the effective values plus the compact list of overridden field ids (`overridden`), and `PatchConfigSectionRequest` its `set` / `clear` mutations; both are new rows, measured after the overrides model. Raising a budget is a deliberate decision: measure the control task again and
 update this table.
 
 ### Measuring the control task
@@ -101,7 +103,7 @@ Scenarios, each with the device in the stated state (all services active, i.e. t
 3. identity provisioned
 4. Wi-Fi and identity both configured: `rohi status` (**the regression scenario**) and `rohi status <service>` for
    every service
-5. `rohi config get` and `rohi config set` of every section
+5. `rohi config <section>` and `rohi config <section> FIELD=VALUE` of every section
 6. Wi-Fi scan and `wifi connect` action invocation
 7. identity `provision` and `erase` action invocation
 8. `rohi factory-reset`
@@ -123,7 +125,7 @@ Record per target:
 | 3. identity provisioned | | |
 | 4. `rohi status`, Wi-Fi + identity | | |
 | 4. `rohi status <service>`, worst service | | |
-| 5. `config get` / `config set`, worst section | | |
+| 5. `config <section>` read / `FIELD=VALUE` patch, worst section | | |
 | 6. Wi-Fi scan / connect | | |
 | 7. identity provision / erase | | |
 | 8. factory reset | | |

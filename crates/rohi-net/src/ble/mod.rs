@@ -28,7 +28,7 @@ mod config;
 mod managed;
 mod service;
 
-pub use config::{BleName, BleSettings, MAX_BLE_NAME_LEN};
+pub use config::{BleName, BleOverrides, BleSettings, MAX_BLE_NAME_LEN};
 pub use managed::field as config_field;
 pub use service::{BleProbe, BleService, SERVICE_ID, STATES, issue, state, status_field};
 

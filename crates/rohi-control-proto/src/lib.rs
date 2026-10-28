@@ -120,7 +120,8 @@ impl fmt::Debug for control::ConfigMutation {
             .field(
                 "operation",
                 &match &self.operation {
-                    Some(Operation::Unset(_)) => "unset",
+                    Some(Operation::Clear(_)) => "clear",
+                    Some(Operation::None(_)) => "none",
                     Some(_) => "set <redacted>",
                     None => "<none>",
                 },

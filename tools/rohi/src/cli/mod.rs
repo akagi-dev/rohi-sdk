@@ -48,7 +48,7 @@ use std::time::Duration;
 
 use clap::Parser;
 
-pub use args::{ActionCommand, Cli, ColorChoice, Command, ConfigAction, OutputFormat};
+pub use args::{Cli, ColorChoice, Command, ConfigAction, OutputFormat};
 pub use diagnostic::{CliError, Diagnostic, PartialApply};
 pub use target::{Match, Target, resolve};
 pub use terminal::Io;
@@ -110,6 +110,9 @@ pub async fn execute<T: ClientTransport>(
     command: Command,
     ctx: &mut Ctx,
 ) -> Result<(), CliError> {
+    if let Some(help) = static_help(&command) {
+        return ctx.io.result(&help);
+    }
     match command {
         Command::Scan { .. } => Err(CliError::Usage("scan does not talk to a device".into())),
         Command::Status {
@@ -117,11 +120,63 @@ pub async fn execute<T: ClientTransport>(
             watch,
             interval,
         } => status::run(device, service, watch, interval, ctx).await,
-        Command::Config { action } => config::run(device, action, ctx).await,
+        Command::Config {
+            action,
+            section,
+            assignments,
+            dry_run,
+            help,
+        } => {
+            let request = config::Request {
+                section,
+                assignments,
+                dry_run,
+                help,
+            };
+            config::run(device, action, request, ctx).await
+        }
         Command::FactoryReset { yes } => factory_reset::run(device, yes, ctx).await,
         Command::Reboot => reboot::run(device, ctx).await,
-        Command::Action { action } => action::run(device, action, ctx).await,
+        Command::Action {
+            service,
+            action,
+            args,
+            help,
+        } => {
+            let request = action::Request {
+                service,
+                action,
+                args,
+                help,
+            };
+            action::run(device, request, ctx).await
+        }
     }
+}
+
+/// The ordinary help of `rohi config` and `rohi action`, which do not need a
+/// device. Their `--help` is handled here and not by clap, because for a
+/// section or an action it describes the object and is generated from the
+/// schema the device reports.
+pub fn static_help(command: &Command) -> Option<String> {
+    let name = match command {
+        Command::Config {
+            action: None,
+            section: None,
+            help: true,
+            ..
+        } => "config",
+        Command::Action {
+            service: None,
+            help: true,
+            ..
+        } => "action",
+        _ => return None,
+    };
+    let mut cli = <Cli as clap::CommandFactory>::command();
+    cli.build();
+    let help = cli.find_subcommand_mut(name)?.render_long_help();
+    Some(format!("{help}\n"))
 }
 
 async fn interruptible<T>(work: impl Future<Output = Result<T, CliError>>) -> Result<T, CliError> {
@@ -165,6 +220,9 @@ async fn connect_ble(
 pub async fn run(cli: Cli, ctx: &mut Ctx) -> Result<(), CliError> {
     if let Command::Scan { duration } = &cli.command {
         return interruptible(discover(*duration, ctx)).await;
+    }
+    if let Some(help) = static_help(&cli.command) {
+        return ctx.io.result(&help);
     }
 
     let target = Target::parse(cli.device.as_deref())?;
