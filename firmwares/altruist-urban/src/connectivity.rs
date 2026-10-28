@@ -34,6 +34,7 @@
 use core::cell::RefCell;
 use core::convert::Infallible;
 
+use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::signal::Signal;
@@ -177,6 +178,16 @@ async fn serve(
         Delay,
     );
     service.run().await
+}
+
+/// Starts the telemetry task, see [`connectivity_task`]. It reads snapshots
+/// only: it can neither delay nor stop the sensors, whatever the uplink does.
+pub fn start(
+    spawner: Spawner,
+    network: NetworkHandle<'static, Ip>,
+    measurements: MeasurementHandle<'static, RawMutex>,
+) {
+    spawner.spawn(connectivity_task(network, measurements).unwrap());
 }
 
 /// Runs the telemetry service while it is enabled and restarts it with every

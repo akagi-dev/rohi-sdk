@@ -19,15 +19,19 @@
 //! operation of one sensor never blocks another sensor task.
 
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
+use embassy_executor::Spawner;
 use embassy_sync::mutex::Mutex;
 use embassy_time::Delay;
 use esp_hal::Async;
 use esp_hal::i2c::master::I2c;
 use esp_hal::uart::Uart;
+use log::info;
 use rohi_hal::SensorKind;
 use rohi_hal::runtime::{Reporter, Runner, RunnerConfig, TimeoutI2c};
 use rohi_hal::sensors::{bmx280, noise, scd4x, sds011};
+use rohi_hal_esp::board::altruist_urban::AltruistUrban;
 use rohi_hal_esp::{EmbassyClock, I2sMicrophone};
+use static_cell::StaticCell;
 
 use super::{EVENTS, RawMutex, STATES};
 
@@ -43,6 +47,25 @@ pub type I2cHandle = TimeoutI2c<I2cDevice<'static, RawMutex, I2c<'static, Async>
 /// Create a handle to the shared I2C bus.
 pub fn i2c_handle(bus: &'static SharedI2cBus) -> I2cHandle {
     TimeoutI2c::new(I2cDevice::new(bus), Delay, I2C_TRANSACTION_TIMEOUT_MS)
+}
+
+static I2C_BUS: StaticCell<SharedI2cBus> = StaticCell::new();
+
+/// Starts the sensor tasks of the Altruist Urban `board`: the I2C sensors share
+/// one bus, every sensor has its own task, so a failing or slow sensor never
+/// delays another one.
+pub fn start(spawner: Spawner, board: AltruistUrban) {
+    let AltruistUrban {
+        i2c,
+        sds011_uart,
+        microphone,
+    } = board;
+    let i2c_bus = I2C_BUS.init(Mutex::new(i2c));
+    spawner.spawn(bmx280_task(i2c_handle(i2c_bus)).unwrap());
+    spawner.spawn(scd4x_task(i2c_handle(i2c_bus)).unwrap());
+    spawner.spawn(sds011_task(sds011_uart).unwrap());
+    spawner.spawn(noise_task(microphone).unwrap());
+    info!("Sensor tasks started");
 }
 
 fn reporter(

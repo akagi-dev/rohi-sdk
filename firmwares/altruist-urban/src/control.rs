@@ -25,11 +25,17 @@
 //! ```
 //!
 //! The registries only talk to runtime handles; they never own a store, a flash
-//! region or the radio. Adding a config section or a service means adding it to
-//! the tuples below; the protocol and the `rohi` tool need no change.
+//! region or the radio. Adding a config section means adding its binding to
+//! `firmware_configs!` in [`crate::config`], which generates the section tuple
+//! and its construction. Adding a service means adding it to [`Services`] and
+//! to [`device`]: the Embassy control task needs the concrete type, so the type
+//! and the value of the service tuple stay explicit. The protocol and the `rohi`
+//! tool need no change.
 
+use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::Delay;
+use log::{error, info};
 use rohi_connectivity::ConnectivityStatusService;
 use rohi_control::{Controller, Device, DeviceInfo, OpenPolicy};
 use rohi_control_ble::ControlBle;
@@ -38,16 +44,14 @@ use rohi_hal_esp::EmbassyClock;
 use rohi_identity::{Identity, IdentityService, IdentityStore, IdentityStoreError, PublicKey};
 use rohi_location::LocationService;
 use rohi_net::{BleService, NetworkHandle, NetworkService, WifiService};
-use rohi_service::{
-    ConfigError as RegistryError, ConfigRegistry, FactoryReset, Mutation, Patched, SectionInfo,
-    SectionSchema, SectionValues, Startup, Tracked,
-};
+use rohi_net_esp::EspWireless;
+use rohi_service::{Startup, Tracked};
 use rohi_time::TimeStatusService;
 use static_cell::StaticCell;
 
 use crate::bindings::ble_settings;
 use crate::config::{
-    ConfigHandle, ConfigSections, ServiceError as ConfigError, StorageMaintenance, WifiSection,
+    ConfigHandle, ConfigSections, ServiceError as ConfigError, StorageConfig, WifiSection,
     config_sections, maintenance, wifi_section,
 };
 use crate::identity::IdentityHandle;
@@ -91,66 +95,7 @@ fn identity_error(error: ConfigError) -> IdentityStoreError {
 
 /// The config sections of the device plus the factory reset of the storage
 /// behind them.
-pub struct UrbanConfig {
-    sections: &'static ConfigSections,
-    storage: StorageMaintenance,
-}
-
-impl ConfigRegistry for UrbanConfig {
-    fn section_count(&self) -> usize {
-        self.sections.section_count()
-    }
-
-    fn section_info(&self, index: usize) -> Option<SectionInfo> {
-        self.sections.section_info(index)
-    }
-
-    fn schema(&self, section: u64) -> Option<SectionSchema> {
-        self.sections.schema(section)
-    }
-
-    async fn get(&self, section: u64) -> Result<SectionValues, RegistryError> {
-        self.sections.get(section).await
-    }
-
-    async fn patch(
-        &self,
-        section: u64,
-        mutations: &[Mutation],
-        expected_revision: Option<u32>,
-        dry_run: bool,
-    ) -> Result<Patched, RegistryError> {
-        self.sections
-            .patch(section, mutations, expected_revision, dry_run)
-            .await
-    }
-
-    async fn reset(
-        &self,
-        section: u64,
-        expected_revision: Option<u32>,
-        dry_run: bool,
-    ) -> Result<Patched, RegistryError> {
-        self.sections
-            .reset(section, expected_revision, dry_run)
-            .await
-    }
-
-    /// Formats the whole configuration region: this also removes the identity
-    /// and sections this firmware does not know. The sections are reset
-    /// afterwards; with nothing left to remove this commits nothing and only
-    /// advances their revisions.
-    async fn factory_reset(&self) -> Result<FactoryReset, RegistryError> {
-        self.storage
-            .factory_reset()
-            .await
-            .map_err(|error| match error {
-                ConfigError::Unavailable(_) => RegistryError::Unavailable,
-                _ => RegistryError::Internal,
-            })?;
-        self.sections.factory_reset().await
-    }
-}
+pub type UrbanConfig = StorageConfig<ConfigSections>;
 
 /// The config sections, shared by the control plane and the services that
 /// change their own section.
@@ -199,10 +144,7 @@ pub fn device(
             board: BOARD,
         },
         uptime_ms,
-        UrbanConfig {
-            sections,
-            storage: maintenance(),
-        },
+        StorageConfig::new(sections, maintenance()),
         (
             Tracked::new(Startup::new(
                 WifiService::new(
@@ -264,6 +206,31 @@ pub static BLE_RESOURCES: StaticCell<BleResources> = StaticCell::new();
 #[embassy_executor::task]
 pub async fn ble_task(runner: BleRunner) {
     runner.run().await
+}
+
+/// Starts the BLE control plane on `wireless`: the peripheral with the name
+/// the configuration owner published at boot, and the control task over the
+/// device built from `config`, `identity` and `network`. A BLE failure must
+/// never stop the sensors: it is logged and the firmware carries on.
+pub fn start(
+    spawner: Spawner,
+    wireless: &mut EspWireless,
+    config: ConfigHandle,
+    identity: IdentityHandle,
+    network: Option<NetworkHandle<'static, Ip>>,
+) {
+    match wireless.ble(ble_config(), BLE_RESOURCES.init(Default::default())) {
+        Ok((transport, runner)) => {
+            let device = device(config, identity, network, transport.status());
+            spawner.spawn(ble_task(runner).unwrap());
+            spawner.spawn(control_task(transport, device).unwrap());
+            info!(
+                "BLE control started, wireless heap free {} B",
+                wireless.heap().free
+            );
+        }
+        Err(error) => error!("BLE unavailable: {}", error),
+    }
 }
 
 /// Serves control requests received over BLE.

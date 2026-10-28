@@ -36,6 +36,7 @@
 //! deadlines use the monotonic clock. NTP is unauthenticated, so the time is
 //! not input for security decisions.
 
+use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
@@ -110,6 +111,11 @@ fn resolve(servers: NtpServersConfig) -> NtpServersConfig {
         warn!("Time: NTP servers are invalid, using the default servers");
         TimeBinding::firmware_only()
     }
+}
+
+/// Starts the NTP synchronization of the time service, see [`ntp_task`].
+pub fn start(spawner: Spawner, network: NetworkHandle<'static, Ip>) {
+    spawner.spawn(ntp_task(network).unwrap());
 }
 
 /// Keeps the time service synchronized over NTP; never returns.

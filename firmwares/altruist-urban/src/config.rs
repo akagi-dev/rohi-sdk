@@ -83,7 +83,10 @@ use rohi_config::{
 use rohi_config_esp::esp::{PartitionError, config_storage, esp_storage::FlashStorage};
 use rohi_config_esp::{EspConfigStorage, EspStorageError};
 
-use rohi_service::ManagedConfig;
+use rohi_service::{
+    ConfigError as RegistryError, ConfigRegistry, FactoryReset, ManagedConfig, Mutation, Patched,
+    SectionInfo, SectionSchema, SectionValues,
+};
 
 use crate::bindings::{
     Binding, BleBinding, ConfigRuntime, ConnectivityBinding, IdentityBinding, LocationBinding,
@@ -356,6 +359,75 @@ impl StorageMaintenance {
             Outcome::Failed(error) => Err(error),
             _ => unreachable!("factory reset request answered with another outcome"),
         }
+    }
+}
+
+/// A registry of config sections plus the factory reset of the storage behind
+/// them, which formats the whole region: this also removes the identity and
+/// sections this firmware does not know. The sections are reset afterwards;
+/// with nothing left to remove this commits nothing and only advances their
+/// revisions. Everything else is delegated to the sections.
+pub struct StorageConfig<R: 'static> {
+    sections: &'static R,
+    storage: StorageMaintenance,
+}
+
+impl<R> StorageConfig<R> {
+    /// The `sections` with the factory reset of `storage`.
+    pub const fn new(sections: &'static R, storage: StorageMaintenance) -> Self {
+        Self { sections, storage }
+    }
+}
+
+impl<R: ConfigRegistry> ConfigRegistry for StorageConfig<R> {
+    fn section_count(&self) -> usize {
+        self.sections.section_count()
+    }
+
+    fn section_info(&self, index: usize) -> Option<SectionInfo> {
+        self.sections.section_info(index)
+    }
+
+    fn schema(&self, section: u64) -> Option<SectionSchema> {
+        self.sections.schema(section)
+    }
+
+    async fn get(&self, section: u64) -> Result<SectionValues, RegistryError> {
+        self.sections.get(section).await
+    }
+
+    async fn patch(
+        &self,
+        section: u64,
+        mutations: &[Mutation],
+        expected_revision: Option<u32>,
+        dry_run: bool,
+    ) -> Result<Patched, RegistryError> {
+        self.sections
+            .patch(section, mutations, expected_revision, dry_run)
+            .await
+    }
+
+    async fn reset(
+        &self,
+        section: u64,
+        expected_revision: Option<u32>,
+        dry_run: bool,
+    ) -> Result<Patched, RegistryError> {
+        self.sections
+            .reset(section, expected_revision, dry_run)
+            .await
+    }
+
+    async fn factory_reset(&self) -> Result<FactoryReset, RegistryError> {
+        self.storage
+            .factory_reset()
+            .await
+            .map_err(|error| match error {
+                ServiceError::Unavailable(_) => RegistryError::Unavailable,
+                _ => RegistryError::Internal,
+            })?;
+        self.sections.factory_reset().await
     }
 }
 

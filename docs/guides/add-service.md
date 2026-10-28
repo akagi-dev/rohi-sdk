@@ -58,8 +58,9 @@ Operations the service offers go into `ACTIONS` and `invoke`, see [Add a control
 
 ## 4. Register in the firmware
 
-In `firmwares/altruist-urban/src/control.rs` add the service to the `Services` tuple and its section to `ConfigSections`
-(each takes up to 8 entries), and construct them in `device()`:
+In `firmwares/altruist-urban/src/control.rs` add the service to the `Services` tuple (up to 12 entries; the Embassy
+control task needs the concrete type) and construct it in `device()`. A config section is not added here but as a
+`Binding` in `firmware_configs!` (`config.rs`), which generates the `ConfigSections` tuple (also up to 12 entries):
 
 ```rust,ignore
 pub type Services = (
