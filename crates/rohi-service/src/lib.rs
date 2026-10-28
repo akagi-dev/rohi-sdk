@@ -58,6 +58,7 @@
 extern crate self as rohi_service;
 
 pub mod action;
+pub mod codec;
 pub mod config;
 mod field;
 pub mod registry;
@@ -70,6 +71,7 @@ pub use action::{
     Action, ActionDescriptor, ActionError, ActionOutput, MAX_ACTION_ARGS, MAX_RECORD_FIELDS,
     MAX_RECORDS, Records,
 };
+pub use codec::{Codec, Standard};
 pub use config::{
     Config, ConfigEntry, ConfigError, ConfigRegistry, ConfigSectionOps, ConfigUpdate, EntryState,
     FactoryReset, FieldError, Mutation, MutationOp, Patched, RestartRequired, Section, SectionInfo,

@@ -68,6 +68,9 @@ pub enum FieldError {
     Invalid,
     /// The field is required: it cannot be set to "no value".
     NotOptional,
+    /// The field is a write-only secret: its value is never read, only
+    /// whether it is set.
+    Secret,
 }
 
 /// A typed config section exposed through the generic config interface.
