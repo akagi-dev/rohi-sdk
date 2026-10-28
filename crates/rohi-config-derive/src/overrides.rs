@@ -15,183 +15,27 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-
-//! `#[derive(ConfigOverrides)]`: the persisted per-field overrides of a typed
-//! config section, generated from the config struct itself.
-
-use std::collections::HashSet;
+//! The persisted per-field overrides of a typed config section, generated
+//! from the config declaration: the overrides struct with its CBOR map codec
+//! keyed by the field ids, and its `ConfigOverrides`, `ConfigSection` and
+//! `HasOverrides` relationships.
+//!
+//! A `read_only` field is exposed to clients but never persisted: it has no
+//! override and takes its value from `Default`.
 
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use syn::ext::IdentExt;
-use syn::spanned::Spanned;
-use syn::{Data, DeriveInput, Fields, Ident, LitInt, LitStr, Visibility};
+use syn::{DeriveInput, LitStr, Visibility};
 
-use crate::{crate_path, duplicate, fnv1a64};
+use crate::model::Model;
+use crate::{crate_path, fnv1a64};
 
-struct Container {
-    overrides: Ident,
-    version: u16,
-    id: Option<u64>,
-}
-
-fn parse_container(input: &DeriveInput) -> syn::Result<Container> {
-    let mut overrides: Option<Ident> = None;
-    let mut version: Option<u16> = None;
-    let mut id: Option<u64> = None;
-    for attr in input.attrs.iter().filter(|a| a.path().is_ident("config")) {
-        attr.parse_nested_meta(|meta| {
-            let span = meta.path.span();
-            if meta.path.is_ident("overrides") {
-                if overrides.is_some() {
-                    return Err(duplicate("overrides", span));
-                }
-                overrides = Some(meta.value()?.parse()?);
-            } else if meta.path.is_ident("version") {
-                if version.is_some() {
-                    return Err(duplicate("version", span));
-                }
-                let lit: LitInt = meta.value()?.parse()?;
-                version = Some(lit.base10_parse::<u16>().map_err(|_| {
-                    syn::Error::new(lit.span(), "`version` must be an integer in 0..=65535")
-                })?);
-            } else if meta.path.is_ident("id") {
-                if id.is_some() {
-                    return Err(duplicate("id", span));
-                }
-                let lit: LitInt = meta.value()?.parse()?;
-                id = Some(lit.base10_parse::<u64>().map_err(|_| {
-                    syn::Error::new(lit.span(), "`id` must be an integer that fits in `u64`")
-                })?);
-            } else {
-                return Err(syn::Error::new(
-                    span,
-                    "unknown `config` attribute, expected one of: `overrides`, `version`, `id`",
-                ));
-            }
-            Ok(())
-        })?;
-    }
-    let overrides = overrides.ok_or_else(|| {
-        syn::Error::new(
-            input.ident.span(),
-            "missing `overrides`, add `#[config(overrides = MyOverrides, version = 1)]`",
-        )
-    })?;
-    let version = version.ok_or_else(|| {
-        syn::Error::new(
-            input.ident.span(),
-            "missing `version`, add `#[config(overrides = MyOverrides, version = 1)]`",
-        )
-    })?;
-    Ok(Container {
-        overrides,
-        version,
-        id,
-    })
-}
-
-struct Field<'a> {
-    ident: &'a Ident,
-    ty: &'a syn::Type,
-    id: u32,
-    docs: Vec<&'a syn::Attribute>,
-}
-
-fn parse_field(field: &syn::Field) -> syn::Result<Field<'_>> {
-    let ident = field
-        .ident
-        .as_ref()
-        .ok_or_else(|| syn::Error::new(field.span(), "fields must be named"))?;
-    let mut id: Option<u32> = None;
-    for attr in field.attrs.iter().filter(|a| a.path().is_ident("config")) {
-        attr.parse_nested_meta(|meta| {
-            let span = meta.path.span();
-            if meta.path.is_ident("id") {
-                if id.is_some() {
-                    return Err(duplicate("id", span));
-                }
-                let lit: LitInt = meta.value()?.parse()?;
-                id = Some(lit.base10_parse::<u32>().map_err(|_| {
-                    syn::Error::new(
-                        lit.span(),
-                        "field `id` must be an integer that fits in `u32`",
-                    )
-                })?);
-            } else {
-                return Err(syn::Error::new(
-                    span,
-                    "unknown field `config` attribute, expected `id`",
-                ));
-            }
-            Ok(())
-        })?;
-    }
-    let id = id.ok_or_else(|| {
-        syn::Error::new(
-            ident.span(),
-            format!("field `{ident}` needs a stable id, add `#[config(id = N)]`"),
-        )
-    })?;
-    Ok(Field {
-        ident,
-        ty: &field.ty,
-        id,
-        docs: field
-            .attrs
-            .iter()
-            .filter(|a| a.path().is_ident("doc"))
-            .collect(),
-    })
-}
-
-pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
-    let container = parse_container(input)?;
-
-    if let Some(param) = input.generics.params.first() {
-        return Err(syn::Error::new(
-            param.span(),
-            "a config with overrides cannot be generic: the overrides type and the section \
-             identity belong to exactly one type",
-        ));
-    }
-
-    let Data::Struct(data) = &input.data else {
-        return Err(syn::Error::new(
-            input.ident.span(),
-            "`ConfigOverrides` can only be derived for structs with named fields",
-        ));
-    };
-    let Fields::Named(named) = &data.fields else {
-        return Err(syn::Error::new(
-            input.ident.span(),
-            "`ConfigOverrides` needs named fields",
-        ));
-    };
-    let fields = named
-        .named
-        .iter()
-        .map(parse_field)
-        .collect::<syn::Result<Vec<_>>>()?;
-    if fields.is_empty() {
-        return Err(syn::Error::new(
-            input.ident.span(),
-            "a config with overrides needs at least one field",
-        ));
-    }
-    let mut seen = HashSet::new();
-    for field in &fields {
-        if !seen.insert(field.id) {
-            return Err(syn::Error::new(
-                field.ident.span(),
-                format!("duplicate field id {}", field.id),
-            ));
-        }
-    }
-
+pub(crate) fn expand(input: &DeriveInput, model: &Model<'_>) -> TokenStream {
     let krate = crate_path();
     let minicbor = LitStr::new(&quote!(#krate::minicbor).to_string(), Span::call_site());
     let config = &input.ident;
+    let container = &model.container;
     let name = &container.overrides;
     let version = container.version;
     // As for `ConfigSection`: the hash of the name of the effective type, so
@@ -201,10 +45,11 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
         .unwrap_or_else(|| fnv1a64(config.unraw().to_string().as_bytes()));
     let vis: &Visibility = &input.vis;
 
-    let idents: Vec<_> = fields.iter().map(|f| f.ident).collect();
-    let types: Vec<_> = fields.iter().map(|f| f.ty).collect();
-    let ids: Vec<_> = fields.iter().map(|f| f.id).collect();
-    let docs: Vec<_> = fields
+    let stored: Vec<_> = model.fields.iter().filter(|f| !f.read_only).collect();
+    let idents: Vec<_> = stored.iter().map(|f| f.ident).collect();
+    let types: Vec<_> = stored.iter().map(|f| f.ty).collect();
+    let ids: Vec<_> = stored.iter().map(|f| f.id).collect();
+    let docs: Vec<_> = stored
         .iter()
         .map(|f| {
             let docs = &f.docs;
@@ -216,11 +61,22 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
          were set explicitly, keyed by their field ids; an absent field is not overridden."
     );
 
-    Ok(quote! {
+    // Not derived: a secret must never be shown, whatever its type prints.
+    let debug_name = name.unraw().to_string();
+    let debug_fields = stored.iter().map(|f| {
+        let ident = f.ident;
+        let label = ident.unraw().to_string();
+        if f.secret {
+            quote!(.field(#label, &#krate::RedactedOverride(&self.#ident)))
+        } else {
+            quote!(.field(#label, &self.#ident))
+        }
+    });
+
+    quote! {
         #[doc = #overrides_doc]
         #[derive(
             ::core::clone::Clone,
-            ::core::fmt::Debug,
             ::core::cmp::PartialEq,
             #krate::minicbor::Encode,
             #krate::minicbor::Decode,
@@ -233,6 +89,14 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
                 #[n(#ids)]
                 pub #idents: #krate::Override<#types>,
             )*
+        }
+
+        impl ::core::fmt::Debug for #name {
+            fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                f.debug_struct(#debug_name)
+                    #(#debug_fields)*
+                    .finish()
+            }
         }
 
         impl ::core::default::Default for #name {
@@ -293,5 +157,5 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
         impl #krate::HasOverrides for #config {
             type Overrides = #name;
         }
-    })
+    }
 }

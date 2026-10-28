@@ -16,70 +16,39 @@
 //
 //! The `ble` config section in the generic management plane.
 
-use rohi_service::{Config, ConfigField, FieldError, Value, ValueKind};
+use rohi_service::{Codec, FieldError, Value, ValueKind};
 
-use super::config::{BleName, BleSettings};
+use super::config::BleName;
 
-/// Field ids of the `ble` config section. Only ever added.
-pub mod field {
-    /// Advertised name; no name uses the name derived from the MAC.
-    pub const NAME: u32 = 1;
-}
+/// The advertised name as text. A name is 1 to 29 bytes of UTF-8 without
+/// control characters; the section's fields and ids are declared on
+/// [`BleSettings`](super::BleSettings).
+pub struct NameCodec;
 
-impl Config for BleSettings {
-    const NAME: &'static str = "ble";
-    const FIELDS: &'static [ConfigField] =
-        &[ConfigField::new(field::NAME, "name", ValueKind::String).optional()];
+impl Codec<BleName> for NameCodec {
+    const KIND: ValueKind = ValueKind::String;
 
-    fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
-        match id {
-            field::NAME => match &self.name {
-                None => Ok(None),
-                Some(name) => Value::text(name.as_str())
-                    .map(Some)
-                    .ok_or(FieldError::Invalid),
-            },
-            _ => Err(FieldError::UnknownField),
-        }
+    fn encode(name: &BleName) -> Result<Option<Value>, FieldError> {
+        Value::text(name.as_str())
+            .map(Some)
+            .ok_or(FieldError::Invalid)
     }
 
-    fn set_field(&mut self, id: u32, value: Value) -> Result<(), FieldError> {
-        match id {
-            field::NAME => {
-                let text = value.as_str().ok_or(FieldError::WrongKind)?;
-                self.name = Some(BleName::new(text).ok_or(FieldError::Invalid)?);
-                Ok(())
-            }
-            _ => Err(FieldError::UnknownField),
-        }
-    }
-
-    fn set_none(&mut self, id: u32) -> Result<(), FieldError> {
-        match id {
-            field::NAME => {
-                self.name = None;
-                Ok(())
-            }
-            _ => Err(FieldError::UnknownField),
-        }
-    }
-
-    fn field_is_set(&self, id: u32) -> Result<bool, FieldError> {
-        Ok(self.read_field(id)?.is_some())
-    }
-
-    fn validate(&self) -> Result<(), FieldError> {
-        Ok(())
+    fn decode(value: &Value) -> Result<BleName, FieldError> {
+        let text = value.as_str().ok_or(FieldError::WrongKind)?;
+        BleName::new(text).ok_or(FieldError::Invalid)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use rohi_config::ConfigOverrides;
-    use rohi_service::MAX_CONFIG_FIELDS;
+    use rohi_service::{Config, MAX_CONFIG_FIELDS};
 
     use super::*;
-    use crate::BleOverrides;
+    use crate::{BleOverrides, BleSettings};
+
+    const NAME: u32 = 1;
     use rohi_config::ConfigSection;
 
     fn text(value: &str) -> Value {
@@ -100,32 +69,29 @@ mod tests {
     #[test]
     fn the_name_is_optional_and_validated() {
         let mut settings = BleSettings::default();
-        assert_eq!(settings.read_field(field::NAME), Ok(None));
-        settings.set_field(field::NAME, text("urban")).unwrap();
-        assert_eq!(settings.read_field(field::NAME), Ok(Some(text("urban"))));
+        assert_eq!(settings.read_field(NAME), Ok(None));
+        settings.set_field(NAME, text("urban")).unwrap();
+        assert_eq!(settings.read_field(NAME), Ok(Some(text("urban"))));
         assert_eq!(Config::validate(&settings), Ok(()));
         let mut overrides = BleOverrides::default();
-        assert!(overrides.capture(&settings, field::NAME));
+        assert!(overrides.capture(&settings, NAME));
         assert_eq!(
             rohi_config::materialize::<BleSettings>(&Default::default(), &overrides).name,
             settings.name
         );
-        assert!(overrides.clear(field::NAME));
+        assert!(overrides.clear(NAME));
         assert_eq!(
             rohi_config::materialize::<BleSettings>(&Default::default(), &overrides).name,
             None
         );
 
+        assert_eq!(settings.set_field(NAME, text("")), Err(FieldError::Invalid));
         assert_eq!(
-            settings.set_field(field::NAME, text("")),
+            settings.set_field(NAME, text(&"a".repeat(30))),
             Err(FieldError::Invalid)
         );
         assert_eq!(
-            settings.set_field(field::NAME, text(&"a".repeat(30))),
-            Err(FieldError::Invalid)
-        );
-        assert_eq!(
-            settings.set_field(field::NAME, Value::U64(1)),
+            settings.set_field(NAME, Value::U64(1)),
             Err(FieldError::WrongKind)
         );
         assert_eq!(

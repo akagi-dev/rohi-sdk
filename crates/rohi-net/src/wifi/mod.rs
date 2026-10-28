@@ -44,7 +44,6 @@ pub use config::{
     SCAN_TIMEOUT_RANGE_MS, WifiConfig, WifiOverrides, WifiPassword, WifiSsid,
 };
 pub use error::WifiError;
-pub use managed::field as config_field;
 pub use manager::{
     LinkMetrics, ManagerConfig, STATUS_RECEIVERS, WifiHandle, WifiManager, WifiShared,
 };

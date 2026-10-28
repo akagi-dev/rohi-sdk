@@ -629,7 +629,8 @@ async fn setting_fields_shows_the_effective_configuration_the_device_reports() {
         Gadget {
             label: "lamp".into(),
             level: 70,
-            mode: Some(1)
+            mode: Some(1),
+            serial: "SN-1".into(),
         }
     );
 

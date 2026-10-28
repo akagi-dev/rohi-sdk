@@ -150,19 +150,28 @@ fn invalid_hook_is_rejected() {
     assert!(error.contains("expected string literal"), "{error}");
 }
 
-fn overrides_str(source: &str) -> Result<String, String> {
+fn config_str(source: &str) -> Result<String, String> {
     let input: DeriveInput = syn::parse_str(source).unwrap();
-    overrides::expand(&input)
+    expand_config(&input)
         .map(|tokens| tokens.to_string())
         .map_err(|error| error.to_string())
 }
 
-const WIFI: &str = "#[config(overrides = WifiOverrides, version = 1)] \
-    pub struct WifiConfig { #[config(id = 1)] pub ssid: Option<Ssid>, #[config(id = 3)] pub scan: u32 }";
+const ATTR: &str = r#"#[config(name = "demo", overrides = O, version = 1)]"#;
+
+fn with_fields(fields: &str) -> String {
+    format!("{ATTR} struct A {{ {fields} }}")
+}
+
+const WIFI: &str = r#"#[config(name = "wifi", overrides = WifiOverrides, version = 1)]
+    pub struct WifiConfig {
+        #[config(id = 1, with = SsidCodec)] pub ssid: Option<Ssid>,
+        #[config(id = 3, name = "scan_timeout", unit = Ms, min = 1000, max = 9000)] pub scan: u32,
+    }"#;
 
 #[test]
 fn overrides_are_generated_from_the_config() {
-    let out = overrides_str(WIFI).unwrap();
+    let out = config_str(WIFI).unwrap();
     assert!(out.contains("pub struct WifiOverrides"));
     assert!(out.contains("Override < Option < Ssid > >"));
     assert!(out.contains("# [n (3u32)]"));
@@ -173,82 +182,218 @@ fn overrides_are_generated_from_the_config() {
 
 #[test]
 fn the_overrides_section_id_hashes_the_config_name() {
-    let out = overrides_str(WIFI).unwrap();
+    let out = config_str(WIFI).unwrap();
     assert!(out.contains(&id_literal(0x3352_46ad_2024_8b26)));
     assert!(!out.contains(&id_literal(fnv1a64(b"WifiOverrides"))));
 }
 
 #[test]
 fn overrides_explicit_id_is_used_verbatim() {
-    let out = overrides_str(
-        "#[config(overrides = O, version = 1, id = 0xAABBCCDDEEFF0011)] \
-         struct Renamed { #[config(id = 1)] a: u8 }",
+    let out = config_str(
+        r#"#[config(name = "r", overrides = O, version = 1, id = 0xAABBCCDDEEFF0011)]
+         struct Renamed { #[config(id = 1)] a: u8 }"#,
     )
     .unwrap();
     assert!(out.contains(&id_literal(0xAABB_CCDD_EEFF_0011)));
 }
 
 #[test]
-fn overrides_need_name_version_and_field_ids() {
+fn the_config_implementation_is_generated_from_the_same_declaration() {
+    let out = config_str(WIFI).unwrap();
+    assert!(out.contains("Config for WifiConfig"));
+    assert!(out.contains("const NAME : & 'static str = \"wifi\""));
+    // The public name of a field defaults to its identifier.
+    assert!(out.contains("ConfigField :: new (1u32 , \"ssid\""));
+    assert!(out.contains("ConfigField :: new (3u32 , \"scan_timeout\""));
+    assert!(out.contains("Unit :: Ms"));
+    assert!(out.contains("Bounds :: U64"));
+    // An `Option` field is optional, the codec converts the inner type.
+    assert!(out.contains(". optional ()"));
+    assert!(out.contains("< SsidCodec as :: rohi_service :: Codec < Ssid >> :: KIND"));
+    assert!(out.contains("< :: rohi_service :: Standard as :: rohi_service :: Codec < u32 >>"));
+    // Without `validate` every section is valid.
+    assert!(out.contains("fn validate"));
+}
+
+#[test]
+fn the_validation_hook_is_invoked() {
+    let out = config_str(
+        r#"#[config(name = "a", overrides = O, version = 1, validate = check::all)]
+        struct A { #[config(id = 1)] a: u8 }"#,
+    )
+    .unwrap();
+    assert!(out.contains("check :: all (self)"));
+    let out = config_str(
+        r#"#[config(name = "a", overrides = O, version = 1, validate = "check")]
+        struct A { #[config(id = 1)] a: u8 }"#,
+    )
+    .unwrap();
+    assert!(out.contains("check (self)"));
+    let error = config_str(
+        r#"#[config(name = "a", overrides = O, version = 1, validate = "not a path")]
+        struct A { #[config(id = 1)] a: u8 }"#,
+    )
+    .unwrap_err();
+    assert!(error.contains("path to a function"), "{error}");
+}
+
+#[test]
+fn a_secret_is_never_read_and_redacted_in_debug() {
+    let out = config_str(&with_fields(
+        "#[config(id = 1, secret)] token: Option<Token>,",
+    ))
+    .unwrap();
+    assert!(out.contains("FieldError :: Secret"));
+    assert!(out.contains("RedactedOverride"));
+    assert!(out.contains("self . token . is_some ()"));
+    assert!(out.contains(". secret ()"));
+    // The copy handed to the setter is wiped.
+    assert!(out.contains("value . wipe ()"));
+    // The generated `Debug` replaces the derived one.
+    assert!(!out.contains("Debug ,"));
+}
+
+#[test]
+fn a_read_only_field_is_exposed_but_not_persisted() {
+    let out = config_str(&with_fields(
+        "#[config(id = 1)] a: u8, #[config(id = 2, read_only)] serial: u8,",
+    ))
+    .unwrap();
+    assert!(out.contains("FIELD_IDS : & 'static [u32] = & [1u32]"));
+    assert!(out.contains("pub a : :: rohi_config :: Override < u8 >"));
+    assert!(!out.contains("pub serial"));
+    assert!(out.contains(". read_only ()"));
+    assert!(out.contains("FieldError :: ReadOnly"));
+}
+
+#[test]
+fn required_keeps_an_option_field_required() {
+    let optional = config_str(&with_fields("#[config(id = 1)] a: Option<u8>,")).unwrap();
+    assert!(optional.contains(". optional ()"));
+    let required = config_str(&with_fields("#[config(id = 1, required)] a: Option<u8>,")).unwrap();
+    assert!(!required.contains(". optional ()"));
+    assert!(required.contains("FieldError :: NotOptional"));
+    let plain = config_str(&with_fields("#[config(id = 1)] a: u8,")).unwrap();
+    assert!(!plain.contains(". optional ()"));
+}
+
+#[test]
+fn enums_and_enum_ids_are_forwarded() {
+    let out = config_str(
+        r#"#[config(name = "a", overrides = O, version = 1, enums = MODES)]
+        struct A { #[config(id = 1, with = ModeCodec, enum_id = 1)] mode: Mode }"#,
+    )
+    .unwrap();
+    assert!(out.contains("const ENUMS : & 'static [:: rohi_service :: EnumDescriptor] = MODES"));
+    assert!(out.contains(". with_enum (1)"));
+}
+
+#[test]
+fn a_config_needs_name_overrides_version_and_field_ids() {
     let error =
-        overrides_str("#[config(version = 1)] struct A { #[config(id = 1)] a: u8 }").unwrap_err();
+        config_str("#[config(overrides = O, version = 1)] struct A { #[config(id = 1)] a: u8 }")
+            .unwrap_err();
+    assert!(error.contains("missing `name`"), "{error}");
+    let error =
+        config_str(r#"#[config(name = "a", version = 1)] struct A { #[config(id = 1)] a: u8 }"#)
+            .unwrap_err();
     assert!(error.contains("missing `overrides`"), "{error}");
     let error =
-        overrides_str("#[config(overrides = O)] struct A { #[config(id = 1)] a: u8 }").unwrap_err();
+        config_str(r#"#[config(name = "a", overrides = O)] struct A { #[config(id = 1)] a: u8 }"#)
+            .unwrap_err();
     assert!(error.contains("missing `version`"), "{error}");
-    let error =
-        overrides_str("#[config(overrides = O, version = 1)] struct A { a: u8 }").unwrap_err();
+    let error = config_str(&with_fields("a: u8,")).unwrap_err();
     assert!(error.contains("needs a stable id"), "{error}");
 }
 
 #[test]
-fn overrides_reject_duplicate_field_ids() {
-    let error = overrides_str(
-        "#[config(overrides = O, version = 1)] \
-         struct A { #[config(id = 1)] a: u8, #[config(id = 1)] b: u8 }",
-    )
-    .unwrap_err();
-    assert!(error.contains("duplicate field id 1"), "{error}");
-}
-
-#[test]
-fn overrides_reject_unsupported_shapes() {
-    let attr = "#[config(overrides = O, version = 1)]";
-    for source in [
-        format!("{attr} struct A(u8);"),
-        format!("{attr} struct A;"),
-        format!("{attr} struct A {{}}"),
-        format!("{attr} enum A {{ B }}"),
-        format!("{attr} struct A<T> {{ #[config(id = 1)] a: T }}"),
-        format!("{attr} struct A<'a> {{ #[config(id = 1)] a: &'a u8 }}"),
-    ] {
-        assert!(overrides_str(&source).is_err(), "{source}");
+fn names_are_checked() {
+    for name in ["", "Wifi", "1a", "a-b", "a b"] {
+        let error = config_str(&format!(
+            r#"#[config(name = "{name}", overrides = O, version = 1)] struct A {{ #[config(id = 1)] a: u8 }}"#
+        ))
+        .unwrap_err();
+        assert!(error.contains("invalid section name"), "{name}: {error}");
+        let error = config_str(&with_fields(&format!(
+            r#"#[config(id = 1, name = "{name}")] a: u8,"#
+        )))
+        .unwrap_err();
+        assert!(error.contains("invalid field name"), "{name}: {error}");
     }
 }
 
 #[test]
-fn overrides_reject_unknown_attributes_and_duplicates() {
-    let error = overrides_str(
-        "#[config(overrides = O, version = 1, name = \"x\")] struct A { #[config(id = 1)] a: u8 }",
+fn duplicate_ids_and_names_are_rejected() {
+    let error = config_str(&with_fields(
+        "#[config(id = 1)] a: u8, #[config(id = 1)] b: u8,",
+    ))
+    .unwrap_err();
+    assert!(error.contains("duplicate field id 1"), "{error}");
+    let error = config_str(&with_fields(
+        r#"#[config(id = 1)] a: u8, #[config(id = 2, name = "a")] b: u8,"#,
+    ))
+    .unwrap_err();
+    assert!(error.contains("duplicate field name `a`"), "{error}");
+}
+
+#[test]
+fn contradicting_flags_are_rejected() {
+    let error = config_str(&with_fields("#[config(id = 1, secret)] a: String,")).unwrap_err();
+    assert!(error.contains("must be an `Option`"), "{error}");
+    let error = config_str(&with_fields(
+        "#[config(id = 1, secret, read_only)] a: Option<String>,",
+    ))
+    .unwrap_err();
+    assert!(error.contains("both `secret` and `read_only`"), "{error}");
+    let error = config_str(&with_fields("#[config(id = 1, required)] a: u8,")).unwrap_err();
+    assert!(error.contains("only applies to an `Option`"), "{error}");
+    let error = config_str(&with_fields(
+        "#[config(id = 1, required, read_only)] a: Option<u8>,",
+    ))
+    .unwrap_err();
+    assert!(error.contains("`read_only`"), "{error}");
+    let error = config_str(&with_fields("#[config(id = 1, min = 1)] a: u8,")).unwrap_err();
+    assert!(error.contains("both `min` and `max`"), "{error}");
+    let error = config_str(&with_fields(
+        "#[config(id = 1, secret = true)] a: Option<u8>,",
+    ))
+    .unwrap_err();
+    assert!(error.contains("takes no value"), "{error}");
+}
+
+#[test]
+fn overrides_reject_unsupported_shapes() {
+    for source in [
+        format!("{ATTR} struct A(u8);"),
+        format!("{ATTR} struct A;"),
+        format!("{ATTR} struct A {{}}"),
+        format!("{ATTR} enum A {{ B }}"),
+        format!("{ATTR} struct A<T> {{ #[config(id = 1)] a: T }}"),
+        format!("{ATTR} struct A<'a> {{ #[config(id = 1)] a: &'a u8 }}"),
+    ] {
+        assert!(config_str(&source).is_err(), "{source}");
+    }
+}
+
+#[test]
+fn unknown_and_duplicate_attributes_are_rejected() {
+    let error = config_str(
+        r#"#[config(name = "a", overrides = O, version = 1, max_size = 8)] struct A { #[config(id = 1)] a: u8 }"#,
     )
     .unwrap_err();
     assert!(error.contains("unknown `config` attribute"), "{error}");
-    let error = overrides_str(
-        "#[config(overrides = O, overrides = P, version = 1)] struct A { #[config(id = 1)] a: u8 }",
+    let error = config_str(
+        r#"#[config(name = "a", overrides = O, overrides = P, version = 1)] struct A { #[config(id = 1)] a: u8 }"#,
     )
     .unwrap_err();
     assert!(error.contains("duplicate `overrides`"), "{error}");
-    let error = overrides_str(
-        "#[config(overrides = O, version = 1)] struct A { #[config(id = 1, name = 2)] a: u8 }",
-    )
-    .unwrap_err();
+    let error = config_str(&with_fields("#[config(id = 1, size = 2)] a: u8,")).unwrap_err();
     assert!(
         error.contains("unknown field `config` attribute"),
         "{error}"
     );
-    let error = overrides_str(
-        "#[config(overrides = O, version = 1)] struct A { #[config(id = 4294967296)] a: u8 }",
-    )
-    .unwrap_err();
+    let error = config_str(&with_fields("#[config(id = 1, id = 2)] a: u8,")).unwrap_err();
+    assert!(error.contains("duplicate `id`"), "{error}");
+    let error = config_str(&with_fields("#[config(id = 4294967296)] a: u8,")).unwrap_err();
     assert!(error.contains("fits in `u32`"), "{error}");
 }

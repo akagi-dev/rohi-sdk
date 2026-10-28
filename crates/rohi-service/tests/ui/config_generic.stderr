@@ -1,0 +1,5 @@
+error: a config cannot be generic: the overrides type and the section identity belong to exactly one type
+ --> tests/ui/config_generic.rs:5:13
+  |
+5 | struct Demo<T> {
+  |             ^

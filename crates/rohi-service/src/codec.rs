@@ -47,6 +47,11 @@ use crate::config::FieldError;
 use crate::value::{Value, ValueKind};
 
 /// How a field of type `T` appears as a [`Value`].
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` has no conversion between `{T}` and a config value",
+    label = "this type needs its own codec",
+    note = "implement `rohi_service::Codec<{T}>` for a codec type and name it on the field: `#[config(with = MyCodec)]`"
+)]
 pub trait Codec<T> {
     /// The kind of the generic value of the field.
     const KIND: ValueKind;

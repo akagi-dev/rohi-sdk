@@ -24,6 +24,10 @@ use rohi_service::{
 
 use crate::*;
 
+const LATITUDE: u32 = 1;
+const LONGITUDE: u32 = 2;
+const HEIGHT_M: u32 = 3;
+
 fn config() -> LocationConfig {
     LocationConfig {
         latitude: 52.52,
@@ -139,30 +143,23 @@ fn validation_rejects_what_is_not_a_position() {
 fn a_patch_needs_both_coordinates() {
     // A first `set height_m=...` must not store "0, 0".
     let mut section = LocationConfig::default();
-    section
-        .set_field(field::HEIGHT_M, Value::F32(10.0))
-        .unwrap();
+    section.set_field(HEIGHT_M, Value::F32(10.0)).unwrap();
     assert_eq!(Config::validate(&section), Err(FieldError::Invalid));
-    section.set_field(field::LATITUDE, Value::F32(1.5)).unwrap();
+    section.set_field(LATITUDE, Value::F32(1.5)).unwrap();
     assert_eq!(Config::validate(&section), Err(FieldError::Invalid));
-    section
-        .set_field(field::LONGITUDE, Value::F32(2.5))
-        .unwrap();
+    section.set_field(LONGITUDE, Value::F32(2.5)).unwrap();
     assert_eq!(Config::validate(&section), Ok(()));
-    assert_eq!(
-        section.read_field(field::LATITUDE),
-        Ok(Some(Value::F32(1.5)))
-    );
+    assert_eq!(section.read_field(LATITUDE), Ok(Some(Value::F32(1.5))));
     let mut overrides = LocationOverrides::default();
-    overrides.capture(&section, field::HEIGHT_M);
-    overrides.clear(field::HEIGHT_M);
+    overrides.capture(&section, HEIGHT_M);
+    overrides.clear(HEIGHT_M);
     assert_eq!(
         rohi_config::materialize::<LocationConfig>(&Default::default(), &overrides)
-            .read_field(field::HEIGHT_M),
+            .read_field(HEIGHT_M),
         Ok(None)
     );
     assert_eq!(
-        section.set_field(field::LATITUDE, Value::U64(1)),
+        section.set_field(LATITUDE, Value::U64(1)),
         Err(FieldError::WrongKind)
     );
 }
@@ -171,9 +168,9 @@ fn a_patch_needs_both_coordinates() {
 fn the_default_is_no_position_and_reads_as_unset() {
     let defaults = LocationConfig::default();
     assert!(!defaults.is_valid());
-    assert_eq!(defaults.read_field(field::LATITUDE), Ok(None));
-    assert_eq!(defaults.read_field(field::LONGITUDE), Ok(None));
-    assert_eq!(defaults.read_field(field::HEIGHT_M), Ok(None));
+    assert_eq!(defaults.read_field(LATITUDE), Ok(None));
+    assert_eq!(defaults.read_field(LONGITUDE), Ok(None));
+    assert_eq!(defaults.read_field(HEIGHT_M), Ok(None));
     assert!(LocationOverrides::default().is_empty());
 }
 
@@ -182,33 +179,21 @@ fn an_unconfigured_section_is_valid_but_half_a_position_is_not() {
     let mut section = LocationConfig::default();
     assert!(section.is_unset());
     assert_eq!(Config::validate(&section), Ok(()));
-    section
-        .set_field(field::LATITUDE, Value::F32(52.5))
-        .unwrap();
+    section.set_field(LATITUDE, Value::F32(52.5)).unwrap();
     assert!(!section.is_unset());
     assert_eq!(Config::validate(&section), Err(FieldError::Invalid));
-    section
-        .set_field(field::LONGITUDE, Value::F32(13.4))
-        .unwrap();
+    section.set_field(LONGITUDE, Value::F32(13.4)).unwrap();
     assert_eq!(Config::validate(&section), Ok(()));
 }
 
 #[test]
 fn none_applies_to_the_height_only() {
     let mut section = config();
-    section
-        .set_field(field::HEIGHT_M, Value::F32(34.0))
-        .unwrap();
-    assert_eq!(section.set_none(field::HEIGHT_M), Ok(()));
+    section.set_field(HEIGHT_M, Value::F32(34.0)).unwrap();
+    assert_eq!(section.set_none(HEIGHT_M), Ok(()));
     assert_eq!(section.height_m, None);
-    assert_eq!(
-        section.set_none(field::LATITUDE),
-        Err(FieldError::NotOptional)
-    );
-    assert_eq!(
-        section.set_none(field::LONGITUDE),
-        Err(FieldError::NotOptional)
-    );
+    assert_eq!(section.set_none(LATITUDE), Err(FieldError::NotOptional));
+    assert_eq!(section.set_none(LONGITUDE), Err(FieldError::NotOptional));
     assert_eq!(section.set_none(9), Err(FieldError::UnknownField));
 }
 

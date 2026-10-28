@@ -16,20 +16,9 @@
 //
 //! The persistent `location` section and its generic config interface.
 
-use rohi_config::ConfigOverrides;
-use rohi_service::{Bounds, Config, ConfigField, FieldError, Unit, Value, ValueKind};
+use rohi_service::{Codec, Config, FieldError, Value, ValueKind};
 
 use crate::{Location, LocationSourceKind};
-
-/// Field ids of the `location` config section.
-pub mod field {
-    /// Latitude, degrees.
-    pub const LATITUDE: u32 = 1;
-    /// Longitude, degrees.
-    pub const LONGITUDE: u32 = 2;
-    /// Height above mean sea level, metres.
-    pub const HEIGHT_M: u32 = 3;
-}
 
 /// Where the user says the device is (effective configuration).
 ///
@@ -37,17 +26,22 @@ pub mod field {
 /// `NaN` and the section is not valid on its own, so a first `height_m=...`
 /// never stores "0, 0". What is stored are the explicit user overrides of it,
 /// [`LocationOverrides`].
-#[derive(Clone, Copy, Debug, PartialEq, ConfigOverrides)]
-#[config(overrides = LocationOverrides, version = 1)]
+#[derive(Clone, Copy, Debug, PartialEq, Config)]
+#[config(
+    name = "location",
+    overrides = LocationOverrides,
+    version = 1,
+    validate = validate_section
+)]
 pub struct LocationConfig {
     /// Latitude in decimal degrees, -90 to 90 (WGS84).
-    #[config(id = 1)]
+    #[config(id = 1, with = Coordinate, unit = Degrees, min = -90.0, max = 90.0)]
     pub latitude: f64,
     /// Longitude in decimal degrees, -180 to 180 (WGS84).
-    #[config(id = 2)]
+    #[config(id = 2, with = Coordinate, unit = Degrees, min = -180.0, max = 180.0)]
     pub longitude: f64,
     /// Height above mean sea level in metres.
-    #[config(id = 3)]
+    #[config(id = 3, with = Metres, unit = Meters, min = MIN_HEIGHT_M, max = MAX_HEIGHT_M)]
     pub height_m: Option<f64>,
 }
 
@@ -95,66 +89,45 @@ impl LocationConfig {
     }
 }
 
-impl Config for LocationConfig {
-    const NAME: &'static str = "location";
-    const FIELDS: &'static [ConfigField] = &[
-        ConfigField::new(field::LATITUDE, "latitude", ValueKind::F32)
-            .unit(Unit::Degrees)
-            .bounds(Bounds::F32(-90.0, 90.0)),
-        ConfigField::new(field::LONGITUDE, "longitude", ValueKind::F32)
-            .unit(Unit::Degrees)
-            .bounds(Bounds::F32(-180.0, 180.0)),
-        ConfigField::new(field::HEIGHT_M, "height_m", ValueKind::F32)
-            .unit(Unit::Meters)
-            .bounds(Bounds::F32(MIN_HEIGHT_M as f32, MAX_HEIGHT_M as f32))
-            .optional(),
-    ];
+/// A coordinate in degrees, held as `f64` and shown as `f32`.
+///
+/// A coordinate has no value until it is given: the default is `NaN`, which
+/// reads as "no value", so that a first `height_m=...` never stores "0, 0".
+struct Coordinate;
 
-    /// Latitude and longitude have no value until they are given: the
-    /// default is not a position.
-    fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
-        let coordinate = |degrees: f64| (!degrees.is_nan()).then_some(Value::F32(degrees as f32));
-        match id {
-            field::LATITUDE => Ok(coordinate(self.latitude)),
-            field::LONGITUDE => Ok(coordinate(self.longitude)),
-            field::HEIGHT_M => Ok(self.height_m.map(|height| Value::F32(height as f32))),
-            _ => Err(FieldError::UnknownField),
-        }
+impl Codec<f64> for Coordinate {
+    const KIND: ValueKind = ValueKind::F32;
+
+    fn encode(degrees: &f64) -> Result<Option<Value>, FieldError> {
+        Ok((!degrees.is_nan()).then_some(Value::F32(*degrees as f32)))
     }
 
-    fn set_field(&mut self, id: u32, value: Value) -> Result<(), FieldError> {
-        let number = f64::from(value.as_f32().ok_or(FieldError::WrongKind)?);
-        match id {
-            field::LATITUDE => self.latitude = number,
-            field::LONGITUDE => self.longitude = number,
-            field::HEIGHT_M => self.height_m = Some(number),
-            _ => return Err(FieldError::UnknownField),
-        }
+    fn decode(value: &Value) -> Result<f64, FieldError> {
+        Ok(f64::from(value.as_f32().ok_or(FieldError::WrongKind)?))
+    }
+}
+
+/// A height in metres, held as `f64` and shown as `f32`.
+struct Metres;
+
+impl Codec<f64> for Metres {
+    const KIND: ValueKind = ValueKind::F32;
+
+    fn encode(metres: &f64) -> Result<Option<Value>, FieldError> {
+        Ok(Some(Value::F32(*metres as f32)))
+    }
+
+    fn decode(value: &Value) -> Result<f64, FieldError> {
+        Ok(f64::from(value.as_f32().ok_or(FieldError::WrongKind)?))
+    }
+}
+
+/// A section without coordinates is valid: the device does not know where
+/// it is. A single coordinate, or one out of range, is not.
+fn validate_section(config: &LocationConfig) -> Result<(), FieldError> {
+    if config.is_unset() || config.is_valid() {
         Ok(())
-    }
-
-    fn field_is_set(&self, id: u32) -> Result<bool, FieldError> {
-        Ok(self.read_field(id)?.is_some())
-    }
-
-    fn set_none(&mut self, id: u32) -> Result<(), FieldError> {
-        match id {
-            field::HEIGHT_M => {
-                self.height_m = None;
-                Ok(())
-            }
-            field::LATITUDE | field::LONGITUDE => Err(FieldError::NotOptional),
-            _ => Err(FieldError::UnknownField),
-        }
-    }
-
-    /// A section without coordinates is valid: the device does not know where
-    /// it is. A single coordinate, or one out of range, is not.
-    fn validate(&self) -> Result<(), FieldError> {
-        if self.is_unset() || self.is_valid() {
-            Ok(())
-        } else {
-            Err(FieldError::Invalid)
-        }
+    } else {
+        Err(FieldError::Invalid)
     }
 }

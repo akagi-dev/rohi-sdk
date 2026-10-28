@@ -23,25 +23,12 @@ use heapless::{String, Vec};
 use minicbor::decode::{self, Decoder};
 use minicbor::encode::{self, Encoder, Write};
 use minicbor::{CborLen, Decode, Encode};
-use rohi_config::ConfigOverrides;
-use rohi_service::{Config, ConfigField, FieldError, Value, ValueKind};
+use rohi_service::{Codec, Config, FieldError, Value, ValueKind};
 
 use crate::{DEFAULT_SERVERS, MAX_SERVERS};
 
 /// Longest configured server name, in bytes.
 pub const MAX_NAME_LEN: usize = 64;
-
-/// Field ids of the `time` config section.
-pub mod field {
-    /// First server, always set.
-    pub const SERVER1: u32 = 1;
-    /// Second server.
-    pub const SERVER2: u32 = 2;
-    /// Third server.
-    pub const SERVER3: u32 = 3;
-    /// Fourth server.
-    pub const SERVER4: u32 = 4;
-}
 
 mod text_codec {
     use super::*;
@@ -122,20 +109,25 @@ impl fmt::Debug for ServerName {
 /// [`DEFAULT_SERVERS`]. What is stored are the explicit user overrides of it,
 /// [`NtpServersOverrides`]; a slot the user did not override follows the
 /// default.
-#[derive(Clone, Debug, PartialEq, Eq, ConfigOverrides)]
-#[config(overrides = NtpServersOverrides, version = 1)]
+#[derive(Clone, Debug, PartialEq, Eq, Config)]
+#[config(
+    name = "time",
+    overrides = NtpServersOverrides,
+    version = 1,
+    validate = validate_section
+)]
 pub struct NtpServersConfig {
     /// First server.
-    #[config(id = 1)]
+    #[config(id = 1, required, with = ServerNameCodec)]
     pub server1: Option<ServerName>,
     /// Second server.
-    #[config(id = 2)]
+    #[config(id = 2, with = ServerNameCodec)]
     pub server2: Option<ServerName>,
     /// Third server.
-    #[config(id = 3)]
+    #[config(id = 3, with = ServerNameCodec)]
     pub server3: Option<ServerName>,
     /// Fourth server.
-    #[config(id = 4)]
+    #[config(id = 4, with = ServerNameCodec)]
     pub server4: Option<ServerName>,
 }
 
@@ -161,71 +153,41 @@ impl NtpServersConfig {
             .map(ServerName::as_str)
             .collect()
     }
+}
 
-    fn slot(&mut self, id: u32) -> Result<&mut Option<ServerName>, FieldError> {
-        match id {
-            field::SERVER1 => Ok(&mut self.server1),
-            field::SERVER2 => Ok(&mut self.server2),
-            field::SERVER3 => Ok(&mut self.server3),
-            field::SERVER4 => Ok(&mut self.server4),
-            _ => Err(FieldError::UnknownField),
-        }
+/// A server name as text.
+pub struct ServerNameCodec;
+
+impl Codec<ServerName> for ServerNameCodec {
+    const KIND: ValueKind = ValueKind::String;
+
+    fn encode(name: &ServerName) -> Result<Option<Value>, FieldError> {
+        Value::text(name.as_str())
+            .map(Some)
+            .ok_or(FieldError::Invalid)
+    }
+
+    fn decode(value: &Value) -> Result<ServerName, FieldError> {
+        let text = value.as_str().ok_or(FieldError::WrongKind)?;
+        ServerName::new(text).ok_or(FieldError::Invalid)
     }
 }
 
-impl Config for NtpServersConfig {
-    const NAME: &'static str = "time";
-    const FIELDS: &'static [ConfigField] = &[
-        ConfigField::new(field::SERVER1, "server1", ValueKind::String),
-        ConfigField::new(field::SERVER2, "server2", ValueKind::String).optional(),
-        ConfigField::new(field::SERVER3, "server3", ValueKind::String).optional(),
-        ConfigField::new(field::SERVER4, "server4", ValueKind::String).optional(),
-    ];
-
-    fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
-        let slot = match id {
-            field::SERVER1 => &self.server1,
-            field::SERVER2 => &self.server2,
-            field::SERVER3 => &self.server3,
-            field::SERVER4 => &self.server4,
-            _ => return Err(FieldError::UnknownField),
-        };
-        Ok(slot.as_ref().and_then(|name| Value::text(name.as_str())))
-    }
-
-    fn set_field(&mut self, id: u32, value: Value) -> Result<(), FieldError> {
-        let name = value
-            .as_str()
-            .and_then(ServerName::new)
-            .ok_or(FieldError::Invalid)?;
-        *self.slot(id)? = Some(name);
+/// The first server is required and every name must be valid.
+fn validate_section(config: &NtpServersConfig) -> Result<(), FieldError> {
+    let names_valid = [
+        &config.server1,
+        &config.server2,
+        &config.server3,
+        &config.server4,
+    ]
+    .into_iter()
+    .flatten()
+    .all(ServerName::is_valid);
+    if config.server1.is_some() && names_valid {
         Ok(())
-    }
-
-    fn set_none(&mut self, id: u32) -> Result<(), FieldError> {
-        match id {
-            field::SERVER1 => Err(FieldError::NotOptional),
-            _ => {
-                *self.slot(id)? = None;
-                Ok(())
-            }
-        }
-    }
-
-    fn field_is_set(&self, id: u32) -> Result<bool, FieldError> {
-        Ok(self.read_field(id)?.is_some())
-    }
-
-    fn validate(&self) -> Result<(), FieldError> {
-        let names_valid = [&self.server1, &self.server2, &self.server3, &self.server4]
-            .into_iter()
-            .flatten()
-            .all(ServerName::is_valid);
-        if self.server1.is_some() && names_valid {
-            Ok(())
-        } else {
-            Err(FieldError::Invalid)
-        }
+    } else {
+        Err(FieldError::Invalid)
     }
 }
 
@@ -234,6 +196,11 @@ mod tests {
     use rohi_config::{ConfigOverrides, ConfigSection, MAX_SECTION_PAYLOAD, Override};
 
     use super::*;
+
+    const SERVER1: u32 = 1;
+    const SERVER2: u32 = 2;
+    const SERVER3: u32 = 3;
+    const SERVER4: u32 = 4;
 
     fn name(text: &str) -> Option<ServerName> {
         ServerName::new(text)
@@ -334,27 +301,27 @@ mod tests {
     fn fields_are_read_set_and_cleared() {
         let mut config = NtpServersConfig::default();
         config
-            .set_field(field::SERVER3, Value::text("ntp.example").unwrap())
+            .set_field(SERVER3, Value::text("ntp.example").unwrap())
             .unwrap();
         assert_eq!(
-            config.read_field(field::SERVER3),
+            config.read_field(SERVER3),
             Ok(Some(Value::text("ntp.example").unwrap()))
         );
         let mut overrides = NtpServersOverrides::default();
-        overrides.capture(&config, field::SERVER3);
+        overrides.capture(&config, SERVER3);
         assert_eq!(
             rohi_config::materialize::<NtpServersConfig>(&Default::default(), &overrides).server3,
             config.server3
         );
-        overrides.clear(field::SERVER3);
+        overrides.clear(SERVER3);
         assert_eq!(
             rohi_config::materialize::<NtpServersConfig>(&Default::default(), &overrides)
-                .read_field(field::SERVER3),
+                .read_field(SERVER3),
             Ok(None)
         );
         // A cleared first server is the default, not a missing one.
-        overrides.capture(&config, field::SERVER1);
-        overrides.clear(field::SERVER1);
+        overrides.capture(&config, SERVER1);
+        overrides.clear(SERVER1);
         assert_eq!(
             rohi_config::materialize::<NtpServersConfig>(&Default::default(), &overrides)
                 .validate(),
@@ -366,7 +333,7 @@ mod tests {
             Err(FieldError::UnknownField)
         );
         assert_eq!(
-            config.set_field(field::SERVER2, Value::text("bad name").unwrap()),
+            config.set_field(SERVER2, Value::text("bad name").unwrap()),
             Err(FieldError::Invalid)
         );
     }
@@ -374,18 +341,15 @@ mod tests {
     #[test]
     fn none_disables_an_optional_server_and_the_first_is_required() {
         let mut config = NtpServersConfig::default();
-        assert_eq!(config.set_none(field::SERVER2), Ok(()));
+        assert_eq!(config.set_none(SERVER2), Ok(()));
         assert_eq!(config.server2, None);
-        assert_eq!(config.set_none(field::SERVER4), Ok(()));
-        assert_eq!(
-            config.set_none(field::SERVER1),
-            Err(FieldError::NotOptional)
-        );
+        assert_eq!(config.set_none(SERVER4), Ok(()));
+        assert_eq!(config.set_none(SERVER1), Err(FieldError::NotOptional));
         assert_eq!(config.set_none(9), Err(FieldError::UnknownField));
         assert!(
             NtpServersConfig::FIELDS
                 .iter()
-                .all(|f| f.optional == (f.field.id != field::SERVER1))
+                .all(|f| f.optional == (f.field.id != SERVER1))
         );
     }
 
@@ -393,13 +357,13 @@ mod tests {
     fn an_explicit_none_differs_from_the_default_server() {
         let mut overrides = NtpServersOverrides::default();
         let mut config = NtpServersConfig::default();
-        config.set_none(field::SERVER2).unwrap();
-        overrides.capture(&config, field::SERVER2);
+        config.set_none(SERVER2).unwrap();
+        overrides.capture(&config, SERVER2);
         assert_eq!(overrides.server2, Override::Value(None));
         let mut effective = NtpServersConfig::default();
         overrides.apply_to(&mut effective);
         assert_eq!(effective.server2, None);
-        overrides.clear(field::SERVER2);
+        overrides.clear(SERVER2);
         let mut effective = NtpServersConfig::default();
         overrides.apply_to(&mut effective);
         assert_eq!(effective.server2, NtpServersConfig::default().server2);

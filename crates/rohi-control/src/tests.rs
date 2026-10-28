@@ -24,26 +24,71 @@ use rohi_control_proto::control::{
 };
 use rohi_control_proto::{PROTOCOL_VERSION, decode, encode, limits};
 use rohi_service::{
-    Action, ActionDescriptor, ActionError, ActionOutput, Bounds, Config, ConfigField,
-    EnumDescriptor, EnumVariant, FIRST_SERVICE_ISSUE, FieldDescriptor, FieldError, Issue,
-    IssueDescriptor, IssueSeverity, Section, SectionStore, Service, ServiceHealth, ServiceState,
-    ServiceSummary, Status, StatusWriter, Statuses, StoreError, Unit, Value, ValueKind, WriteError,
+    Action, ActionDescriptor, ActionError, ActionOutput, Codec, Config, EnumDescriptor,
+    EnumVariant, FIRST_SERVICE_ISSUE, FieldDescriptor, FieldError, Issue, IssueDescriptor,
+    IssueSeverity, Section, SectionStore, Service, ServiceHealth, ServiceState, ServiceSummary,
+    Status, StatusWriter, Statuses, StoreError, Unit, Value, ValueKind, WriteError,
 };
 
 use crate::*;
 
-#[derive(Clone, Debug, PartialEq, rohi_config::ConfigOverrides)]
-#[config(overrides = NetOverrides, version = 2, id = 1)]
+/// Text of any length the generic value holds.
+struct Text;
+
+impl Codec<std::string::String> for Text {
+    const KIND: ValueKind = ValueKind::String;
+
+    fn encode(value: &std::string::String) -> Result<Option<Value>, FieldError> {
+        Ok(Value::text(value))
+    }
+
+    fn decode(value: &Value) -> Result<std::string::String, FieldError> {
+        value
+            .as_str()
+            .map(std::string::String::from)
+            .ok_or(FieldError::WrongKind)
+    }
+}
+
+const MODES: &[EnumDescriptor] = &[EnumDescriptor::new(
+    1,
+    &[EnumVariant::new(0, "auto"), EnumVariant::new(5, "manual")],
+)];
+
+/// The mode number as the enum [`MODES`].
+struct ModeNumber;
+
+impl Codec<u32> for ModeNumber {
+    const KIND: ValueKind = ValueKind::Enum;
+
+    fn encode(mode: &u32) -> Result<Option<Value>, FieldError> {
+        Ok(Some(Value::Enum(*mode)))
+    }
+
+    fn decode(value: &Value) -> Result<u32, FieldError> {
+        value.as_enum().ok_or(FieldError::WrongKind)
+    }
+}
+
+fn net_is_valid(net: &Net) -> Result<(), FieldError> {
+    if net.enabled && net.host.is_empty() {
+        return Err(FieldError::Invalid);
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq, Config)]
+#[config(name = "net", overrides = NetOverrides, version = 2, id = 1, validate = net_is_valid, enums = MODES)]
 struct Net {
     #[config(id = 1)]
     enabled: bool,
-    #[config(id = 2)]
+    #[config(id = 2, min = 1, max = 65535)]
     port: u64,
-    #[config(id = 3)]
+    #[config(id = 3, with = Text)]
     host: std::string::String,
-    #[config(id = 4)]
+    #[config(id = 4, secret, with = Text)]
     token: Option<std::string::String>,
-    #[config(id = 5)]
+    #[config(id = 5, with = ModeNumber, enum_id = 1)]
     mode: Option<u32>,
 }
 
@@ -56,71 +101,6 @@ impl Default for Net {
             token: None,
             mode: None,
         }
-    }
-}
-
-impl Config for Net {
-    const NAME: &'static str = "net";
-    const FIELDS: &'static [ConfigField] = &[
-        ConfigField::new(1, "enabled", ValueKind::Bool),
-        ConfigField::new(2, "port", ValueKind::U64).bounds(Bounds::U64(1, 65535)),
-        ConfigField::new(3, "host", ValueKind::String),
-        ConfigField::new(4, "token", ValueKind::String)
-            .secret()
-            .optional(),
-        ConfigField::new(5, "mode", ValueKind::Enum)
-            .with_enum(1)
-            .optional(),
-    ];
-    const ENUMS: &'static [EnumDescriptor] = &[EnumDescriptor::new(
-        1,
-        &[EnumVariant::new(0, "auto"), EnumVariant::new(5, "manual")],
-    )];
-
-    fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
-        Ok(match id {
-            1 => Some(Value::Bool(self.enabled)),
-            2 => Some(Value::U64(self.port)),
-            3 => Value::text(&self.host),
-            4 => self.token.as_deref().and_then(Value::text),
-            5 => self.mode.map(Value::Enum),
-            _ => return Err(FieldError::UnknownField),
-        })
-    }
-
-    fn set_field(&mut self, id: u32, value: Value) -> Result<(), FieldError> {
-        match id {
-            1 => self.enabled = value.as_bool().unwrap(),
-            2 => self.port = value.as_u64().unwrap(),
-            3 => self.host = value.as_str().unwrap().into(),
-            4 => self.token = Some(value.as_str().unwrap().into()),
-            5 => self.mode = value.as_enum(),
-            _ => return Err(FieldError::UnknownField),
-        }
-        Ok(())
-    }
-
-    fn set_none(&mut self, id: u32) -> Result<(), FieldError> {
-        match id {
-            4 => self.token = None,
-            5 => self.mode = None,
-            _ => return Err(FieldError::NotOptional),
-        }
-        Ok(())
-    }
-
-    fn field_is_set(&self, id: u32) -> Result<bool, FieldError> {
-        match id {
-            4 => Ok(self.token.is_some()),
-            _ => Ok(self.read_field(id)?.is_some()),
-        }
-    }
-
-    fn validate(&self) -> Result<(), FieldError> {
-        if self.enabled && self.host.is_empty() {
-            return Err(FieldError::Invalid);
-        }
-        Ok(())
     }
 }
 

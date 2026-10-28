@@ -22,10 +22,10 @@ use rohi_location::{LocationOverrides, LocationService, LocationShared};
 use rohi_net::{BleConnectionInfo, BleError, BleState, BleTransport};
 use rohi_net::{WifiConfig, WifiOverrides};
 use rohi_service::{
-    Action, ActionDescriptor, ActionError, ActionOutput, Bounds, Config, ConfigField,
-    EnumDescriptor, EnumVariant, FIRST_SERVICE_ISSUE, FieldDescriptor, FieldError, Issue,
-    IssueDescriptor, IssueSeverity, Section, SectionStore, Service, ServiceHealth, ServiceState,
-    ServiceSummary, Status, StatusWriter, Statuses, StoreError, Unit, Value, ValueKind, WriteError,
+    Action, ActionDescriptor, ActionError, ActionOutput, Codec, Config, EnumDescriptor,
+    EnumVariant, FIRST_SERVICE_ISSUE, FieldDescriptor, FieldError, Issue, IssueDescriptor,
+    IssueSeverity, Section, SectionStore, Service, ServiceHealth, ServiceState, ServiceSummary,
+    Status, StatusWriter, Statuses, StoreError, Unit, Value, ValueKind, WriteError,
 };
 use tokio::sync::mpsc;
 
@@ -129,16 +129,65 @@ impl<C: Config + Default> SectionStore<C> for Mem<C::Overrides> {
     }
 }
 
+/// Text of any length the generic value holds.
+pub struct Text;
+
+impl Codec<String> for Text {
+    const KIND: ValueKind = ValueKind::String;
+
+    fn encode(value: &String) -> Result<Option<Value>, FieldError> {
+        Ok(Value::text(value))
+    }
+
+    fn decode(value: &Value) -> Result<String, FieldError> {
+        value
+            .as_str()
+            .map(str::to_owned)
+            .ok_or(FieldError::WrongKind)
+    }
+}
+
+const GADGET_MODES: &[EnumDescriptor] = &[EnumDescriptor::new(
+    1,
+    &[EnumVariant::new(0, "fast"), EnumVariant::new(1, "slow")],
+)];
+
+/// The mode number as the enum [`GADGET_MODES`].
+pub struct ModeNumber;
+
+impl Codec<u32> for ModeNumber {
+    const KIND: ValueKind = ValueKind::Enum;
+
+    fn encode(mode: &u32) -> Result<Option<Value>, FieldError> {
+        Ok(Some(Value::Enum(*mode)))
+    }
+
+    fn decode(value: &Value) -> Result<u32, FieldError> {
+        value.as_enum().ok_or(FieldError::WrongKind)
+    }
+}
+
+/// The defaults are valid; a mode belongs to a labelled gadget.
+fn gadget_is_valid(gadget: &Gadget) -> Result<(), FieldError> {
+    if gadget.mode.is_some() && gadget.label.is_empty() {
+        return Err(FieldError::Invalid);
+    }
+    Ok(())
+}
+
 /// A section that exists only in the tests.
-#[derive(Clone, Debug, PartialEq, rohi_config::ConfigOverrides)]
-#[config(overrides = GadgetOverrides, version = 3, id = 9)]
+#[derive(Clone, Debug, PartialEq, Config)]
+#[config(name = "gadget", overrides = GadgetOverrides, version = 3, id = 9, validate = gadget_is_valid, enums = GADGET_MODES)]
 pub struct Gadget {
-    #[config(id = 1)]
+    #[config(id = 1, with = Text)]
     pub label: String,
-    #[config(id = 2)]
+    #[config(id = 2, unit = Percent, min = 0, max = 100)]
     pub level: u64,
-    #[config(id = 3)]
+    #[config(id = 3, with = ModeNumber, enum_id = 1)]
     pub mode: Option<u32>,
+    /// Shown, never changed and never stored.
+    #[config(id = 4, read_only, with = Text)]
+    pub serial: String,
 }
 
 impl Default for Gadget {
@@ -147,67 +196,8 @@ impl Default for Gadget {
             label: String::new(),
             level: 50,
             mode: None,
+            serial: "SN-1".into(),
         }
-    }
-}
-
-impl Config for Gadget {
-    const NAME: &'static str = "gadget";
-    const FIELDS: &'static [ConfigField] = &[
-        ConfigField::new(1, "label", ValueKind::String),
-        ConfigField::new(2, "level", ValueKind::U64)
-            .unit(Unit::Percent)
-            .bounds(Bounds::U64(0, 100)),
-        ConfigField::new(3, "mode", ValueKind::Enum)
-            .with_enum(1)
-            .optional(),
-        ConfigField::new(4, "serial", ValueKind::String).read_only(),
-    ];
-    const ENUMS: &'static [EnumDescriptor] = &[EnumDescriptor::new(
-        1,
-        &[EnumVariant::new(0, "fast"), EnumVariant::new(1, "slow")],
-    )];
-
-    fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
-        Ok(match id {
-            1 => Value::text(&self.label),
-            2 => Some(Value::U64(self.level)),
-            3 => self.mode.map(Value::Enum),
-            4 => Value::text("SN-1"),
-            _ => return Err(FieldError::UnknownField),
-        })
-    }
-
-    fn set_field(&mut self, id: u32, value: Value) -> Result<(), FieldError> {
-        match id {
-            1 => self.label = value.as_str().unwrap().to_owned(),
-            2 => self.level = value.as_u64().unwrap(),
-            3 => self.mode = value.as_enum(),
-            _ => return Err(FieldError::UnknownField),
-        }
-        Ok(())
-    }
-
-    fn set_none(&mut self, id: u32) -> Result<(), FieldError> {
-        match id {
-            3 => {
-                self.mode = None;
-                Ok(())
-            }
-            _ => Err(FieldError::NotOptional),
-        }
-    }
-
-    fn field_is_set(&self, id: u32) -> Result<bool, FieldError> {
-        Ok(self.read_field(id)?.is_some())
-    }
-
-    fn validate(&self) -> Result<(), FieldError> {
-        // The defaults are valid; a mode belongs to a labelled gadget.
-        if self.mode.is_some() && self.label.is_empty() {
-            return Err(FieldError::Invalid);
-        }
-        Ok(())
     }
 }
 

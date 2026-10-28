@@ -14,168 +14,79 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+//! The `wifi` config section in the generic management plane: the field codecs
+//! of the domain types and the validation of the section. The fields, their
+//! ids and the persisted overrides are declared once, on [`WifiConfig`].
 
-//! The `wifi` config section in the generic management plane.
+use rohi_service::{Codec, FieldError, Value, ValueKind};
 
-use rohi_service::{Bounds, Config, ConfigField, FieldError, Unit, Value, ValueKind};
-
-use super::config::{
-    BACKOFF_INITIAL_RANGE_MS, BACKOFF_MAX_RANGE_MS, CONNECT_TIMEOUT_RANGE_MS,
-    LINK_REFRESH_RANGE_MS, SCAN_TIMEOUT_RANGE_MS, WifiConfig,
-};
+use super::config::WifiConfig;
 use crate::{WifiPassword, WifiSsid};
 
-/// Field ids of the `wifi` config section. Only ever added.
-pub mod field {
-    /// Network name; text only.
-    pub const SSID: u32 = 1;
-    /// Write-only passphrase; none (the default) for an open network.
-    pub const PASSWORD: u32 = 2;
-    /// Bound of a scan.
-    pub const SCAN_TIMEOUT: u32 = 3;
-    /// Bound of associating with the access point.
-    pub const CONNECT_TIMEOUT: u32 = 4;
-    /// First reconnect delay.
-    pub const BACKOFF_INITIAL: u32 = 5;
-    /// Longest reconnect delay.
-    pub const BACKOFF_MAX: u32 = 6;
-    /// Refresh interval of the connection details.
-    pub const LINK_REFRESH: u32 = 7;
-}
+/// The SSID as text.
+///
+/// An SSID that is not UTF-8 cannot be expressed as text and is reported as
+/// invalid; it is not shown, but it keeps working. An empty name is not a
+/// network: `none` disables Wi-Fi instead.
+pub struct SsidCodec;
 
-const fn timing(id: u32, name: &'static str, (min, max): (u32, u32)) -> ConfigField {
-    ConfigField::new(id, name, ValueKind::U64)
-        .unit(Unit::Ms)
-        .bounds(Bounds::U64(min as u64, max as u64))
-}
+impl Codec<WifiSsid> for SsidCodec {
+    const KIND: ValueKind = ValueKind::String;
 
-fn number(value: &Value) -> Result<u32, FieldError> {
-    match value {
-        Value::U64(number) => u32::try_from(*number).map_err(|_| FieldError::OutOfRange),
-        _ => Err(FieldError::WrongKind),
+    fn encode(ssid: &WifiSsid) -> Result<Option<Value>, FieldError> {
+        ssid.as_str()
+            .and_then(Value::text)
+            .map(Some)
+            .ok_or(FieldError::Invalid)
+    }
+
+    fn decode(value: &Value) -> Result<WifiSsid, FieldError> {
+        let text = value.as_str().ok_or(FieldError::WrongKind)?;
+        WifiSsid::from_bytes(text.as_bytes())
+            .filter(|ssid| !ssid.is_empty())
+            .ok_or(FieldError::Invalid)
     }
 }
 
-impl Config for WifiConfig {
-    const NAME: &'static str = "wifi";
-    const FIELDS: &'static [ConfigField] = &[
-        ConfigField::new(field::SSID, "ssid", ValueKind::String).optional(),
-        ConfigField::new(field::PASSWORD, "password", ValueKind::String)
-            .secret()
-            .optional(),
-        timing(field::SCAN_TIMEOUT, "scan_timeout", SCAN_TIMEOUT_RANGE_MS),
-        timing(
-            field::CONNECT_TIMEOUT,
-            "connect_timeout",
-            CONNECT_TIMEOUT_RANGE_MS,
-        ),
-        timing(
-            field::BACKOFF_INITIAL,
-            "backoff_initial",
-            BACKOFF_INITIAL_RANGE_MS,
-        ),
-        timing(field::BACKOFF_MAX, "backoff_max", BACKOFF_MAX_RANGE_MS),
-        timing(field::LINK_REFRESH, "link_refresh", LINK_REFRESH_RANGE_MS),
-    ];
+/// The passphrase as text. It is write-only: it is never converted to a value.
+pub struct PasswordCodec;
 
-    /// An SSID or password that is not UTF-8 cannot be expressed as text and
-    /// is reported as invalid; it is not shown, but it keeps working.
-    fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
-        let text = |value: &str| Value::text(value).map(Some).ok_or(FieldError::Invalid);
-        match id {
-            field::SSID => match &self.ssid {
-                None => Ok(None),
-                Some(ssid) => ssid
-                    .as_str()
-                    .and_then(Value::text)
-                    .map(Some)
-                    .ok_or(FieldError::Invalid),
-            },
-            field::PASSWORD => match &self.password {
-                None => Ok(None),
-                Some(password) => core::str::from_utf8(password.expose_secret())
-                    .map_err(|_| FieldError::Invalid)
-                    .and_then(text),
-            },
-            field::SCAN_TIMEOUT => Ok(Some(Value::U64(self.scan_timeout_ms.into()))),
-            field::CONNECT_TIMEOUT => Ok(Some(Value::U64(self.connect_timeout_ms.into()))),
-            field::BACKOFF_INITIAL => Ok(Some(Value::U64(self.backoff_initial_ms.into()))),
-            field::BACKOFF_MAX => Ok(Some(Value::U64(self.backoff_max_ms.into()))),
-            field::LINK_REFRESH => Ok(Some(Value::U64(self.link_refresh_ms.into()))),
-            _ => Err(FieldError::UnknownField),
-        }
+impl Codec<WifiPassword> for PasswordCodec {
+    const KIND: ValueKind = ValueKind::String;
+
+    fn encode(_: &WifiPassword) -> Result<Option<Value>, FieldError> {
+        Err(FieldError::Secret)
     }
 
-    fn set_field(&mut self, id: u32, value: Value) -> Result<(), FieldError> {
-        match id {
-            field::SSID => {
-                let text = value.as_str().ok_or(FieldError::WrongKind)?;
-                self.ssid = Some(
-                    WifiSsid::from_bytes(text.as_bytes())
-                        .filter(|ssid| !ssid.is_empty())
-                        .ok_or(FieldError::Invalid)?,
-                );
-            }
-            field::PASSWORD => {
-                let text = value.as_str().ok_or(FieldError::WrongKind)?;
-                self.password =
-                    Some(WifiPassword::from_bytes(text.as_bytes()).ok_or(FieldError::Invalid)?);
-            }
-            field::SCAN_TIMEOUT => self.scan_timeout_ms = number(&value)?,
-            field::CONNECT_TIMEOUT => self.connect_timeout_ms = number(&value)?,
-            field::BACKOFF_INITIAL => self.backoff_initial_ms = number(&value)?,
-            field::BACKOFF_MAX => self.backoff_max_ms = number(&value)?,
-            field::LINK_REFRESH => self.link_refresh_ms = number(&value)?,
-            _ => return Err(FieldError::UnknownField),
-        }
-        Ok(())
+    fn decode(value: &Value) -> Result<WifiPassword, FieldError> {
+        let text = value.as_str().ok_or(FieldError::WrongKind)?;
+        WifiPassword::from_bytes(text.as_bytes()).ok_or(FieldError::Invalid)
     }
+}
 
-    fn set_none(&mut self, id: u32) -> Result<(), FieldError> {
-        match id {
-            // Wi-Fi disabled.
-            field::SSID => {
-                self.ssid = None;
-                Ok(())
-            }
-            // An open network.
-            field::PASSWORD => {
-                self.password = None;
-                Ok(())
-            }
-            field::SCAN_TIMEOUT
-            | field::CONNECT_TIMEOUT
-            | field::BACKOFF_INITIAL
-            | field::BACKOFF_MAX
-            | field::LINK_REFRESH => Err(FieldError::NotOptional),
-            _ => Err(FieldError::UnknownField),
-        }
-    }
-
-    fn field_is_set(&self, id: u32) -> Result<bool, FieldError> {
-        match id {
-            // The password is only asked whether it exists, never read.
-            field::PASSWORD => Ok(self.password.is_some()),
-            _ => Ok(self.read_field(id)?.is_some()),
-        }
-    }
-
-    /// A section without an SSID is valid: Wi-Fi is disabled, the radio stays idle.
-    fn validate(&self) -> Result<(), FieldError> {
-        self.validate_settings().map_err(|_| FieldError::Invalid)
-    }
+/// A section without an SSID is valid: Wi-Fi is disabled, the radio stays
+/// idle. The credentials and the timing are checked as a whole.
+pub(super) fn validate_section(config: &WifiConfig) -> Result<(), FieldError> {
+    config.validate_settings().map_err(|_| FieldError::Invalid)
 }
 
 #[cfg(test)]
 mod tests {
     extern crate std;
 
-    use rohi_config::{ConfigOverrides, Override};
-    use rohi_service::MAX_CONFIG_FIELDS;
+    use rohi_config::{ConfigOverrides, ConfigSection, Override};
+    use rohi_service::{Config, MAX_CONFIG_FIELDS};
 
     use super::*;
     use crate::WifiOverrides;
-    use rohi_config::ConfigSection;
+
+    const SSID: u32 = 1;
+    const PASSWORD: u32 = 2;
+    const SCAN_TIMEOUT: u32 = 3;
+    const CONNECT_TIMEOUT: u32 = 4;
+    const BACKOFF_INITIAL: u32 = 5;
+    const BACKOFF_MAX: u32 = 6;
+    const LINK_REFRESH: u32 = 7;
 
     fn text(value: &str) -> Value {
         Value::text(value).unwrap()
@@ -212,34 +123,65 @@ mod tests {
         assert_eq!(Config::validate(&config), Ok(()));
         assert!(!config.is_configured());
         assert!(WifiConfig::validate(&config).is_err());
-        config.set_field(field::SSID, text("office")).unwrap();
+        config.set_field(SSID, text("office")).unwrap();
         assert!(config.is_configured());
         assert_eq!(Config::validate(&config), Ok(()));
-        assert_eq!(config.read_field(field::PASSWORD), Ok(None));
+        assert_eq!(config.field_is_set(PASSWORD), Ok(false));
 
-        config
-            .set_field(field::PASSWORD, text("hunter2hunter2"))
-            .unwrap();
+        config.set_field(PASSWORD, text("hunter2hunter2")).unwrap();
+        assert_eq!(config.field_is_set(PASSWORD), Ok(true));
+        assert_eq!(config.password, WifiPassword::from_bytes(b"hunter2hunter2"));
+        assert_eq!(config.read_field(SSID), Ok(Some(text("office"))));
+    }
+
+    #[test]
+    fn the_password_is_never_converted_to_a_value() {
+        let mut config = WifiConfig::default();
+        config.set_field(PASSWORD, text("hunter2hunter2")).unwrap();
+        // Neither a read nor the presence check yields it.
+        assert_eq!(config.read_field(PASSWORD), Err(FieldError::Secret));
+        assert_eq!(config.field_is_set(PASSWORD), Ok(true));
         assert_eq!(
-            config.read_field(field::PASSWORD),
-            Ok(Some(text("hunter2hunter2")))
+            PasswordCodec::encode(&config.password.clone().unwrap()),
+            Err(FieldError::Secret)
         );
-        assert_eq!(config.read_field(field::SSID), Ok(Some(text("office"))));
+        assert!(
+            WifiConfig::FIELDS
+                .iter()
+                .find(|field| field.field.id == PASSWORD)
+                .unwrap()
+                .secret
+        );
+    }
+
+    #[test]
+    fn no_debug_output_shows_the_password() {
+        let mut config = WifiConfig::default();
+        config.set_field(PASSWORD, text("hunter2hunter2")).unwrap();
+        let mut overrides = WifiOverrides::default();
+        assert!(overrides.capture(&config, PASSWORD));
+        for shown in [
+            std::format!("{config:?}"),
+            std::format!("{config:#?}"),
+            std::format!("{overrides:?}"),
+            std::format!("{overrides:#?}"),
+        ] {
+            assert!(!shown.contains("hunter2"), "{shown}");
+            assert!(shown.contains("redacted"), "{shown}");
+        }
     }
 
     #[test]
     fn clearing_the_password_override_restores_the_open_network_default() {
         let mut overrides = WifiOverrides::default();
         let mut config = rohi_config::materialize::<WifiConfig>(&Default::default(), &overrides);
-        config
-            .set_field(field::PASSWORD, text("hunter2hunter2"))
-            .unwrap();
-        assert!(overrides.capture(&config, field::PASSWORD));
+        config.set_field(PASSWORD, text("hunter2hunter2")).unwrap();
+        assert!(overrides.capture(&config, PASSWORD));
         assert_eq!(
             rohi_config::materialize::<WifiConfig>(&Default::default(), &overrides).password,
             config.password
         );
-        assert!(overrides.clear(field::PASSWORD));
+        assert!(overrides.clear(PASSWORD));
         assert_eq!(
             rohi_config::materialize::<WifiConfig>(&Default::default(), &overrides).password,
             None
@@ -250,17 +192,15 @@ mod tests {
     #[test]
     fn none_is_only_for_the_ssid_and_the_password() {
         let mut config = WifiConfig::default();
-        config
-            .set_field(field::PASSWORD, text("hunter2hunter2"))
-            .unwrap();
-        assert_eq!(config.set_none(field::PASSWORD), Ok(()));
+        config.set_field(PASSWORD, text("hunter2hunter2")).unwrap();
+        assert_eq!(config.set_none(PASSWORD), Ok(()));
         assert_eq!(config.password, None);
         for id in [
-            field::SCAN_TIMEOUT,
-            field::CONNECT_TIMEOUT,
-            field::BACKOFF_INITIAL,
-            field::BACKOFF_MAX,
-            field::LINK_REFRESH,
+            SCAN_TIMEOUT,
+            CONNECT_TIMEOUT,
+            BACKOFF_INITIAL,
+            BACKOFF_MAX,
+            LINK_REFRESH,
         ] {
             assert_eq!(config.set_none(id), Err(FieldError::NotOptional));
         }
@@ -271,19 +211,16 @@ mod tests {
     fn no_ssid_disables_wifi_and_an_ssid_enables_it() {
         let mut config = WifiConfig::default();
         assert_eq!(config.ssid, None);
-        assert_eq!(config.read_field(field::SSID), Ok(None));
+        assert_eq!(config.read_field(SSID), Ok(None));
         assert!(!config.is_configured());
         assert_eq!(config.clone().configured(), None);
-        config.set_field(field::SSID, text("office")).unwrap();
+        config.set_field(SSID, text("office")).unwrap();
         assert!(config.is_configured());
         assert!(config.clone().configured().is_some());
         // An empty name is not a network: `none` disables Wi-Fi instead.
-        assert_eq!(
-            config.set_field(field::SSID, text("")),
-            Err(FieldError::Invalid)
-        );
-        assert_eq!(config.set_none(field::SSID), Ok(()));
-        assert_eq!(config.read_field(field::SSID), Ok(None));
+        assert_eq!(config.set_field(SSID, text("")), Err(FieldError::Invalid));
+        assert_eq!(config.set_none(SSID), Ok(()));
+        assert_eq!(config.read_field(SSID), Ok(None));
         assert_eq!(Config::validate(&config), Ok(()));
     }
 
@@ -292,13 +229,13 @@ mod tests {
         let firmware = WifiConfig::new(WifiSsid::from_bytes(b"factory").unwrap(), None);
         let mut overrides = WifiOverrides::default();
         let mut config = firmware.clone();
-        config.set_none(field::SSID).unwrap();
-        overrides.capture(&config, field::SSID);
+        config.set_none(SSID).unwrap();
+        overrides.capture(&config, SSID);
         assert_eq!(overrides.ssid, Override::Value(None));
         let mut effective = firmware.clone();
         overrides.apply_to(&mut effective);
         assert!(!effective.is_configured());
-        overrides.clear(field::SSID);
+        overrides.clear(SSID);
         let mut effective = firmware.clone();
         overrides.apply_to(&mut effective);
         assert_eq!(effective.ssid, firmware.ssid);
@@ -312,14 +249,14 @@ mod tests {
         };
         let mut overrides = WifiOverrides::default();
         let mut config = firmware.clone();
-        config.set_none(field::PASSWORD).unwrap();
-        assert!(overrides.capture(&config, field::PASSWORD));
+        config.set_none(PASSWORD).unwrap();
+        assert!(overrides.capture(&config, PASSWORD));
         assert_eq!(overrides.password, Override::Value(None));
         let mut effective = firmware.clone();
         overrides.apply_to(&mut effective);
         assert_eq!(effective.password, None);
         // Clearing follows the firmware default again.
-        assert!(overrides.clear(field::PASSWORD));
+        assert!(overrides.clear(PASSWORD));
         let mut effective = firmware.clone();
         overrides.apply_to(&mut effective);
         assert_eq!(effective.password, firmware.password);
@@ -329,26 +266,26 @@ mod tests {
     fn the_defaults_are_the_former_constants() {
         let config = WifiConfig::default();
         let read = |id| config.read_field(id).unwrap();
-        assert_eq!(read(field::SCAN_TIMEOUT), Some(Value::U64(20_000)));
-        assert_eq!(read(field::CONNECT_TIMEOUT), Some(Value::U64(30_000)));
-        assert_eq!(read(field::BACKOFF_INITIAL), Some(Value::U64(1_000)));
-        assert_eq!(read(field::BACKOFF_MAX), Some(Value::U64(60_000)));
-        assert_eq!(read(field::LINK_REFRESH), Some(Value::U64(10_000)));
+        assert_eq!(read(SCAN_TIMEOUT), Some(Value::U64(20_000)));
+        assert_eq!(read(CONNECT_TIMEOUT), Some(Value::U64(30_000)));
+        assert_eq!(read(BACKOFF_INITIAL), Some(Value::U64(1_000)));
+        assert_eq!(read(BACKOFF_MAX), Some(Value::U64(60_000)));
+        assert_eq!(read(LINK_REFRESH), Some(Value::U64(10_000)));
     }
 
     #[test]
     fn bad_values_are_refused() {
         let mut config = WifiConfig::default();
         assert_eq!(
-            config.set_field(field::SSID, Value::U64(1)),
+            config.set_field(SSID, Value::U64(1)),
             Err(FieldError::WrongKind)
         );
         assert_eq!(
-            config.set_field(field::BACKOFF_MAX, Value::U64(u64::MAX)),
+            config.set_field(BACKOFF_MAX, Value::U64(u64::MAX)),
             Err(FieldError::OutOfRange)
         );
         assert_eq!(
-            config.set_field(field::SSID, text(&"a".repeat(33))),
+            config.set_field(SSID, text(&"a".repeat(33))),
             Err(FieldError::Invalid)
         );
         assert_eq!(
@@ -360,23 +297,19 @@ mod tests {
     #[test]
     fn the_timing_belongs_to_the_whole_section() {
         let mut config = WifiConfig::default();
-        config.set_field(field::SSID, text("office")).unwrap();
-        config
-            .set_field(field::BACKOFF_MAX, Value::U64(500))
-            .unwrap();
+        config.set_field(SSID, text("office")).unwrap();
+        config.set_field(BACKOFF_MAX, Value::U64(500)).unwrap();
         // Lower than the initial delay of 1 s.
         assert_eq!(Config::validate(&config), Err(FieldError::Invalid));
-        config
-            .set_field(field::BACKOFF_INITIAL, Value::U64(200))
-            .unwrap();
+        config.set_field(BACKOFF_INITIAL, Value::U64(200)).unwrap();
         assert_eq!(Config::validate(&config), Ok(()));
     }
 
     #[test]
     fn the_complete_section_is_validated() {
         let mut config = WifiConfig::default();
-        config.set_field(field::SSID, text("office")).unwrap();
-        config.set_field(field::PASSWORD, text("short")).unwrap();
+        config.set_field(SSID, text("office")).unwrap();
+        config.set_field(PASSWORD, text("short")).unwrap();
         assert_eq!(Config::validate(&config), Err(FieldError::Invalid));
     }
 

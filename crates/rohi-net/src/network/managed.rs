@@ -14,36 +14,19 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
-//! The `network` config section in the generic management plane.
+//! The `network` config section in the generic management plane: the field
+//! codecs of the domain types, the enum of the address mode and the validation
+//! of the section. The fields, their ids and the persisted overrides are
+//! declared once, on [`NetworkConfig`](super::NetworkConfig).
 
 use core::fmt::Write as _;
 use core::net::Ipv4Addr;
 use core::str::FromStr;
 
 use heapless::String;
-use rohi_service::{
-    Bounds, Config, ConfigField, EnumDescriptor, EnumVariant, FieldError, Unit, Value, ValueKind,
-};
+use rohi_service::{Codec, EnumDescriptor, EnumVariant, FieldError, Value, ValueKind};
 
-use super::config::{AddressMode, DHCP_TIMEOUT_RANGE_MS, Hostname, Ipv4, NetworkConfig};
-
-/// Field ids of the `network` config section. Only ever added.
-pub mod field {
-    /// `dhcp` or `static`.
-    pub const ADDRESS_MODE: u32 = 1;
-    /// Static IPv4 address.
-    pub const IP: u32 = 2;
-    /// Static network prefix length.
-    pub const PREFIX_LEN: u32 = 3;
-    /// Static default gateway.
-    pub const GATEWAY: u32 = 4;
-    /// Static DNS server.
-    pub const DNS: u32 = 5;
-    /// Host name announced to the DHCP server.
-    pub const HOSTNAME: u32 = 6;
-    /// Bound of obtaining an address from DHCP.
-    pub const DHCP_TIMEOUT: u32 = 7;
-}
+use super::config::{AddressMode, Hostname, Ipv4, NetworkConfig};
 
 /// Values of the `address_mode` field.
 pub mod address_mode {
@@ -65,119 +48,71 @@ pub const ADDRESS_MODES: &[EnumDescriptor] = &[EnumDescriptor::new(
     ],
 )];
 
-fn address_text(address: Ipv4) -> Option<Value> {
-    let mut text = String::<15>::new();
-    write!(text, "{}", Ipv4Addr::from(address)).ok()?;
-    Value::text(&text)
-}
+/// The address mode as the enum [`ADDRESS_MODES`].
+pub struct AddressModeCodec;
 
-fn parse_address(value: &Value) -> Result<Ipv4, FieldError> {
-    let text = value.as_str().ok_or(FieldError::WrongKind)?;
-    Ipv4Addr::from_str(text)
-        .map(Ipv4::from)
-        .map_err(|_| FieldError::Invalid)
-}
+impl Codec<AddressMode> for AddressModeCodec {
+    const KIND: ValueKind = ValueKind::Enum;
 
-fn number(value: &Value) -> Result<u32, FieldError> {
-    match value {
-        Value::U64(number) => u32::try_from(*number).map_err(|_| FieldError::OutOfRange),
-        _ => Err(FieldError::WrongKind),
+    fn encode(mode: &AddressMode) -> Result<Option<Value>, FieldError> {
+        Ok(Some(Value::Enum(match mode {
+            AddressMode::Dhcp => address_mode::DHCP,
+            AddressMode::Static => address_mode::STATIC,
+        })))
     }
-}
 
-impl Config for NetworkConfig {
-    const NAME: &'static str = "network";
-    const FIELDS: &'static [ConfigField] = &[
-        ConfigField::new(field::ADDRESS_MODE, "address_mode", ValueKind::Enum)
-            .with_enum(ADDRESS_MODE_ENUM),
-        ConfigField::new(field::IP, "ip", ValueKind::String).optional(),
-        ConfigField::new(field::PREFIX_LEN, "prefix_len", ValueKind::U64)
-            .bounds(Bounds::U64(1, 30))
-            .optional(),
-        ConfigField::new(field::GATEWAY, "gateway", ValueKind::String).optional(),
-        ConfigField::new(field::DNS, "dns", ValueKind::String).optional(),
-        ConfigField::new(field::HOSTNAME, "hostname", ValueKind::String).optional(),
-        ConfigField::new(field::DHCP_TIMEOUT, "dhcp_timeout", ValueKind::U64)
-            .unit(Unit::Ms)
-            .bounds(Bounds::U64(
-                DHCP_TIMEOUT_RANGE_MS.0 as u64,
-                DHCP_TIMEOUT_RANGE_MS.1 as u64,
-            )),
-    ];
-    const ENUMS: &'static [EnumDescriptor] = ADDRESS_MODES;
-
-    fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
-        let optional_address = |address: Option<Ipv4>| match address {
-            None => Ok(None),
-            Some(address) => address_text(address).map(Some).ok_or(FieldError::Invalid),
-        };
-        match id {
-            field::ADDRESS_MODE => Ok(Some(Value::Enum(match self.address_mode {
-                AddressMode::Dhcp => address_mode::DHCP,
-                AddressMode::Static => address_mode::STATIC,
-            }))),
-            field::IP => optional_address(self.static_ip),
-            field::PREFIX_LEN => Ok(self.prefix_len.map(|len| Value::U64(len.into()))),
-            field::GATEWAY => optional_address(self.gateway),
-            field::DNS => optional_address(self.dns),
-            field::HOSTNAME => match &self.hostname {
-                None => Ok(None),
-                Some(name) => Value::text(name.as_str())
-                    .map(Some)
-                    .ok_or(FieldError::Invalid),
-            },
-            field::DHCP_TIMEOUT => Ok(Some(Value::U64(self.dhcp_timeout_ms.into()))),
-            _ => Err(FieldError::UnknownField),
+    fn decode(value: &Value) -> Result<AddressMode, FieldError> {
+        match value {
+            Value::Enum(address_mode::DHCP) => Ok(AddressMode::Dhcp),
+            Value::Enum(address_mode::STATIC) => Ok(AddressMode::Static),
+            Value::Enum(_) => Err(FieldError::OutOfRange),
+            _ => Err(FieldError::WrongKind),
         }
     }
+}
 
-    fn set_field(&mut self, id: u32, value: Value) -> Result<(), FieldError> {
-        match id {
-            field::ADDRESS_MODE => {
-                self.address_mode = match &value {
-                    Value::Enum(address_mode::DHCP) => AddressMode::Dhcp,
-                    Value::Enum(address_mode::STATIC) => AddressMode::Static,
-                    Value::Enum(_) => return Err(FieldError::OutOfRange),
-                    _ => return Err(FieldError::WrongKind),
-                };
-            }
-            field::IP => self.static_ip = Some(parse_address(&value)?),
-            field::PREFIX_LEN => {
-                self.prefix_len =
-                    Some(u8::try_from(number(&value)?).map_err(|_| FieldError::OutOfRange)?);
-            }
-            field::GATEWAY => self.gateway = Some(parse_address(&value)?),
-            field::DNS => self.dns = Some(parse_address(&value)?),
-            field::HOSTNAME => {
-                let text = value.as_str().ok_or(FieldError::WrongKind)?;
-                self.hostname = Some(Hostname::new(text).ok_or(FieldError::Invalid)?);
-            }
-            field::DHCP_TIMEOUT => self.dhcp_timeout_ms = number(&value)?,
-            _ => return Err(FieldError::UnknownField),
-        }
-        Ok(())
+/// An IPv4 address as dotted text.
+pub struct Ipv4Codec;
+
+impl Codec<Ipv4> for Ipv4Codec {
+    const KIND: ValueKind = ValueKind::String;
+
+    fn encode(address: &Ipv4) -> Result<Option<Value>, FieldError> {
+        let mut text = String::<15>::new();
+        write!(text, "{}", Ipv4Addr::from(*address)).map_err(|_| FieldError::Invalid)?;
+        Value::text(&text).map(Some).ok_or(FieldError::Invalid)
     }
 
-    fn set_none(&mut self, id: u32) -> Result<(), FieldError> {
-        match id {
-            field::IP => self.static_ip = None,
-            field::PREFIX_LEN => self.prefix_len = None,
-            field::GATEWAY => self.gateway = None,
-            field::DNS => self.dns = None,
-            field::HOSTNAME => self.hostname = None,
-            field::ADDRESS_MODE | field::DHCP_TIMEOUT => return Err(FieldError::NotOptional),
-            _ => return Err(FieldError::UnknownField),
-        }
-        Ok(())
+    fn decode(value: &Value) -> Result<Ipv4, FieldError> {
+        let text = value.as_str().ok_or(FieldError::WrongKind)?;
+        Ipv4Addr::from_str(text)
+            .map(Ipv4::from)
+            .map_err(|_| FieldError::Invalid)
+    }
+}
+
+/// A DHCP host name as text.
+pub struct HostnameCodec;
+
+impl Codec<Hostname> for HostnameCodec {
+    const KIND: ValueKind = ValueKind::String;
+
+    fn encode(name: &Hostname) -> Result<Option<Value>, FieldError> {
+        Value::text(name.as_str())
+            .map(Some)
+            .ok_or(FieldError::Invalid)
     }
 
-    fn field_is_set(&self, id: u32) -> Result<bool, FieldError> {
-        Ok(self.read_field(id)?.is_some())
+    fn decode(value: &Value) -> Result<Hostname, FieldError> {
+        let text = value.as_str().ok_or(FieldError::WrongKind)?;
+        Hostname::new(text).ok_or(FieldError::Invalid)
     }
+}
 
-    fn validate(&self) -> Result<(), FieldError> {
-        NetworkConfig::validate(self).map_err(|_| FieldError::Invalid)
-    }
+/// The static address needs all its parts, and the section is valid as a
+/// whole.
+pub(super) fn validate_section(config: &NetworkConfig) -> Result<(), FieldError> {
+    NetworkConfig::validate(config).map_err(|_| FieldError::Invalid)
 }
 
 #[cfg(test)]
@@ -185,11 +120,19 @@ mod tests {
     extern crate std;
 
     use rohi_config::ConfigOverrides;
-    use rohi_service::MAX_CONFIG_FIELDS;
+    use rohi_service::{Config, MAX_CONFIG_FIELDS};
 
     use super::*;
     use crate::NetworkOverrides;
     use rohi_config::ConfigSection;
+
+    const ADDRESS_MODE: u32 = 1;
+    const IP: u32 = 2;
+    const PREFIX_LEN: u32 = 3;
+    const GATEWAY: u32 = 4;
+    const DNS: u32 = 5;
+    const HOSTNAME: u32 = 6;
+    const DHCP_TIMEOUT: u32 = 7;
 
     fn text(value: &str) -> Value {
         Value::text(value).unwrap()
@@ -224,18 +167,9 @@ mod tests {
         let config = NetworkConfig::default();
         assert_eq!(Config::validate(&config), Ok(()));
         let read = |id| config.read_field(id).unwrap();
-        assert_eq!(
-            read(field::ADDRESS_MODE),
-            Some(Value::Enum(address_mode::DHCP))
-        );
-        assert_eq!(read(field::DHCP_TIMEOUT), Some(Value::U64(20_000)));
-        for id in [
-            field::IP,
-            field::PREFIX_LEN,
-            field::GATEWAY,
-            field::DNS,
-            field::HOSTNAME,
-        ] {
+        assert_eq!(read(ADDRESS_MODE), Some(Value::Enum(address_mode::DHCP)));
+        assert_eq!(read(DHCP_TIMEOUT), Some(Value::U64(20_000)));
+        for id in [IP, PREFIX_LEN, GATEWAY, DNS, HOSTNAME] {
             assert_eq!(read(id), None);
         }
     }
@@ -244,40 +178,35 @@ mod tests {
     fn a_static_address_is_set_field_by_field_and_validated_as_a_whole() {
         let mut config = NetworkConfig::default();
         config
-            .set_field(field::ADDRESS_MODE, Value::Enum(address_mode::STATIC))
+            .set_field(ADDRESS_MODE, Value::Enum(address_mode::STATIC))
             .unwrap();
         // Static mode without an address is incomplete.
         assert_eq!(Config::validate(&config), Err(FieldError::Invalid));
 
-        config.set_field(field::IP, text("192.168.1.50")).unwrap();
-        config.set_field(field::PREFIX_LEN, Value::U64(24)).unwrap();
-        config
-            .set_field(field::GATEWAY, text("192.168.1.1"))
-            .unwrap();
-        config.set_field(field::DNS, text("1.1.1.1")).unwrap();
+        config.set_field(IP, text("192.168.1.50")).unwrap();
+        config.set_field(PREFIX_LEN, Value::U64(24)).unwrap();
+        config.set_field(GATEWAY, text("192.168.1.1")).unwrap();
+        config.set_field(DNS, text("1.1.1.1")).unwrap();
         assert_eq!(Config::validate(&config), Ok(()));
-        assert_eq!(config.read_field(field::IP), Ok(Some(text("192.168.1.50"))));
-        assert_eq!(
-            config.read_field(field::PREFIX_LEN),
-            Ok(Some(Value::U64(24)))
-        );
-        assert_eq!(config.read_field(field::DNS), Ok(Some(text("1.1.1.1"))));
+        assert_eq!(config.read_field(IP), Ok(Some(text("192.168.1.50"))));
+        assert_eq!(config.read_field(PREFIX_LEN), Ok(Some(Value::U64(24))));
+        assert_eq!(config.read_field(DNS), Ok(Some(text("1.1.1.1"))));
 
         // A gateway outside the network is rejected by the whole section.
-        config.set_field(field::GATEWAY, text("10.0.0.1")).unwrap();
+        config.set_field(GATEWAY, text("10.0.0.1")).unwrap();
         assert_eq!(Config::validate(&config), Err(FieldError::Invalid));
 
         // Clearing the override of the DNS server restores the default: none.
         let mut overrides = NetworkOverrides::default();
-        assert!(overrides.capture(&config, field::DNS));
+        assert!(overrides.capture(&config, DNS));
         assert_eq!(
             rohi_config::materialize::<NetworkConfig>(&Default::default(), &overrides).dns,
             config.dns
         );
-        assert!(overrides.clear(field::DNS));
+        assert!(overrides.clear(DNS));
         assert_eq!(
             rohi_config::materialize::<NetworkConfig>(&Default::default(), &overrides)
-                .read_field(field::DNS),
+                .read_field(DNS),
             Ok(None)
         );
     }
@@ -286,31 +215,31 @@ mod tests {
     fn bad_values_are_refused() {
         let mut config = NetworkConfig::default();
         assert_eq!(
-            config.set_field(field::IP, text("not an address")),
+            config.set_field(IP, text("not an address")),
             Err(FieldError::Invalid)
         );
         assert_eq!(
-            config.set_field(field::IP, text("192.168.1.256")),
+            config.set_field(IP, text("192.168.1.256")),
             Err(FieldError::Invalid)
         );
         assert_eq!(
-            config.set_field(field::IP, Value::U64(1)),
+            config.set_field(IP, Value::U64(1)),
             Err(FieldError::WrongKind)
         );
         assert_eq!(
-            config.set_field(field::PREFIX_LEN, Value::U64(300)),
+            config.set_field(PREFIX_LEN, Value::U64(300)),
             Err(FieldError::OutOfRange)
         );
         assert_eq!(
-            config.set_field(field::ADDRESS_MODE, Value::Enum(7)),
+            config.set_field(ADDRESS_MODE, Value::Enum(7)),
             Err(FieldError::OutOfRange)
         );
         assert_eq!(
-            config.set_field(field::HOSTNAME, text("bad name")),
+            config.set_field(HOSTNAME, text("bad name")),
             Err(FieldError::Invalid)
         );
         assert_eq!(
-            config.set_field(field::DHCP_TIMEOUT, Value::U64(u64::MAX)),
+            config.set_field(DHCP_TIMEOUT, Value::U64(u64::MAX)),
             Err(FieldError::OutOfRange)
         );
         assert_eq!(
@@ -323,16 +252,14 @@ mod tests {
     fn clearing_an_override_restores_the_default_of_a_required_field() {
         let mut overrides = NetworkOverrides::default();
         let mut config = rohi_config::materialize::<NetworkConfig>(&Default::default(), &overrides);
-        config
-            .set_field(field::DHCP_TIMEOUT, Value::U64(5_000))
-            .unwrap();
-        overrides.capture(&config, field::DHCP_TIMEOUT);
+        config.set_field(DHCP_TIMEOUT, Value::U64(5_000)).unwrap();
+        overrides.capture(&config, DHCP_TIMEOUT);
         assert_eq!(
             rohi_config::materialize::<NetworkConfig>(&Default::default(), &overrides)
                 .dhcp_timeout_ms,
             5_000
         );
-        overrides.clear(field::DHCP_TIMEOUT);
+        overrides.clear(DHCP_TIMEOUT);
         assert_eq!(
             rohi_config::materialize::<NetworkConfig>(&Default::default(), &overrides)
                 .dhcp_timeout_ms,
@@ -343,16 +270,11 @@ mod tests {
     #[test]
     fn the_host_name_is_optional() {
         let mut config = NetworkConfig::default();
-        config
-            .set_field(field::HOSTNAME, text("altruist-1"))
-            .unwrap();
-        assert_eq!(
-            config.read_field(field::HOSTNAME),
-            Ok(Some(text("altruist-1")))
-        );
+        config.set_field(HOSTNAME, text("altruist-1")).unwrap();
+        assert_eq!(config.read_field(HOSTNAME), Ok(Some(text("altruist-1"))));
         let mut overrides = NetworkOverrides::default();
-        overrides.capture(&config, field::HOSTNAME);
-        overrides.clear(field::HOSTNAME);
+        overrides.capture(&config, HOSTNAME);
+        overrides.clear(HOSTNAME);
         assert_eq!(
             rohi_config::materialize::<NetworkConfig>(&Default::default(), &overrides).hostname,
             None

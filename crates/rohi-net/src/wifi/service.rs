@@ -975,7 +975,7 @@ mod tests {
         let mut out = Collect::default();
         let args = connect_args("office", "hunter2hunter2");
         let timing = Mutation {
-            field_id: crate::wifi::managed::field::SCAN_TIMEOUT,
+            field_id: 3, // scan_timeout
             op: MutationOp::Set(Value::U64(9_000)),
         };
         let (connected, patched) = block_on(embassy_futures::join::join(

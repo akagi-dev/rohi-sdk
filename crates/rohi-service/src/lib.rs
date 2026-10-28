@@ -79,6 +79,7 @@ pub use config::{
 };
 pub use field::{Bounds, ConfigField, EnumDescriptor, EnumVariant, FieldDescriptor, Unit};
 pub use registry::{ActionRegistry, ServiceIdentity, StatusRegistry, StatusSet, Statuses, Tracker};
+pub use rohi_config_derive::Config;
 pub use rohi_service_derive::Service;
 pub use service::{Service, assert_service_name, distinct_ids, service_id, service_name_is_valid};
 pub use status::{

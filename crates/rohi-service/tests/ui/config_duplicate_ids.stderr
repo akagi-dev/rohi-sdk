@@ -1,0 +1,5 @@
+error: duplicate field id 1
+ --> tests/ui/config_duplicate_ids.rs:9:5
+  |
+9 |     b: u8,
+  |     ^

@@ -21,7 +21,11 @@ use core::net::Ipv4Addr;
 
 use heapless::String;
 use minicbor::{CborLen, Decode, Encode};
-use rohi_config::ConfigOverrides;
+use rohi_service::Config;
+
+use super::managed::{
+    ADDRESS_MODE_ENUM, ADDRESS_MODES, AddressModeCodec, HostnameCodec, Ipv4Codec, validate_section,
+};
 
 use crate::WifiError;
 
@@ -126,29 +130,41 @@ impl fmt::Debug for Hostname {
 ///
 /// The static address fields are used only in [`AddressMode::Static`] and
 /// kept otherwise, so switching the mode back and forth does not lose them.
-#[derive(Clone, PartialEq, Eq, Debug, ConfigOverrides)]
-#[config(overrides = NetworkOverrides, version = 1)]
+#[derive(Clone, PartialEq, Eq, Debug, Config)]
+#[config(
+    name = "network",
+    overrides = NetworkOverrides,
+    version = 1,
+    validate = validate_section,
+    enums = ADDRESS_MODES
+)]
 pub struct NetworkConfig {
     /// How the IPv4 address is obtained.
-    #[config(id = 1)]
+    #[config(id = 1, with = AddressModeCodec, enum_id = ADDRESS_MODE_ENUM)]
     pub address_mode: AddressMode,
     /// Static IPv4 address.
-    #[config(id = 2)]
+    #[config(id = 2, name = "ip", with = Ipv4Codec)]
     pub static_ip: Option<Ipv4>,
     /// Length of the network prefix of the static address, 1 to 30.
-    #[config(id = 3)]
+    #[config(id = 3, min = 1, max = 30)]
     pub prefix_len: Option<u8>,
     /// Static default gateway.
-    #[config(id = 4)]
+    #[config(id = 4, with = Ipv4Codec)]
     pub gateway: Option<Ipv4>,
     /// Static DNS server.
-    #[config(id = 5)]
+    #[config(id = 5, with = Ipv4Codec)]
     pub dns: Option<Ipv4>,
     /// Host name announced to the DHCP server.
-    #[config(id = 6)]
+    #[config(id = 6, with = HostnameCodec)]
     pub hostname: Option<Hostname>,
     /// Bound of obtaining an address from DHCP.
-    #[config(id = 7)]
+    #[config(
+        id = 7,
+        name = "dhcp_timeout",
+        unit = Ms,
+        min = DHCP_TIMEOUT_RANGE_MS.0,
+        max = DHCP_TIMEOUT_RANGE_MS.1
+    )]
     pub dhcp_timeout_ms: u32,
 }
 

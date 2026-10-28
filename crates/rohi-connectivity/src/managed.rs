@@ -20,86 +20,43 @@ use embassy_sync::blocking_mutex::raw::RawMutex;
 use heapless::Vec;
 use rohi_location::LocationSource;
 use rohi_service::{
-    Bounds, Config, ConfigField, FieldDescriptor, FieldError, Issue, IssueDescriptor,
-    IssueSeverity, MAX_ISSUES, Service, ServiceHealth, ServiceState, ServiceSummary, Status,
-    StatusWriter, Unit, Value, ValueKind, WriteError,
+    Codec, FieldDescriptor, FieldError, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES, Service,
+    ServiceHealth, ServiceState, ServiceSummary, Status, StatusWriter, Value, ValueKind,
+    WriteError,
 };
 
-use crate::config::{MAX_INTERVAL_S, MIN_INTERVAL_S};
 use crate::service::{ConnectivityShared, ConnectivityState};
 use crate::transport::TransportError;
 use crate::{ConnectivityConfig, Host};
 
-/// Field ids of the `connectivity` config section.
-pub mod field {
-    /// Telemetry is only produced and sent when enabled.
-    pub const ENABLED: u32 = 1;
-    /// Robonomics CPS node identifier.
-    pub const NODE_ID: u32 = 2;
-    /// Seconds between telemetry frames.
-    pub const INTERVAL_S: u32 = 3;
-    /// Ingress host name or IPv4 address.
-    pub const HOST: u32 = 4;
-    /// Ingress TCP port.
-    pub const PORT: u32 = 5;
+/// The ingress host as text.
+///
+/// The fields, their ids and the persisted overrides of the `connectivity`
+/// section are declared once, on [`ConnectivityConfig`].
+pub struct HostCodec;
+
+impl Codec<Host> for HostCodec {
+    const KIND: ValueKind = ValueKind::String;
+
+    fn encode(host: &Host) -> Result<Option<Value>, FieldError> {
+        Value::text(host.as_str())
+            .map(Some)
+            .ok_or(FieldError::Invalid)
+    }
+
+    fn decode(value: &Value) -> Result<Host, FieldError> {
+        let text = value.as_str().ok_or(FieldError::WrongKind)?;
+        Host::new(text).ok_or(FieldError::Invalid)
+    }
 }
 
-impl Config for ConnectivityConfig {
-    const NAME: &'static str = "connectivity";
-    const FIELDS: &'static [ConfigField] = &[
-        ConfigField::new(field::ENABLED, "enabled", ValueKind::Bool),
-        ConfigField::new(field::NODE_ID, "node_id", ValueKind::U64),
-        ConfigField::new(field::INTERVAL_S, "interval_s", ValueKind::U64)
-            .unit(Unit::S)
-            .bounds(Bounds::U64(MIN_INTERVAL_S as u64, MAX_INTERVAL_S as u64)),
-        ConfigField::new(field::HOST, "host", ValueKind::String),
-        ConfigField::new(field::PORT, "port", ValueKind::U64).bounds(Bounds::U64(1, 65535)),
-    ];
-
-    fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
-        Ok(Some(match id {
-            field::ENABLED => Value::Bool(self.enabled),
-            field::NODE_ID => Value::U64(self.node_id),
-            field::INTERVAL_S => Value::U64(u64::from(self.interval_s)),
-            field::HOST => Value::text(self.host.as_str()).ok_or(FieldError::Invalid)?,
-            field::PORT => Value::U64(u64::from(self.port)),
-            _ => return Err(FieldError::UnknownField),
-        }))
+/// A disabled section is valid whatever it holds: telemetry is off. An
+/// enabled one must be usable.
+pub(crate) fn validate_section(config: &ConnectivityConfig) -> Result<(), FieldError> {
+    if !config.enabled {
+        return Ok(());
     }
-
-    fn set_field(&mut self, id: u32, value: Value) -> Result<(), FieldError> {
-        match id {
-            field::ENABLED => self.enabled = value.as_bool().ok_or(FieldError::WrongKind)?,
-            field::NODE_ID => self.node_id = value.as_u64().ok_or(FieldError::WrongKind)?,
-            field::INTERVAL_S => {
-                let seconds = value.as_u64().ok_or(FieldError::WrongKind)?;
-                self.interval_s = u32::try_from(seconds).map_err(|_| FieldError::OutOfRange)?;
-            }
-            field::HOST => {
-                let host = value.as_str().ok_or(FieldError::WrongKind)?;
-                self.host = Host::new(host).ok_or(FieldError::Invalid)?;
-            }
-            field::PORT => {
-                let port = value.as_u64().ok_or(FieldError::WrongKind)?;
-                self.port = u16::try_from(port).map_err(|_| FieldError::OutOfRange)?;
-            }
-            _ => return Err(FieldError::UnknownField),
-        }
-        Ok(())
-    }
-
-    fn field_is_set(&self, id: u32) -> Result<bool, FieldError> {
-        Ok(self.read_field(id)?.is_some())
-    }
-
-    /// A disabled section is valid whatever it holds: telemetry is off. An
-    /// enabled one must be usable.
-    fn validate(&self) -> Result<(), FieldError> {
-        if !self.enabled {
-            return Ok(());
-        }
-        ConnectivityConfig::validate(self).map_err(|_| FieldError::Invalid)
-    }
+    ConnectivityConfig::validate(config).map_err(|_| FieldError::Invalid)
 }
 
 /// Issue codes of the `connectivity` service.
@@ -321,9 +278,17 @@ mod tests {
     use embassy_sync::blocking_mutex::raw::NoopRawMutex;
     use rohi_config::ConfigOverrides;
     use rohi_location::NoLocation;
+    use rohi_service::{Bounds, Config, Unit};
 
     use super::*;
     use crate::ConnectivityOverrides;
+    use crate::config::{MAX_INTERVAL_S, MIN_INTERVAL_S};
+
+    const ENABLED: u32 = 1;
+    const NODE_ID: u32 = 2;
+    const INTERVAL_S: u32 = 3;
+    const HOST: u32 = 4;
+    const PORT: u32 = 5;
 
     fn text(value: &str) -> Value {
         Value::text(value).unwrap()
@@ -334,22 +299,18 @@ mod tests {
         let mut config = ConnectivityConfig::default();
         // Disabled is a valid state, with or without a host.
         assert_eq!(Config::validate(&config), Ok(()));
-        config.set_field(field::ENABLED, Value::Bool(true)).unwrap();
+        config.set_field(ENABLED, Value::Bool(true)).unwrap();
         assert_eq!(Config::validate(&config), Err(FieldError::Invalid));
-        config
-            .set_field(field::HOST, text("ingress.example.org"))
-            .unwrap();
-        config.set_field(field::PORT, Value::U64(443)).unwrap();
-        config.set_field(field::NODE_ID, Value::U64(42)).unwrap();
-        config
-            .set_field(field::INTERVAL_S, Value::U64(120))
-            .unwrap();
+        config.set_field(HOST, text("ingress.example.org")).unwrap();
+        config.set_field(PORT, Value::U64(443)).unwrap();
+        config.set_field(NODE_ID, Value::U64(42)).unwrap();
+        config.set_field(INTERVAL_S, Value::U64(120)).unwrap();
         assert_eq!(Config::validate(&config), Ok(()));
         assert_eq!(
-            config.read_field(field::HOST),
+            config.read_field(HOST),
             Ok(Some(text("ingress.example.org")))
         );
-        assert_eq!(config.read_field(field::PORT), Ok(Some(Value::U64(443))));
+        assert_eq!(config.read_field(PORT), Ok(Some(Value::U64(443))));
         assert_eq!(config.interval_s, 120);
     }
 
@@ -357,15 +318,15 @@ mod tests {
     fn typed_conversions_reject_what_does_not_fit() {
         let mut config = ConnectivityConfig::default();
         assert_eq!(
-            config.set_field(field::PORT, Value::U64(70_000)),
+            config.set_field(PORT, Value::U64(70_000)),
             Err(FieldError::OutOfRange)
         );
         assert_eq!(
-            config.set_field(field::HOST, text("bad host!")),
+            config.set_field(HOST, text("bad host!")),
             Err(FieldError::Invalid)
         );
         assert_eq!(
-            config.set_field(field::ENABLED, Value::U64(1)),
+            config.set_field(ENABLED, Value::U64(1)),
             Err(FieldError::WrongKind)
         );
         assert_eq!(
@@ -386,16 +347,14 @@ mod tests {
         let mut overrides = ConnectivityOverrides::default();
         let mut config =
             rohi_config::materialize::<ConnectivityConfig>(&Default::default(), &overrides);
-        config
-            .set_field(field::INTERVAL_S, Value::U64(120))
-            .unwrap();
-        overrides.capture(&config, field::INTERVAL_S);
+        config.set_field(INTERVAL_S, Value::U64(120)).unwrap();
+        overrides.capture(&config, INTERVAL_S);
         assert_eq!(
             rohi_config::materialize::<ConnectivityConfig>(&Default::default(), &overrides)
                 .interval_s,
             120
         );
-        overrides.clear(field::INTERVAL_S);
+        overrides.clear(INTERVAL_S);
         assert_eq!(
             rohi_config::materialize::<ConnectivityConfig>(&Default::default(), &overrides)
                 .interval_s,
@@ -412,10 +371,10 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(
-            field(field::INTERVAL_S).bounds,
+            field(INTERVAL_S).bounds,
             Some(Bounds::U64(MIN_INTERVAL_S.into(), MAX_INTERVAL_S.into()))
         );
-        assert_eq!(field(field::INTERVAL_S).field.unit, Unit::S);
+        assert_eq!(field(INTERVAL_S).field.unit, Unit::S);
     }
 
     fn enabled() -> Option<ConnectivityConfig> {

@@ -1,0 +1,5 @@
+error: field `a` needs a stable id, add `#[config(id = N)]`
+ --> tests/ui/config_missing_field_id.rs:6:5
+  |
+6 |     a: u8,
+  |     ^

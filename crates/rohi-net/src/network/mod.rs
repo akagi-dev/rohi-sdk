@@ -30,5 +30,7 @@ pub use config::{
     AddressMode, DEFAULT_DHCP_TIMEOUT_MS, DHCP_TIMEOUT_RANGE_MS, Hostname, Ipv4, MAX_HOSTNAME_LEN,
     NetworkConfig, NetworkOverrides, StaticIpv4,
 };
-pub use managed::{ADDRESS_MODE_ENUM, ADDRESS_MODES, address_mode, field as config_field};
+pub use managed::{
+    ADDRESS_MODE_ENUM, ADDRESS_MODES, AddressModeCodec, HostnameCodec, Ipv4Codec, address_mode,
+};
 pub use service::{NetworkProbe, NetworkService, issue, status_field};

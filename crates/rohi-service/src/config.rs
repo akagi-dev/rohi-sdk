@@ -73,19 +73,42 @@ pub enum FieldError {
     Secret,
 }
 
-/// A typed config section exposed through the generic config interface.
+/// The typed configuration of one managed section.
 ///
 /// The type is the *effective* configuration the runtime consumes: `Default`,
 /// the firmware overrides and the user overrides, see [`materialize`]. The
 /// persisted state is [`HasOverrides::Overrides`], the fields the user set
 /// explicitly.
 ///
-/// The module owns the typed struct (which derives its persisted overrides with
-/// `#[derive(ConfigOverrides)]`, see [`HasOverrides`]), the field metadata, the
-/// conversion between [`Value`] and typed fields, and the validation. Field ids
-/// are stable and only ever added. The id and version of the section in the
-/// registry are those of the persisted overrides: the hash of the name of the
-/// config type and the `version` of the derive.
+/// A config owns its field metadata, the conversion between [`Value`] and its
+/// typed fields (see [`Codec`](crate::Codec)), which fields are optional or
+/// secret, its validation and its link to the generated persisted overrides.
+/// It owns no storage, no transaction, no revision and no runtime task: those
+/// belong to the [`Section`] that manages it and to the [`SectionStore`] behind
+/// it. It is not a service either: a service may share a section through
+/// [`ConfigUpdate`], and neither needs the other's identity.
+///
+/// Declare a config with `#[derive(Config)]`, which generates this
+/// implementation and the overrides from the one declaration of the fields:
+///
+/// ```ignore
+/// #[derive(Clone, Config)]
+/// #[config(name = "wifi", overrides = WifiOverrides, version = 1, validate = validate_wifi)]
+/// pub struct WifiConfig {
+///     #[config(id = 1, with = SsidCodec)]
+///     pub ssid: Option<WifiSsid>,
+///     #[config(id = 2, secret, with = PasswordCodec)]
+///     pub password: Option<WifiPassword>,
+///     #[config(id = 3, name = "scan_timeout", unit = Ms, min = 1_000, max = 120_000)]
+///     pub scan_timeout_ms: u32,
+/// }
+/// ```
+///
+/// Field ids are stable and only ever added. The id and version of the section
+/// in the registry are those of the persisted overrides: the hash of the name
+/// of the config type and the `version` of the derive. The trait can still be
+/// implemented by hand; the derive is the one source of truth for the common
+/// case.
 pub trait Config: HasOverrides + Clone + Default {
     /// Stable public section name, for example `connectivity`.
     const NAME: &'static str;
@@ -339,7 +362,13 @@ pub trait ConfigSectionOps {
     ) -> Result<Patched, ConfigError>;
 }
 
-/// A typed section with its store and revision counter.
+/// A managed section: a typed [`Config`] with its store, its revision counter
+/// and the transaction lock that serializes every change.
+///
+/// It implements the generic `get`, `patch` and `reset` of
+/// [`ConfigSectionOps`] and the transactional [`ConfigUpdate`] once, for every
+/// config. Control requests and services that change their own section must
+/// share the one instance, so that there is one lock and one revision.
 ///
 /// The revision lives in RAM: it starts at 0 at boot and is meant for
 /// optimistic concurrency within one boot.

@@ -29,7 +29,6 @@ mod managed;
 mod service;
 
 pub use config::{BleName, BleOverrides, BleSettings, MAX_BLE_NAME_LEN};
-pub use managed::field as config_field;
 pub use service::{BleProbe, BleService, STATES, issue, state, status_field};
 
 /// Largest ATT payload a BLE transport ever has to carry (MTU 247 minus the

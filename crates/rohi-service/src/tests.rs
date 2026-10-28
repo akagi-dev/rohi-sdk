@@ -23,17 +23,88 @@ use rohi_config::{ConfigOverrides, Override};
 
 use crate::*;
 
-#[derive(Clone, Debug, PartialEq, ConfigOverrides)]
-#[config(overrides = DemoOverrides, version = 3, id = 1)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Mode {
+    Fast,
+    Slow,
+}
+
+const MODES: &[EnumDescriptor] = &[EnumDescriptor::new(
+    1,
+    &[EnumVariant::new(0, "fast"), EnumVariant::new(1, "slow")],
+)];
+
+struct ModeCodec;
+
+impl Codec<Mode> for ModeCodec {
+    const KIND: ValueKind = ValueKind::Enum;
+
+    fn encode(mode: &Mode) -> Result<Option<Value>, FieldError> {
+        Ok(Some(Value::Enum(match mode {
+            Mode::Fast => 0,
+            Mode::Slow => 1,
+        })))
+    }
+
+    fn decode(value: &Value) -> Result<Mode, FieldError> {
+        match value.as_enum().ok_or(FieldError::WrongKind)? {
+            0 => Ok(Mode::Fast),
+            1 => Ok(Mode::Slow),
+            _ => Err(FieldError::OutOfRange),
+        }
+    }
+}
+
+/// Text of any length the generic value holds.
+struct Text;
+
+impl Codec<String> for Text {
+    const KIND: ValueKind = ValueKind::String;
+
+    fn encode(value: &String) -> Result<Option<Value>, FieldError> {
+        Value::text(value).map(Some).ok_or(FieldError::Invalid)
+    }
+
+    fn decode(value: &Value) -> Result<String, FieldError> {
+        value
+            .as_str()
+            .map(String::from)
+            .ok_or(FieldError::WrongKind)
+    }
+}
+
+/// An enabled section needs a host.
+fn host_is_set(enabled: bool, host: &str) -> Result<(), FieldError> {
+    if enabled && host.is_empty() {
+        return Err(FieldError::Invalid);
+    }
+    Ok(())
+}
+
+fn demo_is_valid(demo: &Demo) -> Result<(), FieldError> {
+    host_is_set(demo.enabled, &demo.host)
+}
+
+#[derive(Clone, Debug, PartialEq, Config)]
+#[config(
+    name = "demo",
+    overrides = DemoOverrides,
+    version = 3,
+    id = 1,
+    validate = demo_is_valid,
+    enums = MODES
+)]
 struct Demo {
     #[config(id = 1)]
     enabled: bool,
-    #[config(id = 2)]
+    #[config(id = 2, unit = S, min = 10, max = 100)]
     interval_s: u64,
-    #[config(id = 3)]
+    #[config(id = 3, with = Text)]
     host: String,
-    #[config(id = 4)]
+    #[config(id = 4, secret, with = Text)]
     token: Option<String>,
+    #[config(id = 5, read_only, with = ModeCodec, enum_id = 1)]
+    mode: Mode,
 }
 
 std::thread_local! {
@@ -49,77 +120,8 @@ impl Default for Demo {
             interval_s: DEFAULT_INTERVAL_S.get(),
             host: String::new(),
             token: None,
+            mode: Mode::Fast,
         }
-    }
-}
-
-const DEMO_FIELDS: &[ConfigField] = &[
-    ConfigField::new(1, "enabled", ValueKind::Bool),
-    ConfigField::new(2, "interval_s", ValueKind::U64)
-        .bounds(Bounds::U64(10, 100))
-        .unit(Unit::S),
-    ConfigField::new(3, "host", ValueKind::String),
-    ConfigField::new(4, "token", ValueKind::String)
-        .secret()
-        .optional(),
-    ConfigField::new(5, "mode", ValueKind::Enum)
-        .with_enum(1)
-        .read_only(),
-];
-
-const MODES: &[EnumDescriptor] = &[EnumDescriptor::new(
-    1,
-    &[EnumVariant::new(0, "fast"), EnumVariant::new(1, "slow")],
-)];
-
-impl Config for Demo {
-    const NAME: &'static str = "demo";
-    const FIELDS: &'static [ConfigField] = DEMO_FIELDS;
-    const ENUMS: &'static [EnumDescriptor] = MODES;
-    fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
-        Ok(match id {
-            1 => Some(Value::Bool(self.enabled)),
-            2 => Some(Value::U64(self.interval_s)),
-            3 => Some(Value::text(&self.host).unwrap()),
-            4 => self.token.as_deref().and_then(Value::text),
-            5 => Some(Value::Enum(0)),
-            _ => return Err(FieldError::UnknownField),
-        })
-    }
-
-    fn set_field(&mut self, id: u32, value: Value) -> Result<(), FieldError> {
-        match (id, value) {
-            (1, Value::Bool(v)) => self.enabled = v,
-            (2, Value::U64(v)) => self.interval_s = v,
-            (3, Value::String(v)) => self.host = v.as_str().into(),
-            (4, Value::String(v)) => self.token = Some(v.as_str().into()),
-            _ => return Err(FieldError::UnknownField),
-        }
-        Ok(())
-    }
-
-    fn set_none(&mut self, id: u32) -> Result<(), FieldError> {
-        match id {
-            4 => {
-                self.token = None;
-                Ok(())
-            }
-            _ => Err(FieldError::NotOptional),
-        }
-    }
-
-    fn field_is_set(&self, id: u32) -> Result<bool, FieldError> {
-        match id {
-            4 => Ok(self.token.is_some()),
-            _ => Ok(self.read_field(id)?.is_some()),
-        }
-    }
-
-    fn validate(&self) -> Result<(), FieldError> {
-        if self.enabled && self.host.is_empty() {
-            return Err(FieldError::Invalid);
-        }
-        Ok(())
     }
 }
 
@@ -558,6 +560,7 @@ fn firmware(host: &str, interval_s: u64, token: Option<&str>) -> Demo {
         interval_s,
         host: host.into(),
         token: token.map(Into::into),
+        mode: Mode::Fast,
     }
 }
 
@@ -744,17 +747,31 @@ fn the_schema_describes_the_fields() {
 fn a_tuple_of_sections_is_a_registry() {
     let a = MemoryStore::default();
 
-    #[derive(Clone, Debug, ConfigOverrides)]
-    #[config(overrides = OtherOverrides, version = 1, id = 2)]
+    fn other_is_valid(other: &Other) -> Result<(), FieldError> {
+        host_is_set(other.enabled, &other.host)
+    }
+
+    // A second section type with another name.
+    #[derive(Clone, Debug, Config)]
+    #[config(
+        name = "other",
+        overrides = OtherOverrides,
+        version = 1,
+        id = 2,
+        validate = other_is_valid,
+        enums = MODES
+    )]
     struct Other {
         #[config(id = 1)]
         enabled: bool,
-        #[config(id = 2)]
+        #[config(id = 2, unit = S, min = 10, max = 100)]
         interval_s: u64,
-        #[config(id = 3)]
+        #[config(id = 3, with = Text)]
         host: String,
-        #[config(id = 4)]
+        #[config(id = 4, secret, with = Text)]
         token: Option<String>,
+        #[config(id = 5, read_only, with = ModeCodec, enum_id = 1)]
+        mode: Mode,
     }
     impl Default for Other {
         fn default() -> Self {
@@ -768,44 +785,8 @@ fn a_tuple_of_sections_is_a_registry() {
                 interval_s: demo.interval_s,
                 host: demo.host,
                 token: demo.token,
+                mode: demo.mode,
             }
-        }
-    }
-    impl From<&Other> for Demo {
-        fn from(other: &Other) -> Self {
-            Self {
-                enabled: other.enabled,
-                interval_s: other.interval_s,
-                host: other.host.clone(),
-                token: other.token.clone(),
-            }
-        }
-    }
-    // A second section type with another name.
-    impl Config for Other {
-        const NAME: &'static str = "other";
-        const FIELDS: &'static [ConfigField] = DEMO_FIELDS;
-        const ENUMS: &'static [EnumDescriptor] = MODES;
-        fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
-            Demo::from(self).read_field(id)
-        }
-        fn field_is_set(&self, id: u32) -> Result<bool, FieldError> {
-            Demo::from(self).field_is_set(id)
-        }
-        fn set_field(&mut self, id: u32, value: Value) -> Result<(), FieldError> {
-            let mut demo = Demo::from(&*self);
-            demo.set_field(id, value)?;
-            *self = demo.into();
-            Ok(())
-        }
-        fn set_none(&mut self, id: u32) -> Result<(), FieldError> {
-            let mut demo = Demo::from(&*self);
-            demo.set_none(id)?;
-            *self = demo.into();
-            Ok(())
-        }
-        fn validate(&self) -> Result<(), FieldError> {
-            Demo::from(self).validate()
         }
     }
     #[derive(Default)]
@@ -1442,12 +1423,30 @@ fn issue_age_follows_the_set_of_active_issues_only() {
     assert_eq!(age(12_000), Some(0));
 }
 
-#[derive(Clone, Debug, ConfigOverrides)]
-#[config(overrides = VaultOverrides, version = 1, id = 9)]
+/// A codec that fails the test when a secret is converted to a value.
+struct Secret;
+
+impl Codec<String> for Secret {
+    const KIND: ValueKind = ValueKind::String;
+
+    fn encode(_: &String) -> Result<Option<Value>, FieldError> {
+        panic!("a secret must never be read")
+    }
+
+    fn decode(value: &Value) -> Result<String, FieldError> {
+        value
+            .as_str()
+            .map(String::from)
+            .ok_or(FieldError::WrongKind)
+    }
+}
+
+#[derive(Clone, Debug, Config)]
+#[config(name = "vault", overrides = VaultOverrides, version = 1, id = 9)]
 struct Vault {
-    #[config(id = 1)]
+    #[config(id = 1, with = Text)]
     label: String,
-    #[config(id = 2)]
+    #[config(id = 2, secret, with = Secret)]
     token: Option<String>,
 }
 
@@ -1457,45 +1456,6 @@ impl Default for Vault {
             label: "main".into(),
             token: None,
         }
-    }
-}
-
-impl Config for Vault {
-    const NAME: &'static str = "vault";
-    const FIELDS: &'static [ConfigField] = &[
-        ConfigField::new(1, "label", ValueKind::String),
-        ConfigField::new(2, "token", ValueKind::String)
-            .secret()
-            .optional(),
-    ];
-    fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
-        match id {
-            1 => Ok(Value::text(&self.label)),
-            2 => panic!("a secret must never be read"),
-            _ => Err(FieldError::UnknownField),
-        }
-    }
-
-    fn field_is_set(&self, id: u32) -> Result<bool, FieldError> {
-        match id {
-            1 => Ok(true),
-            2 => Ok(self.token.is_some()),
-            _ => Err(FieldError::UnknownField),
-        }
-    }
-
-    fn set_field(&mut self, id: u32, value: Value) -> Result<(), FieldError> {
-        let text = value.as_str().ok_or(FieldError::WrongKind)?;
-        match id {
-            1 => self.label = text.into(),
-            2 => self.token = Some(text.into()),
-            _ => return Err(FieldError::UnknownField),
-        }
-        Ok(())
-    }
-
-    fn validate(&self) -> Result<(), FieldError> {
-        Ok(())
     }
 }
 

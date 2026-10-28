@@ -23,7 +23,9 @@ use minicbor::bytes::ByteSlice;
 use minicbor::decode::{self, Decoder};
 use minicbor::encode::{self, Encoder, Write};
 use minicbor::{CborLen, Decode, Encode};
-use rohi_config::ConfigOverrides;
+use rohi_service::Config;
+
+use crate::managed::{HostCodec, validate_section};
 
 /// Maximum length of the configured host name, in bytes.
 pub const MAX_HOST_LEN: usize = 64;
@@ -152,8 +154,13 @@ pub struct Endpoint<'a> {
 /// `ConnectivityConfig::default()` is [`disabled`](Self::disabled): no host
 /// and not valid on its own. What is stored are the explicit user overrides
 /// of it, [`ConnectivityOverrides`].
-#[derive(Clone, PartialEq, Eq, Debug, ConfigOverrides)]
-#[config(overrides = ConnectivityOverrides, version = 1)]
+#[derive(Clone, PartialEq, Eq, Debug, Config)]
+#[config(
+    name = "connectivity",
+    overrides = ConnectivityOverrides,
+    version = 1,
+    validate = validate_section
+)]
 pub struct ConnectivityConfig {
     /// Telemetry is only produced and sent when enabled.
     #[config(id = 1)]
@@ -162,13 +169,13 @@ pub struct ConnectivityConfig {
     #[config(id = 2)]
     pub node_id: u64,
     /// Seconds between telemetry frames.
-    #[config(id = 3)]
+    #[config(id = 3, unit = S, min = MIN_INTERVAL_S, max = MAX_INTERVAL_S)]
     pub interval_s: u32,
     /// Ingress host.
-    #[config(id = 4)]
+    #[config(id = 4, with = HostCodec)]
     pub host: Host,
     /// Ingress TCP port.
-    #[config(id = 5)]
+    #[config(id = 5, min = 1, max = 65535)]
     pub port: u16,
 }
 

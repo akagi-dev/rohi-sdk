@@ -15,9 +15,8 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-
 //! Derive macros for `rohi-config` configuration sections: `ConfigSection` for
-//! persistent sections and `ConfigOverrides` (see below) for managed configs.
+//! persistent sections and `Config` (see below) for managed configs.
 //!
 //! ```ignore
 //! #[derive(minicbor::Encode, minicbor::Decode, minicbor::CborLen, ConfigSection)]
@@ -57,6 +56,8 @@ use quote::{format_ident, quote};
 use syn::ext::IdentExt;
 use syn::{DeriveInput, LitInt, LitStr, Path, parse_macro_input, spanned::Spanned};
 
+mod access;
+mod model;
 mod overrides;
 
 const FNV64_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
@@ -85,40 +86,64 @@ pub fn derive_config_section(input: TokenStream) -> TokenStream {
     }
 }
 
-/// Derives the persisted overrides of a typed config section.
+/// Derives the `rohi_service::Config` implementation and the persisted
+/// overrides of a typed config section from one declaration.
 ///
 /// ```ignore
-/// #[derive(Clone, ConfigOverrides)]
-/// #[config(overrides = WifiOverrides, version = 1)]
+/// #[derive(Clone, Config)]
+/// #[config(name = "wifi", overrides = WifiOverrides, version = 1, validate = validate_wifi)]
 /// pub struct WifiConfig {
-///     #[config(id = 1)]
+///     #[config(id = 1, with = SsidCodec)]
 ///     pub ssid: Option<WifiSsid>,
-///     #[config(id = 3)]
+///     #[config(id = 2, secret, with = PasswordCodec)]
+///     pub password: Option<WifiPassword>,
+///     #[config(id = 3, name = "scan_timeout", unit = Ms, min = 1_000, max = 120_000)]
 ///     pub scan_timeout_ms: u32,
 /// }
 /// ```
 ///
+/// On the struct: `name` (the public name of the section) and `overrides` (the
+/// name of the generated overrides type) and `version` are required; `id`
+/// (explicit section ID, as for `ConfigSection`), `validate = path` (a
+/// `fn(&Self) -> Result<(), FieldError>` for the rules across fields; without
+/// it every section is valid) and `enums = CONST` (the `&[EnumDescriptor]` the
+/// enum fields refer to) are optional.
+///
+/// Every field needs `#[config(id = N)]`, a stable `u32` that is the CBOR map
+/// key of its override and only ever added. Optional keys: `name` (the public
+/// name, the identifier by default), `with = Codec` (the `Codec<T>` that
+/// converts the type, the standard codec by default), `unit = Ms` (a variant
+/// of `Unit`), `min`/`max` (inclusive bounds of a numeric field), `enum_id`,
+/// and the flags `secret`, `required` and `read_only`.
+///
+/// An `Option<T>` field is optional: it can be set to "no value" and the codec
+/// converts `T`; `required` keeps it required. A `secret` field must be an
+/// `Option` and is only ever asked whether it is set. A `read_only` field is
+/// shown to clients but not persisted. The type of a field needs `Clone` and
+/// the `minicbor` traits.
+///
 /// Generated next to the config, with the same visibility: the struct
-/// `WifiOverrides`, which holds an `Override<T>` per field with the type taken
-/// from the config, its CBOR map codec keyed by the field ids, `Default`
-/// (nothing overridden), `ConfigSection` (section ID: the FNV-1a hash of the
-/// name of the *config* type, never of the overrides), `ConfigOverrides<WifiConfig>`
-/// and `HasOverrides for WifiConfig`.
-///
-/// `#[config(...)]` keys on the struct: `overrides = Name` (required),
-/// `version = N` (required, `u16`) and `id = 0x...` (explicit section ID, as for
-/// `ConfigSection`). Every field needs `#[config(id = N)]`, a stable `u32` that
-/// is the CBOR map key and is only ever added. Generic types and structs
-/// without named fields are rejected.
-///
-/// Every field type must be `Clone` and implement the `minicbor` traits.
-#[proc_macro_derive(ConfigOverrides, attributes(config))]
-pub fn derive_config_overrides(input: TokenStream) -> TokenStream {
+/// `WifiOverrides`, which holds an `Override<T>` per persisted field with the
+/// type taken from the config, its CBOR map codec keyed by the field ids,
+/// `Default` (nothing overridden), a `Debug` that redacts secrets,
+/// `ConfigSection` (section ID: the FNV-1a hash of the name of the *config*
+/// type, never of the overrides), `ConfigOverrides<WifiConfig>` and
+/// `HasOverrides for WifiConfig`, and `Config for WifiConfig`. Generic types
+/// and structs without named fields are rejected.
+#[proc_macro_derive(Config, attributes(config))]
+pub fn derive_config(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    match overrides::expand(&input) {
+    match expand_config(&input) {
         Ok(tokens) => tokens.into(),
         Err(error) => error.to_compile_error().into(),
     }
+}
+
+fn expand_config(input: &DeriveInput) -> syn::Result<TokenStream2> {
+    let model = model::parse(input)?;
+    let overrides = overrides::expand(input, &model);
+    let access = access::expand(input, &model);
+    Ok(quote!(#overrides #access))
 }
 
 #[derive(Default)]

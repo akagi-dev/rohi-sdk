@@ -20,7 +20,9 @@ use core::fmt;
 
 use heapless::String;
 use minicbor::{CborLen, Decode, Encode};
-use rohi_config::ConfigOverrides;
+use rohi_service::Config;
+
+use super::managed::NameCodec;
 
 /// Longest advertised name, in bytes: the whole scan response minus its
 /// 2-byte header.
@@ -66,12 +68,12 @@ impl fmt::Debug for BleName {
 /// The name is read when the peripheral starts: a change takes effect after
 /// a restart. What is stored are the explicit user overrides of it,
 /// [`BleOverrides`].
-#[derive(Clone, Debug, Default, PartialEq, Eq, ConfigOverrides)]
-#[config(overrides = BleOverrides, version = 1)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Config)]
+#[config(name = "ble", overrides = BleOverrides, version = 1)]
 pub struct BleSettings {
     /// Advertised and GAP device name. `None` keeps the firmware default,
     /// see [`BleConfig::name_prefix`](crate::BleConfig::name_prefix).
-    #[config(id = 1)]
+    #[config(id = 1, with = NameCodec)]
     pub name: Option<BleName>,
 }
 

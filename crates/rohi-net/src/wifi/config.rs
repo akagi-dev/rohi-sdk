@@ -22,8 +22,9 @@ use minicbor::bytes::ByteSlice;
 use minicbor::decode::{self, Decoder};
 use minicbor::encode::{self, Encoder, Write};
 use minicbor::{CborLen, Decode, Encode};
-use rohi_config::ConfigOverrides;
+use rohi_service::Config;
 
+use super::managed::{PasswordCodec, SsidCodec, validate_section};
 use crate::network::NetworkConfig;
 use crate::{MAX_SSID_LEN, MAX_WIFI_PASSWORD_LEN, MIN_WIFI_PASSWORD_LEN, WifiError};
 
@@ -183,31 +184,61 @@ fn within(value: u32, (min, max): (u32, u32)) -> bool {
 ///
 /// An open network is represented by `password == None`, never by an empty
 /// password.
-#[derive(Clone, PartialEq, Eq, ConfigOverrides)]
-#[config(overrides = WifiOverrides, version = 1)]
+#[derive(Clone, PartialEq, Eq, Config)]
+#[config(name = "wifi", overrides = WifiOverrides, version = 1, validate = validate_section)]
 pub struct WifiConfig {
     /// Network name. `None` (the default) disables Wi-Fi; a network name
     /// enables it.
-    #[config(id = 1)]
+    #[config(id = 1, with = SsidCodec)]
     pub ssid: Option<WifiSsid>,
     /// Passphrase, `None` for an open network.
-    #[config(id = 2)]
+    #[config(id = 2, secret, with = PasswordCodec)]
     pub password: Option<WifiPassword>,
     /// Bound of a network scan.
-    #[config(id = 3)]
+    #[config(
+        id = 3,
+        name = "scan_timeout",
+        unit = Ms,
+        min = SCAN_TIMEOUT_RANGE_MS.0,
+        max = SCAN_TIMEOUT_RANGE_MS.1
+    )]
     pub scan_timeout_ms: u32,
     /// Bound of associating with the access point.
-    #[config(id = 4)]
+    #[config(
+        id = 4,
+        name = "connect_timeout",
+        unit = Ms,
+        min = CONNECT_TIMEOUT_RANGE_MS.0,
+        max = CONNECT_TIMEOUT_RANGE_MS.1
+    )]
     pub connect_timeout_ms: u32,
     /// First delay before a reconnect attempt, doubling up to `backoff_max_ms`.
-    #[config(id = 5)]
+    #[config(
+        id = 5,
+        name = "backoff_initial",
+        unit = Ms,
+        min = BACKOFF_INITIAL_RANGE_MS.0,
+        max = BACKOFF_INITIAL_RANGE_MS.1
+    )]
     pub backoff_initial_ms: u32,
     /// Longest delay between reconnect attempts.
-    #[config(id = 6)]
+    #[config(
+        id = 6,
+        name = "backoff_max",
+        unit = Ms,
+        min = BACKOFF_MAX_RANGE_MS.0,
+        max = BACKOFF_MAX_RANGE_MS.1
+    )]
     pub backoff_max_ms: u32,
     /// Interval of refreshing the connection details while connected; the
     /// link counts as stable after one such interval.
-    #[config(id = 7)]
+    #[config(
+        id = 7,
+        name = "link_refresh",
+        unit = Ms,
+        min = LINK_REFRESH_RANGE_MS.0,
+        max = LINK_REFRESH_RANGE_MS.1
+    )]
     pub link_refresh_ms: u32,
 }
 
