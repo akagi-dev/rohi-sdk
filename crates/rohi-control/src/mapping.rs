@@ -299,6 +299,7 @@ pub(crate) fn mutation(mutation: &pb::ConfigMutation) -> Option<Mutation> {
         field_id: mutation.field_id,
         op: match mutation.operation.as_ref()? {
             Operation::Clear(_) => MutationOp::Clear,
+            Operation::None(_) => MutationOp::None,
             set => MutationOp::Set(from_mutation_case(set)?),
         },
     })

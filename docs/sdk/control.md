@@ -104,10 +104,11 @@ A section has a name, a schema version and a **revision**. `GetConfigSection` re
 (`effective`: the firmware defaults with the user's overrides applied; a field without a value is absent, secrets are
 `redacted`, never their value) and `overridden`, the ids of the fields the user has explicitly overridden (the override
 value of such a field is its entry in `effective`).
-`PatchConfigSection` carries `set` / `clear` mutations by field id, an optional `expected_revision` and `dry_run`; `clear`
-removes the override of any writable field so the field follows the default again (it does **not** set an optional
-field to none). The patch is atomic per section and the complete effective result is validated (a section without any
-override is not validated), see [Service pipeline](service.md#config-sections).
+`PatchConfigSection` carries mutations by field id (a value, `none` or `clear`), an optional `expected_revision` and
+`dry_run`. A value sets an explicit override; `none` overrides an **optional** field with no value (refused for a
+required field); `clear` removes the override of any writable field so the field follows the firmware default again. They
+are three distinct operations on the wire (`none = 9`, `clear = 10`). The patch is atomic per section and the complete
+effective result (firmware defaults + overrides) is validated, see [Service pipeline](service.md#config-sections).
 `ResetConfigSection` removes every override of the section; like a patch it takes an optional `expected_revision`. The response carries the new `revision` and `restart_required`.
 `FactoryReset` formats the configuration storage: every section, sections the firmware does not know and the identity are
 removed and the runtime returns to the defaults. The response carries `restart_required`.

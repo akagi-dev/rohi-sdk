@@ -10,17 +10,16 @@ describes; values are parsed and checked against that description.
 
 What a section shows is its effective configuration: the defaults of
 the firmware with your overrides applied. `FIELD=VALUE` sets an
-override, `FIELD=null` removes it so that the field follows the
-default again. A field you never set keeps following the defaults of
-the firmware, also after an update. Changes are patches applied
-atomically per section: if anything is invalid, nothing is stored.
-After a change the section is read again and shown as the device
-reports it.
+override, `FIELD=none` sets a nullable field to no value (an open
+network, a disabled server) whatever the default is, and `FIELD=null`
+removes the override so that the field follows the default again. A
+field you never set keeps following the defaults of the firmware, also
+after an update. Changes are patches applied atomically per section:
+if anything is invalid, nothing is stored. After a change the section
+is read again and shown as the device reports it.
 
-A section can be inactive until it is set up: a section with the
-defaults only (nothing overridden) is not validated, but the result of
-every change is, so the fields that belong together are set in one
-command.
+The result of every change is validated as a whole, so the fields that
+belong together are set in one command.
 
 Secret fields are never given on the command line: use `FIELD=-` to
 read the value from stdin, or to be asked for it on a terminal. They
@@ -43,7 +42,7 @@ Arguments:
           The section to show or change
 
   [FIELD=VALUE]...
-          Fields to set: `FIELD=VALUE` sets an override, `FIELD=null` removes it
+          Fields to set: `FIELD=VALUE` sets an override, `FIELD=none` sets a nullable field to no value, `FIELD=null` removes the override
 
 Options:
       --dry-run
@@ -95,6 +94,7 @@ Examples:
   rohi config wifi ssid=office password=-
   rohi config wifi scan_timeout=5000
   rohi config wifi scan_timeout=null
+  rohi config wifi password=none
   rohi config wifi scan_timeout=5000 --dry-run
   rohi config wifi --help
   echo 'hunter2hunter2' | rohi config wifi password=-

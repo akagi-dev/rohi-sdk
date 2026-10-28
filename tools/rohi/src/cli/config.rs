@@ -171,8 +171,9 @@ fn writable<'a>(
     Ok(config)
 }
 
-/// `FIELD=VALUE` sets an override and `FIELD=null` removes it. Afterwards the
-/// section is read again and printed as the device reports it.
+/// `FIELD=VALUE` sets an override, `FIELD=none` overrides an optional field
+/// with no value and `FIELD=null` removes the override. Afterwards the section
+/// is read again and printed as the device reports it.
 async fn set<T: ClientTransport>(
     device: &mut Device<T>,
     section: &str,
@@ -193,6 +194,13 @@ async fn set<T: ClientTransport>(
         }
         let op = if text == "null" {
             MutationOp::Clear
+        } else if text == "none" {
+            if !field.optional {
+                return Err(CliError::Usage(format!(
+                    "{name} is not nullable: it always has a value; use {name}=null to follow the default"
+                )));
+            }
+            MutationOp::None
         } else {
             if field.secret && text != "-" {
                 return Err(CliError::Usage(format!(
@@ -219,7 +227,9 @@ async fn set<T: ClientTransport>(
 
 /// The explicit overrides of every section that has some, without secrets and
 /// read-only fields. A field that follows the defaults is not part of it: the
-/// file says what the user chose, not what the firmware defaults are today.
+/// file says what the user chose, not what the firmware defaults are today. An
+/// explicit "no value" is `{"none": true}`, distinct from `null`, which clears
+/// an override.
 async fn snapshot<T: ClientTransport>(
     device: &mut Device<T>,
 ) -> Result<BTreeMap<String, Map<String, Json>>, CliError> {
@@ -236,15 +246,21 @@ async fn snapshot<T: ClientTransport>(
                 .entries
                 .iter()
                 .find(|entry| entry.field_id == field.field.id);
-            if let Some(ConfigEntry {
-                state: EntryState::Value(value),
-                ..
-            }) = entry
-            {
-                fields.insert(
-                    field.field.name.clone(),
-                    serde_json::to_value(value).unwrap_or(Json::Null),
-                );
+            match entry {
+                Some(ConfigEntry {
+                    state: EntryState::Value(value),
+                    ..
+                }) => {
+                    fields.insert(
+                        field.field.name.clone(),
+                        serde_json::to_value(value).unwrap_or(Json::Null),
+                    );
+                }
+                // Overridden without a value: an explicit none.
+                None if field.optional => {
+                    fields.insert(field.field.name.clone(), none_json());
+                }
+                _ => {}
             }
         }
         // A section with only secret overrides has nothing to say here.
@@ -253,6 +269,16 @@ async fn snapshot<T: ClientTransport>(
         }
     }
     Ok(out)
+}
+
+/// The file representation of an explicit none.
+fn none_json() -> Json {
+    serde_json::json!({ "none": true })
+}
+
+/// Whether `json` is the explicit none of a file.
+fn is_none_json(json: &Json) -> bool {
+    json == &none_json()
 }
 
 async fn export<T: ClientTransport>(
@@ -282,6 +308,17 @@ async fn export<T: ClientTransport>(
             )
         }
     }
+}
+
+/// The state of a field before a file is applied.
+#[derive(PartialEq)]
+enum Was {
+    /// Not overridden: the firmware default applies.
+    Default,
+    /// Explicitly overridden with no value.
+    None,
+    /// Explicitly overridden with a value.
+    Value(Value),
 }
 
 /// One difference of a section.
@@ -390,56 +427,56 @@ async fn plan<T: ClientTransport>(
                     // The explicit override of the field, if there is one. The
                     // file is compared with what the user chose, not with the
                     // effective value: a value that equals the default is
-                    // still a new override.
-                    let overridden = current.is_overridden(config.field.id);
-                    let old = current
-                        .entries
-                        .iter()
-                        .find(|entry| entry.field_id == config.field.id)
-                        .and_then(|entry| match &entry.state {
-                            EntryState::Value(value) if overridden => Some(value.clone()),
-                            _ => None,
-                        });
-                    if json.is_null() {
-                        if overridden {
-                            let was = old
-                                .as_ref()
-                                .map(|old| format::value(old, Some(&config.field)))
-                                .unwrap_or_else(|| "(set)".into());
-                            plan.changes.push(Change {
-                                marker: '-',
-                                name: name.clone(),
-                                text: format!("{was} -> (default)"),
-                            });
-                            plan.mutations.push(Mutation {
-                                field_id: config.field.id,
-                                op: MutationOp::Clear,
-                            });
+                    // still a new override, and an explicit none is not the
+                    // default.
+                    let was = if !current.is_overridden(config.field.id) {
+                        Was::Default
+                    } else {
+                        match current
+                            .entries
+                            .iter()
+                            .find(|entry| entry.field_id == config.field.id)
+                            .map(|entry| &entry.state)
+                        {
+                            Some(EntryState::Value(value)) => Was::Value(value.clone()),
+                            _ => Was::None,
                         }
+                    };
+                    let describe = |was: &Was| match was {
+                        Was::Default => "(default)".to_owned(),
+                        Was::None => "(none)".to_owned(),
+                        Was::Value(value) => format::value(value, Some(&config.field)),
+                    };
+                    let (op, now) = if json.is_null() {
+                        (MutationOp::Clear, Was::Default)
+                    } else if is_none_json(json) {
+                        if !config.optional {
+                            return Err(CliError::File(format!(
+                                "{section}.{name} is not nullable: it always has a value"
+                            )));
+                        }
+                        (MutationOp::None, Was::None)
                     } else {
                         let new = values::from_json(&config.field, json)?;
-                        if old.as_ref() != Some(&new) {
-                            let shown = format::value(&new, Some(&config.field));
-                            plan.changes.push(match &old {
-                                Some(old) => Change {
-                                    marker: '~',
-                                    name: name.clone(),
-                                    text: format!(
-                                        "{} -> {shown}",
-                                        format::value(old, Some(&config.field))
-                                    ),
-                                },
-                                None => Change {
-                                    marker: '+',
-                                    name: name.clone(),
-                                    text: shown,
-                                },
-                            });
-                            plan.mutations.push(Mutation {
-                                field_id: config.field.id,
-                                op: MutationOp::Set(new),
-                            });
-                        }
+                        (MutationOp::Set(new.clone()), Was::Value(new))
+                    };
+                    if was != now {
+                        plan.changes.push(Change {
+                            marker: match (&was, &now) {
+                                (_, Was::Default) => '-',
+                                (Was::Default, _) => '+',
+                                _ => '~',
+                            },
+                            name: name.clone(),
+                            text: match &was {
+                                Was::Default => describe(&now),
+                                _ => format!("{} -> {}", describe(&was), describe(&now)),
+                            },
+                        });
+                        plan.mutations.push(Mutation {
+                            field_id: config.field.id,
+                            op,
+                        });
                     }
                 }
             }

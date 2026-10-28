@@ -23,7 +23,7 @@ use super::config::{BleName, BleOverrides, BleSettings};
 
 /// Field ids of the `ble` config section. Only ever added.
 pub mod field {
-    /// Advertised name; unset keeps the firmware default.
+    /// Advertised name; no name uses the name derived from the MAC.
     pub const NAME: u32 = 1;
 }
 
@@ -53,6 +53,16 @@ impl ManagedConfig for BleSettings {
             field::NAME => {
                 let text = value.as_str().ok_or(FieldError::WrongKind)?;
                 self.name = Some(BleName::new(text).ok_or(FieldError::Invalid)?);
+                Ok(())
+            }
+            _ => Err(FieldError::UnknownField),
+        }
+    }
+
+    fn set_none(&mut self, id: u32) -> Result<(), FieldError> {
+        match id {
+            field::NAME => {
+                self.name = None;
                 Ok(())
             }
             _ => Err(FieldError::UnknownField),
@@ -99,9 +109,9 @@ mod tests {
         assert_eq!(ManagedConfig::validate(&settings), Ok(()));
         let mut overrides = BleOverrides::default();
         assert!(overrides.capture(&settings, field::NAME));
-        assert_eq!(overrides.effective().name, settings.name);
+        assert_eq!(overrides.over_default().name, settings.name);
         assert!(overrides.clear(field::NAME));
-        assert_eq!(overrides.effective().name, None);
+        assert_eq!(overrides.over_default().name, None);
 
         assert_eq!(
             settings.set_field(field::NAME, text("")),

@@ -282,7 +282,7 @@ mod tests {
 
     #[test]
     fn overrides_apply_to_the_defaults() {
-        let effective = overrides().effective();
+        let effective = overrides().over_default();
         assert_eq!(effective, config_of_overrides());
         // The interval is not overridden: it is the default.
         assert_eq!(effective.interval_s, DEFAULT_INTERVAL_S);

@@ -233,6 +233,7 @@ pub(crate) fn mutation(mutation: &Mutation, schema: &ConfigSchema) -> Option<pb:
         field_id: mutation.field_id,
         operation: Some(match &mutation.op {
             MutationOp::Set(value) => to_mutation_case(value, field)?,
+            MutationOp::None => pb::ConfigMutation_::Operation::None(pb::Empty {}),
             MutationOp::Clear => pb::ConfigMutation_::Operation::Clear(pb::Empty {}),
         }),
     })

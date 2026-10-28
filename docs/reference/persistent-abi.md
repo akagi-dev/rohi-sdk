@@ -35,8 +35,10 @@ What is covered:
 > absent key is `Override::Default` (the field follows the firmware default) and a present key is an explicit
 > `Override::Value`. Nullable fields are `Override<Option<T>>`: `null` is the explicit value *none*, an absent key is
 > the default. A section without overrides is the empty map `a0` (the section is removed from the store instead).
-> The effective configuration is `C::default()` with the overrides applied, so a changed firmware default reaches every
-> field the user did not override, and an explicit override survives it.
+> The effective configuration is the **firmware defaults** (supplied by the firmware, not necessarily `C::default()`)
+> with the overrides applied, so a changed firmware default reaches every field the user did not override, and an
+> explicit override survives it. The three states of a nullable field are `Default` (absent key), `Value(None)`
+> (`null`) and `Value(Some(v))` (the value).
 >
 > **Strict decode.** `get` requires the decoder to consume the whole payload. A valid value followed by extra
 > bytes fails with `SectionError::TrailingBytes`, never with an unrelated error.

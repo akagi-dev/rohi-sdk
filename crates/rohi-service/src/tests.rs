@@ -106,6 +106,16 @@ impl ManagedConfig for Demo {
         Ok(())
     }
 
+    fn set_none(&mut self, id: u32) -> Result<(), FieldError> {
+        match id {
+            4 => {
+                self.token = None;
+                Ok(())
+            }
+            _ => Err(FieldError::NotOptional),
+        }
+    }
+
     fn field_is_set(&self, id: u32) -> Result<bool, FieldError> {
         match id {
             4 => Ok(self.token.is_some()),
@@ -126,16 +136,32 @@ struct MemoryStore {
     value: RefCell<Option<DemoOverrides>>,
     writes: RefCell<u32>,
     unavailable: RefCell<bool>,
+    /// The firmware defaults when they differ from `Demo::default()`.
+    firmware: RefCell<Option<Demo>>,
+    /// What the store handed to the runtime last.
+    published: RefCell<Option<Demo>>,
 }
 
 impl MemoryStore {
+    fn firmware_defaults(&self) -> Demo {
+        self.firmware.borrow().clone().unwrap_or_default()
+    }
+
     /// The effective configuration behind the persisted overrides.
     fn effective(&self) -> Demo {
-        self.value.borrow().clone().unwrap_or_default().effective()
+        let mut config = self.firmware_defaults();
+        if let Some(overrides) = self.value.borrow().as_ref() {
+            overrides.apply_to(&mut config);
+        }
+        config
     }
 }
 
-impl SectionStore<DemoOverrides> for &MemoryStore {
+impl SectionStore<Demo> for &MemoryStore {
+    fn defaults(&self) -> Demo {
+        self.firmware_defaults()
+    }
+
     async fn load(&self) -> Result<Option<DemoOverrides>, StoreError> {
         // Lets another task run between a load and the following store.
         embassy_futures::yield_now().await;
@@ -145,14 +171,16 @@ impl SectionStore<DemoOverrides> for &MemoryStore {
         Ok(self.value.borrow().clone())
     }
 
-    async fn store(&self, overrides: &DemoOverrides) -> Result<(), StoreError> {
+    async fn store(&self, overrides: &DemoOverrides, effective: &Demo) -> Result<(), StoreError> {
         *self.value.borrow_mut() = Some(overrides.clone());
+        *self.published.borrow_mut() = Some(effective.clone());
         *self.writes.borrow_mut() += 1;
         Ok(())
     }
 
-    async fn remove(&self) -> Result<(), StoreError> {
+    async fn remove(&self, effective: &Demo) -> Result<(), StoreError> {
         *self.value.borrow_mut() = None;
+        *self.published.borrow_mut() = Some(effective.clone());
         *self.writes.borrow_mut() += 1;
         Ok(())
     }
@@ -162,6 +190,13 @@ fn set(id: u32, value: Value) -> Mutation {
     Mutation {
         field_id: id,
         op: MutationOp::Set(value),
+    }
+}
+
+fn none(id: u32) -> Mutation {
+    Mutation {
+        field_id: id,
+        op: MutationOp::None,
     }
 }
 
@@ -479,6 +514,149 @@ fn reset_clears_every_override() {
     assert_eq!(store.effective(), Demo::default());
 }
 
+fn value_of(values: &SectionValues, id: u32) -> Option<EntryState> {
+    values
+        .entries
+        .iter()
+        .find(|entry| entry.field_id == id)
+        .map(|entry| entry.state.clone())
+}
+
+fn firmware(host: &str, interval_s: u64, token: Option<&str>) -> Demo {
+    Demo {
+        enabled: false,
+        interval_s,
+        host: host.into(),
+        token: token.map(Into::into),
+    }
+}
+
+#[test]
+fn get_reports_the_firmware_defaults_when_nothing_is_overridden() {
+    let store = MemoryStore::default();
+    *store.firmware.borrow_mut() = Some(firmware("fw.io", 30, Some("t")));
+    let values = block_on(section(&store).get()).unwrap();
+    assert!(values.overridden.is_empty());
+    assert_eq!(
+        value_of(&values, 2),
+        Some(EntryState::Value(Value::U64(30)))
+    );
+    assert_eq!(value_of(&values, 3), Some(EntryState::Value(text("fw.io"))));
+    assert_eq!(value_of(&values, 4), Some(EntryState::Redacted));
+}
+
+#[test]
+fn an_override_is_applied_on_top_of_the_firmware_defaults() {
+    let store = MemoryStore::default();
+    *store.firmware.borrow_mut() = Some(firmware("fw.io", 30, None));
+    let section = section(&store);
+    block_on(section.patch(&[set(2, Value::U64(20))], None, false)).unwrap();
+    // The other fields keep the firmware defaults, not `Demo::default()`.
+    assert_eq!(store.effective(), firmware("fw.io", 20, None));
+    assert_eq!(store.published.borrow().clone(), Some(store.effective()));
+    let values = block_on(section.get()).unwrap();
+    assert_eq!(value_of(&values, 3), Some(EntryState::Value(text("fw.io"))));
+    assert_eq!(values.overridden.as_slice(), [2]);
+}
+
+#[test]
+fn clearing_an_override_exposes_the_current_firmware_default() {
+    let store = MemoryStore::default();
+    *store.firmware.borrow_mut() = Some(firmware("fw.io", 30, None));
+    let section = section(&store);
+    block_on(section.patch(&[set(2, Value::U64(20)), set(3, text("a.io"))], None, false)).unwrap();
+    *store.firmware.borrow_mut() = Some(firmware("fw2.io", 45, None));
+    block_on(section.patch(&[clear(2)], None, false)).unwrap();
+    // The cleared field follows the new default, the override survives.
+    assert_eq!(store.effective(), firmware("a.io", 45, None));
+    assert_eq!(store.published.borrow().clone(), Some(store.effective()));
+}
+
+#[test]
+fn reset_publishes_the_firmware_defaults() {
+    let store = MemoryStore::default();
+    *store.firmware.borrow_mut() = Some(firmware("fw.io", 30, Some("t")));
+    let section = section(&store);
+    block_on(section.patch(&[set(3, text("a.io"))], None, false)).unwrap();
+    block_on(section.reset(None, false)).unwrap();
+    assert!(store.value.borrow().is_none());
+    assert_eq!(
+        store.published.borrow().clone(),
+        Some(firmware("fw.io", 30, Some("t")))
+    );
+}
+
+#[test]
+fn the_validated_value_is_the_one_published() {
+    let store = MemoryStore::default();
+    let mut base = firmware("", 30, None);
+    base.enabled = true;
+    *store.firmware.borrow_mut() = Some(base);
+    let section = section(&store);
+    // The firmware default is enabled without a host: invalid on its own, so
+    // an unrelated change is rejected, a host override makes it valid.
+    assert_eq!(
+        block_on(section.patch(&[set(2, Value::U64(20))], None, false)),
+        Err(ConfigError::Field(FieldError::Invalid))
+    );
+    block_on(section.patch(&[set(3, text("a.io"))], None, false)).unwrap();
+    let published = store.published.borrow().clone().unwrap();
+    assert_eq!(published.validate(), Ok(()));
+    assert!(published.enabled);
+    assert_eq!(published.host, "a.io");
+}
+
+#[test]
+fn none_is_an_explicit_override_distinct_from_clear() {
+    let store = MemoryStore::default();
+    *store.firmware.borrow_mut() = Some(firmware("fw.io", 30, Some("default")));
+    let section = section(&store);
+    block_on(section.patch(&[none(4)], None, false)).unwrap();
+    let values = block_on(section.get()).unwrap();
+    // Overridden, and without a value.
+    assert_eq!(values.overridden.as_slice(), [4]);
+    assert_eq!(value_of(&values, 4), None);
+    assert_eq!(
+        store.value.borrow().as_ref().unwrap().token,
+        rohi_config::Override::Value(None)
+    );
+    assert_eq!(store.published.borrow().clone().unwrap().token, None);
+
+    // An explicit value replaces it.
+    block_on(section.patch(&[set(4, text("v"))], None, false)).unwrap();
+    assert_eq!(
+        store.value.borrow().as_ref().unwrap().token,
+        rohi_config::Override::Value(Some("v".into()))
+    );
+
+    // Clearing follows the firmware default again.
+    block_on(section.patch(&[none(4)], None, false)).unwrap();
+    block_on(section.patch(&[clear(4)], None, false)).unwrap();
+    let values = block_on(section.get()).unwrap();
+    assert!(values.overridden.is_empty());
+    assert_eq!(value_of(&values, 4), Some(EntryState::Redacted));
+    assert_eq!(
+        store.published.borrow().clone().unwrap().token.as_deref(),
+        Some("default")
+    );
+}
+
+#[test]
+fn none_is_refused_for_a_required_field() {
+    let store = MemoryStore::default();
+    let section = section(&store);
+    assert_eq!(
+        block_on(section.patch(&[none(3)], None, false)),
+        Err(ConfigError::Field(FieldError::NotOptional))
+    );
+    // A read-only field stays read-only.
+    assert_eq!(
+        block_on(section.patch(&[none(5)], None, false)),
+        Err(ConfigError::Field(FieldError::ReadOnly))
+    );
+    assert_eq!(*store.writes.borrow(), 0);
+}
+
 #[test]
 fn an_unavailable_store_is_reported() {
     let store = MemoryStore::default();
@@ -538,8 +716,8 @@ fn a_tuple_of_sections_is_a_registry() {
     }
     impl ConfigOverrides<Other> for OtherOverrides {
         const FIELD_IDS: &'static [u32] = DemoOverrides::FIELD_IDS;
-        fn effective(&self) -> Other {
-            Other(self.0.effective())
+        fn apply_to(&self, config: &mut Other) {
+            self.0.apply_to(&mut config.0)
         }
         fn is_overridden(&self, id: u32) -> Option<bool> {
             self.0.is_overridden(id)
@@ -571,21 +749,27 @@ fn a_tuple_of_sections_is_a_registry() {
         fn set_field(&mut self, id: u32, value: Value) -> Result<(), FieldError> {
             self.0.set_field(id, value)
         }
+        fn set_none(&mut self, id: u32) -> Result<(), FieldError> {
+            self.0.set_none(id)
+        }
         fn validate(&self) -> Result<(), FieldError> {
             self.0.validate()
         }
     }
     #[derive(Default)]
     struct OtherStore(RefCell<Option<DemoOverrides>>);
-    impl SectionStore<OtherOverrides> for &OtherStore {
+    impl SectionStore<Other> for &OtherStore {
+        fn defaults(&self) -> Other {
+            Other::default()
+        }
         async fn load(&self) -> Result<Option<OtherOverrides>, StoreError> {
             Ok(self.0.borrow().clone().map(OtherOverrides))
         }
-        async fn store(&self, overrides: &OtherOverrides) -> Result<(), StoreError> {
+        async fn store(&self, overrides: &OtherOverrides, _: &Other) -> Result<(), StoreError> {
             *self.0.borrow_mut() = Some(overrides.0.clone());
             Ok(())
         }
-        async fn remove(&self) -> Result<(), StoreError> {
+        async fn remove(&self, _: &Other) -> Result<(), StoreError> {
             *self.0.borrow_mut() = None;
             Ok(())
         }
@@ -1309,15 +1493,18 @@ impl ManagedConfig for Vault {
 #[derive(Default)]
 struct VaultStore(RefCell<Option<VaultOverrides>>);
 
-impl SectionStore<VaultOverrides> for &VaultStore {
+impl SectionStore<Vault> for &VaultStore {
+    fn defaults(&self) -> Vault {
+        Vault::default()
+    }
     async fn load(&self) -> Result<Option<VaultOverrides>, StoreError> {
         Ok(self.0.borrow().clone())
     }
-    async fn store(&self, overrides: &VaultOverrides) -> Result<(), StoreError> {
+    async fn store(&self, overrides: &VaultOverrides, _: &Vault) -> Result<(), StoreError> {
         *self.0.borrow_mut() = Some(overrides.clone());
         Ok(())
     }
-    async fn remove(&self) -> Result<(), StoreError> {
+    async fn remove(&self, _: &Vault) -> Result<(), StoreError> {
         *self.0.borrow_mut() = None;
         Ok(())
     }

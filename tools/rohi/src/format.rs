@@ -374,10 +374,17 @@ pub fn config_help(paint: Paint, schema: &ConfigSchema) -> String {
     out.push_str(&format!("{}\n", paint.strong("Fields:")));
     out.push_str(&help_fields(paint, &rows));
     out.push_str(&format!("\n{}\n", paint.strong("Special values:")));
-    let mut special = vec![(
+    let mut special = Vec::new();
+    if schema.fields.iter().any(|field| field.optional) {
+        special.push((
+            "FIELD=none".to_owned(),
+            "set a nullable field to no value, whatever the default is".to_owned(),
+        ));
+    }
+    special.push((
         "FIELD=null".to_owned(),
         "clear the override and use the field default".to_owned(),
-    )];
+    ));
     if schema.fields.iter().any(|field| field.secret) {
         special.push((
             "SECRET=-".to_owned(),
@@ -392,7 +399,8 @@ pub fn config_help(paint: Paint, schema: &ConfigSchema) -> String {
 }
 
 /// The values of a config section: its effective configuration. A secret that
-/// is set is `<redacted>`, a field without a value `<unset>`.
+/// is set is `<redacted>`, a field without a value `<unset>`, or `<none>` when
+/// the user set it to no value explicitly.
 pub fn config_values(paint: Paint, values: &ConfigValues, schema: &ConfigSchema) -> String {
     let rows: Vec<(String, String)> = schema
         .fields
@@ -405,6 +413,7 @@ pub fn config_values(paint: Paint, values: &ConfigValues, schema: &ConfigSchema)
             let text = match entry.map(|entry| &entry.state) {
                 Some(EntryState::Value(v)) => value(v, Some(&field.field)),
                 Some(EntryState::Redacted) => paint.muted("<redacted>"),
+                None if values.is_overridden(field.field.id) => paint.muted("<none>"),
                 None => paint.muted("<unset>"),
             };
             (field.field.name.clone(), text)

@@ -108,6 +108,15 @@ impl ManagedConfig for Net {
         Ok(())
     }
 
+    fn set_none(&mut self, id: u32) -> Result<(), FieldError> {
+        match id {
+            4 => self.token = None,
+            5 => self.mode = None,
+            _ => return Err(FieldError::NotOptional),
+        }
+        Ok(())
+    }
+
     fn field_is_set(&self, id: u32) -> Result<bool, FieldError> {
         match id {
             4 => Ok(self.token.is_some()),
@@ -126,17 +135,21 @@ impl ManagedConfig for Net {
 #[derive(Default)]
 struct Memory(RefCell<Option<NetOverrides>>);
 
-impl SectionStore<NetOverrides> for &Memory {
+impl SectionStore<Net> for &Memory {
+    fn defaults(&self) -> Net {
+        Net::default()
+    }
+
     async fn load(&self) -> Result<Option<NetOverrides>, StoreError> {
         Ok(self.0.borrow().clone())
     }
 
-    async fn store(&self, overrides: &NetOverrides) -> Result<(), StoreError> {
+    async fn store(&self, overrides: &NetOverrides, _: &Net) -> Result<(), StoreError> {
         *self.0.borrow_mut() = Some(overrides.clone());
         Ok(())
     }
 
-    async fn remove(&self) -> Result<(), StoreError> {
+    async fn remove(&self, _: &Net) -> Result<(), StoreError> {
         *self.0.borrow_mut() = None;
         Ok(())
     }
@@ -503,6 +516,60 @@ fn a_patch_is_atomic_and_secrets_are_never_returned() {
         panic!()
     };
     assert_eq!(section.revision, 1);
+}
+
+#[test]
+fn none_overrides_an_optional_field_and_is_refused_for_a_required_one() {
+    controller!(controller, OpenPolicy);
+    let none = |field_id| pb::ConfigMutation {
+        field_id,
+        operation: Some(pb::ConfigMutation_::Operation::None(pb::Empty {})),
+    };
+    let get = || {
+        let Reply::GetConfigSection(section) = call(
+            &controller,
+            &PLAIN,
+            Call::GetConfigSection(pb::GetConfigSectionRequest { section_id: 1 }),
+        ) else {
+            panic!()
+        };
+        section
+    };
+    // Port is required.
+    assert_eq!(
+        error_code(&call(
+            &controller,
+            &PLAIN,
+            Call::PatchConfigSection(patch(1, &[none(2)]))
+        )),
+        pb::ErrorCode::InvalidArgument
+    );
+    assert!(get().overridden.is_empty());
+
+    // The mode is optional: overridden, without a value.
+    assert!(matches!(
+        call(
+            &controller,
+            &PLAIN,
+            Call::PatchConfigSection(patch(1, &[none(5)]))
+        ),
+        Reply::PatchConfigSection(_)
+    ));
+    let section = get();
+    assert_eq!(section.overridden.as_slice(), [5]);
+    assert!(section.effective.iter().all(|e| e.field_id != 5));
+
+    // Clearing removes the override again.
+    let clear = pb::ConfigMutation {
+        field_id: 5,
+        operation: Some(pb::ConfigMutation_::Operation::Clear(pb::Empty {})),
+    };
+    call(
+        &controller,
+        &PLAIN,
+        Call::PatchConfigSection(patch(1, &[clear])),
+    );
+    assert!(get().overridden.is_empty());
 }
 
 #[test]

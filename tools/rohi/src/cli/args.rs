@@ -199,17 +199,16 @@ Examples:
     ///
     /// What a section shows is its effective configuration: the defaults of
     /// the firmware with your overrides applied. `FIELD=VALUE` sets an
-    /// override, `FIELD=null` removes it so that the field follows the
-    /// default again. A field you never set keeps following the defaults of
-    /// the firmware, also after an update. Changes are patches applied
-    /// atomically per section: if anything is invalid, nothing is stored.
-    /// After a change the section is read again and shown as the device
-    /// reports it.
+    /// override, `FIELD=none` sets a nullable field to no value (an open
+    /// network, a disabled server) whatever the default is, and `FIELD=null`
+    /// removes the override so that the field follows the default again. A
+    /// field you never set keeps following the defaults of the firmware, also
+    /// after an update. Changes are patches applied atomically per section:
+    /// if anything is invalid, nothing is stored. After a change the section
+    /// is read again and shown as the device reports it.
     ///
-    /// A section can be inactive until it is set up: a section with the
-    /// defaults only (nothing overridden) is not validated, but the result of
-    /// every change is, so the fields that belong together are set in one
-    /// command.
+    /// The result of every change is validated as a whole, so the fields that
+    /// belong together are set in one command.
     ///
     /// Secret fields are never given on the command line: use `FIELD=-` to
     /// read the value from stdin, or to be asked for it on a terminal. They
@@ -229,6 +228,7 @@ Examples:
   rohi config wifi ssid=office password=-
   rohi config wifi scan_timeout=5000
   rohi config wifi scan_timeout=null
+  rohi config wifi password=none
   rohi config wifi scan_timeout=5000 --dry-run
   rohi config wifi --help
   echo 'hunter2hunter2' | rohi config wifi password=-"
@@ -239,8 +239,8 @@ Examples:
         /// The section to show or change.
         #[arg(value_name = "SECTION")]
         section: Option<String>,
-        /// Fields to set: `FIELD=VALUE` sets an override, `FIELD=null`
-        /// removes it.
+        /// Fields to set: `FIELD=VALUE` sets an override, `FIELD=none` sets
+        /// a nullable field to no value, `FIELD=null` removes the override.
         #[arg(value_name = "FIELD=VALUE")]
         assignments: Vec<String>,
         /// Validate on the device without storing anything.
@@ -351,9 +351,10 @@ Examples:
     /// The file maps section names to the fields you set explicitly, not to
     /// the effective configuration: fields that follow the defaults are left
     /// out, so applying the file elsewhere or later does not pin the defaults
-    /// of today. Sections without overrides, secrets and read-only fields are
-    /// left out as well. Without a file, or with `-`, the document goes to
-    /// stdout.
+    /// of today. A nullable field you set to no value is written as
+    /// `{"none": true}`. Sections without overrides, secrets and read-only
+    /// fields are left out as well. Without a file, or with `-`, the document
+    /// goes to stdout.
     #[command(after_help = "\
 Examples:
   rohi config export config.json
@@ -376,9 +377,11 @@ Examples:
     },
     /// Apply a configuration file of overrides.
     ///
-    /// A field with a value sets an override, a field set to `null` removes
-    /// it (the field follows the default again), a field that is missing in
-    /// the file is left unchanged, and a section set to `null` is reset. Every
+    /// A field with a value sets an override, a field set to `{"none": true}`
+    /// overrides a nullable field with no value, a field set to `null` removes
+    /// the override (the field follows the default again), a field that is
+    /// missing in the file is left unchanged, and a section set to `null` is
+    /// reset. `rohi config export` writes the same representation. Every
     /// section is validated on the device before the first one is changed,
     /// and each section is applied atomically. Applying several sections is
     /// not atomic as a whole: if the device fails in between, the sections

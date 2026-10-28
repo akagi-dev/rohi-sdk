@@ -319,8 +319,6 @@ message GetConfigSectionResponse {
 }
 
 message ConfigMutation {
-  // 9 was `unset`, which removed an optional value; `clear` is different.
-  reserved 9;
   uint32 field_id = 1;
 
   oneof operation {
@@ -331,16 +329,21 @@ message ConfigMutation {
     string string_value = 6;
     bytes bytes_value = 7;
     uint32 enum_value = 8;
-    // Removes the override of the field: the default applies again. It does
-    // not set an optional field to "none".
+    // Overrides an optional field with an explicit "no value" (an open
+    // network, a disabled second server). The firmware default no longer
+    // applies. Refused for a field that is not optional.
+    Empty none = 9;
+    // Removes the override of the field: the firmware default applies again.
+    // It does not set an optional field to "none".
     Empty clear = 10;
   }
 }
 
-// A value creates or replaces the override of the field, `clear` removes it.
-// All mutations are applied to a temporary copy of the overrides, the
-// complete effective result is validated (a section without any override is
-// not), and only then persisted. If anything is invalid nothing changes.
+// A value creates or replaces the override of the field, `none` overrides an
+// optional field with no value, `clear` removes the override. All mutations
+// are applied to a temporary copy of the overrides, the complete effective
+// result (the firmware defaults with the overrides applied) is validated, and
+// only then persisted. If anything is invalid nothing changes.
 message PatchConfigSectionRequest {
   uint64 section_id = 1;
   repeated ConfigMutation mutations = 2;

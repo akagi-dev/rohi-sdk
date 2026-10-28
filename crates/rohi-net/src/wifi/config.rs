@@ -239,13 +239,34 @@ impl WifiConfig {
         }
     }
 
-    /// Checks the configuration before it is persisted or applied.
+    /// Whether a network is configured: an empty SSID is the unconfigured
+    /// state, in which the radio stays idle.
+    pub fn is_configured(&self) -> bool {
+        !self.ssid.is_empty()
+    }
+
+    /// The configuration the radio is given: `None` while no network is
+    /// configured.
+    pub fn configured(self) -> Option<Self> {
+        self.is_configured().then_some(self)
+    }
+
+    /// Checks the configuration before it is applied by the radio: a network
+    /// must be configured.
     pub fn validate(&self) -> Result<(), WifiError> {
-        let valid = !self.ssid.is_empty()
-            && self
-                .password
-                .as_ref()
-                .is_none_or(|password| password.len() >= MIN_WIFI_PASSWORD_LEN)
+        if !self.is_configured() {
+            return Err(WifiError::InvalidConfig);
+        }
+        self.validate_settings()
+    }
+
+    /// Checks the credentials and the timing, which may belong to a section
+    /// that is still unconfigured (see [`is_configured`](Self::is_configured)).
+    pub fn validate_settings(&self) -> Result<(), WifiError> {
+        let valid = self
+            .password
+            .as_ref()
+            .is_none_or(|password| password.len() >= MIN_WIFI_PASSWORD_LEN)
             && within(self.scan_timeout_ms, SCAN_TIMEOUT_RANGE_MS)
             && within(self.connect_timeout_ms, CONNECT_TIMEOUT_RANGE_MS)
             && within(self.backoff_initial_ms, BACKOFF_INITIAL_RANGE_MS)
@@ -357,7 +378,7 @@ mod tests {
         let overrides = WifiOverrides::default();
         assert!(overrides.is_empty());
         assert_eq!(encode(&overrides), [0xa0]);
-        assert_eq!(overrides.effective(), WifiConfig::default());
+        assert_eq!(overrides.over_default(), WifiConfig::default());
     }
 
     #[test]
@@ -381,7 +402,7 @@ mod tests {
     fn the_password_has_three_states() {
         let mut overrides = WifiOverrides::default();
         // Not overridden: the default, no password.
-        assert_eq!(overrides.effective().password, None);
+        assert_eq!(overrides.over_default().password, None);
         assert_eq!(encode(&overrides), [0xa0]);
         // An explicit `None` is stored as null.
         overrides.password = Override::Value(None);
@@ -391,7 +412,7 @@ mod tests {
         overrides.password = Override::Value(Some(password("hunter2hunter2")));
         assert_eq!(roundtrip(&overrides), overrides);
         assert_eq!(
-            overrides.effective().password,
+            overrides.over_default().password,
             Some(password("hunter2hunter2"))
         );
     }
@@ -520,7 +541,7 @@ mod tests {
             scan_timeout_ms: Override::Value(5_000),
             ..WifiOverrides::default()
         };
-        let effective = overrides.effective();
+        let effective = overrides.over_default();
         assert_eq!(effective.ssid, ssid("office"));
         assert_eq!(effective.scan_timeout_ms, 5_000);
         // Not overridden: the field follows `WifiConfig::default()`.

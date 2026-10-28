@@ -129,7 +129,7 @@ mod tests {
             overrides
         );
         assert_eq!(
-            overrides.effective(),
+            overrides.over_default(),
             BleSettings {
                 name: BleName::new("urban")
             }
@@ -139,7 +139,7 @@ mod tests {
     #[test]
     fn the_name_has_three_states() {
         let mut overrides = BleOverrides::default();
-        assert_eq!(overrides.effective().name, None);
+        assert_eq!(overrides.over_default().name, None);
         // An explicit `None` is stored as null, distinct from not overridden.
         overrides.name = Override::Value(None);
         assert_eq!(encode(&overrides), [0xa1, 0x01, 0xf6]);

@@ -121,6 +121,7 @@ impl fmt::Debug for control::ConfigMutation {
                 "operation",
                 &match &self.operation {
                     Some(Operation::Clear(_)) => "clear",
+                    Some(Operation::None(_)) => "none",
                     Some(_) => "set <redacted>",
                     None => "<none>",
                 },

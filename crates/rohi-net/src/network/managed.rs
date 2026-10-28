@@ -166,6 +166,19 @@ impl ManagedConfig for NetworkConfig {
         Ok(())
     }
 
+    fn set_none(&mut self, id: u32) -> Result<(), FieldError> {
+        match id {
+            field::IP => self.static_ip = None,
+            field::PREFIX_LEN => self.prefix_len = None,
+            field::GATEWAY => self.gateway = None,
+            field::DNS => self.dns = None,
+            field::HOSTNAME => self.hostname = None,
+            field::ADDRESS_MODE | field::DHCP_TIMEOUT => return Err(FieldError::NotOptional),
+            _ => return Err(FieldError::UnknownField),
+        }
+        Ok(())
+    }
+
     fn field_is_set(&self, id: u32) -> Result<bool, FieldError> {
         Ok(self.read_field(id)?.is_some())
     }
@@ -263,9 +276,9 @@ mod tests {
         // Clearing the override of the DNS server restores the default: none.
         let mut overrides = NetworkOverrides::default();
         assert!(overrides.capture(&config, field::DNS));
-        assert_eq!(overrides.effective().dns, config.dns);
+        assert_eq!(overrides.over_default().dns, config.dns);
         assert!(overrides.clear(field::DNS));
-        assert_eq!(overrides.effective().read_field(field::DNS), Ok(None));
+        assert_eq!(overrides.over_default().read_field(field::DNS), Ok(None));
     }
 
     #[test]
@@ -308,14 +321,14 @@ mod tests {
     #[test]
     fn clearing_an_override_restores_the_default_of_a_required_field() {
         let mut overrides = NetworkOverrides::default();
-        let mut config = overrides.effective();
+        let mut config = overrides.over_default();
         config
             .set_field(field::DHCP_TIMEOUT, Value::U64(5_000))
             .unwrap();
         overrides.capture(&config, field::DHCP_TIMEOUT);
-        assert_eq!(overrides.effective().dhcp_timeout_ms, 5_000);
+        assert_eq!(overrides.over_default().dhcp_timeout_ms, 5_000);
         overrides.clear(field::DHCP_TIMEOUT);
-        assert_eq!(overrides.effective().dhcp_timeout_ms, 20_000);
+        assert_eq!(overrides.over_default().dhcp_timeout_ms, 20_000);
     }
 
     #[test]
@@ -331,7 +344,7 @@ mod tests {
         let mut overrides = NetworkOverrides::default();
         overrides.capture(&config, field::HOSTNAME);
         overrides.clear(field::HOSTNAME);
-        assert_eq!(overrides.effective().hostname, None);
+        assert_eq!(overrides.over_default().hostname, None);
     }
 
     #[test]

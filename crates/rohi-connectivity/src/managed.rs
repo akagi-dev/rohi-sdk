@@ -96,7 +96,12 @@ impl ManagedConfig for ConnectivityConfig {
         Ok(self.read_field(id)?.is_some())
     }
 
+    /// A disabled section is valid whatever it holds: telemetry is off. An
+    /// enabled one must be usable.
     fn validate(&self) -> Result<(), FieldError> {
+        if !self.enabled {
+            return Ok(());
+        }
         ConnectivityConfig::validate(self).map_err(|_| FieldError::Invalid)
     }
 }
@@ -331,13 +336,15 @@ mod tests {
     }
 
     #[test]
-    fn a_patch_on_the_defaults_needs_a_host() {
+    fn enabling_the_defaults_needs_a_host() {
         let mut config = ConnectivityConfig::default();
+        // Disabled is a valid state, with or without a host.
+        assert_eq!(ManagedConfig::validate(&config), Ok(()));
+        config.set_field(field::ENABLED, Value::Bool(true)).unwrap();
         assert_eq!(ManagedConfig::validate(&config), Err(FieldError::Invalid));
         config
             .set_field(field::HOST, text("ingress.example.org"))
             .unwrap();
-        config.set_field(field::ENABLED, Value::Bool(true)).unwrap();
         config.set_field(field::PORT, Value::U64(443)).unwrap();
         config.set_field(field::NODE_ID, Value::U64(42)).unwrap();
         config
@@ -383,15 +390,15 @@ mod tests {
         assert_eq!(ids, ConnectivityOverrides::FIELD_IDS);
 
         let mut overrides = ConnectivityOverrides::default();
-        let mut config = overrides.effective();
+        let mut config = overrides.over_default();
         config
             .set_field(field::INTERVAL_S, Value::U64(120))
             .unwrap();
         overrides.capture(&config, field::INTERVAL_S);
-        assert_eq!(overrides.effective().interval_s, 120);
+        assert_eq!(overrides.over_default().interval_s, 120);
         overrides.clear(field::INTERVAL_S);
         assert_eq!(
-            overrides.effective().interval_s,
+            overrides.over_default().interval_s,
             ConnectivityConfig::default().interval_s
         );
     }

@@ -130,6 +130,23 @@ impl ManagedConfig for WifiConfig {
         Ok(())
     }
 
+    fn set_none(&mut self, id: u32) -> Result<(), FieldError> {
+        match id {
+            // An open network.
+            field::PASSWORD => {
+                self.password = None;
+                Ok(())
+            }
+            field::SSID
+            | field::SCAN_TIMEOUT
+            | field::CONNECT_TIMEOUT
+            | field::BACKOFF_INITIAL
+            | field::BACKOFF_MAX
+            | field::LINK_REFRESH => Err(FieldError::NotOptional),
+            _ => Err(FieldError::UnknownField),
+        }
+    }
+
     fn field_is_set(&self, id: u32) -> Result<bool, FieldError> {
         match id {
             // The password is only asked whether it exists, never read.
@@ -138,8 +155,9 @@ impl ManagedConfig for WifiConfig {
         }
     }
 
+    /// An unconfigured section (no SSID) is valid: the radio stays idle.
     fn validate(&self) -> Result<(), FieldError> {
-        WifiConfig::validate(self).map_err(|_| FieldError::Invalid)
+        self.validate_settings().map_err(|_| FieldError::Invalid)
     }
 }
 
@@ -147,7 +165,7 @@ impl ManagedConfig for WifiConfig {
 mod tests {
     extern crate std;
 
-    use rohi_config::ConfigOverrides;
+    use rohi_config::{ConfigOverrides, Override};
     use rohi_service::MAX_CONFIG_FIELDS;
 
     use super::*;
@@ -183,8 +201,12 @@ mod tests {
     #[test]
     fn fields_round_trip_and_the_password_is_optional() {
         let mut config = WifiConfig::default();
-        assert!(ManagedConfig::validate(&config).is_err());
+        // No network is a valid, unconfigured section.
+        assert_eq!(ManagedConfig::validate(&config), Ok(()));
+        assert!(!config.is_configured());
+        assert!(WifiConfig::validate(&config).is_err());
         config.set_field(field::SSID, text("office")).unwrap();
+        assert!(config.is_configured());
         assert_eq!(ManagedConfig::validate(&config), Ok(()));
         assert_eq!(config.read_field(field::PASSWORD), Ok(None));
 
@@ -201,15 +223,57 @@ mod tests {
     #[test]
     fn clearing_the_password_override_restores_the_open_network_default() {
         let mut overrides = WifiOverrides::default();
-        let mut config = overrides.effective();
+        let mut config = overrides.over_default();
         config
             .set_field(field::PASSWORD, text("hunter2hunter2"))
             .unwrap();
         assert!(overrides.capture(&config, field::PASSWORD));
-        assert_eq!(overrides.effective().password, config.password);
+        assert_eq!(overrides.over_default().password, config.password);
         assert!(overrides.clear(field::PASSWORD));
-        assert_eq!(overrides.effective().password, None);
+        assert_eq!(overrides.over_default().password, None);
         assert!(overrides.is_empty());
+    }
+
+    #[test]
+    fn none_is_only_for_the_password() {
+        let mut config = WifiConfig::default();
+        config
+            .set_field(field::PASSWORD, text("hunter2hunter2"))
+            .unwrap();
+        assert_eq!(config.set_none(field::PASSWORD), Ok(()));
+        assert_eq!(config.password, None);
+        for id in [
+            field::SSID,
+            field::SCAN_TIMEOUT,
+            field::CONNECT_TIMEOUT,
+            field::BACKOFF_INITIAL,
+            field::BACKOFF_MAX,
+            field::LINK_REFRESH,
+        ] {
+            assert_eq!(config.set_none(id), Err(FieldError::NotOptional));
+        }
+        assert_eq!(config.set_none(99), Err(FieldError::UnknownField));
+    }
+
+    #[test]
+    fn an_explicit_open_network_differs_from_the_default_password() {
+        let firmware = WifiConfig {
+            password: Some(WifiPassword::from_bytes(b"factory-password").unwrap()),
+            ..WifiConfig::default()
+        };
+        let mut overrides = WifiOverrides::default();
+        let mut config = firmware.clone();
+        config.set_none(field::PASSWORD).unwrap();
+        assert!(overrides.capture(&config, field::PASSWORD));
+        assert_eq!(overrides.password, Override::Value(None));
+        let mut effective = firmware.clone();
+        overrides.apply_to(&mut effective);
+        assert_eq!(effective.password, None);
+        // Clearing follows the firmware default again.
+        assert!(overrides.clear(field::PASSWORD));
+        let mut effective = firmware.clone();
+        overrides.apply_to(&mut effective);
+        assert_eq!(effective.password, firmware.password);
     }
 
     #[test]

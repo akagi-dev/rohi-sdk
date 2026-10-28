@@ -55,7 +55,7 @@ fn cbor_encoding_is_stable() {
     assert_eq!(&buffer[23..31], &34.0f64.to_be_bytes());
     let decoded: LocationOverrides = rohi_config::decode_exact(&buffer[..used]).unwrap();
     assert_eq!(decoded, overrides());
-    assert_eq!(decoded.effective(), config());
+    assert_eq!(decoded.over_default(), config());
 
     // Without a height override the entry is omitted.
     let open = LocationOverrides {
@@ -67,7 +67,7 @@ fn cbor_encoding_is_stable() {
     assert_eq!(used, 1 + 2 * 10);
     let decoded: LocationOverrides = rohi_config::decode_exact(&buffer[..used]).unwrap();
     assert_eq!(decoded, open);
-    assert_eq!(decoded.effective().height_m, None);
+    assert_eq!(decoded.over_default().height_m, None);
 }
 
 #[test]
@@ -150,7 +150,10 @@ fn a_patch_needs_both_coordinates() {
     let mut overrides = LocationOverrides::default();
     overrides.capture(&section, field::HEIGHT_M);
     overrides.clear(field::HEIGHT_M);
-    assert_eq!(overrides.effective().read_field(field::HEIGHT_M), Ok(None));
+    assert_eq!(
+        overrides.over_default().read_field(field::HEIGHT_M),
+        Ok(None)
+    );
     assert_eq!(
         section.set_field(field::LATITUDE, Value::U64(1)),
         Err(FieldError::WrongKind)
@@ -165,6 +168,41 @@ fn the_default_is_no_position_and_reads_as_unset() {
     assert_eq!(defaults.read_field(field::LONGITUDE), Ok(None));
     assert_eq!(defaults.read_field(field::HEIGHT_M), Ok(None));
     assert!(LocationOverrides::default().is_empty());
+}
+
+#[test]
+fn an_unconfigured_section_is_valid_but_half_a_position_is_not() {
+    let mut section = LocationConfig::default();
+    assert!(section.is_unset());
+    assert_eq!(ManagedConfig::validate(&section), Ok(()));
+    section
+        .set_field(field::LATITUDE, Value::F32(52.5))
+        .unwrap();
+    assert!(!section.is_unset());
+    assert_eq!(ManagedConfig::validate(&section), Err(FieldError::Invalid));
+    section
+        .set_field(field::LONGITUDE, Value::F32(13.4))
+        .unwrap();
+    assert_eq!(ManagedConfig::validate(&section), Ok(()));
+}
+
+#[test]
+fn none_applies_to_the_height_only() {
+    let mut section = config();
+    section
+        .set_field(field::HEIGHT_M, Value::F32(34.0))
+        .unwrap();
+    assert_eq!(section.set_none(field::HEIGHT_M), Ok(()));
+    assert_eq!(section.height_m, None);
+    assert_eq!(
+        section.set_none(field::LATITUDE),
+        Err(FieldError::NotOptional)
+    );
+    assert_eq!(
+        section.set_none(field::LONGITUDE),
+        Err(FieldError::NotOptional)
+    );
+    assert_eq!(section.set_none(9), Err(FieldError::UnknownField));
 }
 
 #[test]

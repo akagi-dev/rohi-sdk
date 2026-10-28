@@ -563,6 +563,7 @@ Fields:
   serial  string, read-only
 
 Special values:
+  FIELD=none  set a nullable field to no value, whatever the default is
   FIELD=null  clear the override and use the field default
 
 Without FIELD=VALUE the effective configuration is shown: the defaults of the
@@ -624,7 +625,7 @@ async fn setting_fields_shows_the_effective_configuration_the_device_reports() {
     );
     let stored = bench.gadget.value.borrow().clone().unwrap();
     assert_eq!(
-        stored.effective(),
+        stored.over_default(),
         Gadget {
             label: "lamp".into(),
             level: 70,
@@ -773,7 +774,7 @@ async fn bad_input_is_refused_before_anything_is_stored() {
         outcome.device_error(),
         Error::Device(rohi::model::ErrorCode::InvalidArgument)
     ));
-    let outcome = run(&bench, &["config", "gadget", "level=5"]).await;
+    let outcome = run(&bench, &["config", "gadget", "mode=fast"]).await;
     assert!(
         matches!(outcome.error(), CliError::Device(_)),
         "a label is needed"
@@ -790,7 +791,7 @@ async fn dry_run_validates_without_storing() {
         "`gadget` is valid; nothing was changed\n"
     );
     assert_eq!(bench.writes(), 0);
-    let outcome = run(&bench, &["config", "gadget", "level=5", "--dry-run"]).await;
+    let outcome = run(&bench, &["config", "gadget", "mode=fast", "--dry-run"]).await;
     assert!(matches!(outcome.error(), CliError::Device(_)));
 }
 
@@ -1102,7 +1103,13 @@ async fn apply_merges_unsets_and_resets_with_one_confirmation() {
     // The gadget needs a restart.
     assert!(outcome.stdout.contains("restart"), "{}", outcome.stdout);
 
-    let connectivity = bench.telemetry.value.borrow().clone().unwrap().effective();
+    let connectivity = bench
+        .telemetry
+        .value
+        .borrow()
+        .clone()
+        .unwrap()
+        .over_default();
     assert_eq!(connectivity.host.as_str(), "new.example.org");
     assert_eq!(connectivity.port, 443);
     // Missing fields are left alone.
@@ -1140,7 +1147,7 @@ async fn apply_validates_every_section_before_changing_any() {
             .borrow()
             .clone()
             .unwrap()
-            .effective()
+            .over_default()
             .host
             .as_str(),
         "old.example.org"
@@ -1177,7 +1184,7 @@ async fn apply_dry_run_and_non_interactive_confirmation() {
             .borrow()
             .clone()
             .unwrap()
-            .effective()
+            .over_default()
             .port,
         8080
     );
@@ -1981,7 +1988,7 @@ async fn apply_conflicts_when_the_section_changes_after_the_diff_was_shown() {
             .borrow()
             .clone()
             .unwrap()
-            .effective()
+            .over_default()
             .interval_s,
         120
     );
@@ -1998,7 +2005,142 @@ async fn apply_conflicts_when_the_section_changes_after_the_diff_was_shown() {
         partial.source,
         Error::Device(rohi::model::ErrorCode::Conflict)
     ));
-    let stored = bench.telemetry.value.borrow().clone().unwrap().effective();
+    let stored = bench
+        .telemetry
+        .value
+        .borrow()
+        .clone()
+        .unwrap()
+        .over_default();
     assert_eq!(stored.port, 9000);
     assert_eq!(stored.interval_s, 60);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn none_sets_an_explicit_empty_override_and_null_clears_it() {
+    let bench = Bench::new();
+    run(&bench, &["config", "gadget", "label=lamp", "mode=slow"])
+        .await
+        .ok();
+
+    // `none` is an override without a value; the section says so.
+    let outcome = run(&bench, &["config", "gadget", "mode=none"]).await;
+    assert!(
+        outcome.ok().stdout.contains("mode    <none>\n"),
+        "{}",
+        outcome.stdout
+    );
+    assert_eq!(
+        bench.gadget.value.borrow().clone().unwrap().mode,
+        Override::Value(None)
+    );
+    let outcome = run(&bench, &["-o", "json", "config", "gadget"]).await;
+    let json = outcome.ok().json();
+    assert_eq!(json["values"]["mode"], Value::Null);
+    assert_eq!(json["overridden"], json!(["label", "mode"]));
+
+    // `null` follows the default again, which is no value too, but not an
+    // override.
+    let outcome = run(&bench, &["config", "gadget", "mode=null"]).await;
+    assert!(
+        outcome.ok().stdout.contains("mode    <unset>\n"),
+        "{}",
+        outcome.stdout
+    );
+    assert_eq!(
+        bench.gadget.value.borrow().clone().unwrap().mode,
+        Override::Default
+    );
+
+    // An open network is an explicit choice, for a secret field as well.
+    run(&bench, &["config", "wifi", "ssid=office"]).await.ok();
+    let outcome = run(&bench, &["config", "wifi", "password=none"]).await;
+    assert!(
+        outcome.ok().stdout.contains("password         <none>\n"),
+        "{}",
+        outcome.stdout
+    );
+    assert_eq!(
+        bench.wifi.value.borrow().clone().unwrap().password,
+        Override::Value(None)
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn none_is_refused_locally_for_a_field_that_is_not_nullable() {
+    let bench = Bench::new();
+    let outcome = run(&bench, &["config", "gadget", "level=none"]).await;
+    assert!(
+        outcome.message().contains("level is not nullable"),
+        "{}",
+        outcome.message()
+    );
+    assert_eq!(bench.writes(), 0);
+    // Nothing reached the device: this is a usage error.
+    assert!(matches!(outcome.error(), CliError::Usage(_)));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn export_diff_and_apply_keep_none_apart_from_clear_and_default() {
+    let bench = configured().await;
+    run(&bench, &["config", "gadget", "mode=none"]).await.ok();
+    let exported = run(&bench, &["config", "export"]).await.ok().json();
+    assert_eq!(
+        exported["gadget"],
+        json!({ "label": "lamp", "mode": { "none": true } })
+    );
+
+    // The exported file matches the device.
+    let file = temp_file("none.json", &exported.to_string());
+    let outcome = run(&bench, &["config", "diff", path(&file)]).await;
+    assert_eq!(outcome.ok().stdout, "No differences\n");
+
+    // From none to a value, to the default, and back to none.
+    let value = temp_file("value.json", r#"{ "gadget": { "mode": "slow" } }"#);
+    assert_eq!(
+        run(&bench, &["config", "diff", path(&value)])
+            .await
+            .ok()
+            .stdout,
+        "gadget:\n  ~ mode            (none) -> slow\n"
+    );
+    let default = temp_file("default.json", r#"{ "gadget": { "mode": null } }"#);
+    assert_eq!(
+        run(&bench, &["config", "diff", path(&default)])
+            .await
+            .ok()
+            .stdout,
+        "gadget:\n  - mode            (none) -> (default)\n"
+    );
+    run(&bench, &["config", "apply", path(&default), "--yes"])
+        .await
+        .ok();
+    assert_eq!(
+        bench.gadget.value.borrow().clone().unwrap().mode,
+        Override::Default
+    );
+    let outcome = run(&bench, &["config", "diff", path(&file)]).await;
+    assert_eq!(outcome.ok().stdout, "gadget:\n  + mode            (none)\n");
+    run(&bench, &["config", "apply", path(&file), "--yes"])
+        .await
+        .ok();
+    assert_eq!(
+        bench.gadget.value.borrow().clone().unwrap().mode,
+        Override::Value(None)
+    );
+    // Nothing is left to do now.
+    let outcome = run(&bench, &["config", "diff", path(&file)]).await;
+    assert_eq!(outcome.ok().stdout, "No differences\n");
+
+    // A required field cannot be none in a file either.
+    let bad = temp_file(
+        "bad-none.json",
+        r#"{ "gadget": { "level": { "none": true } } }"#,
+    );
+    let outcome = run(&bench, &["config", "diff", path(&bad)]).await;
+    assert!(
+        outcome.message().contains("gadget.level is not nullable"),
+        "{}",
+        outcome.message()
+    );
 }

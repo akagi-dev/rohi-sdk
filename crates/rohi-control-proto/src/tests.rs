@@ -191,6 +191,32 @@ fn clear_is_distinct_from_an_empty_value() {
 }
 
 #[test]
+fn none_clear_and_values_are_three_distinct_operations() {
+    let operation = |operation| ConfigMutation {
+        field_id: 1,
+        operation: Some(operation),
+    };
+    let none = operation(ConfigMutation_::Operation::None(Empty {}));
+    let clear = operation(ConfigMutation_::Operation::Clear(Empty {}));
+    let empty = operation(ConfigMutation_::Operation::StringValue(text("")));
+    let mut wires = [[0u8; 16]; 3];
+    let mut lengths = [0; 3];
+    for (index, message) in [&none, &clear, &empty].into_iter().enumerate() {
+        lengths[index] = encode(message, &mut wires[index]).unwrap();
+    }
+    assert_ne!(&wires[0][..lengths[0]], &wires[1][..lengths[1]]);
+    assert_ne!(&wires[0][..lengths[0]], &wires[2][..lengths[2]]);
+    assert_ne!(&wires[1][..lengths[1]], &wires[2][..lengths[2]]);
+    assert!(matches!(
+        decode::<ConfigMutation>(&wires[0][..lengths[0]])
+            .unwrap()
+            .operation,
+        Some(ConfigMutation_::Operation::None(_))
+    ));
+    assert!(std::format!("{none:?}").contains("none"));
+}
+
+#[test]
 fn oversized_value_is_rejected_with_capacity() {
     // string_value (field 6) of 65 bytes in a request, of 33 in a response.
     let mut wire = [b'a'; 67];

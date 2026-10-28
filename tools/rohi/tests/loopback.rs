@@ -25,6 +25,13 @@ fn set(id: u32, value: Value) -> Mutation {
     }
 }
 
+fn none(id: u32) -> Mutation {
+    Mutation {
+        field_id: id,
+        op: MutationOp::None,
+    }
+}
+
 fn clear(id: u32) -> Mutation {
     Mutation {
         field_id: id,
@@ -185,6 +192,50 @@ async fn a_patch_is_stored_atomically_and_secrets_are_never_returned() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn none_is_an_explicit_override_that_clear_removes() {
+    let bench = Bench::new();
+    with_device(20, &bench, |mut device| async move {
+        // An open network is an explicit choice: no password, overridden.
+        device
+            .config_patch("wifi", &[set(1, text("office")), none(2)], None, false)
+            .await
+            .unwrap();
+        let values = device.config_get("wifi").await.unwrap();
+        assert_eq!(values.overridden, [1, 2]);
+        assert_eq!(entry(&values, 2), None);
+
+        // A required field has no "none"; nothing changes.
+        let error = device
+            .config_patch("wifi", &[none(3)], None, false)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Device(ErrorCode::InvalidArgument)));
+
+        // A value replaces it, clear follows the default again.
+        device
+            .config_patch("wifi", &[set(2, text("hunter2hunter2"))], None, false)
+            .await
+            .unwrap();
+        assert_eq!(
+            entry(&device.config_get("wifi").await.unwrap(), 2),
+            Some(&EntryState::Redacted)
+        );
+        device
+            .config_patch("wifi", &[none(2)], None, false)
+            .await
+            .unwrap();
+        device
+            .config_patch("wifi", &[clear(2)], None, false)
+            .await
+            .unwrap();
+        assert_eq!(device.config_get("wifi").await.unwrap().overridden, [1]);
+    })
+    .await;
+    let stored = bench.wifi.value.borrow().clone().unwrap();
+    assert_eq!(stored.password, Override::Default);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn an_invalid_mutation_stores_nothing() {
     let bench = Bench::new();
     with_device(20, &bench, |mut device| async move {
@@ -201,7 +252,7 @@ async fn an_invalid_mutation_stores_nothing() {
         assert!(matches!(error, Error::Device(ErrorCode::InvalidArgument)));
         // A complete result that fails the typed validation is refused too.
         let error = device
-            .config_patch("gadget", &[set(2, Value::U64(5))], None, false)
+            .config_patch("gadget", &[set(3, Value::Enum("fast".into()))], None, false)
             .await
             .unwrap_err();
         assert!(matches!(error, Error::Device(ErrorCode::InvalidArgument)));

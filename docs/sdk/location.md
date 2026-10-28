@@ -50,10 +50,10 @@ source     configured
 Single precision resolves a coordinate to about one to two metres; the overrides are stored as `f64` (see [persistent
 ABI](../reference/persistent-abi.md)) and the control plane converts.
 
-Latitude and longitude only exist as a pair: the default (no override) is not a position (`NaN`, shown as `<unset>`), so a first
+Latitude and longitude only exist as a pair: the default (no override) is not a position (`NaN`, shown as `<unset>`) and is a valid, unconfigured section, so a first
 `height_m=10` is refused instead of storing `0, 0`. NaN and infinite values are refused too. The device validates
 the complete effective result before anything is stored (see [Config sections](service.md#config-sections));
-a section without overrides is not validated. `rohi config reset location` removes every override: the device does not know where it is again.
+a section without coordinates is valid. `rohi config reset location` removes every override: the device does not know where it is again.
 
 The change takes effect at once, without a restart: the firmware's configuration owner task hands every commit or
 removal to the shared location in the commit step, like the other runtime sections

@@ -28,8 +28,6 @@
 //! region or the radio. Adding a config section or a service means adding it to
 //! the tuples below; the protocol and the `rohi` tool need no change.
 
-use core::marker::PhantomData;
-
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::Delay;
 use log::warn;
@@ -43,7 +41,7 @@ use rohi_identity::{Identity, IdentityService, IdentityStore, IdentityStoreError
 use rohi_location::{LocationConfig, LocationService};
 use rohi_net::{
     BleOverrides, BleService, BleSettings, NetworkConfig, NetworkHandle, NetworkService,
-    WifiConfig, WifiOverrides, WifiService,
+    WifiConfig, WifiService,
 };
 use rohi_service::{
     ConfigError as RegistryError, ConfigRegistry, FactoryReset, ManagedConfig, ManagedSection,
@@ -55,6 +53,7 @@ use rohi_time_ntp::NtpServersConfig;
 use static_cell::StaticCell;
 
 use crate::config::{ConfigHandle, ServiceError as ConfigError, StorageMaintenance, maintenance};
+use crate::defaults;
 use crate::identity::IdentityHandle;
 use crate::resources::{BleResources, BleRunner, BleStatus, BleTransport, Ip};
 use crate::tasks::RawMutex;
@@ -77,37 +76,49 @@ fn store_error(error: ConfigError) -> StoreError {
     }
 }
 
-/// The persisted overrides `O` of a config section behind the configuration
-/// owner task.
+/// The section `C` behind the configuration owner task: its firmware defaults
+/// and its persisted overrides.
 ///
 /// The owner task publishes the committed effective value to the runtime
 /// itself, see [`crate::config`]; cancelling a call can therefore never leave
-/// a stored configuration unknown to the runtime.
-pub struct Stored<O> {
+/// a stored configuration unknown to the runtime. It builds that value from the
+/// same `defaults` provider, which [`crate::defaults`] lists for every
+/// section.
+pub struct Stored<C> {
     config: ConfigHandle,
-    _section: PhantomData<fn() -> O>,
+    defaults: fn() -> C,
 }
 
-impl<O> Stored<O> {
-    const fn new(config: ConfigHandle) -> Self {
-        Self {
-            config,
-            _section: PhantomData,
-        }
+impl<C> Stored<C> {
+    /// The section whose firmware defaults are `defaults`.
+    pub const fn new(config: ConfigHandle, defaults: fn() -> C) -> Self {
+        Self { config, defaults }
     }
 }
 
-impl<O: ConfigSection> SectionStore<O> for Stored<O> {
-    async fn load(&self) -> Result<Option<O>, StoreError> {
-        self.config.get::<O>().await.map_err(store_error)
+impl<C: ManagedConfig> SectionStore<C> for Stored<C>
+where
+    C::Overrides: ConfigSection,
+{
+    fn defaults(&self) -> C {
+        (self.defaults)()
     }
 
-    async fn store(&self, overrides: &O) -> Result<(), StoreError> {
+    async fn load(&self) -> Result<Option<C::Overrides>, StoreError> {
+        self.config.get::<C::Overrides>().await.map_err(store_error)
+    }
+
+    // The owner task publishes the effective value itself, from the same
+    // defaults, in the commit step.
+    async fn store(&self, overrides: &C::Overrides, _effective: &C) -> Result<(), StoreError> {
         self.config.set(overrides).await.map_err(store_error)
     }
 
-    async fn remove(&self) -> Result<(), StoreError> {
-        self.config.remove::<O>().await.map_err(store_error)
+    async fn remove(&self, _effective: &C) -> Result<(), StoreError> {
+        self.config
+            .remove::<C::Overrides>()
+            .await
+            .map_err(store_error)
     }
 }
 
@@ -135,12 +146,11 @@ fn identity_error(error: ConfigError) -> IdentityStoreError {
     }
 }
 
-type Section<C> = ManagedSection<C, Stored<<C as ManagedConfig>::Overrides>, RawMutex>;
+type Section<C> = ManagedSection<C, Stored<C>, RawMutex>;
 
 /// A section the firmware reads once at start: the BLE peripheral advertises
 /// its name from the configuration it was started with.
-type RestartSection<C> =
-    ManagedSection<C, RestartRequired<Stored<<C as ManagedConfig>::Overrides>>, RawMutex>;
+type RestartSection<C> = ManagedSection<C, RestartRequired<Stored<C>>, RawMutex>;
 
 /// The config sections of the device.
 pub type ConfigSections = (
@@ -218,7 +228,7 @@ impl ConfigRegistry for UrbanConfig {
 /// The services of the device.
 pub type Services = (
     Tracked<
-        Startup<WifiService<'static, RawMutex, Delay, net::Probe, Stored<WifiOverrides>>>,
+        Startup<WifiService<'static, RawMutex, Delay, net::Probe, Stored<WifiConfig>>>,
         RawMutex,
     >,
     Tracked<Startup<NetworkService<'static, RawMutex, net::Probe>>, RawMutex>,
@@ -257,12 +267,12 @@ pub fn device(
         uptime_ms,
         UrbanConfig {
             sections: (
-                ManagedSection::new(Stored::new(config)),
-                ManagedSection::new(Stored::new(config)),
-                ManagedSection::new(RestartRequired(Stored::new(config))),
-                ManagedSection::new(Stored::new(config)),
-                ManagedSection::new(Stored::new(config)),
-                ManagedSection::new(Stored::new(config)),
+                ManagedSection::new(Stored::new(config, defaults::wifi)),
+                ManagedSection::new(Stored::new(config, defaults::network)),
+                ManagedSection::new(RestartRequired(Stored::new(config, defaults::ble))),
+                ManagedSection::new(Stored::new(config, defaults::connectivity)),
+                ManagedSection::new(Stored::new(config, defaults::location)),
+                ManagedSection::new(Stored::new(config, defaults::time)),
             ),
             storage: maintenance(),
         },
@@ -272,7 +282,7 @@ pub fn device(
                     net::handle(),
                     Delay,
                     net::Probe::new(network),
-                    Stored::new(config),
+                    Stored::new(config, defaults::wifi),
                 ),
                 network_failed,
             )),
@@ -313,20 +323,20 @@ pub const BLE_CONFIG: rohi_net::BleConfig = rohi_net::BleConfig {
     gatt: GATT,
 };
 
-/// [`BLE_CONFIG`] with the name stored in the `ble` section. The name is read
-/// once, when the peripheral starts.
+/// [`BLE_CONFIG`] with the name of the `ble` section: the firmware defaults
+/// with the stored overrides applied. The name is read once, when the
+/// peripheral starts.
 pub async fn ble_config(config: ConfigHandle) -> rohi_net::BleConfig {
+    let mut settings = defaults::ble();
     match config.get::<BleOverrides>().await {
-        Ok(Some(overrides)) => BLE_CONFIG.with_settings(&overrides.effective()),
-        Ok(None) => BLE_CONFIG,
-        Err(error) => {
-            warn!(
-                "BLE: stored settings unavailable, using the defaults: {}",
-                error
-            );
-            BLE_CONFIG
-        }
+        Ok(Some(overrides)) => overrides.apply_to(&mut settings),
+        Ok(None) => {}
+        Err(error) => warn!(
+            "BLE: stored settings unavailable, using the defaults: {}",
+            error
+        ),
     }
+    BLE_CONFIG.with_settings(&settings)
 }
 
 /// Static storage of the BLE peripheral, sized by [`crate::resources`].

@@ -147,6 +147,7 @@ rohi config connectivity host=ingress.example.org port=443 enabled=true
 rohi config connectivity interval_s=120 --dry-run
 rohi config wifi ssid=office password=-               # secret from stdin or a hidden prompt
 rohi config wifi scan_timeout=null                    # remove the override: back to the firmware default
+rohi config wifi password=none                        # explicit "no value": an open network
 rohi config reset connectivity                     # remove every override of the section
 ```
 
@@ -164,7 +165,8 @@ backoff_max      60000 ms
 link_refresh     10000 ms
 ```
 
-An optional field without a value (its default is none) shows as `<unset>`. After a change `rohi` reads the section
+An optional field without a value shows as `<unset>` when it follows a default that has none, and as `<none>` when you
+set it to no value explicitly. After a change `rohi` reads the section
 again and prints what the device reports, so the output is always the effective result.
 
 Format the whole configuration storage of the device with the dedicated `rohi factory-reset` command (not a `config`
@@ -198,14 +200,18 @@ Special values:
 - **`FIELD=VALUE` is a patch** of overrides: fields that are not mentioned are not touched. All mutations of one command
   are applied to a copy, the complete effective result is validated on the device and stored atomically: if anything
   is invalid, nothing is stored. `--dry-run` validates without storing.
-- **A section without overrides is inactive and is not validated**, but the result of every change is. Fields that
-  belong together are therefore set in one command: `rohi config wifi scan_timeout=5000` alone fails until the
-  `ssid` is set, `rohi config wifi ssid=office scan_timeout=5000` works.
-- **`FIELD=null` removes the override** of any writable field, required or not; the field follows the firmware default
-  again. It does not set an optional field to "none": a field whose default has a value cannot be forced to none
-  (`time` `server2=null` restores its default server).
+- **The result of every change is validated** as `defaults + overrides`; an unconfigured or disabled section (no
+  `ssid`, no location, connectivity disabled) is a valid state. Fields that belong together are therefore set in one
+  command: `rohi config connectivity enabled=true` alone fails until the `host` is set,
+  `rohi config connectivity enabled=true host=ingress.example.org` works.
+- **Three states for a nullable field.** `FIELD=value` is an explicit value, `FIELD=none` is an explicit "no value"
+  (`rohi config wifi password=none` configures an open network, `rohi config time server2=none` disables the second NTP
+  server) and `FIELD=null` removes the override, so the field follows the **current firmware default** again
+  (`rohi config time server2=null` restores the firmware's second server). `none` is only valid for fields that
+  `--help` marks `nullable`; `rohi` refuses it for any other field before contacting the device. `FIELD=null` works for
+  any writable field, required or not.
 - **Secrets** (`secret` in `--help`) are never returned and never part of exports. Put `NAME=-` instead of a value;
-  the tool refuses a secret on the command line. `password=null` is allowed: it removes the override.
+  the tool refuses a secret on the command line. `password=none` and `password=null` are allowed: they carry no secret.
 - **Reset** removes every override of the section, so the firmware defaults apply again.
 - A change that needs a restart says so (`A restart is required for the change to take effect`).
 
@@ -233,12 +239,13 @@ A file maps section names to their fields:
 | In the file | Effect |
 |-------------|--------|
 | `"field": value` | set the override (even if the value equals the default) |
-| `"field": null` | remove the override |
+| `"field": null` | remove the override (follow the firmware default) |
+| `"field": {"none": true}` | explicit "no value" of a nullable field (distinct from `null`) |
 | field missing | left unchanged |
 | `"section": null` | reset the section (remove every override) |
 
 - **Export** writes the explicit overrides only, never materialized defaults, so a later firmware default still
-  reaches fields you did not override. Sections without overrides are omitted; secrets and read-only fields are left
+  reaches fields you did not override. A nullable field you set to no value is written as `{"none": true}`. Sections without overrides are omitted; secrets and read-only fields are left
   out, so applying an exported file never clears or overwrites a secret.
 - A file cannot contain secrets: `config apply` refuses them and points at `config SECTION NAME=-`.
 - **`diff`** compares the file with your overrides on the device and prints `~` changes, `+` new overrides, `-` removed

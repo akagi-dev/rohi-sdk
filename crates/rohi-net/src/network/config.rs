@@ -347,14 +347,14 @@ mod tests {
         full.hostname = Hostname::new("altruist-1");
         let overrides = overrides_of(&full);
         assert_eq!(roundtrip(&overrides), overrides);
-        assert_eq!(overrides.effective(), full);
+        assert_eq!(overrides.over_default(), full);
     }
 
     #[test]
     fn nothing_is_stored_for_the_defaults() {
         assert!(NetworkOverrides::default().is_empty());
         assert_eq!(
-            NetworkOverrides::default().effective(),
+            NetworkOverrides::default().over_default(),
             NetworkConfig::default()
         );
     }

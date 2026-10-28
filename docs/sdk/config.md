@@ -57,9 +57,9 @@ store.set(&identity)?;
 let identity = store.get::<Identity>()?; // Option<Identity>
 ```
 
-A section that users configure is split in two. The typed struct (`WifiConfig`) is the **effective** configuration,
-`Default` is the firmware default and it is not persisted. What the store holds is the user's explicit **overrides**,
-declared with the declarative macro `config_overrides!`:
+A section that users configure is split in two. The typed struct (`WifiConfig`) is the **effective** configuration and
+is not persisted; its `Default` is only a portable baseline, the firmware supplies the authoritative defaults. What the
+store holds is the user's explicit **overrides**, declared with the declarative macro `config_overrides!`:
 
 ```rust,ignore
 rohi_config::config_overrides! {
@@ -72,14 +72,17 @@ rohi_config::config_overrides! {
 
 store.set(&overrides)?;
 let overrides = store.get::<WifiOverrides>()?; // Option<WifiOverrides>
-let wifi: WifiConfig = overrides.effective();  // defaults + overrides
+let mut wifi = firmware_defaults();            // the firmware decides the base
+overrides.apply_to(&mut wifi);                 // effective = firmware defaults + overrides
 ```
 
 The macro generates a struct with an `Override<T>` per field (`Override::Default`: the user did not override it,
 `Override::Value(v)`: explicit; nullable fields are `Override<Option<T>>`, so `Value(None)` differs from `Default`),
 derives the CBOR codec as a **map** keyed by the stable field ids, and implements `ConfigSection` (the section ID is the
-hash of the name of the *section type*, `WifiConfig`) and `ConfigOverrides<WifiConfig>` (`effective()`,
-`is_overridden`, `capture`, `clear`, `is_empty()`, `FIELD_IDS`). A section without overrides encodes as the empty map.
+hash of the name of the *section type*, `WifiConfig`) and `ConfigOverrides<WifiConfig>` (`apply_to`,
+`is_overridden`, `capture`, `clear`, `is_empty()`, `FIELD_IDS`). The generated code only overlays the explicit overrides
+on a base value; it never decides the base (`over_default()` is a convenience on `C::default()` for tests). A section
+without overrides encodes as the empty map.
 
 `store.remove::<T>()` deletes one section, `store.clear()` all of them. The caller never handles section IDs,
 record framing, CRCs, slots or generations.

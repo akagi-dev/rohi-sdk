@@ -88,6 +88,12 @@ impl LocationConfig {
                 .is_none_or(|height| (MIN_HEIGHT_M..=MAX_HEIGHT_M).contains(&height))
     }
 
+    /// Whether nothing is given: the device has no configured position. A
+    /// height alone is not a position and is not unset.
+    pub fn is_unset(&self) -> bool {
+        self.latitude.is_nan() && self.longitude.is_nan() && self.height_m.is_none()
+    }
+
     /// The configured position as a [`Location`].
     pub const fn location(&self) -> Location {
         Location {
@@ -145,8 +151,21 @@ impl ManagedConfig for LocationConfig {
         Ok(self.read_field(id)?.is_some())
     }
 
+    fn set_none(&mut self, id: u32) -> Result<(), FieldError> {
+        match id {
+            field::HEIGHT_M => {
+                self.height_m = None;
+                Ok(())
+            }
+            field::LATITUDE | field::LONGITUDE => Err(FieldError::NotOptional),
+            _ => Err(FieldError::UnknownField),
+        }
+    }
+
+    /// A section without coordinates is valid: the device does not know where
+    /// it is. A single coordinate, or one out of range, is not.
     fn validate(&self) -> Result<(), FieldError> {
-        if self.is_valid() {
+        if self.is_unset() || self.is_valid() {
             Ok(())
         } else {
             Err(FieldError::Invalid)

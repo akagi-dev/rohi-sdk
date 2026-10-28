@@ -189,7 +189,7 @@ impl ManagedConfig for NtpServersConfig {
     const VERSION: u16 = <NtpServersOverrides as ConfigSection>::VERSION;
     const FIELDS: &'static [ConfigField] = &[
         ConfigField::new(field::SERVER1, "server1", ValueKind::String),
-        ConfigField::new(field::SERVER2, "server2", ValueKind::String),
+        ConfigField::new(field::SERVER2, "server2", ValueKind::String).optional(),
         ConfigField::new(field::SERVER3, "server3", ValueKind::String).optional(),
         ConfigField::new(field::SERVER4, "server4", ValueKind::String).optional(),
     ];
@@ -214,6 +214,16 @@ impl ManagedConfig for NtpServersConfig {
             .ok_or(FieldError::Invalid)?;
         *self.slot(id)? = Some(name);
         Ok(())
+    }
+
+    fn set_none(&mut self, id: u32) -> Result<(), FieldError> {
+        match id {
+            field::SERVER1 => Err(FieldError::NotOptional),
+            _ => {
+                *self.slot(id)? = None;
+                Ok(())
+            }
+        }
     }
 
     fn field_is_set(&self, id: u32) -> Result<bool, FieldError> {
@@ -261,7 +271,7 @@ mod tests {
         assert_eq!(decoded, overrides);
         // The second server is not overridden: it follows the default.
         assert_eq!(
-            decoded.effective().servers().as_slice(),
+            decoded.over_default().servers().as_slice(),
             ["a.io", DEFAULT_SERVERS[1], "b"]
         );
     }
@@ -344,13 +354,16 @@ mod tests {
         );
         let mut overrides = NtpServersOverrides::default();
         overrides.capture(&config, field::SERVER3);
-        assert_eq!(overrides.effective().server3, config.server3);
+        assert_eq!(overrides.over_default().server3, config.server3);
         overrides.clear(field::SERVER3);
-        assert_eq!(overrides.effective().read_field(field::SERVER3), Ok(None));
+        assert_eq!(
+            overrides.over_default().read_field(field::SERVER3),
+            Ok(None)
+        );
         // A cleared first server is the default, not a missing one.
         overrides.capture(&config, field::SERVER1);
         overrides.clear(field::SERVER1);
-        assert_eq!(overrides.effective().validate(), Ok(()));
+        assert_eq!(overrides.over_default().validate(), Ok(()));
         assert_eq!(config.read_field(9), Err(FieldError::UnknownField));
         assert_eq!(
             config.set_field(9, Value::text("a").unwrap()),
@@ -360,6 +373,40 @@ mod tests {
             config.set_field(field::SERVER2, Value::text("bad name").unwrap()),
             Err(FieldError::Invalid)
         );
+    }
+
+    #[test]
+    fn none_disables_an_optional_server_and_the_first_is_required() {
+        let mut config = NtpServersConfig::default();
+        assert_eq!(config.set_none(field::SERVER2), Ok(()));
+        assert_eq!(config.server2, None);
+        assert_eq!(config.set_none(field::SERVER4), Ok(()));
+        assert_eq!(
+            config.set_none(field::SERVER1),
+            Err(FieldError::NotOptional)
+        );
+        assert_eq!(config.set_none(9), Err(FieldError::UnknownField));
+        assert!(
+            NtpServersConfig::FIELDS
+                .iter()
+                .all(|f| f.optional == (f.field.id != field::SERVER1))
+        );
+    }
+
+    #[test]
+    fn an_explicit_none_differs_from_the_default_server() {
+        let mut overrides = NtpServersOverrides::default();
+        let mut config = NtpServersConfig::default();
+        config.set_none(field::SERVER2).unwrap();
+        overrides.capture(&config, field::SERVER2);
+        assert_eq!(overrides.server2, Override::Value(None));
+        let mut effective = NtpServersConfig::default();
+        overrides.apply_to(&mut effective);
+        assert_eq!(effective.server2, None);
+        overrides.clear(field::SERVER2);
+        let mut effective = NtpServersConfig::default();
+        overrides.apply_to(&mut effective);
+        assert_eq!(effective.server2, NtpServersConfig::default().server2);
     }
 
     #[test]

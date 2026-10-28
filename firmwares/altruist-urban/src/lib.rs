@@ -42,6 +42,8 @@ pub mod config;
 pub mod connectivity;
 /// Local control plane over BLE.
 pub mod control;
+/// The firmware defaults of the config sections.
+pub mod defaults;
 /// Device identity runtime.
 pub mod identity;
 pub mod location;

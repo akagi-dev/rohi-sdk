@@ -21,15 +21,19 @@
 //! A [`ManagedSection`] ties both together and implements the generic
 //! operations; a tuple of sections is a [`ConfigRegistry`].
 //!
-//! The effective configuration is `C::default()` plus the explicit overrides
-//! of the user ([`ConfigOverrides`]). Only the overrides are persisted, so a
-//! field the user never set follows the defaults of the firmware that runs.
+//! The effective configuration is the firmware defaults plus the explicit
+//! overrides of the user ([`ConfigOverrides`]). The firmware supplies the
+//! defaults through [`SectionStore::defaults`]: they, not `C::default()`, are
+//! the authoritative base of reads, validation and runtime publication. Only
+//! the overrides are persisted, so a field the user never set follows the
+//! defaults of the firmware that runs.
 //!
 //! Patch semantics: load the persisted overrides, apply all mutations to a
-//! copy (`Set` creates or replaces an override, `Clear` removes it), validate
-//! the complete effective result, persist atomically, increment the revision.
-//! If anything is invalid nothing is persisted. A section without overrides
-//! is not validated: it is inactive. The whole transaction (revision check,
+//! copy (`Set` creates or replaces an override with a value, `None` overrides an
+//! optional field with an explicit "no value", `Clear` removes the override),
+//! validate the complete effective result, persist atomically, increment the
+//! revision. If anything is invalid nothing is persisted. The same effective
+//! value is validated, stored and handed to the runtime. The whole transaction (revision check,
 //! load, validate, store, bump) runs under a per-section lock, so concurrent
 //! patches and resets are serialized.
 
@@ -61,18 +65,21 @@ pub enum FieldError {
     /// The value or the resulting section is rejected by the typed
     /// validation.
     Invalid,
+    /// The field is required: it cannot be set to "no value".
+    NotOptional,
 }
 
 /// A typed config section exposed through the generic config interface.
 ///
-/// The type is the *effective* configuration the runtime consumes; its
-/// `Default` is the firmware default. The persisted state is
+/// The type is the *effective* configuration the runtime consumes. The firmware
+/// provides its defaults through [`SectionStore::defaults`]; a `Default`
+/// implementation is only a portable baseline for that. The persisted state is
 /// [`Overrides`](Self::Overrides), the fields the user set explicitly.
 ///
 /// The module owns the typed struct, the field metadata, the conversion
 /// between [`Value`] and typed fields, and the validation. Field ids are
 /// stable and only ever added.
-pub trait ManagedConfig: Clone + Default {
+pub trait ManagedConfig: Clone {
     /// Stable numeric id, the address of requests; unique within the
     /// registry. Only ever added, never reused.
     const SECTION_ID: u64;
@@ -104,8 +111,18 @@ pub trait ManagedConfig: Clone + Default {
     /// is writable and that the value matches kind, variants and range.
     fn set_field(&mut self, id: u32, value: Value) -> Result<(), FieldError>;
 
+    /// Sets an optional field to "no value". The registry has already checked
+    /// that the field exists, is writable and optional. This is a domain state
+    /// distinct from clearing the override: the field does not follow the
+    /// firmware default afterwards.
+    fn set_none(&mut self, id: u32) -> Result<(), FieldError> {
+        let _ = id;
+        Err(FieldError::NotOptional)
+    }
+
     /// Validates the complete effective section, including rules across
-    /// fields. It is not called for a section without overrides.
+    /// fields. It is called for every patch, so an unconfigured or disabled
+    /// section must be a valid state.
     fn validate(&self) -> Result<(), FieldError>;
 }
 
@@ -118,22 +135,30 @@ pub enum StoreError {
     Internal,
 }
 
-/// Persistence and runtime effects of one section, stored as its overrides
-/// `O`.
+/// Persistence, firmware defaults and runtime effects of one section `C`.
 ///
-/// `store` and `remove` commit atomically and hand the effective value to the
-/// runtime (the owner of the store publishes it in the same step), so a
-/// cancelled caller can never leave a stored value unknown to the runtime.
+/// [`defaults`](Self::defaults) is the one authoritative base of the section:
+/// the generic layer applies the persisted overrides on top of it for reads,
+/// validation and publication. `store` and `remove` commit atomically and hand
+/// the `effective` value, the one that was validated, to the runtime (the
+/// owner of the store publishes it in the same step), so a cancelled caller
+/// can never leave a stored value unknown to the runtime.
 #[allow(async_fn_in_trait)]
-pub trait SectionStore<O> {
+pub trait SectionStore<C: ManagedConfig> {
+    /// The firmware defaults: the effective configuration without overrides.
+    /// It may differ from the portable `Default` of the type.
+    fn defaults(&self) -> C;
+
     /// The persisted overrides, `None` when nothing is persisted.
-    async fn load(&self) -> Result<Option<O>, StoreError>;
+    async fn load(&self) -> Result<Option<C::Overrides>, StoreError>;
 
-    /// Persists `overrides` and applies them.
-    async fn store(&self, overrides: &O) -> Result<(), StoreError>;
+    /// Persists `overrides` and publishes `effective`, the firmware defaults
+    /// with `overrides` applied.
+    async fn store(&self, overrides: &C::Overrides, effective: &C) -> Result<(), StoreError>;
 
-    /// Removes the persisted overrides: the section is back to the defaults.
-    async fn remove(&self) -> Result<(), StoreError>;
+    /// Removes the persisted overrides and publishes `effective`, the
+    /// firmware defaults.
+    async fn remove(&self, effective: &C) -> Result<(), StoreError>;
 
     /// Whether a change only takes effect after a restart.
     fn restart_required(&self) -> bool {
@@ -145,17 +170,21 @@ pub trait SectionStore<O> {
 /// change, a reset included, takes effect only after a restart.
 pub struct RestartRequired<S>(pub S);
 
-impl<O, S: SectionStore<O>> SectionStore<O> for RestartRequired<S> {
-    async fn load(&self) -> Result<Option<O>, StoreError> {
+impl<C: ManagedConfig, S: SectionStore<C>> SectionStore<C> for RestartRequired<S> {
+    fn defaults(&self) -> C {
+        self.0.defaults()
+    }
+
+    async fn load(&self) -> Result<Option<C::Overrides>, StoreError> {
         self.0.load().await
     }
 
-    async fn store(&self, overrides: &O) -> Result<(), StoreError> {
-        self.0.store(overrides).await
+    async fn store(&self, overrides: &C::Overrides, effective: &C) -> Result<(), StoreError> {
+        self.0.store(overrides, effective).await
     }
 
-    async fn remove(&self) -> Result<(), StoreError> {
-        self.0.remove().await
+    async fn remove(&self, effective: &C) -> Result<(), StoreError> {
+        self.0.remove(effective).await
     }
 
     fn restart_required(&self) -> bool {
@@ -250,9 +279,12 @@ pub struct SectionValues {
 /// What a mutation does to a field.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MutationOp {
-    /// Creates or replaces the override of the field.
+    /// Creates or replaces the override of the field with a value.
     Set(Value),
-    /// Removes the override of the field: the default applies again.
+    /// Overrides an optional field with an explicit "no value". It differs
+    /// from [`Clear`](Self::Clear): the firmware default no longer applies.
+    None,
+    /// Removes the override of the field: the firmware default applies again.
     Clear,
 }
 
@@ -319,7 +351,7 @@ pub struct ManagedSection<C, S, M: RawMutex> {
     _config: PhantomData<fn() -> C>,
 }
 
-impl<C: ManagedConfig, S: SectionStore<C::Overrides>, M: RawMutex> ManagedSection<C, S, M> {
+impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ManagedSection<C, S, M> {
     /// A section persisted through `store`.
     pub const fn new(store: S) -> Self {
         const {
@@ -361,7 +393,15 @@ impl<C: ManagedConfig, S: SectionStore<C::Overrides>, M: RawMutex> ManagedSectio
             .ok_or(FieldError::UnknownField)
     }
 
-    fn apply(overrides: &mut C::Overrides, mutation: &Mutation) -> Result<(), FieldError> {
+    /// The effective configuration: the firmware defaults with `overrides`
+    /// applied. The one place that decides the base.
+    fn effective(&self, overrides: &C::Overrides) -> C {
+        let mut config = self.store.defaults();
+        overrides.apply_to(&mut config);
+        config
+    }
+
+    fn apply(&self, overrides: &mut C::Overrides, mutation: &Mutation) -> Result<(), FieldError> {
         let field = Self::field(mutation.field_id)?;
         if !field.writable {
             return Err(FieldError::ReadOnly);
@@ -369,8 +409,16 @@ impl<C: ManagedConfig, S: SectionStore<C::Overrides>, M: RawMutex> ManagedSectio
         match &mutation.op {
             MutationOp::Set(value) => {
                 field.check(value, C::ENUMS)?;
-                let mut config = overrides.effective();
+                let mut config = self.effective(overrides);
                 config.set_field(field.field.id, value.clone())?;
+                overrides.capture(&config, field.field.id);
+            }
+            MutationOp::None => {
+                if !field.optional {
+                    return Err(FieldError::NotOptional);
+                }
+                let mut config = self.effective(overrides);
+                config.set_none(field.field.id)?;
                 overrides.capture(&config, field.field.id);
             }
             MutationOp::Clear => {
@@ -388,7 +436,7 @@ impl<C: ManagedConfig, S: SectionStore<C::Overrides>, M: RawMutex> ManagedSectio
     }
 }
 
-impl<C: ManagedConfig, S: SectionStore<C::Overrides>, M: RawMutex> ConfigSectionOps
+impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ConfigSectionOps
     for ManagedSection<C, S, M>
 {
     fn id(&self) -> u64 {
@@ -415,7 +463,7 @@ impl<C: ManagedConfig, S: SectionStore<C::Overrides>, M: RawMutex> ConfigSection
     async fn get(&self) -> Result<SectionValues, ConfigError> {
         let _transaction = self.transaction.lock().await;
         let overrides = self.store.load().await?.unwrap_or_default();
-        let config = overrides.effective();
+        let config = self.effective(&overrides);
         let mut entries = Vec::new();
         let mut overridden = Vec::new();
         for field in C::FIELDS {
@@ -463,12 +511,11 @@ impl<C: ManagedConfig, S: SectionStore<C::Overrides>, M: RawMutex> ConfigSection
         let persisted = stored.is_some();
         let mut next = stored.unwrap_or_default();
         for mutation in mutations {
-            Self::apply(&mut next, mutation)?;
+            self.apply(&mut next, mutation)?;
         }
-        // Without overrides the section is inactive and always valid.
-        if !next.is_empty() {
-            next.effective().validate()?;
-        }
+        // The value validated here is the one stored and published.
+        let effective = self.effective(&next);
+        effective.validate()?;
         let restart_required = self.store.restart_required();
         if dry_run {
             return Ok(Patched {
@@ -477,10 +524,10 @@ impl<C: ManagedConfig, S: SectionStore<C::Overrides>, M: RawMutex> ConfigSection
             });
         }
         if !next.is_empty() {
-            self.store.store(&next).await?;
+            self.store.store(&next, &effective).await?;
         } else if persisted {
             // The last override is gone: the section is the defaults again.
-            self.store.remove().await?;
+            self.store.remove(&effective).await?;
         }
         Ok(Patched {
             revision: self.bump(),
@@ -502,7 +549,7 @@ impl<C: ManagedConfig, S: SectionStore<C::Overrides>, M: RawMutex> ConfigSection
                 restart_required,
             });
         }
-        self.store.remove().await?;
+        self.store.remove(&self.store.defaults()).await?;
         Ok(Patched {
             revision: self.bump(),
             restart_required,

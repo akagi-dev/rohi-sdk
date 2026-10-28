@@ -331,8 +331,10 @@ impl ConfigValues {
 pub enum MutationOp {
     /// Creates or replaces the override of the field.
     Set(Value),
-    /// Removes the override of the field: the default applies again. Not the
-    /// same as setting an optional field to none.
+    /// Overrides an optional field with an explicit "no value": the default
+    /// no longer applies. Not the same as [`Clear`](Self::Clear).
+    None,
+    /// Removes the override of the field: the default applies again.
     Clear,
 }
 
