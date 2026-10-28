@@ -32,7 +32,7 @@ use heapless::Vec;
 
 use crate::action::enum_ok;
 use crate::action::{
-    ActionDescriptor, ActionError, ActionOutput, RecordCollector, Records, check_args,
+    Action, ActionDescriptor, ActionError, ActionOutput, RecordCollector, Records, check_args,
 };
 use crate::field::{EnumDescriptor, FieldDescriptor};
 use crate::schema::{actions_valid, enums_valid, fields_valid, issues_valid, name_ok};
@@ -335,10 +335,65 @@ pub struct Startup<S> {
     failed: bool,
 }
 
-impl<S: ManagedService> Startup<S> {
+impl<S> Startup<S> {
     /// Wraps `service`; `failed` tells that its runtime did not start.
     pub const fn new(service: S, failed: bool) -> Self {
         Self { service, failed }
+    }
+}
+
+impl<S: Service> Service for Startup<S> {
+    const ID: u32 = S::ID;
+    const NAME: &'static str = S::NAME;
+}
+
+impl<S: Status> Status for Startup<S> {
+    const VERSION: u16 = S::VERSION;
+    const STATUS_SCHEMA: &'static [FieldDescriptor] = S::STATUS_SCHEMA;
+    const ENUMS: &'static [EnumDescriptor] = S::ENUMS;
+    const ISSUES: &'static [IssueDescriptor] = S::ISSUES;
+    const ESSENTIAL: bool = S::ESSENTIAL;
+
+    async fn summary(&self) -> ServiceSummary {
+        if self.failed {
+            return ServiceSummary::new(ServiceState::Failed, ServiceHealth::Error, false);
+        }
+        Status::summary(&self.service).await
+    }
+
+    async fn issues(&self, out: &mut Vec<Issue, MAX_ISSUES>) {
+        if self.failed {
+            let _ = out.push(Issue {
+                severity: IssueSeverity::Error,
+                code: ISSUE_STARTUP_FAILED,
+                age_ms: None,
+            });
+        } else {
+            Status::issues(&self.service, out).await;
+        }
+    }
+
+    async fn status(&self, out: &mut impl StatusWriter) -> Result<(), WriteError> {
+        if self.failed {
+            return Ok(());
+        }
+        Status::status(&self.service, out).await
+    }
+}
+
+impl<S: Action> Action for Startup<S> {
+    const ACTIONS: &'static [ActionDescriptor] = S::ACTIONS;
+
+    async fn invoke(
+        &self,
+        action: u32,
+        args: &[(u32, Value)],
+        out: &mut impl ActionOutput,
+    ) -> Result<(), ActionError> {
+        if self.failed {
+            return Err(ActionError::Unavailable);
+        }
+        Action::invoke(&self.service, action, args, out).await
     }
 }
 
@@ -446,15 +501,15 @@ pub enum StatusError {
 }
 
 #[derive(Clone, Copy)]
-struct Track {
-    revision: u32,
+pub(crate) struct Track {
+    pub(crate) revision: u32,
     // What the revision follows: state, health, readiness and issues.
     hash: u32,
     // Only the active issues: their age restarts when the set changes, not
     // when something else about the service does.
     issues_hash: u32,
     state: ServiceState,
-    state_since_ms: u64,
+    pub(crate) state_since_ms: u64,
     issues_since_ms: u64,
 }
 
@@ -483,6 +538,52 @@ fn observable_hash(summary: &ServiceSummary, issues_hash: u32) -> u32 {
     fnv(hash, &issues_hash.to_le_bytes())
 }
 
+pub(crate) type TrackCell<M> = Mutex<M, Cell<Option<Track>>>;
+
+/// Updates the track of a service with what it reported just now and fills
+/// in the age of the issues that have none. `hash` and the revision follow
+/// state, health, readiness and the active issues only, never the
+/// service-specific status fields.
+pub(crate) fn track_observation<M: RawMutex>(
+    cell: &TrackCell<M>,
+    summary: &ServiceSummary,
+    issues: &mut Vec<Issue, MAX_ISSUES>,
+    now_ms: u64,
+) -> Track {
+    let issues_hash = issues_hash(issues);
+    let hash = observable_hash(summary, issues_hash);
+    let track = cell.lock(|cell| {
+        let mut track = cell.get().unwrap_or(Track {
+            revision: 1,
+            hash,
+            issues_hash,
+            state: summary.state,
+            state_since_ms: now_ms,
+            issues_since_ms: now_ms,
+        });
+        if track.state != summary.state {
+            track.state = summary.state;
+            track.state_since_ms = now_ms;
+        }
+        if track.hash != hash {
+            track.hash = hash;
+            track.revision = track.revision.wrapping_add(1);
+        }
+        if track.issues_hash != issues_hash {
+            track.issues_hash = issues_hash;
+            track.issues_since_ms = now_ms;
+        }
+        cell.set(Some(track));
+        track
+    });
+    for issue in issues.iter_mut() {
+        if issue.age_ms.is_none() {
+            issue.age_ms = Some(now_ms.saturating_sub(track.issues_since_ms));
+        }
+    }
+    track
+}
+
 /// A [`ManagedService`] with the bookkeeping the registry needs: the status
 /// revision and the time since the last state change.
 ///
@@ -492,7 +593,7 @@ fn observable_hash(summary: &ServiceSummary, issues_hash: u32) -> u32 {
 /// for precise ages.
 pub struct Tracked<S, M: RawMutex> {
     service: S,
-    track: Mutex<M, Cell<Option<Track>>>,
+    track: TrackCell<M>,
 }
 
 impl<S: ManagedService, M: RawMutex> Tracked<S, M> {
@@ -535,39 +636,7 @@ impl<S: ManagedService, M: RawMutex> Tracked<S, M> {
         let summary = self.service.summary().await;
         let mut issues = Vec::new();
         self.service.issues(&mut issues).await;
-        let issues_hash = issues_hash(&issues);
-        let hash = observable_hash(&summary, issues_hash);
-
-        let track = self.track.lock(|cell| {
-            let mut track = cell.get().unwrap_or(Track {
-                revision: 1,
-                hash,
-                issues_hash,
-                state: summary.state,
-                state_since_ms: now_ms,
-                issues_since_ms: now_ms,
-            });
-            if track.state != summary.state {
-                track.state = summary.state;
-                track.state_since_ms = now_ms;
-            }
-            if track.hash != hash {
-                track.hash = hash;
-                track.revision = track.revision.wrapping_add(1);
-            }
-            if track.issues_hash != issues_hash {
-                track.issues_hash = issues_hash;
-                track.issues_since_ms = now_ms;
-            }
-            cell.set(Some(track));
-            track
-        });
-
-        for issue in &mut issues {
-            if issue.age_ms.is_none() {
-                issue.age_ms = Some(now_ms.saturating_sub(track.issues_since_ms));
-            }
-        }
+        let track = track_observation(&self.track, &summary, &mut issues, now_ms);
         (
             ServiceStatusSummary {
                 id: S::ID,

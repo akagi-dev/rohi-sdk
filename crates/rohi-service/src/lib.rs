@@ -49,6 +49,7 @@ extern crate self as rohi_service;
 pub mod action;
 pub mod config;
 mod field;
+mod registry;
 mod schema;
 pub mod service;
 pub mod status;
@@ -64,6 +65,7 @@ pub use config::{
     RestartRequired, SectionInfo, SectionSchema, SectionStore, SectionValues, StoreError,
 };
 pub use field::{Bounds, ConfigField, EnumDescriptor, EnumVariant, FieldDescriptor, Unit};
+pub use registry::{ActionRegistry, ServiceIdentity, StatusRegistry, StatusSet, Statuses, Tracker};
 pub use rohi_service_derive::Service;
 pub use service::{Service, assert_service_name, distinct_ids, service_id, service_name_is_valid};
 pub use status::{
