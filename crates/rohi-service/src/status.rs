@@ -36,6 +36,7 @@ use crate::action::{
 };
 use crate::field::{EnumDescriptor, FieldDescriptor};
 use crate::schema::{actions_valid, enums_valid, fields_valid, issues_valid, name_ok};
+use crate::service::Service;
 use crate::value::Value;
 use crate::{MAX_FIELD_VALUE_LEN, MAX_FIELDS, MAX_ISSUES};
 
@@ -236,6 +237,42 @@ impl StatusWriter for Collector {
         }
         self.fields.push((id, value)).map_err(|_| WriteError::Full)
     }
+}
+
+/// The status capability of a [`Service`]: a read-only snapshot of its live
+/// runtime state.
+///
+/// The status is written field by field; there is no stored status struct.
+/// Field ids are stable and only ever added. Shared bookkeeping (state age,
+/// revision, device health) is done by the status registry, not by the
+/// service; the service only reports what it knows.
+///
+/// A service implements `Status` only if it has runtime state to show, and
+/// independently of [`Action`](crate::Action).
+#[allow(async_fn_in_trait)]
+pub trait Status: Service {
+    /// Version of the status schema.
+    const VERSION: u16;
+    /// Metadata of the service-specific status fields, at most
+    /// [`MAX_FIELDS`] entries.
+    const STATUS_SCHEMA: &'static [FieldDescriptor];
+    /// The enums the status fields refer to, see [`EnumDescriptor`].
+    const ENUMS: &'static [EnumDescriptor] = &[];
+    /// The names of the issues the service reports, at most
+    /// [`MAX_ISSUE_DESCRIPTORS`].
+    const ISSUES: &'static [IssueDescriptor] = &[];
+    /// Whether the device is impaired when this service is not working.
+    /// Optional services degrade the device health at most.
+    const ESSENTIAL: bool = true;
+
+    /// Lifecycle state, health and readiness.
+    async fn summary(&self) -> ServiceSummary;
+
+    /// Appends the currently active issues.
+    async fn issues(&self, _out: &mut Vec<Issue, MAX_ISSUES>) {}
+
+    /// Writes the service-specific fields that currently have a value.
+    async fn status(&self, out: &mut impl StatusWriter) -> Result<(), WriteError>;
 }
 
 /// A runtime service whose status is exposed through the generic interface.

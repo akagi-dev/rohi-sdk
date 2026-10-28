@@ -28,6 +28,7 @@ rohi-config-esp = { path = "crates/rohi-config-esp" }
 rohi-net = { path = "crates/rohi-net" }
 rohi-net-esp = { path = "crates/rohi-net-esp" }
 rohi-service = { path = "crates/rohi-service" }
+rohi-service-derive = { path = "crates/rohi-service-derive" }
 rohi-control-proto = { path = "crates/rohi-control-proto" }
 rohi-connectivity-proto = { path = "crates/rohi-connectivity-proto" }
 rohi-connectivity = { path = "crates/rohi-connectivity" }

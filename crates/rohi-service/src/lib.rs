@@ -44,16 +44,19 @@
 //! Registries are plain tuples of sections or services; adding a module means
 //! adding it to the tuple.
 
+extern crate self as rohi_service;
+
 pub mod action;
 pub mod config;
 mod field;
 mod schema;
+pub mod service;
 pub mod status;
 mod value;
 
 pub use action::{
-    ActionDescriptor, ActionError, ActionOutput, MAX_ACTION_ARGS, MAX_RECORD_FIELDS, MAX_RECORDS,
-    Records,
+    Action, ActionDescriptor, ActionError, ActionOutput, MAX_ACTION_ARGS, MAX_RECORD_FIELDS,
+    MAX_RECORDS, Records,
 };
 pub use config::{
     ConfigEntry, ConfigError, ConfigRegistry, ConfigSectionOps, ConfigUpdate, EntryState,
@@ -61,11 +64,13 @@ pub use config::{
     RestartRequired, SectionInfo, SectionSchema, SectionStore, SectionValues, StoreError,
 };
 pub use field::{Bounds, ConfigField, EnumDescriptor, EnumVariant, FieldDescriptor, Unit};
+pub use rohi_service_derive::Service;
+pub use service::{Service, assert_service_name, distinct_ids, service_id, service_name_is_valid};
 pub use status::{
     DeviceHealth, FIRST_SERVICE_ISSUE, ISSUE_STARTUP_FAILED, Issue, IssueDescriptor, IssueSeverity,
     ManagedService, ServiceHealth, ServiceInfo, ServiceOps, ServiceRegistry, ServiceSchema,
-    ServiceState, ServiceStatus, ServiceStatusSummary, ServiceSummary, Startup, StatusError,
-    StatusWriter, Tracked, WriteError, default_device_health,
+    ServiceState, ServiceStatus, ServiceStatusSummary, ServiceSummary, Startup, Status,
+    StatusError, StatusWriter, Tracked, WriteError, default_device_health,
 };
 pub use value::{Value, ValueKind};
 

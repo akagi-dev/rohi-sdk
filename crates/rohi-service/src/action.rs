@@ -28,6 +28,7 @@
 use heapless::Vec;
 
 use crate::field::{EnumDescriptor, FieldDescriptor, enum_allows};
+use crate::service::Service;
 use crate::status::{StatusWriter, WriteError};
 use crate::value::Value;
 
@@ -103,6 +104,31 @@ impl ActionDescriptor {
         self.privileged = true;
         self
     }
+}
+
+/// The action capability of a [`Service`]: explicit operations a client can
+/// run, with typed arguments and results.
+///
+/// `Action` is a capability of the service, not a service per command:
+/// `WifiService` exposes `scan`, `connect`, `reconnect` and `disconnect`. A
+/// service implements it independently of [`Status`](crate::Status).
+///
+/// The action registry has already authorized the call and checked the
+/// arguments against the descriptor when [`invoke`](Self::invoke) runs;
+/// secret arguments are wiped by the caller after it returns.
+#[allow(async_fn_in_trait)]
+pub trait Action: Service {
+    /// The actions of the service, see [`ActionDescriptor`].
+    const ACTIONS: &'static [ActionDescriptor];
+
+    /// Runs one of [`ACTIONS`](Self::ACTIONS); results are written to `out`
+    /// as records.
+    async fn invoke(
+        &self,
+        action: u32,
+        args: &[(u32, Value)],
+        out: &mut impl ActionOutput,
+    ) -> Result<(), ActionError>;
 }
 
 /// Why an action failed.
