@@ -105,14 +105,16 @@ fn env_number<T: core::str::FromStr>(value: Option<&str>) -> Option<T> {
     value.and_then(|value| value.parse().ok())
 }
 
-/// Policy compiled into the firmware: nothing is enabled unless a host is set.
-/// It is the firmware layer under the overrides of the user.
+/// Policy compiled into the firmware: nothing is enabled unless a valid host is
+/// set, and the other variables are ignored without one. It is the firmware
+/// layer under the overrides of the user.
 pub fn firmware_overrides() -> ConnectivityOverrides {
     let mut out = ConnectivityOverrides::default();
-    if let Some(host) = option_env!("ROHI_CONNECTIVITY_HOST").and_then(Host::new) {
-        out.enabled = Override::Value(true);
-        out.host = Override::Value(host);
-    }
+    let Some(host) = option_env!("ROHI_CONNECTIVITY_HOST").and_then(Host::new) else {
+        return out;
+    };
+    out.enabled = Override::Value(true);
+    out.host = Override::Value(host);
     if let Some(port) = env_number(option_env!("ROHI_CONNECTIVITY_PORT")) {
         out.port = Override::Value(port);
     }

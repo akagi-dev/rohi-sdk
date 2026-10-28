@@ -446,7 +446,7 @@ enum Owner {
 impl Owner {
     fn handle(&mut self, command: Command, runtime: &ConfigRuntime) -> Outcome {
         if let Command::FormatStorage = command {
-            return self.format_storage();
+            return self.format_storage(runtime);
         }
         if let Command::FactoryReset = command {
             return self.factory_reset(runtime);
@@ -536,7 +536,10 @@ impl Owner {
         }
     }
 
-    fn format_storage(&mut self) -> Outcome {
+    /// The recovered store is empty, which the runtime learns here: an identity
+    /// that was unreadable at boot is now known to be absent. A
+    /// restart-required section is not published, as after any commit.
+    fn format_storage(&mut self, runtime: &ConfigRuntime) -> Outcome {
         match self {
             Self::Ready(_) => Outcome::Failed(ServiceError::StorageHealthy),
             Self::Unavailable { reason, storage } => {
@@ -547,6 +550,7 @@ impl Owner {
                     Ok(store) => {
                         warn!("Configuration: region formatted, previous configuration discarded");
                         *self = Self::Ready(store);
+                        publish_factory_reset(runtime);
                         Outcome::Done
                     }
                     Err(failure) => {

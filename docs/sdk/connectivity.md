@@ -145,7 +145,7 @@ and the published status restarts from `Starting`.
 
 In `altruist-urban` the build-time **firmware overrides** sit between `ConnectivityConfig::default()` (disabled) and the user overrides: the environment variables
 `ROHI_CONNECTIVITY_HOST` (which also enables telemetry), `ROHI_CONNECTIVITY_PORT`, `ROHI_CONNECTIVITY_NODE_ID` and `ROHI_CONNECTIVITY_INTERVAL_S`
-at compile time. Without a host, telemetry is disabled. A user override replaces only its own field; `FIELD=null` and `rohi config reset connectivity` remove user overrides and return to the build-time values.
+at compile time. Without a valid host, telemetry is disabled and the other variables are ignored. A user override replaces only its own field; `FIELD=null` and `rohi config reset connectivity` remove user overrides and return to the build-time values.
 
 ## Status
 
