@@ -32,8 +32,8 @@
 //!                          +-> STATE -> IdentityHandle::sign (future signed telemetry)
 //! ```
 //!
-//! `STATE` is the runtime view of the stored identity: read once at start and
-//! updated by the configuration owner task in the same step as every commit or
+//! `STATE` is the runtime view of the stored identity: published by the
+//! configuration owner task at boot and in the same step as every commit or
 //! removal. Asking whether the device is provisioned, and for its public key,
 //! reads only `STATE` and never the persistent store; the store is read again
 //! only while `STATE` is unknown because it was unreadable at start.
@@ -44,7 +44,7 @@
 use core::cell::RefCell;
 
 use embassy_sync::blocking_mutex::Mutex;
-use log::{error, info, warn};
+use log::info;
 use rohi_identity::{Identity, IdentityError, IdentitySigner, PublicKey, Signature, Signer};
 
 use crate::config::{ConfigHandle, ServiceError};
@@ -103,31 +103,15 @@ pub struct IdentityHandle {
     config: ConfigHandle,
 }
 
-/// Loads the stored identity, if any, and returns the handle.
+/// The handle to the identity behind `config`.
 ///
-/// A missing identity is the normal state of a fresh device. An unreadable
-/// configuration is reported as such and never mistaken for a missing identity:
-/// the identity requests then fail with the configuration error.
-pub async fn start(config: ConfigHandle) -> IdentityHandle {
-    let handle = IdentityHandle { config };
-    match config.get::<Identity>().await {
-        Ok(Some(identity)) => {
-            info!(
-                "Identity: provisioned, public key {}",
-                identity.public_key()
-            );
-            set_signer(Some(identity.signer()));
-        }
-        Ok(None) => {
-            set_signer(None);
-            info!("Identity: not provisioned")
-        }
-        Err(ServiceError::Unavailable(_)) => {
-            warn!("Identity: configuration unavailable, identity state unknown")
-        }
-        Err(_) => error!("Identity: the stored identity section is unreadable"),
-    }
-    handle
+/// It reads nothing: the configuration owner task publishes the stored identity
+/// at boot, see [`crate::bindings::IdentityBinding`]. A missing identity is the
+/// normal state of a fresh device. An unreadable configuration is reported as
+/// such and never mistaken for a missing identity: the identity requests then
+/// fail with the configuration error.
+pub const fn start(config: ConfigHandle) -> IdentityHandle {
+    IdentityHandle { config }
 }
 
 impl IdentityHandle {

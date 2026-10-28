@@ -55,7 +55,10 @@ fn cbor_encoding_is_stable() {
     assert_eq!(&buffer[23..31], &34.0f64.to_be_bytes());
     let decoded: LocationOverrides = rohi_config::decode_exact(&buffer[..used]).unwrap();
     assert_eq!(decoded, overrides());
-    assert_eq!(decoded.over_default(), config());
+    assert_eq!(
+        rohi_config::materialize::<LocationConfig>(&Default::default(), &decoded),
+        config()
+    );
 
     // Without a height override the entry is omitted.
     let open = LocationOverrides {
@@ -67,7 +70,10 @@ fn cbor_encoding_is_stable() {
     assert_eq!(used, 1 + 2 * 10);
     let decoded: LocationOverrides = rohi_config::decode_exact(&buffer[..used]).unwrap();
     assert_eq!(decoded, open);
-    assert_eq!(decoded.over_default().height_m, None);
+    assert_eq!(
+        rohi_config::materialize::<LocationConfig>(&Default::default(), &decoded).height_m,
+        None
+    );
 }
 
 #[test]
@@ -151,7 +157,8 @@ fn a_patch_needs_both_coordinates() {
     overrides.capture(&section, field::HEIGHT_M);
     overrides.clear(field::HEIGHT_M);
     assert_eq!(
-        overrides.over_default().read_field(field::HEIGHT_M),
+        rohi_config::materialize::<LocationConfig>(&Default::default(), &overrides)
+            .read_field(field::HEIGHT_M),
         Ok(None)
     );
     assert_eq!(

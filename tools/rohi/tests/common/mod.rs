@@ -92,9 +92,20 @@ impl<C> Mem<C> {
     }
 }
 
+impl<C: Clone + Default> Mem<C> {
+    /// The effective config of the stored overrides: the defaults with them applied.
+    pub fn effective<T>(&self) -> T
+    where
+        T: rohi_config::HasOverrides<Overrides = C> + Default,
+    {
+        let stored = self.value.borrow().clone().unwrap();
+        rohi_config::materialize(&C::default(), &stored)
+    }
+}
+
 impl<C: ManagedConfig + Default> SectionStore<C> for Mem<C::Overrides> {
-    fn defaults(&self) -> C {
-        C::default()
+    fn firmware_overrides(&self) -> C::Overrides {
+        C::Overrides::default()
     }
 
     async fn load(&self) -> Result<Option<C::Overrides>, StoreError> {
@@ -119,10 +130,14 @@ impl<C: ManagedConfig + Default> SectionStore<C> for Mem<C::Overrides> {
 }
 
 /// A section that exists only in the tests.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, rohi_config::ConfigOverrides)]
+#[config(overrides = GadgetOverrides, version = 3, id = 9)]
 pub struct Gadget {
+    #[config(id = 1)]
     pub label: String,
+    #[config(id = 2)]
     pub level: u64,
+    #[config(id = 3)]
     pub mode: Option<u32>,
 }
 
@@ -136,18 +151,8 @@ impl Default for Gadget {
     }
 }
 
-rohi_config::config_overrides! {
-    pub struct GadgetOverrides for Gadget, version 3 {
-        1 => label: String,
-        2 => level: u64,
-        3 => mode: Option<u32>,
-    }
-}
-
 impl ManagedConfig for Gadget {
-    const SECTION_ID: u64 = 9;
     const NAME: &'static str = "gadget";
-    const VERSION: u16 = 3;
     const FIELDS: &'static [ConfigField] = &[
         ConfigField::new(1, "label", ValueKind::String),
         ConfigField::new(2, "level", ValueKind::U64)
@@ -162,8 +167,6 @@ impl ManagedConfig for Gadget {
         1,
         &[EnumVariant::new(0, "fast"), EnumVariant::new(1, "slow")],
     )];
-
-    type Overrides = GadgetOverrides;
 
     fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
         Ok(match id {
@@ -341,8 +344,8 @@ pub struct LocationStore {
 }
 
 impl SectionStore<LocationConfig> for LocationStore {
-    fn defaults(&self) -> LocationConfig {
-        LocationConfig::default()
+    fn firmware_overrides(&self) -> LocationOverrides {
+        LocationOverrides::default()
     }
 
     async fn load(&self) -> Result<Option<LocationOverrides>, StoreError> {

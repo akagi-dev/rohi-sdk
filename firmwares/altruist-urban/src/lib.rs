@@ -37,13 +37,13 @@ compile_error!(
     "select an ESP target: enable the `esp32c3` or `esp32c6` feature (use `cargo check-esp32c3` / `cargo check-esp32c6`)"
 );
 
+/// Firmware config bindings: product policy and runtime consumers.
+pub mod bindings;
 /// Persistent configuration service (single owner task and handle).
 pub mod config;
 pub mod connectivity;
 /// Local control plane over BLE.
 pub mod control;
-/// The firmware defaults of the config sections.
-pub mod defaults;
 /// Device identity runtime.
 pub mod identity;
 pub mod location;

@@ -21,7 +21,7 @@ use core::net::Ipv4Addr;
 
 use heapless::String;
 use minicbor::{CborLen, Decode, Encode};
-use rohi_config::config_overrides;
+use rohi_config::ConfigOverrides;
 
 use crate::WifiError;
 
@@ -126,40 +126,30 @@ impl fmt::Debug for Hostname {
 ///
 /// The static address fields are used only in [`AddressMode::Static`] and
 /// kept otherwise, so switching the mode back and forth does not lose them.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, ConfigOverrides)]
+#[config(overrides = NetworkOverrides, version = 1)]
 pub struct NetworkConfig {
     /// How the IPv4 address is obtained.
+    #[config(id = 1)]
     pub address_mode: AddressMode,
     /// Static IPv4 address.
+    #[config(id = 2)]
     pub static_ip: Option<Ipv4>,
     /// Length of the network prefix of the static address, 1 to 30.
+    #[config(id = 3)]
     pub prefix_len: Option<u8>,
     /// Static default gateway.
+    #[config(id = 4)]
     pub gateway: Option<Ipv4>,
     /// Static DNS server.
+    #[config(id = 5)]
     pub dns: Option<Ipv4>,
     /// Host name announced to the DHCP server.
+    #[config(id = 6)]
     pub hostname: Option<Hostname>,
     /// Bound of obtaining an address from DHCP.
+    #[config(id = 7)]
     pub dhcp_timeout_ms: u32,
-}
-
-config_overrides! {
-    /// Persisted overrides of the [`NetworkConfig`] section (section
-    /// `NetworkConfig`).
-    ///
-    /// Persistent ABI: a CBOR map keyed by the field ids below, which are only
-    /// ever added; a field that is not overridden is absent. The map is pinned
-    /// by a golden test.
-    pub struct NetworkOverrides for NetworkConfig, version 1 {
-        1 => address_mode: AddressMode,
-        2 => static_ip: Option<Ipv4>,
-        3 => prefix_len: Option<u8>,
-        4 => gateway: Option<Ipv4>,
-        5 => dns: Option<Ipv4>,
-        6 => hostname: Option<Hostname>,
-        7 => dhcp_timeout_ms: u32,
-    }
 }
 
 impl Default for NetworkConfig {
@@ -347,14 +337,20 @@ mod tests {
         full.hostname = Hostname::new("altruist-1");
         let overrides = overrides_of(&full);
         assert_eq!(roundtrip(&overrides), overrides);
-        assert_eq!(overrides.over_default(), full);
+        assert_eq!(
+            rohi_config::materialize::<NetworkConfig>(&Default::default(), &overrides),
+            full
+        );
     }
 
     #[test]
     fn nothing_is_stored_for_the_defaults() {
         assert!(NetworkOverrides::default().is_empty());
         assert_eq!(
-            NetworkOverrides::default().over_default(),
+            rohi_config::materialize::<NetworkConfig>(
+                &Default::default(),
+                &NetworkOverrides::default()
+            ),
             NetworkConfig::default()
         );
     }

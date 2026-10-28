@@ -7,7 +7,7 @@ edition.workspace = true
 homepage.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Derive macro for rohi-config configuration sections"
+description = "Derive macros for rohi-config configuration sections and their persisted overrides"
 
 [badges]
 maintenance = { status = "actively-developed" }

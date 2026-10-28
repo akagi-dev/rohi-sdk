@@ -149,3 +149,106 @@ fn invalid_hook_is_rejected() {
         expand_str("#[config(version = 1, decode_versioned = migrate)] struct A;").unwrap_err();
     assert!(error.contains("expected string literal"), "{error}");
 }
+
+fn overrides_str(source: &str) -> Result<String, String> {
+    let input: DeriveInput = syn::parse_str(source).unwrap();
+    overrides::expand(&input)
+        .map(|tokens| tokens.to_string())
+        .map_err(|error| error.to_string())
+}
+
+const WIFI: &str = "#[config(overrides = WifiOverrides, version = 1)] \
+    pub struct WifiConfig { #[config(id = 1)] pub ssid: Option<Ssid>, #[config(id = 3)] pub scan: u32 }";
+
+#[test]
+fn overrides_are_generated_from_the_config() {
+    let out = overrides_str(WIFI).unwrap();
+    assert!(out.contains("pub struct WifiOverrides"));
+    assert!(out.contains("Override < Option < Ssid > >"));
+    assert!(out.contains("# [n (3u32)]"));
+    assert!(out.contains("HasOverrides for WifiConfig"));
+    assert!(out.contains("ConfigOverrides < WifiConfig > for WifiOverrides"));
+    assert!(out.contains("1u16"));
+}
+
+#[test]
+fn the_overrides_section_id_hashes_the_config_name() {
+    let out = overrides_str(WIFI).unwrap();
+    assert!(out.contains(&id_literal(0x3352_46ad_2024_8b26)));
+    assert!(!out.contains(&id_literal(fnv1a64(b"WifiOverrides"))));
+}
+
+#[test]
+fn overrides_explicit_id_is_used_verbatim() {
+    let out = overrides_str(
+        "#[config(overrides = O, version = 1, id = 0xAABBCCDDEEFF0011)] \
+         struct Renamed { #[config(id = 1)] a: u8 }",
+    )
+    .unwrap();
+    assert!(out.contains(&id_literal(0xAABB_CCDD_EEFF_0011)));
+}
+
+#[test]
+fn overrides_need_name_version_and_field_ids() {
+    let error =
+        overrides_str("#[config(version = 1)] struct A { #[config(id = 1)] a: u8 }").unwrap_err();
+    assert!(error.contains("missing `overrides`"), "{error}");
+    let error =
+        overrides_str("#[config(overrides = O)] struct A { #[config(id = 1)] a: u8 }").unwrap_err();
+    assert!(error.contains("missing `version`"), "{error}");
+    let error =
+        overrides_str("#[config(overrides = O, version = 1)] struct A { a: u8 }").unwrap_err();
+    assert!(error.contains("needs a stable id"), "{error}");
+}
+
+#[test]
+fn overrides_reject_duplicate_field_ids() {
+    let error = overrides_str(
+        "#[config(overrides = O, version = 1)] \
+         struct A { #[config(id = 1)] a: u8, #[config(id = 1)] b: u8 }",
+    )
+    .unwrap_err();
+    assert!(error.contains("duplicate field id 1"), "{error}");
+}
+
+#[test]
+fn overrides_reject_unsupported_shapes() {
+    let attr = "#[config(overrides = O, version = 1)]";
+    for source in [
+        format!("{attr} struct A(u8);"),
+        format!("{attr} struct A;"),
+        format!("{attr} struct A {{}}"),
+        format!("{attr} enum A {{ B }}"),
+        format!("{attr} struct A<T> {{ #[config(id = 1)] a: T }}"),
+        format!("{attr} struct A<'a> {{ #[config(id = 1)] a: &'a u8 }}"),
+    ] {
+        assert!(overrides_str(&source).is_err(), "{source}");
+    }
+}
+
+#[test]
+fn overrides_reject_unknown_attributes_and_duplicates() {
+    let error = overrides_str(
+        "#[config(overrides = O, version = 1, name = \"x\")] struct A { #[config(id = 1)] a: u8 }",
+    )
+    .unwrap_err();
+    assert!(error.contains("unknown `config` attribute"), "{error}");
+    let error = overrides_str(
+        "#[config(overrides = O, overrides = P, version = 1)] struct A { #[config(id = 1)] a: u8 }",
+    )
+    .unwrap_err();
+    assert!(error.contains("duplicate `overrides`"), "{error}");
+    let error = overrides_str(
+        "#[config(overrides = O, version = 1)] struct A { #[config(id = 1, name = 2)] a: u8 }",
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("unknown field `config` attribute"),
+        "{error}"
+    );
+    let error = overrides_str(
+        "#[config(overrides = O, version = 1)] struct A { #[config(id = 4294967296)] a: u8 }",
+    )
+    .unwrap_err();
+    assert!(error.contains("fits in `u32`"), "{error}");
+}

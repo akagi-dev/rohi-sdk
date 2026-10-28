@@ -30,6 +30,11 @@ use super::{EVENTS, RawMutex};
 /// Snapshot requests to the store task, see [`handle`].
 static SNAPSHOTS: MeasurementService<RawMutex> = MeasurementService::new();
 
+/// Starts the store task. Spawn it before the sensors that report to it.
+pub fn start(spawner: embassy_executor::Spawner) {
+    spawner.spawn(store_task().unwrap());
+}
+
 /// Handle for on-demand snapshots; the store itself is never shared.
 pub fn handle() -> MeasurementHandle<'static, RawMutex> {
     SNAPSHOTS.handle()

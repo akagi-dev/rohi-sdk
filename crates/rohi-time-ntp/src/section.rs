@@ -23,7 +23,7 @@ use heapless::{String, Vec};
 use minicbor::decode::{self, Decoder};
 use minicbor::encode::{self, Encoder, Write};
 use minicbor::{CborLen, Decode, Encode};
-use rohi_config::{ConfigSection, config_overrides};
+use rohi_config::ConfigOverrides;
 use rohi_service::{ConfigField, FieldError, ManagedConfig, Value, ValueKind};
 
 use crate::{DEFAULT_SERVERS, MAX_SERVERS};
@@ -122,31 +122,21 @@ impl fmt::Debug for ServerName {
 /// [`DEFAULT_SERVERS`]. What is stored are the explicit user overrides of it,
 /// [`NtpServersOverrides`]; a slot the user did not override follows the
 /// default.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, ConfigOverrides)]
+#[config(overrides = NtpServersOverrides, version = 1)]
 pub struct NtpServersConfig {
     /// First server.
+    #[config(id = 1)]
     pub server1: Option<ServerName>,
     /// Second server.
+    #[config(id = 2)]
     pub server2: Option<ServerName>,
     /// Third server.
+    #[config(id = 3)]
     pub server3: Option<ServerName>,
     /// Fourth server.
+    #[config(id = 4)]
     pub server4: Option<ServerName>,
-}
-
-config_overrides! {
-    /// Persisted overrides of the [`NtpServersConfig`] section (section
-    /// `NtpServersConfig`).
-    ///
-    /// Persistent ABI: a CBOR map keyed by the field ids of [`field`], which
-    /// are only ever added; a slot that is not overridden is absent. The map
-    /// is pinned by a golden test.
-    pub struct NtpServersOverrides for NtpServersConfig, version 1 {
-        1 => server1: Option<ServerName>,
-        2 => server2: Option<ServerName>,
-        3 => server3: Option<ServerName>,
-        4 => server4: Option<ServerName>,
-    }
 }
 
 impl Default for NtpServersConfig {
@@ -184,17 +174,13 @@ impl NtpServersConfig {
 }
 
 impl ManagedConfig for NtpServersConfig {
-    const SECTION_ID: u64 = <NtpServersOverrides as ConfigSection>::ID.0;
     const NAME: &'static str = "time";
-    const VERSION: u16 = <NtpServersOverrides as ConfigSection>::VERSION;
     const FIELDS: &'static [ConfigField] = &[
         ConfigField::new(field::SERVER1, "server1", ValueKind::String),
         ConfigField::new(field::SERVER2, "server2", ValueKind::String).optional(),
         ConfigField::new(field::SERVER3, "server3", ValueKind::String).optional(),
         ConfigField::new(field::SERVER4, "server4", ValueKind::String).optional(),
     ];
-
-    type Overrides = NtpServersOverrides;
 
     fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
         let slot = match id {
@@ -245,7 +231,7 @@ impl ManagedConfig for NtpServersConfig {
 
 #[cfg(test)]
 mod tests {
-    use rohi_config::{ConfigOverrides, MAX_SECTION_PAYLOAD, Override};
+    use rohi_config::{ConfigOverrides, ConfigSection, MAX_SECTION_PAYLOAD, Override};
 
     use super::*;
 
@@ -271,7 +257,9 @@ mod tests {
         assert_eq!(decoded, overrides);
         // The second server is not overridden: it follows the default.
         assert_eq!(
-            decoded.over_default().servers().as_slice(),
+            rohi_config::materialize::<NtpServersConfig>(&Default::default(), &decoded)
+                .servers()
+                .as_slice(),
             ["a.io", DEFAULT_SERVERS[1], "b"]
         );
     }
@@ -354,16 +342,24 @@ mod tests {
         );
         let mut overrides = NtpServersOverrides::default();
         overrides.capture(&config, field::SERVER3);
-        assert_eq!(overrides.over_default().server3, config.server3);
+        assert_eq!(
+            rohi_config::materialize::<NtpServersConfig>(&Default::default(), &overrides).server3,
+            config.server3
+        );
         overrides.clear(field::SERVER3);
         assert_eq!(
-            overrides.over_default().read_field(field::SERVER3),
+            rohi_config::materialize::<NtpServersConfig>(&Default::default(), &overrides)
+                .read_field(field::SERVER3),
             Ok(None)
         );
         // A cleared first server is the default, not a missing one.
         overrides.capture(&config, field::SERVER1);
         overrides.clear(field::SERVER1);
-        assert_eq!(overrides.over_default().validate(), Ok(()));
+        assert_eq!(
+            rohi_config::materialize::<NtpServersConfig>(&Default::default(), &overrides)
+                .validate(),
+            Ok(())
+        );
         assert_eq!(config.read_field(9), Err(FieldError::UnknownField));
         assert_eq!(
             config.set_field(9, Value::text("a").unwrap()),

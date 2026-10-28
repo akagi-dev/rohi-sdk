@@ -17,12 +17,11 @@
 
 //! The `wifi` config section in the generic management plane.
 
-use rohi_config::ConfigSection;
 use rohi_service::{Bounds, ConfigField, FieldError, ManagedConfig, Unit, Value, ValueKind};
 
 use super::config::{
     BACKOFF_INITIAL_RANGE_MS, BACKOFF_MAX_RANGE_MS, CONNECT_TIMEOUT_RANGE_MS,
-    LINK_REFRESH_RANGE_MS, SCAN_TIMEOUT_RANGE_MS, WifiConfig, WifiOverrides,
+    LINK_REFRESH_RANGE_MS, SCAN_TIMEOUT_RANGE_MS, WifiConfig,
 };
 use crate::{WifiPassword, WifiSsid};
 
@@ -58,9 +57,7 @@ fn number(value: &Value) -> Result<u32, FieldError> {
 }
 
 impl ManagedConfig for WifiConfig {
-    const SECTION_ID: u64 = <WifiOverrides as ConfigSection>::ID.0;
     const NAME: &'static str = "wifi";
-    const VERSION: u16 = <WifiOverrides as ConfigSection>::VERSION;
     const FIELDS: &'static [ConfigField] = &[
         ConfigField::new(field::SSID, "ssid", ValueKind::String).optional(),
         ConfigField::new(field::PASSWORD, "password", ValueKind::String)
@@ -80,8 +77,6 @@ impl ManagedConfig for WifiConfig {
         timing(field::BACKOFF_MAX, "backoff_max", BACKOFF_MAX_RANGE_MS),
         timing(field::LINK_REFRESH, "link_refresh", LINK_REFRESH_RANGE_MS),
     ];
-
-    type Overrides = WifiOverrides;
 
     /// An SSID or password that is not UTF-8 cannot be expressed as text and
     /// is reported as invalid; it is not shown, but it keeps working.
@@ -179,6 +174,8 @@ mod tests {
     use rohi_service::MAX_CONFIG_FIELDS;
 
     use super::*;
+    use crate::WifiOverrides;
+    use rohi_config::ConfigSection;
 
     fn text(value: &str) -> Value {
         Value::text(value).unwrap()
@@ -186,7 +183,7 @@ mod tests {
 
     #[test]
     fn the_reported_version_is_the_stored_one() {
-        assert_eq!(<WifiConfig as ManagedConfig>::VERSION, 1);
+        assert_eq!(<WifiOverrides as ConfigSection>::VERSION, 1);
     }
 
     #[test]
@@ -233,14 +230,20 @@ mod tests {
     #[test]
     fn clearing_the_password_override_restores_the_open_network_default() {
         let mut overrides = WifiOverrides::default();
-        let mut config = overrides.over_default();
+        let mut config = rohi_config::materialize::<WifiConfig>(&Default::default(), &overrides);
         config
             .set_field(field::PASSWORD, text("hunter2hunter2"))
             .unwrap();
         assert!(overrides.capture(&config, field::PASSWORD));
-        assert_eq!(overrides.over_default().password, config.password);
+        assert_eq!(
+            rohi_config::materialize::<WifiConfig>(&Default::default(), &overrides).password,
+            config.password
+        );
         assert!(overrides.clear(field::PASSWORD));
-        assert_eq!(overrides.over_default().password, None);
+        assert_eq!(
+            rohi_config::materialize::<WifiConfig>(&Default::default(), &overrides).password,
+            None
+        );
         assert!(overrides.is_empty());
     }
 

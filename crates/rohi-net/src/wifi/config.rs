@@ -22,7 +22,7 @@ use minicbor::bytes::ByteSlice;
 use minicbor::decode::{self, Decoder};
 use minicbor::encode::{self, Encoder, Write};
 use minicbor::{CborLen, Decode, Encode};
-use rohi_config::config_overrides;
+use rohi_config::ConfigOverrides;
 
 use crate::network::NetworkConfig;
 use crate::{MAX_SSID_LEN, MAX_WIFI_PASSWORD_LEN, MIN_WIFI_PASSWORD_LEN, WifiError};
@@ -183,45 +183,44 @@ fn within(value: u32, (min, max): (u32, u32)) -> bool {
 ///
 /// An open network is represented by `password == None`, never by an empty
 /// password.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, ConfigOverrides)]
+#[config(overrides = WifiOverrides, version = 1)]
 pub struct WifiConfig {
     /// Network name. `None` (the default) disables Wi-Fi; a network name
     /// enables it.
+    #[config(id = 1)]
     pub ssid: Option<WifiSsid>,
     /// Passphrase, `None` for an open network.
+    #[config(id = 2)]
     pub password: Option<WifiPassword>,
     /// Bound of a network scan.
+    #[config(id = 3)]
     pub scan_timeout_ms: u32,
     /// Bound of associating with the access point.
+    #[config(id = 4)]
     pub connect_timeout_ms: u32,
     /// First delay before a reconnect attempt, doubling up to `backoff_max_ms`.
+    #[config(id = 5)]
     pub backoff_initial_ms: u32,
     /// Longest delay between reconnect attempts.
+    #[config(id = 6)]
     pub backoff_max_ms: u32,
     /// Interval of refreshing the connection details while connected; the
     /// link counts as stable after one such interval.
+    #[config(id = 7)]
     pub link_refresh_ms: u32,
-}
-
-config_overrides! {
-    /// Persisted overrides of the [`WifiConfig`] section (section `WifiConfig`).
-    ///
-    /// Persistent ABI: a CBOR map keyed by the field ids below, which are only
-    /// ever added; a field that is not overridden is absent. The map is pinned
-    /// by a golden test.
-    pub struct WifiOverrides for WifiConfig, version 1 {
-        1 => ssid: Option<WifiSsid>,
-        2 => password: Option<WifiPassword>,
-        3 => scan_timeout_ms: u32,
-        4 => connect_timeout_ms: u32,
-        5 => backoff_initial_ms: u32,
-        6 => backoff_max_ms: u32,
-        7 => link_refresh_ms: u32,
-    }
 }
 
 impl Default for WifiConfig {
     fn default() -> Self {
+        Self::unconfigured()
+    }
+}
+
+impl WifiConfig {
+    /// No network and the default timing: the portable baseline, usable in
+    /// constants.
+    pub const fn unconfigured() -> Self {
         Self {
             ssid: None,
             password: None,
@@ -232,9 +231,7 @@ impl Default for WifiConfig {
             link_refresh_ms: DEFAULT_LINK_REFRESH_MS,
         }
     }
-}
 
-impl WifiConfig {
     /// A configuration for `ssid` and `password` with the default timing.
     pub const fn new(ssid: WifiSsid, password: Option<WifiPassword>) -> Self {
         Self {
@@ -387,7 +384,10 @@ mod tests {
         let overrides = WifiOverrides::default();
         assert!(overrides.is_empty());
         assert_eq!(encode(&overrides), [0xa0]);
-        assert_eq!(overrides.over_default(), WifiConfig::default());
+        assert_eq!(
+            rohi_config::materialize::<WifiConfig>(&Default::default(), &overrides),
+            WifiConfig::default()
+        );
     }
 
     #[test]
@@ -427,7 +427,10 @@ mod tests {
     fn the_password_has_three_states() {
         let mut overrides = WifiOverrides::default();
         // Not overridden: the default, no password.
-        assert_eq!(overrides.over_default().password, None);
+        assert_eq!(
+            rohi_config::materialize::<WifiConfig>(&Default::default(), &overrides).password,
+            None
+        );
         assert_eq!(encode(&overrides), [0xa0]);
         // An explicit `None` is stored as null.
         overrides.password = Override::Value(None);
@@ -437,7 +440,7 @@ mod tests {
         overrides.password = Override::Value(Some(password("hunter2hunter2")));
         assert_eq!(roundtrip(&overrides), overrides);
         assert_eq!(
-            overrides.over_default().password,
+            rohi_config::materialize::<WifiConfig>(&Default::default(), &overrides).password,
             Some(password("hunter2hunter2"))
         );
     }
@@ -566,7 +569,7 @@ mod tests {
             scan_timeout_ms: Override::Value(5_000),
             ..WifiOverrides::default()
         };
-        let effective = overrides.over_default();
+        let effective = rohi_config::materialize::<WifiConfig>(&Default::default(), &overrides);
         assert_eq!(effective.ssid, Some(ssid("office")));
         assert_eq!(effective.scan_timeout_ms, 5_000);
         // Not overridden: the field follows `WifiConfig::default()`.

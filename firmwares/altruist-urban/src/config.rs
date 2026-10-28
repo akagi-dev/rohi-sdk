@@ -44,20 +44,22 @@
 //! identity. The full factory reset is an explicit, privileged operation of its
 //! own: [`StorageMaintenance::factory_reset`] formats the whole region.
 //!
-//! The published value is always `firmware defaults + stored overrides` (see
-//! [`crate::defaults`]), also for a section that is not stored: a removal
-//! publishes the firmware defaults.
+//! The published value is always `C::default() + firmware overrides + stored
+//! user overrides` (see [`crate::policy`], [`materialize`]), also for a section
+//! that is not stored: a removal publishes the firmware overrides alone.
 //!
-//! Persistent Wi-Fi configuration is *state*: after the owner task committed a
-//! `WifiConfig` or `NetworkConfig` section (and once at boot, from the stored
-//! values) it publishes the value to the Wi-Fi manager as the desired
-//! configuration, synchronously, in the same task step as the commit. The `Identity` section works the same
-//! way: the owner updates the signer in the commit step. So does
-//! `LocationConfig`: the shared location is updated for the telemetry frames and
-//! the `location` service. So does
-//! `ConnectivityConfig`: the telemetry task is signalled and restarts with the
-//! new values. So does `NtpServersConfig`: the NTP task restarts with the new
-//! servers. There is no `.await` between commit and
+//! Persistent configuration is *state*. The sections and their consumers are
+//! listed once, by the [`firmware_configs!`](crate::firmware_configs)
+//! declaration at the end of this module, with one [`crate::bindings`] binding
+//! per section. After the owner task committed (or removed) a section it hands
+//! the effective value to the consumer of its binding, synchronously, in the
+//! same task step as the commit: the Wi-Fi manager gets the desired Wi-Fi and
+//! IPv4 configuration, the shared location is updated for the telemetry frames
+//! and the `location` service, the telemetry and NTP tasks are signalled and
+//! restart with the new values, the identity updates the signer. A
+//! restart-required section (`ble`) is only published at boot. The same step,
+//! with the same firmware overrides, runs once at boot for every section and
+//! after a factory reset. There is no `.await` between commit and
 //! publication, so a caller that is cancelled while waiting for the response
 //! cannot leave a stored configuration unknown to the runtime.
 //!
@@ -75,20 +77,22 @@ use embassy_sync::mutex::Mutex;
 use esp_hal::peripherals::FLASH;
 use log::{error, info, warn};
 use rohi_config::{
-    ConfigError, ConfigOpenState, ConfigOverrides, ConfigSection, ConfigStore, Corruption,
-    EncodeError, MAX_SECTION_PAYLOAD, SectionError, SectionId,
+    ConfigError, ConfigOpenState, ConfigSection, ConfigStore, Corruption, EncodeError,
+    HasOverrides, MAX_SECTION_PAYLOAD, SectionError, SectionId, materialize,
 };
 use rohi_config_esp::esp::{PartitionError, config_storage, esp_storage::FlashStorage};
 use rohi_config_esp::{EspConfigStorage, EspStorageError};
 
-use rohi_connectivity::{ConnectivityConfig, ConnectivityOverrides};
-use rohi_identity::Identity;
-use rohi_location::{LocationConfig, LocationOverrides};
-use rohi_net::{NetworkConfig, NetworkOverrides, WifiConfig, WifiHandle, WifiOverrides};
-use rohi_time_ntp::{NtpServersConfig, NtpServersOverrides};
+use rohi_service::{
+    ConfigError as RegistryError, ConfigRegistry, FactoryReset, ManagedConfig, Mutation, Patched,
+    SectionInfo, SectionSchema, SectionValues,
+};
 
+use crate::bindings::{
+    Binding, BleBinding, ConfigRuntime, ConnectivityBinding, IdentityBinding, LocationBinding,
+    NetworkBinding, PrivateBinding, TimeBinding, WifiBinding,
+};
 use crate::tasks::RawMutex;
-use crate::{connectivity, defaults, identity, location, time};
 
 /// Configuration storage of the Altruist Urban.
 pub type Storage = EspConfigStorage<FlashStorage<'static>>;
@@ -358,6 +362,75 @@ impl StorageMaintenance {
     }
 }
 
+/// A registry of config sections plus the factory reset of the storage behind
+/// them, which formats the whole region: this also removes the identity and
+/// sections this firmware does not know. The sections are reset afterwards;
+/// with nothing left to remove this commits nothing and only advances their
+/// revisions. Everything else is delegated to the sections.
+pub struct StorageConfig<R: 'static> {
+    sections: &'static R,
+    storage: StorageMaintenance,
+}
+
+impl<R> StorageConfig<R> {
+    /// The `sections` with the factory reset of `storage`.
+    pub const fn new(sections: &'static R, storage: StorageMaintenance) -> Self {
+        Self { sections, storage }
+    }
+}
+
+impl<R: ConfigRegistry> ConfigRegistry for StorageConfig<R> {
+    fn section_count(&self) -> usize {
+        self.sections.section_count()
+    }
+
+    fn section_info(&self, index: usize) -> Option<SectionInfo> {
+        self.sections.section_info(index)
+    }
+
+    fn schema(&self, section: u64) -> Option<SectionSchema> {
+        self.sections.schema(section)
+    }
+
+    async fn get(&self, section: u64) -> Result<SectionValues, RegistryError> {
+        self.sections.get(section).await
+    }
+
+    async fn patch(
+        &self,
+        section: u64,
+        mutations: &[Mutation],
+        expected_revision: Option<u32>,
+        dry_run: bool,
+    ) -> Result<Patched, RegistryError> {
+        self.sections
+            .patch(section, mutations, expected_revision, dry_run)
+            .await
+    }
+
+    async fn reset(
+        &self,
+        section: u64,
+        expected_revision: Option<u32>,
+        dry_run: bool,
+    ) -> Result<Patched, RegistryError> {
+        self.sections
+            .reset(section, expected_revision, dry_run)
+            .await
+    }
+
+    async fn factory_reset(&self) -> Result<FactoryReset, RegistryError> {
+        self.storage
+            .factory_reset()
+            .await
+            .map_err(|error| match error {
+                ServiceError::Unavailable(_) => RegistryError::Unavailable,
+                _ => RegistryError::Internal,
+            })?;
+        self.sections.factory_reset().await
+    }
+}
+
 /// What the owner task holds.
 #[allow(clippy::large_enum_variant)]
 enum Owner {
@@ -371,12 +444,12 @@ enum Owner {
 }
 
 impl Owner {
-    fn handle(&mut self, command: Command, wifi: WifiHandle<'static, RawMutex>) -> Outcome {
+    fn handle(&mut self, command: Command, runtime: &ConfigRuntime) -> Outcome {
         if let Command::FormatStorage = command {
-            return self.format_storage();
+            return self.format_storage(runtime);
         }
         if let Command::FactoryReset = command {
-            return self.factory_reset(wifi);
+            return self.factory_reset(runtime);
         }
         match self {
             Self::Unavailable { reason, .. } => match command {
@@ -400,7 +473,7 @@ impl Owner {
                 Command::Set { id, blob } => {
                     match store.set_raw(id, blob.version, blob.payload()) {
                         Ok(()) => {
-                            publish_committed(wifi, id, Some(&blob));
+                            publish_section(runtime, id, Some(&blob), false);
                             Outcome::Done
                         }
                         Err(error) => Outcome::Failed(ServiceError::Store(error)),
@@ -408,7 +481,7 @@ impl Owner {
                 }
                 Command::Remove(id) => match store.remove_raw(id) {
                     Ok(()) => {
-                        publish_committed(wifi, id, None);
+                        publish_section(runtime, id, None, false);
                         Outcome::Done
                     }
                     Err(error) => Outcome::Failed(ServiceError::Store(error)),
@@ -421,7 +494,7 @@ impl Owner {
     /// Formats the region whatever its state, then returns the runtime to the
     /// defaults. Unlike [`Self::format_storage`] it also acts on a healthy
     /// store, so it erases the identity and sections unknown to this firmware.
-    fn factory_reset(&mut self, wifi: WifiHandle<'static, RawMutex>) -> Outcome {
+    fn factory_reset(&mut self, runtime: &ConfigRuntime) -> Outcome {
         if let Self::Unavailable {
             reason,
             storage: None,
@@ -448,16 +521,7 @@ impl Owner {
             Ok(store) => {
                 warn!("Configuration: factory reset, region formatted");
                 *self = Self::Ready(store);
-                for id in [
-                    WifiOverrides::ID,
-                    NetworkOverrides::ID,
-                    Identity::ID,
-                    ConnectivityOverrides::ID,
-                    NtpServersOverrides::ID,
-                    LocationOverrides::ID,
-                ] {
-                    publish_committed(wifi, id, None);
-                }
+                publish_factory_reset(runtime);
                 Outcome::Done
             }
             Err(failure) => {
@@ -472,7 +536,10 @@ impl Owner {
         }
     }
 
-    fn format_storage(&mut self) -> Outcome {
+    /// The recovered store is empty, which the runtime learns here: an identity
+    /// that was unreadable at boot is now known to be absent. A
+    /// restart-required section is not published, as after any commit.
+    fn format_storage(&mut self, runtime: &ConfigRuntime) -> Outcome {
         match self {
             Self::Ready(_) => Outcome::Failed(ServiceError::StorageHealthy),
             Self::Unavailable { reason, storage } => {
@@ -483,6 +550,7 @@ impl Owner {
                     Ok(store) => {
                         warn!("Configuration: region formatted, previous configuration discarded");
                         *self = Self::Ready(store);
+                        publish_factory_reset(runtime);
                         Outcome::Done
                     }
                     Err(failure) => {
@@ -552,14 +620,10 @@ fn open(flash: FLASH<'static>) -> Owner {
 
 /// Owns the [`ConfigStore`] and answers requests, one at a time.
 #[embassy_executor::task]
-async fn config_task(
-    service: &'static ConfigService,
-    mut owner: Owner,
-    wifi: WifiHandle<'static, RawMutex>,
-) {
+async fn config_task(service: &'static ConfigService, mut owner: Owner, runtime: ConfigRuntime) {
     loop {
         let Request { seq, command } = service.requests.receive().await;
-        let outcome = owner.handle(command, wifi);
+        let outcome = owner.handle(command, &runtime);
         service.responses.send(Response { seq, outcome }).await;
     }
 }
@@ -572,18 +636,20 @@ async fn config_task(
 /// [`ServiceError::Unavailable`], so corruption is never mistaken for an empty
 /// (unprovisioned) configuration. [`maintenance`] can format it.
 ///
-/// `wifi` receives the desired Wi-Fi configuration: the stored one now, and
-/// every later commit of the `WifiConfig` and `NetworkConfig` sections, see the
-/// module documentation.
-pub fn start(
-    spawner: Spawner,
-    flash: FLASH<'static>,
-    wifi: WifiHandle<'static, RawMutex>,
-) -> ConfigHandle {
+/// Every section is published to its consumer once before the task runs, from
+/// the stored overrides or the firmware policy, and again after every commit,
+/// see the module documentation. The consumers therefore never read the store
+/// themselves at start.
+pub fn start(spawner: Spawner, flash: FLASH<'static>, runtime: ConfigRuntime) -> ConfigHandle {
     let mut owner = open(flash);
-    publish_stored_wifi(&mut owner, wifi);
-    publish_stored_location(&mut owner, wifi);
-    spawner.spawn(config_task(&SERVICE, owner, wifi).unwrap());
+    publish_boot(
+        match &mut owner {
+            Owner::Ready(store) => Some(store),
+            Owner::Unavailable { .. } => None,
+        },
+        &runtime,
+    );
+    spawner.spawn(config_task(&SERVICE, owner, runtime).unwrap());
     ConfigHandle { service: &SERVICE }
 }
 
@@ -593,126 +659,145 @@ pub fn maintenance() -> StorageMaintenance {
     StorageMaintenance { service: &SERVICE }
 }
 
-/// Publishes a just committed (or removed) section to the runtime that
-/// depends on it: `WifiConfig` and `NetworkConfig` become the desired Wi-Fi
-/// and IPv4 configuration,
-/// `Identity` becomes the signing identity, `ConnectivityConfig` is handed to
-/// the telemetry task, `NtpServersConfig` to the NTP task. Synchronous on
-/// purpose, see the module documentation. Other sections have no runtime consumer.
-fn publish_committed(wifi: WifiHandle<'static, RawMutex>, id: SectionId, blob: Option<&Blob>) {
-    if id == Identity::ID {
-        match blob {
-            None => identity::set_signer(None),
-            Some(blob) => match Identity::decode_versioned(blob.version, blob.payload()) {
-                Ok(identity) => identity::set_signer(Some(identity.signer())),
-                Err(error) => warn!("Identity: committed section cannot be decoded: {}", error),
-            },
+/// The persisted section of binding `B`: the id of its overrides.
+const fn managed_id<B: Binding>() -> u64 {
+    <<B::Config as HasOverrides>::Overrides as ConfigSection>::ID.0
+}
+
+fn section_id<B: Binding>() -> SectionId {
+    SectionId(managed_id::<B>())
+}
+
+const fn private_id<B: PrivateBinding>() -> u64 {
+    <B::Section as ConfigSection>::ID.0
+}
+
+/// Whether no id appears twice. A clash would make one section's commit
+/// publish to another's consumer.
+const fn ids_are_unique(ids: &[u64]) -> bool {
+    let mut index = 0;
+    while index < ids.len() {
+        let mut other = 0;
+        while other < index {
+            if ids[index] == ids[other] {
+                return false;
+            }
+            other += 1;
         }
+        index += 1;
+    }
+    true
+}
+
+/// Publishes a committed (`Some`) or removed (`None`) managed section: the
+/// defaults, the firmware overrides and the user overrides of `blob`, handed to
+/// the consumer of `B`. Synchronous on purpose, see the module documentation.
+///
+/// A restart-required section is only published at `boot`. At boot an
+/// unusable stored value falls back to the firmware policy: the consumer must
+/// get a value to start with, and the stored section stays untouched for the
+/// user to fix.
+fn publish_managed<B: Binding>(runtime: &ConfigRuntime, blob: Option<&Blob>, boot: bool) {
+    if B::RESTART_REQUIRED && !boot {
         return;
     }
-    if id == ConnectivityOverrides::ID {
-        match effective::<ConnectivityOverrides, ConnectivityConfig>(blob, defaults::connectivity) {
-            Ok(config) => connectivity::publish(config),
-            Err(error) => warn!(
-                "Connectivity: committed configuration cannot be decoded: {}",
+    match effective::<B::Config>(blob, B::firmware_overrides) {
+        Ok(config) => B::publish(runtime, &config),
+        Err(error) => {
+            warn!(
+                "{}: stored configuration cannot be decoded: {}",
+                <B::Config as ManagedConfig>::NAME,
                 error
-            ),
+            );
+            if boot {
+                B::publish(runtime, &B::firmware_only());
+            }
         }
-        return;
     }
-    if id == NtpServersOverrides::ID {
-        match effective::<NtpServersOverrides, NtpServersConfig>(blob, defaults::time) {
-            Ok(config) => time::publish(config),
-            Err(error) => warn!("Time: committed NTP servers cannot be decoded: {}", error),
+}
+
+/// Publishes a committed (`Some`) or removed (`None`) private section.
+fn publish_private<B: PrivateBinding>(blob: Option<&Blob>) {
+    match blob {
+        None => B::publish(None),
+        Some(blob) => match B::Section::decode_versioned(blob.version, blob.payload()) {
+            Ok(section) => B::publish(Some(&section)),
+            Err(error) => warn!("Committed private section cannot be decoded: {}", error),
+        },
+    }
+}
+
+/// Reads the section of `B` at boot and publishes it. Missing, stored and
+/// unreadable are three different states: a missing section is the firmware
+/// policy, a stored one is applied, an unreadable one logs and also gets the
+/// firmware policy (see [`publish_managed`]).
+fn boot_managed<B: Binding>(store: &mut ConfigStore<Storage>, runtime: &ConfigRuntime) {
+    let mut blob = Blob::empty();
+    match store.read_raw(section_id::<B>(), &mut blob.bytes) {
+        Ok(Some(info)) => {
+            blob.version = info.version;
+            blob.len = info.length;
+            publish_managed::<B>(runtime, Some(&blob), true);
         }
-        return;
-    }
-    if id == LocationOverrides::ID {
-        match effective::<LocationOverrides, LocationConfig>(blob, defaults::location) {
-            Ok(config) => location::shared().publish_configured(Some(&config)),
-            Err(error) => warn!(
-                "Location: committed configuration cannot be decoded: {}",
+        Ok(None) => publish_managed::<B>(runtime, None, true),
+        Err(error) => {
+            warn!(
+                "{}: configuration unreadable, using the firmware policy: {}",
+                <B::Config as ManagedConfig>::NAME,
                 error
-            ),
+            );
+            publish_managed::<B>(runtime, None, true);
         }
-        return;
     }
-    if id == WifiOverrides::ID {
-        match effective::<WifiOverrides, WifiConfig>(blob, defaults::wifi) {
-            Ok(config) => wifi.set_wifi_config(config.configured()),
-            Err(error) => warn!(
-                "Wi-Fi: committed configuration cannot be decoded: {}",
-                error
-            ),
+}
+
+/// [`boot_managed`] for a private section; an unreadable one is reported to
+/// the binding, which must not treat it as missing.
+fn boot_private<B: PrivateBinding>(store: &mut ConfigStore<Storage>) {
+    let mut blob = Blob::empty();
+    match store.read_raw(SectionId(private_id::<B>()), &mut blob.bytes) {
+        Ok(Some(info)) => {
+            blob.version = info.version;
+            blob.len = info.length;
+            match B::Section::decode_versioned(blob.version, blob.payload()) {
+                Ok(section) => B::publish(Some(&section)),
+                Err(error) => B::unreadable(&error),
+            }
         }
-        return;
-    }
-    if id != NetworkOverrides::ID {
-        return;
-    }
-    match effective::<NetworkOverrides, NetworkConfig>(blob, defaults::network) {
-        Ok(config) => wifi.set_network_config(config),
-        Err(error) => warn!(
-            "Network: committed configuration cannot be decoded: {}",
-            error
-        ),
+        Ok(None) => B::publish(None),
+        Err(error) => B::unreadable(&error),
     }
 }
 
 /// The effective configuration of a committed (or removed) section: the
-/// firmware `defaults` with the stored overrides applied. A removed section
-/// (`None`) is the firmware defaults.
-fn effective<O: ConfigOverrides<C>, C>(
+/// defaults, the `firmware` overrides and the stored user overrides. A removed
+/// section (`None`) has no user overrides.
+fn effective<C: HasOverrides + Default>(
     blob: Option<&Blob>,
-    defaults: fn() -> C,
+    firmware: fn() -> C::Overrides,
 ) -> Result<C, SectionError> {
-    let mut config = defaults();
-    if let Some(blob) = blob {
-        O::decode_versioned(blob.version, blob.payload())?.apply_to(&mut config);
-    }
-    Ok(config)
-}
-
-/// Publishes the stored location at boot: the firmware defaults with the
-/// stored overrides. Without a position the device does not know where it is
-/// and telemetry reports that.
-fn publish_stored_location(owner: &mut Owner, wifi: WifiHandle<'static, RawMutex>) {
-    let Owner::Ready(store) = owner else {
-        return;
+    let user = match blob {
+        Some(blob) => C::Overrides::decode_versioned(blob.version, blob.payload())?,
+        None => C::Overrides::default(),
     };
-    publish_stored(store, wifi, LocationOverrides::ID, "Location");
+    Ok(materialize(&firmware(), &user))
 }
 
-/// Publishes the Wi-Fi and network configuration at boot: the firmware
-/// defaults with the stored overrides. Without a configured network the
-/// manager stays `NotConfigured` and attempts nothing; without network
-/// overrides the address comes from DHCP, unless the firmware defaults say
-/// otherwise.
-fn publish_stored_wifi(owner: &mut Owner, wifi: WifiHandle<'static, RawMutex>) {
-    let Owner::Ready(store) = owner else {
-        warn!("Wi-Fi: configuration unavailable, not configured");
-        return;
-    };
-    publish_stored(store, wifi, NetworkOverrides::ID, "Network");
-    publish_stored(store, wifi, WifiOverrides::ID, "Wi-Fi");
+crate::firmware_configs! {
+    managed WifiBinding, NetworkBinding, BleBinding, ConnectivityBinding, LocationBinding, TimeBinding;
+    private IdentityBinding
 }
 
-/// Publishes the section `id` at boot. An unreadable section is not published:
-/// the runtime keeps its own startup state and the error is logged.
-fn publish_stored(
-    store: &mut ConfigStore<Storage>,
-    wifi: WifiHandle<'static, RawMutex>,
-    id: SectionId,
-    name: &str,
-) {
-    let mut blob = Blob::empty();
-    match store.read_raw(id, &mut blob.bytes) {
-        Ok(Some(info)) => {
-            blob.version = info.version;
-            blob.len = info.length;
-            publish_committed(wifi, id, Some(&blob));
-        }
-        Ok(None) => publish_committed(wifi, id, None),
-        Err(error) => warn!("{} configuration unreadable: {}", name, error),
-    }
+/// The `wifi` section of [`ConfigSections`], which the `wifi` service changes
+/// through the same transaction as a client's config patch.
+pub type WifiSection = ::rohi_service::ManagedSection<
+    ::rohi_net::WifiConfig,
+    crate::bindings::Stored<WifiBinding>,
+    RawMutex,
+>;
+
+/// The `wifi` section among `sections`. A change of the order of the bindings
+/// is a type error here.
+pub fn wifi_section(sections: &'static ConfigSections) -> &'static WifiSection {
+    &sections.0
 }

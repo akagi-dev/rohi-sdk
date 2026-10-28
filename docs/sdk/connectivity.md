@@ -143,9 +143,9 @@ or removal of the section to the telemetry task, which stops the running service
 values (or stays stopped when the configuration is disabled or invalid). The outbox of the replaced service is dropped
 and the published status restarts from `Starting`.
 
-In `altruist-urban`, while the user has no connectivity overrides the build-time defaults apply: the environment variables
-`ROHI_CONNECTIVITY_HOST`, `ROHI_CONNECTIVITY_PORT`, `ROHI_CONNECTIVITY_NODE_ID` and `ROHI_CONNECTIVITY_INTERVAL_S`
-at compile time. Without a host, telemetry is disabled. Once any override is stored, the overrides are applied to `ConnectivityConfig::default()` (disabled) and the build-time values no longer apply, so set `host`, `node_id` and `enabled` together. `rohi config reset connectivity` returns to the build-time defaults.
+In `altruist-urban` the build-time **firmware overrides** sit between `ConnectivityConfig::default()` (disabled) and the user overrides: the environment variables
+`ROHI_CONNECTIVITY_HOST` (which also enables telemetry), `ROHI_CONNECTIVITY_PORT`, `ROHI_CONNECTIVITY_NODE_ID` and `ROHI_CONNECTIVITY_INTERVAL_S`
+at compile time. Without a valid host, telemetry is disabled and the other variables are ignored. A user override replaces only its own field; `FIELD=null` and `rohi config reset connectivity` remove user overrides and return to the build-time values.
 
 ## Status
 

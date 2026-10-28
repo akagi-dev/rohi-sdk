@@ -56,9 +56,9 @@ pub use action::{
     Records,
 };
 pub use config::{
-    ConfigEntry, ConfigError, ConfigRegistry, ConfigSectionOps, EntryState, FactoryReset,
-    FieldError, ManagedConfig, ManagedSection, Mutation, MutationOp, Patched, RestartRequired,
-    SectionInfo, SectionSchema, SectionStore, SectionValues, StoreError,
+    ConfigEntry, ConfigError, ConfigRegistry, ConfigSectionOps, ConfigUpdate, EntryState,
+    FactoryReset, FieldError, ManagedConfig, ManagedSection, Mutation, MutationOp, Patched,
+    RestartRequired, SectionInfo, SectionSchema, SectionStore, SectionValues, StoreError,
 };
 pub use field::{Bounds, ConfigField, EnumDescriptor, EnumVariant, FieldDescriptor, Unit};
 pub use status::{
@@ -97,7 +97,7 @@ pub const MAX_ISSUES: usize = 4;
 /// Maximum number of issues the schema of a service describes.
 pub const MAX_ISSUE_DESCRIPTORS: usize = 12;
 /// Maximum number of sections or services in one registry.
-pub const MAX_REGISTRY_ENTRIES: usize = 8;
+pub const MAX_REGISTRY_ENTRIES: usize = 12;
 
 #[cfg(test)]
 extern crate std;

@@ -28,7 +28,7 @@ use rohi_service::{
 use crate::config::{MAX_INTERVAL_S, MIN_INTERVAL_S};
 use crate::service::{ConnectivityShared, ConnectivityState};
 use crate::transport::TransportError;
-use crate::{ConnectivityConfig, ConnectivityOverrides, Host};
+use crate::{ConnectivityConfig, Host};
 
 /// Field ids of the `connectivity` config section.
 pub mod field {
@@ -45,9 +45,7 @@ pub mod field {
 }
 
 impl ManagedConfig for ConnectivityConfig {
-    const SECTION_ID: u64 = <ConnectivityOverrides as rohi_config::ConfigSection>::ID.0;
     const NAME: &'static str = "connectivity";
-    const VERSION: u16 = <ConnectivityOverrides as rohi_config::ConfigSection>::VERSION;
     const FIELDS: &'static [ConfigField] = &[
         ConfigField::new(field::ENABLED, "enabled", ValueKind::Bool),
         ConfigField::new(field::NODE_ID, "node_id", ValueKind::U64),
@@ -57,8 +55,6 @@ impl ManagedConfig for ConnectivityConfig {
         ConfigField::new(field::HOST, "host", ValueKind::String),
         ConfigField::new(field::PORT, "port", ValueKind::U64).bounds(Bounds::U64(1, 65535)),
     ];
-
-    type Overrides = ConnectivityOverrides;
 
     fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
         Ok(Some(match id {
@@ -330,6 +326,7 @@ mod tests {
     use rohi_location::NoLocation;
 
     use super::*;
+    use crate::ConnectivityOverrides;
 
     fn text(value: &str) -> Value {
         Value::text(value).unwrap()
@@ -390,15 +387,21 @@ mod tests {
         assert_eq!(ids, ConnectivityOverrides::FIELD_IDS);
 
         let mut overrides = ConnectivityOverrides::default();
-        let mut config = overrides.over_default();
+        let mut config =
+            rohi_config::materialize::<ConnectivityConfig>(&Default::default(), &overrides);
         config
             .set_field(field::INTERVAL_S, Value::U64(120))
             .unwrap();
         overrides.capture(&config, field::INTERVAL_S);
-        assert_eq!(overrides.over_default().interval_s, 120);
+        assert_eq!(
+            rohi_config::materialize::<ConnectivityConfig>(&Default::default(), &overrides)
+                .interval_s,
+            120
+        );
         overrides.clear(field::INTERVAL_S);
         assert_eq!(
-            overrides.over_default().interval_s,
+            rohi_config::materialize::<ConnectivityConfig>(&Default::default(), &overrides)
+                .interval_s,
             ConnectivityConfig::default().interval_s
         );
     }

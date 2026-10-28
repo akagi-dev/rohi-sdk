@@ -23,6 +23,7 @@
 //! manager as desired state, published by the configuration owner task, see
 //! [`crate::config`].
 
+use embassy_executor::Spawner;
 use embassy_time::{Delay, Duration, Instant, with_timeout};
 use log::{info, warn};
 use rohi_net::{
@@ -39,17 +40,19 @@ static WIFI: WifiShared<RawMutex> = WifiShared::new();
 static NET_RESOURCES: StaticCell<NetResources> = StaticCell::new();
 static IP: StaticCell<Ip> = StaticCell::new();
 
-/// Brings up Wi-Fi and the IP stack with the sizes of [`crate::resources`].
+/// Brings up Wi-Fi and the IP stack with the sizes of [`crate::resources`]
+/// and starts their tasks ([`wifi_task`] and [`net_runner_task`]).
 ///
-/// Returns the Wi-Fi driver for [`wifi_task`], the IP stack runner for
-/// [`net_runner_task`] and the [`NetworkHandle`] of the IP data plane
-/// (DNS and TCP). Call once.
+/// Returns the [`NetworkHandle`] of the IP data plane (DNS and TCP). Call once.
 pub fn start(
+    spawner: Spawner,
     wireless: &mut EspWireless,
-) -> Result<(EspWifi, NetRunner, NetworkHandle<'static, Ip>), WifiError> {
+) -> Result<NetworkHandle<'static, Ip>, WifiError> {
     let (backend, runner, ip) = wireless.wifi(NET_RESOURCES.init(NetResources::new()))?;
     let ip: &'static Ip = IP.init(ip);
-    Ok((backend, runner, NetworkHandle::new(ip)))
+    spawner.spawn(net_runner_task(runner).unwrap());
+    spawner.spawn(wifi_task(backend).unwrap());
+    Ok(NetworkHandle::new(ip))
 }
 
 /// Milliseconds since boot: the clock of the link uptime.

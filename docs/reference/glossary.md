@@ -12,7 +12,7 @@
 | **Control plane (BLE)** | The local protobuf protocol served over BLE by `rohi-control` + `rohi-control-ble`: info, config, status and actions, driven by schemas the device publishes |
 | **Control plane (Wi-Fi)** | `WifiHandle` / `WifiManager`: configuration, scan, status, reconnect, disconnect. Not DNS or TCP |
 | **Desired state** | The latest value a runtime should converge to (for example the desired `WifiConfig`); published, not queued. See [Runtime ownership](../concepts/runtime-ownership.md#state-versus-command) |
-| **Effective configuration** | What a runtime uses and `rohi config SECTION` shows: the firmware defaults (supplied by the firmware, not necessarily `C::default()`) with the user's overrides applied. A changed firmware default reaches every field that is not overridden. See [Service pipeline](../sdk/service.md#config-sections) |
+| **Effective configuration** | What a runtime uses and `rohi config SECTION` shows: `C::default()`, the firmware overrides compiled into the product and the user's overrides, in that order (`materialize`). A changed firmware override or default reaches every field that is not overridden. See [Service pipeline](../sdk/service.md#config-sections) |
 | **EspWireless** | The single owner of the ESP radio peripherals and the wireless heap; creates the Wi-Fi and BLE drivers |
 | **Golden test** | A test pinning exact encoded bytes or IDs so accidental ABI changes fail |
 | **Device health** | The overall `ok` / `degraded` / `error` of the device, decided by the firmware from its services, never by a client |

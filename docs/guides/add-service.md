@@ -48,7 +48,7 @@ or issues change) and the time in the current state. You do nothing for that.
 
 ## 2. Config (optional)
 
-If users configure it, add a typed section with its `config_overrides!` struct and implement `ManagedConfig` as in
+If users configure it, add a typed section with `#[derive(ConfigOverrides)]` and implement `ManagedConfig` as in
 [Add a ConfigSection](add-config-section.md): the schema, typed conversion, whole-section validation of the effective configuration.
 Name the section like the service when they belong together (`location`, `connectivity`, `wifi`).
 
@@ -58,8 +58,9 @@ Operations the service offers go into `ACTIONS` and `invoke`, see [Add a control
 
 ## 4. Register in the firmware
 
-In `firmwares/altruist-urban/src/control.rs` add the service to the `Services` tuple and its section to `ConfigSections`
-(each takes up to 8 entries), and construct them in `device()`:
+In `firmwares/altruist-urban/src/control.rs` add the service to the `Services` tuple (up to 12 entries; the Embassy
+control task needs the concrete type) and construct it in `device()`. A config section is not added here but as a
+`Binding` in `firmware_configs!` (`config.rs`), which generates the `ConfigSections` tuple (also up to 12 entries):
 
 ```rust,ignore
 pub type Services = (
@@ -71,7 +72,7 @@ pub type Services = (
 ```
 
 If the runtime must react to a stored section, the configuration owner publishes its effective config in the commit step
-(`config.rs`, `publish_committed`, and once at boot).
+(a `Binding` listed in `firmware_configs!` in `config.rs`; it also runs once at boot and after a factory reset).
 
 ## 5. Tests
 

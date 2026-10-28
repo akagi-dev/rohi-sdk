@@ -783,6 +783,10 @@ tuple_service_registry!(5; A.0, B.1, C.2, D.3, E.4);
 tuple_service_registry!(6; A.0, B.1, C.2, D.3, E.4, F.5);
 tuple_service_registry!(7; A.0, B.1, C.2, D.3, E.4, F.5, G.6);
 tuple_service_registry!(8; A.0, B.1, C.2, D.3, E.4, F.5, G.6, H.7);
+tuple_service_registry!(9; A.0, B.1, C.2, D.3, E.4, F.5, G.6, H.7, I.8);
+tuple_service_registry!(10; A.0, B.1, C.2, D.3, E.4, F.5, G.6, H.7, I.8, J.9);
+tuple_service_registry!(11; A.0, B.1, C.2, D.3, E.4, F.5, G.6, H.7, I.8, J.9, K.10);
+tuple_service_registry!(12; A.0, B.1, C.2, D.3, E.4, F.5, G.6, H.7, I.8, J.9, K.10, L.11);
 
 /// The default device health policy.
 ///

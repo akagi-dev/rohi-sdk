@@ -19,15 +19,20 @@ use std::string::String;
 
 use embassy_futures::block_on;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use rohi_config::ConfigOverrides;
+use rohi_config::{ConfigOverrides, Override};
 
 use crate::*;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, ConfigOverrides)]
+#[config(overrides = DemoOverrides, version = 3, id = 1)]
 struct Demo {
+    #[config(id = 1)]
     enabled: bool,
+    #[config(id = 2)]
     interval_s: u64,
+    #[config(id = 3)]
     host: String,
+    #[config(id = 4)]
     token: Option<String>,
 }
 
@@ -45,15 +50,6 @@ impl Default for Demo {
             host: String::new(),
             token: None,
         }
-    }
-}
-
-rohi_config::config_overrides! {
-    struct DemoOverrides for Demo, version 3 {
-        1 => enabled: bool,
-        2 => interval_s: u64,
-        3 => host: String,
-        4 => token: Option<String>,
     }
 }
 
@@ -77,13 +73,9 @@ const MODES: &[EnumDescriptor] = &[EnumDescriptor::new(
 )];
 
 impl ManagedConfig for Demo {
-    const SECTION_ID: u64 = 1;
     const NAME: &'static str = "demo";
-    const VERSION: u16 = 3;
     const FIELDS: &'static [ConfigField] = DEMO_FIELDS;
     const ENUMS: &'static [EnumDescriptor] = MODES;
-    type Overrides = DemoOverrides;
-
     fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
         Ok(match id {
             1 => Some(Value::Bool(self.enabled)),
@@ -136,30 +128,33 @@ struct MemoryStore {
     value: RefCell<Option<DemoOverrides>>,
     writes: RefCell<u32>,
     unavailable: RefCell<bool>,
-    /// The firmware defaults when they differ from `Demo::default()`.
+    /// The firmware policy: every field of this config is a firmware override.
     firmware: RefCell<Option<Demo>>,
     /// What the store handed to the runtime last.
     published: RefCell<Option<Demo>>,
 }
 
 impl MemoryStore {
-    fn firmware_defaults(&self) -> Demo {
-        self.firmware.borrow().clone().unwrap_or_default()
+    fn firmware_overrides(&self) -> DemoOverrides {
+        let mut overrides = DemoOverrides::default();
+        if let Some(demo) = self.firmware.borrow().as_ref() {
+            for id in 1..=4 {
+                assert!(overrides.capture(demo, id));
+            }
+        }
+        overrides
     }
 
     /// The effective configuration behind the persisted overrides.
     fn effective(&self) -> Demo {
-        let mut config = self.firmware_defaults();
-        if let Some(overrides) = self.value.borrow().as_ref() {
-            overrides.apply_to(&mut config);
-        }
-        config
+        let user = self.value.borrow().clone().unwrap_or_default();
+        rohi_config::materialize(&self.firmware_overrides(), &user)
     }
 }
 
 impl SectionStore<Demo> for &MemoryStore {
-    fn defaults(&self) -> Demo {
-        self.firmware_defaults()
+    fn firmware_overrides(&self) -> DemoOverrides {
+        MemoryStore::firmware_overrides(self)
     }
 
     async fn load(&self) -> Result<Option<DemoOverrides>, StoreError> {
@@ -432,6 +427,41 @@ fn concurrent_patches_are_serialized() {
 }
 
 #[test]
+fn a_service_update_shares_the_transaction_and_the_revision() {
+    let store = MemoryStore::default();
+    let section = section(&store);
+    // A patch and a service update at once: neither loses the other's change.
+    let (a, b) = block_on(embassy_futures::join::join(
+        section.patch(&[set(3, text("a.io"))], None, false),
+        section.update(|overrides| overrides.interval_s = Override::Value(20)),
+    ));
+    assert!(a.is_ok() && b.is_ok());
+    let stored = store.effective();
+    assert_eq!(stored.host.as_str(), "a.io");
+    assert_eq!(stored.interval_s, 20);
+    // Both writes moved the revision of the section.
+    assert_eq!(section.info().revision, 2);
+    assert_eq!(
+        block_on(section.patch(&[set(3, text("b.io"))], Some(1), false)),
+        Err(ConfigError::Conflict)
+    );
+}
+
+#[test]
+fn an_update_with_an_invalid_effective_result_changes_nothing() {
+    let store = MemoryStore::default();
+    let section = section(&store);
+    let result = block_on(section.update(|overrides| overrides.enabled = Override::Value(true)));
+    // Enabled without a host is invalid on its own.
+    assert_eq!(
+        result.map(|_| ()),
+        Err(ConfigError::Field(FieldError::Invalid))
+    );
+    assert!(store.value.borrow().is_none());
+    assert_eq!(section.info().revision, 0);
+}
+
+#[test]
 fn get_reports_the_effective_values_and_redacts_secrets() {
     let store = MemoryStore::default();
     let section = section(&store);
@@ -573,6 +603,36 @@ fn clearing_an_override_exposes_the_current_firmware_default() {
 }
 
 #[test]
+fn none_replaces_a_firmware_value_and_clear_reveals_it_again() {
+    let store = MemoryStore::default();
+    *store.firmware.borrow_mut() = Some(firmware("fw.io", 30, Some("t")));
+    let section = section(&store);
+    block_on(section.patch(&[none(4)], None, false)).unwrap();
+    // An explicit "no value" is a user override of a non-empty firmware value.
+    assert_eq!(store.effective().token, None);
+    assert_eq!(
+        store.value.borrow().as_ref().unwrap().token,
+        Override::Value(None)
+    );
+    block_on(section.patch(&[clear(4)], None, false)).unwrap();
+    assert_eq!(store.effective().token.as_deref(), Some("t"));
+    // Nothing is left to persist: only the firmware policy applies.
+    assert!(store.value.borrow().is_none());
+}
+
+#[test]
+fn the_firmware_overrides_are_never_persisted() {
+    let store = MemoryStore::default();
+    *store.firmware.borrow_mut() = Some(firmware("fw.io", 30, Some("t")));
+    let section = section(&store);
+    block_on(section.patch(&[set(2, Value::U64(20))], None, false)).unwrap();
+    let stored = store.value.borrow().clone().unwrap();
+    assert_eq!(stored.interval_s, Override::Value(20));
+    assert_eq!(stored.host, Override::Default);
+    assert_eq!(stored.token, Override::Default);
+}
+
+#[test]
 fn reset_publishes_the_firmware_defaults() {
     let store = MemoryStore::default();
     *store.firmware.borrow_mut() = Some(firmware("fw.io", 30, Some("t")));
@@ -684,89 +744,81 @@ fn the_schema_describes_the_fields() {
 fn a_tuple_of_sections_is_a_registry() {
     let a = MemoryStore::default();
 
-    #[derive(Clone, Debug, Default)]
-    struct Other(Demo);
-    #[derive(Clone, Default)]
-    struct OtherOverrides(DemoOverrides);
-    impl rohi_config::ConfigSection for OtherOverrides {
-        const ID: rohi_config::SectionId = rohi_config::SectionId(2);
-        const VERSION: u16 = 1;
+    #[derive(Clone, Debug, ConfigOverrides)]
+    #[config(overrides = OtherOverrides, version = 1, id = 2)]
+    struct Other {
+        #[config(id = 1)]
+        enabled: bool,
+        #[config(id = 2)]
+        interval_s: u64,
+        #[config(id = 3)]
+        host: String,
+        #[config(id = 4)]
+        token: Option<String>,
     }
-    impl minicbor::Encode<()> for OtherOverrides {
-        fn encode<W: minicbor::encode::Write>(
-            &self,
-            e: &mut minicbor::Encoder<W>,
-            ctx: &mut (),
-        ) -> Result<(), minicbor::encode::Error<W::Error>> {
-            self.0.encode(e, ctx)
-        }
-    }
-    impl minicbor::CborLen<()> for OtherOverrides {
-        fn cbor_len(&self, ctx: &mut ()) -> usize {
-            self.0.cbor_len(ctx)
+    impl Default for Other {
+        fn default() -> Self {
+            Demo::default().into()
         }
     }
-    impl<'b> minicbor::Decode<'b, ()> for OtherOverrides {
-        fn decode(
-            d: &mut minicbor::Decoder<'b>,
-            ctx: &mut (),
-        ) -> Result<Self, minicbor::decode::Error> {
-            minicbor::Decode::decode(d, ctx).map(Self)
+    impl From<Demo> for Other {
+        fn from(demo: Demo) -> Self {
+            Self {
+                enabled: demo.enabled,
+                interval_s: demo.interval_s,
+                host: demo.host,
+                token: demo.token,
+            }
         }
     }
-    impl ConfigOverrides<Other> for OtherOverrides {
-        const FIELD_IDS: &'static [u32] = DemoOverrides::FIELD_IDS;
-        fn apply_to(&self, config: &mut Other) {
-            self.0.apply_to(&mut config.0)
-        }
-        fn is_overridden(&self, id: u32) -> Option<bool> {
-            self.0.is_overridden(id)
-        }
-        fn capture(&mut self, config: &Other, id: u32) -> bool {
-            self.0.capture(&config.0, id)
-        }
-        fn clear(&mut self, id: u32) -> bool {
-            self.0.clear(id)
-        }
-        fn is_empty(&self) -> bool {
-            self.0.is_empty()
+    impl From<&Other> for Demo {
+        fn from(other: &Other) -> Self {
+            Self {
+                enabled: other.enabled,
+                interval_s: other.interval_s,
+                host: other.host.clone(),
+                token: other.token.clone(),
+            }
         }
     }
     // A second section type with another name.
     impl ManagedConfig for Other {
-        const SECTION_ID: u64 = 2;
         const NAME: &'static str = "other";
-        const VERSION: u16 = 1;
         const FIELDS: &'static [ConfigField] = DEMO_FIELDS;
         const ENUMS: &'static [EnumDescriptor] = MODES;
-        type Overrides = OtherOverrides;
         fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
-            self.0.read_field(id)
+            Demo::from(self).read_field(id)
         }
         fn field_is_set(&self, id: u32) -> Result<bool, FieldError> {
-            self.0.field_is_set(id)
+            Demo::from(self).field_is_set(id)
         }
         fn set_field(&mut self, id: u32, value: Value) -> Result<(), FieldError> {
-            self.0.set_field(id, value)
+            let mut demo = Demo::from(&*self);
+            demo.set_field(id, value)?;
+            *self = demo.into();
+            Ok(())
         }
         fn set_none(&mut self, id: u32) -> Result<(), FieldError> {
-            self.0.set_none(id)
+            let mut demo = Demo::from(&*self);
+            demo.set_none(id)?;
+            *self = demo.into();
+            Ok(())
         }
         fn validate(&self) -> Result<(), FieldError> {
-            self.0.validate()
+            Demo::from(self).validate()
         }
     }
     #[derive(Default)]
-    struct OtherStore(RefCell<Option<DemoOverrides>>);
+    struct OtherStore(RefCell<Option<OtherOverrides>>);
     impl SectionStore<Other> for &OtherStore {
-        fn defaults(&self) -> Other {
-            Other::default()
+        fn firmware_overrides(&self) -> OtherOverrides {
+            OtherOverrides::default()
         }
         async fn load(&self) -> Result<Option<OtherOverrides>, StoreError> {
-            Ok(self.0.borrow().clone().map(OtherOverrides))
+            Ok(self.0.borrow().clone())
         }
         async fn store(&self, overrides: &OtherOverrides, _: &Other) -> Result<(), StoreError> {
-            *self.0.borrow_mut() = Some(overrides.0.clone());
+            *self.0.borrow_mut() = Some(overrides.clone());
             Ok(())
         }
         async fn remove(&self, _: &Other) -> Result<(), StoreError> {
@@ -1425,9 +1477,12 @@ fn issue_age_follows_the_set_of_active_issues_only() {
     assert_eq!(age(12_000), Some(0));
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, ConfigOverrides)]
+#[config(overrides = VaultOverrides, version = 1, id = 9)]
 struct Vault {
+    #[config(id = 1)]
     label: String,
+    #[config(id = 2)]
     token: Option<String>,
 }
 
@@ -1440,25 +1495,14 @@ impl Default for Vault {
     }
 }
 
-rohi_config::config_overrides! {
-    struct VaultOverrides for Vault, version 1 {
-        1 => label: String,
-        2 => token: Option<String>,
-    }
-}
-
 impl ManagedConfig for Vault {
-    const SECTION_ID: u64 = 9;
     const NAME: &'static str = "vault";
-    const VERSION: u16 = 1;
     const FIELDS: &'static [ConfigField] = &[
         ConfigField::new(1, "label", ValueKind::String),
         ConfigField::new(2, "token", ValueKind::String)
             .secret()
             .optional(),
     ];
-    type Overrides = VaultOverrides;
-
     fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
         match id {
             1 => Ok(Value::text(&self.label)),
@@ -1494,8 +1538,8 @@ impl ManagedConfig for Vault {
 struct VaultStore(RefCell<Option<VaultOverrides>>);
 
 impl SectionStore<Vault> for &VaultStore {
-    fn defaults(&self) -> Vault {
-        Vault::default()
+    fn firmware_overrides(&self) -> VaultOverrides {
+        VaultOverrides::default()
     }
     async fn load(&self) -> Result<Option<VaultOverrides>, StoreError> {
         Ok(self.0.borrow().clone())

@@ -289,7 +289,7 @@ mod tests {
         let shared = WifiShared::<NoopRawMutex>::new();
         let handle = shared.handle();
         let mut manager = WifiManager::new(Radio, NoDelay, &shared, ManagerConfig::DEFAULT);
-        handle.set_wifi_config(Some(wifi()));
+        handle.set_wifi_config(wifi());
         block_on(manager.step());
         block_on(manager.step());
 
@@ -334,7 +334,7 @@ mod tests {
             let handle = shared.handle();
             let mut manager =
                 WifiManager::new(Failing(error), NoDelay, &shared, ManagerConfig::DEFAULT);
-            handle.set_wifi_config(Some(wifi()));
+            handle.set_wifi_config(wifi());
             block_on(manager.step());
             block_on(manager.step());
 

@@ -23,15 +23,14 @@ use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embedded_hal_async::delay::DelayNs;
 use heapless::{String, Vec};
-use rohi_config::{ConfigOverrides, Override};
+use rohi_config::Override;
 use rohi_service::{
-    ActionDescriptor, ActionError, ActionOutput, EnumDescriptor, EnumVariant, FieldDescriptor,
-    Issue, IssueDescriptor, IssueSeverity, MAX_FIELD_VALUE_LEN, MAX_ISSUES, ManagedService,
-    SectionStore, ServiceHealth, ServiceState, ServiceSummary, StatusWriter, Unit, Value,
-    ValueKind, WriteError,
+    ActionDescriptor, ActionError, ActionOutput, ConfigError, ConfigUpdate, EnumDescriptor,
+    EnumVariant, FieldDescriptor, FieldError, Issue, IssueDescriptor, IssueSeverity,
+    MAX_FIELD_VALUE_LEN, MAX_ISSUES, ManagedService, ServiceHealth, ServiceState, ServiceSummary,
+    StatusWriter, Unit, Value, ValueKind, WriteError,
 };
 
-use super::config::DEFAULT_SCAN_TIMEOUT_MS;
 use crate::{WifiConfig, WifiError, WifiHandle, WifiPassword, WifiSecurity, WifiSsid, WifiState};
 
 // SSIDs and MAC addresses are status values and scan results, which are
@@ -244,6 +243,16 @@ fn issue(error: WifiError) -> Option<Issue> {
     })
 }
 
+fn config_error(error: ConfigError) -> ActionError {
+    match error {
+        ConfigError::Field(
+            FieldError::Invalid | FieldError::OutOfRange | FieldError::WrongKind,
+        ) => ActionError::InvalidArgument,
+        ConfigError::Unavailable => ActionError::Unavailable,
+        _ => ActionError::Internal,
+    }
+}
+
 fn action_error(error: WifiError) -> ActionError {
     match error {
         WifiError::NotConfigured => ActionError::Rejected("not_configured"),
@@ -278,34 +287,33 @@ const fn bytes(descriptor: FieldDescriptor) -> FieldDescriptor {
 /// the `scan`, `connect`, `reconnect` and `disconnect` actions.
 ///
 /// A scan is bounded by the `scan_timeout` of the configuration, measured
-/// with `delay`. `connect` persists the credentials in the `wifi` section
-/// behind `store`; the store hands the stored value to the manager.
-pub struct WifiService<'a, M: RawMutex, D, P, S> {
+/// with `delay`. `connect` changes the `wifi` section through `config`, the
+/// same transaction as a client's config patch, so it keeps the other
+/// overrides and the revision of the section follows.
+pub struct WifiService<'a, M: RawMutex, D, P, U> {
     handle: WifiHandle<'a, M>,
     delay: D,
     probe: P,
-    store: S,
+    config: U,
 }
 
-impl<'a, M: RawMutex, D: DelayNs + Clone, P: WifiProbe, S: SectionStore<WifiConfig>>
-    WifiService<'a, M, D, P, S>
+impl<'a, M: RawMutex, D: DelayNs + Clone, P: WifiProbe, U: ConfigUpdate<WifiConfig>>
+    WifiService<'a, M, D, P, U>
 {
     /// The service of the manager behind `handle`, with the platform
-    /// readings of `probe` and the persistence of the `wifi` section in
-    /// `store`.
-    pub const fn new(handle: WifiHandle<'a, M>, delay: D, probe: P, store: S) -> Self {
+    /// readings of `probe` and the transactions on the `wifi` section through
+    /// `config`.
+    pub const fn new(handle: WifiHandle<'a, M>, delay: D, probe: P, config: U) -> Self {
         Self {
             handle,
             delay,
             probe,
-            store,
+            config,
         }
     }
 
     fn scan_timeout_ms(&self) -> u32 {
-        self.handle
-            .wifi_config()
-            .map_or(DEFAULT_SCAN_TIMEOUT_MS, |config| config.scan_timeout_ms)
+        self.handle.wifi_settings().scan_timeout_ms
     }
 
     async fn connect(&self, args: &[(u32, Value)]) -> Result<(), ActionError> {
@@ -328,34 +336,27 @@ impl<'a, M: RawMutex, D: DelayNs + Clone, P: WifiProbe, S: SectionStore<WifiConf
         };
 
         // The other overrides (the timing) are kept; only the network changes.
-        let mut overrides = self
-            .store
-            .load()
+        // The effective result is validated and published by the section in the
+        // commit step; a changed configuration makes the manager connect by itself.
+        let before = self.handle.wifi_config();
+        self.config
+            .update(|overrides| {
+                overrides.ssid = Override::Value(Some(ssid));
+                overrides.password = password;
+            })
             .await
-            .map_err(|_| ActionError::Unavailable)?
-            .unwrap_or_default();
-        overrides.ssid = Override::Value(Some(ssid));
-        overrides.password = password;
-        let mut config = self.store.defaults();
-        overrides.apply_to(&mut config);
-        config.validate().map_err(action_error)?;
-
-        let unchanged = self.handle.wifi_config().as_ref() == Some(&config);
-        self.store
-            .store(&overrides, &config)
-            .await
-            .map_err(|_| ActionError::Unavailable)?;
-        // A changed configuration makes the manager connect by itself; the
-        // same one is ignored by it and needs the explicit new attempt.
-        if unchanged {
+            .map_err(config_error)?;
+        // The same configuration is ignored by the manager and needs the
+        // explicit new attempt.
+        if self.handle.wifi_config() == before {
             self.handle.reconnect().map_err(action_error)?;
         }
         Ok(())
     }
 }
 
-impl<M: RawMutex, D: DelayNs + Clone, P: WifiProbe, S: SectionStore<WifiConfig>> ManagedService
-    for WifiService<'_, M, D, P, S>
+impl<M: RawMutex, D: DelayNs + Clone, P: WifiProbe, U: ConfigUpdate<WifiConfig>> ManagedService
+    for WifiService<'_, M, D, P, U>
 {
     const ID: u32 = SERVICE_ID;
     const NAME: &'static str = "wifi";
@@ -504,7 +505,7 @@ mod tests {
 
     use embassy_futures::block_on;
     use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-    use rohi_service::{MAX_FIELDS, StoreError};
+    use rohi_service::{MAX_FIELDS, ManagedSection, SectionStore, StoreError};
 
     use super::*;
     use crate::WifiOverrides;
@@ -548,7 +549,7 @@ mod tests {
     struct Store<'a> {
         handle: WifiHandle<'a, NoopRawMutex>,
         value: RefCell<Option<WifiOverrides>>,
-        defaults: RefCell<WifiConfig>,
+        firmware: RefCell<WifiOverrides>,
         writes: RefCell<usize>,
         fail: bool,
     }
@@ -558,7 +559,7 @@ mod tests {
             Self {
                 handle,
                 value: RefCell::new(None),
-                defaults: RefCell::new(WifiConfig::default()),
+                firmware: RefCell::new(WifiOverrides::default()),
                 writes: RefCell::new(0),
                 fail: false,
             }
@@ -566,8 +567,8 @@ mod tests {
     }
 
     impl SectionStore<WifiConfig> for &Store<'_> {
-        fn defaults(&self) -> WifiConfig {
-            self.defaults.borrow().clone()
+        fn firmware_overrides(&self) -> WifiOverrides {
+            self.firmware.borrow().clone()
         }
 
         async fn load(&self) -> Result<Option<WifiOverrides>, StoreError> {
@@ -584,15 +585,21 @@ mod tests {
         ) -> Result<(), StoreError> {
             *self.writes.borrow_mut() += 1;
             *self.value.borrow_mut() = Some(overrides.clone());
-            self.handle.set_wifi_config(effective.clone().configured());
+            self.handle.set_wifi_config(effective.clone());
             Ok(())
         }
 
         async fn remove(&self, effective: &WifiConfig) -> Result<(), StoreError> {
             *self.value.borrow_mut() = None;
-            self.handle.set_wifi_config(effective.clone().configured());
+            self.handle.set_wifi_config(effective.clone());
             Ok(())
         }
+    }
+
+    fn section<'a>(
+        store: &'a Store<'a>,
+    ) -> ManagedSection<WifiConfig, &'a Store<'a>, NoopRawMutex> {
+        ManagedSection::new(store)
     }
 
     #[derive(Default)]
@@ -621,7 +628,13 @@ mod tests {
     }
 
     type Shared = WifiShared<NoopRawMutex>;
-    type Service<'a, P> = WifiService<'a, NoopRawMutex, NoDelay, P, &'a Store<'a>>;
+    type Service<'a, P> = WifiService<
+        'a,
+        NoopRawMutex,
+        NoDelay,
+        P,
+        ManagedSection<WifiConfig, &'a Store<'a>, NoopRawMutex>,
+    >;
 
     fn text(value: &str) -> Value {
         Value::text(value).unwrap()
@@ -721,7 +734,7 @@ mod tests {
     fn reconnect_is_queued_and_unknown_actions_are_refused() {
         let shared = Shared::new();
         let store = Store::new(shared.handle());
-        let service = WifiService::new(shared.handle(), NoDelay, (), &store);
+        let service = WifiService::new(shared.handle(), NoDelay, (), section(&store));
         let mut out = Collect::default();
         assert_eq!(
             block_on(service.invoke(action::RECONNECT, &[], &mut out)),
@@ -737,7 +750,7 @@ mod tests {
     fn a_new_manager_is_a_disabled_service_that_still_reports_its_resources() {
         let shared = Shared::new();
         let store = Store::new(shared.handle());
-        let service = WifiService::new(shared.handle(), NoDelay, FULL, &store);
+        let service = WifiService::new(shared.handle(), NoDelay, FULL, section(&store));
         let summary = block_on(service.summary());
         assert_eq!(summary.state, rohi_service::ServiceState::Disabled);
         assert!(!summary.ready);
@@ -762,7 +775,7 @@ mod tests {
     fn what_the_platform_cannot_tell_is_not_reported() {
         let shared = Shared::new();
         let store = Store::new(shared.handle());
-        let service = WifiService::new(shared.handle(), NoDelay, (), &store);
+        let service = WifiService::new(shared.handle(), NoDelay, (), section(&store));
         let mut out = Collect::default();
         block_on(service.status(&mut out)).unwrap();
         assert_eq!(out.0, [(status_field::RECONNECTS, Value::U64(0))]);
@@ -775,7 +788,7 @@ mod tests {
             }),
             now: None,
         };
-        let service = WifiService::new(shared.handle(), NoDelay, probe, &store);
+        let service = WifiService::new(shared.handle(), NoDelay, probe, section(&store));
         let mut out = Collect::default();
         block_on(service.status(&mut out)).unwrap();
         assert!(out.get(status_field::HEAP_FREE).is_some());
@@ -796,11 +809,11 @@ mod tests {
             &shared,
             ManagerConfig::DEFAULT.with_clock(|| 40_000),
         );
-        handle.set_wifi_config(Some(config()));
+        handle.set_wifi_config(config());
         block_on(manager.step());
         block_on(manager.step());
 
-        let service = WifiService::new(handle, NoDelay, FULL, &store);
+        let service = WifiService::new(handle, NoDelay, FULL, section(&store));
         let summary = block_on(service.summary());
         assert_eq!(summary.state, rohi_service::ServiceState::Running);
         assert!(summary.ready);
@@ -831,7 +844,7 @@ mod tests {
             &shared,
             ManagerConfig::DEFAULT,
         );
-        let service = WifiService::new(handle, NoDelay, (), &store);
+        let service = WifiService::new(handle, NoDelay, (), section(&store));
         let mut out = Collect::default();
 
         let args = connect_args("office", "hunter2hunter2");
@@ -839,7 +852,10 @@ mod tests {
             block_on(service.invoke(action::CONNECT, &args, &mut out)),
             Ok(())
         );
-        let stored = store.value.borrow().clone().unwrap().over_default();
+        let stored = rohi_config::materialize::<WifiConfig>(
+            &Default::default(),
+            &store.value.borrow().clone().unwrap(),
+        );
         assert_eq!(
             stored.ssid.as_ref().and_then(WifiSsid::as_str),
             Some("office")
@@ -865,7 +881,7 @@ mod tests {
             scan_timeout_ms: Override::Value(5_000),
             ..WifiOverrides::default()
         });
-        let service = WifiService::new(handle, NoDelay, (), &store);
+        let service = WifiService::new(handle, NoDelay, (), section(&store));
 
         let args = connect_args("cafe", "");
         let mut out = Collect::default();
@@ -877,7 +893,7 @@ mod tests {
         // An open network is explicit: it is not the same as following the default.
         assert_eq!(stored.password, Override::Value(None));
         assert_eq!(stored.scan_timeout_ms, Override::Value(5_000));
-        let stored = stored.over_default();
+        let stored = rohi_config::materialize::<WifiConfig>(&Default::default(), &stored);
         assert_eq!(
             stored.ssid.as_ref().and_then(WifiSsid::as_str),
             Some("cafe")
@@ -891,11 +907,12 @@ mod tests {
         let shared = Shared::new();
         let handle = shared.handle();
         let store = Store::new(handle);
-        *store.defaults.borrow_mut() = WifiConfig::new(
-            WifiSsid::from_bytes(b"factory").unwrap(),
-            Some(WifiPassword::from_bytes(b"factory-password").unwrap()),
-        );
-        let service = WifiService::new(handle, NoDelay, (), &store);
+        *store.firmware.borrow_mut() = WifiOverrides {
+            ssid: Override::Value(Some(WifiSsid::from_bytes(b"factory").unwrap())),
+            password: Override::Value(Some(WifiPassword::from_bytes(b"factory-password").unwrap())),
+            ..WifiOverrides::default()
+        };
+        let service = WifiService::new(handle, NoDelay, (), section(&store));
         let mut out = Collect::default();
         assert_eq!(
             block_on(service.invoke(action::CONNECT, &connect_args("cafe", ""), &mut out)),
@@ -910,15 +927,15 @@ mod tests {
     }
 
     #[test]
-    fn connect_applies_the_overrides_on_the_firmware_defaults() {
+    fn connect_applies_the_user_overrides_on_the_firmware_overrides() {
         let shared = Shared::new();
         let handle = shared.handle();
         let store = Store::new(handle);
-        *store.defaults.borrow_mut() = WifiConfig {
-            scan_timeout_ms: 7_000,
-            ..WifiConfig::default()
+        *store.firmware.borrow_mut() = WifiOverrides {
+            scan_timeout_ms: Override::Value(7_000),
+            ..WifiOverrides::default()
         };
-        let service = WifiService::new(handle, NoDelay, (), &store);
+        let service = WifiService::new(handle, NoDelay, (), section(&store));
         let mut out = Collect::default();
         assert_eq!(
             block_on(service.invoke(
@@ -931,6 +948,57 @@ mod tests {
         assert_eq!(handle.wifi_config().unwrap().scan_timeout_ms, 7_000);
         let stored = store.value.borrow().clone().unwrap();
         assert_eq!(stored.scan_timeout_ms, Override::Default);
+    }
+
+    #[test]
+    fn the_scan_timeout_applies_without_a_configured_network() {
+        let shared = Shared::new();
+        let handle = shared.handle();
+        let store = Store::new(handle);
+        let service = WifiService::new(handle, NoDelay, (), section(&store));
+        assert_eq!(
+            service.scan_timeout_ms(),
+            WifiConfig::default().scan_timeout_ms
+        );
+        handle.set_wifi_config(WifiConfig {
+            scan_timeout_ms: 7_000,
+            ..WifiConfig::default()
+        });
+        assert!(!handle.is_configured());
+        assert_eq!(handle.wifi_config(), None);
+        assert_eq!(service.scan_timeout_ms(), 7_000);
+    }
+
+    #[test]
+    fn connect_shares_the_revision_and_does_not_lose_a_concurrent_patch() {
+        use rohi_service::{ConfigSectionOps, Mutation, MutationOp};
+
+        let shared = Shared::new();
+        let handle = shared.handle();
+        let store = Store::new(handle);
+        let section = section(&store);
+        let service = WifiService::new(handle, NoDelay, (), &section);
+        let mut out = Collect::default();
+        let args = connect_args("office", "hunter2hunter2");
+        let timing = Mutation {
+            field_id: crate::wifi::managed::field::SCAN_TIMEOUT,
+            op: MutationOp::Set(Value::U64(9_000)),
+        };
+        let (connected, patched) = block_on(embassy_futures::join::join(
+            service.invoke(action::CONNECT, &args, &mut out),
+            section.patch(&[timing], None, false),
+        ));
+        assert_eq!(connected, Ok(()));
+        assert!(patched.is_ok());
+        // Both writes went through the section: both overrides survive and
+        // the revision counted both.
+        let stored = store.value.borrow().clone().unwrap();
+        assert_eq!(
+            stored.ssid,
+            Override::Value(Some(WifiSsid::from_bytes(b"office").unwrap()))
+        );
+        assert_eq!(stored.scan_timeout_ms, Override::Value(9_000));
+        assert_eq!(section.info().revision, 2);
     }
 
     #[test]
@@ -947,7 +1015,7 @@ mod tests {
             &shared,
             ManagerConfig::DEFAULT,
         );
-        let service = WifiService::new(handle, NoDelay, (), &store);
+        let service = WifiService::new(handle, NoDelay, (), section(&store));
         let mut out = Collect::default();
         let args = connect_args("office", "hunter2hunter2");
 
@@ -968,7 +1036,7 @@ mod tests {
     fn invalid_credentials_are_refused_and_nothing_is_stored() {
         let shared = Shared::new();
         let store = Store::new(shared.handle());
-        let service = WifiService::new(shared.handle(), NoDelay, (), &store);
+        let service = WifiService::new(shared.handle(), NoDelay, (), section(&store));
         let mut out = Collect::default();
 
         for args in [
@@ -1002,7 +1070,7 @@ mod tests {
         let shared = Shared::new();
         let mut store = Store::new(shared.handle());
         store.fail = true;
-        let service = WifiService::new(shared.handle(), NoDelay, (), &store);
+        let service = WifiService::new(shared.handle(), NoDelay, (), section(&store));
         let mut out = Collect::default();
         assert_eq!(
             block_on(service.invoke(action::CONNECT, &connect_args("office", ""), &mut out)),

@@ -79,12 +79,13 @@ pub use format::{
 };
 pub use id::SectionId;
 pub use memory::{MemoryError, MemoryStorage};
-pub use overrides::{ConfigOverrides, Override};
+pub use overrides::{ConfigOverrides, HasOverrides, Override, materialize};
 pub use section::ConfigSection;
 pub use storage::ConfigStorage;
 pub use store::{ConfigOpenState, ConfigStore, OpenFailure, SectionInfo};
 
-/// Derive macro generating the [`ConfigSection`] implementation.
-pub use rohi_config_derive::ConfigSection;
+/// Derive macros generating the [`ConfigSection`] implementation and the
+/// persisted overrides of a managed config ([`ConfigOverrides`]).
+pub use rohi_config_derive::{ConfigOverrides, ConfigSection};
 
 pub use minicbor;

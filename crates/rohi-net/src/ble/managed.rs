@@ -16,10 +16,9 @@
 //
 //! The `ble` config section in the generic management plane.
 
-use rohi_config::ConfigSection;
 use rohi_service::{ConfigField, FieldError, ManagedConfig, Value, ValueKind};
 
-use super::config::{BleName, BleOverrides, BleSettings};
+use super::config::{BleName, BleSettings};
 
 /// Field ids of the `ble` config section. Only ever added.
 pub mod field {
@@ -28,13 +27,9 @@ pub mod field {
 }
 
 impl ManagedConfig for BleSettings {
-    const SECTION_ID: u64 = <BleOverrides as ConfigSection>::ID.0;
     const NAME: &'static str = "ble";
-    const VERSION: u16 = <BleOverrides as ConfigSection>::VERSION;
     const FIELDS: &'static [ConfigField] =
         &[ConfigField::new(field::NAME, "name", ValueKind::String).optional()];
-
-    type Overrides = BleOverrides;
 
     fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
         match id {
@@ -84,6 +79,8 @@ mod tests {
     use rohi_service::MAX_CONFIG_FIELDS;
 
     use super::*;
+    use crate::BleOverrides;
+    use rohi_config::ConfigSection;
 
     fn text(value: &str) -> Value {
         Value::text(value).unwrap()
@@ -91,7 +88,7 @@ mod tests {
 
     #[test]
     fn the_schema_is_well_formed() {
-        assert_eq!(<BleSettings as ManagedConfig>::VERSION, 1);
+        assert_eq!(<BleOverrides as ConfigSection>::VERSION, 1);
         assert_eq!(BleSettings::FIELDS.len(), BleOverrides::FIELD_IDS.len());
         assert!(BleSettings::FIELDS.len() <= MAX_CONFIG_FIELDS);
         for field in BleSettings::FIELDS {
@@ -109,9 +106,15 @@ mod tests {
         assert_eq!(ManagedConfig::validate(&settings), Ok(()));
         let mut overrides = BleOverrides::default();
         assert!(overrides.capture(&settings, field::NAME));
-        assert_eq!(overrides.over_default().name, settings.name);
+        assert_eq!(
+            rohi_config::materialize::<BleSettings>(&Default::default(), &overrides).name,
+            settings.name
+        );
         assert!(overrides.clear(field::NAME));
-        assert_eq!(overrides.over_default().name, None);
+        assert_eq!(
+            rohi_config::materialize::<BleSettings>(&Default::default(), &overrides).name,
+            None
+        );
 
         assert_eq!(
             settings.set_field(field::NAME, text("")),

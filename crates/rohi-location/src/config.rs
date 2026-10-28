@@ -16,7 +16,7 @@
 //
 //! The persistent `location` section and its generic config interface.
 
-use rohi_config::{ConfigSection, config_overrides};
+use rohi_config::ConfigOverrides;
 use rohi_service::{Bounds, ConfigField, FieldError, ManagedConfig, Unit, Value, ValueKind};
 
 use crate::{Location, LocationSourceKind};
@@ -37,28 +37,18 @@ pub mod field {
 /// `NaN` and the section is not valid on its own, so a first `height_m=...`
 /// never stores "0, 0". What is stored are the explicit user overrides of it,
 /// [`LocationOverrides`].
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, ConfigOverrides)]
+#[config(overrides = LocationOverrides, version = 1)]
 pub struct LocationConfig {
     /// Latitude in decimal degrees, -90 to 90 (WGS84).
+    #[config(id = 1)]
     pub latitude: f64,
     /// Longitude in decimal degrees, -180 to 180 (WGS84).
+    #[config(id = 2)]
     pub longitude: f64,
     /// Height above mean sea level in metres.
+    #[config(id = 3)]
     pub height_m: Option<f64>,
-}
-
-config_overrides! {
-    /// Persisted overrides of the [`LocationConfig`] section (section
-    /// `LocationConfig`).
-    ///
-    /// Persistent ABI: a CBOR map keyed by the field ids of [`field`], which
-    /// are only ever added; a field that is not overridden is absent. The map
-    /// is pinned by a golden test.
-    pub struct LocationOverrides for LocationConfig, version 1 {
-        1 => latitude: f64,
-        2 => longitude: f64,
-        3 => height_m: Option<f64>,
-    }
 }
 
 impl Default for LocationConfig {
@@ -106,9 +96,7 @@ impl LocationConfig {
 }
 
 impl ManagedConfig for LocationConfig {
-    const SECTION_ID: u64 = <LocationOverrides as ConfigSection>::ID.0;
     const NAME: &'static str = "location";
-    const VERSION: u16 = <LocationOverrides as ConfigSection>::VERSION;
     const FIELDS: &'static [ConfigField] = &[
         ConfigField::new(field::LATITUDE, "latitude", ValueKind::F32)
             .unit(Unit::Degrees)
@@ -121,8 +109,6 @@ impl ManagedConfig for LocationConfig {
             .bounds(Bounds::F32(MIN_HEIGHT_M as f32, MAX_HEIGHT_M as f32))
             .optional(),
     ];
-
-    type Overrides = LocationOverrides;
 
     /// Latitude and longitude have no value until they are given: the
     /// default is not a position.

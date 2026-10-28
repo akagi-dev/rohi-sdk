@@ -18,11 +18,11 @@
 //!
 //! The service runs in its own task and only reads measurement snapshots, so
 //! Wi-Fi, DNS, TCP, server, time or authorization failures never reach the
-//! sensors. Configuration is the build-time [`defaults`]
-//! (`ROHI_CONNECTIVITY_HOST`, `ROHI_CONNECTIVITY_PORT`,
+//! sensors. Configuration is `ConnectivityConfig::default()`, the build-time
+//! [`firmware_overrides`] (`ROHI_CONNECTIVITY_HOST`, `ROHI_CONNECTIVITY_PORT`,
 //! `ROHI_CONNECTIVITY_NODE_ID`, `ROHI_CONNECTIVITY_INTERVAL_S`; without a host
-//! nothing is enabled) with the overrides of the persistent
-//! `ConnectivityConfig` section applied.
+//! nothing is enabled) and the overrides of the persistent
+//! `ConnectivityConfig` section.
 //!
 //! The task is always running once the network is up and follows the
 //! configuration: every commit or removal of the section is published by the
@@ -34,14 +34,14 @@
 use core::cell::RefCell;
 use core::convert::Infallible;
 
+use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::Delay;
 use esp_hal::rng::Rng;
 use log::{info, warn};
-use rohi_config::ConfigOverrides;
-use rohi_connectivity::config::{DEFAULT_INTERVAL_S, DEFAULT_PORT};
+use rohi_config::Override;
 use rohi_connectivity::{
     ConnectivityConfig, ConnectivityOverrides, ConnectivityService, ConnectivityShared,
     ConnectivityStatus, Host, HttpTransport, NONCE_LEN, NonceError, NonceSource, ServiceConfig,
@@ -50,7 +50,6 @@ use rohi_hal::runtime::MeasurementHandle;
 use rohi_hal_esp::EmbassyClock;
 use rohi_net::NetworkHandle;
 
-use crate::config::{ConfigHandle, ServiceError};
 use crate::identity::StaticSigner;
 use crate::resources::{CONNECTIVITY_OUTBOX_DEPTH, Ip};
 use crate::tasks::RawMutex;
@@ -61,8 +60,8 @@ static SHARED: ConnectivityShared<RawMutex> = ConnectivityShared::new();
 /// The latest effective configuration, see [`publish`].
 static UPDATES: Signal<RawMutex, ConnectivityConfig> = Signal::new();
 
-/// Hands the effective `ConnectivityConfig` (the [`defaults`] with the
-/// committed overrides, or the defaults after a removal) to the running task.
+/// Hands the effective `ConnectivityConfig` (the defaults, the
+/// [`firmware_overrides`] and the committed user overrides) to the running task.
 /// Synchronous, so the configuration owner can call it in the commit step;
 /// only the latest value matters.
 pub fn publish(config: ConnectivityConfig) {
@@ -106,33 +105,26 @@ fn env_number<T: core::str::FromStr>(value: Option<&str>) -> Option<T> {
     value.and_then(|value| value.parse().ok())
 }
 
-/// Configuration compiled into the firmware: disabled unless a host is set.
-/// It is the base the overrides of the user are applied to.
-pub fn defaults() -> ConnectivityConfig {
-    let mut config = ConnectivityConfig::default();
+/// Policy compiled into the firmware: nothing is enabled unless a valid host is
+/// set, and the other variables are ignored without one. It is the firmware
+/// layer under the overrides of the user.
+pub fn firmware_overrides() -> ConnectivityOverrides {
+    let mut out = ConnectivityOverrides::default();
     let Some(host) = option_env!("ROHI_CONNECTIVITY_HOST").and_then(Host::new) else {
-        return config;
+        return out;
     };
-    config.enabled = true;
-    config.host = host;
-    config.port = env_number(option_env!("ROHI_CONNECTIVITY_PORT")).unwrap_or(DEFAULT_PORT);
-    config.node_id = env_number(option_env!("ROHI_CONNECTIVITY_NODE_ID")).unwrap_or(0);
-    config.interval_s =
-        env_number(option_env!("ROHI_CONNECTIVITY_INTERVAL_S")).unwrap_or(DEFAULT_INTERVAL_S);
-    config
-}
-
-/// The [`defaults`] with the stored overrides. `None` when telemetry is
-/// disabled or the configuration is invalid.
-async fn load_config(config: ConfigHandle) -> Option<ConnectivityConfig> {
-    let mut loaded = defaults();
-    match config.get::<ConnectivityOverrides>().await {
-        Ok(Some(overrides)) => overrides.apply_to(&mut loaded),
-        Ok(None) => {}
-        Err(ServiceError::Unavailable(_)) => {}
-        Err(error) => warn!("Connectivity: stored configuration unusable: {}", error),
+    out.enabled = Override::Value(true);
+    out.host = Override::Value(host);
+    if let Some(port) = env_number(option_env!("ROHI_CONNECTIVITY_PORT")) {
+        out.port = Override::Value(port);
     }
-    effective(loaded)
+    if let Some(node_id) = env_number(option_env!("ROHI_CONNECTIVITY_NODE_ID")) {
+        out.node_id = Override::Value(node_id);
+    }
+    if let Some(interval) = env_number(option_env!("ROHI_CONNECTIVITY_INTERVAL_S")) {
+        out.interval_s = Override::Value(interval);
+    }
+    out
 }
 
 /// `None` when `loaded` is disabled or invalid.
@@ -190,15 +182,26 @@ async fn serve(
     service.run().await
 }
 
+/// Starts the telemetry task, see [`connectivity_task`]. It reads snapshots
+/// only: it can neither delay nor stop the sensors, whatever the uplink does.
+pub fn start(
+    spawner: Spawner,
+    network: NetworkHandle<'static, Ip>,
+    measurements: MeasurementHandle<'static, RawMutex>,
+) {
+    spawner.spawn(connectivity_task(network, measurements).unwrap());
+}
+
 /// Runs the telemetry service while it is enabled and restarts it with every
 /// published configuration.
 #[embassy_executor::task]
 pub async fn connectivity_task(
     network: NetworkHandle<'static, Ip>,
     measurements: MeasurementHandle<'static, RawMutex>,
-    config: ConfigHandle,
 ) {
-    let mut current = load_config(config).await;
+    // The configuration owner publishes the effective configuration at boot,
+    // before this task runs, like after every commit.
+    let mut current = effective(UPDATES.wait().await);
     loop {
         EFFECTIVE.lock(|cell| *cell.borrow_mut() = current.clone());
         let published = match &current {

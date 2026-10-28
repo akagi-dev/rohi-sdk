@@ -179,7 +179,7 @@ dispatches, and responses leave through a bounded TX queue.
 | `MAX_ACTIONS` | 12 per device |
 | `MAX_CONFIG_FIELDS` | 16 fields per section |
 | `MAX_MUTATIONS` | 8 per patch |
-| `MAX_CONFIG_SECTIONS` / `MAX_SERVICES` | 8 / 8 |
+| `MAX_CONFIG_SECTIONS` / `MAX_SERVICES` | 12 / 12 |
 | `MAX_ISSUES` / `MAX_ISSUE_DESCRIPTORS` | 4 active / 12 described |
 | `MAX_REASON_LEN` (reason of a rejected action) | 32 B |
 | `MAX_ACTION_ARGS` / `MAX_RECORDS` / `MAX_RECORD_FIELDS` | 3 / 6 / 4 |

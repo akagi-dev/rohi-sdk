@@ -32,12 +32,18 @@ use rohi_service::{
 
 use crate::*;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, rohi_config::ConfigOverrides)]
+#[config(overrides = NetOverrides, version = 2, id = 1)]
 struct Net {
+    #[config(id = 1)]
     enabled: bool,
+    #[config(id = 2)]
     port: u64,
+    #[config(id = 3)]
     host: std::string::String,
+    #[config(id = 4)]
     token: Option<std::string::String>,
+    #[config(id = 5)]
     mode: Option<u32>,
 }
 
@@ -53,20 +59,8 @@ impl Default for Net {
     }
 }
 
-rohi_config::config_overrides! {
-    struct NetOverrides for Net, version 2 {
-        1 => enabled: bool,
-        2 => port: u64,
-        3 => host: std::string::String,
-        4 => token: Option<std::string::String>,
-        5 => mode: Option<u32>,
-    }
-}
-
 impl ManagedConfig for Net {
-    const SECTION_ID: u64 = 1;
     const NAME: &'static str = "net";
-    const VERSION: u16 = 2;
     const FIELDS: &'static [ConfigField] = &[
         ConfigField::new(1, "enabled", ValueKind::Bool),
         ConfigField::new(2, "port", ValueKind::U64).bounds(Bounds::U64(1, 65535)),
@@ -82,8 +76,6 @@ impl ManagedConfig for Net {
         1,
         &[EnumVariant::new(0, "auto"), EnumVariant::new(5, "manual")],
     )];
-
-    type Overrides = NetOverrides;
 
     fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
         Ok(match id {
@@ -136,8 +128,8 @@ impl ManagedConfig for Net {
 struct Memory(RefCell<Option<NetOverrides>>);
 
 impl SectionStore<Net> for &Memory {
-    fn defaults(&self) -> Net {
-        Net::default()
+    fn firmware_overrides(&self) -> NetOverrides {
+        NetOverrides::default()
     }
 
     async fn load(&self) -> Result<Option<NetOverrides>, StoreError> {

@@ -53,9 +53,11 @@ Socket counts and buffer sizes stay compile-time (they size static memory), see 
 ### `connect`
 
 `rohi action wifi connect ssid=- password=-` stores a network and joins it. It takes the `ssid` and the `password`
-(empty for an open network), sets the `ssid` override and the `password` override (an empty password is an open network, persisted as the explicit `Value(None)`, not as following the default), keeps the other overrides (timing), validates the effective result (the store's firmware defaults with the overrides applied), persists the overrides through the
-`SectionStore<WifiConfig>` given to `WifiService`, and, when the manager would otherwise ignore the unchanged
-configuration, requests a reconnect. It is privileged and its arguments are secret, so the `rohi` tool reads every
+(empty for an open network), sets the `ssid` override and the `password` override (an empty password is an open network, persisted as the explicit `Value(None)`, not as following the default), keeps the other overrides (timing), and changes the section through the `ConfigUpdate<WifiConfig>` given to `WifiService` (in the firmware, the very
+`ManagedSection` the control plane uses): the same transaction as `rohi config`, so the effective result (defaults,
+firmware overrides and the candidate user overrides) is validated, persisted and published in one step, a concurrent
+config change is not lost and the revision of the section advances. When the manager would otherwise ignore the unchanged
+configuration, it requests a reconnect. It is privileged and its arguments are secret, so the `rohi` tool reads every
 argument from stdin or a prompt. Use `rohi config wifi ssid=office password=-` to change the section without
 connecting at once.
 
@@ -88,7 +90,7 @@ persistent WifiConfig + NetworkConfig ──► desired link config ──► Wi
 Scan · Reconnect · Disconnect ──► bounded command queue ──► WifiManager
 ```
 
-- `WifiHandle::set_wifi_config(Option<WifiConfig>)` and `WifiHandle::set_network_config(NetworkConfig)` publish the desired configuration. They are **synchronous**: no
+- `WifiHandle::set_wifi_config(WifiConfig)` (the whole effective section: without an SSID no network is configured, yet `wifi_settings()` keeps the timing, so the scan timeout stays effective) and `WifiHandle::set_network_config(NetworkConfig)` publish the desired configuration. They are **synchronous**: no
   `.await`, no queue, never `Busy`. The latest value wins; updates published before the manager ran are coalesced, so
   rapid updates A, B, C converge directly on C instead of causing a connect/disconnect cycle for A and B.
 - `scan()`, `reconnect()` and `disconnect()` are commands in a bounded queue (`WIFI_COMMAND_QUEUE_DEPTH`). They return
