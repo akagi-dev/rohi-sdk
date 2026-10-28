@@ -48,9 +48,8 @@ pub mod wifi;
 pub use ble::{
     BleConfig, BleConnectionInfo, BleError, BleGattSpec, BleName, BleOverrides, BleProbe,
     BleService, BleSettings, BleState, BleTransport, DEFAULT_BLE_PAYLOAD, MAX_BLE_NAME_LEN,
-    MAX_BLE_PAYLOAD, SERVICE_ID as BLE_SERVICE_ID, STATES as BLE_STATES,
-    config_field as ble_config_field, issue as ble_issue, state as ble_state,
-    status_field as ble_status_field,
+    MAX_BLE_PAYLOAD, STATES as BLE_STATES, config_field as ble_config_field, issue as ble_issue,
+    state as ble_state, status_field as ble_status_field,
 };
 pub use ip::{IpBackend, IpUsage, NetError, NetworkHandle, UdpSocket};
 pub use limits::{
@@ -60,11 +59,9 @@ pub use limits::{
 pub use network::{
     ADDRESS_MODE_ENUM, ADDRESS_MODES, AddressMode, DEFAULT_DHCP_TIMEOUT_MS, DHCP_TIMEOUT_RANGE_MS,
     Hostname, Ipv4, MAX_HOSTNAME_LEN, NetworkConfig, NetworkOverrides, NetworkProbe,
-    NetworkService, SERVICE_ID as NETWORK_SERVICE_ID, StaticIpv4, address_mode,
-    config_field as network_config_field, issue as network_issue,
-    status_field as network_status_field,
+    NetworkService, StaticIpv4, address_mode, config_field as network_config_field,
+    issue as network_issue, status_field as network_status_field,
 };
-pub use wifi::SERVICE_ID as WIFI_SERVICE_ID;
 pub use wifi::{
     BACKOFF_INITIAL_RANGE_MS, BACKOFF_MAX_RANGE_MS, Backoff, CONNECT_TIMEOUT_RANGE_MS,
     DEFAULT_BACKOFF_INITIAL_MS, DEFAULT_BACKOFF_MAX_MS, DEFAULT_CONNECT_TIMEOUT_MS,

@@ -22,7 +22,7 @@ use embassy_sync::blocking_mutex::raw::RawMutex;
 use heapless::{String, Vec};
 use rohi_service::{
     FIRST_SERVICE_ISSUE, FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES,
-    ManagedService, ServiceSummary, StatusWriter, ValueKind, WriteError,
+    Service, ServiceSummary, Status, StatusWriter, ValueKind, WriteError,
 };
 
 use crate::wifi::service_summary;
@@ -41,9 +41,6 @@ impl NetworkProbe for () {
         None
     }
 }
-
-/// Id of the `network` service.
-pub const SERVICE_ID: u32 = 2;
 
 /// Issue codes of the `network` service.
 pub mod issue {
@@ -71,6 +68,7 @@ pub mod status_field {
 
 /// The IP layer of the Wi-Fi link as a `network` service: address and
 /// socket usage. It has no actions; the link is operated through `wifi`.
+#[derive(Service)]
 pub struct NetworkService<'a, M: RawMutex, P> {
     handle: WifiHandle<'a, M>,
     probe: P,
@@ -84,9 +82,7 @@ impl<'a, M: RawMutex, P: NetworkProbe> NetworkService<'a, M, P> {
     }
 }
 
-impl<M: RawMutex, P: NetworkProbe> ManagedService for NetworkService<'_, M, P> {
-    const ID: u32 = SERVICE_ID;
-    const NAME: &'static str = "network";
+impl<M: RawMutex, P: NetworkProbe> Status for NetworkService<'_, M, P> {
     const VERSION: u16 = 1;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
         FieldDescriptor::new(status_field::IP, "ip", ValueKind::String),
@@ -223,7 +219,7 @@ mod tests {
 
     #[test]
     fn the_schema_is_well_formed() {
-        let schema = <NetworkService<'static, NoopRawMutex, ()> as ManagedService>::STATUS_SCHEMA;
+        let schema = <NetworkService<'static, NoopRawMutex, ()> as Status>::STATUS_SCHEMA;
         assert!(schema.len() <= MAX_FIELDS);
         let mut ids: std::vec::Vec<_> = schema.iter().map(|field| field.id).collect();
         ids.sort_unstable();
@@ -232,7 +228,6 @@ mod tests {
         for field in schema {
             assert!(field.name.len() <= 24, "{}", field.name);
         }
-        assert!(<NetworkService<'static, NoopRawMutex, ()> as ManagedService>::ACTIONS.is_empty());
     }
 
     #[test]
@@ -343,5 +338,11 @@ mod tests {
             block_on(service.issues(&mut issues));
             assert_eq!(issues.len(), expected, "{error:?} {:?}", handle.status());
         }
+    }
+
+    #[test]
+    fn the_service_identity_is_part_of_the_wire_abi() {
+        type S = NetworkService<'static, NoopRawMutex, ()>;
+        assert_eq!(<S as Service>::NAME, "network");
     }
 }

@@ -23,6 +23,7 @@ use embassy_sync::blocking_mutex::raw::RawMutex;
 use log::{info, warn};
 use rohi_hal::MonotonicTimestamp;
 use rohi_hal::runtime::Clock;
+use rohi_service::Service;
 
 use crate::{
     SyncFailure, TimeSample, TimeSnapshot, TimeSourceKind, TimeStatus, TimeSyncState, UnixTime,
@@ -110,6 +111,7 @@ struct Inner {
 /// All methods take `&self`; place the service in a `static`. See the
 /// [crate documentation](crate) for the guarantees, in particular that the
 /// wall-clock time may step.
+#[derive(Service)]
 pub struct TimeService<C, M: RawMutex> {
     clock: C,
     config: TimeConfig,

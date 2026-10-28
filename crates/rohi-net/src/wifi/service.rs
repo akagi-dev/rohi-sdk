@@ -25,9 +25,9 @@ use embedded_hal_async::delay::DelayNs;
 use heapless::{String, Vec};
 use rohi_config::Override;
 use rohi_service::{
-    ActionDescriptor, ActionError, ActionOutput, ConfigError, ConfigUpdate, EnumDescriptor,
+    Action, ActionDescriptor, ActionError, ActionOutput, ConfigError, ConfigUpdate, EnumDescriptor,
     EnumVariant, FieldDescriptor, FieldError, Issue, IssueDescriptor, IssueSeverity,
-    MAX_FIELD_VALUE_LEN, MAX_ISSUES, ManagedService, ServiceHealth, ServiceState, ServiceSummary,
+    MAX_FIELD_VALUE_LEN, MAX_ISSUES, Service, ServiceHealth, ServiceState, ServiceSummary, Status,
     StatusWriter, Unit, Value, ValueKind, WriteError,
 };
 
@@ -70,9 +70,6 @@ impl WifiProbe for () {
         None
     }
 }
-
-/// Id of the `wifi` service.
-pub const SERVICE_ID: u32 = 1;
 
 /// Ids of the actions of the `wifi` service.
 pub mod action {
@@ -290,6 +287,7 @@ const fn bytes(descriptor: FieldDescriptor) -> FieldDescriptor {
 /// with `delay`. `connect` changes the `wifi` section through `config`, the
 /// same transaction as a client's config patch, so it keeps the other
 /// overrides and the revision of the section follows.
+#[derive(Service)]
 pub struct WifiService<'a, M: RawMutex, D, P, U> {
     handle: WifiHandle<'a, M>,
     delay: D,
@@ -355,11 +353,9 @@ impl<'a, M: RawMutex, D: DelayNs + Clone, P: WifiProbe, U: ConfigUpdate<WifiConf
     }
 }
 
-impl<M: RawMutex, D: DelayNs + Clone, P: WifiProbe, U: ConfigUpdate<WifiConfig>> ManagedService
+impl<M: RawMutex, D: DelayNs + Clone, P: WifiProbe, U: ConfigUpdate<WifiConfig>> Status
     for WifiService<'_, M, D, P, U>
 {
-    const ID: u32 = SERVICE_ID;
-    const NAME: &'static str = "wifi";
     const VERSION: u16 = 1;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
         FieldDescriptor::new(status_field::SSID, "ssid", ValueKind::String),
@@ -387,25 +383,6 @@ impl<M: RawMutex, D: DelayNs + Clone, P: WifiProbe, U: ConfigUpdate<WifiConfig>>
     ];
     const ENUMS: &'static [EnumDescriptor] = ENUMS;
     const ISSUES: &'static [IssueDescriptor] = ISSUES;
-    const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new(action::SCAN, "scan")
-            .results(&[
-                FieldDescriptor::new(scan_field::SSID, "ssid", ValueKind::String),
-                FieldDescriptor::new(scan_field::RSSI, "rssi", ValueKind::I64).unit(Unit::Dbm),
-                FieldDescriptor::new(scan_field::CHANNEL, "channel", ValueKind::U64),
-                FieldDescriptor::new(scan_field::SECURITY, "security", ValueKind::Enum)
-                    .with_enum(SECURITY_ENUM),
-            ])
-            .enums(ENUMS),
-        ActionDescriptor::new(action::CONNECT, "connect")
-            .args(&[
-                FieldDescriptor::new(connect_field::SSID, "ssid", ValueKind::String),
-                FieldDescriptor::new(connect_field::PASSWORD, "password", ValueKind::String),
-            ])
-            .secret(),
-        ActionDescriptor::new(action::RECONNECT, "reconnect").privileged(),
-        ActionDescriptor::new(action::DISCONNECT, "disconnect").privileged(),
-    ];
 
     async fn summary(&self) -> ServiceSummary {
         summary_of(self.handle.status().state)
@@ -453,6 +430,30 @@ impl<M: RawMutex, D: DelayNs + Clone, P: WifiProbe, U: ConfigUpdate<WifiConfig>>
         }
         Ok(())
     }
+}
+
+impl<M: RawMutex, D: DelayNs + Clone, P: WifiProbe, U: ConfigUpdate<WifiConfig>> Action
+    for WifiService<'_, M, D, P, U>
+{
+    const ACTIONS: &'static [ActionDescriptor] = &[
+        ActionDescriptor::new(action::SCAN, "scan")
+            .results(&[
+                FieldDescriptor::new(scan_field::SSID, "ssid", ValueKind::String),
+                FieldDescriptor::new(scan_field::RSSI, "rssi", ValueKind::I64).unit(Unit::Dbm),
+                FieldDescriptor::new(scan_field::CHANNEL, "channel", ValueKind::U64),
+                FieldDescriptor::new(scan_field::SECURITY, "security", ValueKind::Enum)
+                    .with_enum(SECURITY_ENUM),
+            ])
+            .enums(ENUMS),
+        ActionDescriptor::new(action::CONNECT, "connect")
+            .args(&[
+                FieldDescriptor::new(connect_field::SSID, "ssid", ValueKind::String),
+                FieldDescriptor::new(connect_field::PASSWORD, "password", ValueKind::String),
+            ])
+            .secret(),
+        ActionDescriptor::new(action::RECONNECT, "reconnect").privileged(),
+        ActionDescriptor::new(action::DISCONNECT, "disconnect").privileged(),
+    ];
 
     async fn invoke(
         &self,
@@ -690,7 +691,7 @@ mod tests {
 
     #[test]
     fn the_schema_is_well_formed() {
-        let schema = <Service<'static, ()> as ManagedService>::STATUS_SCHEMA;
+        let schema = <Service<'static, ()> as Status>::STATUS_SCHEMA;
         assert!(schema.len() <= MAX_FIELDS);
         let mut ids: std::vec::Vec<_> = schema.iter().map(|field| field.id).collect();
         ids.sort_unstable();
@@ -703,7 +704,7 @@ mod tests {
 
     #[test]
     fn actions_are_declared_with_their_privileges() {
-        let actions = <Service<'static, ()> as ManagedService>::ACTIONS;
+        let actions = <Service<'static, ()> as Action>::ACTIONS;
         let flags: std::vec::Vec<_> = actions
             .iter()
             .map(|action| (action.name, action.privileged, action.secret_args))
@@ -1082,5 +1083,13 @@ mod tests {
     fn a_dhcp_failure_is_not_an_issue_of_the_link() {
         assert!(issue(WifiError::DhcpFailed).is_none());
         assert!(issue(WifiError::AuthenticationFailed).is_some());
+    }
+
+    #[test]
+    fn the_service_identity_is_part_of_the_wire_abi() {
+        assert_eq!(
+            <Service<'static, ()> as rohi_service::Service>::NAME,
+            "wifi"
+        );
     }
 }

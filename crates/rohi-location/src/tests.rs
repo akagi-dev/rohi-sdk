@@ -18,8 +18,8 @@ use embassy_futures::block_on;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use rohi_config::{ConfigOverrides, ConfigSection, Override};
 use rohi_service::{
-    Bounds, ConfigField, FieldError, ManagedConfig, ManagedService, ServiceRegistry, ServiceState,
-    Tracked, Unit, Value,
+    Bounds, ConfigField, FieldError, ManagedConfig, ServiceState, Status, StatusRegistry, Statuses,
+    Unit, Value,
 };
 
 use crate::*;
@@ -281,10 +281,13 @@ fn a_live_fix_beats_the_configured_location_and_gives_way_when_lost() {
     assert!(shared.current().is_some());
 }
 
+const SERVICE_ID: u32 = rohi_service::service_id("location");
+
 #[test]
 fn the_service_is_disabled_until_a_location_is_set() {
     let shared = LocationShared::<NoopRawMutex>::new();
-    let registry = (Tracked::<_, NoopRawMutex>::new(LocationService(&shared)),);
+    let service = LocationService(&shared);
+    let registry = Statuses::<NoopRawMutex, _>::new((&service,));
     let status = block_on(registry.status(SERVICE_ID, 0)).unwrap();
     assert_eq!(status.summary.state, ServiceState::Disabled);
     assert!(!status.summary.ready);
@@ -312,11 +315,24 @@ fn the_service_is_disabled_until_a_location_is_set() {
 #[test]
 fn the_status_schema_fits_the_protocol() {
     type S = LocationService<'static, NoopRawMutex>;
-    assert_eq!(<S as ManagedService>::STATUS_SCHEMA.len(), 4);
-    const { assert!(!<S as ManagedService>::ESSENTIAL) };
+    assert_eq!(<S as Status>::STATUS_SCHEMA.len(), 4);
+    const { assert!(!<S as Status>::ESSENTIAL) };
     assert!(
-        <S as ManagedService>::STATUS_SCHEMA
+        <S as Status>::STATUS_SCHEMA
             .iter()
             .all(|field| field.name.len() <= 24)
+    );
+}
+
+#[test]
+fn the_service_identity_is_part_of_the_wire_abi() {
+    use rohi_service::Service;
+    assert_eq!(
+        <LocationService<'static, NoopRawMutex> as Service>::NAME,
+        "location"
+    );
+    assert_eq!(
+        <LocationService<'static, NoopRawMutex> as Service>::ID,
+        SERVICE_ID
     );
 }

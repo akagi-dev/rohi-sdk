@@ -21,7 +21,7 @@ use heapless::Vec;
 use rohi_location::LocationSource;
 use rohi_service::{
     Bounds, ConfigField, FieldDescriptor, FieldError, Issue, IssueDescriptor, IssueSeverity,
-    MAX_ISSUES, ManagedConfig, ManagedService, ServiceHealth, ServiceState, ServiceSummary,
+    MAX_ISSUES, ManagedConfig, Service, ServiceHealth, ServiceState, ServiceSummary, Status,
     StatusWriter, Unit, Value, ValueKind, WriteError,
 };
 
@@ -102,9 +102,6 @@ impl ManagedConfig for ConnectivityConfig {
     }
 }
 
-/// Id of the `connectivity` service.
-pub const SERVICE_ID: u32 = 6;
-
 /// Issue codes of the `connectivity` service.
 pub mod issue {
     use rohi_service::FIRST_SERVICE_ISSUE as BASE;
@@ -178,6 +175,8 @@ fn transport_issue(error: TransportError) -> Issue {
 /// Telemetry without a location still flows but is incomplete: while the
 /// device does not know where it is, an otherwise healthy service is
 /// `degraded` with the issue `no_location`.
+#[derive(Service)]
+#[service(name = "connectivity")]
 pub struct ConnectivityStatusService<'a, M: RawMutex> {
     shared: &'a ConnectivityShared<M>,
     effective: fn() -> Option<ConnectivityConfig>,
@@ -207,9 +206,7 @@ impl<'a, M: RawMutex> ConnectivityStatusService<'a, M> {
     }
 }
 
-impl<M: RawMutex> ManagedService for ConnectivityStatusService<'_, M> {
-    const ID: u32 = SERVICE_ID;
-    const NAME: &'static str = "connectivity";
+impl<M: RawMutex> Status for ConnectivityStatusService<'_, M> {
     const VERSION: u16 = 1;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
         FieldDescriptor::new(
@@ -536,5 +533,13 @@ mod tests {
         let mut issues = Vec::new();
         block_on(off.issues(&mut issues));
         assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn the_service_identity_is_part_of_the_wire_abi() {
+        assert_eq!(
+            <ConnectivityStatusService<'static, NoopRawMutex> as Service>::NAME,
+            "connectivity"
+        );
     }
 }

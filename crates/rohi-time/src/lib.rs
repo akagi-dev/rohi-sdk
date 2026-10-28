@@ -76,7 +76,7 @@ mod tests;
 #[cfg(test)]
 mod testutil;
 
-pub use managed::{SERVICE_ID, TimeStatusService, issue, source_value, status_field};
+pub use managed::{issue, source_value, status_field};
 pub use service::{
     DEFAULT_HORIZON, DEFAULT_MAX_UNCERTAINTY, DEFAULT_STALE_AFTER, TimeConfig, TimeService,
 };

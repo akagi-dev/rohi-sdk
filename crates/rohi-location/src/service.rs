@@ -20,14 +20,11 @@ use embassy_sync::blocking_mutex::raw::RawMutex;
 use heapless::Vec;
 use rohi_service::{
     EnumDescriptor, EnumVariant, FIRST_SERVICE_ISSUE, FieldDescriptor, Issue, IssueDescriptor,
-    IssueSeverity, MAX_ISSUES, ManagedService, ServiceHealth, ServiceState, ServiceSummary,
+    IssueSeverity, MAX_ISSUES, Service, ServiceHealth, ServiceState, ServiceSummary, Status,
     StatusWriter, Unit, ValueKind, WriteError,
 };
 
 use crate::{LocationShared, LocationSourceKind};
-
-/// Id of the `location` service.
-pub const SERVICE_ID: u32 = 7;
 
 /// Issue codes of the `location` service.
 pub mod issue {
@@ -60,11 +57,10 @@ pub mod status_field {
 /// Not knowing where the device is is not an error, so the service is
 /// `disabled` until a location is set; consumers that need it (telemetry)
 /// report their own degradation.
+#[derive(Service)]
 pub struct LocationService<'a, M: RawMutex>(pub &'a LocationShared<M>);
 
-impl<M: RawMutex> ManagedService for LocationService<'_, M> {
-    const ID: u32 = SERVICE_ID;
-    const NAME: &'static str = "location";
+impl<M: RawMutex> Status for LocationService<'_, M> {
     const VERSION: u16 = 1;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
         FieldDescriptor::new(status_field::LATITUDE, "latitude", ValueKind::F32)

@@ -52,7 +52,7 @@ pub use network::NetworkInfo;
 pub use scan::{ScanCollector, WifiNetwork, WifiScanResults, WifiSecurity};
 pub(crate) use service::summary_of as service_summary;
 pub use service::{
-    HeapStats, SERVICE_ID, WifiProbe, WifiService, action, connect_field, issue, scan_field,
-    security, status_field,
+    HeapStats, WifiProbe, WifiService, action, connect_field, issue, scan_field, security,
+    status_field,
 };
 pub use state::{WifiState, WifiStatus};

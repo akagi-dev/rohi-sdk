@@ -410,6 +410,15 @@ async fn actions_take_arguments_and_return_records() {
             device.invoke("radio", "missing", &[]).await.unwrap_err(),
             Error::Device(ErrorCode::NotFound)
         ));
+        // `location` reports status but offers no actions.
+        assert!(matches!(
+            device.invoke("location", "scan", &[]).await.unwrap_err(),
+            Error::Device(ErrorCode::NotSupported)
+        ));
+        assert!(matches!(
+            device.invoke("nobody", "scan", &[]).await.unwrap_err(),
+            Error::Device(ErrorCode::NotFound)
+        ));
         let error = device.invoke("radio", "explode", &[]).await.unwrap_err();
         assert!(matches!(&error, Error::Rejected(reason) if reason == "not_today"));
     })

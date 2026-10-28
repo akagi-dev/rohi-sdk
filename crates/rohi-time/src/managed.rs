@@ -21,14 +21,11 @@ use heapless::Vec;
 use rohi_hal::runtime::Clock;
 use rohi_service::{
     EnumDescriptor, EnumVariant, FieldDescriptor, Issue, IssueDescriptor, IssueSeverity,
-    MAX_ISSUES, ManagedService, ServiceHealth, ServiceState, ServiceSummary, StatusWriter, Unit,
+    MAX_ISSUES, ServiceHealth, ServiceState, ServiceSummary, Status, StatusWriter, Unit,
     ValueKind, WriteError,
 };
 
 use crate::{SyncFailure, TimeService, TimeSourceKind, TimeSyncState};
-
-/// Id of the `time` service.
-pub const SERVICE_ID: u32 = 5;
 
 /// Issue codes of the `time` service.
 pub mod issue {
@@ -91,15 +88,11 @@ fn failure_issue(failure: SyncFailure) -> Issue {
     }
 }
 
-/// The time service as a `time` service of the status plane.
+/// The [`TimeService`] is the `time` service of the status plane.
 ///
 /// Wall-clock time is optional: the device has none until a source delivered
 /// a plausible sample, and it is never invented.
-pub struct TimeStatusService<'a, C, M: RawMutex>(pub &'a TimeService<C, M>);
-
-impl<C: Clock, M: RawMutex> ManagedService for TimeStatusService<'_, C, M> {
-    const ID: u32 = SERVICE_ID;
-    const NAME: &'static str = "time";
+impl<C: Clock, M: RawMutex> Status for TimeService<C, M> {
     const VERSION: u16 = 1;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
         FieldDescriptor::new(status_field::UNIX_TIME_MS, "unix_time", ValueKind::U64)
@@ -136,7 +129,7 @@ impl<C: Clock, M: RawMutex> ManagedService for TimeStatusService<'_, C, M> {
     async fn summary(&self) -> ServiceSummary {
         use ServiceHealth as H;
         use ServiceState as S;
-        let status = self.0.status();
+        let status = self.status();
         match status.state {
             TimeSyncState::Synchronized => ServiceSummary::new(S::Running, H::Ok, true),
             // The time is usable but may have drifted.
@@ -150,14 +143,14 @@ impl<C: Clock, M: RawMutex> ManagedService for TimeStatusService<'_, C, M> {
     }
 
     async fn issues(&self, out: &mut Vec<Issue, MAX_ISSUES>) {
-        if let Some(failure) = self.0.status().last_failure {
+        if let Some(failure) = self.status().last_failure {
             let _ = out.push(failure_issue(failure));
         }
     }
 
     async fn status(&self, out: &mut impl StatusWriter) -> Result<(), WriteError> {
-        let status = self.0.status();
-        if let Some(now) = self.0.now() {
+        let status = self.status();
+        if let Some(now) = self.now() {
             out.u64(status_field::UNIX_TIME_MS, now.as_millis())?;
         }
         if let Some(source) = status.source {
@@ -188,7 +181,7 @@ impl<C: Clock, M: RawMutex> ManagedService for TimeStatusService<'_, C, M> {
 mod tests {
     use embassy_futures::block_on;
     use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-    use rohi_service::{ManagedService, ServiceRegistry, Tracked, Value};
+    use rohi_service::{Service, StatusRegistry, Statuses, Value};
 
     use super::*;
     use crate::testutil::ManualClock;
@@ -200,8 +193,9 @@ mod tests {
             ManualClock::default(),
             TimeConfig::new(crate::UnixTime::from_secs(1_700_000_000)),
         );
-        let registry = (Tracked::<_, NoopRawMutex>::new(TimeStatusService(&service)),);
-        let status = block_on(registry.status(SERVICE_ID, 0)).unwrap();
+        let registry = Statuses::<NoopRawMutex, _>::new((&service,));
+        let status =
+            block_on(registry.status(TimeService::<ManualClock, NoopRawMutex>::ID, 0)).unwrap();
         assert_eq!(status.summary.state, rohi_service::ServiceState::Starting);
         assert!(!status.summary.ready);
         assert!(status.issues.is_empty());
@@ -215,9 +209,10 @@ mod tests {
 
     #[test]
     fn the_schema_lists_the_sources() {
-        type S = TimeStatusService<'static, ManualClock, NoopRawMutex>;
-        assert!(<S as ManagedService>::ENUMS[0].contains(source_value::RTC));
-        assert_eq!(<S as ManagedService>::STATUS_SCHEMA[1].enum_id, 1);
-        const { assert!(!<S as ManagedService>::ESSENTIAL) };
+        type S = TimeService<ManualClock, NoopRawMutex>;
+        assert_eq!(<S as Service>::NAME, "time");
+        assert!(<S as Status>::ENUMS[0].contains(source_value::RTC));
+        assert_eq!(<S as Status>::STATUS_SCHEMA[1].enum_id, 1);
+        const { assert!(!<S as Status>::ESSENTIAL) };
     }
 }

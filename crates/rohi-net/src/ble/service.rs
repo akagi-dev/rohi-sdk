@@ -19,7 +19,7 @@
 use heapless::Vec;
 use rohi_service::{
     EnumDescriptor, EnumVariant, FieldDescriptor, Issue, IssueDescriptor, IssueSeverity,
-    MAX_FIELD_VALUE_LEN, MAX_ISSUES, ManagedService, ServiceHealth, ServiceState, ServiceSummary,
+    MAX_FIELD_VALUE_LEN, MAX_ISSUES, Service, ServiceHealth, ServiceState, ServiceSummary, Status,
     StatusWriter, Unit, ValueKind, WriteError,
 };
 
@@ -41,9 +41,6 @@ pub trait BleProbe {
     /// The name the peripheral advertises, once it is known.
     fn name(&self) -> Option<BleName>;
 }
-
-/// Id of the `ble` service.
-pub const SERVICE_ID: u32 = 3;
 
 /// Issue codes of the `ble` service.
 pub mod issue {
@@ -98,11 +95,10 @@ pub const STATES: &[EnumDescriptor] = &[EnumDescriptor::new(
 
 /// The BLE peripheral as a `ble` service. It has no actions; it is
 /// configured through the `ble` section.
+#[derive(Service)]
 pub struct BleService<P>(pub P);
 
-impl<P: BleProbe> ManagedService for BleService<P> {
-    const ID: u32 = SERVICE_ID;
-    const NAME: &'static str = "ble";
+impl<P: BleProbe> Status for BleService<P> {
     const VERSION: u16 = 1;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
         FieldDescriptor::new(status_field::STATE, "state", ValueKind::Enum).with_enum(1),
@@ -226,7 +222,7 @@ mod tests {
 
     #[test]
     fn the_schema_is_well_formed() {
-        let schema = <BleService<&Fake> as ManagedService>::STATUS_SCHEMA;
+        let schema = <BleService<&Fake> as Status>::STATUS_SCHEMA;
         assert!(schema.len() <= MAX_FIELDS);
         let mut ids: std::vec::Vec<_> = schema.iter().map(|field| field.id).collect();
         ids.sort_unstable();
@@ -235,7 +231,6 @@ mod tests {
         for field in schema {
             assert!(field.name.len() <= 24, "{}", field.name);
         }
-        assert!(<BleService<&Fake> as ManagedService>::ACTIONS.is_empty());
     }
 
     #[test]
@@ -289,5 +284,14 @@ mod tests {
         block_on(service.issues(&mut issues));
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].code, issue::DRIVER_ERROR);
+    }
+
+    #[test]
+    fn the_service_identity_is_part_of_the_wire_abi() {
+        assert_eq!(<BleService<&Fake> as Service>::NAME, "ble");
+        assert_eq!(
+            <BleService<&Fake> as Service>::ID,
+            rohi_service::service_id("ble")
+        );
     }
 }

@@ -24,7 +24,7 @@ use embassy_sync::blocking_mutex::raw::RawMutex;
 use heapless::Vec;
 use rohi_service::{
     FIRST_SERVICE_ISSUE, FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES,
-    ManagedService, ServiceHealth, ServiceState, ServiceSummary, StatusWriter, Unit, Value,
+    Service, ServiceHealth, ServiceState, ServiceSummary, Status, StatusWriter, Unit, Value,
     ValueKind, WriteError,
 };
 
@@ -203,11 +203,10 @@ fn summary(snapshot: &MeasurementsSnapshot) -> ServiceSummary {
 }
 
 /// The measurement runtime as a `sensors` service of the status plane.
+#[derive(Service)]
 pub struct SensorsService<'a, M: RawMutex>(pub MeasurementHandle<'a, M>);
 
-impl<M: RawMutex> ManagedService for SensorsService<'_, M> {
-    const ID: u32 = 8;
-    const NAME: &'static str = "sensors";
+impl<M: RawMutex> Status for SensorsService<'_, M> {
     const VERSION: u16 = 1;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = FIELDS;
     const ISSUES: &'static [IssueDescriptor] = ISSUES;
@@ -320,5 +319,14 @@ mod tests {
         assert_eq!(ids.len(), FIELDS.len());
         assert!(FIELDS.len() <= rohi_service::MAX_FIELDS);
         assert!(FIELDS.iter().all(|field| field.name.len() <= 24));
+    }
+
+    #[test]
+    fn the_service_identity_is_part_of_the_wire_abi() {
+        use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+        assert_eq!(
+            <SensorsService<'static, NoopRawMutex> as Service>::NAME,
+            "sensors"
+        );
     }
 }

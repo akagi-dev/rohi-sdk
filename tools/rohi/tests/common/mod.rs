@@ -22,10 +22,11 @@ use rohi_location::{LocationOverrides, LocationService, LocationShared};
 use rohi_net::{BleConnectionInfo, BleError, BleState, BleTransport};
 use rohi_net::{WifiConfig, WifiOverrides};
 use rohi_service::{
-    ActionDescriptor, ActionError, ActionOutput, Bounds, ConfigField, EnumDescriptor, EnumVariant,
-    FIRST_SERVICE_ISSUE, FieldDescriptor, FieldError, Issue, IssueDescriptor, IssueSeverity,
-    ManagedConfig, ManagedSection, ManagedService, SectionStore, ServiceHealth, ServiceState,
-    ServiceSummary, StatusWriter, StoreError, Tracked, Unit, Value, ValueKind, WriteError,
+    Action, ActionDescriptor, ActionError, ActionOutput, Bounds, ConfigField, EnumDescriptor,
+    EnumVariant, FIRST_SERVICE_ISSUE, FieldDescriptor, FieldError, Issue, IssueDescriptor,
+    IssueSeverity, ManagedConfig, ManagedSection, SectionStore, Service, ServiceHealth,
+    ServiceState, ServiceSummary, Status, StatusWriter, Statuses, StoreError, Unit, Value,
+    ValueKind, WriteError,
 };
 use tokio::sync::mpsc;
 
@@ -212,16 +213,14 @@ impl ManagedConfig for Gadget {
 }
 
 /// A service that exists only in the tests.
-#[derive(Default)]
+#[derive(Default, Service)]
 pub struct Radio {
     pub connected: Cell<bool>,
     pub degraded: Cell<bool>,
     pub calls: RefCell<Vec<String>>,
 }
 
-impl ManagedService for &Radio {
-    const ID: u32 = 3;
-    const NAME: &'static str = "radio";
+impl Status for Radio {
     const VERSION: u16 = 2;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
         FieldDescriptor::new(1, "ssid", ValueKind::String),
@@ -234,25 +233,6 @@ impl ManagedService for &Radio {
     )];
     const ISSUES: &'static [IssueDescriptor] =
         &[IssueDescriptor::new(FIRST_SERVICE_ISSUE, "link_lost")];
-    const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new(1, "scan")
-            .results(&[
-                FieldDescriptor::new(1, "ssid", ValueKind::String),
-                FieldDescriptor::new(2, "rssi", ValueKind::I64).unit(Unit::Dbm),
-                FieldDescriptor::new(3, "security", ValueKind::Enum).with_enum(1),
-            ])
-            .enums(&[EnumDescriptor::new(
-                1,
-                &[EnumVariant::new(0, "open"), EnumVariant::new(1, "wpa2")],
-            )]),
-        ActionDescriptor::new(2, "reconnect").privileged(),
-        ActionDescriptor::new(3, "tune").args(&[FieldDescriptor::new(
-            1,
-            "channel",
-            ValueKind::U64,
-        )]),
-        ActionDescriptor::new(4, "explode"),
-    ];
 
     async fn summary(&self) -> ServiceSummary {
         if self.degraded.get() {
@@ -281,6 +261,28 @@ impl ManagedService for &Radio {
         }
         out.variant(3, 0)
     }
+}
+
+impl Action for Radio {
+    const ACTIONS: &'static [ActionDescriptor] = &[
+        ActionDescriptor::new(1, "scan")
+            .results(&[
+                FieldDescriptor::new(1, "ssid", ValueKind::String),
+                FieldDescriptor::new(2, "rssi", ValueKind::I64).unit(Unit::Dbm),
+                FieldDescriptor::new(3, "security", ValueKind::Enum).with_enum(1),
+            ])
+            .enums(&[EnumDescriptor::new(
+                1,
+                &[EnumVariant::new(0, "open"), EnumVariant::new(1, "wpa2")],
+            )]),
+        ActionDescriptor::new(2, "reconnect").privileged(),
+        ActionDescriptor::new(3, "tune").args(&[FieldDescriptor::new(
+            1,
+            "channel",
+            ValueKind::U64,
+        )]),
+        ActionDescriptor::new(4, "explode"),
+    ];
 
     async fn invoke(
         &self,
@@ -418,13 +420,16 @@ type Sections = (
     ManagedSection<LocationConfig, LocationStore, NoopRawMutex>,
 );
 
-type Services<'a> = (
-    Tracked<&'a Radio, NoopRawMutex>,
-    Tracked<IdentityService<MemIdentity>, NoopRawMutex>,
-    Tracked<LocationService<'a, NoopRawMutex>, NoopRawMutex>,
+type StatusServices<'a> = (
+    &'a Radio,
+    &'a IdentityService<MemIdentity>,
+    &'a LocationService<'a, NoopRawMutex>,
 );
 
-pub type Backend<'a> = BackendDevice<Sections, Services<'a>>;
+type ActionServices<'a> = (&'a Radio, &'a IdentityService<MemIdentity>);
+
+pub type Backend<'a> =
+    BackendDevice<Sections, Statuses<NoopRawMutex, StatusServices<'a>>, ActionServices<'a>>;
 
 thread_local! {
     static REBOOTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
@@ -444,6 +449,10 @@ fn uptime() -> u64 {
 }
 
 pub fn backend(bench: &Bench) -> Backend<'_> {
+    // The services are shared by the status and the action registry; a test
+    // process may leak the few bytes.
+    let identity: &_ = Box::leak(Box::new(IdentityService(bench.identity.clone())));
+    let location: &_ = Box::leak(Box::new(LocationService(&bench.location.shared)));
     BackendDevice::new(
         DeviceInfo {
             firmware: "fake-1.0.0",
@@ -456,11 +465,8 @@ pub fn backend(bench: &Bench) -> Backend<'_> {
             ManagedSection::new(bench.gadget.clone()),
             ManagedSection::new(bench.location.clone()),
         ),
-        (
-            Tracked::new(&bench.radio),
-            Tracked::new(IdentityService(bench.identity.clone())),
-            Tracked::new(LocationService(&bench.location.shared)),
-        ),
+        Statuses::new((&bench.radio, identity, location)),
+        (&bench.radio, identity),
     )
     .with_reboot(reboot)
 }
