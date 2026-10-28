@@ -12,7 +12,8 @@ use clap::{CommandFactory, Parser};
 use common::*;
 use rohi::cli::{Cli, CliError, Ctx, Io, PartialApply, execute};
 use rohi::{Device, Error};
-use rohi_config::{ConfigOverrides, Override};
+use rohi_config::Override;
+use rohi_connectivity::ConnectivityConfig;
 use rohi_control::{Controller, OpenPolicy};
 use rohi_control_ble::ControlBle;
 use rohi_net::WifiPassword;
@@ -623,9 +624,8 @@ async fn setting_fields_shows_the_effective_configuration_the_device_reports() {
         outcome.stdout,
         "label   lamp\nlevel   70 %\nmode    slow\nserial  SN-1\n\nA restart is required for the change to take effect\n"
     );
-    let stored = bench.gadget.value.borrow().clone().unwrap();
     assert_eq!(
-        stored.over_default(),
+        bench.gadget.effective::<Gadget>(),
         Gadget {
             label: "lamp".into(),
             level: 70,
@@ -1103,13 +1103,7 @@ async fn apply_merges_unsets_and_resets_with_one_confirmation() {
     // The gadget needs a restart.
     assert!(outcome.stdout.contains("restart"), "{}", outcome.stdout);
 
-    let connectivity = bench
-        .telemetry
-        .value
-        .borrow()
-        .clone()
-        .unwrap()
-        .over_default();
+    let connectivity = bench.telemetry.effective::<ConnectivityConfig>();
     assert_eq!(connectivity.host.as_str(), "new.example.org");
     assert_eq!(connectivity.port, 443);
     // Missing fields are left alone.
@@ -1143,11 +1137,7 @@ async fn apply_validates_every_section_before_changing_any() {
     assert_eq!(
         bench
             .telemetry
-            .value
-            .borrow()
-            .clone()
-            .unwrap()
-            .over_default()
+            .effective::<ConnectivityConfig>()
             .host
             .as_str(),
         "old.example.org"
@@ -1177,17 +1167,7 @@ async fn apply_dry_run_and_non_interactive_confirmation() {
 
     let outcome = run(&bench, &["config", "apply", path(&file), "--yes"]).await;
     outcome.ok();
-    assert_eq!(
-        bench
-            .telemetry
-            .value
-            .borrow()
-            .clone()
-            .unwrap()
-            .over_default()
-            .port,
-        8080
-    );
+    assert_eq!(bench.telemetry.effective::<ConnectivityConfig>().port, 8080);
 
     // A second application has nothing to do.
     let outcome = run(&bench, &["config", "apply", path(&file), "--yes"]).await;
@@ -1982,14 +1962,7 @@ async fn apply_conflicts_when_the_section_changes_after_the_diff_was_shown() {
     let (outcome, requests) = apply_with_rival(&bench, &file, 0).await;
     outcome.ok();
     assert_eq!(
-        bench
-            .telemetry
-            .value
-            .borrow()
-            .clone()
-            .unwrap()
-            .over_default()
-            .interval_s,
+        bench.telemetry.effective::<ConnectivityConfig>().interval_s,
         120
     );
 
@@ -2005,13 +1978,7 @@ async fn apply_conflicts_when_the_section_changes_after_the_diff_was_shown() {
         partial.source,
         Error::Device(rohi::model::ErrorCode::Conflict)
     ));
-    let stored = bench
-        .telemetry
-        .value
-        .borrow()
-        .clone()
-        .unwrap()
-        .over_default();
+    let stored = bench.telemetry.effective::<ConnectivityConfig>();
     assert_eq!(stored.port, 9000);
     assert_eq!(stored.interval_s, 60);
 }

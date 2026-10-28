@@ -48,7 +48,7 @@ or issues change) and the time in the current state. You do nothing for that.
 
 ## 2. Config (optional)
 
-If users configure it, add a typed section with its `config_overrides!` struct and implement `ManagedConfig` as in
+If users configure it, add a typed section with `#[derive(ConfigOverrides)]` and implement `ManagedConfig` as in
 [Add a ConfigSection](add-config-section.md): the schema, typed conversion, whole-section validation of the effective configuration.
 Name the section like the service when they belong together (`location`, `connectivity`, `wifi`).
 

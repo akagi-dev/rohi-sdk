@@ -21,12 +21,13 @@
 //! A [`ManagedSection`] ties both together and implements the generic
 //! operations; a tuple of sections is a [`ConfigRegistry`].
 //!
-//! The effective configuration is the firmware defaults plus the explicit
-//! overrides of the user ([`ConfigOverrides`]). The firmware supplies the
-//! defaults through [`SectionStore::defaults`]: they, not `C::default()`, are
-//! the authoritative base of reads, validation and runtime publication. Only
-//! the overrides are persisted, so a field the user never set follows the
-//! defaults of the firmware that runs.
+//! The effective configuration is `C::default()`, plus the firmware overrides
+//! compiled into the product, plus the explicit overrides of the user, see
+//! [`materialize`]. Firmware and user overrides are two values of the same
+//! generated type ([`HasOverrides::Overrides`]). The firmware supplies its part
+//! through [`SectionStore::firmware_overrides`]; it is the same for reads,
+//! validation and runtime publication and is never persisted, so a field the
+//! user never set follows the firmware that runs.
 //!
 //! Patch semantics: load the persisted overrides, apply all mutations to a
 //! copy (`Set` creates or replaces an override with a value, `None` overrides an
@@ -44,10 +45,10 @@ use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embassy_sync::mutex::Mutex as AsyncMutex;
 use heapless::Vec;
-use rohi_config::ConfigOverrides;
+use rohi_config::{ConfigOverrides, ConfigSection, HasOverrides, materialize};
 
 use crate::field::{ConfigField, EnumDescriptor};
-use crate::schema::{config_fields_valid, enums_valid, name_ok};
+use crate::schema::{config_fields_valid, enums_valid, field_ids_match, name_ok};
 use crate::value::Value;
 use crate::{MAX_CONFIG_FIELDS, MAX_REGISTRY_ENTRIES};
 
@@ -71,30 +72,24 @@ pub enum FieldError {
 
 /// A typed config section exposed through the generic config interface.
 ///
-/// The type is the *effective* configuration the runtime consumes. The firmware
-/// provides its defaults through [`SectionStore::defaults`]; a `Default`
-/// implementation is only a portable baseline for that. The persisted state is
-/// [`Overrides`](Self::Overrides), the fields the user set explicitly.
+/// The type is the *effective* configuration the runtime consumes: `Default`,
+/// the firmware overrides and the user overrides, see [`materialize`]. The
+/// persisted state is [`HasOverrides::Overrides`], the fields the user set
+/// explicitly.
 ///
-/// The module owns the typed struct, the field metadata, the conversion
-/// between [`Value`] and typed fields, and the validation. Field ids are
-/// stable and only ever added.
-pub trait ManagedConfig: Clone {
-    /// Stable numeric id, the address of requests; unique within the
-    /// registry. Only ever added, never reused.
-    const SECTION_ID: u64;
+/// The module owns the typed struct (which derives its persisted overrides with
+/// `#[derive(ConfigOverrides)]`, see [`HasOverrides`]), the field metadata, the
+/// conversion between [`Value`] and typed fields, and the validation. Field ids
+/// are stable and only ever added. The id and version of the section in the
+/// registry are those of the persisted overrides: the hash of the name of the
+/// config type and the `version` of the derive.
+pub trait ManagedConfig: HasOverrides + Clone + Default {
     /// Stable public section name, for example `connectivity`.
     const NAME: &'static str;
-    /// Version of the section schema.
-    const VERSION: u16;
     /// Field metadata, at most [`MAX_CONFIG_FIELDS`] entries.
     const FIELDS: &'static [ConfigField];
     /// The enums the fields refer to, see [`EnumDescriptor`].
     const ENUMS: &'static [EnumDescriptor] = &[];
-
-    /// The persisted explicit overrides, see [`rohi_config::config_overrides`].
-    /// `Overrides::default()` overrides nothing.
-    type Overrides: ConfigOverrides<Self>;
 
     /// The current value of a field, `None` when it has none (an optional
     /// field that is not set). Never called for secret fields: the registry
@@ -135,29 +130,31 @@ pub enum StoreError {
     Internal,
 }
 
-/// Persistence, firmware defaults and runtime effects of one section `C`.
+/// Persistence, firmware overrides and runtime effects of one section `C`.
 ///
-/// [`defaults`](Self::defaults) is the one authoritative base of the section:
-/// the generic layer applies the persisted overrides on top of it for reads,
-/// validation and publication. `store` and `remove` commit atomically and hand
-/// the `effective` value, the one that was validated, to the runtime (the
+/// [`firmware_overrides`](Self::firmware_overrides) is the product policy of
+/// the section: the generic layer materializes `C::default()`, these and the
+/// persisted user overrides for reads, validation and publication. `store` and
+/// `remove` commit atomically and hand the `effective` value, the one that was
+/// validated, to the runtime (the
 /// owner of the store publishes it in the same step), so a cancelled caller
 /// can never leave a stored value unknown to the runtime.
 #[allow(async_fn_in_trait)]
 pub trait SectionStore<C: ManagedConfig> {
-    /// The firmware defaults: the effective configuration without overrides.
-    /// It may differ from the portable `Default` of the type.
-    fn defaults(&self) -> C;
+    /// The overrides compiled into the firmware, all `Default` when the
+    /// product has no policy for the section. Deterministic for the lifetime of
+    /// the running firmware and never persisted.
+    fn firmware_overrides(&self) -> C::Overrides;
 
     /// The persisted overrides, `None` when nothing is persisted.
     async fn load(&self) -> Result<Option<C::Overrides>, StoreError>;
 
-    /// Persists `overrides` and publishes `effective`, the firmware defaults
-    /// with `overrides` applied.
+    /// Persists the user `overrides` and publishes `effective`, the
+    /// materialization of the firmware overrides and `overrides`.
     async fn store(&self, overrides: &C::Overrides, effective: &C) -> Result<(), StoreError>;
 
-    /// Removes the persisted overrides and publishes `effective`, the
-    /// firmware defaults.
+    /// Removes the persisted user overrides and publishes `effective`, the
+    /// materialization of the firmware overrides alone.
     async fn remove(&self, effective: &C) -> Result<(), StoreError>;
 
     /// Whether a change only takes effect after a restart.
@@ -171,8 +168,8 @@ pub trait SectionStore<C: ManagedConfig> {
 pub struct RestartRequired<S>(pub S);
 
 impl<C: ManagedConfig, S: SectionStore<C>> SectionStore<C> for RestartRequired<S> {
-    fn defaults(&self) -> C {
-        self.0.defaults()
+    fn firmware_overrides(&self) -> C::Overrides {
+        self.0.firmware_overrides()
     }
 
     async fn load(&self) -> Result<Option<C::Overrides>, StoreError> {
@@ -269,7 +266,7 @@ pub struct ConfigEntry {
 pub struct SectionValues {
     /// Name, version and current revision.
     pub section: SectionInfo,
-    /// The effective configuration: the defaults with the overrides applied.
+    /// The effective configuration: defaults, firmware and user overrides.
     /// A field without a value (an optional field that is not set) is absent.
     pub entries: Vec<ConfigEntry, MAX_CONFIG_FIELDS>,
     /// The ids of the fields the user overrides explicitly.
@@ -331,7 +328,7 @@ pub trait ConfigSectionOps {
         expected_revision: Option<u32>,
         dry_run: bool,
     ) -> Result<Patched, ConfigError>;
-    /// Removes every override: the effective configuration is the defaults.
+    /// Removes every user override: the firmware overrides and the defaults apply.
     async fn reset(
         &self,
         expected_revision: Option<u32>,
@@ -365,6 +362,10 @@ impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ManagedSection<C, S, M> 
                 config_fields_valid(C::FIELDS, C::ENUMS),
                 "invalid config fields: ids and names must be unique and fit"
             );
+            assert!(
+                field_ids_match(C::FIELDS, <C::Overrides as ConfigOverrides<C>>::FIELD_IDS),
+                "every writable config field needs an override and every override a config field"
+            );
         };
         Self {
             store,
@@ -386,6 +387,10 @@ impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ManagedSection<C, S, M> 
         })
     }
 
+    /// The id of the section: that of its persisted overrides.
+    const SECTION_ID: u64 = <C::Overrides as ConfigSection>::ID.0;
+    const VERSION: u16 = <C::Overrides as ConfigSection>::VERSION;
+
     fn field(id: u32) -> Result<&'static ConfigField, FieldError> {
         C::FIELDS
             .iter()
@@ -393,12 +398,10 @@ impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ManagedSection<C, S, M> 
             .ok_or(FieldError::UnknownField)
     }
 
-    /// The effective configuration: the firmware defaults with `overrides`
-    /// applied. The one place that decides the base.
+    /// The effective configuration: `C::default()`, the firmware overrides and
+    /// the user `overrides`. The one place that decides it.
     fn effective(&self, overrides: &C::Overrides) -> C {
-        let mut config = self.store.defaults();
-        overrides.apply_to(&mut config);
-        config
+        materialize(&self.store.firmware_overrides(), overrides)
     }
 
     fn apply(&self, overrides: &mut C::Overrides, mutation: &Mutation) -> Result<(), FieldError> {
@@ -440,14 +443,14 @@ impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ConfigSectionOps
     for ManagedSection<C, S, M>
 {
     fn id(&self) -> u64 {
-        C::SECTION_ID
+        Self::SECTION_ID
     }
 
     fn info(&self) -> SectionInfo {
         SectionInfo {
-            id: C::SECTION_ID,
+            id: Self::SECTION_ID,
             name: C::NAME,
-            version: u32::from(C::VERSION),
+            version: u32::from(Self::VERSION),
             revision: self.revision(),
         }
     }
@@ -526,7 +529,7 @@ impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ConfigSectionOps
         if !next.is_empty() {
             self.store.store(&next, &effective).await?;
         } else if persisted {
-            // The last override is gone: the section is the defaults again.
+            // The last user override is gone: only the firmware policy applies.
             self.store.remove(&effective).await?;
         }
         Ok(Patched {
@@ -549,7 +552,8 @@ impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ConfigSectionOps
                 restart_required,
             });
         }
-        self.store.remove(&self.store.defaults()).await?;
+        let effective = self.effective(&C::Overrides::default());
+        self.store.remove(&effective).await?;
         Ok(Patched {
             revision: self.bump(),
             restart_required,

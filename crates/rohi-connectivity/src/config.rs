@@ -23,7 +23,7 @@ use minicbor::bytes::ByteSlice;
 use minicbor::decode::{self, Decoder};
 use minicbor::encode::{self, Encoder, Write};
 use minicbor::{CborLen, Decode, Encode};
-use rohi_config::config_overrides;
+use rohi_config::ConfigOverrides;
 
 /// Maximum length of the configured host name, in bytes.
 pub const MAX_HOST_LEN: usize = 64;
@@ -152,34 +152,24 @@ pub struct Endpoint<'a> {
 /// `ConnectivityConfig::default()` is [`disabled`](Self::disabled): no host
 /// and not valid on its own. What is stored are the explicit user overrides
 /// of it, [`ConnectivityOverrides`].
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, ConfigOverrides)]
+#[config(overrides = ConnectivityOverrides, version = 1)]
 pub struct ConnectivityConfig {
     /// Telemetry is only produced and sent when enabled.
+    #[config(id = 1)]
     pub enabled: bool,
     /// Robonomics CPS node identifier (`core.v1.Meta.node_id`).
+    #[config(id = 2)]
     pub node_id: u64,
     /// Seconds between telemetry frames.
+    #[config(id = 3)]
     pub interval_s: u32,
     /// Ingress host.
+    #[config(id = 4)]
     pub host: Host,
     /// Ingress TCP port.
+    #[config(id = 5)]
     pub port: u16,
-}
-
-config_overrides! {
-    /// Persisted overrides of the [`ConnectivityConfig`] section (section
-    /// `ConnectivityConfig`).
-    ///
-    /// Persistent ABI: a CBOR map keyed by the field ids below, which are only
-    /// ever added; a field that is not overridden is absent. The map is pinned
-    /// by a golden test.
-    pub struct ConnectivityOverrides for ConnectivityConfig, version 1 {
-        1 => enabled: bool,
-        2 => node_id: u64,
-        3 => interval_s: u32,
-        4 => host: Host,
-        5 => port: u16,
-    }
 }
 
 impl ConnectivityConfig {
@@ -230,7 +220,7 @@ impl Default for ConnectivityConfig {
 
 #[cfg(test)]
 mod tests {
-    use rohi_config::{ConfigOverrides, ConfigSection, MAX_SECTION_PAYLOAD, Override};
+    use rohi_config::{ConfigSection, MAX_SECTION_PAYLOAD, Override};
 
     use super::*;
 
@@ -282,7 +272,8 @@ mod tests {
 
     #[test]
     fn overrides_apply_to_the_defaults() {
-        let effective = overrides().over_default();
+        let effective =
+            rohi_config::materialize::<ConnectivityConfig>(&Default::default(), &overrides());
         assert_eq!(effective, config_of_overrides());
         // The interval is not overridden: it is the default.
         assert_eq!(effective.interval_s, DEFAULT_INTERVAL_S);

@@ -21,15 +21,12 @@ use core::net::Ipv4Addr;
 use core::str::FromStr;
 
 use heapless::String;
-use rohi_config::ConfigSection;
 use rohi_service::{
     Bounds, ConfigField, EnumDescriptor, EnumVariant, FieldError, ManagedConfig, Unit, Value,
     ValueKind,
 };
 
-use super::config::{
-    AddressMode, DHCP_TIMEOUT_RANGE_MS, Hostname, Ipv4, NetworkConfig, NetworkOverrides,
-};
+use super::config::{AddressMode, DHCP_TIMEOUT_RANGE_MS, Hostname, Ipv4, NetworkConfig};
 
 /// Field ids of the `network` config section. Only ever added.
 pub mod field {
@@ -90,9 +87,7 @@ fn number(value: &Value) -> Result<u32, FieldError> {
 }
 
 impl ManagedConfig for NetworkConfig {
-    const SECTION_ID: u64 = <NetworkOverrides as ConfigSection>::ID.0;
     const NAME: &'static str = "network";
-    const VERSION: u16 = <NetworkOverrides as ConfigSection>::VERSION;
     const FIELDS: &'static [ConfigField] = &[
         ConfigField::new(field::ADDRESS_MODE, "address_mode", ValueKind::Enum)
             .with_enum(ADDRESS_MODE_ENUM),
@@ -111,8 +106,6 @@ impl ManagedConfig for NetworkConfig {
             )),
     ];
     const ENUMS: &'static [EnumDescriptor] = ADDRESS_MODES;
-
-    type Overrides = NetworkOverrides;
 
     fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
         let optional_address = |address: Option<Ipv4>| match address {
@@ -196,6 +189,8 @@ mod tests {
     use rohi_service::MAX_CONFIG_FIELDS;
 
     use super::*;
+    use crate::NetworkOverrides;
+    use rohi_config::ConfigSection;
 
     fn text(value: &str) -> Value {
         Value::text(value).unwrap()
@@ -203,7 +198,7 @@ mod tests {
 
     #[test]
     fn the_reported_version_is_the_stored_one() {
-        assert_eq!(<NetworkConfig as ManagedConfig>::VERSION, 1);
+        assert_eq!(<NetworkOverrides as ConfigSection>::VERSION, 1);
     }
 
     #[test]
@@ -276,9 +271,16 @@ mod tests {
         // Clearing the override of the DNS server restores the default: none.
         let mut overrides = NetworkOverrides::default();
         assert!(overrides.capture(&config, field::DNS));
-        assert_eq!(overrides.over_default().dns, config.dns);
+        assert_eq!(
+            rohi_config::materialize::<NetworkConfig>(&Default::default(), &overrides).dns,
+            config.dns
+        );
         assert!(overrides.clear(field::DNS));
-        assert_eq!(overrides.over_default().read_field(field::DNS), Ok(None));
+        assert_eq!(
+            rohi_config::materialize::<NetworkConfig>(&Default::default(), &overrides)
+                .read_field(field::DNS),
+            Ok(None)
+        );
     }
 
     #[test]
@@ -321,14 +323,22 @@ mod tests {
     #[test]
     fn clearing_an_override_restores_the_default_of_a_required_field() {
         let mut overrides = NetworkOverrides::default();
-        let mut config = overrides.over_default();
+        let mut config = rohi_config::materialize::<NetworkConfig>(&Default::default(), &overrides);
         config
             .set_field(field::DHCP_TIMEOUT, Value::U64(5_000))
             .unwrap();
         overrides.capture(&config, field::DHCP_TIMEOUT);
-        assert_eq!(overrides.over_default().dhcp_timeout_ms, 5_000);
+        assert_eq!(
+            rohi_config::materialize::<NetworkConfig>(&Default::default(), &overrides)
+                .dhcp_timeout_ms,
+            5_000
+        );
         overrides.clear(field::DHCP_TIMEOUT);
-        assert_eq!(overrides.over_default().dhcp_timeout_ms, 20_000);
+        assert_eq!(
+            rohi_config::materialize::<NetworkConfig>(&Default::default(), &overrides)
+                .dhcp_timeout_ms,
+            20_000
+        );
     }
 
     #[test]
@@ -344,7 +354,10 @@ mod tests {
         let mut overrides = NetworkOverrides::default();
         overrides.capture(&config, field::HOSTNAME);
         overrides.clear(field::HOSTNAME);
-        assert_eq!(overrides.over_default().hostname, None);
+        assert_eq!(
+            rohi_config::materialize::<NetworkConfig>(&Default::default(), &overrides).hostname,
+            None
+        );
     }
 
     #[test]

@@ -31,7 +31,7 @@
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::Delay;
 use log::warn;
-use rohi_config::{ConfigOverrides, ConfigSection};
+use rohi_config::{HasOverrides, materialize};
 use rohi_connectivity::{ConnectivityConfig, ConnectivityStatusService};
 use rohi_control::{Controller, Device, DeviceInfo, OpenPolicy};
 use rohi_control_ble::ControlBle;
@@ -53,8 +53,8 @@ use rohi_time_ntp::NtpServersConfig;
 use static_cell::StaticCell;
 
 use crate::config::{ConfigHandle, ServiceError as ConfigError, StorageMaintenance, maintenance};
-use crate::defaults;
 use crate::identity::IdentityHandle;
+use crate::policy;
 use crate::resources::{BleResources, BleRunner, BleStatus, BleTransport, Ip};
 use crate::tasks::RawMutex;
 use crate::tasks::store;
@@ -76,32 +76,29 @@ fn store_error(error: ConfigError) -> StoreError {
     }
 }
 
-/// The section `C` behind the configuration owner task: its firmware defaults
-/// and its persisted overrides.
+/// The section `C` behind the configuration owner task: its firmware overrides
+/// and its persisted user overrides.
 ///
 /// The owner task publishes the committed effective value to the runtime
 /// itself, see [`crate::config`]; cancelling a call can therefore never leave
 /// a stored configuration unknown to the runtime. It builds that value from the
-/// same `defaults` provider, which [`crate::defaults`] lists for every
+/// same firmware overrides provider, which [`crate::policy`] lists for every
 /// section.
-pub struct Stored<C> {
+pub struct Stored<C: HasOverrides> {
     config: ConfigHandle,
-    defaults: fn() -> C,
+    firmware: fn() -> C::Overrides,
 }
 
-impl<C> Stored<C> {
-    /// The section whose firmware defaults are `defaults`.
-    pub const fn new(config: ConfigHandle, defaults: fn() -> C) -> Self {
-        Self { config, defaults }
+impl<C: HasOverrides> Stored<C> {
+    /// The section whose firmware overrides are `firmware`.
+    pub const fn new(config: ConfigHandle, firmware: fn() -> C::Overrides) -> Self {
+        Self { config, firmware }
     }
 }
 
-impl<C: ManagedConfig> SectionStore<C> for Stored<C>
-where
-    C::Overrides: ConfigSection,
-{
-    fn defaults(&self) -> C {
-        (self.defaults)()
+impl<C: ManagedConfig> SectionStore<C> for Stored<C> {
+    fn firmware_overrides(&self) -> C::Overrides {
+        (self.firmware)()
     }
 
     async fn load(&self) -> Result<Option<C::Overrides>, StoreError> {
@@ -109,7 +106,7 @@ where
     }
 
     // The owner task publishes the effective value itself, from the same
-    // defaults, in the commit step.
+    // firmware overrides, in the commit step.
     async fn store(&self, overrides: &C::Overrides, _effective: &C) -> Result<(), StoreError> {
         self.config.set(overrides).await.map_err(store_error)
     }
@@ -267,12 +264,12 @@ pub fn device(
         uptime_ms,
         UrbanConfig {
             sections: (
-                ManagedSection::new(Stored::new(config, defaults::wifi)),
-                ManagedSection::new(Stored::new(config, defaults::network)),
-                ManagedSection::new(RestartRequired(Stored::new(config, defaults::ble))),
-                ManagedSection::new(Stored::new(config, defaults::connectivity)),
-                ManagedSection::new(Stored::new(config, defaults::location)),
-                ManagedSection::new(Stored::new(config, defaults::time)),
+                ManagedSection::new(Stored::new(config, policy::wifi)),
+                ManagedSection::new(Stored::new(config, policy::network)),
+                ManagedSection::new(RestartRequired(Stored::new(config, policy::ble))),
+                ManagedSection::new(Stored::new(config, policy::connectivity)),
+                ManagedSection::new(Stored::new(config, policy::location)),
+                ManagedSection::new(Stored::new(config, policy::time)),
             ),
             storage: maintenance(),
         },
@@ -282,7 +279,7 @@ pub fn device(
                     net::handle(),
                     Delay,
                     net::Probe::new(network),
-                    Stored::new(config, defaults::wifi),
+                    Stored::new(config, policy::wifi),
                 ),
                 network_failed,
             )),
@@ -323,19 +320,22 @@ pub const BLE_CONFIG: rohi_net::BleConfig = rohi_net::BleConfig {
     gatt: GATT,
 };
 
-/// [`BLE_CONFIG`] with the name of the `ble` section: the firmware defaults
-/// with the stored overrides applied. The name is read once, when the
+/// [`BLE_CONFIG`] with the name of the `ble` section: the defaults, the
+/// firmware overrides and the stored overrides. The name is read once, when the
 /// peripheral starts.
 pub async fn ble_config(config: ConfigHandle) -> rohi_net::BleConfig {
-    let mut settings = defaults::ble();
-    match config.get::<BleOverrides>().await {
-        Ok(Some(overrides)) => overrides.apply_to(&mut settings),
-        Ok(None) => {}
-        Err(error) => warn!(
-            "BLE: stored settings unavailable, using the defaults: {}",
-            error
-        ),
-    }
+    let user = match config.get::<BleOverrides>().await {
+        Ok(Some(overrides)) => overrides,
+        Ok(None) => BleOverrides::default(),
+        Err(error) => {
+            warn!(
+                "BLE: stored settings unavailable, using the defaults: {}",
+                error
+            );
+            BleOverrides::default()
+        }
+    };
+    let settings = materialize::<BleSettings>(&policy::ble(), &user);
     BLE_CONFIG.with_settings(&settings)
 }
 

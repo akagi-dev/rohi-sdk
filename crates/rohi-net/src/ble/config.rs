@@ -20,7 +20,7 @@ use core::fmt;
 
 use heapless::String;
 use minicbor::{CborLen, Decode, Encode};
-use rohi_config::config_overrides;
+use rohi_config::ConfigOverrides;
 
 /// Longest advertised name, in bytes: the whole scan response minus its
 /// 2-byte header.
@@ -66,23 +66,13 @@ impl fmt::Debug for BleName {
 /// The name is read when the peripheral starts: a change takes effect after
 /// a restart. What is stored are the explicit user overrides of it,
 /// [`BleOverrides`].
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, ConfigOverrides)]
+#[config(overrides = BleOverrides, version = 1)]
 pub struct BleSettings {
     /// Advertised and GAP device name. `None` keeps the firmware default,
     /// see [`BleConfig::name_prefix`](crate::BleConfig::name_prefix).
+    #[config(id = 1)]
     pub name: Option<BleName>,
-}
-
-config_overrides! {
-    /// Persisted overrides of the [`BleSettings`] section (section
-    /// `BleSettings`).
-    ///
-    /// Persistent ABI: a CBOR map keyed by the field ids below, which are only
-    /// ever added; a field that is not overridden is absent. The map is pinned
-    /// by a golden test.
-    pub struct BleOverrides for BleSettings, version 1 {
-        1 => name: Option<BleName>,
-    }
 }
 
 #[cfg(test)]
@@ -129,7 +119,7 @@ mod tests {
             overrides
         );
         assert_eq!(
-            overrides.over_default(),
+            rohi_config::materialize::<BleSettings>(&Default::default(), &overrides),
             BleSettings {
                 name: BleName::new("urban")
             }
@@ -139,7 +129,10 @@ mod tests {
     #[test]
     fn the_name_has_three_states() {
         let mut overrides = BleOverrides::default();
-        assert_eq!(overrides.over_default().name, None);
+        assert_eq!(
+            rohi_config::materialize::<BleSettings>(&Default::default(), &overrides).name,
+            None
+        );
         // An explicit `None` is stored as null, distinct from not overridden.
         overrides.name = Override::Value(None);
         assert_eq!(encode(&overrides), [0xa1, 0x01, 0xf6]);

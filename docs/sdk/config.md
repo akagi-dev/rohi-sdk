@@ -11,7 +11,7 @@ section, see [Service pipeline](service.md#config-sections).
 ```text
 feature crate
     ↓
-typed section ── overrides (`config_overrides!`) or `#[derive(ConfigSection)]` ── section ID / version
+typed section ── overrides (`#[derive(ConfigOverrides)]`) or `#[derive(ConfigSection)]` ── section ID / version
     ↓
 minicbor payload
     ↓
@@ -30,8 +30,8 @@ Crates:
 
 | Crate                 | Responsibility                                                                    |
 |-----------------------|-----------------------------------------------------------------------------------|
-| `rohi-config`         | `ConfigSection`, `Override`, `config_overrides!`, `ConfigStorage`, `ConfigStore`, CBOR slot format, `MemoryStorage` |
-| `rohi-config-derive`  | `#[derive(ConfigSection)]`, section IDs from struct names                          |
+| `rohi-config`         | `ConfigSection`, `Override`, `ConfigOverrides`, `HasOverrides`, `materialize`, `ConfigStorage`, `ConfigStore`, CBOR slot format, `MemoryStorage` |
+| `rohi-config-derive`  | `#[derive(ConfigSection)]`, `#[derive(ConfigOverrides)]`, section IDs from struct names                         |
 | `rohi-config-esp`     | ESP32-C3 / ESP32-C6 flash backend, bounded flash region, partition lookup          |
 
 Each feature crate owns its own schema (for example `rohi-net` owns `NetworkConfig` and `NetworkOverrides`); `rohi-config` never learns
@@ -58,31 +58,36 @@ let identity = store.get::<Identity>()?; // Option<Identity>
 ```
 
 A section that users configure is split in two. The typed struct (`WifiConfig`) is the **effective** configuration and
-is not persisted; its `Default` is only a portable baseline, the firmware supplies the authoritative defaults. What the
-store holds is the user's explicit **overrides**, declared with the declarative macro `config_overrides!`:
+is not persisted; its `Default` is the portable baseline. What the store holds is the user's explicit **overrides**,
+generated from the struct itself by `#[derive(ConfigOverrides)]`:
 
 ```rust,ignore
-rohi_config::config_overrides! {
-    pub struct WifiOverrides for WifiConfig, version 1 {
-        1 => ssid: WifiSsid,
-        2 => password: Option<WifiPassword>,
-        3 => scan_timeout_ms: u32,
-    }
+#[derive(Clone, ConfigOverrides)]
+#[config(overrides = WifiOverrides, version = 1)]
+pub struct WifiConfig {
+    #[config(id = 1)]
+    pub ssid: Option<WifiSsid>,
+    #[config(id = 2)]
+    pub password: Option<WifiPassword>,
+    #[config(id = 3)]
+    pub scan_timeout_ms: u32,
 }
 
 store.set(&overrides)?;
-let overrides = store.get::<WifiOverrides>()?; // Option<WifiOverrides>
-let mut wifi = firmware_defaults();            // the firmware decides the base
-overrides.apply_to(&mut wifi);                 // effective = firmware defaults + overrides
+let overrides = store.get::<WifiOverrides>()?;          // Option<WifiOverrides>
+let wifi: WifiConfig = materialize(&firmware, &user);   // default + firmware overrides + user overrides
 ```
 
-The macro generates a struct with an `Override<T>` per field (`Override::Default`: the user did not override it,
-`Override::Value(v)`: explicit; nullable fields are `Override<Option<T>>`, so `Value(None)` differs from `Default`),
-derives the CBOR codec as a **map** keyed by the stable field ids, and implements `ConfigSection` (the section ID is the
-hash of the name of the *section type*, `WifiConfig`) and `ConfigOverrides<WifiConfig>` (`apply_to`,
-`is_overridden`, `capture`, `clear`, `is_empty()`, `FIELD_IDS`). The generated code only overlays the explicit overrides
-on a base value; it never decides the base (`over_default()` is a convenience on `C::default()` for tests). A section
-without overrides encodes as the empty map.
+The derive generates, next to the struct and with its visibility, `WifiOverrides` with an `Override<T>` per field, whose
+type is taken from the struct (`Override::Default`: the user did not override it, `Override::Value(v)`: explicit;
+nullable fields are `Override<Option<T>>`, so `Value(None)` differs from `Default`). It derives the CBOR codec as a
+**map** keyed by the stable field ids and implements `ConfigSection` (the section ID is the hash of the name of the
+*config type*, `WifiConfig`, never of `WifiOverrides`), `ConfigOverrides<WifiConfig>` (`apply_to`, `is_overridden`,
+`capture`, `clear`, `is_empty()`, `FIELD_IDS`) and `HasOverrides` for `WifiConfig`, which links the config to its
+overrides type. The generated code only overlays the explicit overrides on a base value; it never decides the base.
+`rohi_config::materialize` is that rule: `C::default()`, then the firmware overrides, then the user overrides. A section
+without overrides encodes as the empty map. Every field needs `#[config(id = N)]`; generic types, tuple structs and
+duplicate ids are compile errors.
 
 `store.remove::<T>()` deletes one section, `store.clear()` all of them. The caller never handles section IDs,
 record framing, CRCs, slots or generations.
@@ -92,8 +97,8 @@ secret handling, section IDs, versioning, the container format and unknown-secti
 and documented once in [Persistent ABI](../reference/persistent-abi.md). The step by step recipe is
 [Add a ConfigSection](../guides/add-config-section.md).
 
-The `#[config(version = N)]` attribute is required for a derived section (`config_overrides!` takes the version in its
-header); `id` and `decode_versioned` are optional, see
+The `#[config(version = N)]` attribute is required for a derived section (`#[config(overrides = Name, version = N)]` on a
+config); `id` is optional (and `decode_versioned` for `ConfigSection`), see
 [Section versioning](../reference/persistent-abi.md#section-versioning).
 
 

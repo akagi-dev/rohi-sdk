@@ -53,24 +53,24 @@ clients; the typed `validate()` stays authoritative. `Value`'s
 ## Config sections
 
 A module implements `ManagedConfig` for its **typed** section, the *effective* configuration, and keeps all knowledge
-about it. The **persisted** part is a generated overrides struct
-(`rohi_config::config_overrides!`, see [Configuration store](config.md)) that holds an `Override<T>` per field:
+about it. The **persisted** part is an overrides struct generated from the config by
+`#[derive(ConfigOverrides)]` (see [Configuration store](config.md)) that holds an `Override<T>` per field:
 `Override::Default` (the user did not override it) or `Override::Value(v)` (explicit; nullable fields use
 `Override<Option<T>>`: `Value(Some(v))` is an explicit value, `Value(None)` an explicit "no value" and `Default` follows
-the firmware). The effective configuration is the **firmware defaults** with the overrides applied. The firmware
-supplies the defaults through `SectionStore::defaults()`; the portable `Default` of the type is only a baseline a
-product can start from.
+the layer below). The effective configuration is `C::default()` (the portable baseline owned by the module), then the
+**firmware overrides** compiled into the product, then the **user overrides**: `rohi_config::materialize`. Firmware
+and user overrides are two values of the same generated type. The firmware supplies its part through
+`SectionStore::firmware_overrides()`; it is never persisted.
 
 ```rust,ignore
-impl ManagedConfig for ConnectivityConfig {          // ConnectivityConfig: Clone
-    const SECTION_ID: u64 = <ConnectivityOverrides as ConfigSection>::ID.0; // the stored section id, the address of requests
+// ConnectivityConfig: Clone + Default + #[derive(ConfigOverrides)]. The id of the section (the address of
+// requests) and its version are those of `ConnectivityOverrides` as a `ConfigSection`.
+impl ManagedConfig for ConnectivityConfig {
     const NAME: &'static str = "connectivity";
-    const VERSION: u16 = 2;
     const FIELDS: &'static [ConfigField] = &[
         ConfigField::new(3, "interval_s", ValueKind::U64).unit(Unit::S).bounds(Bounds::U64(10, 86_400)),
         // ...
     ];
-    type Overrides = ConnectivityOverrides;           // the persisted overrides
     fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> { /* typed -> Value, None = no value */ }
     fn field_is_set(&self, id: u32) -> Result<bool, FieldError> { /* without reading a secret */ }
     fn set_field(&mut self, id: u32, value: Value) -> Result<(), FieldError> { /* Value -> typed */ }
@@ -80,17 +80,17 @@ impl ManagedConfig for ConnectivityConfig {          // ConnectivityConfig: Clon
 ```
 
 The schema only expresses simple constraints (kind, enum variants, numeric range); everything else stays in typed
-`validate`. A `ManagedSection<C, S, M>` adds the generic behaviour on top of a `SectionStore<C>` (`defaults`, `load`,
-`store`, `remove` of the **overrides**, `restart_required`), which the firmware implements over its configuration owner
-task. `defaults()` is the one authoritative base: reads, validation and runtime publication all use
-`defaults()` + overrides, and `store` / `remove` receive that same effective value to publish.
+`validate`. A `ManagedSection<C, S, M>` adds the generic behaviour on top of a `SectionStore<C>` (`firmware_overrides`,
+`load`, `store`, `remove` of the **user overrides**, `restart_required`), which the firmware implements over its
+configuration owner task. Reads, validation and runtime publication all use `materialize(firmware_overrides(),
+user)`, and `store` / `remove` receive that same effective value to publish.
 
 1. **Patch semantics.** A patch is a list of `set` / `none` / `clear` mutations by field id. Load the stored overrides
    (or an empty set) and apply all mutations to a temporary copy: `set` checks kind and range, sets the value on the
    effective copy and **captures** it as an explicit override; `none` sets an **optional** field to no value and
    captures that as an explicit override (a required field answers `NotOptional`); `clear` removes the override of any
-   writable field, required or not, so the field follows the firmware default again. Then validate the **complete
-   effective** config (firmware defaults + candidate overrides). An unconfigured or disabled section is a valid state
+   writable field, required or not, so the field follows the firmware override, or else the default, again. Then validate the **complete
+   effective** config (defaults + firmware overrides + candidate user overrides). An unconfigured or disabled section is a valid state
    (wifi without an SSID is disabled, a location without coordinates, connectivity disabled), so every patch is validated. Then
    store atomically (a result without any override removes the persisted section), publish the same effective config,
    increment the revision. If anything is invalid, nothing is stored. A field that is not mentioned keeps its override
@@ -100,19 +100,19 @@ task. `defaults()` is the one authoritative base: reads, validation and runtime 
 3. **Dry run** validates exactly like a real patch and stores nothing; the revision does not change.
 4. **Revision** (`u32`, RAM only, 0 at boot) increments on every successful write or reset; `expected_revision`
    makes a patch or a reset fail with `CONFLICT` if the section changed meanwhile.
-5. **Reset** removes every override and publishes the firmware defaults.
+5. **Reset** removes every user override and publishes the firmware policy over the defaults; compiled firmware overrides are retained.
 6. `restart_required` tells the client that a change needs a restart.
 
 `GetConfigSection` returns the effective values (`SectionValues::entries`; a field without a value, such as an optional
 field whose default is none, is absent) and `overridden`, the ids of the explicitly overridden fields. A changed
-firmware default reaches every field the user did not override; an explicit override survives it. The three states of
+firmware override or default reaches every field the user did not override; an explicit override survives it. The three states of
 a nullable field stay distinct: `FIELD=value` is an explicit value, `FIELD=none` (`MutationOp::None`) an explicit "no
-value" and `FIELD=null` (`MutationOp::Clear`) follows the current firmware default (`server2` of the `time` section
+value" and `FIELD=null` (`MutationOp::Clear`) removes only the user override and follows the current firmware override or default (`server2` of the `time` section
 defaults to `time.cloudflare.com`: `server2=none` disables the second server, `server2=null` restores that default).
 
 The store must commit **and** publish to the runtime in one step, so a cancelled caller can never leave a stored value
 unknown to the runtime ([Durable mutation](../concepts/async-and-cancellation.md#durable-mutation)). The firmware owner
-publishes the **effective** config (the firmware defaults with the overrides applied, also after a removal).
+publishes the **effective** config (defaults, firmware overrides and user overrides, also after a removal).
 
 A `ConfigRegistry` is a **tuple of sections**; it dispatches by name:
 

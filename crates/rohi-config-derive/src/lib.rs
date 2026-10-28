@@ -16,7 +16,8 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-//! Derive macro for `rohi-config` configuration sections.
+//! Derive macros for `rohi-config` configuration sections: `ConfigSection` for
+//! persistent sections and `ConfigOverrides` (see below) for managed configs.
 //!
 //! ```ignore
 //! #[derive(minicbor::Encode, minicbor::Decode, minicbor::CborLen, ConfigSection)]
@@ -56,6 +57,8 @@ use quote::{format_ident, quote};
 use syn::ext::IdentExt;
 use syn::{DeriveInput, LitInt, LitStr, Path, parse_macro_input, spanned::Spanned};
 
+mod overrides;
+
 const FNV64_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV64_PRIME: u64 = 0x0000_0100_0000_01b3;
 
@@ -77,6 +80,42 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 pub fn derive_config_section(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     match expand(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
+}
+
+/// Derives the persisted overrides of a typed config section.
+///
+/// ```ignore
+/// #[derive(Clone, ConfigOverrides)]
+/// #[config(overrides = WifiOverrides, version = 1)]
+/// pub struct WifiConfig {
+///     #[config(id = 1)]
+///     pub ssid: Option<WifiSsid>,
+///     #[config(id = 3)]
+///     pub scan_timeout_ms: u32,
+/// }
+/// ```
+///
+/// Generated next to the config, with the same visibility: the struct
+/// `WifiOverrides`, which holds an `Override<T>` per field with the type taken
+/// from the config, its CBOR map codec keyed by the field ids, `Default`
+/// (nothing overridden), `ConfigSection` (section ID: the FNV-1a hash of the
+/// name of the *config* type, never of the overrides), `ConfigOverrides<WifiConfig>`
+/// and `HasOverrides for WifiConfig`.
+///
+/// `#[config(...)]` keys on the struct: `overrides = Name` (required),
+/// `version = N` (required, `u16`) and `id = 0x...` (explicit section ID, as for
+/// `ConfigSection`). Every field needs `#[config(id = N)]`, a stable `u32` that
+/// is the CBOR map key and is only ever added. Generic types and structs
+/// without named fields are rejected.
+///
+/// Every field type must be `Clone` and implement the `minicbor` traits.
+#[proc_macro_derive(ConfigOverrides, attributes(config))]
+pub fn derive_config_overrides(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    match overrides::expand(&input) {
         Ok(tokens) => tokens.into(),
         Err(error) => error.to_compile_error().into(),
     }

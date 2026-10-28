@@ -117,6 +117,47 @@ pub(crate) const fn config_fields_valid(fields: &[ConfigField], enums: &[EnumDes
     true
 }
 
+/// Whether the writable schema fields and the overridable fields (`FIELD_IDS`
+/// of the generated overrides) agree: a writable field needs an override to be
+/// persisted, and an override without a schema field could never be changed or
+/// reported. Read-only fields (computed values) have no override.
+pub(crate) const fn field_ids_match(fields: &[ConfigField], ids: &[u32]) -> bool {
+    let mut index = 0;
+    while index < fields.len() {
+        if fields[index].writable && !contains(ids, fields[index].field.id) {
+            return false;
+        }
+        index += 1;
+    }
+    let mut index = 0;
+    while index < ids.len() {
+        let mut found = false;
+        let mut other = 0;
+        while other < fields.len() {
+            if fields[other].field.id == ids[index] {
+                found = true;
+            }
+            other += 1;
+        }
+        if !found {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
+
+const fn contains(ids: &[u32], id: u32) -> bool {
+    let mut index = 0;
+    while index < ids.len() {
+        if ids[index] == id {
+            return true;
+        }
+        index += 1;
+    }
+    false
+}
+
 /// Whether the enums fit the limits of the control protocol and are unique:
 /// ids are non-zero and unique, variant values and names are unique within
 /// their enum and names fit the wire.

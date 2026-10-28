@@ -27,8 +27,8 @@
 //! control plane and Wi-Fi run without wall-clock time. [`ntp_task`] samples
 //! NTP in the background once the network is ready and keeps resynchronizing;
 //! failures are retried with bounded backoff and only recorded in the status.
-//! The servers are the `time` configuration section (the firmware defaults,
-//! the public servers, with the stored overrides) and follow its changes, see
+//! The servers are the `time` configuration section (the public servers,
+//! the firmware overrides and the stored overrides) and follow its changes, see
 //! [`publish`].
 //! Components read the time through [`service`] and never touch NTP.
 //!
@@ -41,7 +41,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::Delay;
 use log::{info, warn};
-use rohi_config::ConfigOverrides;
+use rohi_config::materialize;
 use rohi_hal_esp::EmbassyClock;
 use rohi_net::NetworkHandle;
 use rohi_service::ManagedConfig;
@@ -49,7 +49,7 @@ use rohi_time::{SyncSchedule, Synchronizer, TimeConfig, TimeService, UnixTime};
 use rohi_time_ntp::{NtpConfig, NtpServersConfig, NtpServersOverrides, NtpTimeSource};
 
 use crate::config::ConfigHandle;
-use crate::defaults;
+use crate::policy;
 use crate::resources::Ip;
 use crate::tasks::RawMutex;
 
@@ -95,21 +95,22 @@ pub fn service() -> &'static Time {
 /// Servers the next synchronization rounds use, see [`publish`].
 static UPDATES: Signal<RawMutex, NtpServersConfig> = Signal::new();
 
-/// Hands the effective `NtpServersConfig` (the firmware defaults with the
-/// committed overrides, or the defaults after a removal) to the running
+/// Hands the effective `NtpServersConfig` (the defaults, the firmware
+/// overrides and the committed user overrides) to the running
 /// [`ntp_task`]. Synchronous, so the configuration owner can call it in the
 /// commit step; only the latest value matters.
 pub fn publish(servers: NtpServersConfig) {
     UPDATES.signal(servers);
 }
 
-/// The effective servers, or the firmware defaults when they are unusable.
+/// The effective servers, or the firmware policy over the defaults when they
+/// are unusable.
 fn resolve(servers: NtpServersConfig) -> NtpServersConfig {
     if servers.validate().is_ok() {
         servers
     } else {
-        warn!("Time: NTP servers are invalid, using the firmware defaults");
-        defaults::time()
+        warn!("Time: NTP servers are invalid, using the default servers");
+        materialize(&policy::time(), &NtpServersOverrides::default())
     }
 }
 
@@ -125,13 +126,15 @@ fn resolve(servers: NtpServersConfig) -> NtpServersConfig {
 /// samples at once.
 #[embassy_executor::task]
 pub async fn ntp_task(network: NetworkHandle<'static, Ip>, config: ConfigHandle) {
-    let mut servers = defaults::time();
-    match config.get::<NtpServersOverrides>().await {
-        Ok(Some(overrides)) => overrides.apply_to(&mut servers),
-        Ok(None) => {}
-        Err(error) => warn!("Time: stored NTP servers unreadable: {}", error),
-    }
-    let mut servers = resolve(servers);
+    let user = match config.get::<NtpServersOverrides>().await {
+        Ok(Some(overrides)) => overrides,
+        Ok(None) => NtpServersOverrides::default(),
+        Err(error) => {
+            warn!("Time: stored NTP servers unreadable: {}", error);
+            NtpServersOverrides::default()
+        }
+    };
+    let mut servers = resolve(materialize(&policy::time(), &user));
     loop {
         let published = {
             let hosts = servers.servers();

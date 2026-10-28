@@ -23,7 +23,7 @@ use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embedded_hal_async::delay::DelayNs;
 use heapless::{String, Vec};
-use rohi_config::{ConfigOverrides, Override};
+use rohi_config::Override;
 use rohi_service::{
     ActionDescriptor, ActionError, ActionOutput, EnumDescriptor, EnumVariant, FieldDescriptor,
     Issue, IssueDescriptor, IssueSeverity, MAX_FIELD_VALUE_LEN, MAX_ISSUES, ManagedService,
@@ -336,8 +336,8 @@ impl<'a, M: RawMutex, D: DelayNs + Clone, P: WifiProbe, S: SectionStore<WifiConf
             .unwrap_or_default();
         overrides.ssid = Override::Value(Some(ssid));
         overrides.password = password;
-        let mut config = self.store.defaults();
-        overrides.apply_to(&mut config);
+        let config =
+            rohi_config::materialize::<WifiConfig>(&self.store.firmware_overrides(), &overrides);
         config.validate().map_err(action_error)?;
 
         let unchanged = self.handle.wifi_config().as_ref() == Some(&config);
@@ -548,7 +548,7 @@ mod tests {
     struct Store<'a> {
         handle: WifiHandle<'a, NoopRawMutex>,
         value: RefCell<Option<WifiOverrides>>,
-        defaults: RefCell<WifiConfig>,
+        firmware: RefCell<WifiOverrides>,
         writes: RefCell<usize>,
         fail: bool,
     }
@@ -558,7 +558,7 @@ mod tests {
             Self {
                 handle,
                 value: RefCell::new(None),
-                defaults: RefCell::new(WifiConfig::default()),
+                firmware: RefCell::new(WifiOverrides::default()),
                 writes: RefCell::new(0),
                 fail: false,
             }
@@ -566,8 +566,8 @@ mod tests {
     }
 
     impl SectionStore<WifiConfig> for &Store<'_> {
-        fn defaults(&self) -> WifiConfig {
-            self.defaults.borrow().clone()
+        fn firmware_overrides(&self) -> WifiOverrides {
+            self.firmware.borrow().clone()
         }
 
         async fn load(&self) -> Result<Option<WifiOverrides>, StoreError> {
@@ -839,7 +839,10 @@ mod tests {
             block_on(service.invoke(action::CONNECT, &args, &mut out)),
             Ok(())
         );
-        let stored = store.value.borrow().clone().unwrap().over_default();
+        let stored = rohi_config::materialize::<WifiConfig>(
+            &Default::default(),
+            &store.value.borrow().clone().unwrap(),
+        );
         assert_eq!(
             stored.ssid.as_ref().and_then(WifiSsid::as_str),
             Some("office")
@@ -877,7 +880,7 @@ mod tests {
         // An open network is explicit: it is not the same as following the default.
         assert_eq!(stored.password, Override::Value(None));
         assert_eq!(stored.scan_timeout_ms, Override::Value(5_000));
-        let stored = stored.over_default();
+        let stored = rohi_config::materialize::<WifiConfig>(&Default::default(), &stored);
         assert_eq!(
             stored.ssid.as_ref().and_then(WifiSsid::as_str),
             Some("cafe")
@@ -891,10 +894,11 @@ mod tests {
         let shared = Shared::new();
         let handle = shared.handle();
         let store = Store::new(handle);
-        *store.defaults.borrow_mut() = WifiConfig::new(
-            WifiSsid::from_bytes(b"factory").unwrap(),
-            Some(WifiPassword::from_bytes(b"factory-password").unwrap()),
-        );
+        *store.firmware.borrow_mut() = WifiOverrides {
+            ssid: Override::Value(Some(WifiSsid::from_bytes(b"factory").unwrap())),
+            password: Override::Value(Some(WifiPassword::from_bytes(b"factory-password").unwrap())),
+            ..WifiOverrides::default()
+        };
         let service = WifiService::new(handle, NoDelay, (), &store);
         let mut out = Collect::default();
         assert_eq!(
@@ -910,13 +914,13 @@ mod tests {
     }
 
     #[test]
-    fn connect_applies_the_overrides_on_the_firmware_defaults() {
+    fn connect_applies_the_user_overrides_on_the_firmware_overrides() {
         let shared = Shared::new();
         let handle = shared.handle();
         let store = Store::new(handle);
-        *store.defaults.borrow_mut() = WifiConfig {
-            scan_timeout_ms: 7_000,
-            ..WifiConfig::default()
+        *store.firmware.borrow_mut() = WifiOverrides {
+            scan_timeout_ms: Override::Value(7_000),
+            ..WifiOverrides::default()
         };
         let service = WifiService::new(handle, NoDelay, (), &store);
         let mut out = Collect::default();

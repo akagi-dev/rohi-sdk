@@ -44,9 +44,9 @@
 //! identity. The full factory reset is an explicit, privileged operation of its
 //! own: [`StorageMaintenance::factory_reset`] formats the whole region.
 //!
-//! The published value is always `firmware defaults + stored overrides` (see
-//! [`crate::defaults`]), also for a section that is not stored: a removal
-//! publishes the firmware defaults.
+//! The published value is always `C::default() + firmware overrides + stored
+//! user overrides` (see [`crate::policy`], [`materialize`]), also for a section
+//! that is not stored: a removal publishes the firmware overrides alone.
 //!
 //! Persistent Wi-Fi configuration is *state*: after the owner task committed a
 //! `WifiConfig` or `NetworkConfig` section (and once at boot, from the stored
@@ -75,8 +75,8 @@ use embassy_sync::mutex::Mutex;
 use esp_hal::peripherals::FLASH;
 use log::{error, info, warn};
 use rohi_config::{
-    ConfigError, ConfigOpenState, ConfigOverrides, ConfigSection, ConfigStore, Corruption,
-    EncodeError, MAX_SECTION_PAYLOAD, SectionError, SectionId,
+    ConfigError, ConfigOpenState, ConfigSection, ConfigStore, Corruption, EncodeError,
+    HasOverrides, MAX_SECTION_PAYLOAD, SectionError, SectionId, materialize,
 };
 use rohi_config_esp::esp::{PartitionError, config_storage, esp_storage::FlashStorage};
 use rohi_config_esp::{EspConfigStorage, EspStorageError};
@@ -88,7 +88,7 @@ use rohi_net::{NetworkConfig, NetworkOverrides, WifiConfig, WifiHandle, WifiOver
 use rohi_time_ntp::{NtpServersConfig, NtpServersOverrides};
 
 use crate::tasks::RawMutex;
-use crate::{connectivity, defaults, identity, location, time};
+use crate::{connectivity, identity, location, policy, time};
 
 /// Configuration storage of the Altruist Urban.
 pub type Storage = EspConfigStorage<FlashStorage<'static>>;
@@ -611,7 +611,7 @@ fn publish_committed(wifi: WifiHandle<'static, RawMutex>, id: SectionId, blob: O
         return;
     }
     if id == ConnectivityOverrides::ID {
-        match effective::<ConnectivityOverrides, ConnectivityConfig>(blob, defaults::connectivity) {
+        match effective::<ConnectivityConfig>(blob, policy::connectivity) {
             Ok(config) => connectivity::publish(config),
             Err(error) => warn!(
                 "Connectivity: committed configuration cannot be decoded: {}",
@@ -621,14 +621,14 @@ fn publish_committed(wifi: WifiHandle<'static, RawMutex>, id: SectionId, blob: O
         return;
     }
     if id == NtpServersOverrides::ID {
-        match effective::<NtpServersOverrides, NtpServersConfig>(blob, defaults::time) {
+        match effective::<NtpServersConfig>(blob, policy::time) {
             Ok(config) => time::publish(config),
             Err(error) => warn!("Time: committed NTP servers cannot be decoded: {}", error),
         }
         return;
     }
     if id == LocationOverrides::ID {
-        match effective::<LocationOverrides, LocationConfig>(blob, defaults::location) {
+        match effective::<LocationConfig>(blob, policy::location) {
             Ok(config) => location::shared().publish_configured(Some(&config)),
             Err(error) => warn!(
                 "Location: committed configuration cannot be decoded: {}",
@@ -638,7 +638,7 @@ fn publish_committed(wifi: WifiHandle<'static, RawMutex>, id: SectionId, blob: O
         return;
     }
     if id == WifiOverrides::ID {
-        match effective::<WifiOverrides, WifiConfig>(blob, defaults::wifi) {
+        match effective::<WifiConfig>(blob, policy::wifi) {
             Ok(config) => wifi.set_wifi_config(config.configured()),
             Err(error) => warn!(
                 "Wi-Fi: committed configuration cannot be decoded: {}",
@@ -650,7 +650,7 @@ fn publish_committed(wifi: WifiHandle<'static, RawMutex>, id: SectionId, blob: O
     if id != NetworkOverrides::ID {
         return;
     }
-    match effective::<NetworkOverrides, NetworkConfig>(blob, defaults::network) {
+    match effective::<NetworkConfig>(blob, policy::network) {
         Ok(config) => wifi.set_network_config(config),
         Err(error) => warn!(
             "Network: committed configuration cannot be decoded: {}",
@@ -660,21 +660,21 @@ fn publish_committed(wifi: WifiHandle<'static, RawMutex>, id: SectionId, blob: O
 }
 
 /// The effective configuration of a committed (or removed) section: the
-/// firmware `defaults` with the stored overrides applied. A removed section
-/// (`None`) is the firmware defaults.
-fn effective<O: ConfigOverrides<C>, C>(
+/// defaults, the `firmware` overrides and the stored user overrides. A removed
+/// section (`None`) has no user overrides.
+fn effective<C: HasOverrides + Default>(
     blob: Option<&Blob>,
-    defaults: fn() -> C,
+    firmware: fn() -> C::Overrides,
 ) -> Result<C, SectionError> {
-    let mut config = defaults();
-    if let Some(blob) = blob {
-        O::decode_versioned(blob.version, blob.payload())?.apply_to(&mut config);
-    }
-    Ok(config)
+    let user = match blob {
+        Some(blob) => C::Overrides::decode_versioned(blob.version, blob.payload())?,
+        None => C::Overrides::default(),
+    };
+    Ok(materialize(&firmware(), &user))
 }
 
-/// Publishes the stored location at boot: the firmware defaults with the
-/// stored overrides. Without a position the device does not know where it is
+/// Publishes the stored location at boot: the effective value, built like any
+/// commit. Without a position the device does not know where it is
 /// and telemetry reports that.
 fn publish_stored_location(owner: &mut Owner, wifi: WifiHandle<'static, RawMutex>) {
     let Owner::Ready(store) = owner else {
@@ -683,11 +683,10 @@ fn publish_stored_location(owner: &mut Owner, wifi: WifiHandle<'static, RawMutex
     publish_stored(store, wifi, LocationOverrides::ID, "Location");
 }
 
-/// Publishes the Wi-Fi and network configuration at boot: the firmware
-/// defaults with the stored overrides. Without a configured network the
-/// manager stays `NotConfigured` and attempts nothing; without network
-/// overrides the address comes from DHCP, unless the firmware defaults say
-/// otherwise.
+/// Publishes the Wi-Fi and network configuration at boot: defaults, firmware
+/// overrides and stored overrides. Without a configured network the manager
+/// stays `NotConfigured` and attempts nothing; without network overrides the
+/// address comes from DHCP, unless the firmware overrides say otherwise.
 fn publish_stored_wifi(owner: &mut Owner, wifi: WifiHandle<'static, RawMutex>) {
     let Owner::Ready(store) = owner else {
         warn!("Wi-Fi: configuration unavailable, not configured");
