@@ -24,11 +24,10 @@ use rohi_control_proto::control::{
 };
 use rohi_control_proto::{PROTOCOL_VERSION, decode, encode, limits};
 use rohi_service::{
-    Action, ActionDescriptor, ActionError, ActionOutput, Bounds, ConfigField, EnumDescriptor,
-    EnumVariant, FIRST_SERVICE_ISSUE, FieldDescriptor, FieldError, Issue, IssueDescriptor,
-    IssueSeverity, ManagedConfig, ManagedSection, SectionStore, Service, ServiceHealth,
-    ServiceState, ServiceSummary, Status, StatusWriter, Statuses, StoreError, Unit, Value,
-    ValueKind, WriteError,
+    Action, ActionDescriptor, ActionError, ActionOutput, Bounds, Config, ConfigField,
+    EnumDescriptor, EnumVariant, FIRST_SERVICE_ISSUE, FieldDescriptor, FieldError, Issue,
+    IssueDescriptor, IssueSeverity, Section, SectionStore, Service, ServiceHealth, ServiceState,
+    ServiceSummary, Status, StatusWriter, Statuses, StoreError, Unit, Value, ValueKind, WriteError,
 };
 
 use crate::*;
@@ -60,7 +59,7 @@ impl Default for Net {
     }
 }
 
-impl ManagedConfig for Net {
+impl Config for Net {
     const NAME: &'static str = "net";
     const FIELDS: &'static [ConfigField] = &[
         ConfigField::new(1, "enabled", ValueKind::Bool),
@@ -232,8 +231,8 @@ impl Action for Radio {
     }
 }
 
-type Section<'a> = ManagedSection<Net, &'a Memory, NoopRawMutex>;
-type TestDevice<'a> = Device<(Section<'a>,), Statuses<NoopRawMutex, (&'a Radio,)>, (&'a Radio,)>;
+type NetSection<'a> = Section<Net, &'a Memory, NoopRawMutex>;
+type TestDevice<'a> = Device<(NetSection<'a>,), Statuses<NoopRawMutex, (&'a Radio,)>, (&'a Radio,)>;
 
 const RADIO: u32 = Radio::ID;
 
@@ -250,7 +249,7 @@ fn device<'a>(memory: &'a Memory, radio: &'a Radio) -> TestDevice<'a> {
     Device::new(
         INFO,
         uptime,
-        (ManagedSection::new(memory),),
+        (Section::new(memory),),
         Statuses::new((radio,)),
         (radio,),
     )

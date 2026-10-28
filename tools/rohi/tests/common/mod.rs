@@ -22,11 +22,10 @@ use rohi_location::{LocationOverrides, LocationService, LocationShared};
 use rohi_net::{BleConnectionInfo, BleError, BleState, BleTransport};
 use rohi_net::{WifiConfig, WifiOverrides};
 use rohi_service::{
-    Action, ActionDescriptor, ActionError, ActionOutput, Bounds, ConfigField, EnumDescriptor,
-    EnumVariant, FIRST_SERVICE_ISSUE, FieldDescriptor, FieldError, Issue, IssueDescriptor,
-    IssueSeverity, ManagedConfig, ManagedSection, SectionStore, Service, ServiceHealth,
-    ServiceState, ServiceSummary, Status, StatusWriter, Statuses, StoreError, Unit, Value,
-    ValueKind, WriteError,
+    Action, ActionDescriptor, ActionError, ActionOutput, Bounds, Config, ConfigField,
+    EnumDescriptor, EnumVariant, FIRST_SERVICE_ISSUE, FieldDescriptor, FieldError, Issue,
+    IssueDescriptor, IssueSeverity, Section, SectionStore, Service, ServiceHealth, ServiceState,
+    ServiceSummary, Status, StatusWriter, Statuses, StoreError, Unit, Value, ValueKind, WriteError,
 };
 use tokio::sync::mpsc;
 
@@ -104,7 +103,7 @@ impl<C: Clone + Default> Mem<C> {
     }
 }
 
-impl<C: ManagedConfig + Default> SectionStore<C> for Mem<C::Overrides> {
+impl<C: Config + Default> SectionStore<C> for Mem<C::Overrides> {
     fn firmware_overrides(&self) -> C::Overrides {
         C::Overrides::default()
     }
@@ -152,7 +151,7 @@ impl Default for Gadget {
     }
 }
 
-impl ManagedConfig for Gadget {
+impl Config for Gadget {
     const NAME: &'static str = "gadget";
     const FIELDS: &'static [ConfigField] = &[
         ConfigField::new(1, "label", ValueKind::String),
@@ -414,10 +413,10 @@ impl Default for Bench {
 }
 
 type Sections = (
-    ManagedSection<WifiConfig, Mem<WifiOverrides>, NoopRawMutex>,
-    ManagedSection<ConnectivityConfig, Mem<ConnectivityOverrides>, NoopRawMutex>,
-    ManagedSection<Gadget, Mem<GadgetOverrides>, NoopRawMutex>,
-    ManagedSection<LocationConfig, LocationStore, NoopRawMutex>,
+    Section<WifiConfig, Mem<WifiOverrides>, NoopRawMutex>,
+    Section<ConnectivityConfig, Mem<ConnectivityOverrides>, NoopRawMutex>,
+    Section<Gadget, Mem<GadgetOverrides>, NoopRawMutex>,
+    Section<LocationConfig, LocationStore, NoopRawMutex>,
 );
 
 type StatusServices<'a> = (
@@ -460,10 +459,10 @@ pub fn backend(bench: &Bench) -> Backend<'_> {
         },
         uptime,
         (
-            ManagedSection::new(bench.wifi.clone()),
-            ManagedSection::new(bench.telemetry.clone()),
-            ManagedSection::new(bench.gadget.clone()),
-            ManagedSection::new(bench.location.clone()),
+            Section::new(bench.wifi.clone()),
+            Section::new(bench.telemetry.clone()),
+            Section::new(bench.gadget.clone()),
+            Section::new(bench.location.clone()),
         ),
         Statuses::new((&bench.radio, identity, location)),
         (&bench.radio, identity),

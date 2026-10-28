@@ -20,8 +20,8 @@ use embassy_sync::blocking_mutex::raw::RawMutex;
 use heapless::Vec;
 use rohi_location::LocationSource;
 use rohi_service::{
-    Bounds, ConfigField, FieldDescriptor, FieldError, Issue, IssueDescriptor, IssueSeverity,
-    MAX_ISSUES, ManagedConfig, Service, ServiceHealth, ServiceState, ServiceSummary, Status,
+    Bounds, Config, ConfigField, FieldDescriptor, FieldError, Issue, IssueDescriptor,
+    IssueSeverity, MAX_ISSUES, Service, ServiceHealth, ServiceState, ServiceSummary, Status,
     StatusWriter, Unit, Value, ValueKind, WriteError,
 };
 
@@ -44,7 +44,7 @@ pub mod field {
     pub const PORT: u32 = 5;
 }
 
-impl ManagedConfig for ConnectivityConfig {
+impl Config for ConnectivityConfig {
     const NAME: &'static str = "connectivity";
     const FIELDS: &'static [ConfigField] = &[
         ConfigField::new(field::ENABLED, "enabled", ValueKind::Bool),
@@ -333,9 +333,9 @@ mod tests {
     fn enabling_the_defaults_needs_a_host() {
         let mut config = ConnectivityConfig::default();
         // Disabled is a valid state, with or without a host.
-        assert_eq!(ManagedConfig::validate(&config), Ok(()));
+        assert_eq!(Config::validate(&config), Ok(()));
         config.set_field(field::ENABLED, Value::Bool(true)).unwrap();
-        assert_eq!(ManagedConfig::validate(&config), Err(FieldError::Invalid));
+        assert_eq!(Config::validate(&config), Err(FieldError::Invalid));
         config
             .set_field(field::HOST, text("ingress.example.org"))
             .unwrap();
@@ -344,7 +344,7 @@ mod tests {
         config
             .set_field(field::INTERVAL_S, Value::U64(120))
             .unwrap();
-        assert_eq!(ManagedConfig::validate(&config), Ok(()));
+        assert_eq!(Config::validate(&config), Ok(()));
         assert_eq!(
             config.read_field(field::HOST),
             Ok(Some(text("ingress.example.org")))

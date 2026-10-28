@@ -17,7 +17,7 @@
 
 //! The `wifi` config section in the generic management plane.
 
-use rohi_service::{Bounds, ConfigField, FieldError, ManagedConfig, Unit, Value, ValueKind};
+use rohi_service::{Bounds, Config, ConfigField, FieldError, Unit, Value, ValueKind};
 
 use super::config::{
     BACKOFF_INITIAL_RANGE_MS, BACKOFF_MAX_RANGE_MS, CONNECT_TIMEOUT_RANGE_MS,
@@ -56,7 +56,7 @@ fn number(value: &Value) -> Result<u32, FieldError> {
     }
 }
 
-impl ManagedConfig for WifiConfig {
+impl Config for WifiConfig {
     const NAME: &'static str = "wifi";
     const FIELDS: &'static [ConfigField] = &[
         ConfigField::new(field::SSID, "ssid", ValueKind::String).optional(),
@@ -209,12 +209,12 @@ mod tests {
     fn fields_round_trip_and_the_password_is_optional() {
         let mut config = WifiConfig::default();
         // No network is a valid, unconfigured section.
-        assert_eq!(ManagedConfig::validate(&config), Ok(()));
+        assert_eq!(Config::validate(&config), Ok(()));
         assert!(!config.is_configured());
         assert!(WifiConfig::validate(&config).is_err());
         config.set_field(field::SSID, text("office")).unwrap();
         assert!(config.is_configured());
-        assert_eq!(ManagedConfig::validate(&config), Ok(()));
+        assert_eq!(Config::validate(&config), Ok(()));
         assert_eq!(config.read_field(field::PASSWORD), Ok(None));
 
         config
@@ -284,7 +284,7 @@ mod tests {
         );
         assert_eq!(config.set_none(field::SSID), Ok(()));
         assert_eq!(config.read_field(field::SSID), Ok(None));
-        assert_eq!(ManagedConfig::validate(&config), Ok(()));
+        assert_eq!(Config::validate(&config), Ok(()));
     }
 
     #[test]
@@ -365,11 +365,11 @@ mod tests {
             .set_field(field::BACKOFF_MAX, Value::U64(500))
             .unwrap();
         // Lower than the initial delay of 1 s.
-        assert_eq!(ManagedConfig::validate(&config), Err(FieldError::Invalid));
+        assert_eq!(Config::validate(&config), Err(FieldError::Invalid));
         config
             .set_field(field::BACKOFF_INITIAL, Value::U64(200))
             .unwrap();
-        assert_eq!(ManagedConfig::validate(&config), Ok(()));
+        assert_eq!(Config::validate(&config), Ok(()));
     }
 
     #[test]
@@ -377,7 +377,7 @@ mod tests {
         let mut config = WifiConfig::default();
         config.set_field(field::SSID, text("office")).unwrap();
         config.set_field(field::PASSWORD, text("short")).unwrap();
-        assert_eq!(ManagedConfig::validate(&config), Err(FieldError::Invalid));
+        assert_eq!(Config::validate(&config), Err(FieldError::Invalid));
     }
 
     #[test]

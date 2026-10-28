@@ -22,8 +22,7 @@ use core::str::FromStr;
 
 use heapless::String;
 use rohi_service::{
-    Bounds, ConfigField, EnumDescriptor, EnumVariant, FieldError, ManagedConfig, Unit, Value,
-    ValueKind,
+    Bounds, Config, ConfigField, EnumDescriptor, EnumVariant, FieldError, Unit, Value, ValueKind,
 };
 
 use super::config::{AddressMode, DHCP_TIMEOUT_RANGE_MS, Hostname, Ipv4, NetworkConfig};
@@ -86,7 +85,7 @@ fn number(value: &Value) -> Result<u32, FieldError> {
     }
 }
 
-impl ManagedConfig for NetworkConfig {
+impl Config for NetworkConfig {
     const NAME: &'static str = "network";
     const FIELDS: &'static [ConfigField] = &[
         ConfigField::new(field::ADDRESS_MODE, "address_mode", ValueKind::Enum)
@@ -223,7 +222,7 @@ mod tests {
     #[test]
     fn the_defaults_are_dhcp_without_a_static_address() {
         let config = NetworkConfig::default();
-        assert_eq!(ManagedConfig::validate(&config), Ok(()));
+        assert_eq!(Config::validate(&config), Ok(()));
         let read = |id| config.read_field(id).unwrap();
         assert_eq!(
             read(field::ADDRESS_MODE),
@@ -248,7 +247,7 @@ mod tests {
             .set_field(field::ADDRESS_MODE, Value::Enum(address_mode::STATIC))
             .unwrap();
         // Static mode without an address is incomplete.
-        assert_eq!(ManagedConfig::validate(&config), Err(FieldError::Invalid));
+        assert_eq!(Config::validate(&config), Err(FieldError::Invalid));
 
         config.set_field(field::IP, text("192.168.1.50")).unwrap();
         config.set_field(field::PREFIX_LEN, Value::U64(24)).unwrap();
@@ -256,7 +255,7 @@ mod tests {
             .set_field(field::GATEWAY, text("192.168.1.1"))
             .unwrap();
         config.set_field(field::DNS, text("1.1.1.1")).unwrap();
-        assert_eq!(ManagedConfig::validate(&config), Ok(()));
+        assert_eq!(Config::validate(&config), Ok(()));
         assert_eq!(config.read_field(field::IP), Ok(Some(text("192.168.1.50"))));
         assert_eq!(
             config.read_field(field::PREFIX_LEN),
@@ -266,7 +265,7 @@ mod tests {
 
         // A gateway outside the network is rejected by the whole section.
         config.set_field(field::GATEWAY, text("10.0.0.1")).unwrap();
-        assert_eq!(ManagedConfig::validate(&config), Err(FieldError::Invalid));
+        assert_eq!(Config::validate(&config), Err(FieldError::Invalid));
 
         // Clearing the override of the DNS server restores the default: none.
         let mut overrides = NetworkOverrides::default();

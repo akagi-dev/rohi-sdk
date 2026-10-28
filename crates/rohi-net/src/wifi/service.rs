@@ -506,7 +506,7 @@ mod tests {
 
     use embassy_futures::block_on;
     use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-    use rohi_service::{MAX_FIELDS, ManagedSection, SectionStore, StoreError};
+    use rohi_service::{MAX_FIELDS, Section, SectionStore, StoreError};
 
     use super::*;
     use crate::WifiOverrides;
@@ -597,10 +597,8 @@ mod tests {
         }
     }
 
-    fn section<'a>(
-        store: &'a Store<'a>,
-    ) -> ManagedSection<WifiConfig, &'a Store<'a>, NoopRawMutex> {
-        ManagedSection::new(store)
+    fn section<'a>(store: &'a Store<'a>) -> Section<WifiConfig, &'a Store<'a>, NoopRawMutex> {
+        Section::new(store)
     }
 
     #[derive(Default)]
@@ -629,13 +627,8 @@ mod tests {
     }
 
     type Shared = WifiShared<NoopRawMutex>;
-    type Service<'a, P> = WifiService<
-        'a,
-        NoopRawMutex,
-        NoDelay,
-        P,
-        ManagedSection<WifiConfig, &'a Store<'a>, NoopRawMutex>,
-    >;
+    type Service<'a, P> =
+        WifiService<'a, NoopRawMutex, NoDelay, P, Section<WifiConfig, &'a Store<'a>, NoopRawMutex>>;
 
     fn text(value: &str) -> Value {
         Value::text(value).unwrap()

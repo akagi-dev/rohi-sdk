@@ -17,7 +17,7 @@
 //! The persistent `location` section and its generic config interface.
 
 use rohi_config::ConfigOverrides;
-use rohi_service::{Bounds, ConfigField, FieldError, ManagedConfig, Unit, Value, ValueKind};
+use rohi_service::{Bounds, Config, ConfigField, FieldError, Unit, Value, ValueKind};
 
 use crate::{Location, LocationSourceKind};
 
@@ -95,7 +95,7 @@ impl LocationConfig {
     }
 }
 
-impl ManagedConfig for LocationConfig {
+impl Config for LocationConfig {
     const NAME: &'static str = "location";
     const FIELDS: &'static [ConfigField] = &[
         ConfigField::new(field::LATITUDE, "latitude", ValueKind::F32)

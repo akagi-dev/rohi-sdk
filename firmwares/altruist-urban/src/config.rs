@@ -84,7 +84,7 @@ use rohi_config_esp::esp::{PartitionError, config_storage, esp_storage::FlashSto
 use rohi_config_esp::{EspConfigStorage, EspStorageError};
 
 use rohi_service::{
-    ConfigError as RegistryError, ConfigRegistry, FactoryReset, ManagedConfig, Mutation, Patched,
+    Config, ConfigError as RegistryError, ConfigRegistry, FactoryReset, Mutation, Patched,
     SectionInfo, SectionSchema, SectionValues,
 };
 
@@ -706,7 +706,7 @@ fn publish_managed<B: Binding>(runtime: &ConfigRuntime, blob: Option<&Blob>, boo
         Err(error) => {
             warn!(
                 "{}: stored configuration cannot be decoded: {}",
-                <B::Config as ManagedConfig>::NAME,
+                <B::Config as Config>::NAME,
                 error
             );
             if boot {
@@ -743,7 +743,7 @@ fn boot_managed<B: Binding>(store: &mut ConfigStore<Storage>, runtime: &ConfigRu
         Err(error) => {
             warn!(
                 "{}: configuration unreadable, using the firmware policy: {}",
-                <B::Config as ManagedConfig>::NAME,
+                <B::Config as Config>::NAME,
                 error
             );
             publish_managed::<B>(runtime, None, true);
@@ -790,11 +790,8 @@ crate::firmware_configs! {
 
 /// The `wifi` section of [`ConfigSections`], which the `wifi` service changes
 /// through the same transaction as a client's config patch.
-pub type WifiSection = ::rohi_service::ManagedSection<
-    ::rohi_net::WifiConfig,
-    crate::bindings::Stored<WifiBinding>,
-    RawMutex,
->;
+pub type WifiSection =
+    ::rohi_service::Section<::rohi_net::WifiConfig, crate::bindings::Stored<WifiBinding>, RawMutex>;
 
 /// The `wifi` section among `sections`. A change of the order of the bindings
 /// is a type error here.

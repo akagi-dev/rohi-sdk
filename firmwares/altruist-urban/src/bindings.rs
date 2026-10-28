@@ -45,7 +45,7 @@ use rohi_connectivity::ConnectivityConfig;
 use rohi_identity::Identity;
 use rohi_location::LocationConfig;
 use rohi_net::{BleSettings, NetworkConfig, WifiConfig, WifiHandle};
-use rohi_service::{ManagedConfig, SectionStore, StoreError};
+use rohi_service::{Config, SectionStore, StoreError};
 use rohi_time_ntp::NtpServersConfig;
 
 use crate::config::{ConfigHandle, ServiceError};
@@ -69,7 +69,7 @@ impl ConfigRuntime {
 /// The firmware side of a managed config section.
 pub trait Binding {
     /// The effective section.
-    type Config: ManagedConfig;
+    type Config: Config;
 
     /// Whether a change only takes effect after a restart. Such a section is
     /// published once, at boot; a later commit only persists it.
@@ -92,7 +92,7 @@ pub trait Binding {
     fn publish(runtime: &ConfigRuntime, effective: &Self::Config);
 }
 
-/// A persisted section the firmware keeps for itself: not a [`ManagedConfig`],
+/// A persisted section the firmware keeps for itself: not a [`Config`],
 /// no overrides, not visible to clients.
 pub trait PrivateBinding {
     /// The stored section.
@@ -307,7 +307,7 @@ macro_rules! firmware_configs {
         /// The managed config sections of the device.
         pub type ConfigSections = (
             $(
-                ::rohi_service::ManagedSection<
+                ::rohi_service::Section<
                     <$managed as $crate::bindings::Binding>::Config,
                     $crate::bindings::Stored<$managed>,
                     $crate::tasks::RawMutex,
@@ -317,7 +317,7 @@ macro_rules! firmware_configs {
 
         /// The managed config sections of the device over `config`.
         pub fn config_sections(config: ConfigHandle) -> ConfigSections {
-            ($(::rohi_service::ManagedSection::new($crate::bindings::Stored::<$managed>::new(config)),)+)
+            ($(::rohi_service::Section::new($crate::bindings::Stored::<$managed>::new(config)),)+)
         }
 
         const _: () = assert!(

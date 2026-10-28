@@ -18,8 +18,8 @@ use embassy_futures::block_on;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use rohi_config::{ConfigOverrides, ConfigSection, Override};
 use rohi_service::{
-    Bounds, ConfigField, FieldError, ManagedConfig, ServiceState, Status, StatusRegistry, Statuses,
-    Unit, Value,
+    Bounds, Config, ConfigField, FieldError, ServiceState, Status, StatusRegistry, Statuses, Unit,
+    Value,
 };
 
 use crate::*;
@@ -124,7 +124,7 @@ fn validation_rejects_what_is_not_a_position() {
         },
     ] {
         assert!(!bad.is_valid(), "{bad:?}");
-        assert_eq!(ManagedConfig::validate(&bad), Err(FieldError::Invalid));
+        assert_eq!(Config::validate(&bad), Err(FieldError::Invalid));
     }
     // The poles and the antimeridian are valid.
     let edge = LocationConfig {
@@ -142,13 +142,13 @@ fn a_patch_needs_both_coordinates() {
     section
         .set_field(field::HEIGHT_M, Value::F32(10.0))
         .unwrap();
-    assert_eq!(ManagedConfig::validate(&section), Err(FieldError::Invalid));
+    assert_eq!(Config::validate(&section), Err(FieldError::Invalid));
     section.set_field(field::LATITUDE, Value::F32(1.5)).unwrap();
-    assert_eq!(ManagedConfig::validate(&section), Err(FieldError::Invalid));
+    assert_eq!(Config::validate(&section), Err(FieldError::Invalid));
     section
         .set_field(field::LONGITUDE, Value::F32(2.5))
         .unwrap();
-    assert_eq!(ManagedConfig::validate(&section), Ok(()));
+    assert_eq!(Config::validate(&section), Ok(()));
     assert_eq!(
         section.read_field(field::LATITUDE),
         Ok(Some(Value::F32(1.5)))
@@ -181,16 +181,16 @@ fn the_default_is_no_position_and_reads_as_unset() {
 fn an_unconfigured_section_is_valid_but_half_a_position_is_not() {
     let mut section = LocationConfig::default();
     assert!(section.is_unset());
-    assert_eq!(ManagedConfig::validate(&section), Ok(()));
+    assert_eq!(Config::validate(&section), Ok(()));
     section
         .set_field(field::LATITUDE, Value::F32(52.5))
         .unwrap();
     assert!(!section.is_unset());
-    assert_eq!(ManagedConfig::validate(&section), Err(FieldError::Invalid));
+    assert_eq!(Config::validate(&section), Err(FieldError::Invalid));
     section
         .set_field(field::LONGITUDE, Value::F32(13.4))
         .unwrap();
-    assert_eq!(ManagedConfig::validate(&section), Ok(()));
+    assert_eq!(Config::validate(&section), Ok(()));
 }
 
 #[test]

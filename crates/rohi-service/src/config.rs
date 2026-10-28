@@ -16,9 +16,9 @@
 //
 //! Typed configuration sections behind a generic, schema-driven interface.
 //!
-//! A module implements [`ManagedConfig`] for its typed section and a
+//! A module implements [`Config`] for its typed section and a
 //! [`SectionStore`] that persists its overrides and applies runtime effects.
-//! A [`ManagedSection`] ties both together and implements the generic
+//! A [`Section`] ties both together and implements the generic
 //! operations; a tuple of sections is a [`ConfigRegistry`].
 //!
 //! The effective configuration is `C::default()`, plus the firmware overrides
@@ -83,7 +83,7 @@ pub enum FieldError {
 /// are stable and only ever added. The id and version of the section in the
 /// registry are those of the persisted overrides: the hash of the name of the
 /// config type and the `version` of the derive.
-pub trait ManagedConfig: HasOverrides + Clone + Default {
+pub trait Config: HasOverrides + Clone + Default {
     /// Stable public section name, for example `connectivity`.
     const NAME: &'static str;
     /// Field metadata, at most [`MAX_CONFIG_FIELDS`] entries.
@@ -140,7 +140,7 @@ pub enum StoreError {
 /// owner of the store publishes it in the same step), so a cancelled caller
 /// can never leave a stored value unknown to the runtime.
 #[allow(async_fn_in_trait)]
-pub trait SectionStore<C: ManagedConfig> {
+pub trait SectionStore<C: Config> {
     /// The overrides compiled into the firmware, all `Default` when the
     /// product has no policy for the section. Deterministic for the lifetime of
     /// the running firmware and never persisted.
@@ -167,7 +167,7 @@ pub trait SectionStore<C: ManagedConfig> {
 /// change, a reset included, takes effect only after a restart.
 pub struct RestartRequired<S>(pub S);
 
-impl<C: ManagedConfig, S: SectionStore<C>> SectionStore<C> for RestartRequired<S> {
+impl<C: Config, S: SectionStore<C>> SectionStore<C> for RestartRequired<S> {
     fn firmware_overrides(&self) -> C::Overrides {
         self.0.firmware_overrides()
     }
@@ -340,7 +340,7 @@ pub trait ConfigSectionOps {
 ///
 /// The revision lives in RAM: it starts at 0 at boot and is meant for
 /// optimistic concurrency within one boot.
-pub struct ManagedSection<C, S, M: RawMutex> {
+pub struct Section<C, S, M: RawMutex> {
     store: S,
     revision: Mutex<M, Cell<u32>>,
     // Serializes transactions on the store.
@@ -348,7 +348,7 @@ pub struct ManagedSection<C, S, M: RawMutex> {
     _config: PhantomData<fn() -> C>,
 }
 
-impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ManagedSection<C, S, M> {
+impl<C: Config, S: SectionStore<C>, M: RawMutex> Section<C, S, M> {
     /// A section persisted through `store`.
     pub const fn new(store: S) -> Self {
         const {
@@ -484,9 +484,7 @@ impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ManagedSection<C, S, M> 
     }
 }
 
-impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ConfigSectionOps
-    for ManagedSection<C, S, M>
-{
+impl<C: Config, S: SectionStore<C>, M: RawMutex> ConfigSectionOps for Section<C, S, M> {
     fn id(&self) -> u64 {
         Self::SECTION_ID
     }
@@ -593,16 +591,14 @@ impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ConfigSectionOps
 /// persisted and published, and the revision is incremented. A service never
 /// reads and writes the store on its own, which would lose a concurrent change.
 #[allow(async_fn_in_trait)]
-pub trait ConfigUpdate<C: ManagedConfig> {
+pub trait ConfigUpdate<C: Config> {
     /// Applies `change` to the persisted user overrides. Nothing is changed
     /// when the effective result is invalid.
     async fn update<F: FnOnce(&mut C::Overrides)>(&self, change: F)
     -> Result<Patched, ConfigError>;
 }
 
-impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ConfigUpdate<C>
-    for ManagedSection<C, S, M>
-{
+impl<C: Config, S: SectionStore<C>, M: RawMutex> ConfigUpdate<C> for Section<C, S, M> {
     async fn update<F: FnOnce(&mut C::Overrides)>(
         &self,
         change: F,
@@ -616,7 +612,7 @@ impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ConfigUpdate<C>
     }
 }
 
-impl<C: ManagedConfig, T: ConfigUpdate<C>> ConfigUpdate<C> for &T {
+impl<C: Config, T: ConfigUpdate<C>> ConfigUpdate<C> for &T {
     async fn update<F: FnOnce(&mut C::Overrides)>(
         &self,
         change: F,

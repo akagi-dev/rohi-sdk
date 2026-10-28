@@ -16,7 +16,7 @@
 //
 //! The `ble` config section in the generic management plane.
 
-use rohi_service::{ConfigField, FieldError, ManagedConfig, Value, ValueKind};
+use rohi_service::{Config, ConfigField, FieldError, Value, ValueKind};
 
 use super::config::{BleName, BleSettings};
 
@@ -26,7 +26,7 @@ pub mod field {
     pub const NAME: u32 = 1;
 }
 
-impl ManagedConfig for BleSettings {
+impl Config for BleSettings {
     const NAME: &'static str = "ble";
     const FIELDS: &'static [ConfigField] =
         &[ConfigField::new(field::NAME, "name", ValueKind::String).optional()];
@@ -103,7 +103,7 @@ mod tests {
         assert_eq!(settings.read_field(field::NAME), Ok(None));
         settings.set_field(field::NAME, text("urban")).unwrap();
         assert_eq!(settings.read_field(field::NAME), Ok(Some(text("urban"))));
-        assert_eq!(ManagedConfig::validate(&settings), Ok(()));
+        assert_eq!(Config::validate(&settings), Ok(()));
         let mut overrides = BleOverrides::default();
         assert!(overrides.capture(&settings, field::NAME));
         assert_eq!(

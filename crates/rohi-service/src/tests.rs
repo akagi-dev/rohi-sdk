@@ -72,7 +72,7 @@ const MODES: &[EnumDescriptor] = &[EnumDescriptor::new(
     &[EnumVariant::new(0, "fast"), EnumVariant::new(1, "slow")],
 )];
 
-impl ManagedConfig for Demo {
+impl Config for Demo {
     const NAME: &'static str = "demo";
     const FIELDS: &'static [ConfigField] = DEMO_FIELDS;
     const ENUMS: &'static [EnumDescriptor] = MODES;
@@ -202,8 +202,8 @@ fn clear(id: u32) -> Mutation {
     }
 }
 
-fn section(store: &MemoryStore) -> ManagedSection<Demo, &MemoryStore, NoopRawMutex> {
-    ManagedSection::new(store)
+fn section(store: &MemoryStore) -> Section<Demo, &MemoryStore, NoopRawMutex> {
+    Section::new(store)
 }
 
 fn text(value: &str) -> Value {
@@ -498,7 +498,7 @@ fn get_reports_the_effective_values_and_redacts_secrets() {
     assert_eq!(values.overridden.as_slice(), [3]);
 }
 
-fn interval(section: &ManagedSection<Demo, &MemoryStore, NoopRawMutex>) -> Option<EntryState> {
+fn interval(section: &Section<Demo, &MemoryStore, NoopRawMutex>) -> Option<EntryState> {
     block_on(section.get())
         .unwrap()
         .entries
@@ -782,7 +782,7 @@ fn a_tuple_of_sections_is_a_registry() {
         }
     }
     // A second section type with another name.
-    impl ManagedConfig for Other {
+    impl Config for Other {
         const NAME: &'static str = "other";
         const FIELDS: &'static [ConfigField] = DEMO_FIELDS;
         const ENUMS: &'static [EnumDescriptor] = MODES;
@@ -833,7 +833,7 @@ fn a_tuple_of_sections_is_a_registry() {
 
     let registry = (
         section(&a),
-        ManagedSection::<Other, _, NoopRawMutex>::new(&other_store),
+        Section::<Other, _, NoopRawMutex>::new(&other_store),
     );
     assert_eq!(registry.section_count(), 2);
     assert_eq!(registry.section_info(0).unwrap().name, "demo");
@@ -1251,9 +1251,9 @@ fn enum_values_are_checked_against_the_enum_of_the_field() {
 #[test]
 fn a_restart_only_store_reports_it_for_every_change_and_factory_reset() {
     let store = MemoryStore::default();
-    let registry = (ManagedSection::<Demo, _, NoopRawMutex>::new(
-        RestartRequired(&store),
-    ),);
+    let registry = (Section::<Demo, _, NoopRawMutex>::new(RestartRequired(
+        &store,
+    )),);
 
     let patched = block_on(registry.patch(1, &[set(3, text("a.io"))], None, false)).unwrap();
     assert!(patched.restart_required);
@@ -1460,7 +1460,7 @@ impl Default for Vault {
     }
 }
 
-impl ManagedConfig for Vault {
+impl Config for Vault {
     const NAME: &'static str = "vault";
     const FIELDS: &'static [ConfigField] = &[
         ConfigField::new(1, "label", ValueKind::String),
@@ -1522,7 +1522,7 @@ impl SectionStore<Vault> for &VaultStore {
 #[test]
 fn reading_a_section_never_reads_a_secret() {
     let store = VaultStore::default();
-    let section = ManagedSection::<Vault, _, NoopRawMutex>::new(&store);
+    let section = Section::<Vault, _, NoopRawMutex>::new(&store);
 
     // A secret that is set is reported as redacted.
     *store.0.borrow_mut() = Some(VaultOverrides {
@@ -1547,7 +1547,7 @@ fn reading_a_section_never_reads_a_secret() {
 #[test]
 fn a_patch_never_reads_a_secret_either() {
     let store = VaultStore::default();
-    let section = ManagedSection::<Vault, _, NoopRawMutex>::new(&store);
+    let section = Section::<Vault, _, NoopRawMutex>::new(&store);
     block_on(section.patch(&[set(2, text("hunter2"))], None, false)).unwrap();
     block_on(section.patch(&[clear(2)], None, false)).unwrap();
     assert!(store.0.borrow().is_none());

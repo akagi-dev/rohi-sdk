@@ -24,7 +24,7 @@ use minicbor::decode::{self, Decoder};
 use minicbor::encode::{self, Encoder, Write};
 use minicbor::{CborLen, Decode, Encode};
 use rohi_config::ConfigOverrides;
-use rohi_service::{ConfigField, FieldError, ManagedConfig, Value, ValueKind};
+use rohi_service::{Config, ConfigField, FieldError, Value, ValueKind};
 
 use crate::{DEFAULT_SERVERS, MAX_SERVERS};
 
@@ -173,7 +173,7 @@ impl NtpServersConfig {
     }
 }
 
-impl ManagedConfig for NtpServersConfig {
+impl Config for NtpServersConfig {
     const NAME: &'static str = "time";
     const FIELDS: &'static [ConfigField] = &[
         ConfigField::new(field::SERVER1, "server1", ValueKind::String),
