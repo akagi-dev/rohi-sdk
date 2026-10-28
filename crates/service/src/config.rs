@@ -126,6 +126,40 @@ pub trait Config: HasOverrides + Clone + Default {
     fn validate(&self) -> Result<(), FieldError>;
 }
 
+/// A revision counter that is shared between the commit owner and a section.
+///
+/// It counts completed commits. Where a commit is carried out by a task of its
+/// own, that task owns the counter and advances it in the step that commits,
+/// see [`SectionStore::revision`].
+pub struct Revision<M: RawMutex>(Mutex<M, Cell<u32>>);
+
+impl<M: RawMutex> Revision<M> {
+    /// A counter at 0.
+    pub const fn new() -> Self {
+        Self(Mutex::new(Cell::new(0)))
+    }
+
+    /// The current revision.
+    pub fn get(&self) -> u32 {
+        self.0.lock(Cell::get)
+    }
+
+    /// Advances the revision and returns the new one.
+    pub fn bump(&self) -> u32 {
+        self.0.lock(|revision| {
+            let next = revision.get().wrapping_add(1);
+            revision.set(next);
+            next
+        })
+    }
+}
+
+impl<M: RawMutex> Default for Revision<M> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Failure of the persistence behind a section.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StoreError {
@@ -166,6 +200,25 @@ pub trait SectionStore<C: Config> {
     fn restart_required(&self) -> bool {
         false
     }
+
+    /// The revision of the section, as counted by the owner of the commit.
+    ///
+    /// A store whose commit is carried out by a task of its own, so that it
+    /// completes even when the caller of [`store`](Self::store) or
+    /// [`remove`](Self::remove) is cancelled, must return the revision it
+    /// owns. The owner advances it in the step that commits and publishes, before
+    /// it answers, and only for a commit that succeeded; a factory reset advances
+    /// every section. The section then reads, checks and reports this revision
+    /// and never counts on its own, so a cancelled caller can neither leave a
+    /// stale revision behind a committed value nor advance it for a commit that
+    /// did not happen.
+    ///
+    /// `None` (the default): the store commits within the call, which cannot
+    /// be cancelled halfway, and the section counts its successful writes
+    /// itself.
+    fn revision(&self) -> Option<u32> {
+        None
+    }
 }
 
 /// A [`SectionStore`] whose section is read once, when its owner starts: every
@@ -191,6 +244,10 @@ impl<C: Config, S: SectionStore<C>> SectionStore<C> for RestartRequired<S> {
 
     fn restart_required(&self) -> bool {
         true
+    }
+
+    fn revision(&self) -> Option<u32> {
+        self.0.revision()
     }
 }
 
@@ -353,7 +410,8 @@ pub trait ConfigSectionOps {
 /// optimistic concurrency within one boot.
 pub struct Section<C, S, M: RawMutex> {
     store: S,
-    revision: Mutex<M, Cell<u32>>,
+    // Counts the writes of a store that has no revision of its own.
+    revision: Revision<M>,
     // Serializes transactions on the store.
     transaction: AsyncMutex<M, ()>,
     _config: PhantomData<fn() -> C>,
@@ -380,22 +438,26 @@ impl<C: Config, S: SectionStore<C>, M: RawMutex> Section<C, S, M> {
         };
         Self {
             store,
-            revision: Mutex::new(Cell::new(0)),
+            revision: Revision::new(),
             transaction: AsyncMutex::new(()),
             _config: PhantomData,
         }
     }
 
+    /// The revision: the one of the commit owner when the store has it, so that
+    /// it reflects every completed commit whether or not its caller is still
+    /// waiting.
     fn revision(&self) -> u32 {
-        self.revision.lock(Cell::get)
+        self.store.revision().unwrap_or_else(|| self.revision.get())
     }
 
-    fn bump(&self) -> u32 {
-        self.revision.lock(|revision| {
-            let next = revision.get().wrapping_add(1);
-            revision.set(next);
-            next
-        })
+    /// The revision after a successful write. The owner of the store has
+    /// already advanced its own; otherwise the section counts it.
+    fn committed(&self) -> u32 {
+        match self.store.revision() {
+            Some(revision) => revision,
+            None => self.revision.bump(),
+        }
     }
 
     /// The id of the section: that of its persisted overrides.
@@ -482,7 +544,7 @@ impl<C: Config, S: SectionStore<C>, M: RawMutex> Section<C, S, M> {
             self.store.remove(&effective).await?;
         }
         Ok(Patched {
-            revision: self.bump(),
+            revision: self.committed(),
             restart_required,
         })
     }
@@ -590,7 +652,7 @@ impl<C: Config, S: SectionStore<C>, M: RawMutex> ConfigSectionOps for Section<C,
         let effective = self.effective(&C::Overrides::default());
         self.store.remove(&effective).await?;
         Ok(Patched {
-            revision: self.bump(),
+            revision: self.committed(),
             restart_required,
         })
     }

@@ -63,6 +63,16 @@
 //! publication, so a caller that is cancelled while waiting for the response
 //! cannot leave a stored configuration unknown to the runtime.
 //!
+//! The revision of a managed section is owned by this task as well. It is
+//! advanced in the same synchronous step, after a successful commit or removal
+//! and its publication and before the answer is sent, and for every section
+//! by a factory reset or a recovery format. A failed write does not advance it
+//! and a request that was never queued does not exist for the task, so the
+//! revision counts completed transactions whether or not their caller is still
+//! waiting: a cancelled caller cannot leave a committed value behind an
+//! unchanged revision, and a later patch with the previous `expected_revision`
+//! is a conflict. The sections read it through [`crate::bindings::Stored`].
+//!
 //! Flash erase and programming are synchronous and `esp-storage` runs them in
 //! a critical section with the flash cache disabled, so an update stalls the
 //! whole CPU (each 4 KiB sector erase takes tens of milliseconds), not only
@@ -287,7 +297,9 @@ impl ConfigHandle {
     /// Cancellation: dropping the future before the request is queued leaves
     /// the store unchanged; afterwards the owner task still commits it (and
     /// publishes a `NetworkConfig` to the Wi-Fi runtime), so the operation is
-    /// logically completed and the caller only misses the result.
+    /// logically completed and the caller only misses the result. The owner
+    /// task also advances the revision of the section in that step, so the
+    /// caller does not miss it either.
     pub async fn set<T: ConfigSection>(&self, value: &T) -> Result<(), ServiceError> {
         let mut blob = Blob::empty();
         blob.version = T::VERSION;
@@ -366,7 +378,8 @@ impl StorageMaintenance {
 /// them, which formats the whole region: this also removes the identity and
 /// sections this firmware does not know. The sections are reset afterwards;
 /// with nothing left to remove this commits nothing and only advances their
-/// revisions. Everything else is delegated to the sections.
+/// revisions (the owner already counted the format for every section). Everything
+/// else is delegated to the sections.
 pub struct StorageConfig<R: 'static> {
     sections: &'static R,
     storage: StorageMaintenance,
@@ -474,6 +487,7 @@ impl Owner {
                     match store.set_raw(id, blob.version, blob.payload()) {
                         Ok(()) => {
                             publish_section(runtime, id, Some(&blob), false);
+                            bump_revision(id);
                             Outcome::Done
                         }
                         Err(error) => Outcome::Failed(ServiceError::Store(error)),
@@ -482,6 +496,7 @@ impl Owner {
                 Command::Remove(id) => match store.remove_raw(id) {
                     Ok(()) => {
                         publish_section(runtime, id, None, false);
+                        bump_revision(id);
                         Outcome::Done
                     }
                     Err(error) => Outcome::Failed(ServiceError::Store(error)),
@@ -522,6 +537,7 @@ impl Owner {
                 warn!("Configuration: factory reset, region formatted");
                 *self = Self::Ready(store);
                 publish_factory_reset(runtime);
+                bump_all_revisions();
                 Outcome::Done
             }
             Err(failure) => {
@@ -551,6 +567,7 @@ impl Owner {
                         warn!("Configuration: region formatted, previous configuration discarded");
                         *self = Self::Ready(store);
                         publish_factory_reset(runtime);
+                        bump_all_revisions();
                         Outcome::Done
                     }
                     Err(failure) => {
@@ -660,7 +677,7 @@ pub fn maintenance() -> StorageMaintenance {
 }
 
 /// The persisted section of binding `B`: the id of its overrides.
-const fn managed_id<B: Binding>() -> u64 {
+pub(crate) const fn managed_id<B: Binding>() -> u64 {
     <<B::Config as HasOverrides>::Overrides as ConfigSection>::ID.0
 }
 

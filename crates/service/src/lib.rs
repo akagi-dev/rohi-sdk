@@ -71,7 +71,7 @@ pub use action::{
 };
 pub use config::{
     Config, ConfigEntry, ConfigError, ConfigRegistry, ConfigSectionOps, ConfigUpdate, EntryState,
-    FactoryReset, Mutation, MutationOp, Patched, RestartRequired, Section, SectionInfo,
+    FactoryReset, Mutation, MutationOp, Patched, RestartRequired, Revision, Section, SectionInfo,
     SectionSchema, SectionStore, SectionValues, StoreError,
 };
 pub use field::{Bounds, ConfigField, EnumDescriptor, EnumVariant, FieldDescriptor, Unit};
