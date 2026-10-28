@@ -55,13 +55,15 @@ enum Command {
 /// coalesced into the last one.
 struct Desired {
     generation: u32,
-    wifi: Option<WifiConfig>,
+    /// The whole effective configuration: without an SSID no network is
+    /// configured, but the settings (timing) stay meaningful.
+    wifi: WifiConfig,
     network: NetworkConfig,
 }
 
 impl Desired {
     fn link(&self) -> Option<LinkConfig> {
-        self.wifi.clone().map(|wifi| LinkConfig {
+        self.wifi.clone().configured().map(|wifi| LinkConfig {
             wifi,
             network: self.network.clone(),
         })
@@ -98,7 +100,7 @@ impl<M: RawMutex> WifiShared<M> {
         Self {
             desired: BlockingMutex::new(RefCell::new(Desired {
                 generation: 0,
-                wifi: None,
+                wifi: WifiConfig::unconfigured(),
                 network: NetworkConfig::new(),
             })),
             desired_changed: Signal::new(),
@@ -158,8 +160,10 @@ impl<M: RawMutex> WifiHandle<'_, M> {
             .map_err(|_| WifiError::Busy)
     }
 
-    /// Publishes the desired Wi-Fi configuration: `Some` to use a network,
-    /// `None` when no network is configured (forgotten).
+    /// Publishes the desired Wi-Fi configuration, the whole effective section:
+    /// with an SSID it is the network to use, without one no network is
+    /// configured (forgotten) but the settings, such as the scan timeout, stay
+    /// readable with [`wifi_settings`](Self::wifi_settings).
     ///
     /// Synchronous on purpose: there is no `.await`, so a caller that
     /// persisted the configuration cannot be cancelled before the manager
@@ -170,7 +174,7 @@ impl<M: RawMutex> WifiHandle<'_, M> {
     ///
     /// The manager validates the value again. Completion does not mean the
     /// access point was reached; follow [`status`](Self::status) for that.
-    pub fn set_wifi_config(&self, config: Option<WifiConfig>) {
+    pub fn set_wifi_config(&self, config: WifiConfig) {
         self.publish_desired(|desired| desired.wifi = config);
     }
 
@@ -189,8 +193,15 @@ impl<M: RawMutex> WifiHandle<'_, M> {
         self.shared.desired_changed.signal(());
     }
 
-    /// The latest desired Wi-Fi configuration, as published.
+    /// The latest desired Wi-Fi configuration, as published; `None` while no
+    /// network is configured.
     pub fn wifi_config(&self) -> Option<WifiConfig> {
+        self.wifi_settings().configured()
+    }
+
+    /// The latest desired Wi-Fi settings, as published, also without a
+    /// network; the defaults until one is published.
+    pub fn wifi_settings(&self) -> WifiConfig {
         self.shared
             .desired
             .lock(|desired| desired.borrow().wifi.clone())
@@ -213,7 +224,7 @@ impl<M: RawMutex> WifiHandle<'_, M> {
     pub fn is_configured(&self) -> bool {
         self.shared
             .desired
-            .lock(|desired| desired.borrow().wifi.is_some())
+            .lock(|desired| desired.borrow().wifi.is_configured())
     }
 
     /// Drops the current connection and connects again immediately.

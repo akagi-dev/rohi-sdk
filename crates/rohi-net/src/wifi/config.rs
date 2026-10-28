@@ -213,6 +213,14 @@ pub struct WifiConfig {
 
 impl Default for WifiConfig {
     fn default() -> Self {
+        Self::unconfigured()
+    }
+}
+
+impl WifiConfig {
+    /// No network and the default timing: the portable baseline, usable in
+    /// constants.
+    pub const fn unconfigured() -> Self {
         Self {
             ssid: None,
             password: None,
@@ -223,9 +231,7 @@ impl Default for WifiConfig {
             link_refresh_ms: DEFAULT_LINK_REFRESH_MS,
         }
     }
-}
 
-impl WifiConfig {
     /// A configuration for `ssid` and `password` with the default timing.
     pub const fn new(ssid: WifiSsid, password: Option<WifiPassword>) -> Self {
         Self {

@@ -40,7 +40,7 @@ use embassy_sync::signal::Signal;
 use embassy_time::Delay;
 use esp_hal::rng::Rng;
 use log::{info, warn};
-use rohi_config::{Override, materialize};
+use rohi_config::Override;
 use rohi_connectivity::{
     ConnectivityConfig, ConnectivityOverrides, ConnectivityService, ConnectivityShared,
     ConnectivityStatus, Host, HttpTransport, NONCE_LEN, NonceError, NonceSource, ServiceConfig,
@@ -49,11 +49,10 @@ use rohi_hal::runtime::MeasurementHandle;
 use rohi_hal_esp::EmbassyClock;
 use rohi_net::NetworkHandle;
 
-use crate::config::{ConfigHandle, ServiceError};
 use crate::identity::StaticSigner;
 use crate::resources::{CONNECTIVITY_OUTBOX_DEPTH, Ip};
 use crate::tasks::RawMutex;
-use crate::{location, policy, time};
+use crate::{location, time};
 
 static SHARED: ConnectivityShared<RawMutex> = ConnectivityShared::new();
 
@@ -125,22 +124,6 @@ pub fn firmware_overrides() -> ConnectivityOverrides {
     out
 }
 
-/// The effective configuration at start: defaults, the [`firmware_overrides`]
-/// and the stored overrides. `None` when telemetry is disabled or the
-/// configuration is invalid.
-async fn load_config(config: ConfigHandle) -> Option<ConnectivityConfig> {
-    let user = match config.get::<ConnectivityOverrides>().await {
-        Ok(Some(overrides)) => overrides,
-        Ok(None) => ConnectivityOverrides::default(),
-        Err(ServiceError::Unavailable(_)) => ConnectivityOverrides::default(),
-        Err(error) => {
-            warn!("Connectivity: stored configuration unusable: {}", error);
-            ConnectivityOverrides::default()
-        }
-    };
-    effective(materialize(&policy::connectivity(), &user))
-}
-
 /// `None` when `loaded` is disabled or invalid.
 fn effective(loaded: ConnectivityConfig) -> Option<ConnectivityConfig> {
     if !loaded.enabled {
@@ -202,9 +185,10 @@ async fn serve(
 pub async fn connectivity_task(
     network: NetworkHandle<'static, Ip>,
     measurements: MeasurementHandle<'static, RawMutex>,
-    config: ConfigHandle,
 ) {
-    let mut current = load_config(config).await;
+    // The configuration owner publishes the effective configuration at boot,
+    // before this task runs, like after every commit.
+    let mut current = effective(UPDATES.wait().await);
     loop {
         EFFECTIVE.lock(|cell| *cell.borrow_mut() = current.clone());
         let published = match &current {

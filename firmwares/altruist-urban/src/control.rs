@@ -30,31 +30,27 @@
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::Delay;
-use log::warn;
-use rohi_config::{HasOverrides, materialize};
-use rohi_connectivity::{ConnectivityConfig, ConnectivityStatusService};
+use rohi_connectivity::ConnectivityStatusService;
 use rohi_control::{Controller, Device, DeviceInfo, OpenPolicy};
 use rohi_control_ble::ControlBle;
 use rohi_hal::SensorsService;
 use rohi_hal_esp::EmbassyClock;
 use rohi_identity::{Identity, IdentityService, IdentityStore, IdentityStoreError, PublicKey};
-use rohi_location::{LocationConfig, LocationService};
-use rohi_net::{
-    BleOverrides, BleService, BleSettings, NetworkConfig, NetworkHandle, NetworkService,
-    WifiConfig, WifiService,
-};
+use rohi_location::LocationService;
+use rohi_net::{BleService, NetworkHandle, NetworkService, WifiService};
 use rohi_service::{
-    ConfigError as RegistryError, ConfigRegistry, FactoryReset, ManagedConfig, ManagedSection,
-    Mutation, Patched, RestartRequired, SectionInfo, SectionSchema, SectionStore, SectionValues,
-    Startup, StoreError, Tracked,
+    ConfigError as RegistryError, ConfigRegistry, FactoryReset, Mutation, Patched, SectionInfo,
+    SectionSchema, SectionValues, Startup, Tracked,
 };
 use rohi_time::TimeStatusService;
-use rohi_time_ntp::NtpServersConfig;
 use static_cell::StaticCell;
 
-use crate::config::{ConfigHandle, ServiceError as ConfigError, StorageMaintenance, maintenance};
+use crate::bindings::{Stored, WifiBinding, ble_settings};
+use crate::config::{
+    ConfigHandle, ConfigSections, ServiceError as ConfigError, StorageMaintenance, config_sections,
+    maintenance,
+};
 use crate::identity::IdentityHandle;
-use crate::policy;
 use crate::resources::{BleResources, BleRunner, BleStatus, BleTransport, Ip};
 use crate::tasks::RawMutex;
 use crate::tasks::store;
@@ -68,56 +64,6 @@ const FIRMWARE: &str = concat!(env!("CARGO_PKG_NAME"), "-", env!("CARGO_PKG_VERS
 const BOARD: &str = "urban-esp32c3";
 #[cfg(feature = "esp32c6")]
 const BOARD: &str = "urban-esp32c6";
-
-fn store_error(error: ConfigError) -> StoreError {
-    match error {
-        ConfigError::Unavailable(_) => StoreError::Unavailable,
-        _ => StoreError::Internal,
-    }
-}
-
-/// The section `C` behind the configuration owner task: its firmware overrides
-/// and its persisted user overrides.
-///
-/// The owner task publishes the committed effective value to the runtime
-/// itself, see [`crate::config`]; cancelling a call can therefore never leave
-/// a stored configuration unknown to the runtime. It builds that value from the
-/// same firmware overrides provider, which [`crate::policy`] lists for every
-/// section.
-pub struct Stored<C: HasOverrides> {
-    config: ConfigHandle,
-    firmware: fn() -> C::Overrides,
-}
-
-impl<C: HasOverrides> Stored<C> {
-    /// The section whose firmware overrides are `firmware`.
-    pub const fn new(config: ConfigHandle, firmware: fn() -> C::Overrides) -> Self {
-        Self { config, firmware }
-    }
-}
-
-impl<C: ManagedConfig> SectionStore<C> for Stored<C> {
-    fn firmware_overrides(&self) -> C::Overrides {
-        (self.firmware)()
-    }
-
-    async fn load(&self) -> Result<Option<C::Overrides>, StoreError> {
-        self.config.get::<C::Overrides>().await.map_err(store_error)
-    }
-
-    // The owner task publishes the effective value itself, from the same
-    // firmware overrides, in the commit step.
-    async fn store(&self, overrides: &C::Overrides, _effective: &C) -> Result<(), StoreError> {
-        self.config.set(overrides).await.map_err(store_error)
-    }
-
-    async fn remove(&self, _effective: &C) -> Result<(), StoreError> {
-        self.config
-            .remove::<C::Overrides>()
-            .await
-            .map_err(store_error)
-    }
-}
 
 /// The identity section behind the configuration owner task.
 pub struct StoredIdentity(IdentityHandle);
@@ -142,22 +88,6 @@ fn identity_error(error: ConfigError) -> IdentityStoreError {
         _ => IdentityStoreError::Internal,
     }
 }
-
-type Section<C> = ManagedSection<C, Stored<C>, RawMutex>;
-
-/// A section the firmware reads once at start: the BLE peripheral advertises
-/// its name from the configuration it was started with.
-type RestartSection<C> = ManagedSection<C, RestartRequired<Stored<C>>, RawMutex>;
-
-/// The config sections of the device.
-pub type ConfigSections = (
-    Section<WifiConfig>,
-    Section<NetworkConfig>,
-    RestartSection<BleSettings>,
-    Section<ConnectivityConfig>,
-    Section<LocationConfig>,
-    Section<NtpServersConfig>,
-);
 
 /// The config sections of the device plus the factory reset of the storage
 /// behind them.
@@ -225,7 +155,7 @@ impl ConfigRegistry for UrbanConfig {
 /// The services of the device.
 pub type Services = (
     Tracked<
-        Startup<WifiService<'static, RawMutex, Delay, net::Probe, Stored<WifiConfig>>>,
+        Startup<WifiService<'static, RawMutex, Delay, net::Probe, Stored<WifiBinding>>>,
         RawMutex,
     >,
     Tracked<Startup<NetworkService<'static, RawMutex, net::Probe>>, RawMutex>,
@@ -263,14 +193,7 @@ pub fn device(
         },
         uptime_ms,
         UrbanConfig {
-            sections: (
-                ManagedSection::new(Stored::new(config, policy::wifi)),
-                ManagedSection::new(Stored::new(config, policy::network)),
-                ManagedSection::new(RestartRequired(Stored::new(config, policy::ble))),
-                ManagedSection::new(Stored::new(config, policy::connectivity)),
-                ManagedSection::new(Stored::new(config, policy::location)),
-                ManagedSection::new(Stored::new(config, policy::time)),
-            ),
+            sections: config_sections(config),
             storage: maintenance(),
         },
         (
@@ -279,7 +202,7 @@ pub fn device(
                     net::handle(),
                     Delay,
                     net::Probe::new(network),
-                    Stored::new(config, policy::wifi),
+                    Stored::new(config),
                 ),
                 network_failed,
             )),
@@ -320,23 +243,11 @@ pub const BLE_CONFIG: rohi_net::BleConfig = rohi_net::BleConfig {
     gatt: GATT,
 };
 
-/// [`BLE_CONFIG`] with the name of the `ble` section: the defaults, the
-/// firmware overrides and the stored overrides. The name is read once, when the
-/// peripheral starts.
-pub async fn ble_config(config: ConfigHandle) -> rohi_net::BleConfig {
-    let user = match config.get::<BleOverrides>().await {
-        Ok(Some(overrides)) => overrides,
-        Ok(None) => BleOverrides::default(),
-        Err(error) => {
-            warn!(
-                "BLE: stored settings unavailable, using the defaults: {}",
-                error
-            );
-            BleOverrides::default()
-        }
-    };
-    let settings = materialize::<BleSettings>(&policy::ble(), &user);
-    BLE_CONFIG.with_settings(&settings)
+/// [`BLE_CONFIG`] with the name of the `ble` section as the configuration
+/// owner published it at boot: the defaults, the firmware overrides and the
+/// stored overrides. The name is read once, when the peripheral starts.
+pub fn ble_config() -> rohi_net::BleConfig {
+    BLE_CONFIG.with_settings(&ble_settings())
 }
 
 /// Static storage of the BLE peripheral, sized by [`crate::resources`].

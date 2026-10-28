@@ -88,7 +88,7 @@ persistent WifiConfig + NetworkConfig ──► desired link config ──► Wi
 Scan · Reconnect · Disconnect ──► bounded command queue ──► WifiManager
 ```
 
-- `WifiHandle::set_wifi_config(Option<WifiConfig>)` and `WifiHandle::set_network_config(NetworkConfig)` publish the desired configuration. They are **synchronous**: no
+- `WifiHandle::set_wifi_config(WifiConfig)` (the whole effective section: without an SSID no network is configured, yet `wifi_settings()` keeps the timing, so the scan timeout stays effective) and `WifiHandle::set_network_config(NetworkConfig)` publish the desired configuration. They are **synchronous**: no
   `.await`, no queue, never `Busy`. The latest value wins; updates published before the manager ran are coalesced, so
   rapid updates A, B, C converge directly on C instead of causing a connect/disconnect cycle for A and B.
 - `scan()`, `reconnect()` and `disconnect()` are commands in a bounded queue (`WIFI_COMMAND_QUEUE_DEPTH`). They return

@@ -71,7 +71,7 @@ pub type Services = (
 ```
 
 If the runtime must react to a stored section, the configuration owner publishes its effective config in the commit step
-(`config.rs`, `publish_committed`, and once at boot).
+(a `Binding` listed in `firmware_configs!` in `config.rs`; it also runs once at boot and after a factory reset).
 
 ## 5. Tests
 

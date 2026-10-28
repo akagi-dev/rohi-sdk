@@ -54,13 +54,15 @@ compiled into the product, never persisted), plus the user overrides.
    (`get::<UplinkOverrides>()`); the configuration task is the only owner of the store. If the runtime must react to a
    change (as Wi-Fi does), publish the **effective** config (`materialize(&firmware, &user)`, also
    after a removal) as **desired state** from the owner task right after the commit, with no `.await` in between
-   ([Durable mutation](../concepts/async-and-cancellation.md#durable-mutation)). List the section's firmware overrides provider in
-   one place (`policy.rs` of the firmware) and use it for reads, validation and publication alike.
+   ([Durable mutation](../concepts/async-and-cancellation.md#durable-mutation)). Describe the section once as a firmware `Binding`
+   (`bindings.rs`: the firmware overrides and the consumer to publish to) and list it in `firmware_configs!`
+   (`config.rs`); that one list drives the control-plane registration, boot, commit, removal and factory-reset
+   publication, and a restart-required section (`RESTART_REQUIRED`) is published at boot only.
 5. **Expose it to clients** (optional, but this is how users set it): implement `ManagedConfig` for the typed section in
    the same crate (`NAME`, `FIELDS`, `read_field`, `field_is_set`, `set_field`, `set_none` for the optional fields, `validate`;
    see [Service pipeline](../sdk/service.md#config-sections)), implement `SectionStore<UplinkConfig>` (with
-   `firmware_overrides()`) over the configuration handle in the firmware and add `ManagedSection<C, Store<C>, RawMutex>` to the config
-   registry tuple in `control.rs`. The protocol, the client and the `rohi` CLI need **no change**: `rohi config
+   `firmware_overrides()`) over the configuration handle in the firmware (`Stored<YourBinding>`, generated into the config registry by
+   `firmware_configs!`). The protocol, the client and the `rohi` CLI need **no change**: `rohi config
    <section>` and `rohi config <section> FIELD=VALUE` work at once. `FIELD=none` sets an optional field to no
    value explicitly and `FIELD=null` removes the override of any writable field so that it follows the firmware override or default
    again. `read_field` returns `None` for a field without a value (an optional field that is none, or a default that is

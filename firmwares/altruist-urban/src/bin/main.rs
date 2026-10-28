@@ -30,6 +30,7 @@ use esp_hal::timer::timg::TimerGroup;
 use log::{error, info};
 use static_cell::StaticCell;
 
+use altruist_urban::bindings::ConfigRuntime;
 use altruist_urban::config;
 use altruist_urban::connectivity::connectivity_task;
 use altruist_urban::control::{self, BLE_RESOURCES, ble_task, control_task};
@@ -75,10 +76,10 @@ async fn main(spawner: Spawner) -> ! {
     // The configuration task is the single owner of the store; everything else
     // uses the handle. A missing partition (old partition table) or corrupted
     // configuration must not stop the sensors.
-    let config = config::start(spawner, runtime.flash, net::handle());
+    let config = config::start(spawner, runtime.flash, ConfigRuntime::new(net::handle()));
     // Identity is provisioned from the host, never generated; a fresh device
     // simply has none and keeps sensing.
-    let identity = identity::start(config).await;
+    let identity = identity::start(config);
     spawner.spawn(reboot_task().unwrap());
 
     let board = AltruistUrban::new(hardware).expect("board initialization failed");
@@ -100,11 +101,11 @@ async fn main(spawner: Spawner) -> ! {
             // uses it for NTP and the telemetry uplink for HTTP.
             spawner.spawn(net_runner_task(runner).unwrap());
             spawner.spawn(wifi_task(backend).unwrap());
-            spawner.spawn(ntp_task(network, config).unwrap());
+            spawner.spawn(ntp_task(network).unwrap());
             // Telemetry reads snapshots only: it can neither delay nor stop
             // the sensors, whatever the uplink does. It follows configuration
             // changes made over the control link.
-            spawner.spawn(connectivity_task(network, store::handle(), config).unwrap());
+            spawner.spawn(connectivity_task(network, store::handle()).unwrap());
             wifi_configured = net::handle().is_configured();
             ip = Some(network);
             info!(
@@ -115,7 +116,7 @@ async fn main(spawner: Spawner) -> ! {
         Err(error) => error!("Wi-Fi unavailable: {}", error),
     }
 
-    let ble_config = control::ble_config(config).await;
+    let ble_config = control::ble_config();
     match wireless.ble(ble_config, BLE_RESOURCES.init(Default::default())) {
         Ok((transport, runner)) => {
             let device = control::device(config, identity, ip, transport.status());

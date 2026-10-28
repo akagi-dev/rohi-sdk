@@ -31,7 +31,6 @@ use rohi_service::{
     ValueKind, WriteError,
 };
 
-use super::config::DEFAULT_SCAN_TIMEOUT_MS;
 use crate::{WifiConfig, WifiError, WifiHandle, WifiPassword, WifiSecurity, WifiSsid, WifiState};
 
 // SSIDs and MAC addresses are status values and scan results, which are
@@ -303,9 +302,7 @@ impl<'a, M: RawMutex, D: DelayNs + Clone, P: WifiProbe, S: SectionStore<WifiConf
     }
 
     fn scan_timeout_ms(&self) -> u32 {
-        self.handle
-            .wifi_config()
-            .map_or(DEFAULT_SCAN_TIMEOUT_MS, |config| config.scan_timeout_ms)
+        self.handle.wifi_settings().scan_timeout_ms
     }
 
     async fn connect(&self, args: &[(u32, Value)]) -> Result<(), ActionError> {
@@ -584,13 +581,13 @@ mod tests {
         ) -> Result<(), StoreError> {
             *self.writes.borrow_mut() += 1;
             *self.value.borrow_mut() = Some(overrides.clone());
-            self.handle.set_wifi_config(effective.clone().configured());
+            self.handle.set_wifi_config(effective.clone());
             Ok(())
         }
 
         async fn remove(&self, effective: &WifiConfig) -> Result<(), StoreError> {
             *self.value.borrow_mut() = None;
-            self.handle.set_wifi_config(effective.clone().configured());
+            self.handle.set_wifi_config(effective.clone());
             Ok(())
         }
     }
@@ -796,7 +793,7 @@ mod tests {
             &shared,
             ManagerConfig::DEFAULT.with_clock(|| 40_000),
         );
-        handle.set_wifi_config(Some(config()));
+        handle.set_wifi_config(config());
         block_on(manager.step());
         block_on(manager.step());
 
@@ -935,6 +932,25 @@ mod tests {
         assert_eq!(handle.wifi_config().unwrap().scan_timeout_ms, 7_000);
         let stored = store.value.borrow().clone().unwrap();
         assert_eq!(stored.scan_timeout_ms, Override::Default);
+    }
+
+    #[test]
+    fn the_scan_timeout_applies_without_a_configured_network() {
+        let shared = Shared::new();
+        let handle = shared.handle();
+        let store = Store::new(handle);
+        let service = WifiService::new(handle, NoDelay, (), &store);
+        assert_eq!(
+            service.scan_timeout_ms(),
+            WifiConfig::default().scan_timeout_ms
+        );
+        handle.set_wifi_config(WifiConfig {
+            scan_timeout_ms: 7_000,
+            ..WifiConfig::default()
+        });
+        assert!(!handle.is_configured());
+        assert_eq!(handle.wifi_config(), None);
+        assert_eq!(service.scan_timeout_ms(), 7_000);
     }
 
     #[test]

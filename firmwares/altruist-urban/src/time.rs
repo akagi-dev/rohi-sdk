@@ -41,15 +41,13 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::Delay;
 use log::{info, warn};
-use rohi_config::materialize;
 use rohi_hal_esp::EmbassyClock;
 use rohi_net::NetworkHandle;
 use rohi_service::ManagedConfig;
 use rohi_time::{SyncSchedule, Synchronizer, TimeConfig, TimeService, UnixTime};
-use rohi_time_ntp::{NtpConfig, NtpServersConfig, NtpServersOverrides, NtpTimeSource};
+use rohi_time_ntp::{NtpConfig, NtpServersConfig, NtpTimeSource};
 
-use crate::config::ConfigHandle;
-use crate::policy;
+use crate::bindings::{Binding, TimeBinding};
 use crate::resources::Ip;
 use crate::tasks::RawMutex;
 
@@ -110,7 +108,7 @@ fn resolve(servers: NtpServersConfig) -> NtpServersConfig {
         servers
     } else {
         warn!("Time: NTP servers are invalid, using the default servers");
-        materialize(&policy::time(), &NtpServersOverrides::default())
+        TimeBinding::firmware_only()
     }
 }
 
@@ -125,16 +123,9 @@ fn resolve(servers: NtpServersConfig) -> NtpServersConfig {
 /// removal of it restarts the synchronization with the new servers, which
 /// samples at once.
 #[embassy_executor::task]
-pub async fn ntp_task(network: NetworkHandle<'static, Ip>, config: ConfigHandle) {
-    let user = match config.get::<NtpServersOverrides>().await {
-        Ok(Some(overrides)) => overrides,
-        Ok(None) => NtpServersOverrides::default(),
-        Err(error) => {
-            warn!("Time: stored NTP servers unreadable: {}", error);
-            NtpServersOverrides::default()
-        }
-    };
-    let mut servers = resolve(materialize(&policy::time(), &user));
+pub async fn ntp_task(network: NetworkHandle<'static, Ip>) {
+    // Published by the configuration owner at boot, like after every commit.
+    let mut servers = resolve(UPDATES.wait().await);
     loop {
         let published = {
             let hosts = servers.servers();

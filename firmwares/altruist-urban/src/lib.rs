@@ -37,6 +37,8 @@ compile_error!(
     "select an ESP target: enable the `esp32c3` or `esp32c6` feature (use `cargo check-esp32c3` / `cargo check-esp32c6`)"
 );
 
+/// Firmware config bindings: product policy and runtime consumers.
+pub mod bindings;
 /// Persistent configuration service (single owner task and handle).
 pub mod config;
 pub mod connectivity;
@@ -46,8 +48,6 @@ pub mod control;
 pub mod identity;
 pub mod location;
 pub mod net;
-/// The firmware overrides of the config sections.
-pub mod policy;
 /// Deferred device reboot.
 pub mod reboot;
 /// Static resource budget of the wireless stack.
