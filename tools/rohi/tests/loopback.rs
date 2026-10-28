@@ -142,7 +142,7 @@ async fn a_patch_is_stored_atomically_and_secrets_are_never_returned() {
         // Nothing is overridden: the effective values are the defaults.
         let defaults = device.config_get("wifi").await.unwrap();
         assert!(defaults.overridden.is_empty());
-        assert_eq!(entry(&defaults, 1), Some(&EntryState::Value(text(""))));
+        assert_eq!(entry(&defaults, 1), None);
         assert_eq!(entry(&defaults, 2), None);
         assert_eq!(
             entry(&defaults, 3),
@@ -186,7 +186,7 @@ async fn a_patch_is_stored_atomically_and_secrets_are_never_returned() {
     let stored = bench.wifi.value.borrow().clone().unwrap();
     assert_eq!(
         stored.ssid,
-        Override::Value(WifiSsid::from_bytes(b"office").unwrap())
+        Override::Value(Some(WifiSsid::from_bytes(b"office").unwrap()))
     );
     assert_eq!(stored.password, Override::Default);
 }

@@ -334,7 +334,7 @@ impl<'a, M: RawMutex, D: DelayNs + Clone, P: WifiProbe, S: SectionStore<WifiConf
             .await
             .map_err(|_| ActionError::Unavailable)?
             .unwrap_or_default();
-        overrides.ssid = Override::Value(ssid);
+        overrides.ssid = Override::Value(Some(ssid));
         overrides.password = password;
         let mut config = self.store.defaults();
         overrides.apply_to(&mut config);
@@ -840,7 +840,10 @@ mod tests {
             Ok(())
         );
         let stored = store.value.borrow().clone().unwrap().over_default();
-        assert_eq!(stored.ssid.as_str(), Some("office"));
+        assert_eq!(
+            stored.ssid.as_ref().and_then(WifiSsid::as_str),
+            Some("office")
+        );
         assert_eq!(
             stored.password.as_ref().map(WifiPassword::expose_secret),
             Some(&b"hunter2hunter2"[..])
@@ -857,7 +860,7 @@ mod tests {
         let handle = shared.handle();
         let store = Store::new(handle);
         *store.value.borrow_mut() = Some(WifiOverrides {
-            ssid: Override::Value(WifiSsid::from_bytes(b"old").unwrap()),
+            ssid: Override::Value(Some(WifiSsid::from_bytes(b"old").unwrap())),
             password: Override::Value(Some(WifiPassword::from_bytes(b"hunter2hunter2").unwrap())),
             scan_timeout_ms: Override::Value(5_000),
             ..WifiOverrides::default()
@@ -875,7 +878,10 @@ mod tests {
         assert_eq!(stored.password, Override::Value(None));
         assert_eq!(stored.scan_timeout_ms, Override::Value(5_000));
         let stored = stored.over_default();
-        assert_eq!(stored.ssid.as_str(), Some("cafe"));
+        assert_eq!(
+            stored.ssid.as_ref().and_then(WifiSsid::as_str),
+            Some("cafe")
+        );
         assert_eq!(stored.password, None);
         assert_eq!(stored.scan_timeout_ms, 5_000);
     }
@@ -896,7 +902,10 @@ mod tests {
             Ok(())
         );
         let published = handle.wifi_config().unwrap();
-        assert_eq!(published.ssid.as_str(), Some("cafe"));
+        assert_eq!(
+            published.ssid.as_ref().and_then(WifiSsid::as_str),
+            Some("cafe")
+        );
         assert_eq!(published.password, None);
     }
 

@@ -91,7 +91,7 @@ task. `defaults()` is the one authoritative base: reads, validation and runtime 
    captures that as an explicit override (a required field answers `NotOptional`); `clear` removes the override of any
    writable field, required or not, so the field follows the firmware default again. Then validate the **complete
    effective** config (firmware defaults + candidate overrides). An unconfigured or disabled section is a valid state
-   (wifi without an SSID, a location without coordinates, connectivity disabled), so every patch is validated. Then
+   (wifi without an SSID is disabled, a location without coordinates, connectivity disabled), so every patch is validated. Then
    store atomically (a result without any override removes the persisted section), publish the same effective config,
    increment the revision. If anything is invalid, nothing is stored. A field that is not mentioned keeps its override
    or its default. Consequence: fields that belong together are set in one patch (`enabled=true` alone on connectivity

@@ -2144,3 +2144,32 @@ async fn export_diff_and_apply_keep_none_apart_from_clear_and_default() {
         outcome.message()
     );
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn no_ssid_means_wifi_is_disabled_and_ssid_none_disables_it_explicitly() {
+    let bench = Bench::new();
+    // Disabled by default: no network name.
+    let outcome = run(&bench, &["config", "wifi"]).await;
+    assert!(
+        outcome.ok().stdout.contains("ssid             <unset>\n"),
+        "{}",
+        outcome.stdout
+    );
+    run(&bench, &["config", "wifi", "ssid=office"]).await.ok();
+    let outcome = run(&bench, &["config", "wifi", "ssid=none"]).await;
+    assert!(
+        outcome.ok().stdout.contains("ssid             <none>\n"),
+        "{}",
+        outcome.stdout
+    );
+    assert_eq!(
+        bench.wifi.value.borrow().clone().unwrap().ssid,
+        Override::Value(None)
+    );
+    let outcome = run(&bench, &["config", "wifi", "ssid=null"]).await;
+    assert!(
+        outcome.ok().stdout.contains("ssid             <unset>\n"),
+        "{}",
+        outcome.stdout
+    );
+}

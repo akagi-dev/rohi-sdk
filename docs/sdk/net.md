@@ -42,7 +42,7 @@ target; the Wi-Fi station and the IP layer are configured and observed separatel
 | Status | `ssid`, `rssi`, `channel`, `mac`, `reconnects`, `link_uptime`, `heap_size`, `heap_free`, `heap_min_free` (with `heap-stats`) | `ip`, `gateway`, `dns`, `tcp_in_use`, `tcp_capacity`, `udp_in_use`, `udp_capacity` | `state` (`disabled`, `advertising`, `connected`, `error`), `name`, `encrypted`, `authenticated`, `max_payload` |
 | Actions | `scan`, `connect`, `reconnect`, `disconnect` | none | none |
 
-Fields that do not exist now are not reported. A change of the `wifi` or `network` section reconnects. A section is the effective configuration (firmware defaults plus your overrides); without an `ssid` the section is valid but unconfigured and the radio stays idle. Timings default
+Fields that do not exist now are not reported. A change of the `wifi` or `network` section reconnects. A section is the effective configuration (firmware defaults plus your overrides); `ssid` is nullable and `None` is the default: without an `ssid` Wi-Fi is disabled and the radio stays idle, an `ssid` enables it. `ssid=none` disables Wi-Fi explicitly even when the firmware default names a network, `ssid=null` follows the firmware default again. Timings default
 to the former constants. The `wifi` and `network` services share the link: `network` is `running` when the link is up
 and reports `dhcp_failed` as its issue; every other link error is an issue of `wifi`.
 

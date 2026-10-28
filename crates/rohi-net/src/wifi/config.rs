@@ -185,8 +185,9 @@ fn within(value: u32, (min, max): (u32, u32)) -> bool {
 /// password.
 #[derive(Clone, PartialEq, Eq)]
 pub struct WifiConfig {
-    /// Network name.
-    pub ssid: WifiSsid,
+    /// Network name. `None` (the default) disables Wi-Fi; a network name
+    /// enables it.
+    pub ssid: Option<WifiSsid>,
     /// Passphrase, `None` for an open network.
     pub password: Option<WifiPassword>,
     /// Bound of a network scan.
@@ -209,7 +210,7 @@ config_overrides! {
     /// ever added; a field that is not overridden is absent. The map is pinned
     /// by a golden test.
     pub struct WifiOverrides for WifiConfig, version 1 {
-        1 => ssid: WifiSsid,
+        1 => ssid: Option<WifiSsid>,
         2 => password: Option<WifiPassword>,
         3 => scan_timeout_ms: u32,
         4 => connect_timeout_ms: u32,
@@ -221,7 +222,15 @@ config_overrides! {
 
 impl Default for WifiConfig {
     fn default() -> Self {
-        Self::new(WifiSsid::empty(), None)
+        Self {
+            ssid: None,
+            password: None,
+            scan_timeout_ms: DEFAULT_SCAN_TIMEOUT_MS,
+            connect_timeout_ms: DEFAULT_CONNECT_TIMEOUT_MS,
+            backoff_initial_ms: DEFAULT_BACKOFF_INITIAL_MS,
+            backoff_max_ms: DEFAULT_BACKOFF_MAX_MS,
+            link_refresh_ms: DEFAULT_LINK_REFRESH_MS,
+        }
     }
 }
 
@@ -229,7 +238,7 @@ impl WifiConfig {
     /// A configuration for `ssid` and `password` with the default timing.
     pub const fn new(ssid: WifiSsid, password: Option<WifiPassword>) -> Self {
         Self {
-            ssid,
+            ssid: Some(ssid),
             password,
             scan_timeout_ms: DEFAULT_SCAN_TIMEOUT_MS,
             connect_timeout_ms: DEFAULT_CONNECT_TIMEOUT_MS,
@@ -239,14 +248,13 @@ impl WifiConfig {
         }
     }
 
-    /// Whether a network is configured: an empty SSID is the unconfigured
-    /// state, in which the radio stays idle.
+    /// Whether a network is configured. Without an SSID Wi-Fi is disabled and
+    /// the radio stays idle.
     pub fn is_configured(&self) -> bool {
-        !self.ssid.is_empty()
+        self.ssid.is_some()
     }
 
-    /// The configuration the radio is given: `None` while no network is
-    /// configured.
+    /// The configuration the radio is given: `None` while Wi-Fi is disabled.
     pub fn configured(self) -> Option<Self> {
         self.is_configured().then_some(self)
     }
@@ -260,13 +268,14 @@ impl WifiConfig {
         self.validate_settings()
     }
 
-    /// Checks the credentials and the timing, which may belong to a section
-    /// that is still unconfigured (see [`is_configured`](Self::is_configured)).
+    /// Checks the SSID, the credentials and the timing, which may belong to a
+    /// section with Wi-Fi disabled (see [`is_configured`](Self::is_configured)).
     pub fn validate_settings(&self) -> Result<(), WifiError> {
-        let valid = self
-            .password
-            .as_ref()
-            .is_none_or(|password| password.len() >= MIN_WIFI_PASSWORD_LEN)
+        let valid = self.ssid.as_ref().is_none_or(|ssid| !ssid.is_empty())
+            && self
+                .password
+                .as_ref()
+                .is_none_or(|password| password.len() >= MIN_WIFI_PASSWORD_LEN)
             && within(self.scan_timeout_ms, SCAN_TIMEOUT_RANGE_MS)
             && within(self.connect_timeout_ms, CONNECT_TIMEOUT_RANGE_MS)
             && within(self.backoff_initial_ms, BACKOFF_INITIAL_RANGE_MS)
@@ -280,9 +289,9 @@ impl WifiConfig {
         }
     }
 
-    /// Replaces the SSID and keeps the rest.
+    /// Replaces the SSID, which enables Wi-Fi, and keeps the rest.
     pub fn with_ssid(mut self, ssid: WifiSsid) -> Self {
-        self.ssid = ssid;
+        self.ssid = Some(ssid);
         self
     }
 
@@ -384,7 +393,7 @@ mod tests {
     #[test]
     fn the_cbor_encoding_is_stable() {
         let overrides = WifiOverrides {
-            ssid: Override::Value(ssid("ab")),
+            ssid: Override::Value(Some(ssid("ab"))),
             scan_timeout_ms: Override::Value(5_000),
             ..WifiOverrides::default()
         };
@@ -396,6 +405,22 @@ mod tests {
                 0x03, 0x19, 0x13, 0x88, // 3: scan_timeout_ms 5000
             ]
         );
+    }
+
+    #[test]
+    fn the_ssid_has_three_states() {
+        let none = WifiOverrides {
+            ssid: Override::Value(None),
+            ..WifiOverrides::default()
+        };
+        // {1: null}: Wi-Fi explicitly disabled, not "follow the default".
+        assert_eq!(encode(&none), [0xa1, 0x01, 0xf6]);
+        assert_eq!(roundtrip(&none), none);
+        assert_eq!(WifiOverrides::default().ssid, Override::Default);
+        assert_eq!(WifiConfig::default().ssid, None);
+        let mut config = WifiConfig::new(ssid("base"), None);
+        none.apply_to(&mut config);
+        assert!(!config.is_configured());
     }
 
     #[test]
@@ -428,7 +453,7 @@ mod tests {
     #[test]
     fn the_largest_value_fits_a_section() {
         let overrides = WifiOverrides {
-            ssid: Override::Value(WifiSsid::from_bytes(&[b'a'; MAX_SSID_LEN]).unwrap()),
+            ssid: Override::Value(Some(WifiSsid::from_bytes(&[b'a'; MAX_SSID_LEN]).unwrap())),
             password: Override::Value(Some(
                 WifiPassword::from_bytes(&[b'p'; MAX_WIFI_PASSWORD_LEN]).unwrap(),
             )),
@@ -511,20 +536,20 @@ mod tests {
             ..WifiConfig::new(ssid("old"), Some(password("hunter2hunter2")))
         };
         let updated = config.clone().with_ssid(ssid("new"));
-        assert_eq!(updated.ssid, ssid("new"));
+        assert_eq!(updated.ssid, Some(ssid("new")));
         assert_eq!(updated.password, config.password);
         assert_eq!(updated.scan_timeout_ms, 5_000);
 
         let cleared = updated.with_password(None);
         assert_eq!(cleared.password, None);
-        assert_eq!(cleared.ssid, ssid("new"));
+        assert_eq!(cleared.ssid, Some(ssid("new")));
     }
 
     #[test]
     fn overrides_persist_in_the_config_store_and_can_be_removed() {
         let mut store = ConfigStore::open(MemoryStorage::<16384>::new()).unwrap();
         let overrides = WifiOverrides {
-            ssid: Override::Value(ssid("office")),
+            ssid: Override::Value(Some(ssid("office"))),
             password: Override::Value(Some(password("hunter2hunter2"))),
             ..WifiOverrides::default()
         };
@@ -537,12 +562,12 @@ mod tests {
     #[test]
     fn a_changed_default_reaches_only_the_fields_without_an_override() {
         let overrides = WifiOverrides {
-            ssid: Override::Value(ssid("office")),
+            ssid: Override::Value(Some(ssid("office"))),
             scan_timeout_ms: Override::Value(5_000),
             ..WifiOverrides::default()
         };
         let effective = overrides.over_default();
-        assert_eq!(effective.ssid, ssid("office"));
+        assert_eq!(effective.ssid, Some(ssid("office")));
         assert_eq!(effective.scan_timeout_ms, 5_000);
         // Not overridden: the field follows `WifiConfig::default()`.
         assert_eq!(effective.connect_timeout_ms, DEFAULT_CONNECT_TIMEOUT_MS);

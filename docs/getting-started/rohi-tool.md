@@ -146,6 +146,7 @@ rohi config connectivity --help                    # fields: type, unit, allowed
 rohi config connectivity host=ingress.example.org port=443 enabled=true
 rohi config connectivity interval_s=120 --dry-run
 rohi config wifi ssid=office password=-               # secret from stdin or a hidden prompt
+rohi config wifi ssid=none                            # disable Wi-Fi (no ssid is the default)
 rohi config wifi scan_timeout=null                    # remove the override: back to the firmware default
 rohi config wifi password=none                        # explicit "no value": an open network
 rohi config reset connectivity                     # remove every override of the section
@@ -201,7 +202,7 @@ Special values:
   are applied to a copy, the complete effective result is validated on the device and stored atomically: if anything
   is invalid, nothing is stored. `--dry-run` validates without storing.
 - **The result of every change is validated** as `defaults + overrides`; an unconfigured or disabled section (no
-  `ssid`, no location, connectivity disabled) is a valid state. Fields that belong together are therefore set in one
+  `ssid` means Wi-Fi is disabled, no location, connectivity disabled) is a valid state. Fields that belong together are therefore set in one
   command: `rohi config connectivity enabled=true` alone fails until the `host` is set,
   `rohi config connectivity enabled=true host=ingress.example.org` works.
 - **Three states for a nullable field.** `FIELD=value` is an explicit value, `FIELD=none` is an explicit "no value"

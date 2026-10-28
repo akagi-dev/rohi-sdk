@@ -62,7 +62,7 @@ impl ManagedConfig for WifiConfig {
     const NAME: &'static str = "wifi";
     const VERSION: u16 = <WifiOverrides as ConfigSection>::VERSION;
     const FIELDS: &'static [ConfigField] = &[
-        ConfigField::new(field::SSID, "ssid", ValueKind::String),
+        ConfigField::new(field::SSID, "ssid", ValueKind::String).optional(),
         ConfigField::new(field::PASSWORD, "password", ValueKind::String)
             .secret()
             .optional(),
@@ -88,12 +88,14 @@ impl ManagedConfig for WifiConfig {
     fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
         let text = |value: &str| Value::text(value).map(Some).ok_or(FieldError::Invalid);
         match id {
-            field::SSID => self
-                .ssid
-                .as_str()
-                .and_then(Value::text)
-                .map(Some)
-                .ok_or(FieldError::Invalid),
+            field::SSID => match &self.ssid {
+                None => Ok(None),
+                Some(ssid) => ssid
+                    .as_str()
+                    .and_then(Value::text)
+                    .map(Some)
+                    .ok_or(FieldError::Invalid),
+            },
             field::PASSWORD => match &self.password {
                 None => Ok(None),
                 Some(password) => core::str::from_utf8(password.expose_secret())
@@ -113,7 +115,11 @@ impl ManagedConfig for WifiConfig {
         match id {
             field::SSID => {
                 let text = value.as_str().ok_or(FieldError::WrongKind)?;
-                self.ssid = WifiSsid::from_bytes(text.as_bytes()).ok_or(FieldError::Invalid)?;
+                self.ssid = Some(
+                    WifiSsid::from_bytes(text.as_bytes())
+                        .filter(|ssid| !ssid.is_empty())
+                        .ok_or(FieldError::Invalid)?,
+                );
             }
             field::PASSWORD => {
                 let text = value.as_str().ok_or(FieldError::WrongKind)?;
@@ -132,13 +138,17 @@ impl ManagedConfig for WifiConfig {
 
     fn set_none(&mut self, id: u32) -> Result<(), FieldError> {
         match id {
+            // Wi-Fi disabled.
+            field::SSID => {
+                self.ssid = None;
+                Ok(())
+            }
             // An open network.
             field::PASSWORD => {
                 self.password = None;
                 Ok(())
             }
-            field::SSID
-            | field::SCAN_TIMEOUT
+            field::SCAN_TIMEOUT
             | field::CONNECT_TIMEOUT
             | field::BACKOFF_INITIAL
             | field::BACKOFF_MAX
@@ -155,7 +165,7 @@ impl ManagedConfig for WifiConfig {
         }
     }
 
-    /// An unconfigured section (no SSID) is valid: the radio stays idle.
+    /// A section without an SSID is valid: Wi-Fi is disabled, the radio stays idle.
     fn validate(&self) -> Result<(), FieldError> {
         self.validate_settings().map_err(|_| FieldError::Invalid)
     }
@@ -235,7 +245,7 @@ mod tests {
     }
 
     #[test]
-    fn none_is_only_for_the_password() {
+    fn none_is_only_for_the_ssid_and_the_password() {
         let mut config = WifiConfig::default();
         config
             .set_field(field::PASSWORD, text("hunter2hunter2"))
@@ -243,7 +253,6 @@ mod tests {
         assert_eq!(config.set_none(field::PASSWORD), Ok(()));
         assert_eq!(config.password, None);
         for id in [
-            field::SSID,
             field::SCAN_TIMEOUT,
             field::CONNECT_TIMEOUT,
             field::BACKOFF_INITIAL,
@@ -253,6 +262,43 @@ mod tests {
             assert_eq!(config.set_none(id), Err(FieldError::NotOptional));
         }
         assert_eq!(config.set_none(99), Err(FieldError::UnknownField));
+    }
+
+    #[test]
+    fn no_ssid_disables_wifi_and_an_ssid_enables_it() {
+        let mut config = WifiConfig::default();
+        assert_eq!(config.ssid, None);
+        assert_eq!(config.read_field(field::SSID), Ok(None));
+        assert!(!config.is_configured());
+        assert_eq!(config.clone().configured(), None);
+        config.set_field(field::SSID, text("office")).unwrap();
+        assert!(config.is_configured());
+        assert!(config.clone().configured().is_some());
+        // An empty name is not a network: `none` disables Wi-Fi instead.
+        assert_eq!(
+            config.set_field(field::SSID, text("")),
+            Err(FieldError::Invalid)
+        );
+        assert_eq!(config.set_none(field::SSID), Ok(()));
+        assert_eq!(config.read_field(field::SSID), Ok(None));
+        assert_eq!(ManagedConfig::validate(&config), Ok(()));
+    }
+
+    #[test]
+    fn an_explicit_no_ssid_overrides_a_firmware_default_network() {
+        let firmware = WifiConfig::new(WifiSsid::from_bytes(b"factory").unwrap(), None);
+        let mut overrides = WifiOverrides::default();
+        let mut config = firmware.clone();
+        config.set_none(field::SSID).unwrap();
+        overrides.capture(&config, field::SSID);
+        assert_eq!(overrides.ssid, Override::Value(None));
+        let mut effective = firmware.clone();
+        overrides.apply_to(&mut effective);
+        assert!(!effective.is_configured());
+        overrides.clear(field::SSID);
+        let mut effective = firmware.clone();
+        overrides.apply_to(&mut effective);
+        assert_eq!(effective.ssid, firmware.ssid);
     }
 
     #[test]
