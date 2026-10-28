@@ -100,8 +100,10 @@ user)`, and `store` / `remove` receive that same effective value to publish.
 3. **Dry run** validates exactly like a real patch and stores nothing; the revision does not change.
 4. **Revision** (`u32`, RAM only, 0 at boot) increments on every successful write or reset; `expected_revision`
    makes a patch or a reset fail with `CONFLICT` if the section changed meanwhile.
-5. **Reset** removes every user override and publishes the firmware policy over the defaults; compiled firmware overrides are retained.
-6. `restart_required` tells the client that a change needs a restart.
+5. **Service actions** that change the section (such as `wifi connect`) use `ConfigUpdate::update` of the same
+   `ManagedSection`: the same lock, validation, publication and revision as a patch, never a separate load and store.
+6. **Reset** removes every user override and publishes the firmware policy over the defaults; compiled firmware overrides are retained.
+7. `restart_required` tells the client that a change needs a restart.
 
 `GetConfigSection` returns the effective values (`SectionValues::entries`; a field without a value, such as an optional
 field whose default is none, is absent) and `overridden`, the ids of the explicitly overridden fields. A changed

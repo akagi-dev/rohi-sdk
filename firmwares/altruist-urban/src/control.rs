@@ -45,10 +45,10 @@ use rohi_service::{
 use rohi_time::TimeStatusService;
 use static_cell::StaticCell;
 
-use crate::bindings::{Stored, WifiBinding, ble_settings};
+use crate::bindings::ble_settings;
 use crate::config::{
-    ConfigHandle, ConfigSections, ServiceError as ConfigError, StorageMaintenance, config_sections,
-    maintenance,
+    ConfigHandle, ConfigSections, ServiceError as ConfigError, StorageMaintenance, WifiSection,
+    config_sections, maintenance, wifi_section,
 };
 use crate::identity::IdentityHandle;
 use crate::resources::{BleResources, BleRunner, BleStatus, BleTransport, Ip};
@@ -92,7 +92,7 @@ fn identity_error(error: ConfigError) -> IdentityStoreError {
 /// The config sections of the device plus the factory reset of the storage
 /// behind them.
 pub struct UrbanConfig {
-    sections: ConfigSections,
+    sections: &'static ConfigSections,
     storage: StorageMaintenance,
 }
 
@@ -152,10 +152,14 @@ impl ConfigRegistry for UrbanConfig {
     }
 }
 
+/// The config sections, shared by the control plane and the services that
+/// change their own section.
+static SECTIONS: StaticCell<ConfigSections> = StaticCell::new();
+
 /// The services of the device.
 pub type Services = (
     Tracked<
-        Startup<WifiService<'static, RawMutex, Delay, net::Probe, Stored<WifiBinding>>>,
+        Startup<WifiService<'static, RawMutex, Delay, net::Probe, &'static WifiSection>>,
         RawMutex,
     >,
     Tracked<Startup<NetworkService<'static, RawMutex, net::Probe>>, RawMutex>,
@@ -186,6 +190,9 @@ pub fn device(
     ble: BleStatus,
 ) -> UrbanDevice {
     let network_failed = network.is_none();
+    // The `wifi` service and the control plane share the one section: one
+    // transaction lock and one revision for every change.
+    let sections: &'static ConfigSections = SECTIONS.init(config_sections(config));
     Device::new(
         DeviceInfo {
             firmware: FIRMWARE,
@@ -193,7 +200,7 @@ pub fn device(
         },
         uptime_ms,
         UrbanConfig {
-            sections: config_sections(config),
+            sections,
             storage: maintenance(),
         },
         (
@@ -202,7 +209,7 @@ pub fn device(
                     net::handle(),
                     Delay,
                     net::Probe::new(network),
-                    Stored::new(config),
+                    wifi_section(sections),
                 ),
                 network_failed,
             )),

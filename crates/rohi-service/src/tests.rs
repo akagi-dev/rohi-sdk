@@ -427,6 +427,41 @@ fn concurrent_patches_are_serialized() {
 }
 
 #[test]
+fn a_service_update_shares_the_transaction_and_the_revision() {
+    let store = MemoryStore::default();
+    let section = section(&store);
+    // A patch and a service update at once: neither loses the other's change.
+    let (a, b) = block_on(embassy_futures::join::join(
+        section.patch(&[set(3, text("a.io"))], None, false),
+        section.update(|overrides| overrides.interval_s = Override::Value(20)),
+    ));
+    assert!(a.is_ok() && b.is_ok());
+    let stored = store.effective();
+    assert_eq!(stored.host.as_str(), "a.io");
+    assert_eq!(stored.interval_s, 20);
+    // Both writes moved the revision of the section.
+    assert_eq!(section.info().revision, 2);
+    assert_eq!(
+        block_on(section.patch(&[set(3, text("b.io"))], Some(1), false)),
+        Err(ConfigError::Conflict)
+    );
+}
+
+#[test]
+fn an_update_with_an_invalid_effective_result_changes_nothing() {
+    let store = MemoryStore::default();
+    let section = section(&store);
+    let result = block_on(section.update(|overrides| overrides.enabled = Override::Value(true)));
+    // Enabled without a host is invalid on its own.
+    assert_eq!(
+        result.map(|_| ()),
+        Err(ConfigError::Field(FieldError::Invalid))
+    );
+    assert!(store.value.borrow().is_none());
+    assert_eq!(section.info().revision, 0);
+}
+
+#[test]
 fn get_reports_the_effective_values_and_redacts_secrets() {
     let store = MemoryStore::default();
     let section = section(&store);

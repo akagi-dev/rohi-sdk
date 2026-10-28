@@ -53,9 +53,11 @@ Socket counts and buffer sizes stay compile-time (they size static memory), see 
 ### `connect`
 
 `rohi action wifi connect ssid=- password=-` stores a network and joins it. It takes the `ssid` and the `password`
-(empty for an open network), sets the `ssid` override and the `password` override (an empty password is an open network, persisted as the explicit `Value(None)`, not as following the default), keeps the other overrides (timing), validates the effective result (defaults, the store's firmware overrides and the candidate user overrides), persists the overrides through the
-`SectionStore<WifiConfig>` given to `WifiService`, and, when the manager would otherwise ignore the unchanged
-configuration, requests a reconnect. It is privileged and its arguments are secret, so the `rohi` tool reads every
+(empty for an open network), sets the `ssid` override and the `password` override (an empty password is an open network, persisted as the explicit `Value(None)`, not as following the default), keeps the other overrides (timing), and changes the section through the `ConfigUpdate<WifiConfig>` given to `WifiService` (in the firmware, the very
+`ManagedSection` the control plane uses): the same transaction as `rohi config`, so the effective result (defaults,
+firmware overrides and the candidate user overrides) is validated, persisted and published in one step, a concurrent
+config change is not lost and the revision of the section advances. When the manager would otherwise ignore the unchanged
+configuration, it requests a reconnect. It is privileged and its arguments are secret, so the `rohi` tool reads every
 argument from stdin or a prompt. Use `rohi config wifi ssid=office password=-` to change the section without
 connecting at once.
 

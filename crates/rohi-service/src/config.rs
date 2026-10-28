@@ -414,7 +414,7 @@ impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ManagedSection<C, S, M> 
                 field.check(value, C::ENUMS)?;
                 let mut config = self.effective(overrides);
                 config.set_field(field.field.id, value.clone())?;
-                overrides.capture(&config, field.field.id);
+                Self::capture(overrides, &config, field.field.id)?;
             }
             MutationOp::None => {
                 if !field.optional {
@@ -422,13 +422,58 @@ impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ManagedSection<C, S, M> 
                 }
                 let mut config = self.effective(overrides);
                 config.set_none(field.field.id)?;
-                overrides.capture(&config, field.field.id);
+                Self::capture(overrides, &config, field.field.id)?;
             }
             MutationOp::Clear => {
-                overrides.clear(field.field.id);
+                if !overrides.clear(field.field.id) {
+                    return Err(FieldError::UnknownField);
+                }
             }
         }
         Ok(())
+    }
+
+    /// Overrides the field with its value in `config`. The schema and the
+    /// overrides are checked to agree when the section is built, so a field
+    /// the overrides do not know is a bug that must not be ignored.
+    fn capture(overrides: &mut C::Overrides, config: &C, id: u32) -> Result<(), FieldError> {
+        if overrides.capture(config, id) {
+            Ok(())
+        } else {
+            Err(FieldError::UnknownField)
+        }
+    }
+
+    /// Validates the effective result of `next` and persists it (or removes
+    /// the persisted section when no user override is left), publishing the
+    /// value that was validated, then bumps the revision. The one commit step
+    /// of every mutation; callers hold the transaction lock.
+    async fn write(
+        &self,
+        next: &C::Overrides,
+        persisted: bool,
+        dry_run: bool,
+    ) -> Result<Patched, ConfigError> {
+        // The value validated here is the one stored and published.
+        let effective = self.effective(next);
+        effective.validate()?;
+        let restart_required = self.store.restart_required();
+        if dry_run {
+            return Ok(Patched {
+                revision: self.revision(),
+                restart_required,
+            });
+        }
+        if !next.is_empty() {
+            self.store.store(next, &effective).await?;
+        } else if persisted {
+            // The last user override is gone: only the firmware policy applies.
+            self.store.remove(&effective).await?;
+        }
+        Ok(Patched {
+            revision: self.bump(),
+            restart_required,
+        })
     }
 
     fn check_revision(&self, expected: Option<u32>) -> Result<(), ConfigError> {
@@ -516,26 +561,7 @@ impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ConfigSectionOps
         for mutation in mutations {
             self.apply(&mut next, mutation)?;
         }
-        // The value validated here is the one stored and published.
-        let effective = self.effective(&next);
-        effective.validate()?;
-        let restart_required = self.store.restart_required();
-        if dry_run {
-            return Ok(Patched {
-                revision: self.revision(),
-                restart_required,
-            });
-        }
-        if !next.is_empty() {
-            self.store.store(&next, &effective).await?;
-        } else if persisted {
-            // The last user override is gone: only the firmware policy applies.
-            self.store.remove(&effective).await?;
-        }
-        Ok(Patched {
-            revision: self.bump(),
-            restart_required,
-        })
+        self.write(&next, persisted, dry_run).await
     }
 
     async fn reset(
@@ -558,6 +584,44 @@ impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ConfigSectionOps
             revision: self.bump(),
             restart_required,
         })
+    }
+}
+
+/// Changes the user overrides of one section from a service, through the same
+/// transaction as a client's patch: under the section lock the persisted
+/// overrides are loaded, changed, the complete effective result is validated,
+/// persisted and published, and the revision is incremented. A service never
+/// reads and writes the store on its own, which would lose a concurrent change.
+#[allow(async_fn_in_trait)]
+pub trait ConfigUpdate<C: ManagedConfig> {
+    /// Applies `change` to the persisted user overrides. Nothing is changed
+    /// when the effective result is invalid.
+    async fn update<F: FnOnce(&mut C::Overrides)>(&self, change: F)
+    -> Result<Patched, ConfigError>;
+}
+
+impl<C: ManagedConfig, S: SectionStore<C>, M: RawMutex> ConfigUpdate<C>
+    for ManagedSection<C, S, M>
+{
+    async fn update<F: FnOnce(&mut C::Overrides)>(
+        &self,
+        change: F,
+    ) -> Result<Patched, ConfigError> {
+        let _transaction = self.transaction.lock().await;
+        let stored = self.store.load().await?;
+        let persisted = stored.is_some();
+        let mut next = stored.unwrap_or_default();
+        change(&mut next);
+        self.write(&next, persisted, false).await
+    }
+}
+
+impl<C: ManagedConfig, T: ConfigUpdate<C>> ConfigUpdate<C> for &T {
+    async fn update<F: FnOnce(&mut C::Overrides)>(
+        &self,
+        change: F,
+    ) -> Result<Patched, ConfigError> {
+        (**self).update(change).await
     }
 }
 
