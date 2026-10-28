@@ -20,8 +20,8 @@ use rohi_control_proto::control::{
 };
 use rohi_control_proto::{PROTOCOL_VERSION, decode, encode, limits};
 use rohi_service::{
-    ActionError, ConfigError, ConfigRegistry, MAX_ACTION_ARGS, MAX_MUTATIONS, Mutation,
-    ServiceRegistry, ServiceStatusSummary, StatusError, Value,
+    ActionError, ActionRegistry, ConfigError, ConfigRegistry, MAX_ACTION_ARGS, MAX_MUTATIONS,
+    Mutation, ServiceStatusSummary, StatusError, StatusRegistry, Value,
 };
 
 use crate::mapping;
@@ -91,13 +91,13 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             Call::InvokeAction(invoke) => {
                 match self
                     .backend
-                    .services()
+                    .actions()
                     .action(invoke.service_id, invoke.action_id)
                 {
                     Ok(action) if action.secret_args => Privilege::Provision,
                     Ok(action) if action.privileged => Privilege::Mutate,
                     Ok(_) => Privilege::Read,
-                    Err(e) => return (id, action_error(e)),
+                    Err(e) => return (id, self.action_failure(e, invoke.service_id)),
                 }
             }
             _ => Privilege::Read,
@@ -201,7 +201,7 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             Call::Reboot(_) if backend.reboot() => Reply::Reboot(pb::RebootResponse {}),
             Call::Reboot(_) => error(pb::ErrorCode::NotSupported),
             Call::GetServicesStatus(_) => {
-                let services = backend.services();
+                let services = backend.statuses();
                 let now = backend.uptime_ms();
                 let mut summaries: Vec<
                     ServiceStatusSummary,
@@ -227,8 +227,8 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
                 })
             }
             Call::GetServiceSchema(request) => {
-                match backend.services().schema(request.service_id) {
-                    None => error(pb::ErrorCode::NotFound),
+                match backend.statuses().schema(request.service_id) {
+                    None => self.missing_status(request.service_id),
                     Some(schema) => Reply::GetServiceSchema(pb::GetServiceSchemaResponse {
                         service_id: schema.info.id,
                         name: mapping::text(schema.info.name),
@@ -241,11 +241,11 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             }
             Call::GetServiceStatus(request) => {
                 match backend
-                    .services()
+                    .statuses()
                     .status(request.service_id, backend.uptime_ms())
                     .await
                 {
-                    Err(StatusError::UnknownService) => error(pb::ErrorCode::NotFound),
+                    Err(StatusError::UnknownService) => self.missing_status(request.service_id),
                     Ok(status) => {
                         let mut fields = Vec::new();
                         for (id, value) in &status.fields {
@@ -269,14 +269,17 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
                 }
             }
             Call::ListActions(_) => {
-                let services = backend.services();
+                let services = backend.actions();
                 let mut actions = Vec::new();
                 'services: for index in 0..services.service_count() {
-                    let Some(info) = services.service_info(index) else {
+                    let Some(info) = services.service_identity(index) else {
                         continue;
                     };
                     for action in services.service_actions(index) {
-                        if actions.push(mapping::action_info(info.id, action)).is_err() {
+                        if actions
+                            .push(mapping::action_info(info.id, info.name, action))
+                            .is_err()
+                        {
                             break 'services;
                         }
                     }
@@ -285,10 +288,10 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             }
             Call::GetActionSchema(request) => {
                 match backend
-                    .services()
+                    .actions()
                     .action(request.service_id, request.action_id)
                 {
-                    Err(e) => action_error(e),
+                    Err(e) => self.action_failure(e, request.service_id),
                     Ok(action) => {
                         let mut out = pb::GetActionSchemaResponse {
                             args: mapping::fields(action.args),
@@ -296,12 +299,45 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
                             enums: mapping::enums(action.enums),
                             ..Default::default()
                         };
-                        out.set_action(mapping::action_info(request.service_id, action));
+                        out.set_action(mapping::action_info(
+                            request.service_id,
+                            self.action_service_name(request.service_id),
+                            action,
+                        ));
                         Reply::GetActionSchema(out)
                     }
                 }
             }
             Call::InvokeAction(request) => self.invoke(request).await,
+        }
+    }
+
+    /// The name of an action service the registry has just resolved.
+    fn action_service_name(&self, service: u32) -> &'static str {
+        let actions = self.backend.actions();
+        (0..actions.service_count())
+            .filter_map(|index| actions.service_identity(index))
+            .find(|identity| identity.id == service)
+            .map_or("", |identity| identity.name)
+    }
+
+    /// A status request for a service that has no status: "not supported" when
+    /// the service exists with other capabilities, "not found" otherwise.
+    fn missing_status(&self, service: u32) -> Reply {
+        if self.backend.actions().contains(service) {
+            error(pb::ErrorCode::NotSupported)
+        } else {
+            error(pb::ErrorCode::NotFound)
+        }
+    }
+
+    /// Maps an action failure; an action request for a service that only
+    /// reports status is "not supported", not "not found".
+    fn action_failure(&self, e: ActionError, service: u32) -> Reply {
+        if e == ActionError::UnknownService && self.backend.statuses().contains(service) {
+            error(pb::ErrorCode::NotSupported)
+        } else {
+            action_error(e)
         }
     }
 
@@ -356,7 +392,7 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
         }
         let result = if valid {
             self.backend
-                .services()
+                .actions()
                 .invoke(request.service_id, request.action_id, &args)
                 .await
         } else {
@@ -369,7 +405,7 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             mapping::wipe_arg(arg);
         }
         match result {
-            Err(e) => action_error(e),
+            Err(e) => self.action_failure(e, request.service_id),
             Ok(records) => {
                 let mut out = Vec::new();
                 for record in &records {

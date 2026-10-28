@@ -275,11 +275,10 @@ pub(crate) fn issue(issue: &pb::ServiceIssue, names: &[IssueInfo]) -> Issue {
     }
 }
 
-/// `service` names the owner of the action.
-pub(crate) fn action_info(info: &pb::ActionInfo, service: &str) -> ActionInfo {
+pub(crate) fn action_info(info: &pb::ActionInfo) -> ActionInfo {
     ActionInfo {
         service_id: info.service_id,
-        service: service.to_owned(),
+        service: info.service.as_str().to_owned(),
         id: info.id,
         name: info.name.as_str().to_owned(),
         privileged: info.privileged,

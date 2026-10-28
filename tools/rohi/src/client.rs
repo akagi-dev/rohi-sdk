@@ -47,6 +47,12 @@ fn not_found() -> Error {
     Error::Device(ErrorCode::NotFound)
 }
 
+/// What a service that exists, but lacks the requested capability, is answered
+/// with: it reports status or offers actions, not both.
+fn not_supported() -> Error {
+    Error::Device(ErrorCode::NotSupported)
+}
+
 /// A connected ROHI device.
 ///
 /// Discovery and schemas are fetched on demand and cached for the life of
@@ -285,12 +291,25 @@ impl<T: ClientTransport> Device<T> {
         if self.services.is_none() {
             self.services_status().await?;
         }
-        self.services
+        let found = self
+            .services
             .iter()
             .flatten()
             .find(|info| info.name == service)
-            .map(|info| info.id)
-            .ok_or_else(not_found)
+            .map(|info| info.id);
+        if let Some(id) = found {
+            return Ok(id);
+        }
+        // An action-only service has no status.
+        if self
+            .actions()
+            .await?
+            .iter()
+            .any(|info| info.service == service)
+        {
+            return Err(not_supported());
+        }
+        Err(not_found())
     }
 
     /// Status schema of a service; cached.
@@ -394,24 +413,10 @@ impl<T: ClientTransport> Device<T> {
 
     /// The actions of all services.
     pub async fn actions(&mut self) -> Result<Vec<ActionInfo>> {
-        if self.services.is_none() {
-            self.services_status().await?;
-        }
         let call = Call::ListActions(pb::ListActionsRequest {});
         match self.call(call).await? {
             Reply::ListActions(list) => {
-                let services = self.services.as_deref().unwrap_or_default();
-                let actions: Vec<_> = list
-                    .actions
-                    .iter()
-                    .map(|info| {
-                        let service = services
-                            .iter()
-                            .find(|service| service.id == info.service_id)
-                            .map_or("", |service| service.name.as_str());
-                        convert::action_info(info, service)
-                    })
-                    .collect();
+                let actions: Vec<_> = list.actions.iter().map(convert::action_info).collect();
                 self.actions = Some(actions.clone());
                 Ok(actions)
             }
@@ -423,12 +428,26 @@ impl<T: ClientTransport> Device<T> {
         if self.actions.is_none() {
             self.actions().await?;
         }
-        self.actions
+        let found = self
+            .actions
             .iter()
             .flatten()
             .find(|info| info.service == service && info.name == action)
-            .map(|info| (info.service_id, info.id))
-            .ok_or_else(not_found)
+            .map(|info| (info.service_id, info.id));
+        if let Some(ids) = found {
+            return Ok(ids);
+        }
+        // A status-only service has no actions.
+        if self
+            .actions
+            .iter()
+            .flatten()
+            .all(|info| info.service != service)
+            && self.service_id(service).await.is_ok()
+        {
+            return Err(not_supported());
+        }
+        Err(not_found())
     }
 
     /// Schema of an action; cached.
@@ -442,27 +461,25 @@ impl<T: ClientTransport> Device<T> {
             service_id,
             action_id,
         });
-        let schema = match self.call(call).await? {
-            Reply::GetActionSchema(response) => ActionSchema {
-                action: convert::action_info(
-                    response
-                        .action()
-                        .ok_or_else(|| Error::Protocol("action schema without an action".into()))?,
-                    service,
-                ),
-                args: response
-                    .args
-                    .iter()
-                    .map(|field| convert::field(field, &response.enums))
-                    .collect(),
-                results: response
-                    .results
-                    .iter()
-                    .map(|field| convert::field(field, &response.enums))
-                    .collect(),
-            },
-            other => return Err(unexpected(&other)),
-        };
+        let schema =
+            match self.call(call).await? {
+                Reply::GetActionSchema(response) => ActionSchema {
+                    action: convert::action_info(response.action().ok_or_else(|| {
+                        Error::Protocol("action schema without an action".into())
+                    })?),
+                    args: response
+                        .args
+                        .iter()
+                        .map(|field| convert::field(field, &response.enums))
+                        .collect(),
+                    results: response
+                        .results
+                        .iter()
+                        .map(|field| convert::field(field, &response.enums))
+                        .collect(),
+                },
+                other => return Err(unexpected(&other)),
+            };
         self.action_schemas.insert(key, schema.clone());
         Ok(schema)
     }

@@ -20,7 +20,7 @@
 //!
 //! ```text
 //! request bytes -> Controller -> ControlBackend (firmware)
-//!                     |           config registry, service registry
+//!                     |           config, status and action registries
 //! response bytes <----+
 //! ```
 //!

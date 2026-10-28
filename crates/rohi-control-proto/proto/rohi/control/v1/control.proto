@@ -528,6 +528,9 @@ message ActionInfo {
   // The arguments are secrets: clients must not echo or log them and should
   // read them without showing them.
   bool secret_args = 5;
+  // Name of the owning service. A service may have actions without reporting
+  // status, so clients cannot resolve the name from the status listing.
+  string service = 6;
 }
 
 message ListActionsRequest {}

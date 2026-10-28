@@ -259,6 +259,7 @@ fn main() {
         ),
         // Actions.
         (".rohi.control.v1.ActionInfo.name", "MAX_NAME_LEN"),
+        (".rohi.control.v1.ActionInfo.service", "MAX_NAME_LEN"),
         (
             ".rohi.control.v1.ListActionsResponse.actions",
             "MAX_ACTIONS",

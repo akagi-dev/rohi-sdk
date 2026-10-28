@@ -24,10 +24,11 @@ use rohi_control_proto::control::{
 };
 use rohi_control_proto::{PROTOCOL_VERSION, decode, encode, limits};
 use rohi_service::{
-    ActionDescriptor, ActionError, ActionOutput, Bounds, ConfigField, EnumDescriptor, EnumVariant,
-    FIRST_SERVICE_ISSUE, FieldDescriptor, FieldError, Issue, IssueDescriptor, IssueSeverity,
-    ManagedConfig, ManagedSection, ManagedService, SectionStore, ServiceHealth, ServiceState,
-    ServiceSummary, StatusWriter, StoreError, Tracked, Unit, Value, ValueKind, WriteError,
+    Action, ActionDescriptor, ActionError, ActionOutput, Bounds, ConfigField, EnumDescriptor,
+    EnumVariant, FIRST_SERVICE_ISSUE, FieldDescriptor, FieldError, Issue, IssueDescriptor,
+    IssueSeverity, ManagedConfig, ManagedSection, SectionStore, Service, ServiceHealth,
+    ServiceState, ServiceSummary, Status, StatusWriter, Statuses, StoreError, Unit, Value,
+    ValueKind, WriteError,
 };
 
 use crate::*;
@@ -147,14 +148,13 @@ impl SectionStore<Net> for &Memory {
     }
 }
 
+#[derive(Service)]
 struct Radio {
     degraded: RefCell<bool>,
     log: RefCell<std::vec::Vec<std::string::String>>,
 }
 
-impl ManagedService for &Radio {
-    const ID: u32 = 3;
-    const NAME: &'static str = "radio";
+impl Status for Radio {
     const VERSION: u16 = 1;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
         FieldDescriptor::new(1, "ssid", ValueKind::String),
@@ -168,18 +168,6 @@ impl ManagedService for &Radio {
     )];
     const ISSUES: &'static [IssueDescriptor] =
         &[IssueDescriptor::new(FIRST_SERVICE_ISSUE, "link_lost")];
-    const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new(1, "scan").results(&[FieldDescriptor::new(
-            1,
-            "ssid",
-            ValueKind::String,
-        )]),
-        ActionDescriptor::new(2, "reconnect").privileged(),
-        ActionDescriptor::new(3, "provision")
-            .args(&[FieldDescriptor::new(1, "secret", ValueKind::Bytes)])
-            .secret(),
-    ];
-
     async fn summary(&self) -> ServiceSummary {
         if *self.degraded.borrow() {
             ServiceSummary::new(ServiceState::Running, ServiceHealth::Degraded, false)
@@ -204,6 +192,20 @@ impl ManagedService for &Radio {
         out.variant(3, 5)?;
         out.f32(4, 1.5)
     }
+}
+
+impl Action for Radio {
+    const ACTIONS: &'static [ActionDescriptor] = &[
+        ActionDescriptor::new(1, "scan").results(&[FieldDescriptor::new(
+            1,
+            "ssid",
+            ValueKind::String,
+        )]),
+        ActionDescriptor::new(2, "reconnect").privileged(),
+        ActionDescriptor::new(3, "provision")
+            .args(&[FieldDescriptor::new(1, "secret", ValueKind::Bytes)])
+            .secret(),
+    ];
 
     async fn invoke(
         &self,
@@ -231,7 +233,9 @@ impl ManagedService for &Radio {
 }
 
 type Section<'a> = ManagedSection<Net, &'a Memory, NoopRawMutex>;
-type TestDevice<'a> = Device<(Section<'a>,), (Tracked<&'a Radio, NoopRawMutex>,)>;
+type TestDevice<'a> = Device<(Section<'a>,), Statuses<NoopRawMutex, (&'a Radio,)>, (&'a Radio,)>;
+
+const RADIO: u32 = Radio::ID;
 
 const INFO: DeviceInfo = DeviceInfo {
     firmware: "test-0.1.0",
@@ -247,7 +251,8 @@ fn device<'a>(memory: &'a Memory, radio: &'a Radio) -> TestDevice<'a> {
         INFO,
         uptime,
         (ManagedSection::new(memory),),
-        (Tracked::new(radio),),
+        Statuses::new((radio,)),
+        (radio,),
     )
 }
 
@@ -327,7 +332,7 @@ macro_rules! controller {
 
 #[test]
 fn info_is_served_without_any_module() {
-    let controller = Controller::new(Device::new(INFO, uptime, (), ()), OpenPolicy);
+    let controller = Controller::new(Device::new(INFO, uptime, (), (), ()), OpenPolicy);
     let Reply::GetInfo(info) = call(&controller, &PLAIN, Call::GetInfo(pb::GetInfoRequest {}))
     else {
         panic!()
@@ -343,7 +348,7 @@ fn info_is_served_without_any_module() {
         panic!()
     };
     assert!(sections.sections.is_empty());
-    let get = Call::GetServiceStatus(pb::GetServiceStatusRequest { service_id: 3 });
+    let get = Call::GetServiceStatus(pb::GetServiceStatusRequest { service_id: RADIO });
     assert_eq!(
         error_code(&call(&controller, &PLAIN, get)),
         pb::ErrorCode::NotFound
@@ -695,13 +700,13 @@ fn reboot_needs_the_hook_and_a_secure_link() {
     }
     let request = || Call::Reboot(pb::RebootRequest {});
 
-    let controller = Controller::new(Device::new(INFO, uptime, (), ()), OpenPolicy);
+    let controller = Controller::new(Device::new(INFO, uptime, (), (), ()), OpenPolicy);
     assert_eq!(
         error_code(&call(&controller, &PLAIN, request())),
         pb::ErrorCode::NotSupported
     );
 
-    let device = Device::new(INFO, uptime, (), ()).with_reboot(reboot);
+    let device = Device::new(INFO, uptime, (), (), ()).with_reboot(reboot);
     let controller = Controller::new(device, RequireEncryption);
     assert_eq!(
         error_code(&call(&controller, &PLAIN, request())),
@@ -751,7 +756,7 @@ fn service_status_is_compact_in_the_summary_and_detailed_per_service() {
     assert_eq!(all.services.len(), 1);
     let summary = &all.services[0];
     // Discovery and compact status in one message.
-    assert_eq!(summary.service_id, 3);
+    assert_eq!(summary.service_id, RADIO);
     assert_eq!(summary.name.as_str(), "radio");
     assert_eq!(summary.version, 1);
     assert_eq!(summary.state, pb::ServiceState::Running);
@@ -761,11 +766,11 @@ fn service_status_is_compact_in_the_summary_and_detailed_per_service() {
     let Reply::GetServiceSchema(schema) = call(
         &controller,
         &PLAIN,
-        Call::GetServiceSchema(pb::GetServiceSchemaRequest { service_id: 3 }),
+        Call::GetServiceSchema(pb::GetServiceSchemaRequest { service_id: RADIO }),
     ) else {
         panic!()
     };
-    assert_eq!(schema.service_id, 3);
+    assert_eq!(schema.service_id, RADIO);
     assert_eq!(schema.name.as_str(), "radio");
     assert_eq!(schema.fields.len(), 4);
     assert_eq!(schema.fields[1].unit, pb::Unit::Dbm);
@@ -778,12 +783,12 @@ fn service_status_is_compact_in_the_summary_and_detailed_per_service() {
     let Reply::GetServiceStatus(status) = call(
         &controller,
         &PLAIN,
-        Call::GetServiceStatus(pb::GetServiceStatusRequest { service_id: 3 }),
+        Call::GetServiceStatus(pb::GetServiceStatusRequest { service_id: RADIO }),
     ) else {
         panic!()
     };
     // The detailed status does not repeat the summary.
-    assert_eq!(status.service_id, 3);
+    assert_eq!(status.service_id, RADIO);
     assert_eq!(status.revision, summary.revision);
     assert_eq!(status.fields.len(), 4);
     assert!(matches!(
@@ -815,7 +820,7 @@ fn device_health_is_decided_by_the_firmware_and_issues_have_codes() {
     let Reply::GetServiceStatus(status) = call(
         &controller,
         &PLAIN,
-        Call::GetServiceStatus(pb::GetServiceStatusRequest { service_id: 3 }),
+        Call::GetServiceStatus(pb::GetServiceStatusRequest { service_id: RADIO }),
     ) else {
         panic!()
     };
@@ -842,9 +847,9 @@ fn actions_are_discovered_described_and_invoked() {
     assert_eq!(
         names,
         [
-            (3, 1, "scan", false),
-            (3, 2, "reconnect", true),
-            (3, 3, "provision", true)
+            (RADIO, 1, "scan", false),
+            (RADIO, 2, "reconnect", true),
+            (RADIO, 3, "provision", true)
         ]
     );
 
@@ -852,7 +857,7 @@ fn actions_are_discovered_described_and_invoked() {
         &controller,
         &PLAIN,
         Call::GetActionSchema(pb::GetActionSchemaRequest {
-            service_id: 3,
+            service_id: RADIO,
             action_id: 3,
         }),
     ) else {
@@ -866,7 +871,7 @@ fn actions_are_discovered_described_and_invoked() {
         &controller,
         &PLAIN,
         Call::InvokeAction(pb::InvokeActionRequest {
-            service_id: 3,
+            service_id: RADIO,
             action_id: 1,
             args: Vec::new(),
         }),
@@ -895,7 +900,7 @@ fn action_failures_are_typed() {
         )
     };
     assert_eq!(
-        error_code(&invoke(3, 99, Vec::new())),
+        error_code(&invoke(RADIO, 99, Vec::new())),
         pb::ErrorCode::NotFound
     );
     assert_eq!(
@@ -904,10 +909,10 @@ fn action_failures_are_typed() {
     );
     // `provision` needs its argument.
     assert_eq!(
-        error_code(&invoke(3, 3, Vec::new())),
+        error_code(&invoke(RADIO, 3, Vec::new())),
         pb::ErrorCode::InvalidArgument
     );
-    let Reply::Error(rejected) = invoke(3, 2, Vec::new()) else {
+    let Reply::Error(rejected) = invoke(RADIO, 2, Vec::new()) else {
         panic!()
     };
     assert_eq!(rejected.code, pb::ErrorCode::Rejected);
@@ -963,7 +968,7 @@ fn the_policy_gates_writes_and_privileged_actions() {
 
     let action = |id: u32, args: Vec<pb::ActionArg, 3>| {
         Call::InvokeAction(pb::InvokeActionRequest {
-            service_id: 3,
+            service_id: RADIO,
             action_id: id,
             args,
         })
@@ -1004,7 +1009,7 @@ fn policy_rejections_do_not_reach_the_service() {
     let radio = radio();
     let controller = Controller::new(device(&memory, &radio), RequireEncryption);
     let reconnect = Call::InvokeAction(pb::InvokeActionRequest {
-        service_id: 3,
+        service_id: RADIO,
         action_id: 2,
         args: Vec::new(),
     });
@@ -1012,6 +1017,7 @@ fn policy_rejections_do_not_reach_the_service() {
     assert!(radio.log.borrow().is_empty());
 }
 
+#[derive(Service)]
 struct Many;
 
 macro_rules! counters {
@@ -1020,23 +1026,13 @@ macro_rules! counters {
     };
 }
 
-impl ManagedService for Many {
-    const ID: u32 = 10;
-    const NAME: &'static str = "many";
+impl Status for Many {
     const VERSION: u16 = 1;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = counters! {
         1, "f1"; 2, "f2"; 3, "f3"; 4, "f4"; 5, "f5"; 6, "f6"; 7, "f7"; 8, "f8"; 9, "f9"; 10, "f10";
         11, "f11"; 12, "f12"; 13, "f13"; 14, "f14"; 15, "f15"; 16, "f16"; 17, "f17"; 18, "f18";
         19, "f19"; 20, "f20";
     };
-    const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new(1, "a"),
-        ActionDescriptor::new(2, "b"),
-        ActionDescriptor::new(3, "c"),
-        ActionDescriptor::new(4, "d"),
-        ActionDescriptor::new(5, "e"),
-        ActionDescriptor::new(6, "f"),
-    ];
 
     async fn summary(&self) -> ServiceSummary {
         ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true)
@@ -1050,6 +1046,26 @@ impl ManagedService for Many {
     }
 }
 
+impl Action for Many {
+    const ACTIONS: &'static [ActionDescriptor] = &[
+        ActionDescriptor::new(1, "a"),
+        ActionDescriptor::new(2, "b"),
+        ActionDescriptor::new(3, "c"),
+        ActionDescriptor::new(4, "d"),
+        ActionDescriptor::new(5, "e"),
+        ActionDescriptor::new(6, "f"),
+    ];
+
+    async fn invoke(
+        &self,
+        _: u32,
+        _: &[(u32, Value)],
+        _: &mut impl ActionOutput,
+    ) -> Result<(), ActionError> {
+        Ok(())
+    }
+}
+
 #[test]
 fn full_schemas_status_and_action_lists_fit_one_response() {
     let controller = Controller::new(
@@ -1057,17 +1073,17 @@ fn full_schemas_status_and_action_lists_fit_one_response() {
             INFO,
             uptime,
             (),
-            (
-                Tracked::<_, NoopRawMutex>::new(Many),
-                Tracked::<_, NoopRawMutex>::new(Many2),
-            ),
+            Statuses::<NoopRawMutex, _>::new((&Many,)),
+            (&Many, &Many2),
         ),
         OpenPolicy,
     );
     let Reply::GetServiceSchema(schema) = call(
         &controller,
         &PLAIN,
-        Call::GetServiceSchema(pb::GetServiceSchemaRequest { service_id: 10 }),
+        Call::GetServiceSchema(pb::GetServiceSchemaRequest {
+            service_id: Many::ID,
+        }),
     ) else {
         panic!()
     };
@@ -1077,7 +1093,9 @@ fn full_schemas_status_and_action_lists_fit_one_response() {
     let Reply::GetServiceStatus(status) = call(
         &controller,
         &PLAIN,
-        Call::GetServiceStatus(pb::GetServiceStatusRequest { service_id: 10 }),
+        Call::GetServiceStatus(pb::GetServiceStatusRequest {
+            service_id: Many::ID,
+        }),
     ) else {
         panic!()
     };
@@ -1092,18 +1110,15 @@ fn full_schemas_status_and_action_lists_fit_one_response() {
         panic!()
     };
     assert_eq!(list.actions.len(), limits::MAX_ACTIONS);
-    assert_eq!(list.actions[0].service_id, 10);
-    assert_eq!(list.actions[11].service_id, 11);
+    assert_eq!(list.actions[0].service_id, Many::ID);
+    assert_eq!(list.actions[11].service_id, Many2::ID);
     assert_eq!(list.actions[11].name.as_str(), "f");
 }
 
+#[derive(Service)]
 struct Many2;
 
-impl ManagedService for Many2 {
-    const ID: u32 = 11;
-    const NAME: &'static str = "many2";
-    const VERSION: u16 = 1;
-    const STATUS_SCHEMA: &'static [FieldDescriptor] = &[];
+impl Action for Many2 {
     const ACTIONS: &'static [ActionDescriptor] = &[
         ActionDescriptor::new(1, "a"),
         ActionDescriptor::new(2, "b"),
@@ -1113,20 +1128,118 @@ impl ManagedService for Many2 {
         ActionDescriptor::new(6, "f"),
     ];
 
-    async fn summary(&self) -> ServiceSummary {
-        ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true)
+    async fn invoke(
+        &self,
+        _: u32,
+        _: &[(u32, Value)],
+        _: &mut impl ActionOutput,
+    ) -> Result<(), ActionError> {
+        Ok(())
     }
+}
 
-    async fn status(&self, _: &mut impl StatusWriter) -> Result<(), WriteError> {
+// The only way two different services can share an id is a hash collision of
+// two names; it is caught when the device is built.
+struct Impostor;
+
+impl Service for Impostor {
+    const ID: u32 = Radio::ID;
+    const NAME: &'static str = "impostor";
+}
+
+impl Action for Impostor {
+    const ACTIONS: &'static [ActionDescriptor] = &[];
+
+    async fn invoke(
+        &self,
+        _: u32,
+        _: &[(u32, Value)],
+        _: &mut impl ActionOutput,
+    ) -> Result<(), ActionError> {
         Ok(())
     }
 }
 
 #[test]
-#[should_panic(expected = "two services share an id")]
-fn a_device_with_clashing_ids_does_not_start_in_any_build() {
+#[should_panic(expected = "two different services share an id")]
+fn a_device_with_a_colliding_service_id_does_not_start_in_any_build() {
     let radio = radio();
-    let (a, b): (Tracked<_, NoopRawMutex>, Tracked<_, NoopRawMutex>) =
-        (Tracked::new(&radio), Tracked::new(&radio));
-    let _ = Device::new(INFO, uptime, (), (a, b));
+    let _ = Device::new(
+        INFO,
+        uptime,
+        (),
+        Statuses::<NoopRawMutex, _>::new((&radio,)),
+        (&Impostor,),
+    );
+}
+
+#[test]
+fn a_service_with_one_capability_is_unsupported_for_the_other() {
+    let radio = radio();
+    let controller = Controller::new(
+        Device::new(
+            INFO,
+            uptime,
+            (),
+            Statuses::<NoopRawMutex, _>::new((&radio,)),
+            (&Many2,),
+        ),
+        OpenPolicy,
+    );
+    // `radio` has status only here, `many2` actions only.
+    assert_eq!(
+        error_code(&call(
+            &controller,
+            &PLAIN,
+            Call::InvokeAction(pb::InvokeActionRequest {
+                service_id: RADIO,
+                action_id: 1,
+                args: Vec::new(),
+            }),
+        )),
+        pb::ErrorCode::NotSupported
+    );
+    assert_eq!(
+        error_code(&call(
+            &controller,
+            &PLAIN,
+            Call::GetServiceStatus(pb::GetServiceStatusRequest {
+                service_id: Many2::ID,
+            }),
+        )),
+        pb::ErrorCode::NotSupported
+    );
+    assert_eq!(
+        error_code(&call(
+            &controller,
+            &PLAIN,
+            Call::GetServiceSchema(pb::GetServiceSchemaRequest {
+                service_id: Many2::ID,
+            }),
+        )),
+        pb::ErrorCode::NotSupported
+    );
+    // A service nobody registered is unknown, whatever the capability.
+    for service_id in [1, Many::ID] {
+        assert_eq!(
+            error_code(&call(
+                &controller,
+                &PLAIN,
+                Call::GetServiceStatus(pb::GetServiceStatusRequest { service_id }),
+            )),
+            pb::ErrorCode::NotFound
+        );
+        assert_eq!(
+            error_code(&call(
+                &controller,
+                &PLAIN,
+                Call::InvokeAction(pb::InvokeActionRequest {
+                    service_id,
+                    action_id: 1,
+                    args: Vec::new(),
+                }),
+            )),
+            pb::ErrorCode::NotFound
+        );
+    }
 }

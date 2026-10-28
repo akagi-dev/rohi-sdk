@@ -370,9 +370,14 @@ pub(crate) fn issue(issue: &Issue) -> pb::ServiceIssue {
     }
 }
 
-pub(crate) fn action_info(service_id: u32, action: &ActionDescriptor) -> pb::ActionInfo {
+pub(crate) fn action_info(
+    service_id: u32,
+    service: &str,
+    action: &ActionDescriptor,
+) -> pb::ActionInfo {
     pb::ActionInfo {
         service_id,
+        service: text(service),
         id: action.id,
         name: text(action.name),
         privileged: action.privileged,

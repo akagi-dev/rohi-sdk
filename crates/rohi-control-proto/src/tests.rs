@@ -422,6 +422,7 @@ fn every_action_listed_fits_the_response_limit() {
                 name: text(&"a".repeat(limits::MAX_NAME_LEN)),
                 privileged: true,
                 secret_args: true,
+                service: text(&"s".repeat(limits::MAX_NAME_LEN)),
             })
             .ok()
             .unwrap();
@@ -453,6 +454,7 @@ fn a_full_action_schema_fits_the_response_limit() {
         name: text(&"a".repeat(limits::MAX_NAME_LEN)),
         privileged: true,
         secret_args: true,
+        service: text(&"s".repeat(limits::MAX_NAME_LEN)),
     });
     round_trip(response(Response_::Response::GetActionSchema(schema)));
 }

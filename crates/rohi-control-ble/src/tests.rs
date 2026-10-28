@@ -15,8 +15,8 @@ use rohi_control_proto::limits::{MAX_REQUEST_LEN, MAX_RESPONSE_LEN};
 use rohi_control_proto::{PROTOCOL_VERSION, decode, encode};
 use rohi_net::{BleConnectionInfo, BleError, BleState, BleTransport, MAX_BLE_PAYLOAD};
 use rohi_service::{
-    ActionDescriptor, ActionError, ActionOutput, FieldDescriptor, ManagedService, ServiceHealth,
-    ServiceState, ServiceSummary, StatusWriter, Tracked, Value, ValueKind, WriteError,
+    Action, ActionDescriptor, ActionError, ActionOutput, FieldDescriptor, Service, ServiceHealth,
+    ServiceState, ServiceSummary, Status, StatusWriter, Statuses, Value, ValueKind, WriteError,
 };
 
 use crate::ControlBle;
@@ -374,6 +374,7 @@ impl BleTransport for &Shared {
 }
 
 /// A device with one service that records the actions it ran.
+#[derive(Service)]
 struct Radio<'a> {
     shared: &'a Shared,
     calls: RefCell<Vec<&'static str>>,
@@ -381,25 +382,13 @@ struct Radio<'a> {
     hold_scan: RefCell<bool>,
 }
 
-impl ManagedService for &Radio<'_> {
-    const ID: u32 = 1;
-    const NAME: &'static str = "radio";
+impl Status for Radio<'_> {
     const VERSION: u16 = 1;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
         FieldDescriptor::new(1, "a", ValueKind::String),
         FieldDescriptor::new(2, "b", ValueKind::String),
         FieldDescriptor::new(3, "c", ValueKind::String),
         FieldDescriptor::new(4, "d", ValueKind::String),
-    ];
-    const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new(1, "scan"),
-        ActionDescriptor::new(2, "reconnect"),
-        ActionDescriptor::new(3, "disconnect").privileged(),
-        ActionDescriptor::new(4, "store").args(&[FieldDescriptor::new(
-            1,
-            "data",
-            ValueKind::Bytes,
-        )]),
     ];
 
     async fn summary(&self) -> ServiceSummary {
@@ -413,6 +402,19 @@ impl ManagedService for &Radio<'_> {
         }
         Ok(())
     }
+}
+
+impl Action for Radio<'_> {
+    const ACTIONS: &'static [ActionDescriptor] = &[
+        ActionDescriptor::new(1, "scan"),
+        ActionDescriptor::new(2, "reconnect"),
+        ActionDescriptor::new(3, "disconnect").privileged(),
+        ActionDescriptor::new(4, "store").args(&[FieldDescriptor::new(
+            1,
+            "data",
+            ValueKind::Bytes,
+        )]),
+    ];
 
     async fn invoke(
         &self,
@@ -443,7 +445,9 @@ impl ManagedService for &Radio<'_> {
     }
 }
 
-type Bench<'a> = Device<(), (Tracked<&'a Radio<'a>, NoopRawMutex>,)>;
+type Bench<'a> = Device<(), Statuses<NoopRawMutex, (&'a Radio<'a>,)>, (&'a Radio<'a>,)>;
+
+const RADIO: u32 = <Radio<'static> as Service>::ID;
 
 fn uptime() -> u64 {
     600
@@ -465,7 +469,8 @@ fn device<'a>(radio: &'a Radio<'a>) -> Bench<'a> {
         },
         uptime,
         (),
-        (Tracked::new(radio),),
+        Statuses::new((radio,)),
+        (radio,),
     )
 }
 
@@ -482,7 +487,7 @@ fn invoke(service_id: u32, action_id: u32, args: &[pb::ActionArg]) -> Call {
 }
 
 fn status_request() -> Call {
-    Call::GetServiceStatus(pb::GetServiceStatusRequest { service_id: 1 })
+    Call::GetServiceStatus(pb::GetServiceStatusRequest { service_id: RADIO })
 }
 
 fn request_bytes(id: u32, call: Call) -> Vec<u8> {
@@ -571,7 +576,7 @@ fn long_request() -> Vec<u8> {
             heapless::Vec::from_slice(&[0x42; 60]).unwrap(),
         )),
     };
-    request_bytes(3, invoke(1, 4, &[data]))
+    request_bytes(3, invoke(RADIO, 4, &[data]))
 }
 
 #[test]
@@ -687,7 +692,7 @@ fn response_is_dropped_when_the_link_changed_during_the_request() {
     let controller = Controller::new(device(&radio), OpenPolicy);
     shared.push_frames(frames(
         1,
-        &request_bytes(1, invoke(1, 2, &[])),
+        &request_bytes(1, invoke(RADIO, 2, &[])),
         MAX_BLE_PAYLOAD,
     ));
     run(&shared, &controller, 1);
@@ -706,7 +711,7 @@ fn cancelled_step_abandons_the_request_and_the_next_one_works() {
 
     shared.push_frames(frames(
         1,
-        &request_bytes(1, invoke(1, 1, &[])),
+        &request_bytes(1, invoke(RADIO, 1, &[])),
         MAX_BLE_PAYLOAD,
     ));
     {
@@ -758,7 +763,7 @@ fn link_security_reaches_the_policy() {
     let shared = Shared::new(MAX_BLE_PAYLOAD);
     let radio = radio(&shared);
     let controller = Controller::new(device(&radio), RequireEncryption);
-    let request = request_bytes(1, invoke(1, 3, &[]));
+    let request = request_bytes(1, invoke(RADIO, 3, &[]));
 
     shared.push_frames(frames(1, &request, MAX_BLE_PAYLOAD));
     run(&shared, &controller, 1);
