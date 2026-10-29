@@ -111,7 +111,7 @@ impl ActionDescriptor {
 /// run, with typed arguments and results.
 ///
 /// `Action` is a capability of the service, not a service per command:
-/// `WifiService` exposes `scan`, `connect`, `reconnect` and `disconnect`. A
+/// `WifiService` exposes `scan`, `reconnect` and `disconnect`. A
 /// service implements it independently of [`Status`](crate::Status).
 ///
 /// The action registry has already authorized the call and checked the

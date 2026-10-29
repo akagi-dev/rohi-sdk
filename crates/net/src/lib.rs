@@ -69,7 +69,6 @@ pub use wifi::{
     LinkMetrics, ManagerConfig, NetworkInfo, SCAN_TIMEOUT_RANGE_MS, STATUS_RECEIVERS,
     ScanCollector, WifiBackend, WifiConfig, WifiError, WifiHandle, WifiManager, WifiNetwork,
     WifiOverrides, WifiPassword, WifiProbe, WifiScanResults, WifiSecurity, WifiService, WifiShared,
-    WifiSsid, WifiState, WifiStatus, action as wifi_action, connect_field as wifi_connect_field,
-    issue as wifi_issue, scan_field as wifi_scan_field, security as wifi_security,
-    status_field as wifi_status_field,
+    WifiSsid, WifiState, WifiStatus, action as wifi_action, issue as wifi_issue,
+    scan_field as wifi_scan_field, security as wifi_security, status_field as wifi_status_field,
 };

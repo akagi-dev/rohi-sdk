@@ -40,7 +40,7 @@ target; the Wi-Fi station and the IP layer are configured and observed separatel
 |---|---|---|---|
 | Config | `ssid`, `password` (secret), `scan_timeout`, `connect_timeout`, `backoff_initial`, `backoff_max`, `link_refresh` (ms) | `address_mode` (`dhcp` or `static`), `ip`, `prefix_len`, `gateway`, `dns`, `hostname` (DHCP option 12), `dhcp_timeout` (ms). Static mode needs `ip`, `prefix_len` and `gateway` on the same link | `name` (1 to 29 bytes, optional; without an override the firmware default `<PREFIX>-<MAC>` applies). Read when the peripheral starts, so a change applies after a reboot |
 | Status | `ssid`, `rssi`, `channel`, `mac`, `reconnects`, `link_uptime`, `heap_size`, `heap_free`, `heap_min_free` (with `heap-stats`) | `ip`, `gateway`, `dns`, `tcp_in_use`, `tcp_capacity`, `udp_in_use`, `udp_capacity` | `state` (`disabled`, `advertising`, `connected`, `error`), `name`, `encrypted`, `authenticated`, `max_payload` |
-| Actions | `scan`, `connect`, `reconnect`, `disconnect` | none | none |
+| Actions | `scan`, `reconnect`, `disconnect` | none | none |
 
 Fields that do not exist now are not reported. A change of the `wifi` or `network` section reconnects. A section is the effective configuration (firmware defaults plus your overrides); `ssid` is nullable and `None` is the default: without an `ssid` Wi-Fi is disabled and the radio stays idle, an `ssid` enables it. `ssid=none` disables Wi-Fi explicitly even when the firmware default names a network, `ssid=null` follows the firmware default again. Timings default
 to the former constants. The `wifi` and `network` services share the link: `network` is `running` when the link is up
@@ -49,17 +49,6 @@ and reports `dhcp_failed` as its issue; every other link error is an issue of `w
 The heap, clock and socket numbers come from a `WifiProbe` and a `NetworkProbe` the firmware passes to `WifiService` and
 `NetworkService`, and the BLE state from a `BleProbe` passed to `BleService`, so `rohi-net` stays free of platform types.
 Socket counts and buffer sizes stay compile-time (they size static memory), see [Resource limits](../reference/resource-limits.md).
-
-### `connect`
-
-`rohi action wifi connect ssid=- password=-` stores a network and joins it. It takes the `ssid` and the `password`
-(empty for an open network), sets the `ssid` override and the `password` override (an empty password is an open network, persisted as the explicit `Value(None)`, not as following the default), keeps the other overrides (timing), and changes the section through the `ConfigUpdate<WifiConfig>` given to `WifiService` (in the firmware, the very
-`ManagedSection` the control plane uses): the same transaction as `rohi config`, so the effective result (defaults,
-firmware overrides and the candidate user overrides) is validated, persisted and published in one step, a concurrent
-config change is not lost and the revision of the section advances. When the manager would otherwise ignore the unchanged
-configuration, it requests a reconnect. It is privileged and its arguments are secret, so the `rohi` tool reads every
-argument from stdin or a prompt. Use `rohi config wifi ssid=office password=-` to change the section without
-connecting at once.
 
 ## Wi-Fi control plane
 
@@ -131,7 +120,6 @@ Other behaviour:
 | config section `wifi` | `ssid` (text, 1 to 32 bytes) and `password` (write-only secret, 8 to 64 bytes, optional: no override means an open network) | `rohi config wifi ssid=office password=-` |
 | service `wifi` | state, `ssid`, `rssi` (dBm), `channel`, `mac` | `rohi status wifi` |
 | action `scan` | one record per network, strongest first: `ssid`, `rssi`, `channel`, `security` | `rohi action wifi scan` |
-| action `connect` (privileged, secret arguments) | store a network and join it | `rohi action wifi connect ssid=- password=-` |
 | actions `reconnect`, `disconnect` (privileged) | drop the link and connect again / stay idle | `rohi action wifi reconnect` |
 
 The service maps `WifiState` to lifecycle and health: `NotConfigured` is `disabled` (not an error), `Idle` is `stopped`,

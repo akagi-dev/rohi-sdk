@@ -785,14 +785,3 @@ crate::firmware_configs! {
     managed WifiBinding, NetworkBinding, BleBinding, ConnectivityBinding, LocationBinding, TimeBinding;
     private IdentityBinding
 }
-
-/// The `wifi` section of [`ConfigSections`], which the `wifi` service changes
-/// through the same transaction as a client's config patch.
-pub type WifiSection =
-    ::rohi_service::Section<::rohi_net::WifiConfig, crate::bindings::Stored<WifiBinding>, RawMutex>;
-
-/// The `wifi` section among `sections`. A change of the order of the bindings
-/// is a type error here.
-pub fn wifi_section(sections: &'static ConfigSections) -> &'static WifiSection {
-    &sections.0
-}

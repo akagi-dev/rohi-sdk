@@ -72,9 +72,8 @@ Examples:
   rohi action
   rohi action wifi
   rohi action wifi scan
-  rohi action wifi connect ssid=- password=-
   rohi action wifi reconnect
-  rohi action wifi connect --help
+  rohi action wifi reconnect --help
   rohi action identity provision secret=-
   rohi -o json action wifi scan
 

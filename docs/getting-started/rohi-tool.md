@@ -298,7 +298,7 @@ without echoing it.
 | `rohi wifi` (status) | `rohi status wifi` |
 | `rohi wifi scan` | `rohi action wifi scan` |
 | `rohi wifi reconnect`, `disconnect` | `rohi action wifi reconnect` / `disconnect` |
-| `rohi wifi connect`, `configure`, `forget` | `rohi action wifi connect ssid=- password=-`, `rohi config wifi ssid=.. password=-`, `rohi config reset wifi`, then `rohi status wifi` |
+| `rohi wifi configure`, `forget` | `rohi config wifi ssid=.. password=-`, `rohi config reset wifi`, then `rohi status wifi` |
 | `rohi connectivity set --host ..` | `rohi config connectivity host=..` |
 | `rohi config list`, `config describe <section>` | `rohi config`, `rohi config <section> --help` |
 | `rohi config get <section>`, `config set <section> ..` | `rohi config <section>`, `rohi config <section> FIELD=VALUE` |

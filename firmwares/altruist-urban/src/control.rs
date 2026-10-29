@@ -53,8 +53,8 @@ use static_cell::StaticCell;
 
 use crate::bindings::ble_settings;
 use crate::config::{
-    ConfigHandle, ConfigSections, ServiceError as ConfigError, StorageConfig, WifiSection,
-    config_sections, maintenance, wifi_section,
+    ConfigHandle, ConfigSections, ServiceError as ConfigError, StorageConfig, config_sections,
+    maintenance,
 };
 use crate::identity::IdentityHandle;
 use crate::resources::{BleResources, BleRunner, BleStatus, BleTransport, Ip};
@@ -99,12 +99,11 @@ fn identity_error(error: ConfigError) -> IdentityStoreError {
 /// behind them.
 pub type UrbanConfig = StorageConfig<ConfigSections>;
 
-/// The config sections, shared by the control plane and the services that
-/// change their own section.
+/// The config sections, owned by the control plane.
 static SECTIONS: StaticCell<ConfigSections> = StaticCell::new();
 
 /// The services of the device, by capability.
-type UrbanWifi = Startup<WifiService<'static, RawMutex, Delay, net::Probe, &'static WifiSection>>;
+type UrbanWifi = Startup<WifiService<'static, RawMutex, Delay, net::Probe>>;
 type UrbanNetwork = Startup<NetworkService<'static, RawMutex, net::Probe>>;
 type UrbanBle = BleService<BleStatus>;
 type UrbanConnectivity = Startup<ConnectivityStatusService<'static, RawMutex>>;
@@ -174,17 +173,10 @@ pub fn device(
     ble: BleStatus,
 ) -> UrbanDevice {
     let network_failed = network.is_none();
-    // The `wifi` service and the control plane share the one section: one
-    // transaction lock for every change.
     let sections: &'static ConfigSections = SECTIONS.init(config_sections(config));
     let services: &'static UrbanServices = SERVICES.init(UrbanServices {
         wifi: Startup::new(
-            WifiService::new(
-                net::handle(),
-                Delay,
-                net::Probe::new(network),
-                wifi_section(sections),
-            ),
+            WifiService::new(net::handle(), Delay, net::Probe::new(network)),
             network_failed,
         ),
         network: Startup::new(

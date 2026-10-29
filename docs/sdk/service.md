@@ -100,7 +100,7 @@ user)`, and `store` / `remove` receive that same effective value to publish.
 3. **Dry run** validates exactly like a real patch and stores nothing; the revision does not change.
 4. **Revision** (`u32`, RAM only, 0 at boot) increments on every successful write or reset; `expected_revision`
    makes a patch or a reset fail with `CONFLICT` if the section changed meanwhile.
-5. **Service actions** that change the section (such as `wifi connect`) use `ConfigUpdate::update` of the same
+5. **Service actions** that change the section use `ConfigUpdate::update` of the same
    `ManagedSection`: the same lock, validation, publication and revision as a patch, never a separate load and store.
 6. **Reset** removes every user override and publishes the firmware policy over the defaults; compiled firmware overrides are retained.
 7. `restart_required` tells the client that a change needs a restart.
@@ -212,7 +212,7 @@ A section, service or action has at most one enum (`MAX_ENUMS`), a constraint of
 
 | Crate | Config section | Service | Actions |
 |-------|----------------|---------|---------|
-| `rohi-net` | `wifi` (`ssid`, `password` secret, timeouts, backoff), `network` (address mode, static IPv4, host name, DHCP timeout), `ble` (`name`) | `wifi` (link, radio heap), `network` (address, sockets), `ble` (state, name, link security) | `wifi`: `scan`, `connect`, `reconnect`, `disconnect` |
+| `rohi-net` | `wifi` (`ssid`, `password` secret, timeouts, backoff), `network` (address mode, static IPv4, host name, DHCP timeout), `ble` (`name`) | `wifi` (link, radio heap), `network` (address, sockets), `ble` (state, name, link security) | `wifi`: `scan`, `reconnect`, `disconnect` |
 | `rohi-connectivity` | `connectivity` | `connectivity` (queue, counters, endpoint) | |
 | `rohi-location` | `location` | `location` | |
 | `rohi-time` / `rohi-time-ntp` | `time` (NTP servers, `rohi-time-ntp`) | `time` (unix time, source, age, failures) | |
