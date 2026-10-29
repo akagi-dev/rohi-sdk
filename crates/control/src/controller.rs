@@ -168,7 +168,6 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
                         Reply::GetConfigSection(pb::GetConfigSectionResponse {
                             section_id: values.section.id,
                             version: values.section.version,
-                            revision: values.section.revision,
                             effective: entries,
                             overridden,
                         })
@@ -179,15 +178,10 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             Call::ResetConfigSection(request) => {
                 match backend
                     .config()
-                    .reset(
-                        request.section_id,
-                        request.expected_revision().copied(),
-                        request.dry_run,
-                    )
+                    .reset(request.section_id, request.dry_run)
                     .await
                 {
                     Ok(done) => Reply::ResetConfigSection(pb::ResetConfigSectionResponse {
-                        revision: done.revision,
                         restart_required: done.restart_required,
                     }),
                     Err(e) => config_error(e),
@@ -355,12 +349,7 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
         let result = if valid {
             self.backend
                 .config()
-                .patch(
-                    request.section_id,
-                    &mutations,
-                    request.expected_revision().copied(),
-                    request.dry_run,
-                )
+                .patch(request.section_id, &mutations, request.dry_run)
                 .await
         } else {
             Err(ConfigError::Field(rohi_service::FieldError::Invalid))
@@ -375,7 +364,6 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
         }
         match result {
             Ok(done) => Reply::PatchConfigSection(pb::PatchConfigSectionResponse {
-                revision: done.revision,
                 restart_required: done.restart_required,
             }),
             Err(e) => config_error(e),
@@ -437,7 +425,6 @@ fn config_error(e: ConfigError) -> Reply {
     error(match e {
         ConfigError::UnknownSection => pb::ErrorCode::NotFound,
         ConfigError::Field(_) => pb::ErrorCode::InvalidArgument,
-        ConfigError::Conflict => pb::ErrorCode::Conflict,
         ConfigError::Unavailable => pb::ErrorCode::Unavailable,
         ConfigError::Internal => pb::ErrorCode::Internal,
     })

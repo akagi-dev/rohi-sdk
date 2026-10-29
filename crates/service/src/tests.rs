@@ -192,7 +192,7 @@ fn text(value: &str) -> Value {
 }
 
 #[test]
-fn patch_applies_all_mutations_and_bumps_the_revision() {
+fn patch_applies_all_mutations() {
     let store = MemoryStore::default();
     let section = section(&store);
     let patched = block_on(section.patch(
@@ -201,11 +201,9 @@ fn patch_applies_all_mutations_and_bumps_the_revision() {
             set(3, text("a.io")),
             set(2, Value::U64(30)),
         ],
-        Some(0),
         false,
     ))
     .unwrap();
-    assert_eq!(patched.revision, 1);
     assert!(!patched.restart_required);
     let stored = store.effective();
     assert!(stored.enabled);
@@ -217,8 +215,8 @@ fn patch_applies_all_mutations_and_bumps_the_revision() {
 fn a_patch_keeps_untouched_overrides() {
     let store = MemoryStore::default();
     let section = section(&store);
-    block_on(section.patch(&[set(3, text("a.io")), set(2, Value::U64(20))], None, false)).unwrap();
-    block_on(section.patch(&[set(3, text("b.io"))], None, false)).unwrap();
+    block_on(section.patch(&[set(3, text("a.io")), set(2, Value::U64(20))], false)).unwrap();
+    block_on(section.patch(&[set(3, text("b.io"))], false)).unwrap();
     let stored = store.effective();
     assert_eq!(stored.host.as_str(), "b.io");
     assert_eq!(stored.interval_s, 20);
@@ -228,7 +226,7 @@ fn a_patch_keeps_untouched_overrides() {
 fn only_the_fields_that_were_set_are_persisted() {
     let store = MemoryStore::default();
     let section = section(&store);
-    block_on(section.patch(&[set(3, text("a.io"))], None, false)).unwrap();
+    block_on(section.patch(&[set(3, text("a.io"))], false)).unwrap();
     let overrides = store.value.borrow().clone().unwrap();
     assert_eq!(overrides.host, rohi_config::Override::Value("a.io".into()));
     assert_eq!(overrides.interval_s, rohi_config::Override::Default);
@@ -239,7 +237,7 @@ fn only_the_fields_that_were_set_are_persisted() {
 fn a_value_equal_to_the_default_is_still_an_override() {
     let store = MemoryStore::default();
     let section = section(&store);
-    block_on(section.patch(&[set(2, Value::U64(60))], None, false)).unwrap();
+    block_on(section.patch(&[set(2, Value::U64(60))], false)).unwrap();
     assert_eq!(
         store.value.borrow().clone().unwrap().interval_s,
         rohi_config::Override::Value(60)
@@ -251,17 +249,12 @@ fn a_value_equal_to_the_default_is_still_an_override() {
 fn an_invalid_mutation_changes_nothing() {
     let store = MemoryStore::default();
     let section = section(&store);
-    block_on(section.patch(&[set(3, text("a.io"))], None, false)).unwrap();
+    block_on(section.patch(&[set(3, text("a.io"))], false)).unwrap();
     let before = store.value.borrow().clone();
-    let result = block_on(section.patch(
-        &[set(3, text("b.io")), set(2, Value::U64(1_000))],
-        None,
-        false,
-    ));
+    let result = block_on(section.patch(&[set(3, text("b.io")), set(2, Value::U64(1_000))], false));
     assert_eq!(result, Err(ConfigError::Field(FieldError::OutOfRange)));
     assert_eq!(*store.value.borrow(), before);
     assert_eq!(*store.writes.borrow(), 1);
-    assert_eq!(section.info().revision, 1);
 }
 
 #[test]
@@ -270,20 +263,15 @@ fn the_complete_effective_result_is_validated() {
     let section = section(&store);
     // `enabled` needs a host: a cross-field rule of the typed section.
     assert_eq!(
-        block_on(section.patch(&[set(1, Value::Bool(true))], None, false)),
+        block_on(section.patch(&[set(1, Value::Bool(true))], false)),
         Err(ConfigError::Field(FieldError::Invalid))
     );
     assert!(store.value.borrow().is_none());
     // The host can come from the same patch.
-    block_on(section.patch(
-        &[set(1, Value::Bool(true)), set(3, text("a.io"))],
-        None,
-        false,
-    ))
-    .unwrap();
+    block_on(section.patch(&[set(1, Value::Bool(true)), set(3, text("a.io"))], false)).unwrap();
     // Clearing the host leaves `enabled` without one.
     assert_eq!(
-        block_on(section.patch(&[clear(3)], None, false)),
+        block_on(section.patch(&[clear(3)], false)),
         Err(ConfigError::Field(FieldError::Invalid))
     );
     assert_eq!(store.effective().host.as_str(), "a.io");
@@ -293,7 +281,7 @@ fn the_complete_effective_result_is_validated() {
 fn field_errors_are_distinguished() {
     let store = MemoryStore::default();
     let section = section(&store);
-    let patch = |mutation| block_on(section.patch(&[mutation], None, false));
+    let patch = |mutation| block_on(section.patch(&[mutation], false));
     assert_eq!(
         patch(set(99, Value::Bool(true))),
         Err(FieldError::UnknownField.into())
@@ -321,18 +309,17 @@ fn clearing_an_override_restores_the_default_of_any_field() {
             set(2, Value::U64(20)),
             set(4, text("")),
         ],
-        None,
         false,
     ))
     .unwrap();
     assert_eq!(store.effective().interval_s, 20);
     // A required field can be cleared too: the default applies again.
-    block_on(section.patch(&[clear(2)], None, false)).unwrap();
+    block_on(section.patch(&[clear(2)], false)).unwrap();
     assert_eq!(store.effective().interval_s, 60);
     assert_eq!(store.effective().host.as_str(), "a.io");
     // An empty value is an override, clearing is not the same.
     assert_eq!(store.effective().token.as_deref(), Some(""));
-    block_on(section.patch(&[clear(4)], None, false)).unwrap();
+    block_on(section.patch(&[clear(4)], false)).unwrap();
     assert_eq!(store.effective().token, None);
 }
 
@@ -340,8 +327,8 @@ fn clearing_an_override_restores_the_default_of_any_field() {
 fn clearing_the_last_override_removes_the_persisted_section() {
     let store = MemoryStore::default();
     let section = section(&store);
-    block_on(section.patch(&[set(3, text("a.io"))], None, false)).unwrap();
-    block_on(section.patch(&[clear(3)], None, false)).unwrap();
+    block_on(section.patch(&[set(3, text("a.io"))], false)).unwrap();
+    block_on(section.patch(&[clear(3)], false)).unwrap();
     assert!(store.value.borrow().is_none());
     assert_eq!(store.effective(), Demo::default());
     assert!(block_on(section.get()).unwrap().overridden.is_empty());
@@ -351,7 +338,7 @@ fn clearing_the_last_override_removes_the_persisted_section() {
 fn clearing_a_field_that_is_not_overridden_is_a_no_op() {
     let store = MemoryStore::default();
     let section = section(&store);
-    block_on(section.patch(&[clear(2)], None, false)).unwrap();
+    block_on(section.patch(&[clear(2)], false)).unwrap();
     assert!(store.value.borrow().is_none());
     // Nothing was persisted, so there was nothing to write either.
     assert_eq!(*store.writes.borrow(), 0);
@@ -361,29 +348,15 @@ fn clearing_a_field_that_is_not_overridden_is_a_no_op() {
 fn dry_run_validates_without_persisting() {
     let store = MemoryStore::default();
     let section = section(&store);
-    let patched = block_on(section.patch(&[set(3, text("a.io"))], None, true)).unwrap();
-    assert_eq!(patched.revision, 0);
+    block_on(section.patch(&[set(3, text("a.io"))], true)).unwrap();
     assert!(store.value.borrow().is_none());
     assert_eq!(*store.writes.borrow(), 0);
     assert_eq!(
-        block_on(section.patch(&[set(1, Value::Bool(true))], None, true)),
+        block_on(section.patch(&[set(1, Value::Bool(true))], true)),
         Err(FieldError::Invalid.into())
     );
-    block_on(section.reset(None, true)).unwrap();
+    block_on(section.reset(true)).unwrap();
     assert_eq!(*store.writes.borrow(), 0);
-}
-
-#[test]
-fn a_stale_revision_is_a_conflict() {
-    let store = MemoryStore::default();
-    let section = section(&store);
-    block_on(section.patch(&[set(3, text("a.io"))], Some(0), false)).unwrap();
-    assert_eq!(
-        block_on(section.patch(&[set(3, text("b.io"))], Some(0), false)),
-        Err(ConfigError::Conflict)
-    );
-    assert_eq!(store.effective().host.as_str(), "a.io");
-    block_on(section.patch(&[set(3, text("b.io"))], Some(1), false)).unwrap();
 }
 
 #[test]
@@ -391,15 +364,17 @@ fn concurrent_patches_are_serialized() {
     let store = MemoryStore::default();
     let section = section(&store);
     let (a, b) = block_on(embassy_futures::join::join(
-        section.patch(&[set(3, text("a.io"))], Some(0), false),
-        section.patch(&[set(4, text("s3cret"))], Some(0), false),
+        section.patch(&[set(3, text("a.io"))], false),
+        section.patch(&[set(4, text("s3cret"))], false),
     ));
-    assert_eq!(a.map(|patched| patched.revision), Ok(1));
-    assert_eq!(b, Err(ConfigError::Conflict));
+    assert!(a.is_ok() && b.is_ok());
+    let stored = store.effective();
+    assert_eq!(stored.host.as_str(), "a.io");
+    assert_eq!(stored.token.as_deref(), Some("s3cret"));
 
     let (a, b) = block_on(embassy_futures::join::join(
-        section.patch(&[set(3, text("b.io"))], None, false),
-        section.patch(&[set(4, text("t0ken"))], None, false),
+        section.patch(&[set(3, text("b.io"))], false),
+        section.patch(&[set(4, text("t0ken"))], false),
     ));
     assert!(a.is_ok() && b.is_ok());
     let stored = store.effective();
@@ -408,24 +383,18 @@ fn concurrent_patches_are_serialized() {
 }
 
 #[test]
-fn a_service_update_shares_the_transaction_and_the_revision() {
+fn a_service_update_shares_the_transaction() {
     let store = MemoryStore::default();
     let section = section(&store);
     // A patch and a service update at once: neither loses the other's change.
     let (a, b) = block_on(embassy_futures::join::join(
-        section.patch(&[set(3, text("a.io"))], None, false),
+        section.patch(&[set(3, text("a.io"))], false),
         section.update(|overrides| overrides.interval_s = Override::Value(20)),
     ));
     assert!(a.is_ok() && b.is_ok());
     let stored = store.effective();
     assert_eq!(stored.host.as_str(), "a.io");
     assert_eq!(stored.interval_s, 20);
-    // Both writes moved the revision of the section.
-    assert_eq!(section.info().revision, 2);
-    assert_eq!(
-        block_on(section.patch(&[set(3, text("b.io"))], Some(1), false)),
-        Err(ConfigError::Conflict)
-    );
 }
 
 #[test]
@@ -439,7 +408,6 @@ fn an_update_with_an_invalid_effective_result_changes_nothing() {
         Err(ConfigError::Field(FieldError::Invalid))
     );
     assert!(store.value.borrow().is_none());
-    assert_eq!(section.info().revision, 0);
 }
 
 #[test]
@@ -465,7 +433,7 @@ fn get_reports_the_effective_values_and_redacts_secrets() {
     // An optional field without a value is absent.
     assert_eq!(value(&defaults, 4), None);
 
-    block_on(section.patch(&[set(3, text("a.io")), set(4, text("s3cret"))], None, false)).unwrap();
+    block_on(section.patch(&[set(3, text("a.io")), set(4, text("s3cret"))], false)).unwrap();
     let values = block_on(section.get()).unwrap();
     assert_eq!(values.overridden.as_slice(), [3, 4]);
     assert_eq!(value(&values, 2), Some(EntryState::Value(Value::U64(60))));
@@ -473,7 +441,7 @@ fn get_reports_the_effective_values_and_redacts_secrets() {
     assert_eq!(value(&values, 4), Some(EntryState::Redacted));
     assert!(!std::format!("{values:?}").contains("s3cret"));
 
-    block_on(section.patch(&[clear(4)], None, false)).unwrap();
+    block_on(section.patch(&[clear(4)], false)).unwrap();
     let values = block_on(section.get()).unwrap();
     assert_eq!(value(&values, 4), None);
     assert_eq!(values.overridden.as_slice(), [3]);
@@ -492,7 +460,7 @@ fn interval(section: &Section<Demo, &MemoryStore, NoopRawMutex>) -> Option<Entry
 fn a_changed_firmware_default_reaches_the_fields_without_an_override() {
     let store = MemoryStore::default();
     let section = section(&store);
-    block_on(section.patch(&[set(3, text("a.io"))], None, false)).unwrap();
+    block_on(section.patch(&[set(3, text("a.io"))], false)).unwrap();
     assert_eq!(interval(&section), Some(EntryState::Value(Value::U64(60))));
     // A firmware update changes the default; the persisted data stays.
     DEFAULT_INTERVAL_S.set(90);
@@ -504,11 +472,11 @@ fn a_changed_firmware_default_reaches_the_fields_without_an_override() {
 fn an_explicit_override_survives_a_changed_default() {
     let store = MemoryStore::default();
     let section = section(&store);
-    block_on(section.patch(&[set(2, Value::U64(30))], None, false)).unwrap();
+    block_on(section.patch(&[set(2, Value::U64(30))], false)).unwrap();
     DEFAULT_INTERVAL_S.set(90);
     assert_eq!(interval(&section), Some(EntryState::Value(Value::U64(30))));
     // Clearing the override falls back to the current default.
-    block_on(section.patch(&[clear(2)], None, false)).unwrap();
+    block_on(section.patch(&[clear(2)], false)).unwrap();
     assert_eq!(interval(&section), Some(EntryState::Value(Value::U64(90))));
 }
 
@@ -516,9 +484,8 @@ fn an_explicit_override_survives_a_changed_default() {
 fn reset_clears_every_override() {
     let store = MemoryStore::default();
     let section = section(&store);
-    block_on(section.patch(&[set(3, text("a.io")), set(2, Value::U64(20))], None, false)).unwrap();
-    let patched = block_on(section.reset(None, false)).unwrap();
-    assert_eq!(patched.revision, 2);
+    block_on(section.patch(&[set(3, text("a.io")), set(2, Value::U64(20))], false)).unwrap();
+    block_on(section.reset(false)).unwrap();
     assert!(store.value.borrow().is_none());
     let values = block_on(section.get()).unwrap();
     assert!(values.overridden.is_empty());
@@ -562,7 +529,7 @@ fn an_override_is_applied_on_top_of_the_firmware_defaults() {
     let store = MemoryStore::default();
     *store.firmware.borrow_mut() = Some(firmware("fw.io", 30, None));
     let section = section(&store);
-    block_on(section.patch(&[set(2, Value::U64(20))], None, false)).unwrap();
+    block_on(section.patch(&[set(2, Value::U64(20))], false)).unwrap();
     // The other fields keep the firmware defaults, not `Demo::default()`.
     assert_eq!(store.effective(), firmware("fw.io", 20, None));
     assert_eq!(store.published.borrow().clone(), Some(store.effective()));
@@ -576,9 +543,9 @@ fn clearing_an_override_exposes_the_current_firmware_default() {
     let store = MemoryStore::default();
     *store.firmware.borrow_mut() = Some(firmware("fw.io", 30, None));
     let section = section(&store);
-    block_on(section.patch(&[set(2, Value::U64(20)), set(3, text("a.io"))], None, false)).unwrap();
+    block_on(section.patch(&[set(2, Value::U64(20)), set(3, text("a.io"))], false)).unwrap();
     *store.firmware.borrow_mut() = Some(firmware("fw2.io", 45, None));
-    block_on(section.patch(&[clear(2)], None, false)).unwrap();
+    block_on(section.patch(&[clear(2)], false)).unwrap();
     // The cleared field follows the new default, the override survives.
     assert_eq!(store.effective(), firmware("a.io", 45, None));
     assert_eq!(store.published.borrow().clone(), Some(store.effective()));
@@ -589,14 +556,14 @@ fn none_replaces_a_firmware_value_and_clear_reveals_it_again() {
     let store = MemoryStore::default();
     *store.firmware.borrow_mut() = Some(firmware("fw.io", 30, Some("t")));
     let section = section(&store);
-    block_on(section.patch(&[none(4)], None, false)).unwrap();
+    block_on(section.patch(&[none(4)], false)).unwrap();
     // An explicit "no value" is a user override of a non-empty firmware value.
     assert_eq!(store.effective().token, None);
     assert_eq!(
         store.value.borrow().as_ref().unwrap().token,
         Override::Value(None)
     );
-    block_on(section.patch(&[clear(4)], None, false)).unwrap();
+    block_on(section.patch(&[clear(4)], false)).unwrap();
     assert_eq!(store.effective().token.as_deref(), Some("t"));
     // Nothing is left to persist: only the firmware policy applies.
     assert!(store.value.borrow().is_none());
@@ -607,7 +574,7 @@ fn the_firmware_overrides_are_never_persisted() {
     let store = MemoryStore::default();
     *store.firmware.borrow_mut() = Some(firmware("fw.io", 30, Some("t")));
     let section = section(&store);
-    block_on(section.patch(&[set(2, Value::U64(20))], None, false)).unwrap();
+    block_on(section.patch(&[set(2, Value::U64(20))], false)).unwrap();
     let stored = store.value.borrow().clone().unwrap();
     assert_eq!(stored.interval_s, Override::Value(20));
     assert_eq!(stored.host, Override::Default);
@@ -619,8 +586,8 @@ fn reset_publishes_the_firmware_defaults() {
     let store = MemoryStore::default();
     *store.firmware.borrow_mut() = Some(firmware("fw.io", 30, Some("t")));
     let section = section(&store);
-    block_on(section.patch(&[set(3, text("a.io"))], None, false)).unwrap();
-    block_on(section.reset(None, false)).unwrap();
+    block_on(section.patch(&[set(3, text("a.io"))], false)).unwrap();
+    block_on(section.reset(false)).unwrap();
     assert!(store.value.borrow().is_none());
     assert_eq!(
         store.published.borrow().clone(),
@@ -638,10 +605,10 @@ fn the_validated_value_is_the_one_published() {
     // The firmware default is enabled without a host: invalid on its own, so
     // an unrelated change is rejected, a host override makes it valid.
     assert_eq!(
-        block_on(section.patch(&[set(2, Value::U64(20))], None, false)),
+        block_on(section.patch(&[set(2, Value::U64(20))], false)),
         Err(ConfigError::Field(FieldError::Invalid))
     );
-    block_on(section.patch(&[set(3, text("a.io"))], None, false)).unwrap();
+    block_on(section.patch(&[set(3, text("a.io"))], false)).unwrap();
     let published = store.published.borrow().clone().unwrap();
     assert_eq!(published.validate(), Ok(()));
     assert!(published.enabled);
@@ -653,7 +620,7 @@ fn none_is_an_explicit_override_distinct_from_clear() {
     let store = MemoryStore::default();
     *store.firmware.borrow_mut() = Some(firmware("fw.io", 30, Some("default")));
     let section = section(&store);
-    block_on(section.patch(&[none(4)], None, false)).unwrap();
+    block_on(section.patch(&[none(4)], false)).unwrap();
     let values = block_on(section.get()).unwrap();
     // Overridden, and without a value.
     assert_eq!(values.overridden.as_slice(), [4]);
@@ -665,15 +632,15 @@ fn none_is_an_explicit_override_distinct_from_clear() {
     assert_eq!(store.published.borrow().clone().unwrap().token, None);
 
     // An explicit value replaces it.
-    block_on(section.patch(&[set(4, text("v"))], None, false)).unwrap();
+    block_on(section.patch(&[set(4, text("v"))], false)).unwrap();
     assert_eq!(
         store.value.borrow().as_ref().unwrap().token,
         rohi_config::Override::Value(Some("v".into()))
     );
 
     // Clearing follows the firmware default again.
-    block_on(section.patch(&[none(4)], None, false)).unwrap();
-    block_on(section.patch(&[clear(4)], None, false)).unwrap();
+    block_on(section.patch(&[none(4)], false)).unwrap();
+    block_on(section.patch(&[clear(4)], false)).unwrap();
     let values = block_on(section.get()).unwrap();
     assert!(values.overridden.is_empty());
     assert_eq!(value_of(&values, 4), Some(EntryState::Redacted));
@@ -688,12 +655,12 @@ fn none_is_refused_for_a_required_field() {
     let store = MemoryStore::default();
     let section = section(&store);
     assert_eq!(
-        block_on(section.patch(&[none(3)], None, false)),
+        block_on(section.patch(&[none(3)], false)),
         Err(ConfigError::Field(FieldError::NotOptional))
     );
     // A read-only field stays read-only.
     assert_eq!(
-        block_on(section.patch(&[none(5)], None, false)),
+        block_on(section.patch(&[none(5)], false)),
         Err(ConfigError::Field(FieldError::ReadOnly))
     );
     assert_eq!(*store.writes.borrow(), 0);
@@ -706,7 +673,7 @@ fn an_unavailable_store_is_reported() {
     let section = section(&store);
     assert_eq!(block_on(section.get()), Err(ConfigError::Unavailable));
     assert_eq!(
-        block_on(section.patch(&[], None, false)),
+        block_on(section.patch(&[], false)),
         Err(ConfigError::Unavailable)
     );
 }
@@ -802,13 +769,13 @@ fn a_tuple_of_sections_is_a_registry() {
     assert!(registry.schema(2).is_some());
     assert!(registry.schema(99).is_none());
 
-    let patched = block_on(registry.patch(2, &[set(3, text("x.io"))], None, false)).unwrap();
+    let patched = block_on(registry.patch(2, &[set(3, text("x.io"))], false)).unwrap();
     assert!(patched.restart_required);
     assert!(other_store.0.borrow().is_some());
     assert!(a.value.borrow().is_none());
     assert_eq!(block_on(registry.get(99)), Err(ConfigError::UnknownSection));
     assert_eq!(block_on(().get(1)), Err(ConfigError::UnknownSection));
-    block_on(registry.reset(2, None, false)).unwrap();
+    block_on(registry.reset(2, false)).unwrap();
     assert!(other_store.0.borrow().is_none());
 }
 
@@ -1215,16 +1182,12 @@ fn a_restart_only_store_reports_it_for_every_change_and_factory_reset() {
         &store,
     )),);
 
-    let patched = block_on(registry.patch(1, &[set(3, text("a.io"))], None, false)).unwrap();
+    let patched = block_on(registry.patch(1, &[set(3, text("a.io"))], false)).unwrap();
     assert!(patched.restart_required);
     assert!(store.value.borrow().is_some());
-    let dry = block_on(registry.patch(1, &[set(3, text("b.io"))], None, true)).unwrap();
+    let dry = block_on(registry.patch(1, &[set(3, text("b.io"))], true)).unwrap();
     assert!(dry.restart_required);
-    assert!(
-        block_on(registry.reset(1, None, false))
-            .unwrap()
-            .restart_required
-    );
+    assert!(block_on(registry.reset(1, false)).unwrap().restart_required);
     assert!(store.value.borrow().is_none());
     assert!(block_on(registry.factory_reset()).unwrap().restart_required);
 }
@@ -1487,7 +1450,7 @@ fn reading_a_section_never_reads_a_secret() {
 fn a_patch_never_reads_a_secret_either() {
     let store = VaultStore::default();
     let section = Section::<Vault, _, NoopRawMutex>::new(&store);
-    block_on(section.patch(&[set(2, text("hunter2"))], None, false)).unwrap();
-    block_on(section.patch(&[clear(2)], None, false)).unwrap();
+    block_on(section.patch(&[set(2, text("hunter2"))], false)).unwrap();
+    block_on(section.patch(&[clear(2)], false)).unwrap();
     assert!(store.0.borrow().is_none());
 }

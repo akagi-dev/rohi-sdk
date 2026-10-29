@@ -98,10 +98,8 @@ enum ErrorCode {
   ERROR_CODE_PERMISSION_DENIED = 6;
   // Unexpected device failure.
   ERROR_CODE_INTERNAL = 7;
-  // The addressed object changed since the revision the client expected.
-  ERROR_CODE_CONFLICT = 8;
   // The action ran and was refused for the stable reason in `Error.reason`.
-  ERROR_CODE_REJECTED = 9;
+  ERROR_CODE_REJECTED = 8;
 }
 
 message Error {
@@ -246,8 +244,6 @@ message ConfigSectionInfo {
   string name = 2;
   // Version of the section schema.
   uint32 version = 3;
-  // Changes after every successful write or reset. Restarts from 0 at boot.
-  uint32 revision = 4;
 }
 
 message ConfigFieldDescriptor {
@@ -305,17 +301,13 @@ message GetConfigSectionRequest {
 message GetConfigSectionResponse {
   uint64 section_id = 1;
   uint32 version = 2;
-  uint32 revision = 3;
   // The effective value of every field that has one: what the device runs
   // with. Secrets are `redacted`.
-  repeated ConfigEntry effective = 4;
+  repeated ConfigEntry effective = 3;
   // The ids of the fields the user overrides explicitly. The override value
   // of such a field is its entry in `effective`, so these two lists carry
   // both the effective configuration and the user's overrides.
-  repeated uint32 overridden = 6;
-  // The former `configured` flag; there is no such state any more.
-  reserved 5;
-  reserved "configured";
+  repeated uint32 overridden = 4;
 }
 
 message ConfigMutation {
@@ -347,16 +339,13 @@ message ConfigMutation {
 message PatchConfigSectionRequest {
   uint64 section_id = 1;
   repeated ConfigMutation mutations = 2;
-  // Fails with `ERROR_CODE_CONFLICT` when the section changed meanwhile.
-  optional uint32 expected_revision = 3;
-  // Validate only; nothing is persisted and the revision does not change.
-  bool dry_run = 4;
+  // Validate only; nothing is persisted.
+  bool dry_run = 3;
 }
 
 message PatchConfigSectionResponse {
-  uint32 revision = 1;
   // The change takes effect after a restart.
-  bool restart_required = 2;
+  bool restart_required = 1;
 }
 
 // Removes every override of the section: the effective configuration is the
@@ -364,13 +353,10 @@ message PatchConfigSectionResponse {
 message ResetConfigSectionRequest {
   uint64 section_id = 1;
   bool dry_run = 2;
-  // Fails with `ERROR_CODE_CONFLICT` when the section changed meanwhile.
-  optional uint32 expected_revision = 3;
 }
 
 message ResetConfigSectionResponse {
-  uint32 revision = 1;
-  bool restart_required = 2;
+  bool restart_required = 1;
 }
 
 // Formats the configuration storage: every section is removed, including

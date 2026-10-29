@@ -170,17 +170,14 @@ async fn a_patch_is_stored_atomically_and_secrets_are_never_returned() {
             .config_patch(
                 "wifi",
                 &[set(1, text("office")), set(2, text("hunter2hunter2"))],
-                Some(0),
                 false,
             )
             .await
             .unwrap();
-        assert_eq!(applied.revision, 1);
         assert!(!applied.restart_required);
 
         let values = device.config_get("wifi").await.unwrap();
         assert_eq!(values.overridden, [1, 2]);
-        assert_eq!(values.section.revision, 1);
         assert_eq!(entry(&values, 1), Some(&EntryState::Value(text("office"))));
         assert_eq!(entry(&values, 2), Some(&EntryState::Redacted));
         // The timing is not overridden: it is the default.
@@ -192,7 +189,7 @@ async fn a_patch_is_stored_atomically_and_secrets_are_never_returned() {
 
         // Clearing the override of the password restores its default, none.
         device
-            .config_patch("wifi", &[clear(2)], None, false)
+            .config_patch("wifi", &[clear(2)], false)
             .await
             .unwrap();
         let values = device.config_get("wifi").await.unwrap();
@@ -214,7 +211,7 @@ async fn none_is_an_explicit_override_that_clear_removes() {
     with_device(20, &bench, |mut device| async move {
         // An open network is an explicit choice: no password, overridden.
         device
-            .config_patch("wifi", &[set(1, text("office")), none(2)], None, false)
+            .config_patch("wifi", &[set(1, text("office")), none(2)], false)
             .await
             .unwrap();
         let values = device.config_get("wifi").await.unwrap();
@@ -223,14 +220,14 @@ async fn none_is_an_explicit_override_that_clear_removes() {
 
         // A required field has no "none"; nothing changes.
         let error = device
-            .config_patch("wifi", &[none(3)], None, false)
+            .config_patch("wifi", &[none(3)], false)
             .await
             .unwrap_err();
         assert!(matches!(error, Error::Device(ErrorCode::InvalidArgument)));
 
         // A value replaces it, clear follows the default again.
         device
-            .config_patch("wifi", &[set(2, text("hunter2hunter2"))], None, false)
+            .config_patch("wifi", &[set(2, text("hunter2hunter2"))], false)
             .await
             .unwrap();
         assert_eq!(
@@ -238,11 +235,11 @@ async fn none_is_an_explicit_override_that_clear_removes() {
             Some(&EntryState::Redacted)
         );
         device
-            .config_patch("wifi", &[none(2)], None, false)
+            .config_patch("wifi", &[none(2)], false)
             .await
             .unwrap();
         device
-            .config_patch("wifi", &[clear(2)], None, false)
+            .config_patch("wifi", &[clear(2)], false)
             .await
             .unwrap();
         assert_eq!(device.config_get("wifi").await.unwrap().overridden, [1]);
@@ -261,7 +258,6 @@ async fn an_invalid_mutation_stores_nothing() {
             .config_patch(
                 "gadget",
                 &[set(1, text("lamp")), set(2, Value::U64(1_000))],
-                None,
                 false,
             )
             .await
@@ -269,26 +265,26 @@ async fn an_invalid_mutation_stores_nothing() {
         assert!(matches!(error, Error::Device(ErrorCode::InvalidArgument)));
         // A complete result that fails the typed validation is refused too.
         let error = device
-            .config_patch("gadget", &[set(3, Value::Enum("fast".into()))], None, false)
+            .config_patch("gadget", &[set(3, Value::Enum("fast".into()))], false)
             .await
             .unwrap_err();
         assert!(matches!(error, Error::Device(ErrorCode::InvalidArgument)));
         // So are a read-only field and an unknown one.
         assert!(
             device
-                .config_patch("gadget", &[set(4, text("x"))], None, false)
+                .config_patch("gadget", &[set(4, text("x"))], false)
                 .await
                 .is_err()
         );
         assert!(
             device
-                .config_patch("gadget", &[clear(4)], None, false)
+                .config_patch("gadget", &[clear(4)], false)
                 .await
                 .is_err()
         );
         assert!(
             device
-                .config_patch("gadget", &[clear(99)], None, false)
+                .config_patch("gadget", &[clear(99)], false)
                 .await
                 .is_err()
         );
@@ -299,14 +295,14 @@ async fn an_invalid_mutation_stores_nothing() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn dry_runs_conflicts_restarts_and_reset() {
+async fn dry_runs_restarts_and_reset() {
     let bench = Bench::new();
     with_device(20, &bench, |mut device| async move {
         let dry = device
-            .config_patch("gadget", &[set(1, text("lamp"))], None, true)
+            .config_patch("gadget", &[set(1, text("lamp"))], true)
             .await
             .unwrap();
-        assert_eq!(dry.revision, 0);
+        assert!(dry.restart_required);
         assert!(
             device
                 .config_get("gadget")
@@ -318,19 +314,13 @@ async fn dry_runs_conflicts_restarts_and_reset() {
 
         // This section only takes effect after a restart.
         let applied = device
-            .config_patch("gadget", &[set(1, text("lamp"))], Some(0), false)
+            .config_patch("gadget", &[set(1, text("lamp"))], false)
             .await
             .unwrap();
         assert!(applied.restart_required);
 
-        let error = device
-            .config_patch("gadget", &[set(2, Value::U64(7))], Some(0), false)
-            .await
-            .unwrap_err();
-        assert!(matches!(error, Error::Device(ErrorCode::Conflict)));
-
-        let reset = device.config_reset("gadget", None, false).await.unwrap();
-        assert_eq!(reset.revision, 2);
+        let reset = device.config_reset("gadget", false).await.unwrap();
+        assert!(reset.restart_required);
         assert!(
             device
                 .config_get("gadget")

@@ -943,7 +943,7 @@ async fn reset_asks_only_where_somebody_can_answer() {
     );
     assert_eq!(
         outcome.stdout,
-        "`gadget` reset to the defaults (revision 1)\nA restart is required for the change to take effect\n"
+        "`gadget` reset to the defaults\nA restart is required for the change to take effect\n"
     );
     assert!(bench.gadget.value.borrow().is_none());
 
@@ -1912,7 +1912,7 @@ async fn export_and_apply_carry_the_location() {
 }
 
 // ---------------------------------------------------------------------------
-// optimistic concurrency of `config apply`
+// `config apply` without revisions
 // ---------------------------------------------------------------------------
 
 /// A client link that lets another client change the device right before its
@@ -1941,7 +1941,7 @@ impl rohi::ClientTransport for Interfering {
                 op: rohi::model::MutationOp::Set(rohi::model::Value::U64(9000)),
             };
             rival
-                .config_patch("connectivity", &[node], None, false)
+                .config_patch("connectivity", &[node], false)
                 .await
                 .unwrap();
         }
@@ -1995,7 +1995,7 @@ async fn apply_with_rival(bench: &Bench, file: &std::path::Path, at: usize) -> (
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn apply_conflicts_when_the_section_changes_after_the_diff_was_shown() {
+async fn apply_keeps_a_change_another_client_made_after_the_diff_was_shown() {
     let file = temp_file("race.json", r#"{ "connectivity": { "interval_s": 120 } }"#);
 
     // Undisturbed, the last request is the store of the section.
@@ -2007,21 +2007,14 @@ async fn apply_conflicts_when_the_section_changes_after_the_diff_was_shown() {
         120
     );
 
-    // Another client gets in just before that store: nothing is overwritten.
+    // Another client gets in just before that store: the apply goes through
+    // and the other client's change of another field is kept.
     let bench = configured().await;
     let (outcome, _) = apply_with_rival(&bench, &file, requests).await;
-    let CliError::PartialApply(partial) = outcome.error() else {
-        panic!("{}", outcome.message());
-    };
-    assert_eq!(partial.failed, "connectivity");
-    assert!(partial.applied.is_empty());
-    assert!(matches!(
-        partial.source,
-        Error::Device(rohi::model::ErrorCode::Conflict)
-    ));
+    outcome.ok();
     let stored = bench.telemetry.effective::<ConnectivityConfig>();
     assert_eq!(stored.node_id, 9000);
-    assert_eq!(stored.interval_s, 60);
+    assert_eq!(stored.interval_s, 120);
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -33,16 +33,15 @@
 //! Patch semantics: load the persisted overrides, apply all mutations to a
 //! copy (`Set` creates or replaces an override with a value, `None` overrides an
 //! optional field with an explicit "no value", `Clear` removes the override),
-//! validate the complete effective result, persist atomically, increment the
-//! revision. If anything is invalid nothing is persisted. The same effective
-//! value is validated, stored and handed to the runtime. The whole transaction (revision check,
-//! load, validate, store, bump) runs under a per-section lock, so concurrent
-//! patches and resets are serialized.
+//! validate the complete effective result and persist it atomically. If anything
+//! is invalid nothing is persisted. The same effective value is validated,
+//! stored and handed to the runtime. The whole transaction (load, validate,
+//! store) runs under a per-section lock, so concurrent patches and resets are
+//! serialized and each applies to the latest persisted overrides; for the same
+//! field the last committed value wins.
 
-use core::cell::Cell;
 use core::marker::PhantomData;
 
-use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embassy_sync::mutex::Mutex as AsyncMutex;
 use heapless::Vec;
@@ -63,7 +62,7 @@ use rohi_config::Value;
 /// A config owns its field metadata, the conversion between [`Value`] and its
 /// typed fields (see [`Codec`](crate::Codec)), which fields are optional or
 /// secret, its validation and its link to the generated persisted overrides.
-/// It owns no storage, no transaction, no revision and no runtime task: those
+/// It owns no storage, no transaction and no runtime task: those
 /// belong to the [`Section`] that manages it and to the [`SectionStore`] behind
 /// it. It is not a service either: a service may share a section through
 /// [`ConfigUpdate`], and neither needs the other's identity.
@@ -127,40 +126,6 @@ pub trait Config: HasOverrides + Clone + Default {
     fn validate(&self) -> Result<(), FieldError>;
 }
 
-/// A revision counter that is shared between the commit owner and a section.
-///
-/// It counts completed commits. Where a commit is carried out by a task of its
-/// own, that task owns the counter and advances it in the step that commits,
-/// see [`SectionStore::revision`].
-pub struct Revision<M: RawMutex>(Mutex<M, Cell<u32>>);
-
-impl<M: RawMutex> Revision<M> {
-    /// A counter at 0.
-    pub const fn new() -> Self {
-        Self(Mutex::new(Cell::new(0)))
-    }
-
-    /// The current revision.
-    pub fn get(&self) -> u32 {
-        self.0.lock(Cell::get)
-    }
-
-    /// Advances the revision and returns the new one.
-    pub fn bump(&self) -> u32 {
-        self.0.lock(|revision| {
-            let next = revision.get().wrapping_add(1);
-            revision.set(next);
-            next
-        })
-    }
-}
-
-impl<M: RawMutex> Default for Revision<M> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Failure of the persistence behind a section.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StoreError {
@@ -201,25 +166,6 @@ pub trait SectionStore<C: Config> {
     fn restart_required(&self) -> bool {
         false
     }
-
-    /// The revision of the section, as counted by the owner of the commit.
-    ///
-    /// A store whose commit is carried out by a task of its own, so that it
-    /// completes even when the caller of [`store`](Self::store) or
-    /// [`remove`](Self::remove) is cancelled, must return the revision it
-    /// owns. The owner advances it in the step that commits and publishes, before
-    /// it answers, and only for a commit that succeeded; a factory reset advances
-    /// every section. The section then reads, checks and reports this revision
-    /// and never counts on its own, so a cancelled caller can neither leave a
-    /// stale revision behind a committed value nor advance it for a commit that
-    /// did not happen.
-    ///
-    /// `None` (the default): the store commits within the call, which cannot
-    /// be cancelled halfway, and the section counts its successful writes
-    /// itself.
-    fn revision(&self) -> Option<u32> {
-        None
-    }
 }
 
 /// A [`SectionStore`] whose section is read once, when its owner starts: every
@@ -246,10 +192,6 @@ impl<C: Config, S: SectionStore<C>> SectionStore<C> for RestartRequired<S> {
     fn restart_required(&self) -> bool {
         true
     }
-
-    fn revision(&self) -> Option<u32> {
-        self.0.revision()
-    }
 }
 
 /// Failure of a generic config operation.
@@ -259,8 +201,6 @@ pub enum ConfigError {
     UnknownSection,
     /// A mutation is invalid; nothing was changed.
     Field(FieldError),
-    /// The section changed since the expected revision.
-    Conflict,
     /// The storage is currently unavailable.
     Unavailable,
     /// Unexpected failure.
@@ -282,7 +222,7 @@ impl From<StoreError> for ConfigError {
     }
 }
 
-/// Id, name, version and revision of a section.
+/// Id, name and version of a section.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SectionInfo {
     /// Stable numeric id.
@@ -291,14 +231,12 @@ pub struct SectionInfo {
     pub name: &'static str,
     /// Version of the section schema.
     pub version: u32,
-    /// Changes after every successful write or reset; restarts from 0 at boot.
-    pub revision: u32,
 }
 
 /// A section with its field metadata.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SectionSchema {
-    /// Name, version and current revision.
+    /// Id, name and version.
     pub section: SectionInfo,
     /// Field metadata.
     pub fields: &'static [ConfigField],
@@ -327,7 +265,7 @@ pub struct ConfigEntry {
 /// The readable content of a section.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SectionValues {
-    /// Name, version and current revision.
+    /// Id, name and version.
     pub section: SectionInfo,
     /// The effective configuration: defaults, firmware and user overrides.
     /// A field without a value (an optional field that is not set) is absent.
@@ -360,8 +298,6 @@ pub struct Mutation {
 /// Outcome of a successful patch or reset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Patched {
-    /// The revision after the change (unchanged for a dry run).
-    pub revision: u32,
     /// Whether the change only takes effect after a restart.
     pub restart_required: bool,
 }
@@ -378,41 +314,29 @@ pub struct FactoryReset {
 pub trait ConfigSectionOps {
     /// Stable section id.
     fn id(&self) -> u64;
-    /// Name, version and current revision.
+    /// Id, name and version.
     fn info(&self) -> SectionInfo;
     /// Field metadata.
     fn schema(&self) -> SectionSchema;
     /// Readable content; secrets are redacted.
     async fn get(&self) -> Result<SectionValues, ConfigError>;
     /// Applies `mutations` atomically.
-    async fn patch(
-        &self,
-        mutations: &[Mutation],
-        expected_revision: Option<u32>,
-        dry_run: bool,
-    ) -> Result<Patched, ConfigError>;
+    async fn patch(&self, mutations: &[Mutation], dry_run: bool) -> Result<Patched, ConfigError>;
     /// Removes every user override: the firmware overrides and the defaults apply.
-    async fn reset(
-        &self,
-        expected_revision: Option<u32>,
-        dry_run: bool,
-    ) -> Result<Patched, ConfigError>;
+    async fn reset(&self, dry_run: bool) -> Result<Patched, ConfigError>;
+    /// Whether a change only takes effect after a restart.
+    fn restart_required(&self) -> bool;
 }
 
-/// A managed section: a typed [`Config`] with its store, its revision counter
-/// and the transaction lock that serializes every change.
+/// A managed section: a typed [`Config`] with its store and the transaction
+/// lock that serializes every change.
 ///
 /// It implements the generic `get`, `patch` and `reset` of
 /// [`ConfigSectionOps`] and the transactional [`ConfigUpdate`] once, for every
 /// config. Control requests and services that change their own section must
-/// share the one instance, so that there is one lock and one revision.
-///
-/// The revision lives in RAM: it starts at 0 at boot and is meant for
-/// optimistic concurrency within one boot.
+/// share the one instance, so that there is one lock.
 pub struct Section<C, S, M: RawMutex> {
     store: S,
-    // Counts the writes of a store that has no revision of its own.
-    revision: Revision<M>,
     // Serializes transactions on the store.
     transaction: AsyncMutex<M, ()>,
     _config: PhantomData<fn() -> C>,
@@ -439,29 +363,11 @@ impl<C: Config, S: SectionStore<C>, M: RawMutex> Section<C, S, M> {
         };
         Self {
             store,
-            revision: Revision::new(),
             transaction: AsyncMutex::new(()),
             _config: PhantomData,
         }
     }
 
-    /// The revision: the one of the commit owner when the store has it, so that
-    /// it reflects every completed commit whether or not its caller is still
-    /// waiting.
-    fn revision(&self) -> u32 {
-        self.store.revision().unwrap_or_else(|| self.revision.get())
-    }
-
-    /// The revision after a successful write. The owner of the store has
-    /// already advanced its own; otherwise the section counts it.
-    fn committed(&self) -> u32 {
-        match self.store.revision() {
-            Some(revision) => revision,
-            None => self.revision.bump(),
-        }
-    }
-
-    /// The id of the section: that of its persisted overrides.
     const SECTION_ID: u64 = <C::Overrides as ConfigSection>::ID.0;
     const VERSION: u16 = <C::Overrides as ConfigSection>::VERSION;
 
@@ -520,7 +426,7 @@ impl<C: Config, S: SectionStore<C>, M: RawMutex> Section<C, S, M> {
 
     /// Validates the effective result of `next` and persists it (or removes
     /// the persisted section when no user override is left), publishing the
-    /// value that was validated, then bumps the revision. The one commit step
+    /// value that was validated, The one commit step
     /// of every mutation; callers hold the transaction lock.
     async fn write(
         &self,
@@ -533,10 +439,7 @@ impl<C: Config, S: SectionStore<C>, M: RawMutex> Section<C, S, M> {
         effective.validate()?;
         let restart_required = self.store.restart_required();
         if dry_run {
-            return Ok(Patched {
-                revision: self.revision(),
-                restart_required,
-            });
+            return Ok(Patched { restart_required });
         }
         if !next.is_empty() {
             self.store.store(next, &effective).await?;
@@ -544,17 +447,7 @@ impl<C: Config, S: SectionStore<C>, M: RawMutex> Section<C, S, M> {
             // The last user override is gone: only the firmware policy applies.
             self.store.remove(&effective).await?;
         }
-        Ok(Patched {
-            revision: self.committed(),
-            restart_required,
-        })
-    }
-
-    fn check_revision(&self, expected: Option<u32>) -> Result<(), ConfigError> {
-        match expected {
-            Some(expected) if expected != self.revision() => Err(ConfigError::Conflict),
-            _ => Ok(()),
-        }
+        Ok(Patched { restart_required })
     }
 }
 
@@ -568,7 +461,6 @@ impl<C: Config, S: SectionStore<C>, M: RawMutex> ConfigSectionOps for Section<C,
             id: Self::SECTION_ID,
             name: C::NAME,
             version: u32::from(Self::VERSION),
-            revision: self.revision(),
         }
     }
 
@@ -619,14 +511,8 @@ impl<C: Config, S: SectionStore<C>, M: RawMutex> ConfigSectionOps for Section<C,
         })
     }
 
-    async fn patch(
-        &self,
-        mutations: &[Mutation],
-        expected_revision: Option<u32>,
-        dry_run: bool,
-    ) -> Result<Patched, ConfigError> {
+    async fn patch(&self, mutations: &[Mutation], dry_run: bool) -> Result<Patched, ConfigError> {
         let _transaction = self.transaction.lock().await;
-        self.check_revision(expected_revision)?;
         let stored = self.store.load().await?;
         let persisted = stored.is_some();
         let mut next = stored.unwrap_or_default();
@@ -636,33 +522,26 @@ impl<C: Config, S: SectionStore<C>, M: RawMutex> ConfigSectionOps for Section<C,
         self.write(&next, persisted, dry_run).await
     }
 
-    async fn reset(
-        &self,
-        expected_revision: Option<u32>,
-        dry_run: bool,
-    ) -> Result<Patched, ConfigError> {
+    async fn reset(&self, dry_run: bool) -> Result<Patched, ConfigError> {
         let _transaction = self.transaction.lock().await;
-        self.check_revision(expected_revision)?;
         let restart_required = self.store.restart_required();
         if dry_run {
-            return Ok(Patched {
-                revision: self.revision(),
-                restart_required,
-            });
+            return Ok(Patched { restart_required });
         }
         let effective = self.effective(&C::Overrides::default());
         self.store.remove(&effective).await?;
-        Ok(Patched {
-            revision: self.committed(),
-            restart_required,
-        })
+        Ok(Patched { restart_required })
+    }
+
+    fn restart_required(&self) -> bool {
+        self.store.restart_required()
     }
 }
 
 /// Changes the user overrides of one section from a service, through the same
 /// transaction as a client's patch: under the section lock the persisted
 /// overrides are loaded, changed, the complete effective result is validated,
-/// persisted and published, and the revision is incremented. A service never
+/// persisted and published. A service never
 /// reads and writes the store on its own, which would lose a concurrent change.
 #[allow(async_fn_in_trait)]
 pub trait ConfigUpdate<C: Config> {
@@ -715,16 +594,12 @@ pub trait ConfigRegistry {
         &self,
         section: u64,
         mutations: &[Mutation],
-        expected_revision: Option<u32>,
         dry_run: bool,
     ) -> Result<Patched, ConfigError>;
     /// Resets the section with the given id.
-    async fn reset(
-        &self,
-        section: u64,
-        expected_revision: Option<u32>,
-        dry_run: bool,
-    ) -> Result<Patched, ConfigError>;
+    async fn reset(&self, section: u64, dry_run: bool) -> Result<Patched, ConfigError>;
+    /// Whether a change of any section only takes effect after a restart.
+    fn restart_required(&self) -> bool;
 
     /// Whether no two sections share an id. Firmware checks it once at
     /// start, a clash would make requests reach the wrong section.
@@ -747,7 +622,7 @@ pub trait ConfigRegistry {
             let Some(info) = self.section_info(index) else {
                 continue;
             };
-            restart_required |= self.reset(info.id, None, false).await?.restart_required;
+            restart_required |= self.reset(info.id, false).await?.restart_required;
         }
         Ok(FactoryReset { restart_required })
     }
@@ -770,18 +645,16 @@ impl ConfigRegistry for () {
         Err(ConfigError::UnknownSection)
     }
 
-    async fn patch(
-        &self,
-        _: u64,
-        _: &[Mutation],
-        _: Option<u32>,
-        _: bool,
-    ) -> Result<Patched, ConfigError> {
+    async fn patch(&self, _: u64, _: &[Mutation], _: bool) -> Result<Patched, ConfigError> {
         Err(ConfigError::UnknownSection)
     }
 
-    async fn reset(&self, _: u64, _: Option<u32>, _: bool) -> Result<Patched, ConfigError> {
+    async fn reset(&self, _: u64, _: bool) -> Result<Patched, ConfigError> {
         Err(ConfigError::UnknownSection)
+    }
+
+    fn restart_required(&self) -> bool {
+        false
     }
 }
 
@@ -817,11 +690,10 @@ macro_rules! tuple_config_registry {
                 &self,
                 section: u64,
                 mutations: &[Mutation],
-                expected_revision: Option<u32>,
-                dry_run: bool,
+                        dry_run: bool,
             ) -> Result<Patched, ConfigError> {
                 $(if self.$index.id() == section {
-                    return self.$index.patch(mutations, expected_revision, dry_run).await;
+                    return self.$index.patch(mutations, dry_run).await;
                 })+
                 Err(ConfigError::UnknownSection)
             }
@@ -829,13 +701,16 @@ macro_rules! tuple_config_registry {
             async fn reset(
                 &self,
                 section: u64,
-                expected_revision: Option<u32>,
-                dry_run: bool,
+                        dry_run: bool,
             ) -> Result<Patched, ConfigError> {
                 $(if self.$index.id() == section {
-                    return self.$index.reset(expected_revision, dry_run).await;
+                    return self.$index.reset(dry_run).await;
                 })+
                 Err(ConfigError::UnknownSection)
+            }
+
+            fn restart_required(&self) -> bool {
+                false $(|| self.$index.restart_required())+
             }
         }
     };

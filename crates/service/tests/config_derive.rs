@@ -435,7 +435,6 @@ fn a_section_reads_patches_and_resets_the_generated_config() {
             set(6, Value::bytes(&[1, 2, 3, 4]).unwrap()),
             set(7, Value::F32(10.5)),
         ],
-        None,
         false,
     ))
     .unwrap();
@@ -461,32 +460,32 @@ fn a_section_reads_patches_and_resets_the_generated_config() {
     // The whole effective result is validated: disabling nothing but
     // clearing the label while enabled is refused and changes nothing.
     assert_eq!(
-        block_on(section.patch(&[op(2, MutationOp::Clear)], None, false)),
+        block_on(section.patch(&[op(2, MutationOp::Clear)], false)),
         Err(ConfigError::Field(FieldError::Invalid))
     );
     assert!(block_on(section.get()).unwrap().overridden.contains(&2));
 
     // Explicit "no value" differs from clearing the override.
-    block_on(section.patch(&[op(4, MutationOp::None)], None, false)).unwrap();
+    block_on(section.patch(&[op(4, MutationOp::None)], false)).unwrap();
     assert!(block_on(section.get()).unwrap().overridden.contains(&4));
-    block_on(section.patch(&[op(4, MutationOp::Clear)], None, false)).unwrap();
+    block_on(section.patch(&[op(4, MutationOp::Clear)], false)).unwrap();
     assert!(!block_on(section.get()).unwrap().overridden.contains(&4));
 
     // Writes the schema does not allow.
     assert_eq!(
-        block_on(section.patch(&[set(9, Value::U64(1))], None, false)),
+        block_on(section.patch(&[set(9, Value::U64(1))], false)),
         Err(ConfigError::Field(FieldError::ReadOnly))
     );
     assert_eq!(
-        block_on(section.patch(&[op(8, MutationOp::None)], None, false)),
+        block_on(section.patch(&[op(8, MutationOp::None)], false)),
         Err(ConfigError::Field(FieldError::NotOptional))
     );
     assert_eq!(
-        block_on(section.patch(&[set(3, Value::U64(101))], None, false)),
+        block_on(section.patch(&[set(3, Value::U64(101))], false)),
         Err(ConfigError::Field(FieldError::OutOfRange))
     );
 
-    block_on(section.reset(None, false)).unwrap();
+    block_on(section.reset(false)).unwrap();
     assert!(store.value.borrow().is_none());
     assert!(block_on(section.get()).unwrap().overridden.is_empty());
     assert!(!store.published.borrow().clone().unwrap().enabled);
@@ -496,22 +495,12 @@ fn a_section_reads_patches_and_resets_the_generated_config() {
 fn a_service_updates_the_same_section_as_the_client() {
     let store = Store::default();
     let section = Section::<Gadget, _, NoopRawMutex>::new(&store);
-    let revision = |section: &Section<Gadget, &Store, NoopRawMutex>| {
-        block_on(section.get()).unwrap().section.revision
-    };
-    let before = revision(&section);
     let done = block_on(section.update(|overrides| {
         overrides.level_percent = rohi_config::Override::Value(10);
     }))
     .unwrap();
-    assert_eq!(done.revision, before + 1);
-    assert_eq!(revision(&section), done.revision);
-    block_on(section.patch(&[set(1, Value::Bool(false))], Some(done.revision), false)).unwrap();
-    // A stale expectation is a conflict, for the client and the service alike.
-    assert_eq!(
-        block_on(section.patch(&[set(1, Value::Bool(true))], Some(done.revision), false)),
-        Err(ConfigError::Conflict)
-    );
+    assert!(!done.restart_required);
+    block_on(section.patch(&[set(1, Value::Bool(false))], false)).unwrap();
     let stored = store.value.borrow().clone().unwrap();
     assert_eq!(stored.level_percent.as_value(), Some(&10));
 }
@@ -535,12 +524,12 @@ fn firmware_overrides_sit_between_the_defaults_and_the_user() {
         level(&section),
         rohi_service::EntryState::Value(Value::U64(70))
     );
-    block_on(section.patch(&[set(3, Value::U64(20))], None, false)).unwrap();
+    block_on(section.patch(&[set(3, Value::U64(20))], false)).unwrap();
     assert_eq!(
         level(&section),
         rohi_service::EntryState::Value(Value::U64(20))
     );
-    block_on(section.reset(None, false)).unwrap();
+    block_on(section.reset(false)).unwrap();
     assert_eq!(
         level(&section),
         rohi_service::EntryState::Value(Value::U64(70))

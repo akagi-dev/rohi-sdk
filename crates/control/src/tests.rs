@@ -412,7 +412,6 @@ fn a_patch_is_atomic_and_secrets_are_never_returned() {
     else {
         panic!()
     };
-    assert_eq!(done.revision, 1);
     assert!(!done.restart_required);
 
     let Reply::GetConfigSection(section) = call(
@@ -423,7 +422,6 @@ fn a_patch_is_atomic_and_secrets_are_never_returned() {
         panic!()
     };
     assert_eq!(section.overridden.as_slice(), [1, 3, 4]);
-    assert_eq!(section.revision, 1);
     // The effective values include the defaults, such as the port.
     let port = section.effective.iter().find(|e| e.field_id == 2).unwrap();
     assert!(matches!(
@@ -460,7 +458,7 @@ fn a_patch_is_atomic_and_secrets_are_never_returned() {
     ) else {
         panic!()
     };
-    assert_eq!(section.revision, 1);
+    assert_eq!(section.overridden.as_slice(), [1, 3, 4]);
 }
 
 #[test]
@@ -518,22 +516,15 @@ fn none_overrides_an_optional_field_and_is_refused_for_a_required_one() {
 }
 
 #[test]
-fn patch_conflicts_dry_runs_clear_and_reset() {
+fn patch_dry_runs_clear_and_reset() {
     controller!(controller, OpenPolicy);
-    let mut stale = patch(1, &[mutation(3, string_value("a.io"))]);
-    stale.set_expected_revision(5);
-    assert_eq!(
-        error_code(&call(&controller, &PLAIN, Call::PatchConfigSection(stale))),
-        pb::ErrorCode::Conflict
-    );
-
     let mut dry = patch(1, &[mutation(3, string_value("a.io"))]);
     dry.dry_run = true;
     let Reply::PatchConfigSection(done) = call(&controller, &PLAIN, Call::PatchConfigSection(dry))
     else {
         panic!()
     };
-    assert_eq!(done.revision, 0);
+    assert!(!done.restart_required);
     let get = || {
         call(
             &controller,
@@ -570,32 +561,16 @@ fn patch_conflicts_dry_runs_clear_and_reset() {
     assert!(section.effective.iter().all(|e| e.field_id != 4));
     assert_eq!(section.overridden.as_slice(), [3]);
 
-    // A reset of a revision the section has moved past is a conflict.
-    let mut stale = pb::ResetConfigSectionRequest {
+    let current = pb::ResetConfigSectionRequest {
         section_id: 1,
         ..Default::default()
     };
-    stale.set_expected_revision(1);
-    assert_eq!(
-        error_code(&call(&controller, &PLAIN, Call::ResetConfigSection(stale))),
-        pb::ErrorCode::Conflict
-    );
-    let Reply::GetConfigSection(section) = get() else {
-        panic!()
-    };
-    assert_eq!(section.overridden.as_slice(), [3]);
-
-    let mut current = pb::ResetConfigSectionRequest {
-        section_id: 1,
-        ..Default::default()
-    };
-    current.set_expected_revision(2);
     let Reply::ResetConfigSection(done) =
         call(&controller, &PLAIN, Call::ResetConfigSection(current))
     else {
         panic!()
     };
-    assert_eq!(done.revision, 3);
+    assert!(!done.restart_required);
     let Reply::GetConfigSection(section) = get() else {
         panic!()
     };
@@ -907,7 +882,6 @@ fn the_policy_gates_writes_and_privileged_actions() {
     let reset = Call::ResetConfigSection(pb::ResetConfigSectionRequest {
         section_id: 1,
         dry_run: true,
-        ..Default::default()
     });
     assert_eq!(
         error_code(&call(&controller, &PLAIN, reset)),

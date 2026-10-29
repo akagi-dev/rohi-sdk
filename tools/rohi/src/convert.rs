@@ -170,7 +170,6 @@ pub(crate) fn section(info: &pb::ConfigSectionInfo) -> SectionInfo {
         id: info.id,
         name: info.name.as_str().to_owned(),
         version: info.version,
-        revision: info.revision,
     }
 }
 
@@ -204,7 +203,6 @@ pub(crate) fn config_values(
             id: response.section_id,
             name: schema.section.name.clone(),
             version: response.version,
-            revision: response.revision,
         },
         overridden: response.overridden.iter().copied().collect(),
         entries: response

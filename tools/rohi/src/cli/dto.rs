@@ -176,7 +176,6 @@ pub fn config_values(values: &ConfigValues, schema: &ConfigSchema) -> Json {
 pub fn applied(section: &str, applied: &Applied, dry_run: bool) -> Json {
     json!({
         "section": section,
-        "revision": applied.revision,
         "restart_required": applied.restart_required,
         "dry_run": dry_run,
     })

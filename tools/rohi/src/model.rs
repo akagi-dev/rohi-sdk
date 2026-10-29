@@ -79,7 +79,6 @@ open_enum! {
         Unavailable = Unavailable => "unavailable",
         PermissionDenied = PermissionDenied => "permission denied",
         Internal = Internal => "internal error",
-        Conflict = Conflict => "conflict",
         Rejected = Rejected => "rejected",
     }
 }
@@ -260,8 +259,6 @@ pub struct SectionInfo {
     pub name: String,
     /// Version of the section schema.
     pub version: u32,
-    /// Changes after every successful write or reset.
-    pub revision: u32,
 }
 
 /// A config field.
@@ -352,8 +349,6 @@ pub struct Mutation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct Applied {
-    /// Revision after the change.
-    pub revision: u32,
     /// Whether the change needs a restart.
     pub restart_required: bool,
 }

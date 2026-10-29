@@ -175,7 +175,7 @@ pub fn device(
 ) -> UrbanDevice {
     let network_failed = network.is_none();
     // The `wifi` service and the control plane share the one section: one
-    // transaction lock and one revision for every change.
+    // transaction lock for every change.
     let sections: &'static ConfigSections = SECTIONS.init(config_sections(config));
     let services: &'static UrbanServices = SERVICES.init(UrbanServices {
         wifi: Startup::new(

@@ -163,13 +163,11 @@ fn patch_request_round_trips_and_keeps_values_out_of_debug() {
         })
         .ok()
         .unwrap();
-    let mut patch = PatchConfigSectionRequest {
+    let patch = PatchConfigSectionRequest {
         section_id: 1,
         mutations,
         dry_run: true,
-        ..Default::default()
     };
-    patch.set_expected_revision(4);
     let request = Request {
         protocol_version: PROTOCOL_VERSION,
         request_id: 1,
@@ -336,7 +334,6 @@ fn full_config_schema_fits_the_response_limit() {
         id: u64::MAX,
         name: text(&"s".repeat(limits::MAX_NAME_LEN)),
         version: u32::MAX,
-        revision: u32::MAX,
     });
     round_trip(response(Response_::Response::GetConfigSchema(schema)));
 }

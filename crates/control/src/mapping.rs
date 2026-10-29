@@ -278,7 +278,6 @@ pub(crate) fn section_info(info: &SectionInfo) -> pb::ConfigSectionInfo {
         id: info.id,
         name: text(info.name),
         version: info.version,
-        revision: info.revision,
     }
 }
 

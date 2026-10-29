@@ -16,12 +16,13 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-//! Revisions follow completed commits, not waiting callers.
+//! Transactions of a section: serialization, commits of a cancelled caller and
+//! publication.
 //!
 //! The store below models the configuration owner of the firmware: a request
-//! is queued, the owner task commits, publishes and advances the revision in
-//! one synchronous step, and answers. A caller that is cancelled after its
-//! request was queued still gets its commit, and the revision must say so.
+//! is queued, the owner task commits and publishes in one synchronous step, and
+//! answers. A caller that is cancelled after its request was queued still gets
+//! its commit.
 
 extern crate std;
 
@@ -31,11 +32,12 @@ use core::pin::pin;
 use core::task::Poll;
 use std::vec::Vec;
 
+use embassy_futures::join::join;
 use embassy_futures::poll_once;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use rohi_config::{Override, Value};
 use rohi_service::{
-    Config, ConfigError, ConfigSectionOps, ConfigUpdate, Mutation, MutationOp, Revision, Section,
+    Config, ConfigError, ConfigSectionOps, ConfigUpdate, Mutation, MutationOp, Section,
     SectionStore, StoreError,
 };
 
@@ -44,6 +46,8 @@ use rohi_service::{
 struct Lamp {
     #[config(id = 1, min = 0, max = 100)]
     level: u8,
+    #[config(id = 2, min = 0, max = 255)]
+    hue: u8,
 }
 
 #[derive(Clone)]
@@ -52,14 +56,13 @@ enum Request {
     Remove,
 }
 
-/// The commit owner: a queue, the persisted overrides and the revision.
+/// The commit owner: a queue and the persisted overrides.
 #[derive(Default)]
 struct Owner {
     queue: RefCell<Option<Request>>,
     response: Cell<Option<Result<(), StoreError>>>,
     persisted: RefCell<Option<LampOverrides>>,
-    published: RefCell<Vec<u8>>,
-    revision: Revision<NoopRawMutex>,
+    published: RefCell<Vec<(u8, u8)>>,
     fail_next: Cell<bool>,
 }
 
@@ -77,22 +80,19 @@ impl Owner {
             Request::Store(overrides) => {
                 let effective = rohi_config::materialize::<Lamp>(&Default::default(), &overrides);
                 *self.persisted.borrow_mut() = Some(overrides);
-                self.published.borrow_mut().push(effective.level);
+                self.published
+                    .borrow_mut()
+                    .push((effective.level, effective.hue));
             }
             Request::Remove => {
                 *self.persisted.borrow_mut() = None;
-                self.published.borrow_mut().push(Lamp::default().level);
+                self.published
+                    .borrow_mut()
+                    .push((Lamp::default().level, Lamp::default().hue));
             }
         }
-        // Commit, publication and revision in one step, before the answer.
-        self.revision.bump();
+        // Commit and publication in one step, before the answer.
         self.response.set(Some(Ok(())));
-    }
-
-    /// A factory reset: the whole storage is formatted, every section counts.
-    fn factory_reset(&self) {
-        *self.persisted.borrow_mut() = None;
-        self.revision.bump();
     }
 
     async fn call(&self, request: Request) -> Result<(), StoreError> {
@@ -124,23 +124,19 @@ impl SectionStore<Lamp> for &Owner {
     async fn remove(&self, _: &Lamp) -> Result<(), StoreError> {
         self.call(Request::Remove).await
     }
-
-    fn revision(&self) -> Option<u32> {
-        Some(self.revision.get())
-    }
 }
 
 type LampSection<'a> = Section<Lamp, &'a Owner, NoopRawMutex>;
 
 fn set(level: u64) -> [Mutation; 1] {
-    [Mutation {
-        field_id: 1,
-        op: MutationOp::Set(Value::U64(level)),
-    }]
+    field(1, level)
 }
 
-fn revision(section: &LampSection<'_>) -> u32 {
-    section.info().revision
+fn field(field_id: u32, value: u64) -> [Mutation; 1] {
+    [Mutation {
+        field_id,
+        op: MutationOp::Set(Value::U64(value)),
+    }]
 }
 
 /// Polls `operation` until the owner has answered, running the owner task
@@ -156,106 +152,112 @@ fn drive<T>(owner: &Owner, operation: impl core::future::Future<Output = T>) -> 
 }
 
 #[test]
-fn a_cancelled_patch_still_advances_the_revision() {
+fn a_cancelled_patch_is_still_committed_and_published() {
     let owner = Owner::default();
     let section = LampSection::new(&owner);
-    assert_eq!(revision(&section), 0);
 
     // The caller queues the request and is cancelled while it waits.
     {
         let mutations = set(30);
-        let mut patch = pin!(section.patch(&mutations, Some(0), false));
+        let mut patch = pin!(section.patch(&mutations, false));
         assert!(poll_once(patch.as_mut()).is_pending());
         assert!(owner.queue.borrow().is_some());
     }
 
     // The owner task commits and publishes without the caller.
     owner.process();
-    assert_eq!(*owner.published.borrow(), [30]);
+    assert_eq!(*owner.published.borrow(), [(30, 0)]);
     assert!(owner.persisted.borrow().is_some());
-    assert_eq!(revision(&section), 1);
 
-    // A client that still holds the previous revision is refused, and nothing
-    // is overwritten.
-    assert_eq!(
-        drive(&owner, section.patch(&set(80), Some(0), false)),
-        Err(ConfigError::Conflict)
-    );
-    assert_eq!(*owner.published.borrow(), [30]);
-    // The current revision is accepted.
-    let done = drive(&owner, section.patch(&set(80), Some(1), false)).unwrap();
-    assert_eq!(done.revision, 2);
-    assert_eq!(revision(&section), 2);
+    // The section is usable afterwards and builds on the committed value.
+    drive(&owner, section.patch(&field(2, 7), false)).unwrap();
+    assert_eq!(*owner.published.borrow(), [(30, 0), (30, 7)]);
 }
 
 #[test]
-fn a_write_that_never_reached_the_owner_does_not_advance_the_revision() {
+fn a_write_that_never_reached_the_owner_changes_nothing() {
     let owner = Owner::default();
     let section = LampSection::new(&owner);
     // Dropped before it is polled at all.
-    drop(section.patch(&set(30), None, false));
+    drop(section.patch(&set(30), false));
     // Cancelled while it waits for the section lock: the request is not
     // queued.
     {
         let (a, b) = (set(10), set(20));
-        let mut first = pin!(section.patch(&a, None, false));
+        let mut first = pin!(section.patch(&a, false));
         assert!(poll_once(first.as_mut()).is_pending());
         owner.queue.take();
-        let mut second = pin!(section.patch(&b, None, false));
+        let mut second = pin!(section.patch(&b, false));
         assert!(poll_once(second.as_mut()).is_pending());
         assert!(owner.queue.borrow().is_none());
     }
-    assert_eq!(revision(&section), 0);
     assert!(owner.persisted.borrow().is_none());
-    // The section is usable and counts from where the owner is.
-    let done = drive(&owner, section.patch(&set(40), Some(0), false)).unwrap();
-    assert_eq!(done.revision, 1);
+    assert!(owner.published.borrow().is_empty());
+    // The section is usable.
+    drive(&owner, section.patch(&set(40), false)).unwrap();
+    assert_eq!(*owner.published.borrow(), [(40, 0)]);
 }
 
 #[test]
-fn a_failed_commit_does_not_advance_the_revision() {
+fn a_failed_commit_publishes_nothing() {
     let owner = Owner::default();
     let section = LampSection::new(&owner);
     owner.fail_next.set(true);
     assert_eq!(
-        drive(&owner, section.patch(&set(30), None, false)),
+        drive(&owner, section.patch(&set(30), false)),
         Err(ConfigError::Unavailable)
     );
-    assert_eq!(revision(&section), 0);
     assert!(owner.published.borrow().is_empty());
-    // Invalid input never reaches the owner.
-    assert!(matches!(
-        drive(&owner, section.patch(&set(300), None, false)),
-        Err(ConfigError::Field(_))
-    ));
-    assert_eq!(revision(&section), 0);
-    // A dry run changes nothing either.
-    drive(&owner, section.patch(&set(30), None, true)).unwrap();
-    assert_eq!(revision(&section), 0);
-    assert!(owner.queue.borrow().is_none());
+    assert!(owner.persisted.borrow().is_none());
 }
 
 #[test]
-fn a_cancelled_reset_still_advances_the_revision() {
+fn an_invalid_configuration_is_never_committed() {
     let owner = Owner::default();
     let section = LampSection::new(&owner);
-    drive(&owner, section.patch(&set(30), None, false)).unwrap();
+    assert!(matches!(
+        drive(&owner, section.patch(&set(300), false)),
+        Err(ConfigError::Field(_))
+    ));
+    // One invalid mutation rejects the valid ones of the same patch.
+    let mixed = [set(30)[0].clone(), field(2, 300)[0].clone()];
+    assert!(matches!(
+        drive(&owner, section.patch(&mixed, false)),
+        Err(ConfigError::Field(_))
+    ));
+    assert!(owner.queue.borrow().is_none());
+    assert!(owner.persisted.borrow().is_none());
+    assert!(owner.published.borrow().is_empty());
+}
+
+#[test]
+fn a_dry_run_writes_nothing() {
+    let owner = Owner::default();
+    let section = LampSection::new(&owner);
+    drive(&owner, section.patch(&set(30), true)).unwrap();
+    drive(&owner, section.reset(true)).unwrap();
+    assert!(owner.queue.borrow().is_none());
+    assert!(owner.persisted.borrow().is_none());
+    assert!(owner.published.borrow().is_empty());
+}
+
+#[test]
+fn a_cancelled_reset_is_still_committed() {
+    let owner = Owner::default();
+    let section = LampSection::new(&owner);
+    drive(&owner, section.patch(&set(30), false)).unwrap();
     {
-        let reset = section.reset(Some(1), false);
+        let reset = section.reset(false);
         let mut reset = pin!(reset);
         assert!(poll_once(reset.as_mut()).is_pending());
     }
     owner.process();
     assert!(owner.persisted.borrow().is_none());
-    assert_eq!(revision(&section), 2);
-    assert_eq!(
-        drive(&owner, section.reset(Some(1), false)),
-        Err(ConfigError::Conflict)
-    );
+    assert_eq!(*owner.published.borrow(), [(30, 0), (0, 0)]);
 }
 
 #[test]
-fn a_cancelled_service_update_still_advances_the_revision() {
+fn a_cancelled_service_update_is_still_committed() {
     let owner = Owner::default();
     let section = LampSection::new(&owner);
     {
@@ -264,34 +266,41 @@ fn a_cancelled_service_update_still_advances_the_revision() {
         assert!(poll_once(update.as_mut()).is_pending());
     }
     owner.process();
-    assert_eq!(revision(&section), 1);
-    // The client and the service share the revision.
-    assert_eq!(
-        drive(&owner, section.patch(&set(1), Some(0), false)),
-        Err(ConfigError::Conflict)
-    );
+    assert_eq!(*owner.published.borrow(), [(55, 0)]);
 }
 
 #[test]
-fn a_cancelled_factory_reset_leaves_no_stale_revision() {
+fn concurrent_changes_of_different_fields_are_both_kept() {
     let owner = Owner::default();
     let section = LampSection::new(&owner);
-    drive(&owner, section.patch(&set(30), None, false)).unwrap();
-    // The reset is queued and the caller goes away; the owner formats the
-    // storage and counts it for every section.
-    owner.factory_reset();
-    assert_eq!(revision(&section), 2);
-    assert_eq!(
-        drive(&owner, section.patch(&set(50), Some(1), false)),
-        Err(ConfigError::Conflict)
+    // A client patch and a service update race for the section lock; the
+    // second one is applied to what the first one committed.
+    let (patch, update) = drive(
+        &owner,
+        join(
+            section.patch(&set(30), false),
+            section.update(|overrides| overrides.hue = Override::Value(7)),
+        ),
     );
+    patch.unwrap();
+    update.unwrap();
+    assert_eq!(*owner.published.borrow(), [(30, 0), (30, 7)]);
+    let values = drive(&owner, section.get()).unwrap();
+    assert_eq!(values.overridden.as_slice(), [1, 2]);
 }
 
 #[test]
-fn the_revision_counter_counts_and_wraps() {
-    let revision = Revision::<NoopRawMutex>::new();
-    assert_eq!(revision.get(), 0);
-    assert_eq!(revision.bump(), 1);
-    assert_eq!(revision.get(), 1);
-    assert_eq!(Revision::<NoopRawMutex>::default().get(), 0);
+fn the_last_committed_change_of_a_field_wins() {
+    let owner = Owner::default();
+    let section = LampSection::new(&owner);
+    let (a, b) = drive(
+        &owner,
+        join(
+            section.patch(&set(10), false),
+            section.patch(&set(20), false),
+        ),
+    );
+    a.unwrap();
+    b.unwrap();
+    assert_eq!(*owner.published.borrow(), [(10, 0), (20, 0)]);
 }

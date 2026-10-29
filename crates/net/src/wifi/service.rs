@@ -287,7 +287,7 @@ const fn bytes(descriptor: FieldDescriptor) -> FieldDescriptor {
 /// A scan is bounded by the `scan_timeout` of the configuration, measured
 /// with `delay`. `connect` changes the `wifi` section through `config`, the
 /// same transaction as a client's config patch, so it keeps the other
-/// overrides and the revision of the section follows.
+/// overrides.
 #[derive(Service)]
 pub struct WifiService<'a, M: RawMutex, D, P, U> {
     handle: WifiHandle<'a, M>,
@@ -965,7 +965,7 @@ mod tests {
     }
 
     #[test]
-    fn connect_shares_the_revision_and_does_not_lose_a_concurrent_patch() {
+    fn connect_shares_the_transaction_and_does_not_lose_a_concurrent_patch() {
         use rohi_service::{ConfigSectionOps, Mutation, MutationOp};
 
         let shared = Shared::new();
@@ -981,19 +981,17 @@ mod tests {
         };
         let (connected, patched) = block_on(embassy_futures::join::join(
             service.invoke(action::CONNECT, &args, &mut out),
-            section.patch(&[timing], None, false),
+            section.patch(&[timing], false),
         ));
         assert_eq!(connected, Ok(()));
         assert!(patched.is_ok());
-        // Both writes went through the section: both overrides survive and
-        // the revision counted both.
+        // Both writes went through the section: both overrides survive.
         let stored = store.value.borrow().clone().unwrap();
         assert_eq!(
             stored.ssid,
             Override::Value(Some(WifiSsid::from_bytes(b"office").unwrap()))
         );
         assert_eq!(stored.scan_timeout_ms, Override::Value(9_000));
-        assert_eq!(section.info().revision, 2);
     }
 
     #[test]

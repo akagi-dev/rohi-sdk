@@ -166,7 +166,6 @@ impl<T: ClientTransport> Device<T> {
         &mut self,
         section: &str,
         mutations: &[Mutation],
-        expected_revision: Option<u32>,
         dry_run: bool,
     ) -> Result<Applied> {
         let schema = self.config_schema(section).await?;
@@ -176,45 +175,28 @@ impl<T: ClientTransport> Device<T> {
                 .ok_or_else(|| Error::InvalidInput("a value does not fit the protocol".into()))?;
             list.push(wire).map_err(|_| Error::TooLarge)?;
         }
-        let mut request = pb::PatchConfigSectionRequest {
+        let request = pb::PatchConfigSectionRequest {
             section_id: schema.section.id,
             mutations: list,
             dry_run,
-            ..Default::default()
         };
-        if let Some(revision) = expected_revision {
-            request.set_expected_revision(revision);
-        }
         match self.call(Call::PatchConfigSection(request)).await? {
             Reply::PatchConfigSection(done) => Ok(Applied {
-                revision: done.revision,
                 restart_required: done.restart_required,
             }),
             other => Err(unexpected(&other)),
         }
     }
 
-    /// Removes the persisted section and restores the defaults. With
-    /// `expected_revision` it fails with a conflict when the section changed
-    /// since that revision.
-    pub async fn config_reset(
-        &mut self,
-        section: &str,
-        expected_revision: Option<u32>,
-        dry_run: bool,
-    ) -> Result<Applied> {
-        let mut request = pb::ResetConfigSectionRequest {
+    /// Removes the persisted section and restores the defaults.
+    pub async fn config_reset(&mut self, section: &str, dry_run: bool) -> Result<Applied> {
+        let request = pb::ResetConfigSectionRequest {
             section_id: self.section_id(section).await?,
             dry_run,
-            ..Default::default()
         };
-        if let Some(revision) = expected_revision {
-            request.set_expected_revision(revision);
-        }
         let call = Call::ResetConfigSection(request);
         match self.call(call).await? {
             Reply::ResetConfigSection(done) => Ok(Applied {
-                revision: done.revision,
                 restart_required: done.restart_required,
             }),
             other => Err(unexpected(&other)),

@@ -172,14 +172,6 @@ impl<B: Binding> SectionStore<B::Config> for Stored<B> {
     fn restart_required(&self) -> bool {
         B::RESTART_REQUIRED
     }
-
-    // The owner task counts the commits, see [`crate::config`]: the revision
-    // is not the caller's to advance, and a cancelled caller cannot lose it.
-    fn revision(&self) -> Option<u32> {
-        Some(crate::config::section_revision(
-            crate::config::managed_id::<B>(),
-        ))
-    }
 }
 
 /// `wifi`: the desired state of the Wi-Fi manager.
@@ -329,9 +321,6 @@ macro_rules! firmware_configs {
             ($(::rohi_service::Section::new($crate::bindings::Stored::<$managed>::new(config)),)+)
         }
 
-        /// Number of managed sections.
-        const MANAGED_SECTIONS: usize = [$(stringify!($managed)),+].len();
-
         const _: () = assert!(
             ids_are_unique(&[
                 $(managed_id::<$managed>(),)+
@@ -339,40 +328,6 @@ macro_rules! firmware_configs {
             ]),
             "two config bindings share a section id"
         );
-
-        /// The ids of the managed sections, in the order of the revisions.
-        const MANAGED_IDS: [u64; MANAGED_SECTIONS] = [$(managed_id::<$managed>(),)+];
-
-        /// The revision of every managed section, advanced by the owner task in the
-        /// step that commits and publishes it, see [`bump_revision`]. The sections of
-        /// the control plane read it through [`Stored`]($crate::bindings::Stored), so it
-        /// counts completed commits whether or not the caller of a commit is still
-        /// waiting.
-        static REVISIONS: [::rohi_service::Revision<$crate::tasks::RawMutex>; MANAGED_SECTIONS] =
-            [const { ::rohi_service::Revision::new() }; MANAGED_SECTIONS];
-
-        /// The revision of the managed section `id`; 0 for an id that is not managed.
-        pub(crate) fn section_revision(id: u64) -> u32 {
-            MANAGED_IDS
-                .iter()
-                .position(|managed| *managed == id)
-                .map_or(0, |index| REVISIONS[index].get())
-        }
-
-        /// Counts a successful commit or removal of the section `id`. Private
-        /// sections have no revision.
-        fn bump_revision(id: SectionId) {
-            if let Some(index) = MANAGED_IDS.iter().position(|managed| *managed == id.0) {
-                REVISIONS[index].bump();
-            }
-        }
-
-        /// Counts a factory reset or a recovery format for every managed section.
-        fn bump_all_revisions() {
-            for revision in &REVISIONS {
-                revision.bump();
-            }
-        }
 
         /// Publishes the committed (`Some`) or removed (`None`) section `id`.
         /// `boot`: the first publication of a start, which also covers
