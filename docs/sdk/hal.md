@@ -22,10 +22,10 @@ and application code is heapless. All waits use monotonic async timers; nothing 
 
 | Component | Location | Role |
 |-----------|----------|------|
-| Drivers | `crates/rohi-hal/src/sensors/` | BMx280, SCD4x, SDS011, noise. Hardware independent (`embedded-hal-async`, `embedded-io-async`), unit tested on a host |
-| Runtime | `crates/rohi-hal/src/runtime/` | `Runner` lifecycle, `Reporter`, `EventBus`, backoff, bounded I²C |
-| Types, store | `crates/rohi-hal/src/` (`measurements`, `sensor`, `store`, ...) | Typed units, `SensorEvent`, `MeasurementStore`, `MeasurementsSnapshot` |
-| Board | `crates/rohi-hal-esp/src/board/altruist_urban/` | All pin assignments, bus configuration (features `esp32c3` / `esp32c6`) |
+| Drivers | `crates/hal/src/sensors/` | BMx280, SCD4x, SDS011, noise. Hardware independent (`embedded-hal-async`, `embedded-io-async`), unit tested on a host |
+| Runtime | `crates/hal/src/runtime/` | `Runner` lifecycle, `Reporter`, `EventBus`, backoff, bounded I²C |
+| Types, store | `crates/hal/src/` (`measurements`, `sensor`, `store`, ...) | Typed units, `SensorEvent`, `MeasurementStore`, `MeasurementsSnapshot` |
+| Board | `crates/hal-esp/src/board/altruist_urban/` | All pin assignments, bus configuration (features `esp32c3` / `esp32c6`) |
 | Tasks | `firmwares/altruist-urban/src/tasks/` | One Embassy task per sensor, single `MeasurementStore` owner |
 
 Every sensor runs in its own task, so a failing or slow sensor never delays another one. Lightweight I²C sensors share

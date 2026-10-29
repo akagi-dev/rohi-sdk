@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! `rohi action`: the generic operations of the services.
 
 use super::diagnostic::CliError;

@@ -1,0 +1,75 @@
+[wifi] id=0x335246ad20248b26 version=1
+  field 1 "ssid" String unit=None enum=0 writable=true secret=false optional=true bounds=None
+  field 2 "password" String unit=None enum=0 writable=true secret=true optional=true bounds=None
+  field 3 "scan_timeout" U64 unit=Ms enum=0 writable=true secret=false optional=false bounds=Some(U64(1000, 120000))
+  field 4 "connect_timeout" U64 unit=Ms enum=0 writable=true secret=false optional=false bounds=Some(U64(5000, 120000))
+  field 5 "backoff_initial" U64 unit=Ms enum=0 writable=true secret=false optional=false bounds=Some(U64(100, 600000))
+  field 6 "backoff_max" U64 unit=Ms enum=0 writable=true secret=false optional=false bounds=Some(U64(100, 3600000))
+  field 7 "link_refresh" U64 unit=Ms enum=0 writable=true secret=false optional=false bounds=Some(U64(1000, 600000))
+  overridable [1, 2, 3, 4, 5, 6, 7]
+  default 1: none
+  default 2: set=Ok(false)
+  default 3: u64 20000
+  default 4: u64 30000
+  default 5: u64 1000
+  default 6: u64 60000
+  default 7: u64 10000
+  default valid=Ok(())
+  cbor a701f602f603194e2004197530051903e80619ea6007192710
+[network] id=0x48f89649eb74bec7 version=1
+  field 1 "address_mode" Enum unit=None enum=1 writable=true secret=false optional=false bounds=None
+  field 2 "ip" String unit=None enum=0 writable=true secret=false optional=true bounds=None
+  field 3 "prefix_len" U64 unit=None enum=0 writable=true secret=false optional=true bounds=Some(U64(1, 30))
+  field 4 "gateway" String unit=None enum=0 writable=true secret=false optional=true bounds=None
+  field 5 "dns" String unit=None enum=0 writable=true secret=false optional=true bounds=None
+  field 6 "hostname" String unit=None enum=0 writable=true secret=false optional=true bounds=None
+  field 7 "dhcp_timeout" U64 unit=Ms enum=0 writable=true secret=false optional=false bounds=Some(U64(1000, 120000))
+  enum 1: 0="dhcp" 1="static"
+  overridable [1, 2, 3, 4, 5, 6, 7]
+  default 1: enum 0
+  default 2: none
+  default 3: none
+  default 4: none
+  default 5: none
+  default 6: none
+  default 7: u64 20000
+  default valid=Ok(())
+  cbor a7010002f603f604f605f606f607194e20
+[ble] id=0xcba3fd7b3d5ad5ef version=1
+  field 1 "name" String unit=None enum=0 writable=true secret=false optional=true bounds=None
+  overridable [1]
+  default 1: none
+  default valid=Ok(())
+  cbor a101f6
+[connectivity] id=0x9c57015a40662d0c version=1
+  field 2 "node_id" U64 unit=None enum=0 writable=true secret=false optional=false bounds=None
+  field 3 "interval_s" U64 unit=S enum=0 writable=true secret=false optional=false bounds=Some(U64(10, 86400))
+  field 4 "endpoint" String unit=None enum=0 writable=true secret=false optional=true bounds=None
+  overridable [2, 3, 4]
+  default 2: u64 0
+  default 3: u64 60
+  default 4: none
+  default valid=Ok(())
+  cbor a3020003183c04f6
+[location] id=0xce098b4a3e381f40 version=1
+  field 1 "latitude" F32 unit=Degrees enum=0 writable=true secret=false optional=false bounds=Some(F32(-90.0, 90.0))
+  field 2 "longitude" F32 unit=Degrees enum=0 writable=true secret=false optional=false bounds=Some(F32(-180.0, 180.0))
+  field 3 "height_m" F32 unit=Meters enum=0 writable=true secret=false optional=true bounds=Some(F32(-1000.0, 10000.0))
+  overridable [1, 2, 3]
+  default 1: none
+  default 2: none
+  default 3: none
+  default valid=Ok(())
+  cbor a301fb7ff800000000000002fb7ff800000000000003f6
+[time] id=0x2feb7d230f6ed989 version=1
+  field 1 "server1" String unit=None enum=0 writable=true secret=false optional=false bounds=None
+  field 2 "server2" String unit=None enum=0 writable=true secret=false optional=true bounds=None
+  field 3 "server3" String unit=None enum=0 writable=true secret=false optional=true bounds=None
+  field 4 "server4" String unit=None enum=0 writable=true secret=false optional=true bounds=None
+  overridable [1, 2, 3, 4]
+  default 1: string "pool.ntp.org"
+  default 2: string "time.cloudflare.com"
+  default 3: none
+  default 4: none
+  default valid=Ok(())
+  cbor a4016c706f6f6c2e6e74702e6f7267027374696d652e636c6f7564666c6172652e636f6d03f604f6

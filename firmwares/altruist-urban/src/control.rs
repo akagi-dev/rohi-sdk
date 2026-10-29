@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! Local control plane: the Altruist Urban side of `rohi-control`.
 //!
 //! ```text
@@ -21,32 +22,33 @@
 //!                                                              |
 //!                                             UrbanDevice (this module)
 //!                          config sections: wifi, connectivity, location, time
-//!                          services: wifi, connectivity, time, sensors, identity
+//!                          status: wifi, network, ble, connectivity, location, time,
+//!                                  sensors, identity
+//!                          actions: wifi, identity
 //! ```
 //!
 //! The registries only talk to runtime handles; they never own a store, a flash
 //! region or the radio. Adding a config section means adding its binding to
 //! `firmware_configs!` in [`crate::config`], which generates the section tuple
-//! and its construction. Adding a service means adding it to [`Services`] and
-//! to [`device`]: the Embassy control task needs the concrete type, so the type
-//! and the value of the service tuple stay explicit. The protocol and the `rohi`
-//! tool need no change.
+//! and its construction. Adding a service means adding its instance to
+//! `UrbanServices` and to the tuple of every capability it has, the status
+//! tuple if it implements `Status` and the action tuple if it implements
+//! `Action`: the Embassy control task needs the concrete type, so the types and
+//! the values of the tuples stay explicit. The protocol and the `rohi` tool
+//! need no change.
 
 use embassy_executor::Spawner;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::Delay;
 use log::{error, info};
 use rohi_connectivity::ConnectivityStatusService;
 use rohi_control::{Controller, Device, DeviceInfo, OpenPolicy};
 use rohi_control_ble::ControlBle;
 use rohi_hal::SensorsService;
-use rohi_hal_esp::EmbassyClock;
 use rohi_identity::{Identity, IdentityService, IdentityStore, IdentityStoreError, PublicKey};
 use rohi_location::LocationService;
 use rohi_net::{BleService, NetworkHandle, NetworkService, WifiService};
 use rohi_net_esp::EspWireless;
-use rohi_service::{Startup, Tracked};
-use rohi_time::TimeStatusService;
+use rohi_service::{ActionRegistry, Startup, StatusSet, Statuses};
 use static_cell::StaticCell;
 
 use crate::bindings::ble_settings;
@@ -101,29 +103,66 @@ pub type UrbanConfig = StorageConfig<ConfigSections>;
 /// change their own section.
 static SECTIONS: StaticCell<ConfigSections> = StaticCell::new();
 
-/// The services of the device.
-pub type Services = (
-    Tracked<
-        Startup<WifiService<'static, RawMutex, Delay, net::Probe, &'static WifiSection>>,
-        RawMutex,
-    >,
-    Tracked<Startup<NetworkService<'static, RawMutex, net::Probe>>, RawMutex>,
-    Tracked<BleService<BleStatus>, RawMutex>,
-    Tracked<Startup<ConnectivityStatusService<'static, RawMutex>>, RawMutex>,
-    Tracked<LocationService<'static, RawMutex>, RawMutex>,
-    Tracked<TimeStatusService<'static, EmbassyClock, CriticalSectionRawMutex>, RawMutex>,
-    Tracked<SensorsService<'static, RawMutex>, RawMutex>,
-    Tracked<IdentityService<StoredIdentity>, RawMutex>,
+/// The services of the device, by capability.
+type UrbanWifi = Startup<WifiService<'static, RawMutex, Delay, net::Probe, &'static WifiSection>>;
+type UrbanNetwork = Startup<NetworkService<'static, RawMutex, net::Probe>>;
+type UrbanBle = BleService<BleStatus>;
+type UrbanConnectivity = Startup<ConnectivityStatusService<'static, RawMutex>>;
+type UrbanLocation = LocationService<'static, RawMutex>;
+type UrbanSensors = SensorsService<'static, RawMutex>;
+type UrbanIdentity = IdentityService<StoredIdentity>;
+
+/// The instances of the services of the device.
+///
+/// Each service is created once and referenced by the registries of the
+/// capabilities it has, so that no registry owns or copies a service.
+struct UrbanServices {
+    wifi: UrbanWifi,
+    network: UrbanNetwork,
+    ble: UrbanBle,
+    connectivity: UrbanConnectivity,
+    location: UrbanLocation,
+    sensors: UrbanSensors,
+    identity: UrbanIdentity,
+}
+
+/// The services that report status. The `time` service is the time runtime
+/// itself.
+type UrbanStatusServices = (
+    &'static UrbanWifi,
+    &'static UrbanNetwork,
+    &'static UrbanBle,
+    &'static UrbanConnectivity,
+    &'static UrbanLocation,
+    &'static time::Time,
+    &'static UrbanSensors,
+    &'static UrbanIdentity,
 );
 
+/// The status registry of the device.
+pub type UrbanStatuses = Statuses<RawMutex, UrbanStatusServices>;
+
+/// The services that offer actions.
+pub type UrbanActions = (&'static UrbanWifi, &'static UrbanIdentity);
+
+// Two services with one id would route requests to the wrong service; this is
+// a build error already in `cargo check`.
+const _: () = {
+    assert!(<UrbanStatusServices as StatusSet<RawMutex>>::IDS_UNIQUE);
+    assert!(<UrbanActions as ActionRegistry>::IDS_UNIQUE);
+};
+
+/// The service instances, shared by the status and the action registry.
+static SERVICES: StaticCell<UrbanServices> = StaticCell::new();
+
 /// The control backend of the Altruist Urban.
-pub type UrbanDevice = Device<UrbanConfig, Services>;
+pub type UrbanDevice = Device<UrbanConfig, UrbanStatuses, UrbanActions>;
 
 fn uptime_ms() -> u64 {
     time::service().monotonic_now().millis
 }
 
-/// The registries over the runtime handles of the firmware.
+/// The device over the runtime handles of the firmware.
 ///
 /// `network` is the IP data plane; `None` tells that the network runtime did
 /// not start: its services then report a failed start instead of looking
@@ -136,8 +175,35 @@ pub fn device(
 ) -> UrbanDevice {
     let network_failed = network.is_none();
     // The `wifi` service and the control plane share the one section: one
-    // transaction lock and one revision for every change.
+    // transaction lock for every change.
     let sections: &'static ConfigSections = SECTIONS.init(config_sections(config));
+    let services: &'static UrbanServices = SERVICES.init(UrbanServices {
+        wifi: Startup::new(
+            WifiService::new(
+                net::handle(),
+                Delay,
+                net::Probe::new(network),
+                wifi_section(sections),
+            ),
+            network_failed,
+        ),
+        network: Startup::new(
+            NetworkService::new(net::handle(), net::Probe::new(network)),
+            network_failed,
+        ),
+        ble: BleService(ble),
+        connectivity: Startup::new(
+            ConnectivityStatusService::new(
+                connectivity::shared(),
+                connectivity::effective_config,
+                location::shared(),
+            ),
+            network_failed,
+        ),
+        location: LocationService(location::shared()),
+        sensors: SensorsService(store::handle()),
+        identity: IdentityService(StoredIdentity(identity)),
+    });
     Device::new(
         DeviceInfo {
             firmware: FIRMWARE,
@@ -145,34 +211,17 @@ pub fn device(
         },
         uptime_ms,
         StorageConfig::new(sections, maintenance()),
-        (
-            Tracked::new(Startup::new(
-                WifiService::new(
-                    net::handle(),
-                    Delay,
-                    net::Probe::new(network),
-                    wifi_section(sections),
-                ),
-                network_failed,
-            )),
-            Tracked::new(Startup::new(
-                NetworkService::new(net::handle(), net::Probe::new(network)),
-                network_failed,
-            )),
-            Tracked::new(BleService(ble)),
-            Tracked::new(Startup::new(
-                ConnectivityStatusService::new(
-                    connectivity::shared(),
-                    connectivity::effective_config,
-                    location::shared(),
-                ),
-                network_failed,
-            )),
-            Tracked::new(LocationService(location::shared())),
-            Tracked::new(TimeStatusService(time::service())),
-            Tracked::new(SensorsService(store::handle())),
-            Tracked::new(IdentityService(StoredIdentity(identity))),
-        ),
+        Statuses::new((
+            &services.wifi,
+            &services.network,
+            &services.ble,
+            &services.connectivity,
+            &services.location,
+            time::service(),
+            &services.sensors,
+            &services.identity,
+        )),
+        (&services.wifi, &services.identity),
     )
     .with_reboot(reboot::request)
 }

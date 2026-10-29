@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! Plain Rust model of the control protocol.
 //!
 //! These types are what applications use. They hold no protobuf types and no
@@ -78,7 +79,6 @@ open_enum! {
         Unavailable = Unavailable => "unavailable",
         PermissionDenied = PermissionDenied => "permission denied",
         Internal = Internal => "internal error",
-        Conflict = Conflict => "conflict",
         Rejected = Rejected => "rejected",
     }
 }
@@ -259,8 +259,6 @@ pub struct SectionInfo {
     pub name: String,
     /// Version of the section schema.
     pub version: u32,
-    /// Changes after every successful write or reset.
-    pub revision: u32,
 }
 
 /// A config field.
@@ -351,8 +349,6 @@ pub struct Mutation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct Applied {
-    /// Revision after the change.
-    pub revision: u32,
     /// Whether the change needs a restart.
     pub restart_required: bool,
 }

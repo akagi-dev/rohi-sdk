@@ -1,0 +1,36 @@
+[package]
+name = "rohi-connectivity"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Robonomics Open Hardware telemetry: signed connectivity-protocol frames, bounded outbox, HTTP transport"
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[dependencies]
+rohi-connectivity-proto.workspace = true
+rohi-hal.workspace = true
+rohi-identity.workspace = true
+rohi-config.workspace = true
+rohi-service.workspace = true
+rohi-location.workspace = true
+rohi-net.workspace = true
+rohi-time.workspace = true
+minicbor.workspace = true
+heapless.workspace = true
+libm.workspace = true
+embassy-sync.workspace = true
+embedded-hal-async.workspace = true
+embedded-io-async.workspace = true
+embedded-nal-async.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+rohi-identity = { path = "../identity", features = ["mock"] }
+rohi-net = { path = "../net", features = ["testing"] }
+embassy-futures.workspace = true

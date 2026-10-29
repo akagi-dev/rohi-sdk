@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: assertion failed: <(&WifiService, &WirelessService) as StatusSet<NoopRawMutex>>::IDS_UNIQUE
+  --> tests/ui/duplicate_status_services.rs:53:15
+   |
+53 | const _: () = assert!(<(&WifiService, &WirelessService) as StatusSet<NoopRawMutex>>::IDS_UNIQUE);
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `_` failed here

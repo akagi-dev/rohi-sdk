@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 
 //! Time service of the Altruist Urban: synchronized wall-clock time.
 //!
@@ -44,7 +45,7 @@ use embassy_time::Delay;
 use log::{info, warn};
 use rohi_hal_esp::EmbassyClock;
 use rohi_net::NetworkHandle;
-use rohi_service::ManagedConfig;
+use rohi_service::Config;
 use rohi_time::{SyncSchedule, Synchronizer, TimeConfig, TimeService, UnixTime};
 use rohi_time_ntp::{NtpConfig, NtpServersConfig, NtpTimeSource};
 

@@ -1,0 +1,25 @@
+[package]
+name = "rohi-control"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Robonomics Open Hardware control protocol dispatcher: transport and platform independent"
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[dependencies]
+rohi-control-proto.workspace = true
+rohi-service.workspace = true
+heapless.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+embassy-futures.workspace = true
+embassy-sync.workspace = true
+rohi-config = { workspace = true, features = ["std"] }
+minicbor = { workspace = true, features = ["std"] }

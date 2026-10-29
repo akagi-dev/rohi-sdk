@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: assertion failed: distinct_ids(&[WifiService::ID, WirelessService::ID])
+  --> tests/ui/duplicate_ids.rs:28:15
+   |
+28 | const _: () = assert!(distinct_ids(&[WifiService::ID, WirelessService::ID]));
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `_` failed here

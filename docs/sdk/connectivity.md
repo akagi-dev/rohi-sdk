@@ -5,8 +5,8 @@
 pluggable transport. HTTP is implemented first, on top of `rohi_net::NetworkHandle`.
 
 The wire format is pinned to `airalab/connectivity-protocol@33b4e7ec6eaa19a930b91bfb59bd3337c1ec88ac`. The `.proto`
-files are vendored in `crates/rohi-connectivity-proto/proto/` (verbatim copy, license included) and the revision is
-recorded in `crates/rohi-connectivity-proto/UPSTREAM_REV`; no build downloads anything. The reference implementation is
+files are vendored in `crates/connectivity-proto/proto/` (verbatim copy, license included) and the revision is
+recorded in `crates/connectivity-proto/UPSTREAM_REV`; no build downloads anything. The reference implementation is
 [`airalab/robins`](https://github.com/airalab/robins).
 
 ```text

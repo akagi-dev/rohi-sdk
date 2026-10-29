@@ -15,6 +15,7 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
 
 //! Persistent configuration service.
 //!
@@ -84,7 +85,7 @@ use rohi_config_esp::esp::{PartitionError, config_storage, esp_storage::FlashSto
 use rohi_config_esp::{EspConfigStorage, EspStorageError};
 
 use rohi_service::{
-    ConfigError as RegistryError, ConfigRegistry, FactoryReset, ManagedConfig, Mutation, Patched,
+    Config, ConfigError as RegistryError, ConfigRegistry, FactoryReset, Mutation, Patched,
     SectionInfo, SectionSchema, SectionValues,
 };
 
@@ -364,9 +365,10 @@ impl StorageMaintenance {
 
 /// A registry of config sections plus the factory reset of the storage behind
 /// them, which formats the whole region: this also removes the identity and
-/// sections this firmware does not know. The sections are reset afterwards;
-/// with nothing left to remove this commits nothing and only advances their
-/// revisions. Everything else is delegated to the sections.
+/// sections this firmware does not know. Nothing else is
+/// written afterwards: the format already left every section at its firmware
+/// defaults and the owner published them. Everything else is delegated to the
+/// sections.
 pub struct StorageConfig<R: 'static> {
     sections: &'static R,
     storage: StorageMaintenance,
@@ -400,23 +402,17 @@ impl<R: ConfigRegistry> ConfigRegistry for StorageConfig<R> {
         &self,
         section: u64,
         mutations: &[Mutation],
-        expected_revision: Option<u32>,
         dry_run: bool,
     ) -> Result<Patched, RegistryError> {
-        self.sections
-            .patch(section, mutations, expected_revision, dry_run)
-            .await
+        self.sections.patch(section, mutations, dry_run).await
     }
 
-    async fn reset(
-        &self,
-        section: u64,
-        expected_revision: Option<u32>,
-        dry_run: bool,
-    ) -> Result<Patched, RegistryError> {
-        self.sections
-            .reset(section, expected_revision, dry_run)
-            .await
+    async fn reset(&self, section: u64, dry_run: bool) -> Result<Patched, RegistryError> {
+        self.sections.reset(section, dry_run).await
+    }
+
+    fn restart_required(&self) -> bool {
+        self.sections.restart_required()
     }
 
     async fn factory_reset(&self) -> Result<FactoryReset, RegistryError> {
@@ -427,7 +423,9 @@ impl<R: ConfigRegistry> ConfigRegistry for StorageConfig<R> {
                 ServiceError::Unavailable(_) => RegistryError::Unavailable,
                 _ => RegistryError::Internal,
             })?;
-        self.sections.factory_reset().await
+        Ok(FactoryReset {
+            restart_required: self.sections.restart_required(),
+        })
     }
 }
 
@@ -660,7 +658,7 @@ pub fn maintenance() -> StorageMaintenance {
 }
 
 /// The persisted section of binding `B`: the id of its overrides.
-const fn managed_id<B: Binding>() -> u64 {
+pub(crate) const fn managed_id<B: Binding>() -> u64 {
     <<B::Config as HasOverrides>::Overrides as ConfigSection>::ID.0
 }
 
@@ -706,7 +704,7 @@ fn publish_managed<B: Binding>(runtime: &ConfigRuntime, blob: Option<&Blob>, boo
         Err(error) => {
             warn!(
                 "{}: stored configuration cannot be decoded: {}",
-                <B::Config as ManagedConfig>::NAME,
+                <B::Config as Config>::NAME,
                 error
             );
             if boot {
@@ -743,7 +741,7 @@ fn boot_managed<B: Binding>(store: &mut ConfigStore<Storage>, runtime: &ConfigRu
         Err(error) => {
             warn!(
                 "{}: configuration unreadable, using the firmware policy: {}",
-                <B::Config as ManagedConfig>::NAME,
+                <B::Config as Config>::NAME,
                 error
             );
             publish_managed::<B>(runtime, None, true);
@@ -790,11 +788,8 @@ crate::firmware_configs! {
 
 /// The `wifi` section of [`ConfigSections`], which the `wifi` service changes
 /// through the same transaction as a client's config patch.
-pub type WifiSection = ::rohi_service::ManagedSection<
-    ::rohi_net::WifiConfig,
-    crate::bindings::Stored<WifiBinding>,
-    RawMutex,
->;
+pub type WifiSection =
+    ::rohi_service::Section<::rohi_net::WifiConfig, crate::bindings::Stored<WifiBinding>, RawMutex>;
 
 /// The `wifi` section among `sections`. A change of the order of the bindings
 /// is a type error here.

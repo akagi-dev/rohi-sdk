@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! Protobuf <-> model conversion.
 //! Protobuf <-> model conversion.
 //!
@@ -169,7 +170,6 @@ pub(crate) fn section(info: &pb::ConfigSectionInfo) -> SectionInfo {
         id: info.id,
         name: info.name.as_str().to_owned(),
         version: info.version,
-        revision: info.revision,
     }
 }
 
@@ -203,7 +203,6 @@ pub(crate) fn config_values(
             id: response.section_id,
             name: schema.section.name.clone(),
             version: response.version,
-            revision: response.revision,
         },
         overridden: response.overridden.iter().copied().collect(),
         entries: response
@@ -275,11 +274,10 @@ pub(crate) fn issue(issue: &pb::ServiceIssue, names: &[IssueInfo]) -> Issue {
     }
 }
 
-/// `service` names the owner of the action.
-pub(crate) fn action_info(info: &pb::ActionInfo, service: &str) -> ActionInfo {
+pub(crate) fn action_info(info: &pb::ActionInfo) -> ActionInfo {
     ActionInfo {
         service_id: info.service_id,
-        service: service.to_owned(),
+        service: info.service.as_str().to_owned(),
         id: info.id,
         name: info.name.as_str().to_owned(),
         privileged: info.privileged,

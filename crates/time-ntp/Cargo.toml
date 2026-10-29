@@ -1,0 +1,32 @@
+[package]
+name = "rohi-time-ntp"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Robonomics Open Hardware time service: NTP/SNTP time source over the rohi-net IP data plane"
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[dependencies]
+rohi-config.workspace = true
+rohi-hal.workspace = true
+rohi-net.workspace = true
+rohi-service.workspace = true
+rohi-time.workspace = true
+sntpc.workspace = true
+minicbor.workspace = true
+heapless.workspace = true
+embedded-hal-async.workspace = true
+embedded-nal-async.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+minicbor = { workspace = true, features = ["std"] }
+rohi-net = { path = "../net", features = ["testing"] }
+embassy-futures.workspace = true
+embassy-sync.workspace = true

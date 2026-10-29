@@ -1,0 +1,19 @@
+error[E0080]: evaluation panicked: service name must match [a-z][a-z0-9_]* and fit MAX_NAME_LEN bytes
+  --> tests/ui/name_too_long.rs:21:10
+   |
+21 | #[derive(Service)]
+   |          ^^^^^^^ evaluation of `_` failed inside this call
+   |
+note: inside `assert_service_name`
+  --> $RUST/core/src/panic.rs
+   |
+   |           $crate::panicking::panic_fmt($crate::const_format_args!($($t)+));
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the failure occurred here
+   |
+  ::: src/service.rs
+   |
+   | /     assert!(
+   | |         service_name_is_valid(name),
+   | |         "service name must match [a-z][a-z0-9_]* and fit MAX_NAME_LEN bytes"
+   | |     );
+   | |_____- in this macro invocation

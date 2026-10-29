@@ -9,7 +9,7 @@ against the standard traits is portable, testable on the host and independent of
 Make your layer generic over `embedded_nal_async::{Dns, TcpConnect}` and `embedded_io_async::{Read, Write}`:
 
 ```rust,ignore
-{{#include ../../crates/rohi-net/tests/network_example.rs:fetch}}
+{{#include ../../crates/net/tests/network_example.rs:fetch}}
 ```
 
 Handle the typed `NetError`:
@@ -34,7 +34,7 @@ let net = NetworkHandle::new(&ip);
 ```
 
 `FakeIp` scripts DNS answers, refused connections, readiness changes, slot exhaustion and held operations and lets you
-play the peer. See `crates/rohi-net/src/ip/tests.rs` and `tests/network_example.rs`.
+play the peer. See `crates/net/src/ip/tests.rs` and `tests/network_example.rs`.
 
 ## On the device
 

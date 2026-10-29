@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! The JSON written by `-o json`. These documents are owned by the command
 //! line and versioned with `schema_version`; they are deliberately not the
 //! model types of the library, which may change independently.
@@ -175,7 +176,6 @@ pub fn config_values(values: &ConfigValues, schema: &ConfigSchema) -> Json {
 pub fn applied(section: &str, applied: &Applied, dry_run: bool) -> Json {
     json!({
         "section": section,
-        "revision": applied.revision,
         "restart_required": applied.restart_required,
         "dry_run": dry_run,
     })

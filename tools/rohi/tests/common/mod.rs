@@ -1,3 +1,20 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Copyright 2025-2026 Akagi Engineering <admin@akagi.dev>
+//
+//  Licensed under the Apache License, Version 2.0 (the "License");
+//  you may not use this file except in compliance with the License.
+//  You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+//  Unless required by applicable law or agreed to in writing, software
+//  distributed under the License is distributed on an "AS IS" BASIS,
+//  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+//  See the License for the specific language governing permissions and
+//  limitations under the License.
+//
+///////////////////////////////////////////////////////////////////////////////
 //! In-memory ROHI device and client link shared by the integration tests.
 //!
 //! The device is built from the real generic pieces (`rohi-control`,
@@ -13,6 +30,7 @@ use std::rc::Rc;
 
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use rohi::{ClientTransport, Device, Error};
+use rohi_config::{Text, Variant};
 use rohi_connectivity::{ConnectivityConfig, ConnectivityOverrides};
 use rohi_control::{ControlBackend, Controller, Device as BackendDevice, DeviceInfo, OpenPolicy};
 use rohi_control_ble::ControlBle;
@@ -22,10 +40,10 @@ use rohi_location::{LocationOverrides, LocationService, LocationShared};
 use rohi_net::{BleConnectionInfo, BleError, BleState, BleTransport};
 use rohi_net::{WifiConfig, WifiOverrides};
 use rohi_service::{
-    ActionDescriptor, ActionError, ActionOutput, Bounds, ConfigField, EnumDescriptor, EnumVariant,
+    Action, ActionDescriptor, ActionError, ActionOutput, Config, EnumDescriptor, EnumVariant,
     FIRST_SERVICE_ISSUE, FieldDescriptor, FieldError, Issue, IssueDescriptor, IssueSeverity,
-    ManagedConfig, ManagedSection, ManagedService, SectionStore, ServiceHealth, ServiceState,
-    ServiceSummary, StatusWriter, StoreError, Tracked, Unit, Value, ValueKind, WriteError,
+    Section, SectionStore, Service, ServiceHealth, ServiceState, ServiceSummary, Status,
+    StatusWriter, Statuses, StoreError, Unit, Value, ValueKind, WriteError,
 };
 use tokio::sync::mpsc;
 
@@ -103,7 +121,7 @@ impl<C: Clone + Default> Mem<C> {
     }
 }
 
-impl<C: ManagedConfig + Default> SectionStore<C> for Mem<C::Overrides> {
+impl<C: Config + Default> SectionStore<C> for Mem<C::Overrides> {
     fn firmware_overrides(&self) -> C::Overrides {
         C::Overrides::default()
     }
@@ -129,16 +147,32 @@ impl<C: ManagedConfig + Default> SectionStore<C> for Mem<C::Overrides> {
     }
 }
 
+const GADGET_MODES: &[EnumDescriptor] = &[EnumDescriptor::new(
+    1,
+    &[EnumVariant::new(0, "fast"), EnumVariant::new(1, "slow")],
+)];
+
+/// The defaults are valid; a mode belongs to a labelled gadget.
+fn gadget_is_valid(gadget: &Gadget) -> Result<(), FieldError> {
+    if gadget.mode.is_some() && gadget.label.is_empty() {
+        return Err(FieldError::Invalid);
+    }
+    Ok(())
+}
+
 /// A section that exists only in the tests.
-#[derive(Clone, Debug, PartialEq, rohi_config::ConfigOverrides)]
-#[config(overrides = GadgetOverrides, version = 3, id = 9)]
+#[derive(Clone, Debug, PartialEq, Config)]
+#[config(name = "gadget", overrides = GadgetOverrides, version = 3, id = 9, validate = gadget_is_valid, enums = GADGET_MODES)]
 pub struct Gadget {
-    #[config(id = 1)]
+    #[config(id = 1, with = Text)]
     pub label: String,
-    #[config(id = 2)]
+    #[config(id = 2, unit = Percent, min = 0, max = 100)]
     pub level: u64,
-    #[config(id = 3)]
+    #[config(id = 3, with = Variant, enum_id = 1)]
     pub mode: Option<u32>,
+    /// Shown, never changed and never stored.
+    #[config(id = 4, read_only, with = Text)]
+    pub serial: String,
 }
 
 impl Default for Gadget {
@@ -147,81 +181,20 @@ impl Default for Gadget {
             label: String::new(),
             level: 50,
             mode: None,
+            serial: "SN-1".into(),
         }
-    }
-}
-
-impl ManagedConfig for Gadget {
-    const NAME: &'static str = "gadget";
-    const FIELDS: &'static [ConfigField] = &[
-        ConfigField::new(1, "label", ValueKind::String),
-        ConfigField::new(2, "level", ValueKind::U64)
-            .unit(Unit::Percent)
-            .bounds(Bounds::U64(0, 100)),
-        ConfigField::new(3, "mode", ValueKind::Enum)
-            .with_enum(1)
-            .optional(),
-        ConfigField::new(4, "serial", ValueKind::String).read_only(),
-    ];
-    const ENUMS: &'static [EnumDescriptor] = &[EnumDescriptor::new(
-        1,
-        &[EnumVariant::new(0, "fast"), EnumVariant::new(1, "slow")],
-    )];
-
-    fn read_field(&self, id: u32) -> Result<Option<Value>, FieldError> {
-        Ok(match id {
-            1 => Value::text(&self.label),
-            2 => Some(Value::U64(self.level)),
-            3 => self.mode.map(Value::Enum),
-            4 => Value::text("SN-1"),
-            _ => return Err(FieldError::UnknownField),
-        })
-    }
-
-    fn set_field(&mut self, id: u32, value: Value) -> Result<(), FieldError> {
-        match id {
-            1 => self.label = value.as_str().unwrap().to_owned(),
-            2 => self.level = value.as_u64().unwrap(),
-            3 => self.mode = value.as_enum(),
-            _ => return Err(FieldError::UnknownField),
-        }
-        Ok(())
-    }
-
-    fn set_none(&mut self, id: u32) -> Result<(), FieldError> {
-        match id {
-            3 => {
-                self.mode = None;
-                Ok(())
-            }
-            _ => Err(FieldError::NotOptional),
-        }
-    }
-
-    fn field_is_set(&self, id: u32) -> Result<bool, FieldError> {
-        Ok(self.read_field(id)?.is_some())
-    }
-
-    fn validate(&self) -> Result<(), FieldError> {
-        // The defaults are valid; a mode belongs to a labelled gadget.
-        if self.mode.is_some() && self.label.is_empty() {
-            return Err(FieldError::Invalid);
-        }
-        Ok(())
     }
 }
 
 /// A service that exists only in the tests.
-#[derive(Default)]
+#[derive(Default, Service)]
 pub struct Radio {
     pub connected: Cell<bool>,
     pub degraded: Cell<bool>,
     pub calls: RefCell<Vec<String>>,
 }
 
-impl ManagedService for &Radio {
-    const ID: u32 = 3;
-    const NAME: &'static str = "radio";
+impl Status for Radio {
     const VERSION: u16 = 2;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
         FieldDescriptor::new(1, "ssid", ValueKind::String),
@@ -234,25 +207,6 @@ impl ManagedService for &Radio {
     )];
     const ISSUES: &'static [IssueDescriptor] =
         &[IssueDescriptor::new(FIRST_SERVICE_ISSUE, "link_lost")];
-    const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new(1, "scan")
-            .results(&[
-                FieldDescriptor::new(1, "ssid", ValueKind::String),
-                FieldDescriptor::new(2, "rssi", ValueKind::I64).unit(Unit::Dbm),
-                FieldDescriptor::new(3, "security", ValueKind::Enum).with_enum(1),
-            ])
-            .enums(&[EnumDescriptor::new(
-                1,
-                &[EnumVariant::new(0, "open"), EnumVariant::new(1, "wpa2")],
-            )]),
-        ActionDescriptor::new(2, "reconnect").privileged(),
-        ActionDescriptor::new(3, "tune").args(&[FieldDescriptor::new(
-            1,
-            "channel",
-            ValueKind::U64,
-        )]),
-        ActionDescriptor::new(4, "explode"),
-    ];
 
     async fn summary(&self) -> ServiceSummary {
         if self.degraded.get() {
@@ -281,6 +235,28 @@ impl ManagedService for &Radio {
         }
         out.variant(3, 0)
     }
+}
+
+impl Action for Radio {
+    const ACTIONS: &'static [ActionDescriptor] = &[
+        ActionDescriptor::new(1, "scan")
+            .results(&[
+                FieldDescriptor::new(1, "ssid", ValueKind::String),
+                FieldDescriptor::new(2, "rssi", ValueKind::I64).unit(Unit::Dbm),
+                FieldDescriptor::new(3, "security", ValueKind::Enum).with_enum(1),
+            ])
+            .enums(&[EnumDescriptor::new(
+                1,
+                &[EnumVariant::new(0, "open"), EnumVariant::new(1, "wpa2")],
+            )]),
+        ActionDescriptor::new(2, "reconnect").privileged(),
+        ActionDescriptor::new(3, "tune").args(&[FieldDescriptor::new(
+            1,
+            "channel",
+            ValueKind::U64,
+        )]),
+        ActionDescriptor::new(4, "explode"),
+    ];
 
     async fn invoke(
         &self,
@@ -412,19 +388,22 @@ impl Default for Bench {
 }
 
 type Sections = (
-    ManagedSection<WifiConfig, Mem<WifiOverrides>, NoopRawMutex>,
-    ManagedSection<ConnectivityConfig, Mem<ConnectivityOverrides>, NoopRawMutex>,
-    ManagedSection<Gadget, Mem<GadgetOverrides>, NoopRawMutex>,
-    ManagedSection<LocationConfig, LocationStore, NoopRawMutex>,
+    Section<WifiConfig, Mem<WifiOverrides>, NoopRawMutex>,
+    Section<ConnectivityConfig, Mem<ConnectivityOverrides>, NoopRawMutex>,
+    Section<Gadget, Mem<GadgetOverrides>, NoopRawMutex>,
+    Section<LocationConfig, LocationStore, NoopRawMutex>,
 );
 
-type Services<'a> = (
-    Tracked<&'a Radio, NoopRawMutex>,
-    Tracked<IdentityService<MemIdentity>, NoopRawMutex>,
-    Tracked<LocationService<'a, NoopRawMutex>, NoopRawMutex>,
+type StatusServices<'a> = (
+    &'a Radio,
+    &'a IdentityService<MemIdentity>,
+    &'a LocationService<'a, NoopRawMutex>,
 );
 
-pub type Backend<'a> = BackendDevice<Sections, Services<'a>>;
+type ActionServices<'a> = (&'a Radio, &'a IdentityService<MemIdentity>);
+
+pub type Backend<'a> =
+    BackendDevice<Sections, Statuses<NoopRawMutex, StatusServices<'a>>, ActionServices<'a>>;
 
 thread_local! {
     static REBOOTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
@@ -444,6 +423,10 @@ fn uptime() -> u64 {
 }
 
 pub fn backend(bench: &Bench) -> Backend<'_> {
+    // The services are shared by the status and the action registry; a test
+    // process may leak the few bytes.
+    let identity: &_ = Box::leak(Box::new(IdentityService(bench.identity.clone())));
+    let location: &_ = Box::leak(Box::new(LocationService(&bench.location.shared)));
     BackendDevice::new(
         DeviceInfo {
             firmware: "fake-1.0.0",
@@ -451,16 +434,13 @@ pub fn backend(bench: &Bench) -> Backend<'_> {
         },
         uptime,
         (
-            ManagedSection::new(bench.wifi.clone()),
-            ManagedSection::new(bench.telemetry.clone()),
-            ManagedSection::new(bench.gadget.clone()),
-            ManagedSection::new(bench.location.clone()),
+            Section::new(bench.wifi.clone()),
+            Section::new(bench.telemetry.clone()),
+            Section::new(bench.gadget.clone()),
+            Section::new(bench.location.clone()),
         ),
-        (
-            Tracked::new(&bench.radio),
-            Tracked::new(IdentityService(bench.identity.clone())),
-            Tracked::new(LocationService(&bench.location.shared)),
-        ),
+        Statuses::new((&bench.radio, identity, location)),
+        (&bench.radio, identity),
     )
     .with_reboot(reboot)
 }

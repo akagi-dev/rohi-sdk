@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! Errors of the command line and their presentation: what is printed on
 //! stderr and the exit status.
 
@@ -286,9 +287,6 @@ fn device_diagnostic(error: &Error) -> Diagnostic {
             let diagnostic = Diagnostic::new(format!("the device refused the request: {code}"));
             match code {
                 ErrorCode::Busy => diagnostic.hint("try again in a moment"),
-                ErrorCode::Conflict => {
-                    diagnostic.hint("the configuration changed meanwhile; read it again")
-                }
                 ErrorCode::PermissionDenied => {
                     diagnostic.hint("this change needs an encrypted or authenticated link")
                 }

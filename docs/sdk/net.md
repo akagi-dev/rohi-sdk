@@ -153,7 +153,7 @@ traits, so TLS, HTTP and uplink layers stay independent of `embassy-net`:
 | `embedded_nal_async::TcpConnect` | `connect` → a connection that implements `embedded_io_async::{Read, Write}` |
 
 ```rust,ignore
-{{#include ../../crates/rohi-net/tests/network_example.rs:fetch}}
+{{#include ../../crates/net/tests/network_example.rs:fetch}}
 ```
 
 This function is compiled and run against the host fake backend by `cargo test -p rohi-net`

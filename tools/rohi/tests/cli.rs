@@ -1,3 +1,20 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+//  Copyright 2025-2026 Akagi Engineering <admin@akagi.dev>
+//
+//  Licensed under the Apache License, Version 2.0 (the "License");
+//  you may not use this file except in compliance with the License.
+//  You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+//  Unless required by applicable law or agreed to in writing, software
+//  distributed under the License is distributed on an "AS IS" BASIS,
+//  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+//  See the License for the specific language governing permissions and
+//  limitations under the License.
+//
+///////////////////////////////////////////////////////////////////////////////
 //! The `rohi` command line without Bluetooth: parsing, help, output contract,
 //! the generic `status`, `config` and `action` commands, run through
 //! `rohi::cli::execute` against the in-memory device.
@@ -629,7 +646,8 @@ async fn setting_fields_shows_the_effective_configuration_the_device_reports() {
         Gadget {
             label: "lamp".into(),
             level: 70,
-            mode: Some(1)
+            mode: Some(1),
+            serial: "SN-1".into(),
         }
     );
 
@@ -925,7 +943,7 @@ async fn reset_asks_only_where_somebody_can_answer() {
     );
     assert_eq!(
         outcome.stdout,
-        "`gadget` reset to the defaults (revision 1)\nA restart is required for the change to take effect\n"
+        "`gadget` reset to the defaults\nA restart is required for the change to take effect\n"
     );
     assert!(bench.gadget.value.borrow().is_none());
 
@@ -954,10 +972,8 @@ async fn configured() -> Bench {
         &[
             "config",
             "connectivity",
-            "host=old.example.org",
-            "port=80",
+            "endpoint=http://old.example.org:80",
             "interval_s=60",
-            "enabled=true",
         ],
     )
     .await
@@ -992,7 +1008,7 @@ async fn export_writes_the_explicit_overrides_without_secrets_or_read_only_field
         json,
         json!({
             "wifi": { "ssid": "office" },
-            "connectivity": { "enabled": true, "interval_s": 60, "host": "old.example.org", "port": 80 },
+            "connectivity": { "interval_s": 60, "endpoint": "http://old.example.org:80" },
             "gadget": { "label": "lamp", "mode": "fast" },
         })
     );
@@ -1022,7 +1038,7 @@ async fn diff_shows_what_applying_would_change_and_changes_nothing() {
     let file = temp_file(
         "diff.json",
         r#"{
-            "connectivity": { "host": "new.example.org", "interval_s": 120, "port": 80 },
+            "connectivity": { "endpoint": "http://new.example.org:80", "interval_s": 120 },
             "gadget": { "mode": null, "level": 20 },
             "wifi": null
         }"#,
@@ -1033,7 +1049,7 @@ async fn diff_shows_what_applying_would_change_and_changes_nothing() {
         outcome.stdout,
         "\
 connectivity:
-  ~ host            old.example.org -> new.example.org
+  ~ endpoint        http://old.example.org:80 -> http://new.example.org:80
   ~ interval_s      60 s -> 120 s
 gadget:
   + level           20 %
@@ -1045,7 +1061,10 @@ wifi:
     assert_eq!(bench.writes(), writes);
 
     // The same file against a device that already matches.
-    let same = temp_file("same.json", r#"{ "connectivity": { "port": 80 } }"#);
+    let same = temp_file(
+        "same.json",
+        r#"{ "connectivity": { "endpoint": "http://old.example.org:80" } }"#,
+    );
     let outcome = run(&bench, &["config", "diff", path(&same)]).await;
     assert_eq!(outcome.ok().stdout, "No differences\n");
 
@@ -1076,7 +1095,7 @@ async fn apply_merges_unsets_and_resets_with_one_confirmation() {
     let file = temp_file(
         "apply.json",
         r#"{
-            "connectivity": { "host": "new.example.org", "port": 443 },
+            "connectivity": { "endpoint": "http://new.example.org:443" },
             "gadget": { "mode": null },
             "wifi": null
         }"#,
@@ -1104,11 +1123,14 @@ async fn apply_merges_unsets_and_resets_with_one_confirmation() {
     assert!(outcome.stdout.contains("restart"), "{}", outcome.stdout);
 
     let connectivity = bench.telemetry.effective::<ConnectivityConfig>();
-    assert_eq!(connectivity.host.as_str(), "new.example.org");
-    assert_eq!(connectivity.port, 443);
+    assert_eq!(
+        connectivity
+            .endpoint()
+            .map(|endpoint| (endpoint.host, endpoint.port)),
+        Some(("new.example.org", 443))
+    );
     // Missing fields are left alone.
     assert_eq!(connectivity.interval_s, 60);
-    assert!(connectivity.enabled);
     // `null` removed the override of the mode: it follows the default.
     assert_eq!(
         bench.gadget.value.borrow().clone().unwrap().mode,
@@ -1125,7 +1147,7 @@ async fn apply_validates_every_section_before_changing_any() {
     // device: nothing may be applied.
     let file = temp_file(
         "invalid.json",
-        r#"{ "connectivity": { "host": "new.example.org" }, "gadget": { "level": 101 } }"#,
+        r#"{ "connectivity": { "endpoint": "http://new.example.org" }, "gadget": { "level": 101 } }"#,
     );
     let outcome = run(&bench, &["config", "apply", path(&file), "--yes"]).await;
     assert!(
@@ -1138,9 +1160,10 @@ async fn apply_validates_every_section_before_changing_any() {
         bench
             .telemetry
             .effective::<ConnectivityConfig>()
-            .host
-            .as_str(),
-        "old.example.org"
+            .endpoint
+            .as_ref()
+            .map(|endpoint| endpoint.as_str()),
+        Some("http://old.example.org:80")
     );
 }
 
@@ -1148,7 +1171,10 @@ async fn apply_validates_every_section_before_changing_any() {
 async fn apply_dry_run_and_non_interactive_confirmation() {
     let bench = configured().await;
     let writes = bench.writes();
-    let file = temp_file("dry.json", r#"{ "connectivity": { "port": 8080 } }"#);
+    let file = temp_file(
+        "dry.json",
+        r#"{ "connectivity": { "endpoint": "http://old.example.org:8080" } }"#,
+    );
 
     let outcome = run(&bench, &["config", "apply", path(&file), "--dry-run"]).await;
     outcome.ok();
@@ -1167,7 +1193,14 @@ async fn apply_dry_run_and_non_interactive_confirmation() {
 
     let outcome = run(&bench, &["config", "apply", path(&file), "--yes"]).await;
     outcome.ok();
-    assert_eq!(bench.telemetry.effective::<ConnectivityConfig>().port, 8080);
+    assert_eq!(
+        bench
+            .telemetry
+            .effective::<ConnectivityConfig>()
+            .endpoint()
+            .map(|endpoint| endpoint.port),
+        Some(8080)
+    );
 
     // A second application has nothing to do.
     let outcome = run(&bench, &["config", "apply", path(&file), "--yes"]).await;
@@ -1686,11 +1719,15 @@ async fn a_failing_stdout_fails_the_command_and_a_closed_pipe_is_quiet() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_schema_of_many_fields_arrives_complete_in_one_response() {
-    // The telemetry section has five fields, all in one schema response.
+    // The telemetry section has three fields, all in one schema response.
     let bench = Bench::new();
     run(
         &bench,
-        &["config", "connectivity", "host=a.example.org", "port=443"],
+        &[
+            "config",
+            "connectivity",
+            "endpoint=http://a.example.org:443",
+        ],
     )
     .await
     .ok();
@@ -1698,10 +1735,14 @@ async fn a_schema_of_many_fields_arrives_complete_in_one_response() {
     outcome.ok();
     assert_eq!(
         outcome.stdout,
-        "enabled     false\nnode_id     0\ninterval_s  60 s\nhost        a.example.org\nport        443\n"
+        "node_id     0\ninterval_s  60 s\nendpoint    http://a.example.org:443\n"
     );
     let outcome = run(&bench, &["config", "connectivity", "--help"]).await;
-    assert!(outcome.ok().stdout.contains("port"), "{}", outcome.stdout);
+    assert!(
+        outcome.ok().stdout.contains("endpoint"),
+        "{}",
+        outcome.stdout
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1871,7 +1912,7 @@ async fn export_and_apply_carry_the_location() {
 }
 
 // ---------------------------------------------------------------------------
-// optimistic concurrency of `config apply`
+// `config apply` without revisions
 // ---------------------------------------------------------------------------
 
 /// A client link that lets another client change the device right before its
@@ -1895,12 +1936,12 @@ impl rohi::ClientTransport for Interfering {
         if self.sent == self.at
             && let Some(mut rival) = self.rival.take()
         {
-            let port = rohi::model::Mutation {
-                field_id: 5,
+            let node = rohi::model::Mutation {
+                field_id: 2,
                 op: rohi::model::MutationOp::Set(rohi::model::Value::U64(9000)),
             };
             rival
-                .config_patch("connectivity", &[port], None, false)
+                .config_patch("connectivity", &[node], false)
                 .await
                 .unwrap();
         }
@@ -1954,7 +1995,7 @@ async fn apply_with_rival(bench: &Bench, file: &std::path::Path, at: usize) -> (
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn apply_conflicts_when_the_section_changes_after_the_diff_was_shown() {
+async fn apply_keeps_a_change_another_client_made_after_the_diff_was_shown() {
     let file = temp_file("race.json", r#"{ "connectivity": { "interval_s": 120 } }"#);
 
     // Undisturbed, the last request is the store of the section.
@@ -1966,21 +2007,14 @@ async fn apply_conflicts_when_the_section_changes_after_the_diff_was_shown() {
         120
     );
 
-    // Another client gets in just before that store: nothing is overwritten.
+    // Another client gets in just before that store: the apply goes through
+    // and the other client's change of another field is kept.
     let bench = configured().await;
     let (outcome, _) = apply_with_rival(&bench, &file, requests).await;
-    let CliError::PartialApply(partial) = outcome.error() else {
-        panic!("{}", outcome.message());
-    };
-    assert_eq!(partial.failed, "connectivity");
-    assert!(partial.applied.is_empty());
-    assert!(matches!(
-        partial.source,
-        Error::Device(rohi::model::ErrorCode::Conflict)
-    ));
+    outcome.ok();
     let stored = bench.telemetry.effective::<ConnectivityConfig>();
-    assert_eq!(stored.port, 9000);
-    assert_eq!(stored.interval_s, 60);
+    assert_eq!(stored.node_id, 9000);
+    assert_eq!(stored.interval_s, 120);
 }
 
 #[tokio::test(flavor = "current_thread")]

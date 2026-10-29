@@ -37,7 +37,7 @@ No protocol, dispatcher, client or CLI change is needed.
 
 Only when the operation fits none of the planes (config, status, actions, info):
 
-1. **Schema** (`crates/rohi-control-proto/proto/rohi/control/v1/control.proto`): add the request and response messages
+1. **Schema** (`crates/control-proto/proto/rohi/control/v1/control.proto`): add the request and response messages
    and a `oneof` entry with a **new field number**. Add bounds for every repeated, string and bytes field in `build.rs`
    so the generated types stay heapless, and keep the memory budget test green (`messages_stay_small_in_memory`): a
    response is built on the stack of a microcontroller, so prefer **paging** to a larger response. Do not bump
