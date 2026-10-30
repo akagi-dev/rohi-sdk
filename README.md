@@ -3,7 +3,7 @@
 ![ROHI Logo](./docs/images/robo-hw-logo-white.png#gh-dark-mode-only)
 ![ROHI Logo](./docs/images/robo-hw-logo-black.png#gh-light-mode-only)
   
-# Robonomics Open Hardware Initiative SDK
+# Robonomics Open Hardware Interface SDK
 
 
 > The SDK repository provides all the components needed to start build IoT devices
@@ -37,7 +37,7 @@
 nix develop                  # or install the toolchain from rust-toolchain.toml
 cargo test                   # host tests, no hardware needed
 cargo check-esp32c3 && cargo check-esp32c6
-cargo run --release -p altruist-urban --features esp32c3 --target riscv32imc-unknown-none-elf   # flash a board
+cargo flash-esp32c3  # flash a board
 ```
 
 More: [usage examples](examples/src/bin) and the **[ROHI SDK Book](https://rohi.akagi.dev)**.
