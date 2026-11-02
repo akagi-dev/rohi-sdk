@@ -25,6 +25,8 @@ and the portable crates never contain pin numbers. Existing example: `rohi_hal_e
    `src/resources.rs` with the documentation of [Memory model](../concepts/memory-model.md); the product owns its budget.
 3. Document the pin map and its verification status in [Boards](../platform/boards.md), marking anything that has not
    been verified on hardware.
+   Add the board and its capabilities to the [support matrix](../support/overview.md#maintenance-policy) in the same
+   pull request.
 
 Keep vendor types inside the platform crate and the portable APIs unchanged; if a portable crate needs to change for the
 new board, the seam was leaking ([Portability](../concepts/portability.md)).

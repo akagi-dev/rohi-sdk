@@ -1,5 +1,7 @@
 # What is the ROHI SDK?
 
+This page is the technical overview of the SDK. For the product view, start with [Why ROHI?](../intro/why-rohi.md).
+
 **ROHI** (Robonomics Open Hardware Initiative) SDK is a set of Rust libraries, firmware and desktop tools for building
 IoT devices powered by the [Robonomics](https://robonomics.network/) network. It targets the ESP32-C3 and ESP32-C6
 (RISC-V) and is built on:
@@ -23,8 +25,8 @@ protocol, and the rules that make them safe to combine.
 | Sensors | Typed measurements, drivers (BMx280, SCD4x, SDS011, noise), runtime, `MeasurementStore` | [Sensor HAL](../sdk/hal.md), [Sensors](../sdk/sensors.md) |
 | Configuration | CBOR, A/B-slot, power-fail-safe store of independent typed sections; users persist only their overrides of the firmware defaults | [Configuration store](../sdk/config.md) |
 | Networking | Wi-Fi control plane, DNS/TCP data plane, ESP backend | [Networking](../sdk/net.md) |
-| Services | Config sections, live status (state, health, issues) and actions of every module, discovered by name | [Service pipeline](../sdk/service.md), [Services and status](services.md) |
-| Control | Generic local BLE control protocol, `rohi` desktop client | [Control plane](../sdk/control.md), [The rohi tool](rohi-tool.md) |
+| Services | Config sections, live status (state, health, issues) and actions of every module, discovered by name | [Service pipeline](../sdk/service.md), [Status & diagnostics](../use/desktop/status.md) |
+| Control | Generic local BLE control protocol, `rohi` desktop client | [Control plane](../sdk/control.md), [Desktop application](../use/desktop/index.md) |
 | Location | Where the device is (configured now, GNSS later), sent in telemetry | [Location](../sdk/location.md) |
 | Identity | Provisioned Ed25519 device identity and signer | [Device identity](../sdk/identity.md) |
 | Firmware | Altruist Urban, a complete product built from the above | [Boards](../platform/boards.md) |

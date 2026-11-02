@@ -1,9 +1,21 @@
-# Services and status
+# Status & diagnostics
 
-A ROHI device is a set of **services**: Wi-Fi, telemetry, time, sensors, identity, location, and whatever a firmware
-adds. This page explains how to see what each one is doing and how that differs from configuring it, using the
-[`rohi` tool](rohi-tool.md). Nothing here is specific to a module: the device describes its services, sections and
-actions, and the tool shows them.
+This page explains how to see what each service of a device is doing and how that differs from configuring it, using `rohi`. Nothing here is specific to a module: the device describes its services, sections and actions, and the tool shows them. How a firmware reports status is in [Status](../../build/status.md).
+
+## Commands
+
+```bash
+rohi status                       # device health and one row per service: one compact request
+rohi status network                  # one service: values with units, active issues
+rohi status --watch               # reprint when something observable changed (Ctrl-C to stop)
+rohi status network --watch --interval 5
+rohi -o json status network
+```
+
+Services are discovered from the device, so `rohi status <name>` works for any service the summary lists. Without a
+service the output is the summary table; with `-o json` it is
+`{ "device": .., "uptime_ms": .., "health": .., "services": [..] }`. The sections below explain state,
+health, readiness, issues and revisions.
 
 ## Four questions, four places
 
@@ -167,8 +179,8 @@ provisioning, are always read from stdin or a hidden prompt: `rohi action identi
 
 `rohi config` lists the sections of the device, shows the **effective** configuration of a section (the firmware
 defaults with your explicit **overrides** applied) and changes overrides with patches that are applied atomically per
-section. Secrets are write-only. It is covered on [The rohi tool](rohi-tool.md#configuration); the rules are in
-[Service pipeline](../sdk/service.md#config-sections).
+section. Secrets are write-only. It is covered on [Configuration](configuration.md); the rules are in
+[Service pipeline](../../sdk/service.md#config-sections).
 
 ## What the services are
 
@@ -181,7 +193,7 @@ section. Secrets are write-only. It is covered on [The rohi tool](rohi-tool.md#c
 | `time` | wall-clock time, source, age, failures | `network_unavailable`, `timeout`, `implausible` |
 | `sensors` | `<sensor>.<measurement>` values in canonical units | `bmx280_error`, `sds011_degraded`, ... |
 | `identity` | provisioned or not, public key | `not_provisioned` |
-| `location` | where the device is and where that comes from ([Location](../sdk/location.md)) | `not_set` |
+| `location` | where the device is and where that comes from ([Location](../../sdk/location.md)) | `not_set` |
 
 A firmware may offer more or fewer; `rohi status` shows what the connected device really has. Adding a service needs
-no change to the tool: [Add a service](../guides/add-service.md).
+no change to the tool: [Add a service](../../guides/add-service.md).

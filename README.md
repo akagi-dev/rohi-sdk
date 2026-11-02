@@ -6,9 +6,10 @@
 # Robonomics Open Hardware Initiative SDK
 
 
-> The SDK repository provides all the components needed to start build IoT devices
-> powered by [Robonomics Network](https://robonomics.network/), a Web3 cloud platform
-> designed to manage IoT devices and robotics.
+> **One App. Any Firmware.** ROHI is an open ecosystem where firmware implementing the common ROHI control protocol
+> can be operated through shared clients, whether created by developers, the community or you. This SDK provides the
+> components to build such firmware for devices powered by [Robonomics Network](https://robonomics.network/), a Web3
+> cloud platform designed to manage IoT devices and robotics.
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0) [![Crates.io Version](https://img.shields.io/crates/v/rohi-hal)](https://crates.io/crates/hal) [![Documentation](https://docs.rs/rohi-hal/badge.svg)](https://docs.rs/rohi-hal)
 
@@ -16,6 +17,7 @@
 
 ## 🌟 Features
 
+* Reusable firmware components and a generic control protocol (config, status, action) that shared clients discover from the device
 * Type- & memory-safe using [Rust Language](https://www.rust-lang.org/)
 * Fully async code powered by [Embassy Framework](https://embassy.dev/)
 * Secure & decentralized infrastructure on [Robonomics Network](https://robonomics.network/)
@@ -46,8 +48,9 @@ More: [usage examples](examples/src/bin) and the **[ROHI SDK Book](https://rohi.
 
 ## 📚 Documentation
 
-* **[ROHI SDK Book](https://rohi.akagi.dev)** — architecture, concepts, guides, reference and validation
+* **[ROHI Book](https://rohi.akagi.dev)** — vision, using a device (`rohi` desktop client), building firmware, verifying and sharing
   (sources in [`docs/`](docs/README.md)).
+* [Support matrix](docs/support/overview.md) — what is supported per board, firmware and capability, and what is verified.
 * [API documentation](https://docs.rs/rohi-hal) (`cargo doc --no-deps` for the whole workspace).
 * [Robonomics Wiki](https://wiki.robonomics.network/), [Espressif Rust](https://docs.esp-rs.org/book/),
   [Embassy Framework](https://embassy.dev/book/)
@@ -60,4 +63,5 @@ More: [usage examples](examples/src/bin) and the **[ROHI SDK Book](https://rohi.
 | [`firmwares/altruist-urban`](firmwares/altruist-urban) | [Altruist Urban](https://robonomics.network/devices/altruist/) firmware |
 | [`examples/`](examples/src/bin) | one hardware example per sensor and a configuration self-test |
 | [`tools/rohi`](tools/rohi) | BLE client library and command line tool |
+| [`support-matrix/`](support-matrix) | machine-readable support matrix (validated by `tools/support-matrix`) |
 | [`docs/`](docs) | the SDK book (mdBook) |

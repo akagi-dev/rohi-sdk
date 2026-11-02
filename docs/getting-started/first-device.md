@@ -70,5 +70,5 @@ Behind the scenes, several processes occur:
 
 ## Talk to the device
 
-Once the firmware runs, the [`rohi` tool](rohi-tool.md) finds it over Bluetooth LE and shows its status, sensors and
+Once the firmware runs, the [`rohi` desktop application](../use/desktop/index.md) finds it over Bluetooth LE and shows its status, sensors and
 Wi-Fi.

@@ -5,9 +5,16 @@
 | Place | Content |
 |-------|---------|
 | `README.md` | project landing page and the shortest quickstart, with links to this book and the API docs |
-| **This book** (mdBook, `docs/`) | architecture, concepts, SDK component overviews, guides, platform notes, reference, validation |
-| **Rustdoc** (`cargo doc --no-deps`) | exact Rust API documentation; do not copy API listings into the book |
+| **This book** (mdBook, `docs/`) | product vision, current capabilities, user journeys (Use a Device, Build Firmware, Verify & Share), tutorials and navigation |
+| **Rustdoc** (`cargo doc --no-deps`) | the authoritative technical documentation of each crate: APIs, contracts, ownership, resource constraints, integration examples; do not copy API listings into the book |
 | Crate and module comments | local implementation contracts: invariants, cancellation semantics, safety |
+| Source and protocol definitions | authoritative schemas (`control.proto`), implementations, tests, platform behaviour |
+| [Support matrix](../support/overview.md) | hardware compatibility, firmware support, verification levels and evidence |
+
+The book explains how to use and extend ROHI; the crates explain how ROHI works internally. Some SDK component and
+concept pages still carry technical detail that belongs in the crate rustdoc; they are grouped under
+[SDK crates](../build/sdk-crates.md) and are migrated crate by crate, not copied. Do not add new detailed contracts to the
+book when the crate can hold them.
 
 ## One authoritative location per concept
 
@@ -18,13 +25,15 @@ A fact lives on exactly one page; other pages link to it. Canonical pages:
 | Resource limits and constants | [Resource limits](../reference/resource-limits.md) |
 | Persistent ABI rules | [Persistent ABI](../reference/persistent-abi.md) |
 | Targets, features and commands | [Targets and features](../reference/targets-and-features.md) |
-| Control protocol and its limits | [Control plane](../sdk/control.md) |
+| Control protocol and its limits | [Control plane](../sdk/control.md); concept: [Control protocol](../build/control-protocol.md) |
+| Desktop workflows (`rohi` commands) | [Desktop application](../use/desktop/index.md) |
 | Cancellation rules | [Async and cancellation](../concepts/async-and-cancellation.md) |
 | Measurements and sizes | [Resource budget](../validation/resource-budget.md) |
 | Supported boards, firmware and verification evidence | [Support matrix](../support/overview.md) |
 
 ## Style
 
+- Mark what is **implemented**, **planned** and **not verified** explicitly; never describe a plan as a feature (see the mobile application page).
 - Describe the **current** architecture with stable source names (`WifiHandle`, `resources.rs`), small diagrams, concrete
   examples and explicit ownership and dependency boundaries. Link to source and rustdoc instead of pasting them.
 - Do not leave obsolete work-package terminology or history in normative pages; history belongs to the commit log and
@@ -55,7 +64,8 @@ Pure internal refactors with unchanged public behaviour do not need documentatio
 mdbook build docs          # the book builds
 mdbook test docs           # plain Rust snippets compile
 cargo doc --no-deps        # rustdoc of the host crates builds without warnings
-lychee --offline docs/book # internal links and anchors resolve (CI)
+lychee --offline --include-fragments docs/book  # internal links and anchors resolve (CI)
+cargo test -p rohi-support-matrix      # support matrix schema, references and generated page
 ```
 
-CI runs these in the `docs` job. A broken internal link is a defect: fix the link or the page, do not exclude it.
+CI runs these in the `docs` job (and the support matrix test in the `host` job). A broken internal link is a defect: fix the link or the page, do not exclude it.

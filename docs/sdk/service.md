@@ -12,7 +12,7 @@ module by name:
 
 Capabilities, config and status are separate on purpose: a service can exist without a config section, a section
 can exist without a service, and an action is never smuggled into status. See the user-facing view in
-[Services and status](../getting-started/services.md).
+[Status & diagnostics](../use/desktop/status.md).
 
 ```text
  rohi-control (dispatcher)  ──►  ControlBackend { config(), services() }

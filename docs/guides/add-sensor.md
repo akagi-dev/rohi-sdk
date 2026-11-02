@@ -28,6 +28,7 @@ spawns one task. Drivers know nothing about networks or serialization. Backgroun
    (see [Add a service](add-service.md)).
 7. **Add a hardware example** in `examples/src/bin/` if useful, and record the validation in
    [Hardware testing](../validation/hardware-testing.md).
+   Update the [support matrix](../support/overview.md#maintenance-policy) (implementation, integration, evidence).
 8. **Update the docs** ([policy](../contributing/docs-style.md)): the sensor's page section in
    [Sensors](../sdk/sensors.md) and any new limit in [Resource limits](../reference/resource-limits.md).
 

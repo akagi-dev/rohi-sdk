@@ -111,7 +111,7 @@ Issues:
 
 ## Service
 
-`LocationService` is the `location` service of the [status plane](../getting-started/services.md): `disabled` (with the
+`LocationService` is the `location` service of the [status plane](../use/desktop/status.md): `disabled` (with the
 informational issue `not_set`) until a location is set, then `running`, `ok`, ready. Status fields: `latitude`,
 `longitude`, `height_m` (absent when unknown) and `source` (`configured` or `gps`). It is not essential for the device.
 

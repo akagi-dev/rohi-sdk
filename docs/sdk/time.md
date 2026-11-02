@@ -138,7 +138,7 @@ state and, when synchronized, `unix_time` (ms; absent while unsynchronized), `so
 `consecutive_failures`; the time servers are in the `time` config section, not repeated in the status. An unsynchronized device that has not failed yet is `starting`; after failures it is `running` and
 `degraded` with the active issue of the last failure category (`network_unavailable`, `resolve_failed`, `timeout`,
 `invalid_response`, `rejected`, `implausible`, `source_failure`). A stale time is usable but `degraded`. The service is not
-essential for the device. See [Services and status](../getting-started/services.md):
+essential for the device. See [Status & diagnostics](../use/desktop/status.md):
 
 ```text
 $ rohi status time

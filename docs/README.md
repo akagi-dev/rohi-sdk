@@ -1,28 +1,42 @@
-# Introduction 
+# Introduction
 
 <img class="right" src="images/robo-hw-logo-black.png" alt="The ROHI logo" />
 
-**ROHI** (Robonomics Open Hardware Initiative) SDK is a project offering libraries and firmware to build 
-IoT devices powered by [Robonomics](https://robonomics.network/) network - a Web3 cloud platform designed to manage IoT devices and robotics.
+**ROHI** (Robonomics Open Hardware Initiative) is an open ecosystem for IoT firmware built around a common
+**control protocol**. Firmware that implements the protocol can be operated by shared clients, whether it was written
+by the ROHI developers, the community or you.
 
-## SDK Features
+> **One App. Any Firmware.**
 
-- Type- and memory-safe using [Rust Language](https://www.rust-lang.org/)
-- Fully async code powered by [Embassy Framework](https://embassy.dev/)
-- Secure & decentralized infrastructure on [Robonomics Network](https://robonomics.network/)
+The SDK in this repository is the Rust toolkit behind it: libraries, a reference firmware for
+[Altruist Urban](https://robonomics.network/devices/altruist/) and the `rohi` desktop client, for devices powered by the
+[Robonomics](https://robonomics.network/) network.
 
 ## Where to start
 
-- New to ROHI: [What is the ROHI SDK?](getting-started/overview.md), then [Installation](getting-started/installation.md) and
-  [First device](getting-started/first-device.md).
-- Understand the design: [Architecture](concepts/architecture.md) and [Crate map](concepts/crate-map.md).
-- Extend it: the [guides](guides/add-sensor.md).
-- Look something up: [Reference](reference/resource-limits.md) and [Validation](validation/host-testing.md).
+| I want to... | Start here |
+|--------------|-----------|
+| understand what ROHI is and what works today | [Why ROHI?](intro/why-rohi.md), [Current capabilities](intro/current-capabilities.md) |
+| operate a ROHI device | [Use a Device](use/getting-started.md): [Desktop application](use/desktop/index.md) |
+| know whether my hardware is supported | [Supported devices](support/overview.md) |
+| write firmware | [Build Firmware](build/quick-start.md): [Core concepts](build/core-concepts.md), [Create & customize](build/create-and-customize.md) |
+| trust or share a firmware | [Verify & Share](verify/compatibility.md) |
+| look something up | [Reference](reference/resource-limits.md), the [crate rustdoc](build/sdk-crates.md) |
 
-The book explains architecture, contracts and workflows; exact Rust APIs are in the generated rustdoc
-(`cargo doc --no-deps`).
+## How the documentation is organised
 
-> The following sections assume basic Rust knowledge. If you're unsure about any language aspects, please refer to the [Rust book](https://doc.rust-lang.org/book/).
+| Place | Responsibility |
+|-------|----------------|
+| **This book** | vision, current capabilities, user journeys, tutorials, navigation |
+| **Crate rustdoc** (`cargo doc --no-deps`) | APIs, contracts, ownership, resource constraints, integration examples |
+| **Source and protocol definitions** | authoritative schemas, implementations, tests, platform behaviour |
+| **[Support matrix](support/overview.md)** | hardware compatibility, firmware support, verification levels and evidence |
+
+The book explains how to use and extend ROHI; the crates explain how ROHI works internally. See
+[Documentation style and policy](contributing/docs-style.md).
+
+> The book assumes basic Rust knowledge for the firmware sections. If you are unsure about any language aspects, please
+> refer to the [Rust book](https://doc.rust-lang.org/book/).
 
 # Contributing
 

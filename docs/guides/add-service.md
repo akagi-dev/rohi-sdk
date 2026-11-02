@@ -85,4 +85,4 @@ If the runtime must react to a stored section, the configuration owner publishes
 
 A page for the service in `docs/sdk/` (what it reports, issue codes, fields), the table in
 [Service pipeline](../sdk/service.md#what-lives-where), the services list in
-[Services and status](../getting-started/services.md), and the [crate map](../concepts/crate-map.md).
+[Status & diagnostics](../use/desktop/status.md), and the [crate map](../concepts/crate-map.md).

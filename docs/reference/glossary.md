@@ -28,7 +28,7 @@
 | **Reconciliation** | The Wi-Fi manager continuously moving the actual radio state towards the latest desired configuration |
 | **Section ID** | FNV-1a 64-bit hash of the Rust struct name identifying a `ConfigSection` (for an overrides struct: the name of the section type) |
 | **SensorDriver / Runner** | Driver trait for one sensor / the generic task loop handling probing, polling, backoff and recovery |
-| **Service (status)** | A runtime part exposed through `ManagedService`: state, health, readiness, active issues, values and actions, by name; see [Services and status](../getting-started/services.md) |
+| **Service (status)** | A runtime part exposed through `ManagedService`: state, health, readiness, active issues, values and actions, by name; see [Status & diagnostics](../use/desktop/status.md) |
 | **Status revision** | A counter that changes when a service's state, health, readiness or issues change; lets a poller fetch details only when needed |
 | **Slot (A/B)** | One of the two flash slots of the configuration region; updates go to the inactive one and commit last |
 | **Time anchor** | The accepted absolute time together with the monotonic instant it was accepted at; wall-clock time is `anchor + monotonic elapsed`. See [Time service](../sdk/time.md) |

@@ -126,7 +126,7 @@ its `revision` and the currently active issues (numeric `code`, severity, age; t
 schema), but not the summary again. There is no human-readable reason in the protocol: the active issues say why.
 Status is read-only: there is no start, stop or reset in it.
 Pollers compare `revision`s and fetch the detail only when one changed. See [Services and
-status](../getting-started/services.md).
+status](../use/desktop/status.md).
 
 ### Actions
 
@@ -224,7 +224,7 @@ rohi library
   format         human readable rendering driven by the schemas
 ```
 
-No method is named after a module. The command line has one authoritative page, [The rohi tool](../getting-started/rohi-tool.md):
+No method is named after a module. The command line has one authoritative page, [Desktop application](../use/desktop/index.md):
 commands, device selection (`--device`, `ROHI_DEVICE`, `ble://` and `tcp://` URIs), the output contract (results on
 stdout, prompts and diagnostics on stderr, `-o json`, exit codes), configuration files and actions. It is a layer over
 `Device`: parsing, device choice, prompts and output live in `tools/rohi/src/cli`, protocol behaviour stays in `Device`

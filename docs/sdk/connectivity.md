@@ -149,7 +149,7 @@ at compile time. Without a valid host, telemetry is disabled and the other varia
 
 ## Status
 
-The `connectivity` [service](../getting-started/services.md) reports the state of `ConnectivityShared` and the counters
+The `connectivity` [service](../use/desktop/status.md) reports the state of `ConnectivityShared` and the counters
 without any cooperation from the sending task:
 
 | State of the sender | Service state / health / ready | Issue code |
