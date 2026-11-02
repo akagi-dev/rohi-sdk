@@ -2,7 +2,7 @@
 
 This page is the technical overview of the SDK. For the product view, start with [Why ROHI?](../intro/why-rohi.md).
 
-**ROHI** (Robonomics Open Hardware Initiative) SDK is a set of Rust libraries, firmware and desktop tools for building
+**ROHI** (Robonomics Open Hardware Interface) SDK is a set of Rust libraries, firmware and desktop tools for building
 IoT devices powered by the [Robonomics](https://robonomics.network/) network. It targets the ESP32-C3 and ESP32-C6
 (RISC-V) and is built on:
 
@@ -45,8 +45,8 @@ protocol, and the rules that make them safe to combine.
 
 ## Reading path
 
-1. [Installation](installation.md), [Workspace](workspace.md), [Build and test](build-and-test.md).
-2. [First device](first-device.md): run a sensor example on hardware.
+1. [Installation](installation.md) and [Workspace](workspace.md).
+2. [First device](first-device.md): run a sensor example on hardware, then [Build and test](build-and-test.md).
 3. [Architecture](../concepts/architecture.md) and [Crate map](../concepts/crate-map.md): where things live.
 4. The concepts, then the SDK component pages you need, then the [guides](../guides/add-sensor.md).
 5. [Reference](../reference/resource-limits.md) and [Validation](../validation/host-testing.md) when you need exact

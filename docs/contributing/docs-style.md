@@ -13,7 +13,7 @@
 
 The book explains how to use and extend ROHI; the crates explain how ROHI works internally. Some SDK component and
 concept pages still carry technical detail that belongs in the crate rustdoc; they are grouped under
-[SDK crates](../build/sdk-crates.md) and are migrated crate by crate, not copied. Do not add new detailed contracts to the
+*Technical reference* in the navigation (see [SDK crates](../build/sdk-crates.md)) and are migrated crate by crate, not copied. Do not add new detailed contracts to the
 book when the crate can hold them.
 
 ## One authoritative location per concept

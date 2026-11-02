@@ -3,7 +3,7 @@
 ![ROHI Logo](./docs/images/robo-hw-logo-white.png#gh-dark-mode-only)
 ![ROHI Logo](./docs/images/robo-hw-logo-black.png#gh-light-mode-only)
   
-# Robonomics Open Hardware Initiative SDK
+# Robonomics Open Hardware Interface SDK
 
 
 > **One App. Any Firmware.** ROHI is an open ecosystem where firmware implementing the common ROHI control protocol

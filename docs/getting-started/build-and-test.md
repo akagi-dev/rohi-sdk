@@ -48,5 +48,5 @@ See [Documentation style and policy](../contributing/docs-style.md) for the chec
 
 ## Next
 
-[First device](first-device.md) runs a sensor example on hardware; [Hardware testing](../validation/hardware-testing.md)
-lists what is validated on devices.
+[Create & customize](../build/create-and-customize.md) shows how to add your own capabilities, also with an AI assistant;
+[Hardware testing](../validation/hardware-testing.md) lists what is validated on devices.

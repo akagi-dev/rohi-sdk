@@ -2,7 +2,7 @@
 
 <img class="right" src="images/robo-hw-logo-black.png" alt="The ROHI logo" />
 
-**ROHI** (Robonomics Open Hardware Initiative) is an open ecosystem for IoT firmware built around a common
+**ROHI** (Robonomics Open Hardware Interface) is an open ecosystem for IoT firmware built around a common
 **control protocol**. Firmware that implements the protocol can be operated by shared clients, whether it was written
 by the ROHI developers, the community or you.
 

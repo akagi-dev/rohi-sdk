@@ -12,6 +12,11 @@ one of them becomes visible to generic clients without changing a client.
 | networking | [Use IP networking](../guides/use-network.md) | the `network` / `wifi` services |
 | another board | [Add or support a board](../guides/add-board.md) | a new row in the [support matrix](../support/matrix.md) |
 
+## With an AI assistant
+
+Every guide above can be driven by an AI coding assistant. [Customize firmware with AI](customize-with-ai.md) explains the
+workflow, what to give the assistant and ready-to-use prompts for each kind of change.
+
 ## The path from code to a client
 
 1. Write the portable logic in a feature crate and test it on the host ([Host testing](../validation/host-testing.md)).
