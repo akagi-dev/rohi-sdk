@@ -1,6 +1,6 @@
 # Sensors
 
-Supported by the Altruist Urban firmware (ESP32-C3 and ESP32-C6). Each driver is hardware independent and publishes typed
+Supported by the Altruist Urban firmware (ESP32-C3 and ESP32-C6). Which sensors are present on which board and what is verified is in the [support matrix](../support/overview.md). Each driver is hardware independent and publishes typed
 `rohi-hal` observations; see [Sensor HAL (rohi-hal)](hal.md) for lifecycle, timing and events.
 
 | Sensor | Bus | Cadence | Notes |

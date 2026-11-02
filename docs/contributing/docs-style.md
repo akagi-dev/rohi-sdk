@@ -21,6 +21,7 @@ A fact lives on exactly one page; other pages link to it. Canonical pages:
 | Control protocol and its limits | [Control plane](../sdk/control.md) |
 | Cancellation rules | [Async and cancellation](../concepts/async-and-cancellation.md) |
 | Measurements and sizes | [Resource budget](../validation/resource-budget.md) |
+| Supported boards, firmware and verification evidence | [Support matrix](../support/overview.md) |
 
 ## Style
 
@@ -44,6 +45,7 @@ A change must update the SDK book **in the same pull request** when it changes:
 - target support,
 - resource defaults,
 - the developer workflow.
+- a board, a sensor driver, a firmware wiring or a hardware result: update the [support matrix](../support/overview.md) in the same pull request.
 
 Pure internal refactors with unchanged public behaviour do not need documentation churn.
 

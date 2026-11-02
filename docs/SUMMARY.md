@@ -48,6 +48,8 @@
 
 - [ESP32-C3 and ESP32-C6](platform/esp32.md)
 - [Boards](platform/boards.md)
+- [Reading the support matrix](support/overview.md)
+  - [Support matrix](support/matrix.md)
 - [Wireless runtime](platform/wireless.md)
 
 # Reference

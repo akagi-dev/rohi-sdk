@@ -23,6 +23,8 @@
 ## 🔌 Supported hardware
 
 * Altruist Urban on **ESP32-C3** and **ESP32-C6** (the C6 pin map is not yet verified on hardware).
+* What is implemented, integrated, built and verified per board: the [support matrix](docs/support/overview.md) (machine-readable: [`support-matrix/matrix.toml`](support-matrix/matrix.toml)). Altruist Insight is not supported by ROHI.
+
 
 ## 🧰 Main capabilities
 
