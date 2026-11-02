@@ -21,7 +21,7 @@
 //! Robonomics Open Hardware abstraction layer.
 //!
 //! This crate introduces Rust support for devices designed and assembled as
-//! part of Robonomics Open Hardware Initiative (ROHI). Details available at
+//! part of Robonomics Open Hardware Interface (ROHI). Details available at
 //! https://robonomics.network/devices/
 //!
 //! The crate is hardware independent: it depends on no MCU HAL and is fully
