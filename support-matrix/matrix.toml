@@ -141,7 +141,10 @@ title = "Measure CO2 with Altruist Urban"
 verdict = "unsupported"
 summary = "The Urban board carries no SCD4x. The firmware runs the SCD4x driver and would read a sensor wired to the I²C bus, but no wiring is documented upstream and nothing was verified."
 capabilities = ["scd4x"]
-missing = ["An upstream-documented way to attach an SCD4x to the Urban", "A hardware report with an SCD4x on the Urban"]
+missing = [
+  "An upstream-documented way to attach an SCD4x to the Urban",
+  "A hardware report with an SCD4x on the Urban",
+]
 
 [[use_case]]
 id = "uc-noise"
@@ -149,7 +152,11 @@ title = "Measure environmental noise with ROHI"
 verdict = "partial"
 summary = "The Urban microphone yields unweighted dB SPL from the nominal ICS-43434 sensitivity. There is no per-device calibration and no A-weighting, so it is not dBA and not comparable to a calibrated sound level meter."
 capabilities = ["noise"]
-missing = ["A-weighting (dBA)", "Per-device calibration against a reference meter", "Hardware verification on a board"]
+missing = [
+  "A-weighting (dBA)",
+  "Per-device calibration against a reference meter",
+  "Hardware verification on a board",
+]
 
 [[use_case]]
 id = "uc-insight"
@@ -157,14 +164,24 @@ title = "Run ROHI on Altruist Insight"
 verdict = "unsupported"
 summary = "No ROHI firmware or board module exists for the Insight and no display driver exists. The SCD4x driver exists in the SDK, but nothing integrates it on this board."
 capabilities = ["scd4x", "display"]
-missing = ["Insight board module in rohi-hal-esp", "Display driver", "Insight firmware", "Hardware verification"]
+missing = [
+  "Insight board module in rohi-hal-esp",
+  "Display driver",
+  "Insight firmware",
+  "Hardware verification",
+]
 
 [[use_case]]
 id = "uc-water-quality"
 title = "Build a water-quality monitor with existing ROHI firmware"
 verdict = "unsupported"
 summary = "ROHI has no water-quality sensor driver (pH, turbidity, conductivity, temperature probes), no such board and no firmware. A new device would reuse the SDK services but needs all sensing work."
-missing = ["Sensor drivers", "A board definition and firmware", "Calibration procedures", "Hardware verification"]
+missing = [
+  "Sensor drivers",
+  "A board definition and firmware",
+  "Calibration procedures",
+  "Hardware verification",
+]
 
 # --- Evidence -------------------------------------------------------------------------------------------------
 
@@ -383,7 +400,16 @@ limitations = [
   "The ESP32-C6 pin map comes from the upstream schematic and is not verified on hardware.",
   "The driver handles BMP280 (no humidity) and BME280; the Urban documents a BME280.",
 ]
-evidence = ["src-bmx280", "test-bmx280", "src-fw-sensors", "src-board-c6", "doc-boards", "ci-workflow", "up-urban-sensors", "doc-hwtest"]
+evidence = [
+  "src-bmx280",
+  "test-bmx280",
+  "src-fw-sensors",
+  "src-board-c6",
+  "doc-boards",
+  "ci-workflow",
+  "up-urban-sensors",
+  "doc-hwtest",
+]
 
 [[entry]]
 hardware = "altruist-urban-esp32c6"
@@ -400,7 +426,15 @@ limitations = [
   "The Urban sensor list has no SCD4x; the firmware starts the driver anyway and reports no measurement and an unhealthy sensor state when none answers on the I²C bus.",
   "Attaching an external SCD4x is not documented upstream and not verified.",
 ]
-evidence = ["src-scd4x", "test-scd4x", "src-fw-sensors", "src-board-c6", "doc-boards", "ci-workflow", "up-urban-sensors"]
+evidence = [
+  "src-scd4x",
+  "test-scd4x",
+  "src-fw-sensors",
+  "src-board-c6",
+  "doc-boards",
+  "ci-workflow",
+  "up-urban-sensors",
+]
 
 [[entry]]
 hardware = "altruist-urban-esp32c6"
@@ -418,7 +452,16 @@ limitations = [
   "The schematic names the SDS011 nets PM_TX and PM_RX without a viewpoint; swap the pins if the sensor stays silent.",
   "The SDS011 accuracy is ±10 µg/m³ or ±15 % (upstream datasheet figure).",
 ]
-evidence = ["src-sds011", "test-sds011", "src-fw-sensors", "src-board-c6", "doc-boards", "ci-workflow", "up-urban-sensors", "doc-hwtest"]
+evidence = [
+  "src-sds011",
+  "test-sds011",
+  "src-fw-sensors",
+  "src-board-c6",
+  "doc-boards",
+  "ci-workflow",
+  "up-urban-sensors",
+  "doc-hwtest",
+]
 
 [[entry]]
 hardware = "altruist-urban-esp32c6"
@@ -436,7 +479,16 @@ limitations = [
   "Unweighted dB SPL (not dBA) from the nominal ICS-43434 sensitivity (-26 dBFS at 94 dB SPL); no per-device calibration, so values include the microphone response and the device's own noise.",
   "Not comparable to a calibrated, A-weighted sound level meter.",
 ]
-evidence = ["src-noise", "test-noise", "src-fw-sensors", "src-board-c6", "doc-boards", "ci-workflow", "up-urban-sensors", "doc-sensors"]
+evidence = [
+  "src-noise",
+  "test-noise",
+  "src-fw-sensors",
+  "src-board-c6",
+  "doc-boards",
+  "ci-workflow",
+  "up-urban-sensors",
+  "doc-sensors",
+]
 
 [[entry]]
 hardware = "altruist-urban-esp32c6"
@@ -485,7 +537,13 @@ limitations = [
   "Depends on Wi-Fi, time and a provisioned device identity; no hardware run against a connectivity provider is recorded.",
   "The independent altruist-firmware reports to Robonomics through its own mechanism; the two are not interchangeable.",
 ]
-evidence = ["src-connectivity", "test-connectivity", "src-fw-main", "ci-workflow", "doc-hwtest"]
+evidence = [
+  "src-connectivity",
+  "test-connectivity",
+  "src-fw-main",
+  "ci-workflow",
+  "doc-hwtest",
+]
 
 [[entry]]
 hardware = "altruist-urban-esp32c6"
@@ -502,7 +560,13 @@ limitations = [
   "One heap measurement exists (Wi-Fi and BLE running, chip not recorded); advertising, coexistence, MTU and 24 h stability are not measured.",
   "No BLE pairing or encryption yet.",
 ]
-evidence = ["src-control-ble", "test-control-ble", "src-fw-main", "ci-workflow", "doc-hwtest"]
+evidence = [
+  "src-control-ble",
+  "test-control-ble",
+  "src-fw-main",
+  "ci-workflow",
+  "doc-hwtest",
+]
 
 [[entry]]
 hardware = "altruist-urban-esp32c6"
@@ -518,7 +582,13 @@ hardware_verification = "not-verified"
 limitations = [
   "The flash self-test (example-config) exists, but no run is recorded.",
 ]
-evidence = ["src-config-esp", "test-config", "src-fw-main", "ci-workflow", "doc-hwtest"]
+evidence = [
+  "src-config-esp",
+  "test-config",
+  "src-fw-main",
+  "ci-workflow",
+  "doc-hwtest",
+]
 
 [[entry]]
 hardware = "altruist-urban-esp32c6"
@@ -534,7 +604,13 @@ hardware_verification = "not-verified"
 limitations = [
   "The hardware checklist (provision, reboot, erase, re-provision) has no recorded results.",
 ]
-evidence = ["src-identity", "test-identity", "src-fw-main", "ci-workflow", "doc-hwtest"]
+evidence = [
+  "src-identity",
+  "test-identity",
+  "src-fw-main",
+  "ci-workflow",
+  "doc-hwtest",
+]
 
 [[entry]]
 hardware = "altruist-urban-esp32c3"
@@ -551,7 +627,15 @@ limitations = [
   "The ESP32-C3 pin map is checked against the Urban pinout, but this variant has no schematic in airalab/hardware and no recorded hardware run.",
   "The driver handles BMP280 (no humidity) and BME280; the Urban documents a BME280.",
 ]
-evidence = ["src-bmx280", "test-bmx280", "src-fw-sensors", "src-board-c3", "doc-boards", "ci-workflow", "doc-hwtest"]
+evidence = [
+  "src-bmx280",
+  "test-bmx280",
+  "src-fw-sensors",
+  "src-board-c3",
+  "doc-boards",
+  "ci-workflow",
+  "doc-hwtest",
+]
 
 [[entry]]
 hardware = "altruist-urban-esp32c3"
@@ -567,7 +651,14 @@ hardware_verification = "not-verified"
 limitations = [
   "No upstream documentation of the variant's sensors; the firmware starts the SCD4x driver and reports no measurement and an unhealthy sensor state when none answers.",
 ]
-evidence = ["src-scd4x", "test-scd4x", "src-fw-sensors", "src-board-c3", "doc-boards", "ci-workflow"]
+evidence = [
+  "src-scd4x",
+  "test-scd4x",
+  "src-fw-sensors",
+  "src-board-c3",
+  "doc-boards",
+  "ci-workflow",
+]
 
 [[entry]]
 hardware = "altruist-urban-esp32c3"
@@ -585,7 +676,15 @@ limitations = [
   "The UART wiring was not recorded in a hardware report.",
   "The SDS011 accuracy is ±10 µg/m³ or ±15 % (upstream datasheet figure).",
 ]
-evidence = ["src-sds011", "test-sds011", "src-fw-sensors", "src-board-c3", "doc-boards", "ci-workflow", "doc-hwtest"]
+evidence = [
+  "src-sds011",
+  "test-sds011",
+  "src-fw-sensors",
+  "src-board-c3",
+  "doc-boards",
+  "ci-workflow",
+  "doc-hwtest",
+]
 
 [[entry]]
 hardware = "altruist-urban-esp32c3"
@@ -603,7 +702,15 @@ limitations = [
   "Unweighted dB SPL (not dBA) from the nominal ICS-43434 sensitivity (-26 dBFS at 94 dB SPL); no per-device calibration, so values include the microphone response and the device's own noise.",
   "Not comparable to a calibrated, A-weighted sound level meter.",
 ]
-evidence = ["src-noise", "test-noise", "src-fw-sensors", "src-board-c3", "doc-boards", "ci-workflow", "doc-sensors"]
+evidence = [
+  "src-noise",
+  "test-noise",
+  "src-fw-sensors",
+  "src-board-c3",
+  "doc-boards",
+  "ci-workflow",
+  "doc-sensors",
+]
 
 [[entry]]
 hardware = "altruist-urban-esp32c3"
@@ -652,7 +759,13 @@ limitations = [
   "Depends on Wi-Fi, time and a provisioned device identity; no hardware run against a connectivity provider is recorded.",
   "The independent altruist-firmware reports to Robonomics through its own mechanism; the two are not interchangeable.",
 ]
-evidence = ["src-connectivity", "test-connectivity", "src-fw-main", "ci-workflow", "doc-hwtest"]
+evidence = [
+  "src-connectivity",
+  "test-connectivity",
+  "src-fw-main",
+  "ci-workflow",
+  "doc-hwtest",
+]
 
 [[entry]]
 hardware = "altruist-urban-esp32c3"
@@ -669,7 +782,13 @@ limitations = [
   "One heap measurement exists (Wi-Fi and BLE running, chip not recorded); advertising, coexistence, MTU and 24 h stability are not measured.",
   "No BLE pairing or encryption yet.",
 ]
-evidence = ["src-control-ble", "test-control-ble", "src-fw-main", "ci-workflow", "doc-hwtest"]
+evidence = [
+  "src-control-ble",
+  "test-control-ble",
+  "src-fw-main",
+  "ci-workflow",
+  "doc-hwtest",
+]
 
 [[entry]]
 hardware = "altruist-urban-esp32c3"
@@ -685,7 +804,13 @@ hardware_verification = "not-verified"
 limitations = [
   "The flash self-test (example-config) exists, but no run is recorded.",
 ]
-evidence = ["src-config-esp", "test-config", "src-fw-main", "ci-workflow", "doc-hwtest"]
+evidence = [
+  "src-config-esp",
+  "test-config",
+  "src-fw-main",
+  "ci-workflow",
+  "doc-hwtest",
+]
 
 [[entry]]
 hardware = "altruist-urban-esp32c3"
@@ -701,7 +826,13 @@ hardware_verification = "not-verified"
 limitations = [
   "The hardware checklist (provision, reboot, erase, re-provision) has no recorded results.",
 ]
-evidence = ["src-identity", "test-identity", "src-fw-main", "ci-workflow", "doc-hwtest"]
+evidence = [
+  "src-identity",
+  "test-identity",
+  "src-fw-main",
+  "ci-workflow",
+  "doc-hwtest",
+]
 
 [[entry]]
 hardware = "altruist-urban-esp32c6"
@@ -826,9 +957,7 @@ host_tests = "none"
 simulation = "none"
 target_build = "not-built"
 hardware_verification = "not-verified"
-limitations = [
-  "ROHI has no display driver.",
-]
+limitations = ["ROHI has no display driver."]
 evidence = ["up-insight"]
 
 [[entry]]

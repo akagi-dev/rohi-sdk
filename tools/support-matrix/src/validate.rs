@@ -423,7 +423,9 @@ fn is_date(text: &str) -> bool {
     if b.len() != 10
         || b[4] != b'-'
         || b[7] != b'-'
-        || !b.iter().enumerate().all(|(i, c)| (i == 4 || i == 7) == (*c == b'-') || (i != 4 && i != 7 && c.is_ascii_digit()))
+        || !b.iter().enumerate().all(|(i, c)| {
+            (i == 4 || i == 7) == (*c == b'-') || (i != 4 && i != 7 && c.is_ascii_digit())
+        })
     {
         return false;
     }
