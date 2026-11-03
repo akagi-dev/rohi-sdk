@@ -41,3 +41,13 @@ impl<C: Clock, M: RawMutex> LogClock for TimeService<C, M> {
         self.now()
     }
 }
+
+impl<T: LogClock + ?Sized> LogClock for &T {
+    fn monotonic_ms(&self) -> u64 {
+        (**self).monotonic_ms()
+    }
+
+    fn wall_time(&self) -> Option<UnixTime> {
+        (**self).wall_time()
+    }
+}

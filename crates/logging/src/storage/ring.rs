@@ -334,6 +334,13 @@ impl<M: Medium> LogStorage for RingStorage<M> {
     type Error = M::Error;
 
     async fn recover(&mut self) -> Result<Recovery, Failure<M>> {
+        // Downloads that hold segments keep holding them across a recovery.
+        let pinned: Vec<(u32, u8), MAX_SEGMENTS> = self
+            .segments
+            .iter()
+            .filter(|segment| segment.pins > 0)
+            .map(|segment| (segment.id, segment.pins))
+            .collect();
         self.segments.clear();
         self.open = false;
         let total = self.medium.sectors();
@@ -394,6 +401,10 @@ impl<M: Medium> LogStorage for RingStorage<M> {
             dropped += 1;
         }
         for segment in found {
+            let mut segment = segment;
+            if let Some((_, pins)) = pinned.iter().find(|(id, _)| *id == segment.id) {
+                segment.pins = *pins;
+            }
             let _ = self.segments.push(segment);
         }
         self.next_id = self

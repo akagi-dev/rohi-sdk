@@ -45,6 +45,7 @@ pub struct LogSink<M: RawMutex, C, const N: usize> {
     clock: C,
     level: Mutex<M, Cell<LogLevel>>,
     dropped: Mutex<M, Cell<u64>>,
+    last_drop_ms: Mutex<M, Cell<Option<u64>>>,
     queue: Channel<M, LogRecord, N>,
 }
 
@@ -55,6 +56,7 @@ impl<M: RawMutex, C: LogClock, const N: usize> LogSink<M, C, N> {
             clock,
             level: Mutex::new(Cell::new(level)),
             dropped: Mutex::new(Cell::new(0)),
+            last_drop_ms: Mutex::new(Cell::new(None)),
             queue: Channel::new(),
         }
     }
@@ -72,6 +74,22 @@ impl<M: RawMutex, C: LogClock, const N: usize> LogSink<M, C, N> {
     /// Records dropped because the queue was full, since boot.
     pub fn dropped(&self) -> u64 {
         self.dropped.lock(Cell::get)
+    }
+
+    /// When a record was last dropped because the queue was full, in
+    /// milliseconds since boot.
+    pub fn last_drop_ms(&self) -> Option<u64> {
+        self.last_drop_ms.lock(Cell::get)
+    }
+
+    /// Completes when a record is waiting, without taking it.
+    pub async fn ready(&self) {
+        self.queue.ready_to_receive().await;
+    }
+
+    /// The clock records are stamped with.
+    pub fn clock(&self) -> &C {
+        &self.clock
     }
 
     /// Records waiting for the logging task.
@@ -104,6 +122,8 @@ impl<M: RawMutex, C: LogClock, const N: usize> LogSink<M, C, N> {
         } else {
             self.dropped
                 .lock(|cell| cell.set(cell.get().saturating_add(1)));
+            let now = self.clock.monotonic_ms();
+            self.last_drop_ms.lock(|cell| cell.set(Some(now)));
             false
         }
     }

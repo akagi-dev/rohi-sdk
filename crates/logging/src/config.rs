@@ -220,16 +220,22 @@ pub struct LoggingConfig {
     pub flush_interval_ms: u32,
 }
 
+impl LoggingConfig {
+    /// The defaults: [`PRODUCTION_LEVEL`], internal flash, LZ4, 128 KiB in
+    /// 8 KiB segments, flushed every 10 s.
+    pub const DEFAULT: Self = Self {
+        level: PRODUCTION_LEVEL,
+        storage: LogStorageKind::Internal,
+        compression: Compression::Lz4,
+        retention_bytes: DEFAULT_RETENTION_BYTES,
+        segment_bytes: DEFAULT_SEGMENT_BYTES,
+        flush_interval_ms: DEFAULT_FLUSH_INTERVAL_MS,
+    };
+}
+
 impl Default for LoggingConfig {
     fn default() -> Self {
-        Self {
-            level: PRODUCTION_LEVEL,
-            storage: LogStorageKind::Internal,
-            compression: Compression::Lz4,
-            retention_bytes: DEFAULT_RETENTION_BYTES,
-            segment_bytes: DEFAULT_SEGMENT_BYTES,
-            flush_interval_ms: DEFAULT_FLUSH_INTERVAL_MS,
-        }
+        Self::DEFAULT
     }
 }
 

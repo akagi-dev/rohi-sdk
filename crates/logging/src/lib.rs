@@ -92,6 +92,7 @@ mod config;
 mod level;
 mod record;
 pub mod segment;
+mod service;
 mod sink;
 pub mod storage;
 
@@ -102,10 +103,14 @@ extern crate std;
 mod config_tests;
 
 #[cfg(test)]
+mod service_tests;
+
+#[cfg(test)]
 mod tests;
 
 pub use clock::LogClock;
 pub use config::*;
 pub use level::LogLevel;
 pub use record::{LogRecord, MAX_MESSAGE_LEN, MAX_TARGET_LEN};
+pub use service::*;
 pub use sink::{INTERNAL_TARGET, LogSink};

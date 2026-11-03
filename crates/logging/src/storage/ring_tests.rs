@@ -237,3 +237,18 @@ fn at_most_the_segment_limit_is_retained() {
     assert!(stats.segments as usize <= MAX_SEGMENTS);
     assert_contiguous(&all_records(&mut storage));
 }
+
+#[test]
+fn a_recovery_keeps_the_pins_of_downloads() {
+    let mut storage = fresh();
+    let mut writer = Writer::new(1, Compression::None, LIMITS);
+    writer.push_many(&mut storage, 300).unwrap();
+    writer.flush(&mut storage).unwrap();
+    let oldest = block_on(storage.segments()).unwrap()[0];
+    block_on(storage.pin(oldest.id)).unwrap();
+    // The service reads the medium again after a failed write.
+    block_on(storage.recover()).unwrap();
+    let after = block_on(storage.segments()).unwrap();
+    assert!(after.iter().any(|info| info.id == oldest.id && info.pinned));
+    assert_eq!(block_on(storage.clear()), Err(StorageError::Busy));
+}
