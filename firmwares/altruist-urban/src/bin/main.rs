@@ -35,7 +35,7 @@ use altruist_urban::reboot::reboot_task;
 use altruist_urban::resources::WIRELESS_HEAP_SIZE;
 use altruist_urban::tasks::sensors;
 use altruist_urban::tasks::store;
-use altruist_urban::{connectivity, control, flash, identity, net, time};
+use altruist_urban::{connectivity, control, flash, identity, logging, net, time};
 use rohi_sdk::esp::hal::board::altruist_urban::{AltruistUrban, Hardware};
 use rohi_sdk::esp::net::{EspWireless, wireless_heap};
 
@@ -48,7 +48,7 @@ const WIFI_FIRST_ATTEMPT_WAIT: Duration = Duration::from_secs(30);
 
 #[esp_rtos::main]
 async fn main(spawner: Spawner) -> ! {
-    esp_println::logger::init_logger_from_env();
+    logging::init_logger();
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
     let (hardware, runtime) = Hardware::split(peripherals);
@@ -69,6 +69,9 @@ async fn main(spawner: Spawner) -> ! {
     // configuration must not stop the sensors. It publishes every section to
     // its consumer before they start.
     let (flash, partitions) = flash::init(runtime.flash);
+    // The log partition is the log task's alone; boot messages wait in its queue
+    // until it runs.
+    logging::start(spawner, flash, partitions.log);
     let config = config::start(
         spawner,
         flash,

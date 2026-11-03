@@ -21,10 +21,10 @@
 //! BLE radio -> rohi-net-esp (EspBle) -> rohi-control-ble -> rohi-control
 //!                                                              |
 //!                                             UrbanDevice (this module)
-//!                          config sections: wifi, connectivity, location, time
+//!                          config sections: wifi, network, ble, connectivity, location, time, logging
 //!                          status: wifi, network, ble, connectivity, location, time,
-//!                                  sensors, identity
-//!                          actions: wifi, identity
+//!                                  sensors, identity, logging
+//!                          actions: wifi, identity, logging (read, download, clear)
 //! ```
 //!
 //! The registries only talk to runtime handles; they never own a store, a flash
@@ -60,7 +60,7 @@ use crate::identity::IdentityHandle;
 use crate::resources::{BleResources, BleRunner, BleStatus, BleTransport, Ip};
 use crate::tasks::RawMutex;
 use crate::tasks::store;
-use crate::{connectivity, location, net, reboot, time};
+use crate::{connectivity, location, logging, net, reboot, time};
 
 /// Firmware name and version.
 const FIRMWARE: &str = concat!(env!("CARGO_PKG_NAME"), "-", env!("CARGO_PKG_VERSION"));
@@ -110,6 +110,7 @@ type UrbanConnectivity = Startup<ConnectivityStatusService<'static, RawMutex>>;
 type UrbanLocation = LocationService<'static, RawMutex>;
 type UrbanSensors = SensorsService<'static, RawMutex>;
 type UrbanIdentity = IdentityService<StoredIdentity>;
+type UrbanLogging = logging::Service;
 
 /// The instances of the services of the device.
 ///
@@ -123,6 +124,7 @@ struct UrbanServices {
     location: UrbanLocation,
     sensors: UrbanSensors,
     identity: UrbanIdentity,
+    logging: UrbanLogging,
 }
 
 /// The services that report status. The `time` service is the time runtime
@@ -136,13 +138,18 @@ type UrbanStatusServices = (
     &'static time::Time,
     &'static UrbanSensors,
     &'static UrbanIdentity,
+    &'static UrbanLogging,
 );
 
 /// The status registry of the device.
 pub type UrbanStatuses = Statuses<RawMutex, UrbanStatusServices>;
 
 /// The services that offer actions.
-pub type UrbanActions = (&'static UrbanWifi, &'static UrbanIdentity);
+pub type UrbanActions = (
+    &'static UrbanWifi,
+    &'static UrbanIdentity,
+    &'static UrbanLogging,
+);
 
 // Two services with one id would route requests to the wrong service; this is
 // a build error already in `cargo check`.
@@ -195,6 +202,7 @@ pub fn device(
         location: LocationService(location::shared()),
         sensors: SensorsService(store::handle()),
         identity: IdentityService(StoredIdentity(identity)),
+        logging: logging::runtime().service(),
     });
     Device::new(
         DeviceInfo {
@@ -212,8 +220,9 @@ pub fn device(
             time::service(),
             &services.sensors,
             &services.identity,
+            &services.logging,
         )),
-        (&services.wifi, &services.identity),
+        (&services.wifi, &services.identity, &services.logging),
     )
     .with_reboot(reboot::request)
 }

@@ -49,6 +49,8 @@ pub mod flash;
 /// Device identity runtime.
 pub mod identity;
 pub mod location;
+/// Persistent logging.
+pub mod logging;
 pub mod net;
 /// Deferred device reboot.
 pub mod reboot;

@@ -26,6 +26,7 @@ rohi-sdk = { workspace = true, features = [
   "ntp",
   "identity",
   "location",
+  "logging",
   "control",
   "ble",
   "connectivity",

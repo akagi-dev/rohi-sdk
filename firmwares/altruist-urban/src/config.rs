@@ -89,7 +89,7 @@ use rohi_sdk::service::{
 
 use crate::bindings::{
     Binding, BleBinding, ConfigRuntime, ConnectivityBinding, IdentityBinding, LocationBinding,
-    NetworkBinding, PrivateBinding, TimeBinding, WifiBinding,
+    LoggingBinding, NetworkBinding, PrivateBinding, TimeBinding, WifiBinding,
 };
 use crate::flash::Flash;
 use crate::tasks::RawMutex;
@@ -797,6 +797,6 @@ fn effective<C: HasOverrides + Default>(
 }
 
 crate::firmware_configs! {
-    managed WifiBinding, NetworkBinding, BleBinding, ConnectivityBinding, LocationBinding, TimeBinding;
+    managed WifiBinding, NetworkBinding, BleBinding, ConnectivityBinding, LocationBinding, TimeBinding, LoggingBinding;
     private IdentityBinding
 }

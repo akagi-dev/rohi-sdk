@@ -84,7 +84,7 @@ const fn parse_secs(text: &str) -> u64 {
 /// after `DEFAULT_STALE_AFTER` (six hours, several missed hourly resyncs).
 const CONFIG: TimeConfig = TimeConfig::new(BUILD_TIME);
 
-static TIME: Time = TimeService::new(EmbassyClock, CONFIG);
+pub(crate) static TIME: Time = TimeService::new(EmbassyClock, CONFIG);
 
 /// The time service for consumers: `service().now()` is `None` until the first
 /// valid sample.
