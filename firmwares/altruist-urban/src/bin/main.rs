@@ -30,12 +30,10 @@ use esp_hal::timer::timg::TimerGroup;
 use log::{error, info};
 
 use altruist_urban::bindings::ConfigRuntime;
-use altruist_urban::config;
-use altruist_urban::reboot::reboot_task;
-use altruist_urban::resources::WIRELESS_HEAP_SIZE;
-use altruist_urban::tasks::sensors;
-use altruist_urban::tasks::store;
-use altruist_urban::{connectivity, control, identity, net, time};
+use altruist_urban::esp::reboot::reboot_task;
+use altruist_urban::esp::resources::WIRELESS_HEAP_SIZE;
+use altruist_urban::esp::{config, connectivity, control, net, sensors, store, time};
+use altruist_urban::{identity, net as wifi, tasks};
 use rohi_sdk::esp::hal::board::altruist_urban::{AltruistUrban, Hardware};
 use rohi_sdk::esp::net::{EspWireless, wireless_heap};
 
@@ -55,7 +53,7 @@ async fn main(spawner: Spawner) -> ! {
 
     // One owner for the radio: it takes the wireless heap and creates the Wi-Fi
     // and BLE drivers, see `rohi_sdk::esp::net`. All sizes come from
-    // `altruist_urban::resources`.
+    // `altruist_urban::esp::resources`.
     let heap = wireless_heap!(WIRELESS_HEAP_SIZE);
     let mut wireless = EspWireless::new(runtime.wifi, runtime.bt, heap);
     esp_rtos::start(TimerGroup::new(runtime.timg0).timer0, runtime.sw_interrupt);
@@ -68,7 +66,7 @@ async fn main(spawner: Spawner) -> ! {
     // uses the handle. A missing partition (old partition table) or corrupted
     // configuration must not stop the sensors. It publishes every section to
     // its consumer before they start.
-    let config = config::start(spawner, runtime.flash, ConfigRuntime::new(net::handle()));
+    let config = config::start(spawner, runtime.flash, ConfigRuntime::new(wifi::handle()));
     // Identity is provisioned from the host, never generated; a fresh device
     // simply has none and keeps sensing.
     let identity = identity::start(config);
@@ -86,8 +84,8 @@ async fn main(spawner: Spawner) -> ! {
             // uses it for NTP and the telemetry uplink for HTTP. Telemetry
             // follows the configuration changes made over the control link.
             time::start(spawner, network);
-            connectivity::start(spawner, network, store::handle());
-            wifi_configured = net::handle().is_configured();
+            connectivity::start(spawner, network, tasks::store::handle());
+            wifi_configured = wifi::handle().is_configured();
             ip = Some(network);
             info!(
                 "Wi-Fi started, wireless heap free {} B",
@@ -103,7 +101,7 @@ async fn main(spawner: Spawner) -> ! {
     // association in particular, keeps the core busy long enough to overrun
     // the microphone DMA ring.
     if wifi_configured {
-        net::wait_first_attempt(WIFI_FIRST_ATTEMPT_WAIT).await;
+        wifi::wait_first_attempt(WIFI_FIRST_ATTEMPT_WAIT).await;
     }
     sensors::start(spawner, board);
 

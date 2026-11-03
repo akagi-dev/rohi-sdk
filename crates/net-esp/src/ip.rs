@@ -250,7 +250,7 @@ impl<const N: usize, const BUF: usize> Drop for UdpEntry<'_, N, BUF> {
 /// socket table. Each pool holds at most 32 entries.
 ///
 /// The Altruist Urban sizes and the reasoning behind them are in
-/// `firmwares/altruist-urban/src/resources.rs`.
+/// `firmwares/altruist-urban/src/esp/resources.rs`.
 ///
 /// # Panics
 ///

@@ -11,12 +11,18 @@ description = "Altruist Urban firmware."
 [badges]
 maintenance = { status = "actively-developed" }
 
+[lib]
+name = "altruist_urban"
+
 [[bin]]
 name = "altruist-urban"
 path = "./src/bin/main.rs"
+required-features = ["esp"]
 
 [dependencies]
-# ROHI crates, selected by feature; the chip is chosen by `esp32c3` / `esp32c6`
+# The portable application: services, bindings, configuration owner and
+# control composition. It runs on every platform that provides the backends
+# (ESP with the `esp32c3` / `esp32c6` features, the host with `altruist-sim`).
 rohi-sdk = { workspace = true, features = [
   "config",
   "service",
@@ -29,27 +35,42 @@ rohi-sdk = { workspace = true, features = [
   "control",
   "ble",
   "connectivity",
-  "esp",
-  "heap-stats",
+  "embassy-time",
 ] }
-esp-hal = { workspace = true }
-esp-println = { workspace = true }
-esp-backtrace = { workspace = true }
-esp-bootloader-esp-idf = { workspace = true }
-esp-rtos = { workspace = true }
 embassy-executor = { workspace = true }
 embassy-time = { workspace = true }
 embassy-sync = { workspace = true }
 embassy-futures = { workspace = true }
-embassy-embedded-hal = { workspace = true }
 static_cell = { workspace = true }
+heapless = { workspace = true }
 log = { workspace = true }
 
+# ESP platform, only with a chip feature.
+esp-hal = { workspace = true, optional = true }
+esp-println = { workspace = true, optional = true }
+esp-backtrace = { workspace = true, optional = true }
+esp-bootloader-esp-idf = { workspace = true, optional = true }
+esp-rtos = { workspace = true, optional = true }
+embassy-embedded-hal = { workspace = true, optional = true }
+
 [features]
-# Exactly one chip feature must be selected: use `cargo check-esp32c3`,
-# `cargo check-esp32c6`, `cargo build-esp32c3` or `cargo build-esp32c6`.
+# Without a feature only the portable application is built (for the host
+# simulator). A chip feature adds the ESP platform: exactly one must be
+# selected, use `cargo check-esp32c3`, `cargo check-esp32c6`,
+# `cargo build-esp32c3` or `cargo build-esp32c6`.
 default = []
+esp = [
+  "rohi-sdk/esp",
+  "rohi-sdk/heap-stats",
+  "dep:esp-hal",
+  "dep:esp-println",
+  "dep:esp-backtrace",
+  "dep:esp-bootloader-esp-idf",
+  "dep:esp-rtos",
+  "dep:embassy-embedded-hal",
+]
 esp32c3 = [
+  "esp",
   "esp-hal/esp32c3",
   "esp-println/esp32c3",
   "esp-backtrace/esp32c3",
@@ -58,6 +79,7 @@ esp32c3 = [
   "rohi-sdk/esp32c3",
 ]
 esp32c6 = [
+  "esp",
   "esp-hal/esp32c6",
   "esp-println/esp32c6",
   "esp-backtrace/esp32c6",

@@ -357,7 +357,12 @@ macro_rules! firmware_configs {
         /// consumer starts from the same effective value a commit would give.
         /// `None`: the store is unavailable, so the firmware policy applies and
         /// private sections stay unknown.
-        fn publish_boot(store: Option<&mut ConfigStore<Storage>>, runtime: &ConfigRuntime) {
+        fn publish_boot<S: ConfigStorage>(
+            store: Option<&mut ConfigStore<S>>,
+            runtime: &ConfigRuntime,
+        ) where
+            S::Error: ::core::fmt::Debug,
+        {
             let Some(store) = store else {
                 $(publish_managed::<$managed>(runtime, None, true);)+
                 $(<$private as $crate::bindings::PrivateBinding>::unreadable(
@@ -365,8 +370,8 @@ macro_rules! firmware_configs {
                 );)+
                 return;
             };
-            $(boot_managed::<$managed>(store, runtime);)+
-            $(boot_private::<$private>(store);)+
+            $(boot_managed::<$managed, S>(store, runtime);)+
+            $(boot_private::<$private, S>(store);)+
         }
 
         /// Publishes the state after a factory reset: nothing is stored.

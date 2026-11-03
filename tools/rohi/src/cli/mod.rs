@@ -55,7 +55,7 @@ pub use target::{Match, Target, resolve};
 pub use terminal::Io;
 
 use crate::format::Paint;
-use crate::{BleLink, ClientTransport, Device, format, scan, scan_until};
+use crate::{BleLink, ClientTransport, Device, TcpLink, format, scan, scan_until};
 
 /// Everything a command needs besides the device: the terminal, the output
 /// format and what is known about the connection.
@@ -216,6 +216,20 @@ async fn connect_ble(
     Ok(device)
 }
 
+/// Connects to a device that speaks the control protocol over TCP, such as
+/// the `altruist-sim` simulator.
+async fn connect_tcp(
+    cli: &Cli,
+    endpoint: &str,
+    ctx: &mut Ctx,
+) -> Result<Device<TcpLink>, CliError> {
+    ctx.uri = Some(format!("tcp://{endpoint}"));
+    let link = TcpLink::connect(endpoint, Duration::from_secs(cli.scan_timeout)).await?;
+    let mut device = Device::new(link);
+    device.set_timeout(Duration::from_secs(cli.timeout));
+    Ok(device)
+}
+
 /// Runs the command line `cli`: resolves the target, connects, executes and
 /// always closes the connection.
 pub async fn run(cli: Cli, ctx: &mut Ctx) -> Result<(), CliError> {
@@ -226,17 +240,22 @@ pub async fn run(cli: Cli, ctx: &mut Ctx) -> Result<(), CliError> {
         return ctx.io.result(&help);
     }
 
-    let target = Target::parse(cli.device.as_deref())?;
-    let selector = match &target {
-        Target::Ble(selector) => selector.clone(),
-        Target::Tcp(_) => return Err(CliError::UnsupportedTransport("tcp".into())),
-    };
-    let mut device = interruptible(connect_ble(&cli, selector.as_deref(), ctx)).await?;
-    let result = interruptible(execute(&mut device, cli.command, ctx)).await;
-    // Dropping the peripheral does not disconnect it (BlueZ keeps the link),
-    // and the device accepts a single connection: always close it.
-    let closed = device.into_transport().disconnect().await;
-    result.and(closed.map_err(CliError::from))
+    match Target::parse(cli.device.as_deref())? {
+        Target::Ble(selector) => {
+            let mut device = interruptible(connect_ble(&cli, selector.as_deref(), ctx)).await?;
+            let result = interruptible(execute(&mut device, cli.command, ctx)).await;
+            // Dropping the peripheral does not disconnect it (BlueZ keeps the link),
+            // and the device accepts a single connection: always close it.
+            let closed = device.into_transport().disconnect().await;
+            result.and(closed.map_err(CliError::from))
+        }
+        Target::Tcp(endpoint) => {
+            let mut device = interruptible(connect_tcp(&cli, &endpoint, ctx)).await?;
+            let result = interruptible(execute(&mut device, cli.command, ctx)).await;
+            let closed = device.into_transport().disconnect().await;
+            result.and(closed.map_err(CliError::from))
+        }
+    }
 }
 
 /// Runs the command line and returns the process exit code.

@@ -24,7 +24,7 @@
 //! the allowed dependency direction.
 //!
 //! ```text
-//!                    firmwares/altruist-urban   (product: composition, tasks, resources.rs)
+//!                    firmwares/altruist-urban   (product: portable composition; esp/ module: ESP tasks, resources)
 //!                                      │ composes
 //!           ┌──────────────────────┬──────────────────────────┬──────────────────────────────┐
 //!  portable │ sensors              │ configuration, services  │ networking, time, control    │
@@ -47,6 +47,41 @@
 //! ```
 //!
 //! In the picture `->` means "depends on".
+//!
+//! # Platforms: ESP and native
+//!
+//! A product is the portable application on one platform. The ESP platform
+//! implements the seams on the ESP32; the **native platform** implements the
+//! same seams on a host, so the same application runs without hardware as the
+//! `altruist-sim` simulator. The simulator is a platform implementation, not a
+//! different application or protocol stack.
+//!
+//! ```text
+//!                         portable ROHI SDK
+//!             (rohi-hal, -config, -net, -control, ... and the
+//!              portable part of `altruist-urban`)
+//!                                │
+//!                   ┌────────────┴─────────────┐
+//!                   ▼                          ▼
+//!              ESP platform               native platform
+//!   rohi-*-esp, `altruist-urban::esp`      `firmwares/altruist-sim`
+//!   esp-rtos, esp-hal, esp-radio           Embassy platform-std, host sockets
+//!                   │                          │
+//!             altruist-urban              altruist-sim
+//! ```
+//!
+//! | Seam | ESP platform | Native platform |
+//! |------|--------------|-----------------|
+//! | `SensorDriver` | I²C / UART / I²S drivers | simulated drivers fed by a scenario |
+//! | `ConfigStorage` | `EspConfigStorage` on the `rohi-cfg` partition | `FileFlash`, a file with NOR rules |
+//! | `WifiBackend` | `EspWifi` | `NativeWifi` over simulated access points |
+//! | `IpBackend` | `EspIp` on `embassy-net` | `NativeIp` on host sockets |
+//! | `BleTransport` | `EspBle` | `TcpTransport`, the same frames over TCP |
+//!
+//! The native platform never depends on an ESP crate. It simulates logic, not
+//! hardware: CPU timing, RF, electrical bus behaviour and DMA remain
+//! hardware-validation concerns. See
+//! [Run a simulated Altruist](https://rohi.akagi.dev/guides/altruist-sim.html).
 //!
 //! # Rules that keep this picture true
 //!

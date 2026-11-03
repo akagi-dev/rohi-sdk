@@ -166,7 +166,7 @@
 //! * The GATT server is not here: `rohi-net-esp` implements
 //!   [`BleTransport`](rohi_net::BleTransport) for ESP32 and exposes the
 //!   identifiers of [`uuid`]. The wiring in the firmware is
-//!   `firmwares/altruist-urban/src/control.rs`.
+//!   `firmwares/altruist-urban/src/esp/control.rs`.
 //! * The link security reported by the transport
 //!   ([`BleConnectionInfo`](rohi_net::BleConnectionInfo)) becomes the
 //!   [`LinkSecurity`](rohi_control::LinkSecurity) the authorization policy of

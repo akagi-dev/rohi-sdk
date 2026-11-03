@@ -29,11 +29,11 @@ use log::info;
 use rohi_sdk::esp::hal::board::altruist_urban::AltruistUrban;
 use rohi_sdk::esp::hal::{EmbassyClock, I2sMicrophone};
 use rohi_sdk::hal::SensorKind;
-use rohi_sdk::hal::runtime::{Reporter, Runner, RunnerConfig, TimeoutI2c};
+use rohi_sdk::hal::runtime::{EVENT_QUEUE_CAPACITY, Reporter, Runner, RunnerConfig, TimeoutI2c};
 use rohi_sdk::hal::sensors::{bmx280, noise, scd4x, sds011};
 use static_cell::StaticCell;
 
-use super::{EVENTS, RawMutex, STATES};
+use crate::tasks::{RawMutex, reporter};
 
 /// Upper bound of a single I2C transaction.
 const I2C_TRANSACTION_TIMEOUT_MS: u32 = 200;
@@ -68,10 +68,10 @@ pub fn start(spawner: Spawner, board: AltruistUrban) {
     info!("Sensor tasks started");
 }
 
-fn reporter(
+fn esp_reporter(
     kind: SensorKind,
-) -> Reporter<'static, RawMutex, EmbassyClock, { rohi_sdk::hal::runtime::EVENT_QUEUE_CAPACITY }> {
-    Reporter::new(kind, &EVENTS, EmbassyClock).with_shared_states(&STATES)
+) -> Reporter<'static, RawMutex, EmbassyClock, EVENT_QUEUE_CAPACITY> {
+    reporter(kind, EmbassyClock)
 }
 
 /// BMP280 / BME280.
@@ -80,7 +80,7 @@ pub async fn bmx280_task(i2c: I2cHandle) {
     let driver = bmx280::Bmx280::auto(i2c, Delay);
     let mut runner = Runner::new(
         driver,
-        reporter(SensorKind::Bmx280),
+        esp_reporter(SensorKind::Bmx280),
         Delay,
         RunnerConfig::DEFAULT,
     );
@@ -93,7 +93,7 @@ pub async fn scd4x_task(i2c: I2cHandle) {
     let driver = scd4x::Scd4x::new(i2c, Delay);
     let mut runner = Runner::new(
         driver,
-        reporter(SensorKind::Scd4x),
+        esp_reporter(SensorKind::Scd4x),
         Delay,
         RunnerConfig::DEFAULT,
     );
@@ -106,7 +106,7 @@ pub async fn sds011_task(uart: Uart<'static, Async>) {
     let driver = sds011::Sds011::new(uart, Delay, sds011::Config::DEFAULT);
     let mut runner = Runner::new(
         driver,
-        reporter(SensorKind::Sds011),
+        esp_reporter(SensorKind::Sds011),
         Delay,
         RunnerConfig::DEFAULT,
     );
@@ -119,7 +119,7 @@ pub async fn noise_task(microphone: I2sMicrophone) {
     let driver = noise::Noise::new(microphone, Delay, noise::Config::DEFAULT);
     let mut runner = Runner::new(
         driver,
-        reporter(SensorKind::Microphone),
+        esp_reporter(SensorKind::Microphone),
         Delay,
         RunnerConfig::DEFAULT,
     );

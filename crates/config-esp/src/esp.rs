@@ -92,7 +92,7 @@ pub fn partition_region(flash: &mut FlashStorage<'_>) -> Result<FlashRegion, Par
 ///
 /// Takes the flash driver by value: the returned storage owns it. Pass it to
 /// [`rohi_config::ConfigStore::open`] (see
-/// `firmwares/altruist-urban/src/config.rs` and `examples/src/bin/config.rs`
+/// `firmwares/altruist-urban/src/esp/config.rs` and `examples/src/bin/config.rs`
 /// for complete use).
 ///
 /// # Errors

@@ -46,6 +46,7 @@
 //! | `control` | `control` | `rohi-control` | `service` |
 //! | `ble` | `ble` | `rohi-control-ble` | `control`, `net` |
 //! | `connectivity` | `connectivity` | `rohi-connectivity` | `hal`, `identity`, `location`, `net`, `time` |
+//! | `embassy-time` | `hal::runtime::EmbassyClock` | the `embassy-time` clock of `rohi-hal` | `hal` |
 //! | `esp` | `esp::{hal, config, net}` | `rohi-hal-esp`, `rohi-config-esp`, `rohi-net-esp` | `hal`, `config`, `net` |
 //! | `esp32c3`, `esp32c6` | | chip selection of the `esp` crates | `esp` |
 //! | `heap-stats` | | wireless heap statistics of `rohi-net-esp` | `esp` |
@@ -106,6 +107,7 @@
 //! | Identity | Provisioned Ed25519 device identity and signer | [`rohi-identity`](../rohi_identity/index.html) |
 //! | Telemetry | Measurement snapshots as signed `connectivity-protocol` frames | [`rohi-connectivity`](../rohi_connectivity/index.html) |
 //! | Firmware | Altruist Urban, a complete product built from the above | `firmwares/altruist-urban`, [Boards](https://docs.rs/rohi-hal-esp) |
+//! | Simulator | The same application on the host: simulated sensors, native Wi-Fi/IP, TCP control | `firmwares/altruist-sim` |
 //!
 //! The desktop client is described in the
 //! [desktop application](https://rohi.akagi.dev/use/desktop/index.html) guide
@@ -183,7 +185,8 @@
 //! | [`rohi-control-proto`](../rohi_control_proto/index.html) | Bounded protobuf schema of the control protocol | portable | generated messages, `PROTOCOL_VERSION`, `limits` | `micropb` | Transport, behaviour |
 //! | [`rohi-control`](../rohi_control/index.html) | Transport-agnostic control dispatcher and authorization; serves the registries of `rohi-service` | portable | `Controller`, `ControlBackend`, `Device`, `AuthorizationPolicy` | `rohi-control-proto`, `rohi-service` | BLE, stores, the radio, any knowledge of a module (Wi-Fi, sensors, ...) |
 //! | [`rohi-control-ble`](../rohi_control_ble/index.html) | Firmware-side (peripheral) GATT binding: UUIDs, framing, fragmentation, control loop; the host tool `rohi` reuses only `frame` and `uuid` | portable | `ControlBle`, `frame` | `rohi-control`, `rohi-control-proto`, `rohi-net` | The BLE stack |
-//! | `altruist-urban` (`firmwares/altruist-urban`) | Product composition, tasks, resource budget | product | `config`, `net`, `control`, `time`, `connectivity`, `identity`, `location`, `resources`, `tasks` | `rohi-sdk` (the portable and ESP crates above) | Reusable library code |
+//! | `altruist-urban` (`firmwares/altruist-urban`) | Product composition: the portable application (always) and its ESP platform (`esp` module, chip features), resource budget | product | `config`, `net`, `control`, `time`, `connectivity`, `identity`, `location`, `tasks`; with a chip feature `esp::{config, net, control, resources, sensors, ...}` | `rohi-sdk` (the portable and ESP crates above) | Reusable library code |
+//! | `altruist-sim` (`firmwares/altruist-sim`) | Native platform of the same application: simulated sensors, file-backed flash, native Wi-Fi/IP, TCP control | host simulator (`std`) | binary `altruist-sim`, library `altruist_sim` | `altruist-urban` (portable part only), `rohi-sdk` portable features, Embassy `platform-std` | `esp-hal`, `esp-radio`, `esp-rtos`, any `*-esp` crate |
 //! | `rohi-examples` (`examples/`) | One hardware example per sensor and a config self-test | product | binaries | `altruist-urban`, `rohi-sdk` | |
 //! | [`rohi`](../rohi/index.html) (`tools/rohi`) | Desktop client library and CLI over BLE | desktop (`std`) | `Device`, `Session`, `BleLink` | `rohi-control-ble` (`frame`), `rohi-control-proto`, `rohi-net` (BLE payload size), `rohi-identity`, `btleplug` | Anything that runs on the device |
 //! | [`rohi-sdk`](crate) | Umbrella crate: feature-gated re-exports of the crates above and this documentation | portable | feature-gated modules (`service`, `hal`, `net`, `esp`, ...) | the crates above, each optional | |

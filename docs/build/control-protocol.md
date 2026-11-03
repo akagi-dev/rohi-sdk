@@ -28,7 +28,7 @@ use it without a firmware-specific integration.
 | Aspect | State |
 |--------|-------|
 | Protocol | version 1; **still under development** and changing without a version bump: keep client and firmware on the same revision |
-| Transport | BLE is the only implemented transport; the `tcp://` device URI is parsed but not implemented |
+| Transport | BLE on devices; TCP on `localhost` for the [simulated Altruist](../guides/altruist-sim.md), carrying the same frames (`tcp://HOST:PORT`) |
 | Security | the link is not paired or encrypted yet; the policy hook exists, the reference firmware runs the open policy |
 | Scope | local control only; telemetry uplink is a separate service |
 

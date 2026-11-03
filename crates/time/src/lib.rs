@@ -154,7 +154,7 @@
 //!
 //! | Where | What |
 //! |-------|------|
-//! | Altruist Urban firmware (`firmwares/altruist-urban`, module `time`) | Owns one `static` [`TimeService`] on `rohi_hal_esp::EmbassyClock` with a critical-section mutex; the floor is the firmware build time (`BUILD_TIMESTAMP`, set by `build.rs`). The `ntp_task` runs a [`Synchronizer`] over an `NtpTimeSource` and restarts it when the `time` config section changes. Components read the time through the firmware's `time::service()`. |
+//! | Altruist Urban firmware (`firmwares/altruist-urban`, module `time`) | Owns one `static` [`TimeService`] on `rohi_hal::runtime::EmbassyClock` with a critical-section mutex; the floor is the firmware build time (`BUILD_TIMESTAMP`, set by `build.rs`). The platform's NTP task runs `time::run`, a [`Synchronizer`] over an `NtpTimeSource` and restarts it when the `time` config section changes. Components read the time through the firmware's `time::service()`. |
 //! | [`rohi-time-ntp`](../rohi_time_ntp/index.html) | The NTP [`TimeSource`] and the persistent `time` section (the servers). |
 //! | `rohi-connectivity` | Needs UTC to create telemetry frames; see [`rohi-connectivity`](../rohi_connectivity/index.html). |
 //! | Control plane | [`TimeService`] is the read-only `time` status service ([`rohi_service`]). |

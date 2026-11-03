@@ -8,11 +8,12 @@ ROHI SDK: Rust libraries, firmware and desktop tools for Robonomics Open Hardwar
 `cargo` may not be on `PATH`: run it as `nix develop --command bash -c '<cargo command>'`.
 
 ```bash
-cargo test                                   # host: crates/* and tools/* (includes doctests)
+cargo test                                   # host: crates/*, tools/* and firmwares/altruist-sim (includes doctests and the simulator end-to-end tests)
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all -- --check
 cargo check-esp32c3 && cargo check-esp32c6   # firmware, one chip per invocation
 mdbook build docs && mdbook test docs        # the book
+cargo run -p altruist-sim                      # the Altruist firmware stack on the host, see docs/guides/altruist-sim.md
 ```
 
 Never use `--all-features` or `--workspace`: `esp32c3` and `esp32c6` are mutually exclusive.

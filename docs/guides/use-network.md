@@ -23,9 +23,14 @@ Drop connections you no longer need and bound waits with your own timeout; dropp
 `rohi-net` ships an in-memory fake network (the `testing` feature) that scripts DNS answers, refused connections,
 readiness and slot exhaustion and lets the test play the peer. Use it from your crate's tests.
 
+## Try it against real services
+
+The [simulated Altruist](altruist-sim.md) implements the same network handle on the IP stack of your computer, so code
+that uses `NetworkHandle` can talk to `127.0.0.1`, containers and local test servers without hardware.
+
 ## On the device
 
 The firmware creates the handle when it starts Wi-Fi and hands it to the component that needs it. Capacity is a product
-decision in `firmwares/altruist-urban/src/resources.rs` (see the
+decision in `firmwares/altruist-urban/src/esp/resources.rs` (see the
 [memory model](https://docs.rs/rohi-sdk/latest/rohi_sdk/memory/index.html)). There is no TLS yet: do not send secrets in
 clear text.

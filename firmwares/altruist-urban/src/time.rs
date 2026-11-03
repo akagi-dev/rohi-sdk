@@ -19,13 +19,13 @@
 //! Time service of the Altruist Urban: synchronized wall-clock time.
 //!
 //! ```text
-//! network ready -> NtpTimeSource -> Synchronizer (ntp_task) -> TimeService
+//! network ready -> NtpTimeSource -> Synchronizer (time::run) -> TimeService
 //!                                                                  |
 //!                       control plane, future logging/datalog ----+  now()
 //! ```
 //!
 //! The service starts unsynchronized and nothing waits for it: sensing, the
-//! control plane and Wi-Fi run without wall-clock time. [`ntp_task`] samples
+//! control plane and Wi-Fi run without wall-clock time. [`run`] samples
 //! NTP in the background once the network is ready and keeps resynchronizing;
 //! failures are retried with bounded backoff and only recorded in the status.
 //! The servers are the `time` configuration section (the public servers,
@@ -37,20 +37,18 @@
 //! deadlines use the monotonic clock. NTP is unauthenticated, so the time is
 //! not input for security decisions.
 
-use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::Delay;
 use log::{info, warn};
-use rohi_sdk::esp::hal::EmbassyClock;
-use rohi_sdk::net::NetworkHandle;
+use rohi_sdk::hal::runtime::EmbassyClock;
+use rohi_sdk::net::{IpBackend, NetworkHandle};
 use rohi_sdk::ntp::{NtpConfig, NtpServersConfig, NtpTimeSource};
 use rohi_sdk::service::Config;
 use rohi_sdk::time::{SyncSchedule, Synchronizer, TimeConfig, TimeService, UnixTime};
 
 use crate::bindings::{Binding, TimeBinding};
-use crate::resources::Ip;
 use crate::tasks::RawMutex;
 
 /// The firmware's time service.
@@ -97,7 +95,7 @@ static UPDATES: Signal<RawMutex, NtpServersConfig> = Signal::new();
 
 /// Hands the effective `NtpServersConfig` (the defaults, the firmware
 /// overrides and the committed user overrides) to the running
-/// [`ntp_task`]. Synchronous, so the configuration owner can call it in the
+/// [`run`]. Synchronous, so the configuration owner can call it in the
 /// commit step; only the latest value matters.
 pub fn publish(servers: NtpServersConfig) {
     UPDATES.signal(servers);
@@ -114,23 +112,17 @@ fn resolve(servers: NtpServersConfig) -> NtpServersConfig {
     }
 }
 
-/// Starts the NTP synchronization of the time service, see [`ntp_task`].
-pub fn start(spawner: Spawner, network: NetworkHandle<'static, Ip>) {
-    spawner.spawn(ntp_task(network).unwrap());
-}
-
-/// Keeps the time service synchronized over NTP; never returns.
+/// Keeps the time service synchronized over NTP; never returns. The platform
+/// runs it in its NTP task.
 ///
 /// Waits for the network without counting failures, then samples hourly
 /// ([`SyncSchedule::DEFAULT`]); after a failure it backs off from 15 s up to
-/// 10 minutes. Uses one UDP socket per exchange, see
-/// [`crate::resources::UDP_SOCKETS`].
+/// 10 minutes. Uses one UDP socket per exchange.
 ///
 /// The servers come from the `time` configuration section. Every commit or
 /// removal of it restarts the synchronization with the new servers, which
 /// samples at once.
-#[embassy_executor::task]
-pub async fn ntp_task(network: NetworkHandle<'static, Ip>) {
+pub async fn run<I: IpBackend>(network: NetworkHandle<'static, I>) -> ! {
     // Published by the configuration owner at boot, like after every commit.
     let mut servers = resolve(UPDATES.wait().await);
     loop {

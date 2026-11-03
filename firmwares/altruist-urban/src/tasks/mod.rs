@@ -15,14 +15,16 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-//! Embassy tasks of the sensor runtime.
+//! The sensor runtime: event bus, sensor states and the store owner.
+//!
+//! The platform declares the Embassy tasks (one per sensor, one for the store)
+//! around these pieces, because a task cannot be generic.
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use rohi_sdk::hal::runtime::{EVENT_QUEUE_CAPACITY, EventBus, SensorStates};
+use rohi_sdk::hal::SensorKind;
+use rohi_sdk::hal::runtime::{Clock, EVENT_QUEUE_CAPACITY, EventBus, Reporter, SensorStates};
 
-/// Sensor tasks.
-pub mod sensors;
-/// The `MeasurementStore` owner task.
+/// The `MeasurementStore` owner.
 pub mod store;
 
 /// Mutex flavour shared by the runtime primitives.
@@ -34,3 +36,12 @@ pub static EVENTS: EventBus<RawMutex, EVENT_QUEUE_CAPACITY> = EventBus::new();
 
 /// Read-only view of sensor states for runtime policies.
 pub static STATES: SensorStates<RawMutex> = SensorStates::new();
+
+/// The reporter of the sensor `kind`: publishes its events to [`EVENTS`] and
+/// its state to [`STATES`], stamped by `clock`.
+pub fn reporter<C: Clock>(
+    kind: SensorKind,
+    clock: C,
+) -> Reporter<'static, RawMutex, C, EVENT_QUEUE_CAPACITY> {
+    Reporter::new(kind, &EVENTS, clock).with_shared_states(&STATES)
+}

@@ -116,8 +116,8 @@
 //! | `WirelessHeap`, `wireless_heap()` | | Heap usage, also `WirelessHeap::stats` for [`rohi_net::WifiProbe`] |
 //!
 //! The Altruist Urban firmware wires these pieces in
-//! `firmwares/altruist-urban/src/` (`bin/main.rs`: bring-up order; `net.rs`:
-//! Wi-Fi tasks and probes; `control.rs`: BLE control task; `resources.rs`: the
+//! `firmwares/altruist-urban/src/` (`bin/main.rs`: bring-up order; `esp/net.rs`:
+//! Wi-Fi tasks; `esp/control.rs`: BLE control task; `esp/resources.rs`: the
 //! sizes and the reasoning behind each). The portable side is documented in
 //! [`rohi_net`], the control protocol over BLE in `rohi-control-ble`.
 //!

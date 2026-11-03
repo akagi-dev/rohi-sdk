@@ -24,3 +24,25 @@ pub trait Clock {
     /// Current monotonic time.
     fn now(&self) -> MonotonicTimestamp;
 }
+
+/// Time since boot, from the `embassy-time` driver.
+///
+/// A [`Clock`] returning [`Instant::now`](embassy_time::Instant::now) in
+/// milliseconds as a [`MonotonicTimestamp`]. It is monotonic, not wall-clock
+/// time, and needs the `embassy-time` driver of the platform to be running.
+/// Cheap to copy; give one to every [`Reporter`](crate::runtime::Reporter) and
+/// to the store task.
+///
+/// ```text
+/// let reporter = Reporter::new(SensorKind::Bmx280, &EVENTS, EmbassyClock);
+/// ```
+#[cfg(feature = "embassy-time")]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EmbassyClock;
+
+#[cfg(feature = "embassy-time")]
+impl Clock for EmbassyClock {
+    fn now(&self) -> MonotonicTimestamp {
+        MonotonicTimestamp::from_millis(embassy_time::Instant::now().as_millis())
+    }
+}

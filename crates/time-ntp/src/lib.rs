@@ -44,7 +44,7 @@
 //! One synchronization exchange against a scripted server on the in-memory
 //! `FakeIp` backend of `rohi-net` (`rohi_net::testing`, feature
 //! `testing`). On a device `NetworkHandle` wraps the real IP stack and the
-//! delay is a hardware timer; see `firmwares/altruist-urban/src/time.rs` for
+//! delay is a hardware timer (on the host simulator it is the host IP stack); see `firmwares/altruist-urban/src/time.rs` for
 //! the firmware wiring.
 //!
 //! ```

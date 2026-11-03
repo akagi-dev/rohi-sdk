@@ -9,11 +9,11 @@ rust-version = "1.99.1"
 
 [workspace]
 members = ["crates/*", "firmwares/*", "tools/*", "examples"]
-# Host commands (`cargo test`, `cargo clippy`) cover the portable crates and
-# the desktop tools only.
-# Firmware and examples are built per chip, see the `check-*` / `build-*`
+# Host commands (`cargo test`, `cargo clippy`) cover the portable crates, the
+# desktop tools and the native simulator firmware (`altruist-sim`).
+# ESP firmware and examples are built per chip, see the `check-*` / `build-*`
 # aliases in `.cargo/config.toml`.
-default-members = ["crates/*", "tools/*"]
+default-members = ["crates/*", "tools/*", "firmwares/altruist-sim"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -119,6 +119,13 @@ syn = { version = "2.0", features = ["full"] }
 quote = "1.0"
 proc-macro2 = "1.0"
 proc-macro-crate = "3.5"
+
+# Native simulator firmware (std only)
+async-io = "2"
+blocking = "1"
+ctrlc = { version = "3", features = ["termination"] }
+critical-section = { version = "1", features = ["std"] }
+env_logger = { version = "0.11", default-features = false, features = ["humantime"] }
 
 # Desktop tools (std only, never used by firmware)
 btleplug = "0.13"

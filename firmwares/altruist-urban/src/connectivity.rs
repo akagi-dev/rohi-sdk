@@ -35,27 +35,27 @@
 use core::cell::RefCell;
 use core::convert::Infallible;
 
-use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::Delay;
-use esp_hal::rng::Rng;
 use log::{info, warn};
 use rohi_sdk::config::Override;
 use rohi_sdk::connectivity::{
     ConnectivityConfig, ConnectivityOverrides, ConnectivityService, ConnectivityShared,
-    ConnectivityStatus, EndpointUri, HttpTransport, NONCE_LEN, NonceError, NonceSource,
-    ServiceConfig,
+    ConnectivityStatus, EndpointUri, HttpTransport, NonceSource, ServiceConfig,
 };
-use rohi_sdk::esp::hal::EmbassyClock;
-use rohi_sdk::hal::runtime::MeasurementHandle;
-use rohi_sdk::net::NetworkHandle;
+use rohi_sdk::hal::runtime::{EmbassyClock, MeasurementHandle};
+use rohi_sdk::net::{IpBackend, NetworkHandle};
 
 use crate::identity::StaticSigner;
-use crate::resources::{CONNECTIVITY_OUTBOX_DEPTH, Ip};
 use crate::tasks::RawMutex;
 use crate::{location, time};
+
+/// Frames the telemetry outbox holds while the uplink is down. Each frame is
+/// up to `rohi_connectivity_proto::limits::MAX_ENVELOPE_LEN` bytes; when the
+/// outbox is full new frames are skipped, never queued over old ones.
+pub const CONNECTIVITY_OUTBOX_DEPTH: usize = 4;
 
 static SHARED: ConnectivityShared<RawMutex> = ConnectivityShared::new();
 
@@ -87,20 +87,6 @@ static EFFECTIVE: BlockingMutex<RawMutex, RefCell<Option<ConnectivityConfig>>> =
 /// Diagnostics of the telemetry service.
 pub fn status() -> ConnectivityStatus {
     SHARED.status()
-}
-
-/// Nonces from the hardware RNG.
-///
-/// The RNG is a true random source while the radio runs, which is whenever
-/// telemetry can be delivered; nonces only have to be unique for replay
-/// protection, which holds in either mode.
-struct EspNonce;
-
-impl NonceSource for EspNonce {
-    fn fill_nonce(&mut self, dst: &mut [u8; NONCE_LEN]) -> Result<(), NonceError> {
-        Rng::new().read(dst);
-        Ok(())
-    }
 }
 
 fn env_number<T: core::str::FromStr>(value: Option<&str>) -> Option<T> {
@@ -143,9 +129,10 @@ fn effective(loaded: ConnectivityConfig) -> Option<ConnectivityConfig> {
 }
 
 /// Runs the service for `config` until the task is cancelled.
-async fn serve(
-    network: NetworkHandle<'static, Ip>,
+async fn serve<I: IpBackend, N: NonceSource>(
+    network: NetworkHandle<'static, I>,
     measurements: MeasurementHandle<'static, RawMutex>,
+    nonce: N,
     config: &ConnectivityConfig,
 ) -> Infallible {
     let Some(endpoint) = config.endpoint() else {
@@ -177,30 +164,25 @@ async fn serve(
         EmbassyClock,
         time::service(),
         &signer,
-        EspNonce,
+        nonce,
         transport,
         Delay,
     );
     service.run().await
 }
 
-/// Starts the telemetry task, see [`connectivity_task`]. It reads snapshots
-/// only: it can neither delay nor stop the sensors, whatever the uplink does.
-pub fn start(
-    spawner: Spawner,
-    network: NetworkHandle<'static, Ip>,
-    measurements: MeasurementHandle<'static, RawMutex>,
-) {
-    spawner.spawn(connectivity_task(network, measurements).unwrap());
-}
-
 /// Runs the telemetry service while it is enabled and restarts it with every
-/// published configuration.
-#[embassy_executor::task]
-pub async fn connectivity_task(
-    network: NetworkHandle<'static, Ip>,
+/// published configuration; never returns. The platform runs it in its
+/// telemetry task. It reads snapshots only: it can neither delay nor stop the
+/// sensors, whatever the uplink does.
+///
+/// `nonce` produces the frame nonces: a true random source on hardware, a
+/// seeded one for a reproducible simulation.
+pub async fn run<I: IpBackend, N: NonceSource + Clone>(
+    network: NetworkHandle<'static, I>,
     measurements: MeasurementHandle<'static, RawMutex>,
-) {
+    nonce: N,
+) -> ! {
     // The configuration owner publishes the effective configuration at boot,
     // before this task runs, like after every commit.
     let mut current = effective(UPDATES.wait().await);
@@ -208,7 +190,12 @@ pub async fn connectivity_task(
         EFFECTIVE.lock(|cell| *cell.borrow_mut() = current.clone());
         let published = match &current {
             Some(config) => {
-                match select(serve(network, measurements, config), UPDATES.wait()).await {
+                match select(
+                    serve(network, measurements, nonce.clone(), config),
+                    UPDATES.wait(),
+                )
+                .await
+                {
                     Either::First(never) => match never {},
                     Either::Second(published) => published,
                 }

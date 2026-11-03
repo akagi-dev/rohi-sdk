@@ -151,7 +151,7 @@ pub enum Error {
 /// Board peripherals, ready to be handed to sensor drivers.
 ///
 /// Created once by [`AltruistUrban::new`]; the fields are moved into the sensor
-/// tasks (see `firmwares/altruist-urban/src/tasks/sensors.rs`).
+/// tasks (see `firmwares/altruist-urban/src/esp/sensors.rs`).
 pub struct AltruistUrban {
     /// I2C bus of BMx280 and SCD4x.
     pub i2c: I2c<'static, Async>,

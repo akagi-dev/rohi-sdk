@@ -14,10 +14,9 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
-///////////////////////////////////////////////////////////////////////////////
 #![no_std]
 
-//! Altruist Urban firmware: sensor runtime.
+//! Altruist Urban firmware: the portable application and its ESP platform.
 //!
 //! ```text
 //! sensor tasks -> SensorEvent -> EVENTS (bounded) -> store task -> MeasurementStore
@@ -26,35 +25,48 @@
 //! Sensor tasks never touch the `MeasurementStore`; the store task is its
 //! only owner. Other tasks read measurements on demand through
 //! [`tasks::store::handle`], a bounded snapshot request to that owner.
-
-#[cfg(all(feature = "esp32c3", feature = "esp32c6"))]
-compile_error!(
-    "select exactly one ESP target: enable only one of the `esp32c3` and `esp32c6` features"
-);
-
-#[cfg(not(any(feature = "esp32c3", feature = "esp32c6")))]
-compile_error!(
-    "select an ESP target: enable the `esp32c3` or `esp32c6` feature (use `cargo check-esp32c3` / `cargo check-esp32c6`)"
-);
+//!
+//! # Platforms
+//!
+//! The crate is the composition of the Altruist Urban from portable ROHI
+//! services and has no hardware dependency of its own. A platform provides the
+//! backends and the Embassy tasks around it (a task cannot be generic):
+//!
+//! ```text
+//!                      altruist-urban (this crate, portable)
+//!        config owner · bindings · control device · store · Wi-Fi manager
+//!        connectivity · NTP time · identity · location · reboot
+//!                              |
+//!            +-----------------+------------------+
+//!            |                                    |
+//!   `esp` module (feature esp32c3 / esp32c6)   `altruist-sim` (host)
+//!   flash, radio, BLE, sensors, resources      file flash, native Wi-Fi/IP,
+//!                                              TCP control, simulated sensors
+//! ```
+//!
+//! Without a chip feature only the portable part is built.
 
 /// Firmware config bindings: product policy and runtime consumers.
 pub mod bindings;
-/// Persistent configuration service (single owner task and handle).
+/// Persistent configuration service (single owner and handle).
 pub mod config;
+/// Telemetry uplink.
 pub mod connectivity;
-/// Local control plane over BLE.
+/// Local control plane composition.
 pub mod control;
 /// Device identity runtime.
 pub mod identity;
+/// The location of the device.
 pub mod location;
+/// Wi-Fi station runtime.
 pub mod net;
 /// Deferred device reboot.
 pub mod reboot;
-/// Static resource budget of the wireless stack.
-pub mod resources;
-
+/// The sensor runtime.
+pub mod tasks;
 /// Synchronized wall-clock time.
 pub mod time;
 
-/// Embassy tasks.
-pub mod tasks;
+/// The ESP platform.
+#[cfg(feature = "esp")]
+pub mod esp;

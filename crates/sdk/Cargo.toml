@@ -62,6 +62,8 @@ identity = ["service", "dep:rohi-identity"]
 location = ["service", "dep:rohi-location"]
 control = ["service", "dep:rohi-control"]
 ble = ["control", "net", "dep:rohi-control-ble"]
+# `hal::runtime::EmbassyClock`, the monotonic clock over `embassy-time`.
+embassy-time = ["hal", "rohi-hal/embassy-time"]
 connectivity = ["hal", "identity", "location", "net", "time", "dep:rohi-connectivity"]
 
 # ESP backends (module `esp`). Exactly one chip feature must be enabled by the

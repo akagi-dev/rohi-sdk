@@ -20,8 +20,6 @@
 use embassy_futures::select::{Either3, select3};
 use embassy_time::{Duration, Ticker};
 use log::info;
-use rohi_sdk::esp::hal::EmbassyClock;
-use rohi_sdk::esp::net::wireless_heap;
 use rohi_sdk::hal::runtime::{Clock, MeasurementHandle, MeasurementService};
 use rohi_sdk::hal::{MeasurementStore, MeasurementsSnapshot};
 
@@ -29,11 +27,6 @@ use super::{EVENTS, RawMutex};
 
 /// Snapshot requests to the store task, see [`handle`].
 static SNAPSHOTS: MeasurementService<RawMutex> = MeasurementService::new();
-
-/// Starts the store task. Spawn it before the sensors that report to it.
-pub fn start(spawner: embassy_executor::Spawner) {
-    spawner.spawn(store_task().unwrap());
-}
 
 /// Handle for on-demand snapshots; the store itself is never shared.
 pub fn handle() -> MeasurementHandle<'static, RawMutex> {
@@ -82,26 +75,32 @@ fn log_snapshot(snapshot: &MeasurementsSnapshot) {
         );
     }
     info!("dropped events: {}", EVENTS.dropped());
-    let heap = wireless_heap();
-    info!(
-        "wireless heap: {} B free of {} B, minimum free {:?} B",
-        heap.free, heap.size, heap.min_free
-    );
 }
 
-/// Apply sensor events to the store, answer snapshot requests and periodically
-/// log a snapshot. Every snapshot is generated with the time of its request.
-#[embassy_executor::task]
-pub async fn store_task() {
+/// Applies sensor events to the store, answers snapshot requests and
+/// periodically logs a snapshot, then calls `after_snapshot` for the platform
+/// diagnostics (the wireless heap on the ESP). Every snapshot is generated with
+/// the time of its request. Never returns.
+///
+/// `configure` prepares the store before the first event, for example its
+/// freshness policy. The platform runs this in its store task.
+pub async fn run<C: Clock>(
+    clock: C,
+    configure: impl FnOnce(&mut MeasurementStore),
+    after_snapshot: fn(),
+) -> ! {
     let mut store = MeasurementStore::new();
-    let clock = EmbassyClock;
+    configure(&mut store);
     let mut ticker = Ticker::every(SNAPSHOT_INTERVAL);
 
     loop {
         match select3(EVENTS.receive(), SNAPSHOTS.accept(), ticker.next()).await {
             Either3::First(event) => store.apply(event),
             Either3::Second(request) => request.respond(store.snapshot(clock.now())),
-            Either3::Third(()) => log_snapshot(&store.snapshot(clock.now())),
+            Either3::Third(()) => {
+                log_snapshot(&store.snapshot(clock.now()));
+                after_snapshot();
+            }
         }
     }
 }

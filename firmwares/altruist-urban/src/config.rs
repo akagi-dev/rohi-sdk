@@ -18,8 +18,9 @@
 
 //! Persistent configuration service.
 //!
-//! The [`ConfigStore`] on the `rohi-cfg` flash partition has exactly one
-//! owner: the configuration task started by [`start`]. Everything else (the
+//! The [`ConfigStore`] on the configuration flash region has exactly one
+//! owner: the [`ConfigOwner`] that the platform runs in its configuration task
+//! (see [`ConfigOwner::run`]). Everything else (the
 //! Wi-Fi boot logic today, the control layer later) talks to it through the
 //! cloneable [`ConfigHandle`] and a bounded request channel, so nothing outside
 //! this module touches the raw configuration flash and there is no global
@@ -63,25 +64,27 @@
 //! publication, so a caller that is cancelled while waiting for the response
 //! cannot leave a stored configuration unknown to the runtime.
 //!
-//! Flash erase and programming are synchronous and `esp-storage` runs them in
-//! a critical section with the flash cache disabled, so an update stalls the
-//! whole CPU (each 4 KiB sector erase takes tens of milliseconds), not only
+//! Flash erase and programming are synchronous. On the ESP, `esp-storage` runs
+//! them in a critical section with the flash cache disabled, so an update stalls
+//! the whole CPU (each 4 KiB sector erase takes tens of milliseconds), not only
 //! this task. Another executor or priority would not help; configuration
 //! updates are rare and must not be issued from timing-critical paths.
+//!
+//! The owner is generic over the [`ConfigStorage`] backend, so the same logic
+//! runs on the ESP flash and on the file-backed flash of the host simulator.
+//! The backend error is erased into a [`StorageFault`] at the owner boundary,
+//! which keeps [`ConfigHandle`] and everything that holds it non-generic.
 
 use core::fmt;
 
-use embassy_executor::Spawner;
 use embassy_sync::channel::Channel;
 use embassy_sync::mutex::Mutex;
-use esp_hal::peripherals::FLASH;
+use heapless::String;
 use log::{error, info, warn};
 use rohi_sdk::config::{
-    ConfigError, ConfigOpenState, ConfigSection, ConfigStore, Corruption, EncodeError,
-    HasOverrides, MAX_SECTION_PAYLOAD, SectionError, SectionId, materialize,
+    ConfigError, ConfigOpenState, ConfigSection, ConfigStorage, ConfigStore, Corruption,
+    EncodeError, HasOverrides, MAX_SECTION_PAYLOAD, SectionError, SectionId, materialize,
 };
-use rohi_sdk::esp::config::esp::{PartitionError, config_storage, esp_storage::FlashStorage};
-use rohi_sdk::esp::config::{EspConfigStorage, EspStorageError};
 
 use rohi_sdk::service::{
     Config, ConfigError as RegistryError, ConfigRegistry, FactoryReset, Mutation, Patched,
@@ -94,17 +97,57 @@ use crate::bindings::{
 };
 use crate::tasks::RawMutex;
 
-/// Configuration storage of the Altruist Urban.
-pub type Storage = EspConfigStorage<FlashStorage<'static>>;
+/// A failure of the storage backend, as text: the backend error type does not
+/// leak into the runtime API.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StorageFault(String<48>);
+
+impl StorageFault {
+    fn of(error: &dyn fmt::Debug) -> Self {
+        use fmt::Write as _;
+        let mut text = String::new();
+        // A message that does not fit is cut, never dropped.
+        let _ = write!(text, "{error:?}");
+        Self(text)
+    }
+
+    /// The backend error, as its `Debug` text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// A configuration store error with the backend error erased.
+pub type StoreFailure = ConfigError<StorageFault>;
+
+/// Erases the backend error of `error`.
+fn erase<E: fmt::Debug>(error: ConfigError<E>) -> StoreFailure {
+    match error {
+        ConfigError::Storage(error) => ConfigError::Storage(StorageFault::of(&error)),
+        ConfigError::Section(error) => ConfigError::Section(error),
+        ConfigError::InvalidStorage(reason) => ConfigError::InvalidStorage(reason),
+        ConfigError::CorruptStorage(reason) => ConfigError::CorruptStorage(reason),
+        ConfigError::SectionTooLarge { id, len, max } => {
+            ConfigError::SectionTooLarge { id, len, max }
+        }
+        ConfigError::StorageFull => ConfigError::StorageFull,
+        ConfigError::TooManySections => ConfigError::TooManySections,
+        ConfigError::EncodeMismatch { id } => ConfigError::EncodeMismatch { id },
+        ConfigError::VerifyFailed => ConfigError::VerifyFailed,
+        ConfigError::Encode(error) => ConfigError::Encode(error),
+        ConfigError::BufferTooSmall { required } => ConfigError::BufferTooSmall { required },
+    }
+}
 
 /// Why the configuration store is not usable.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Unavailable {
-    /// The `rohi-cfg` partition is missing or unusable (wrong partition table?).
-    Partition(PartitionError),
+    /// The configuration region is missing or unusable (on the ESP: a wrong
+    /// partition table), with the reason.
+    Partition(&'static str),
     /// The store could not be opened. [`ConfigError::CorruptStorage`] means
     /// committed configuration exists but no slot is valid.
-    Open(ConfigError<EspStorageError>),
+    Open(StoreFailure),
 }
 
 impl Unavailable {
@@ -125,7 +168,7 @@ impl Unavailable {
 impl fmt::Display for Unavailable {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Partition(error) => write!(f, "configuration partition: {error:?}"),
+            Self::Partition(reason) => write!(f, "configuration partition: {reason}"),
             Self::Open(error) => write!(f, "{error}"),
         }
     }
@@ -147,7 +190,7 @@ pub enum ServiceError {
     Unavailable(Unavailable),
     /// [`StorageMaintenance::format_storage`] refused: the store is healthy.
     StorageHealthy,
-    Store(ConfigError<EspStorageError>),
+    Store(StoreFailure),
     /// The stored section could not be decoded into the requested type.
     Section(SectionError),
     /// The value could not be encoded into a section payload.
@@ -428,19 +471,108 @@ impl<R: ConfigRegistry> ConfigRegistry for StorageConfig<R> {
     }
 }
 
-/// What the owner task holds.
+/// Owns the [`ConfigStore`] on `S` and answers the requests of the
+/// [`ConfigHandle`]s, one at a time.
+///
+/// Build it with [`ConfigOwner::open`] (or [`ConfigOwner::unavailable`] when
+/// the platform has no usable region), publish the boot state with
+/// [`ConfigOwner::publish_boot`] and then move it into the configuration task
+/// that calls [`ConfigOwner::run`]. An Embassy task cannot be generic, so each
+/// platform declares its own task around the owner of its storage.
 #[allow(clippy::large_enum_variant)]
-enum Owner {
-    Ready(ConfigStore<Storage>),
-    /// The storage is kept whenever the partition exists, so that
+pub enum ConfigOwner<S: ConfigStorage> {
+    Ready(ConfigStore<S>),
+    /// The storage is kept whenever the region exists, so that
     /// [`Command::FormatStorage`] can format it.
     Unavailable {
         reason: Unavailable,
-        storage: Option<Storage>,
+        storage: Option<S>,
     },
 }
 
-impl Owner {
+impl<S: ConfigStorage> ConfigOwner<S>
+where
+    S::Error: fmt::Debug,
+{
+    /// The owner of a configuration region that cannot be used at all: every
+    /// request fails with [`ServiceError::Unavailable`] and there is nothing
+    /// to format.
+    pub fn unavailable(reason: &'static str) -> Self {
+        error!("Configuration region unavailable: {}", reason);
+        Self::Unavailable {
+            reason: Unavailable::Partition(reason),
+            storage: None,
+        }
+    }
+
+    /// Opens the store on `storage`. Corrupted committed configuration does
+    /// not stop the firmware: the owner then answers every request with
+    /// [`ServiceError::Unavailable`], so that corruption is never mistaken
+    /// for an empty (unprovisioned) configuration; [`maintenance`] can format
+    /// it.
+    pub fn open(storage: S) -> Self {
+        let store = match ConfigStore::try_open(storage) {
+            Ok(store) => store,
+            Err(failure) => {
+                match failure.error {
+                    ConfigError::CorruptStorage(reason) => error!(
+                        "Configuration is CORRUPT ({}): committed data exists but is unreadable, \
+                         not treating it as empty (format_storage recovers it)",
+                        reason
+                    ),
+                    ref error => error!("Configuration store unavailable: {}", error),
+                }
+                return Self::Unavailable {
+                    reason: Unavailable::Open(erase(failure.error)),
+                    storage: Some(failure.storage),
+                };
+            }
+        };
+        match store.open_state() {
+            ConfigOpenState::Empty => warn!("Configuration: empty"),
+            ConfigOpenState::Valid => info!(
+                "Configuration: {} section(s), generation {}",
+                store.section_count(),
+                store.generation().unwrap_or(0),
+            ),
+            ConfigOpenState::Recovered => warn!(
+                "Configuration: ignored a damaged slot, using generation {} (slot {}), \
+                 {} section(s); a lost newer update cannot be ruled out",
+                store.generation().unwrap_or(0),
+                store.active_slot().unwrap_or(0),
+                store.section_count()
+            ),
+        }
+        Self::Ready(store)
+    }
+
+    /// Publishes every section to its consumer from the stored overrides or
+    /// the firmware policy, so that the consumers never read the store
+    /// themselves at start. Call it once, before [`run`](Self::run).
+    pub fn publish_boot(&mut self, runtime: &ConfigRuntime) {
+        publish_boot(
+            match self {
+                Self::Ready(store) => Some(store),
+                Self::Unavailable { .. } => None,
+            },
+            runtime,
+        );
+    }
+
+    /// Answers the requests of the [`ConfigHandle`]s, one at a time; never
+    /// returns.
+    ///
+    /// Cancellation: the owner only awaits the request and the response
+    /// channels; every request is handled to completion once received.
+    pub async fn run(&mut self, runtime: &ConfigRuntime) -> ! {
+        let service = &SERVICE;
+        loop {
+            let Request { seq, command } = service.requests.receive().await;
+            let outcome = self.handle(command, runtime);
+            service.responses.send(Response { seq, outcome }).await;
+        }
+    }
+
     fn handle(&mut self, command: Command, runtime: &ConfigRuntime) -> Outcome {
         if let Command::FormatStorage = command {
             return self.format_storage(runtime);
@@ -464,7 +596,7 @@ impl Owner {
                             Outcome::Section(blob)
                         }
                         Ok(None) => Outcome::NotFound,
-                        Err(error) => Outcome::Failed(ServiceError::Store(error)),
+                        Err(error) => Outcome::Failed(ServiceError::Store(erase(error))),
                     }
                 }
                 Command::Set { id, blob } => {
@@ -473,7 +605,7 @@ impl Owner {
                             publish_section(runtime, id, Some(&blob), false);
                             Outcome::Done
                         }
-                        Err(error) => Outcome::Failed(ServiceError::Store(error)),
+                        Err(error) => Outcome::Failed(ServiceError::Store(erase(error))),
                     }
                 }
                 Command::Remove(id) => match store.remove_raw(id) {
@@ -481,7 +613,7 @@ impl Owner {
                         publish_section(runtime, id, None, false);
                         Outcome::Done
                     }
-                    Err(error) => Outcome::Failed(ServiceError::Store(error)),
+                    Err(error) => Outcome::Failed(ServiceError::Store(erase(error))),
                 },
                 Command::FormatStorage | Command::FactoryReset => unreachable!("handled above"),
             },
@@ -503,7 +635,7 @@ impl Owner {
         let taken = core::mem::replace(
             self,
             Self::Unavailable {
-                reason: Unavailable::Partition(PartitionError::NotFound),
+                reason: Unavailable::Partition("being formatted"),
                 storage: None,
             },
         );
@@ -523,9 +655,9 @@ impl Owner {
             }
             Err(failure) => {
                 error!("Configuration: factory reset failed: {}", failure.error);
-                let error = failure.error.clone();
+                let error = erase(failure.error);
                 *self = Self::Unavailable {
-                    reason: Unavailable::Open(failure.error),
+                    reason: Unavailable::Open(error.clone()),
                     storage: Some(failure.storage),
                 };
                 Outcome::Failed(ServiceError::Store(error))
@@ -553,7 +685,7 @@ impl Owner {
                     Err(failure) => {
                         error!("Configuration: format failed: {}", failure.error);
                         *storage = Some(failure.storage);
-                        Outcome::Failed(ServiceError::Store(failure.error))
+                        Outcome::Failed(ServiceError::Store(erase(failure.error)))
                     }
                 }
             }
@@ -561,92 +693,9 @@ impl Owner {
     }
 }
 
-fn open(flash: FLASH<'static>) -> Owner {
-    let storage = match config_storage(FlashStorage::new(flash)) {
-        Ok(storage) => storage,
-        Err(error) => {
-            error!("Configuration partition unavailable: {:?}", error);
-            return Owner::Unavailable {
-                reason: Unavailable::Partition(error),
-                storage: None,
-            };
-        }
-    };
-    let region = storage.region();
-    let location = (region.offset, region.length);
-    let store = match ConfigStore::try_open(storage) {
-        Ok(store) => store,
-        Err(failure) => {
-            match failure.error {
-                ConfigError::CorruptStorage(reason) => error!(
-                    "Configuration is CORRUPT ({}): committed data exists but is unreadable, \
-                     not treating it as empty (format_storage recovers it)",
-                    reason
-                ),
-                ref error => error!("Configuration store unavailable: {}", error),
-            }
-            return Owner::Unavailable {
-                reason: Unavailable::Open(failure.error),
-                storage: Some(failure.storage),
-            };
-        }
-    };
-    match store.open_state() {
-        ConfigOpenState::Empty => {
-            warn!("Configuration: empty @ {:#x}+{:#x}", location.0, location.1)
-        }
-        ConfigOpenState::Valid => info!(
-            "Configuration: {} section(s), generation {} @ {:#x}+{:#x}",
-            store.section_count(),
-            store.generation().unwrap_or(0),
-            location.0,
-            location.1
-        ),
-        ConfigOpenState::Recovered => warn!(
-            "Configuration: ignored a damaged slot, using generation {} (slot {}) @ {:#x}+{:#x}, \
-             {} section(s); a lost newer update cannot be ruled out",
-            store.generation().unwrap_or(0),
-            store.active_slot().unwrap_or(0),
-            location.0,
-            location.1,
-            store.section_count()
-        ),
-    }
-    Owner::Ready(store)
-}
-
-/// Owns the [`ConfigStore`] and answers requests, one at a time.
-#[embassy_executor::task]
-async fn config_task(service: &'static ConfigService, mut owner: Owner, runtime: ConfigRuntime) {
-    loop {
-        let Request { seq, command } = service.requests.receive().await;
-        let outcome = owner.handle(command, &runtime);
-        service.responses.send(Response { seq, outcome }).await;
-    }
-}
-
-/// Opens the configuration store on the `rohi-cfg` partition and starts its
-/// owner task. The returned handle is the only way to reach the configuration.
-///
-/// A missing partition or corrupted committed configuration does not stop the
-/// firmware: the service keeps running and answers every request with
-/// [`ServiceError::Unavailable`], so corruption is never mistaken for an empty
-/// (unprovisioned) configuration. [`maintenance`] can format it.
-///
-/// Every section is published to its consumer once before the task runs, from
-/// the stored overrides or the firmware policy, and again after every commit,
-/// see the module documentation. The consumers therefore never read the store
-/// themselves at start.
-pub fn start(spawner: Spawner, flash: FLASH<'static>, runtime: ConfigRuntime) -> ConfigHandle {
-    let mut owner = open(flash);
-    publish_boot(
-        match &mut owner {
-            Owner::Ready(store) => Some(store),
-            Owner::Unavailable { .. } => None,
-        },
-        &runtime,
-    );
-    spawner.spawn(config_task(&SERVICE, owner, runtime).unwrap());
+/// Handle to the configuration owner, see [`ConfigOwner`]. The only way to
+/// reach the configuration.
+pub fn handle() -> ConfigHandle {
     ConfigHandle { service: &SERVICE }
 }
 
@@ -728,7 +777,10 @@ fn publish_private<B: PrivateBinding>(blob: Option<&Blob>) {
 /// unreadable are three different states: a missing section is the firmware
 /// policy, a stored one is applied, an unreadable one logs and also gets the
 /// firmware policy (see [`publish_managed`]).
-fn boot_managed<B: Binding>(store: &mut ConfigStore<Storage>, runtime: &ConfigRuntime) {
+fn boot_managed<B: Binding, S: ConfigStorage>(store: &mut ConfigStore<S>, runtime: &ConfigRuntime)
+where
+    S::Error: fmt::Debug,
+{
     let mut blob = Blob::empty();
     match store.read_raw(section_id::<B>(), &mut blob.bytes) {
         Ok(Some(info)) => {
@@ -750,7 +802,10 @@ fn boot_managed<B: Binding>(store: &mut ConfigStore<Storage>, runtime: &ConfigRu
 
 /// [`boot_managed`] for a private section; an unreadable one is reported to
 /// the binding, which must not treat it as missing.
-fn boot_private<B: PrivateBinding>(store: &mut ConfigStore<Storage>) {
+fn boot_private<B: PrivateBinding, S: ConfigStorage>(store: &mut ConfigStore<S>)
+where
+    S::Error: fmt::Debug,
+{
     let mut blob = Blob::empty();
     match store.read_raw(SectionId(private_id::<B>()), &mut blob.bytes) {
         Ok(Some(info)) => {

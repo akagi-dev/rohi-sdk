@@ -117,7 +117,8 @@ pub struct Cli {
     )]
     pub color: ColorChoice,
 
-    /// How long to search for the target device.
+    /// How long to search for the target device, or to connect to a TCP
+    /// endpoint.
     #[arg(
         long,
         global = true,

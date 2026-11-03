@@ -1,0 +1,25 @@
+# The life of a CO2 sensor: warm-up, valid data, a failure, recovery.
+#
+#   0 s    SCD4x warming up (no data)
+#   5 s    valid CO2 = 600 ppm
+#   30 s   sensor error
+#   45 s   sensor recovers
+
+[sensors]
+co2 = 600
+interval = "2s"
+warm_up = { scd4x = "5s" }
+
+[freshness]
+stale_after = "20s"
+
+[[events]]
+at = "30s"
+action = "fail"
+sensor = "scd4x"
+kind = "read"
+
+[[events]]
+at = "45s"
+action = "recover"
+sensor = "scd4x"

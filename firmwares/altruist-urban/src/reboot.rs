@@ -14,22 +14,21 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
-///////////////////////////////////////////////////////////////////////////////
+
 //! Deferred device reboot.
 //!
-//! The control `Reboot` request must still deliver its
-//! response, so [`request`] only signals [`reboot_task`], which waits for
-//! [`GRACE`] before resetting the chip.
+//! The control `Reboot` request must still deliver its response, so
+//! [`request`] only signals; the platform task waits for [`due`] and then
+//! resets (the chip on the ESP, a process restart in the simulator).
 
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Timer};
-use esp_hal::system::software_reset;
 use log::warn;
 
 use crate::tasks::RawMutex;
 
 /// Time left for the response to reach the client before the reset.
-const GRACE: Duration = Duration::from_millis(1500);
+pub const GRACE: Duration = Duration::from_millis(1500);
 
 static REQUESTED: Signal<RawMutex, ()> = Signal::new();
 
@@ -38,11 +37,9 @@ pub fn request() {
     REQUESTED.signal(());
 }
 
-/// Resets the chip once a reboot was requested.
-#[embassy_executor::task]
-pub async fn reboot_task() {
+/// Completes once a reboot was requested and [`GRACE`] has passed.
+pub async fn due() {
     REQUESTED.wait().await;
     warn!("Rebooting in {} ms", GRACE.as_millis());
     Timer::after(GRACE).await;
-    software_reset()
 }

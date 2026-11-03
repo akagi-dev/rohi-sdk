@@ -19,6 +19,7 @@ long-running stability tests          ← Hardware testing
 |-------|---------|----------------|-----------------|
 | Host unit tests | `cargo test` | codecs, state machines, bounds, error mapping, golden encodings | no |
 | Host service / integration | `cargo test` | owner + handle + mock backend: reconnect logic, reconciliation, dispatcher, framing, `rohi` client end to end against the real dispatcher, cancellation | no |
+| Native simulator end to end | `cargo test -p altruist-sim` | the composed firmware stack on the host (sensors, storage, Wi-Fi, control, restarts) driven through the real `rohi` client; see [Run a simulated Altruist](../guides/altruist-sim.md) | no |
 | ESP compile checks | `cargo check-esp32c3`, `cargo check-esp32c6`, `cargo build-esp32c3/6`, ESP `clippy` | the platform crates and firmware type-check and link for both chips | no |
 | Hardware functional validation | flash + examples/firmware | radios, flash, buses, pins, heap high-water mark | **yes** ([Hardware testing](hardware-testing.md)) |
 | Long-running stability | 24–72 h soak | leaks, deadlocks, recovery under churn | **yes** |
@@ -40,7 +41,7 @@ found in one of those, add a host test for the logic part and record the hardwar
 ## Fakes and mocks
 
 Every hardware seam has a host implementation (in-memory storage, mock radios, a fake IP stack, scripted BLE transports,
-mock buses); the seams and their fakes are described in the [portability rustdoc](https://docs.rs/rohi-sdk/latest/rohi_sdk/portability/index.html).
+mock buses), and the whole composed firmware runs on the host as [`altruist-sim`](../guides/altruist-sim.md); the seams and their fakes are described in the [portability rustdoc](https://docs.rs/rohi-sdk/latest/rohi_sdk/portability/index.html).
 
 ## Cancellation tests
 

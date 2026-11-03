@@ -12,6 +12,8 @@ cargo clippy --all-targets -- -D warnings
 ```
 
 No board is needed. What the host tests cover and what they cannot is in [Host testing](../validation/host-testing.md).
+To run the Altruist firmware stack itself on the host, use `cargo run -p altruist-sim`, see
+[Run a simulated Altruist](../guides/altruist-sim.md).
 
 ## For the ESP chips
 

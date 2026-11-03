@@ -21,6 +21,8 @@
 //!
 //! - [`BleLink`] / [`scan`]: BLE central built on `btleplug`, finds devices
 //!   exposing the ROHI Control Service and moves chunks;
+//! - [`TcpLink`]: the same chunks over a TCP socket, for the `altruist-sim`
+//!   simulator;
 //! - [`Session`]: frames requests with [`rohi_control_ble::frame`], matches
 //!   responses by request id, enforces timeouts;
 //! - [`Device`]: generic async API (`config_*`, `services*`, `invoke`)
@@ -42,6 +44,7 @@ pub mod format;
 pub mod model;
 mod provision;
 mod session;
+mod tcp;
 
 pub use ble::{BleLink, DiscoveredDevice, scan, scan_until};
 pub use client::Device;
@@ -53,3 +56,4 @@ pub use provision::derive_identity;
 pub use provision::ss58;
 pub use rohi_identity::PublicKey;
 pub use session::{ClientTransport, DEFAULT_TIMEOUT, Session};
+pub use tcp::TcpLink;

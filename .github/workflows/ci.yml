@@ -55,6 +55,31 @@ jobs:
       - name: Run command
         run: cargo ${{ matrix.action.command }} ${{ matrix.action.args }}
 
+  simulator:
+    name: Simulator
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libdbus-1-dev pkg-config
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.99.1
+          components: rust-src
+      - name: Enable caching
+        uses: Swatinem/rust-cache@v2
+      - name: Check
+        run: cargo check -p altruist-sim
+      - name: Test (unit and end-to-end)
+        run: cargo test -p altruist-sim
+      - name: No ESP dependency
+        run: |
+          if cargo tree -p altruist-sim -e normal --prefix none | grep -E '^(esp-|rohi-(hal|net|config)-esp)'; then
+            echo "altruist-sim must not depend on ESP crates"; exit 1
+          fi
+
   esp32c3:
     name: ESP32-C3
     runs-on: ubuntu-latest

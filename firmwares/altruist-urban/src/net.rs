@@ -14,70 +14,66 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
-///////////////////////////////////////////////////////////////////////////////
 
 //! Wi-Fi station runtime.
 //!
-//! [`WifiManager`] is the single owner of the ESP Wi-Fi backend. Other tasks
-//! (the control plane) only use the [`WifiHandle`] returned by [`handle`]; they
-//! never touch the radio driver. The persisted configuration reaches the
-//! manager as desired state, published by the configuration owner task, see
-//! [`crate::config`].
+//! [`WifiManager`] is the single owner of the platform Wi-Fi backend. Other
+//! tasks (the control plane) only use the [`WifiHandle`] returned by
+//! [`handle`]; they never touch the radio driver. The persisted configuration
+//! reaches the manager as desired state, published by the configuration owner
+//! task, see [`crate::config`].
+//!
+//! The backend (`EspWifi` on the ESP, the native backend of the simulator) and
+//! the IP stack are the platform's; this module holds what is common: the
+//! shared state, the manager loop, the probe of the `wifi` and `network`
+//! services and the wait for the first attempt.
 
-use embassy_executor::Spawner;
 use embassy_time::{Delay, Duration, Instant, with_timeout};
 use log::{info, warn};
-use rohi_sdk::esp::net::{EspWifi, EspWireless, NetRunner, wireless_heap};
 use rohi_sdk::net::{
-    HeapStats, IpUsage, ManagerConfig, NetworkHandle, NetworkProbe, WifiError, WifiHandle,
-    WifiManager, WifiProbe, WifiShared, WifiState, WifiStatus,
+    HeapStats, IpBackend, IpUsage, ManagerConfig, NetworkHandle, NetworkProbe, WifiBackend,
+    WifiHandle, WifiManager, WifiProbe, WifiShared, WifiState, WifiStatus,
 };
-use static_cell::StaticCell;
 
-use crate::resources::{Ip, NetResources};
 use crate::tasks::RawMutex;
 
 static WIFI: WifiShared<RawMutex> = WifiShared::new();
-static NET_RESOURCES: StaticCell<NetResources> = StaticCell::new();
-static IP: StaticCell<Ip> = StaticCell::new();
-
-/// Brings up Wi-Fi and the IP stack with the sizes of [`crate::resources`]
-/// and starts their tasks ([`wifi_task`] and [`net_runner_task`]).
-///
-/// Returns the [`NetworkHandle`] of the IP data plane (DNS and TCP). Call once.
-pub fn start(
-    spawner: Spawner,
-    wireless: &mut EspWireless,
-) -> Result<NetworkHandle<'static, Ip>, WifiError> {
-    let (backend, runner, ip) = wireless.wifi(NET_RESOURCES.init(NetResources::new()))?;
-    let ip: &'static Ip = IP.init(ip);
-    spawner.spawn(net_runner_task(runner).unwrap());
-    spawner.spawn(wifi_task(backend).unwrap());
-    Ok(NetworkHandle::new(ip))
-}
 
 /// Milliseconds since boot: the clock of the link uptime.
-fn uptime_ms() -> u64 {
+pub fn uptime_ms() -> u64 {
     Instant::now().as_millis()
 }
 
 /// What the `wifi` and `network` services read from the platform: the wireless
-/// heap and the clock, and the socket usage of the IP stack (when it started).
-#[derive(Clone, Copy)]
-pub struct Probe {
-    ip: Option<NetworkHandle<'static, Ip>>,
+/// heap (when the platform has one) and the clock, and the socket usage of the
+/// IP stack (when it started).
+pub struct Probe<I: 'static> {
+    ip: Option<NetworkHandle<'static, I>>,
+    heap: Option<fn() -> HeapStats>,
 }
 
-impl Probe {
-    /// `ip` is the IP data plane returned by [`start`], `None` if it did not start.
-    pub const fn new(ip: Option<NetworkHandle<'static, Ip>>) -> Self {
-        Self { ip }
+impl<I> Clone for Probe<I> {
+    fn clone(&self) -> Self {
+        *self
     }
 }
 
-impl WifiProbe for Probe {
+impl<I> Copy for Probe<I> {}
+
+impl<I> Probe<I> {
+    /// `ip` is the IP data plane of the platform, `None` if it did not start.
+    /// `heap` reads the wireless heap, `None` on a platform without one.
+    pub const fn new(
+        ip: Option<NetworkHandle<'static, I>>,
+        heap: Option<fn() -> HeapStats>,
+    ) -> Self {
+        Self { ip, heap }
+    }
+}
+
+impl<I> WifiProbe for Probe<I> {
     fn heap(&self) -> Option<HeapStats> {
-        Some(wireless_heap().stats())
+        self.heap.map(|heap| heap())
     }
 
     fn now_ms(&self) -> Option<u64> {
@@ -85,7 +81,7 @@ impl WifiProbe for Probe {
     }
 }
 
-impl NetworkProbe for Probe {
+impl<I: IpBackend> NetworkProbe for Probe<I> {
     fn sockets(&self) -> Option<IpUsage> {
         self.ip.map(|ip| ip.usage())
     }
@@ -96,21 +92,16 @@ pub fn handle() -> WifiHandle<'static, RawMutex> {
     WIFI.handle()
 }
 
-/// Runs the IP stack.
-#[embassy_executor::task]
-pub async fn net_runner_task(runner: NetRunner) {
-    runner.run().await
+/// The manager settings of the firmware: the defaults with the uptime clock.
+pub fn manager_config() -> ManagerConfig {
+    ManagerConfig::DEFAULT.with_clock(uptime_ms)
 }
 
-/// Runs the Wi-Fi connection manager.
-#[embassy_executor::task]
-pub async fn wifi_task(backend: EspWifi) {
-    let mut manager = WifiManager::new(
-        backend,
-        Delay,
-        &WIFI,
-        ManagerConfig::DEFAULT.with_clock(uptime_ms),
-    );
+/// Runs the Wi-Fi connection manager over `backend`; never returns. The one
+/// manager owns the backend, the handle of [`handle`] is the only way to
+/// command it.
+pub async fn run<B: WifiBackend>(backend: B, config: ManagerConfig) -> ! {
+    let mut manager = WifiManager::new(backend, Delay, &WIFI, config);
     manager.run().await
 }
 
