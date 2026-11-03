@@ -27,3 +27,4 @@ minicbor = { workspace = true, features = ["std"] }
 rohi-config = { workspace = true, features = ["std"] }
 embassy-futures.workspace = true
 critical-section = { version = "1", features = ["std"] }
+lz4_flex = { version = "0.14", default-features = false, features = ["std", "frame", "safe-encode", "safe-decode"] }

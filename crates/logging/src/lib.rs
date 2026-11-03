@@ -88,6 +88,7 @@ mod clock;
 mod config;
 mod level;
 mod record;
+pub mod segment;
 mod sink;
 
 #[cfg(test)]
