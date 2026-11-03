@@ -43,6 +43,7 @@
 //! | `ntp` | `ntp` | `rohi-time-ntp` | `time`, `net` |
 //! | `identity` | `identity` | `rohi-identity` | `service` |
 //! | `location` | `location` | `rohi-location` | `service` |
+//! | `logging` | `logging` | `rohi-logging` | `time` |
 //! | `control` | `control` | `rohi-control` | `service` |
 //! | `ble` | `ble` | `rohi-control-ble` | `control`, `net` |
 //! | `connectivity` | `connectivity` | `rohi-connectivity` | `hal`, `identity`, `location`, `net`, `time` |
@@ -177,6 +178,7 @@
 //! | [`rohi-time`](../rohi_time/index.html) | Synchronized wall-clock time: `TimeService`, `TimeSource`, validation, background `Synchronizer` | portable | `TimeService`, `TimeSource`, `TimeSample`, `UnixTime`, `TimeStatus`, `Synchronizer` | `rohi-hal` (monotonic `Clock`, `Backoff`), `rohi-service`, Embassy sync | Network or clock hardware, any concrete source |
 //! | [`rohi-time-ntp`](../rohi_time_ntp/index.html) | NTP/SNTP `TimeSource` over the IP data plane | portable | `NtpTimeSource`, `NtpConfig`, `NtpServersConfig` (the `time` config section) | `rohi-time`, `rohi-net`, `rohi-hal`, `rohi-config`, `rohi-service`, `sntpc` | The global concept of time, the UDP stack |
 //! | [`rohi-location`](../rohi_location/index.html) | The location of the device (user-configured; no GNSS runtime exists yet): `LocationConfig` section, `LocationShared`, `LocationService` | portable | `Location`, `LocationConfig`, `LocationShared`, `LocationSource`, `LocationService` | `rohi-config`, `rohi-service`, Embassy sync | GNSS hardware, telemetry |
+//! | [`rohi-logging`](../rohi_logging/index.html) | Persistent logging: the non-blocking `log` sink and bounded `LogRecord`s (storage and the `logging` service follow) | portable | `LogSink`, `LogRecord`, `LogLevel`, `LogClock` | `rohi-time`, `rohi-hal`, Embassy sync, `log` | Storage, hardware |
 //! | [`rohi-connectivity-proto`](../rohi_connectivity_proto/index.html) | Bounded bindings of `airalab/connectivity-protocol` (vendored, pinned revision) | portable | `core_v1`, `crypto_v1`, `device_v1`, `sensor_v1`, `limits` | `micropb` | Signing, mapping, transports |
 //! | [`rohi-connectivity`](../rohi_connectivity/index.html) | Telemetry: snapshot (+ location) to signed envelope frame, bounded outbox, retry, HTTP transport, `ConnectivityConfig` section, `connectivity` service | portable | `UrbanEncoder`, `EnvelopeBuilder`, `EnvelopeFrame`, `EnvelopeTransport`, `HttpTransport`, `ConnectivityService`, `UtcClock`, `NonceSource`, `FrameSigner` | `rohi-connectivity-proto`, `rohi-hal`, `rohi-identity`, `rohi-location`, `rohi-net`, `rohi-time`, `rohi-config`, `rohi-service` | Private keys, Wi-Fi lifecycle, sensors, backend logic |
 //! | [`rohi-net-esp`](../rohi_net_esp/index.html) | ESP backend of `rohi-net` | ESP | `EspWireless`, `EspWifi`, `EspIp`, `EspBle`, `NetResources`, `BleResources`, `wireless_heap!` | `rohi-net`, `esp-radio`, `embassy-net`, TrouBLE | Product resource sizes, control protocol |
@@ -278,6 +280,10 @@ pub use rohi_identity as identity;
 #[cfg(feature = "location")]
 #[cfg_attr(docsrs, doc(cfg(feature = "location")))]
 pub use rohi_location as location;
+
+#[cfg(feature = "logging")]
+#[cfg_attr(docsrs, doc(cfg(feature = "logging")))]
+pub use rohi_logging as logging;
 #[cfg(feature = "net")]
 #[cfg_attr(docsrs, doc(cfg(feature = "net")))]
 pub use rohi_net as net;

@@ -23,6 +23,7 @@ features = [
   "ntp",
   "identity",
   "location",
+  "logging",
   "control",
   "ble",
   "connectivity",
@@ -38,6 +39,7 @@ rohi-time-ntp = { workspace = true, optional = true }
 rohi-net = { workspace = true, optional = true }
 rohi-identity = { workspace = true, optional = true }
 rohi-location = { workspace = true, optional = true }
+rohi-logging = { workspace = true, optional = true }
 rohi-control = { workspace = true, optional = true }
 rohi-control-ble = { workspace = true, optional = true }
 rohi-connectivity = { workspace = true, optional = true }
@@ -60,6 +62,7 @@ net = ["service", "dep:rohi-net"]
 ntp = ["time", "net", "dep:rohi-time-ntp"]
 identity = ["service", "dep:rohi-identity"]
 location = ["service", "dep:rohi-location"]
+logging = ["time", "dep:rohi-logging"]
 control = ["service", "dep:rohi-control"]
 ble = ["control", "net", "dep:rohi-control-ble"]
 connectivity = ["hal", "identity", "location", "net", "time", "dep:rohi-connectivity"]

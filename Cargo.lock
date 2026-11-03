@@ -3946,6 +3946,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rohi-logging"
+version = "0.6.0"
+dependencies = [
+ "critical-section",
+ "embassy-futures",
+ "embassy-sync 0.8.0",
+ "heapless 0.9.3",
+ "log",
+ "rohi-hal",
+ "rohi-time",
+]
+
+[[package]]
 name = "rohi-net"
 version = "0.6.0"
 dependencies = [
@@ -3995,6 +4008,7 @@ dependencies = [
  "rohi-hal-esp",
  "rohi-identity",
  "rohi-location",
+ "rohi-logging",
  "rohi-net",
  "rohi-net-esp",
  "rohi-service",
