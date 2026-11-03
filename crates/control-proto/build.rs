@@ -140,7 +140,7 @@ const LIMITS: &[(&str, usize, &str)] = &[
     ),
     (
         "MAX_STREAM_FILES",
-        12,
+        24,
         "Maximum number of files of one stream.",
     ),
     (

@@ -139,7 +139,7 @@ pub const MAX_RECORDS: usize = 6;
 /// Maximum number of fields of one record.
 pub const MAX_RECORD_FIELDS: usize = 4;
 /// Maximum number of files of one stream.
-pub const MAX_STREAM_FILES: usize = 12;
+pub const MAX_STREAM_FILES: usize = 24;
 /// Maximum number of bytes of one stream chunk.
 pub const MAX_STREAM_CHUNK: usize = 512;
 

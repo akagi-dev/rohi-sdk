@@ -72,6 +72,9 @@
 //! | [`LogSink`] | register as the `log` backend (with `CriticalSectionRawMutex`) or push events directly |
 //! | [`LogRecord`] | read what the logging task receives |
 //! | [`LogClock`] | stamp records; implemented for `rohi_time::TimeService` |
+//! | [`LoggingConfig`] | the `logging` config section |
+//! | [`segment`] | line text, LZ4 frames, segment headers, batches and the decoder |
+//! | [`storage`] | the [`LogStorage`](storage::LogStorage) contract, [`RingStorage`](storage::RingStorage) and [`RamLogStorage`](storage::RamLogStorage) |
 //!
 //! # Guarantees and Limitations
 //!
@@ -90,6 +93,7 @@ mod level;
 mod record;
 pub mod segment;
 mod sink;
+pub mod storage;
 
 #[cfg(test)]
 extern crate std;
