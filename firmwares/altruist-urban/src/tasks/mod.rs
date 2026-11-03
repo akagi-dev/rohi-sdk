@@ -18,7 +18,7 @@
 //! Embassy tasks of the sensor runtime.
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use rohi_hal::runtime::{EVENT_QUEUE_CAPACITY, EventBus, SensorStates};
+use rohi_sdk::hal::runtime::{EVENT_QUEUE_CAPACITY, EventBus, SensorStates};
 
 /// Sensor tasks.
 pub mod sensors;

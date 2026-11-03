@@ -36,8 +36,8 @@ use altruist_urban::resources::WIRELESS_HEAP_SIZE;
 use altruist_urban::tasks::sensors;
 use altruist_urban::tasks::store;
 use altruist_urban::{connectivity, control, identity, net, time};
-use rohi_hal_esp::board::altruist_urban::{AltruistUrban, Hardware};
-use rohi_net_esp::{EspWireless, wireless_heap};
+use rohi_sdk::esp::hal::board::altruist_urban::{AltruistUrban, Hardware};
+use rohi_sdk::esp::net::{EspWireless, wireless_heap};
 
 use esp_backtrace as _;
 
@@ -54,7 +54,7 @@ async fn main(spawner: Spawner) -> ! {
     let (hardware, runtime) = Hardware::split(peripherals);
 
     // One owner for the radio: it takes the wireless heap and creates the Wi-Fi
-    // and BLE drivers, see `rohi_net_esp`. All sizes come from
+    // and BLE drivers, see `rohi_sdk::esp::net`. All sizes come from
     // `altruist_urban::resources`.
     let heap = wireless_heap!(WIRELESS_HEAP_SIZE);
     let mut wireless = EspWireless::new(runtime.wifi, runtime.bt, heap);

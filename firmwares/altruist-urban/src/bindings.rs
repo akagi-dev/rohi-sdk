@@ -41,13 +41,13 @@ use core::marker::PhantomData;
 
 use embassy_sync::blocking_mutex::Mutex;
 use log::{info, warn};
-use rohi_config::{ConfigSection, HasOverrides, materialize};
-use rohi_connectivity::ConnectivityConfig;
-use rohi_identity::Identity;
-use rohi_location::LocationConfig;
-use rohi_net::{BleSettings, NetworkConfig, WifiConfig, WifiHandle};
-use rohi_service::{Config, SectionStore, StoreError};
-use rohi_time_ntp::NtpServersConfig;
+use rohi_sdk::config::{ConfigSection, HasOverrides, materialize};
+use rohi_sdk::connectivity::ConnectivityConfig;
+use rohi_sdk::identity::Identity;
+use rohi_sdk::location::LocationConfig;
+use rohi_sdk::net::{BleSettings, NetworkConfig, WifiConfig, WifiHandle};
+use rohi_sdk::ntp::NtpServersConfig;
+use rohi_sdk::service::{Config, SectionStore, StoreError};
 
 use crate::config::{ConfigHandle, ServiceError};
 use crate::tasks::RawMutex;
@@ -225,7 +225,7 @@ pub struct ConnectivityBinding;
 impl Binding for ConnectivityBinding {
     type Config = ConnectivityConfig;
 
-    fn firmware_overrides() -> rohi_connectivity::ConnectivityOverrides {
+    fn firmware_overrides() -> rohi_sdk::connectivity::ConnectivityOverrides {
         connectivity::firmware_overrides()
     }
 
@@ -308,7 +308,7 @@ macro_rules! firmware_configs {
         /// The managed config sections of the device.
         pub type ConfigSections = (
             $(
-                ::rohi_service::Section<
+                ::rohi_sdk::service::Section<
                     <$managed as $crate::bindings::Binding>::Config,
                     $crate::bindings::Stored<$managed>,
                     $crate::tasks::RawMutex,
@@ -318,7 +318,7 @@ macro_rules! firmware_configs {
 
         /// The managed config sections of the device over `config`.
         pub fn config_sections(config: ConfigHandle) -> ConfigSections {
-            ($(::rohi_service::Section::new($crate::bindings::Stored::<$managed>::new(config)),)+)
+            ($(::rohi_sdk::service::Section::new($crate::bindings::Stored::<$managed>::new(config)),)+)
         }
 
         const _: () = assert!(

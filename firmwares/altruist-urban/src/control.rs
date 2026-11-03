@@ -40,15 +40,15 @@
 use embassy_executor::Spawner;
 use embassy_time::Delay;
 use log::{error, info};
-use rohi_connectivity::ConnectivityStatusService;
-use rohi_control::{Controller, Device, DeviceInfo, OpenPolicy};
-use rohi_control_ble::ControlBle;
-use rohi_hal::SensorsService;
-use rohi_identity::{Identity, IdentityService, IdentityStore, IdentityStoreError, PublicKey};
-use rohi_location::LocationService;
-use rohi_net::{BleService, NetworkHandle, NetworkService, WifiService};
-use rohi_net_esp::EspWireless;
-use rohi_service::{ActionRegistry, Startup, StatusSet, Statuses};
+use rohi_sdk::ble::ControlBle;
+use rohi_sdk::connectivity::ConnectivityStatusService;
+use rohi_sdk::control::{Controller, Device, DeviceInfo, OpenPolicy};
+use rohi_sdk::esp::net::EspWireless;
+use rohi_sdk::hal::SensorsService;
+use rohi_sdk::identity::{Identity, IdentityService, IdentityStore, IdentityStoreError, PublicKey};
+use rohi_sdk::location::LocationService;
+use rohi_sdk::net::{BleService, NetworkHandle, NetworkService, WifiService};
+use rohi_sdk::service::{ActionRegistry, Startup, StatusSet, Statuses};
 use static_cell::StaticCell;
 
 use crate::bindings::ble_settings;
@@ -219,15 +219,15 @@ pub fn device(
 }
 
 /// GATT layout of the ROHI Control Service.
-pub const GATT: rohi_net::BleGattSpec = rohi_net::BleGattSpec {
-    service: rohi_control_ble::uuid::SERVICE_UUID,
-    rx: rohi_control_ble::uuid::RX_CHARACTERISTIC_UUID,
-    tx: rohi_control_ble::uuid::TX_CHARACTERISTIC_UUID,
+pub const GATT: rohi_sdk::net::BleGattSpec = rohi_sdk::net::BleGattSpec {
+    service: rohi_sdk::ble::uuid::SERVICE_UUID,
+    rx: rohi_sdk::ble::uuid::RX_CHARACTERISTIC_UUID,
+    tx: rohi_sdk::ble::uuid::TX_CHARACTERISTIC_UUID,
 };
 
 /// BLE defaults of the Altruist Urban: the name is `ALTRUIST-URBAN-` and the
 /// last two bytes of the MAC until the `ble` section sets one.
-pub const BLE_CONFIG: rohi_net::BleConfig = rohi_net::BleConfig {
+pub const BLE_CONFIG: rohi_sdk::net::BleConfig = rohi_sdk::net::BleConfig {
     name_prefix: "ALTRUIST-URBAN",
     name: None,
     gatt: GATT,
@@ -236,7 +236,7 @@ pub const BLE_CONFIG: rohi_net::BleConfig = rohi_net::BleConfig {
 /// [`BLE_CONFIG`] with the name of the `ble` section as the configuration
 /// owner published it at boot: the defaults, the firmware overrides and the
 /// stored overrides. The name is read once, when the peripheral starts.
-pub fn ble_config() -> rohi_net::BleConfig {
+pub fn ble_config() -> rohi_sdk::net::BleConfig {
     BLE_CONFIG.with_settings(&ble_settings())
 }
 

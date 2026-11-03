@@ -42,15 +42,15 @@ use embassy_sync::signal::Signal;
 use embassy_time::Delay;
 use esp_hal::rng::Rng;
 use log::{info, warn};
-use rohi_config::Override;
-use rohi_connectivity::{
+use rohi_sdk::config::Override;
+use rohi_sdk::connectivity::{
     ConnectivityConfig, ConnectivityOverrides, ConnectivityService, ConnectivityShared,
     ConnectivityStatus, EndpointUri, HttpTransport, NONCE_LEN, NonceError, NonceSource,
     ServiceConfig,
 };
-use rohi_hal::runtime::MeasurementHandle;
-use rohi_hal_esp::EmbassyClock;
-use rohi_net::NetworkHandle;
+use rohi_sdk::esp::hal::EmbassyClock;
+use rohi_sdk::hal::runtime::MeasurementHandle;
+use rohi_sdk::net::NetworkHandle;
 
 use crate::identity::StaticSigner;
 use crate::resources::{CONNECTIVITY_OUTBOX_DEPTH, Ip};

@@ -76,14 +76,14 @@ use embassy_sync::channel::Channel;
 use embassy_sync::mutex::Mutex;
 use esp_hal::peripherals::FLASH;
 use log::{error, info, warn};
-use rohi_config::{
+use rohi_sdk::config::{
     ConfigError, ConfigOpenState, ConfigSection, ConfigStore, Corruption, EncodeError,
     HasOverrides, MAX_SECTION_PAYLOAD, SectionError, SectionId, materialize,
 };
-use rohi_config_esp::esp::{PartitionError, config_storage, esp_storage::FlashStorage};
-use rohi_config_esp::{EspConfigStorage, EspStorageError};
+use rohi_sdk::esp::config::esp::{PartitionError, config_storage, esp_storage::FlashStorage};
+use rohi_sdk::esp::config::{EspConfigStorage, EspStorageError};
 
-use rohi_service::{
+use rohi_sdk::service::{
     Config, ConfigError as RegistryError, ConfigRegistry, FactoryReset, Mutation, Patched,
     SectionInfo, SectionSchema, SectionValues,
 };
@@ -291,8 +291,8 @@ impl ConfigHandle {
     pub async fn set<T: ConfigSection>(&self, value: &T) -> Result<(), ServiceError> {
         let mut blob = Blob::empty();
         blob.version = T::VERSION;
-        blob.len =
-            rohi_config::encode_to_slice(value, &mut blob.bytes).map_err(ServiceError::Encode)?;
+        blob.len = rohi_sdk::config::encode_to_slice(value, &mut blob.bytes)
+            .map_err(ServiceError::Encode)?;
         let command = Command::Set { id: T::ID, blob };
         match self.call(command).await {
             Outcome::Done => Ok(()),

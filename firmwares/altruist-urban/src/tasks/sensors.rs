@@ -26,11 +26,11 @@ use esp_hal::Async;
 use esp_hal::i2c::master::I2c;
 use esp_hal::uart::Uart;
 use log::info;
-use rohi_hal::SensorKind;
-use rohi_hal::runtime::{Reporter, Runner, RunnerConfig, TimeoutI2c};
-use rohi_hal::sensors::{bmx280, noise, scd4x, sds011};
-use rohi_hal_esp::board::altruist_urban::AltruistUrban;
-use rohi_hal_esp::{EmbassyClock, I2sMicrophone};
+use rohi_sdk::esp::hal::board::altruist_urban::AltruistUrban;
+use rohi_sdk::esp::hal::{EmbassyClock, I2sMicrophone};
+use rohi_sdk::hal::SensorKind;
+use rohi_sdk::hal::runtime::{Reporter, Runner, RunnerConfig, TimeoutI2c};
+use rohi_sdk::hal::sensors::{bmx280, noise, scd4x, sds011};
 use static_cell::StaticCell;
 
 use super::{EVENTS, RawMutex, STATES};
@@ -70,7 +70,7 @@ pub fn start(spawner: Spawner, board: AltruistUrban) {
 
 fn reporter(
     kind: SensorKind,
-) -> Reporter<'static, RawMutex, EmbassyClock, { rohi_hal::runtime::EVENT_QUEUE_CAPACITY }> {
+) -> Reporter<'static, RawMutex, EmbassyClock, { rohi_sdk::hal::runtime::EVENT_QUEUE_CAPACITY }> {
     Reporter::new(kind, &EVENTS, EmbassyClock).with_shared_states(&STATES)
 }
 

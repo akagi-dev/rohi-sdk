@@ -97,7 +97,9 @@
 //!
 //! | Crate | Feature | Meaning |
 //! |-------|---------|---------|
-//! | `altruist-urban` | `esp32c3` / `esp32c6` | chip selection, forwarded to every `*-esp` crate and `esp-*` dependency |
+//! | `altruist-urban` | `esp32c3` / `esp32c6` | chip selection, forwarded to `rohi-sdk` and every `esp-*` dependency |
+//! | `rohi-sdk` | `esp32c3` / `esp32c6` | chip selection, forwarded to every `*-esp` crate; implies `esp` |
+//! | `rohi-sdk` | `config`, `service`, `hal` (`sensors`), `time`, `net`, `ntp`, `identity`, `location`, `control`, `ble`, `connectivity`, `esp`, `heap-stats`, `std` | re-export areas, see the crate page; all off by default |
 //! | `rohi-hal-esp`, `rohi-config-esp`, `rohi-net-esp` | `esp32c3` / `esp32c6` | chip selection; no feature means an empty crate |
 //! | `rohi-net-esp` | `heap-stats` | track the minimum free wireless heap (small runtime overhead); enabled by the firmware |
 //! | `rohi-net` | `testing` | in-memory `IpBackend` (`rohi_net::testing`) for host tests; not for firmware |

@@ -66,20 +66,7 @@ dependencies = [
  "esp-println",
  "esp-rtos",
  "log",
- "rohi-config",
- "rohi-config-esp",
- "rohi-connectivity",
- "rohi-control",
- "rohi-control-ble",
- "rohi-hal",
- "rohi-hal-esp",
- "rohi-identity",
- "rohi-location",
- "rohi-net",
- "rohi-net-esp",
- "rohi-service",
- "rohi-time",
- "rohi-time-ntp",
+ "rohi-sdk",
  "static_cell",
 ]
 
@@ -3904,10 +3891,7 @@ dependencies = [
  "esp-rtos",
  "log",
  "minicbor",
- "rohi-config",
- "rohi-config-esp",
- "rohi-hal",
- "rohi-hal-esp",
+ "rohi-sdk",
  "static_cell",
 ]
 
@@ -4000,6 +3984,23 @@ dependencies = [
 [[package]]
 name = "rohi-sdk"
 version = "0.5.0"
+dependencies = [
+ "minicbor",
+ "rohi-config",
+ "rohi-config-esp",
+ "rohi-connectivity",
+ "rohi-control",
+ "rohi-control-ble",
+ "rohi-hal",
+ "rohi-hal-esp",
+ "rohi-identity",
+ "rohi-location",
+ "rohi-net",
+ "rohi-net-esp",
+ "rohi-service",
+ "rohi-time",
+ "rohi-time-ntp",
+]
 
 [[package]]
 name = "rohi-service"

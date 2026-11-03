@@ -26,7 +26,7 @@
 //! what has been measured. The measurements come from hardware runs; values
 //! marked *not measured* have not been validated on a device yet.
 
-use rohi_net_esp::STACK_INTERNAL_SOCKETS;
+use rohi_sdk::esp::net::STACK_INTERNAL_SOCKETS;
 
 /// Size of the wireless heap in bytes.
 ///
@@ -39,7 +39,7 @@ use rohi_net_esp::STACK_INTERNAL_SOCKETS;
 ///   (Wi-Fi: `WifiError::DriverError`, BLE: `BleState::Error`) and the rest
 ///   of the firmware keeps running.
 /// - Measured: minimum free heap with both radios active is reported by
-///   `rohi_net_esp::wireless_heap()` (`heap-stats`) and logged by the store
+///   `rohi_sdk::esp::net::wireless_heap()` (`heap-stats`) and logged by the store
 ///   task. Current high-water mark with the final value: *not measured*.
 pub const WIRELESS_HEAP_SIZE: usize = 128 * 1024;
 
@@ -68,7 +68,7 @@ pub const UDP_SOCKETS: usize = 1;
 /// Receive and transmit buffer of one UDP socket, in bytes.
 ///
 /// - Consumer: each UDP socket, see [`UDP_SOCKETS`]; each direction queues at
-///   most `rohi_net_esp::UDP_PACKETS` datagrams.
+///   most `rohi_sdk::esp::net::UDP_PACKETS` datagrams.
 /// - Why: an SNTP packet is 48 bytes; 128 holds one with headroom.
 /// - Exhausted: a larger datagram is dropped by the stack.
 /// - Measured: not measured.
@@ -157,7 +157,7 @@ pub const BLE_ATTRIBUTES: usize = 24;
 pub const BLE_CONTROLLER_SLOTS: usize = 4;
 
 /// Storage of the IP stack and its TCP and UDP pools.
-pub type NetResources = rohi_net_esp::NetResources<
+pub type NetResources = rohi_sdk::esp::net::NetResources<
     NETWORK_SOCKETS,
     TCP_CONNECTIONS,
     TCP_RX_BUFFER,
@@ -167,11 +167,16 @@ pub type NetResources = rohi_net_esp::NetResources<
 >;
 
 /// IP data-plane backend of the product.
-pub type Ip =
-    rohi_net_esp::EspIp<TCP_CONNECTIONS, TCP_RX_BUFFER, TCP_TX_BUFFER, UDP_SOCKETS, UDP_BUFFER>;
+pub type Ip = rohi_sdk::esp::net::EspIp<
+    TCP_CONNECTIONS,
+    TCP_RX_BUFFER,
+    TCP_TX_BUFFER,
+    UDP_SOCKETS,
+    UDP_BUFFER,
+>;
 
 /// Storage and bounds of the BLE peripheral.
-pub type BleResources = rohi_net_esp::BleResources<
+pub type BleResources = rohi_sdk::esp::net::BleResources<
     BLE_RX_DEPTH,
     BLE_TX_DEPTH,
     BLE_CONNECTIONS,
@@ -181,13 +186,13 @@ pub type BleResources = rohi_net_esp::BleResources<
 >;
 
 /// BLE transport of the product.
-pub type BleTransport = rohi_net_esp::EspBle<BLE_RX_DEPTH, BLE_TX_DEPTH>;
+pub type BleTransport = rohi_sdk::esp::net::EspBle<BLE_RX_DEPTH, BLE_TX_DEPTH>;
 
 /// Read-only view of the BLE peripheral for the `ble` service.
-pub type BleStatus = rohi_net_esp::EspBleStatus<BLE_RX_DEPTH, BLE_TX_DEPTH>;
+pub type BleStatus = rohi_sdk::esp::net::EspBleStatus<BLE_RX_DEPTH, BLE_TX_DEPTH>;
 
 /// Runner of the BLE stack of the product.
-pub type BleRunner = rohi_net_esp::BleRunner<
+pub type BleRunner = rohi_sdk::esp::net::BleRunner<
     BLE_RX_DEPTH,
     BLE_TX_DEPTH,
     BLE_CONNECTIONS,

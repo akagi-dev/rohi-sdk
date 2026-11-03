@@ -22,5 +22,6 @@ Released crates are also published on docs.rs, for example [`rohi-sdk`](https://
 | `rohi-identity` | device identity and signer |
 | `rohi-location` | device location |
 | `rohi` (`tools/rohi`) | desktop client library and CLI: [Desktop application](../use/desktop/index.md) |
+| `rohi-sdk` | umbrella crate: re-exports the crates above behind Cargo features (`service`, `hal`, `net`, `esp`, ...); the firmware depends on it alone |
 
 The dependency rules and "where does new code go" are in the [`rohi-sdk` rustdoc](https://docs.rs/rohi-sdk).

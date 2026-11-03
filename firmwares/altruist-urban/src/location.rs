@@ -29,7 +29,7 @@
 //! [`crate::config`]). A GNSS receiver will publish its fix to the same
 //! [`LocationShared`].
 
-use rohi_location::LocationShared;
+use rohi_sdk::location::LocationShared;
 
 use crate::tasks::RawMutex;
 

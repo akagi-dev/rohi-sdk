@@ -16,22 +16,22 @@ name = "altruist-urban"
 path = "./src/bin/main.rs"
 
 [dependencies]
-# Hardware independent
-rohi-hal = { workspace = true }
-rohi-config = { workspace = true }
-rohi-identity = { workspace = true }
-rohi-net = { workspace = true }
-rohi-control = { workspace = true }
-rohi-service = { workspace = true }
-rohi-control-ble = { workspace = true }
-rohi-time = { workspace = true }
-rohi-time-ntp = { workspace = true }
-rohi-connectivity = { workspace = true }
-rohi-location = { workspace = true }
-# Hardware specific, the chip is selected by the `esp32c3` / `esp32c6` features
-rohi-hal-esp = { workspace = true }
-rohi-config-esp = { workspace = true }
-rohi-net-esp = { workspace = true, features = ["heap-stats"] }
+# ROHI crates, selected by feature; the chip is chosen by `esp32c3` / `esp32c6`
+rohi-sdk = { workspace = true, features = [
+  "config",
+  "service",
+  "hal",
+  "time",
+  "net",
+  "ntp",
+  "identity",
+  "location",
+  "control",
+  "ble",
+  "connectivity",
+  "esp",
+  "heap-stats",
+] }
 esp-hal = { workspace = true }
 esp-println = { workspace = true }
 esp-backtrace = { workspace = true }
@@ -55,9 +55,7 @@ esp32c3 = [
   "esp-backtrace/esp32c3",
   "esp-bootloader-esp-idf/esp32c3",
   "esp-rtos/esp32c3",
-  "rohi-hal-esp/esp32c3",
-  "rohi-config-esp/esp32c3",
-  "rohi-net-esp/esp32c3",
+  "rohi-sdk/esp32c3",
 ]
 esp32c6 = [
   "esp-hal/esp32c6",
@@ -65,7 +63,5 @@ esp32c6 = [
   "esp-backtrace/esp32c6",
   "esp-bootloader-esp-idf/esp32c6",
   "esp-rtos/esp32c6",
-  "rohi-hal-esp/esp32c6",
-  "rohi-config-esp/esp32c6",
-  "rohi-net-esp/esp32c6",
+  "rohi-sdk/esp32c6",
 ]

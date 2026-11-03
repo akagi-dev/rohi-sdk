@@ -38,9 +38,9 @@ use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
 use log::{error, info};
 use minicbor::{CborLen, Decode, Encode};
-use rohi_config::{ConfigOpenState, ConfigSection, ConfigStorage, ConfigStore};
-use rohi_config_esp::esp::{config_storage, esp_storage::FlashStorage};
-use rohi_config_esp::layout::SLOT_SIZE;
+use rohi_sdk::config::{ConfigOpenState, ConfigSection, ConfigStorage, ConfigStore};
+use rohi_sdk::esp::config::esp::{config_storage, esp_storage::FlashStorage};
+use rohi_sdk::esp::config::layout::SLOT_SIZE;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 

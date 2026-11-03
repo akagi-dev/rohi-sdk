@@ -33,6 +33,14 @@ fn service_path() -> TokenStream {
             let ident = format_ident!("{}", name);
             quote!(::#ident)
         }
+        Err(_) => match crate_name("rohi-sdk") {
+            Ok(FoundCrate::Name(name)) => {
+                let ident = format_ident!("{}", name);
+                quote!(::#ident::service)
+            }
+            Ok(FoundCrate::Itself) => quote!(::rohi_sdk::service),
+            _ => quote!(::rohi_service),
+        },
         _ => quote!(::rohi_service),
     }
 }

@@ -46,7 +46,7 @@ use core::cell::RefCell;
 
 use embassy_sync::blocking_mutex::Mutex;
 use log::info;
-use rohi_identity::{Identity, IdentityError, IdentitySigner, PublicKey, Signature, Signer};
+use rohi_sdk::identity::{Identity, IdentityError, IdentitySigner, PublicKey, Signature, Signer};
 
 use crate::config::{ConfigHandle, ServiceError};
 use crate::tasks::RawMutex;
@@ -185,20 +185,20 @@ impl IdentityHandle {
 #[derive(Clone, Copy, Default)]
 pub struct StaticSigner;
 
-impl rohi_connectivity::FrameSigner for StaticSigner {
-    fn sensor_id(&self) -> Result<PublicKey, rohi_connectivity::SignError> {
+impl rohi_sdk::connectivity::FrameSigner for StaticSigner {
+    fn sensor_id(&self) -> Result<PublicKey, rohi_sdk::connectivity::SignError> {
         STATE.lock(|state| match &*state.borrow() {
             IdentityState::Provisioned(signer) => Ok(signer.public_key()),
-            _ => Err(rohi_connectivity::SignError::NotProvisioned),
+            _ => Err(rohi_sdk::connectivity::SignError::NotProvisioned),
         })
     }
 
-    fn sign_payload(&self, message: &[u8]) -> Result<Signature, rohi_connectivity::SignError> {
+    fn sign_payload(&self, message: &[u8]) -> Result<Signature, rohi_sdk::connectivity::SignError> {
         match STATE.lock(|state| state.borrow().clone()) {
             IdentityState::Provisioned(signer) => {
                 Signer::sign(&signer, message).map_err(Into::into)
             }
-            _ => Err(rohi_connectivity::SignError::NotProvisioned),
+            _ => Err(rohi_sdk::connectivity::SignError::NotProvisioned),
         }
     }
 }

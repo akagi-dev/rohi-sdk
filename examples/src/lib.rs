@@ -31,9 +31,9 @@ use esp_hal::timer::timg::TimerGroup;
 use esp_hal::uart::Uart;
 use esp_rtos::embassy::Executor;
 use log::info;
-use rohi_hal::SensorEvent;
-use rohi_hal_esp::I2sMicrophone;
-use rohi_hal_esp::board::altruist_urban::{AltruistUrban, Hardware};
+use rohi_sdk::esp::hal::I2sMicrophone;
+use rohi_sdk::esp::hal::board::altruist_urban::{AltruistUrban, Hardware};
+use rohi_sdk::hal::SensorEvent;
 use static_cell::StaticCell;
 
 static EXECUTOR: StaticCell<Executor> = StaticCell::new();

@@ -36,10 +36,7 @@ path = "./src/bin/all-sensors.rs"
 
 [dependencies]
 altruist-urban = { path = "../firmwares/altruist-urban" }
-rohi-hal = { workspace = true }
-rohi-config = { workspace = true }
-rohi-hal-esp = { workspace = true }
-rohi-config-esp = { workspace = true }
+rohi-sdk = { workspace = true, features = ["config", "hal", "esp"] }
 minicbor = { workspace = true }
 esp-backtrace = { workspace = true }
 esp-hal = { workspace = true }
@@ -62,8 +59,7 @@ esp32c3 = [
   "esp-backtrace/esp32c3",
   "esp-bootloader-esp-idf/esp32c3",
   "esp-rtos/esp32c3",
-  "rohi-hal-esp/esp32c3",
-  "rohi-config-esp/esp32c3",
+  "rohi-sdk/esp32c3",
 ]
 esp32c6 = [
   "altruist-urban/esp32c6",
@@ -72,6 +68,5 @@ esp32c6 = [
   "esp-backtrace/esp32c6",
   "esp-bootloader-esp-idf/esp32c6",
   "esp-rtos/esp32c6",
-  "rohi-hal-esp/esp32c6",
-  "rohi-config-esp/esp32c6",
+  "rohi-sdk/esp32c6",
 ]

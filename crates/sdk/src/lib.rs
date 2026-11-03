@@ -16,14 +16,61 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 #![no_std]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
-//! ROHI SDK: overview, crate map and cross-cutting contracts.
+//! ROHI SDK: the umbrella crate, overview, crate map and cross-cutting
+//! contracts.
 //!
-//! This crate contains documentation only. It describes what the SDK is, how
-//! its crates fit together and the rules that hold across crates (ownership,
-//! cancellation, memory, portability, versioning). The contracts of one
-//! component are documented in the crate that implements it; the links below
-//! lead there.
+//! This crate has two roles. It documents what the SDK is, how its crates fit
+//! together and the rules that hold across crates (ownership, cancellation,
+//! memory, portability, versioning). It also re-exports the ROHI crates behind
+//! Cargo features (see [Using the umbrella crate](#using-the-umbrella-crate)),
+//! so a product depends on `rohi-sdk` alone. The contracts of one component are
+//! documented in the crate that implements it; the links below lead there.
+//!
+//! # Using the umbrella crate
+//!
+//! Every area is a feature, all off by default. Enabling a feature enables the
+//! crates it needs, and each crate is re-exported as a module:
+//!
+//! | Feature | Module | Crate | Also enables |
+//! |---------|--------|-------|--------------|
+//! | `config` | `config` | `rohi-config` | |
+//! | `service` | `service` | `rohi-service` | `config` |
+//! | `hal` (alias `sensors`) | `hal` | `rohi-hal`: typed measurements, sensor drivers (`hal::sensors`), sensor runtime | `service` |
+//! | `time` | `time` | `rohi-time` | `hal` |
+//! | `net` | `net` | `rohi-net` | `service` |
+//! | `ntp` | `ntp` | `rohi-time-ntp` | `time`, `net` |
+//! | `identity` | `identity` | `rohi-identity` | `service` |
+//! | `location` | `location` | `rohi-location` | `service` |
+//! | `control` | `control` | `rohi-control` | `service` |
+//! | `ble` | `ble` | `rohi-control-ble` | `control`, `net` |
+//! | `connectivity` | `connectivity` | `rohi-connectivity` | `hal`, `identity`, `location`, `net`, `time` |
+//! | `esp` | `esp::{hal, config, net}` | `rohi-hal-esp`, `rohi-config-esp`, `rohi-net-esp` | `hal`, `config`, `net` |
+//! | `esp32c3`, `esp32c6` | | chip selection of the `esp` crates | `esp` |
+//! | `heap-stats` | | wireless heap statistics of `rohi-net-esp` | `esp` |
+//! | `std` | | `std` support of `rohi-config` and `rohi-identity` | |
+//!
+//! ```toml
+//! [dependencies]
+//! rohi-sdk = { version = "0.5", features = ["service", "hal", "net", "esp"] }
+//!
+//! [features]
+//! esp32c3 = ["rohi-sdk/esp32c3"]
+//! esp32c6 = ["rohi-sdk/esp32c6"]
+//! ```
+//!
+//! ```text
+//! use rohi_sdk::hal::sensors::bmx280;
+//! use rohi_sdk::service::Service;
+//! use rohi_sdk::esp::hal::EmbassyClock;
+//! ```
+//!
+//! The derive macros of `rohi-config` and `rohi-service` find the runtime
+//! crates through `rohi-sdk` when it is the only ROHI dependency. Third-party
+//! crates (`esp-hal`, Embassy, `log`, ...) are not re-exported: the product
+//! depends on them directly and selects their chip features itself. Exactly
+//! one chip feature must be enabled by a final build, see [`portability`].
 //!
 //! # What is the ROHI SDK?
 //!
@@ -136,10 +183,10 @@
 //! | [`rohi-control-proto`](../rohi_control_proto/index.html) | Bounded protobuf schema of the control protocol | portable | generated messages, `PROTOCOL_VERSION`, `limits` | `micropb` | Transport, behaviour |
 //! | [`rohi-control`](../rohi_control/index.html) | Transport-agnostic control dispatcher and authorization; serves the registries of `rohi-service` | portable | `Controller`, `ControlBackend`, `Device`, `AuthorizationPolicy` | `rohi-control-proto`, `rohi-service` | BLE, stores, the radio, any knowledge of a module (Wi-Fi, sensors, ...) |
 //! | [`rohi-control-ble`](../rohi_control_ble/index.html) | Firmware-side (peripheral) GATT binding: UUIDs, framing, fragmentation, control loop; the host tool `rohi` reuses only `frame` and `uuid` | portable | `ControlBle`, `frame` | `rohi-control`, `rohi-control-proto`, `rohi-net` | The BLE stack |
-//! | `altruist-urban` (`firmwares/altruist-urban`) | Product composition, tasks, resource budget | product | `config`, `net`, `control`, `time`, `connectivity`, `identity`, `location`, `resources`, `tasks` | the portable and ESP crates above | Reusable library code |
-//! | `rohi-examples` (`examples/`) | One hardware example per sensor and a config self-test | product | binaries | `altruist-urban`, `rohi-hal(-esp)`, `rohi-config(-esp)` | |
+//! | `altruist-urban` (`firmwares/altruist-urban`) | Product composition, tasks, resource budget | product | `config`, `net`, `control`, `time`, `connectivity`, `identity`, `location`, `resources`, `tasks` | `rohi-sdk` (the portable and ESP crates above) | Reusable library code |
+//! | `rohi-examples` (`examples/`) | One hardware example per sensor and a config self-test | product | binaries | `altruist-urban`, `rohi-sdk` | |
 //! | [`rohi`](../rohi/index.html) (`tools/rohi`) | Desktop client library and CLI over BLE | desktop (`std`) | `Device`, `Session`, `BleLink` | `rohi-control-ble` (`frame`), `rohi-control-proto`, `rohi-net` (BLE payload size), `rohi-identity`, `btleplug` | Anything that runs on the device |
-//! | [`rohi-sdk`](crate) | This documentation | documentation only | none | none | |
+//! | [`rohi-sdk`](crate) | Umbrella crate: feature-gated re-exports of the crates above and this documentation | portable | feature-gated modules (`service`, `hal`, `net`, `esp`, ...) | the crates above, each optional | |
 //!
 //! The firmware and the examples are built per chip and are not part of the
 //! host documentation tree; see
@@ -148,11 +195,12 @@
 //! ## Allowed dependency direction
 //!
 //! ```text
-//! altruist-urban ──► rohi-*-esp ──► rohi-* (portable) ──► embedded-* / embassy-sync
+//! altruist-urban, examples ──► rohi-sdk (features) ──► rohi-*-esp ──► rohi-* (portable) ──► embedded-* / embassy-sync
 //!                                                       └─► never esp-*
 //! rohi-hal-esp ──► rohi-hal            rohi-config-esp ──► rohi-config
 //! rohi-net-esp ──► rohi-net
 //!
+//! rohi-sdk ──► every crate below, each behind a feature; nothing depends on rohi-sdk
 //! rohi-config ──► rohi-config-derive          (#[derive(ConfigSection)])
 //! rohi-service ──► rohi-config, rohi-config-derive, rohi-service-derive
 //!                                             (generic model: Value, Config, Status, Action, registries)
@@ -175,7 +223,8 @@
 //!
 //! Forbidden: a portable crate depending on an `*-esp` crate; `rohi-net*`
 //! depending on `rohi-control*`; `rohi-hal` depending on `rohi-net`; a platform
-//! crate depending on the firmware.
+//! crate depending on the firmware; any crate of the workspace except products
+//! depending on `rohi-sdk` (it sits above all of them).
 //!
 //! ## Where does new code go?
 //!
@@ -207,3 +256,53 @@ pub mod memory;
 pub mod ownership;
 pub mod portability;
 pub mod versioning;
+
+#[cfg(feature = "config")]
+#[cfg_attr(docsrs, doc(cfg(feature = "config")))]
+pub use rohi_config as config;
+#[cfg(feature = "connectivity")]
+#[cfg_attr(docsrs, doc(cfg(feature = "connectivity")))]
+pub use rohi_connectivity as connectivity;
+#[cfg(feature = "control")]
+#[cfg_attr(docsrs, doc(cfg(feature = "control")))]
+pub use rohi_control as control;
+#[cfg(feature = "ble")]
+#[cfg_attr(docsrs, doc(cfg(feature = "ble")))]
+pub use rohi_control_ble as ble;
+#[cfg(feature = "hal")]
+#[cfg_attr(docsrs, doc(cfg(feature = "hal")))]
+pub use rohi_hal as hal;
+#[cfg(feature = "identity")]
+#[cfg_attr(docsrs, doc(cfg(feature = "identity")))]
+pub use rohi_identity as identity;
+#[cfg(feature = "location")]
+#[cfg_attr(docsrs, doc(cfg(feature = "location")))]
+pub use rohi_location as location;
+#[cfg(feature = "net")]
+#[cfg_attr(docsrs, doc(cfg(feature = "net")))]
+pub use rohi_net as net;
+#[cfg(feature = "service")]
+#[cfg_attr(docsrs, doc(cfg(feature = "service")))]
+pub use rohi_service as service;
+#[cfg(feature = "time")]
+#[cfg_attr(docsrs, doc(cfg(feature = "time")))]
+pub use rohi_time as time;
+#[cfg(feature = "ntp")]
+#[cfg_attr(docsrs, doc(cfg(feature = "ntp")))]
+pub use rohi_time_ntp as ntp;
+
+/// ESP32 backends of the portable areas, available with the `esp` feature.
+///
+/// The chip is selected by the `esp32c3` or `esp32c6` feature of this crate;
+/// exactly one must be enabled by a final firmware build, see
+/// [`portability`].
+#[cfg(feature = "esp")]
+#[cfg_attr(docsrs, doc(cfg(feature = "esp")))]
+pub mod esp {
+    /// Flash backend of the configuration store, see [`rohi_config_esp`].
+    pub use rohi_config_esp as config;
+    /// Boards, buses and clock of the HAL, see [`rohi_hal_esp`].
+    pub use rohi_hal_esp as hal;
+    /// ESP backend of the network, see [`rohi_net_esp`].
+    pub use rohi_net_esp as net;
+}

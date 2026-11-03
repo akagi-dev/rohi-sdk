@@ -501,6 +501,14 @@ fn crate_path() -> TokenStream2 {
             let ident = format_ident!("{}", name);
             quote!(::#ident)
         }
+        Err(_) => match crate_name("rohi-sdk") {
+            Ok(FoundCrate::Name(name)) => {
+                let ident = format_ident!("{}", name);
+                quote!(::#ident::config)
+            }
+            Ok(FoundCrate::Itself) => quote!(::rohi_sdk::config),
+            _ => quote!(::rohi_config),
+        },
         _ => quote!(::rohi_config),
     }
 }

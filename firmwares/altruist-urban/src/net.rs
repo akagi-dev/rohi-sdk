@@ -27,11 +27,11 @@
 use embassy_executor::Spawner;
 use embassy_time::{Delay, Duration, Instant, with_timeout};
 use log::{info, warn};
-use rohi_net::{
+use rohi_sdk::esp::net::{EspWifi, EspWireless, NetRunner, wireless_heap};
+use rohi_sdk::net::{
     HeapStats, IpUsage, ManagerConfig, NetworkHandle, NetworkProbe, WifiError, WifiHandle,
     WifiManager, WifiProbe, WifiShared, WifiState, WifiStatus,
 };
-use rohi_net_esp::{EspWifi, EspWireless, NetRunner, wireless_heap};
 use static_cell::StaticCell;
 
 use crate::resources::{Ip, NetResources};
