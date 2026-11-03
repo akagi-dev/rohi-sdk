@@ -89,6 +89,7 @@
 //! let wifi = WifiService;
 //! let actions = (&wifi,);
 //! let records = block_on(actions.invoke(WifiService::ID, 1, &[])).unwrap();
+//! let records = records.records();
 //! assert_eq!(records.len(), 2);
 //! assert_eq!(records[0][1], (2, Value::I64(-61)));
 //! assert_eq!(
@@ -125,6 +126,7 @@
 
 use heapless::Vec;
 
+use crate::MAX_NAME_LEN;
 use crate::field::{EnumDescriptor, FieldDescriptor, enum_allows};
 use crate::service::Service;
 use crate::status::{StatusWriter, WriteError};
@@ -136,6 +138,10 @@ pub const MAX_ACTION_ARGS: usize = 3;
 pub const MAX_RECORDS: usize = 6;
 /// Maximum number of fields of one record.
 pub const MAX_RECORD_FIELDS: usize = 4;
+/// Maximum number of files of one stream.
+pub const MAX_STREAM_FILES: usize = 12;
+/// Maximum number of bytes of one stream chunk.
+pub const MAX_STREAM_CHUNK: usize = 512;
 
 /// Static description of an action.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -156,6 +162,9 @@ pub struct ActionDescriptor {
     /// Whether the arguments contain secrets: they are never logged and are
     /// overwritten after the call.
     pub secret_args: bool,
+    /// Whether the action returns a stream instead of records, see
+    /// [`ActionOutput::stream`].
+    pub stream: bool,
 }
 
 impl ActionDescriptor {
@@ -169,6 +178,7 @@ impl ActionDescriptor {
             enums: &[],
             privileged: false,
             secret_args: false,
+            stream: false,
         }
     }
 
@@ -193,6 +203,14 @@ impl ActionDescriptor {
     /// Requires write privilege.
     pub const fn privileged(mut self) -> Self {
         self.privileged = true;
+        self
+    }
+
+    /// Declares that the action returns a stream (see
+    /// [`ActionOutput::stream`]) instead of records; its
+    /// [`results`](Self::results) stay empty.
+    pub const fn stream(mut self) -> Self {
+        self.stream = true;
         self
     }
 
@@ -235,6 +253,37 @@ pub trait Action: Service {
         args: &[(u32, Value)],
         out: &mut impl ActionOutput,
     ) -> Result<(), ActionError>;
+
+    /// Reads a chunk of one file of an open stream this service returned,
+    /// at `offset`, into `buf` (at most [`MAX_STREAM_CHUNK`] bytes).
+    ///
+    /// Idempotent: the same offset returns the same bytes while the stream
+    /// is open. The default answers that the service has no streams.
+    ///
+    /// # Errors
+    ///
+    /// [`ActionError::UnknownStream`] when the stream or file is not open,
+    /// [`ActionError::InvalidArgument`] for an offset beyond the file.
+    async fn read_stream(
+        &self,
+        stream: u32,
+        file: u32,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> Result<StreamChunk, ActionError> {
+        let _ = (stream, file, offset, buf);
+        Err(ActionError::UnknownStream)
+    }
+
+    /// Closes a stream and releases what it holds. The default answers that
+    /// the service has no streams.
+    async fn close_stream(&self, stream: u32) -> Result<(), ActionError> {
+        let _ = stream;
+        Err(ActionError::UnknownStream)
+    }
+
+    /// The control link was lost: release every stream the client left open.
+    fn link_lost(&self) {}
 }
 
 /// Why an action failed.
@@ -250,6 +299,9 @@ pub enum ActionError {
     Busy,
     /// The service is currently unavailable.
     Unavailable,
+    /// No open stream or file with this id: it was closed, timed out or
+    /// never existed.
+    UnknownStream,
     /// The action ran and was refused for a reason a client may react to;
     /// the code is stable and machine-readable, for example
     /// `already_provisioned`.
@@ -261,18 +313,80 @@ pub enum ActionError {
 /// The records an action returned.
 pub type Records = Vec<Vec<(u32, Value), MAX_RECORD_FIELDS>, MAX_RECORDS>;
 
+/// One file of a [`StreamInfo`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StreamFile {
+    /// Stable within the stream.
+    pub id: u32,
+    /// Name the client writes the file under, at most [`MAX_NAME_LEN`] bytes.
+    pub name: heapless::String<MAX_NAME_LEN>,
+    /// Size of the file in bytes.
+    pub size_bytes: u64,
+}
+
+/// A snapshot of files a client reads in chunks instead of in one message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StreamInfo {
+    /// Unique among the open streams of the service.
+    pub id: u32,
+    /// At most [`MAX_STREAM_FILES`].
+    pub files: Vec<StreamFile, MAX_STREAM_FILES>,
+}
+
+/// What an action returned.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "no heap: both variants live on the stack of the control task"
+)]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ActionResult {
+    /// Typed records, see [`ActionOutput::next_record`].
+    Records(Records),
+    /// A stream, see [`ActionOutput::stream`].
+    Stream(StreamInfo),
+}
+
+impl ActionResult {
+    /// The records, empty for a stream.
+    pub fn records(&self) -> &[Vec<(u32, Value), MAX_RECORD_FIELDS>] {
+        match self {
+            Self::Records(records) => records,
+            Self::Stream(_) => &[],
+        }
+    }
+}
+
+/// A chunk read from a stream file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StreamChunk {
+    /// Bytes written to the buffer.
+    pub len: usize,
+    /// Whether the chunk ends the file.
+    pub eof: bool,
+}
+
 /// Receives the records of an action. Besides the field writers of
 /// [`StatusWriter`], [`next_record`](Self::next_record) starts a new record;
 /// the first field written without it starts the first record.
 pub trait ActionOutput: StatusWriter {
     /// Starts a new record.
     fn next_record(&mut self) -> Result<(), WriteError>;
+
+    /// Returns a stream instead of records. Only for an action declared with
+    /// [`ActionDescriptor::stream`] and only when no record was written. The
+    /// default refuses it.
+    fn stream(&mut self, info: StreamInfo) -> Result<(), WriteError> {
+        let _ = info;
+        Err(WriteError::WrongKind)
+    }
 }
 
 pub(crate) struct RecordCollector {
     results: &'static [FieldDescriptor],
     enums: &'static [EnumDescriptor],
+    streams: bool,
     pub(crate) records: Records,
+    pub(crate) stream: Option<StreamInfo>,
 }
 
 impl RecordCollector {
@@ -280,7 +394,9 @@ impl RecordCollector {
         Self {
             results: action.results,
             enums: action.enums,
+            streams: action.stream,
             records: Vec::new(),
+            stream: None,
         }
     }
 }
@@ -306,6 +422,14 @@ impl StatusWriter for RecordCollector {
 impl ActionOutput for RecordCollector {
     fn next_record(&mut self) -> Result<(), WriteError> {
         self.records.push(Vec::new()).map_err(|_| WriteError::Full)
+    }
+
+    fn stream(&mut self, info: StreamInfo) -> Result<(), WriteError> {
+        if !self.streams || !self.records.is_empty() || self.stream.is_some() {
+            return Err(WriteError::WrongKind);
+        }
+        self.stream = Some(info);
+        Ok(())
     }
 }
 

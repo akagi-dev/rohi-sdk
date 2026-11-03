@@ -96,6 +96,7 @@ where
             Ok(len) => len,
             Err(BleError::Disconnected) => {
                 debug!("control: central disconnected");
+                self.controller.link_lost();
                 self.request.reset();
                 return;
             }

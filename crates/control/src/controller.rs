@@ -21,8 +21,8 @@ use rohi_control_proto::control::{
 };
 use rohi_control_proto::{PROTOCOL_VERSION, decode, encode, limits};
 use rohi_service::{
-    ActionError, ActionRegistry, ConfigError, ConfigRegistry, MAX_ACTION_ARGS, MAX_MUTATIONS,
-    Mutation, ServiceStatusSummary, StatusError, StatusRegistry, Value,
+    ActionError, ActionRegistry, ActionResult, ConfigError, ConfigRegistry, MAX_ACTION_ARGS,
+    MAX_MUTATIONS, Mutation, ServiceStatusSummary, StatusError, StatusRegistry, Value,
 };
 
 use crate::mapping;
@@ -49,6 +49,12 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
     /// The wrapped backend.
     pub fn backend(&self) -> &B {
         &self.backend
+    }
+
+    /// The control link was lost or replaced: services release the streams
+    /// the previous client left open.
+    pub fn link_lost(&self) {
+        self.backend.actions().link_lost();
     }
 
     /// Handles one encoded request received on a link with the given
@@ -319,6 +325,18 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
                 }
             }
             Call::InvokeAction(request) => self.invoke(request).await,
+            Call::ReadStream(request) => self.read_stream(request).await,
+            Call::CloseStream(request) => {
+                match self
+                    .backend
+                    .actions()
+                    .close_stream(request.service_id, request.stream_id)
+                    .await
+                {
+                    Ok(()) => Reply::CloseStream(pb::CloseStreamResponse {}),
+                    Err(e) => self.action_failure(e, request.service_id),
+                }
+            }
         }
     }
 
@@ -385,6 +403,35 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
         }
     }
 
+    async fn read_stream(&self, request: pb::ReadStreamRequest) -> Reply {
+        let mut buf = [0u8; limits::MAX_STREAM_CHUNK];
+        match self
+            .backend
+            .actions()
+            .read_stream(
+                request.service_id,
+                request.stream_id,
+                request.file_id,
+                request.offset,
+                &mut buf,
+            )
+            .await
+        {
+            Ok(chunk) if chunk.len <= buf.len() => match Vec::from_slice(&buf[..chunk.len]) {
+                Ok(data) => Reply::ReadStream(pb::ReadStreamResponse {
+                    stream_id: request.stream_id,
+                    file_id: request.file_id,
+                    offset: request.offset,
+                    data,
+                    eof: chunk.eof,
+                }),
+                Err(_) => error(pb::ErrorCode::Internal),
+            },
+            Ok(_) => error(pb::ErrorCode::Internal),
+            Err(e) => self.action_failure(e, request.service_id),
+        }
+    }
+
     async fn invoke(&self, mut request: pb::InvokeActionRequest) -> Reply {
         let mut args: Vec<(u32, Value), MAX_ACTION_ARGS> = Vec::new();
         let mut valid = true;
@@ -410,7 +457,25 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
         }
         match result {
             Err(e) => self.action_failure(e, request.service_id),
-            Ok(records) => {
+            Ok(ActionResult::Stream(stream)) => {
+                let mut files = Vec::new();
+                for file in &stream.files {
+                    let file = pb::StreamFile {
+                        id: file.id,
+                        name: mapping::text(&file.name),
+                        size_bytes: file.size_bytes,
+                    };
+                    if files.push(file).is_err() {
+                        break;
+                    }
+                }
+                Reply::ActionStream(pb::StreamInfo {
+                    service_id: request.service_id,
+                    id: stream.id,
+                    files,
+                })
+            }
+            Ok(ActionResult::Records(records)) => {
                 let mut out = Vec::new();
                 for record in &records {
                     let mut fields = Vec::new();
@@ -455,7 +520,9 @@ fn action_error(e: ActionError) -> Reply {
             out.set_reason(mapping::text(reason));
             Reply::Error(out)
         }
-        ActionError::UnknownService | ActionError::UnknownAction => error(pb::ErrorCode::NotFound),
+        ActionError::UnknownService | ActionError::UnknownAction | ActionError::UnknownStream => {
+            error(pb::ErrorCode::NotFound)
+        }
         ActionError::InvalidArgument => error(pb::ErrorCode::InvalidArgument),
         ActionError::Busy => error(pb::ErrorCode::Busy),
         ActionError::Unavailable => error(pb::ErrorCode::Unavailable),

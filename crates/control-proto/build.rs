@@ -134,6 +134,16 @@ const LIMITS: &[(&str, usize, &str)] = &[
         "Maximum number of fields of one action record.",
     ),
     (
+        "MAX_STREAM_CHUNK",
+        512,
+        "Maximum number of bytes one `ReadStreamResponse` carries.",
+    ),
+    (
+        "MAX_STREAM_FILES",
+        12,
+        "Maximum number of files of one stream.",
+    ),
+    (
         "MAX_REASON_LEN",
         32,
         "Maximum length of the reason of a rejected action, in bytes.",
@@ -162,6 +172,7 @@ const REPEATED: &[&str] = &[
     ".rohi.control.v1.ActionRecord.fields",
     ".rohi.control.v1.InvokeActionResponse.records",
     ".rohi.control.v1.EnumDescriptor.variants",
+    ".rohi.control.v1.StreamInfo.files",
 ];
 
 fn limit(name: &str) -> usize {
@@ -302,6 +313,13 @@ fn main() {
         (
             ".rohi.control.v1.InvokeActionResponse.records",
             "MAX_RECORDS",
+        ),
+        // Streams.
+        (".rohi.control.v1.StreamFile.name", "MAX_NAME_LEN"),
+        (".rohi.control.v1.StreamInfo.files", "MAX_STREAM_FILES"),
+        (
+            ".rohi.control.v1.ReadStreamResponse.data",
+            "MAX_STREAM_CHUNK",
         ),
     ];
     for (path, name) in bounded {

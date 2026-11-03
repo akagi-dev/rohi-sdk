@@ -4,12 +4,13 @@
 // bounded: every string, bytes and repeated field has a fixed maximum
 // capacity, see `build.rs` and `rohi_control_proto::limits`.
 //
-// The protocol knows no device module by name. It offers four generic
+// The protocol knows no device module by name. It offers five generic
 // planes, all driven by schemas the device publishes:
 //
 //   config   - desired persistent state, named sections of typed fields
 //   status   - observed runtime state of named services, read-only
 //   actions  - explicit runtime operations declared by services
+//   stream   - bounded, offset-based reads of the byte streams an action returns
 //   info     - static description of the device
 //
 // Compactness: the generated types store every bounded field inline, so the
@@ -17,7 +18,8 @@
 // sent by discovery only; runtime requests address sections, services and
 // actions by numeric id, and runtime enum values and issues are numbers whose
 // names live in the schema. Collections are never paged: every response
-// fits one bounded message.
+// fits one bounded message. A result that cannot fit is not paged either: the
+// action returns a stream and the client reads its files in bounded chunks.
 //
 // Unknown enum values must be treated as "unknown" by clients.
 
@@ -50,6 +52,8 @@ message Request {
     InvokeActionRequest invoke_action = 22;
     FactoryResetRequest factory_reset = 23;
     RebootRequest reboot = 24;
+    ReadStreamRequest read_stream = 25;
+    CloseStreamRequest close_stream = 26;
   }
 }
 
@@ -75,6 +79,11 @@ message Response {
     InvokeActionResponse invoke_action = 22;
     FactoryResetResponse factory_reset = 23;
     RebootResponse reboot = 24;
+    ReadStreamResponse read_stream = 25;
+    CloseStreamResponse close_stream = 26;
+    // The answer of `InvokeAction` when the result does not fit one message:
+    // instead of `invoke_action`, never both.
+    StreamInfo action_stream = 27;
   }
 }
 
@@ -517,6 +526,9 @@ message ActionInfo {
   // Name of the owning service. A service may have actions without reporting
   // status, so clients cannot resolve the name from the status listing.
   string service = 6;
+  // The action answers with a stream (`action_stream`) instead of records;
+  // it has no result fields.
+  bool returns_stream = 7;
 }
 
 message ListActionsRequest {}
@@ -552,3 +564,63 @@ message ActionRecord {
 message InvokeActionResponse {
   repeated ActionRecord records = 1;
 }
+
+// ---------------------------------------------------------------------------
+// Streams
+// ---------------------------------------------------------------------------
+//
+// A stream is how a service returns a result that does not fit one bounded
+// message: log history, a diagnostic bundle. The action response describes
+// the files of the stream; the client reads each file in bounded chunks by
+// offset and finally closes the stream. The protocol knows no service in
+// particular: it only routes a stream to the service that created it.
+//
+// - A stream is a snapshot: its files do not change while it is open.
+// - Reads are idempotent. Repeating a read with the same offset returns the
+//   same bytes, so a lost response is simply requested again.
+// - A stream is held until the client closes it, the link is lost or the
+//   device times it out; after that its id is unknown (`ERROR_CODE_NOT_FOUND`).
+// - A device holds a few streams at once; an action that needs one more
+//   answers `ERROR_CODE_BUSY` until one is closed.
+
+message StreamFile {
+  // Stable within the stream.
+  uint32 id = 1;
+  // File name the client may use as it is, for example "rohi1.log.lz4".
+  string name = 2;
+  uint64 size_bytes = 3;
+}
+
+message StreamInfo {
+  // The service that owns the stream, the address of every later request.
+  uint32 service_id = 1;
+  // Unique among the open streams of the service.
+  uint32 id = 2;
+  repeated StreamFile files = 3;
+}
+
+message ReadStreamRequest {
+  uint32 service_id = 1;
+  uint32 stream_id = 2;
+  uint32 file_id = 3;
+  uint64 offset = 4;
+}
+
+message ReadStreamResponse {
+  uint32 stream_id = 1;
+  uint32 file_id = 2;
+  // Echo of the requested offset.
+  uint64 offset = 3;
+  // At most `MAX_STREAM_CHUNK` bytes; shorter than requested only at the
+  // end of the file.
+  bytes data = 4;
+  // True when `offset + data.len` is the size of the file.
+  bool eof = 5;
+}
+
+message CloseStreamRequest {
+  uint32 service_id = 1;
+  uint32 stream_id = 2;
+}
+
+message CloseStreamResponse {}

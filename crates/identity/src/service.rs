@@ -339,6 +339,7 @@ mod tests {
         let expected = Identity::from_secret(&[7; SECRET_LEN])
             .unwrap()
             .public_key();
+        let records = records.records();
         assert_eq!(records.len(), 1);
         assert_eq!(
             records[0][0].1.as_bytes(),

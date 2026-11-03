@@ -109,6 +109,7 @@
 //! | config | `ListConfigSections` (11), `GetConfigSchema` (12), `GetConfigSection` (13), `PatchConfigSection` (14), `ResetConfigSection` (15), `FactoryReset` (23) |
 //! | status | `GetServicesStatus` (17), `GetServiceSchema` (18), `GetServiceStatus` (19) |
 //! | actions | `ListActions` (20), `GetActionSchema` (21), `InvokeAction` (22) |
+//! | stream | `ReadStream` (25), `CloseStream` (26); the files of a stream come as `action_stream` (27), the answer of `InvokeAction` |
 //! | device | `Reboot` (24) |
 //!
 //! **Schemas drive clients.** The protocol knows no device module. A device

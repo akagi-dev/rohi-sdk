@@ -1063,11 +1063,13 @@ fn scanner() -> (&'static Scanner,) {
 fn an_action_returns_records() {
     let registry = scanner();
     let records = block_on(registry.invoke(Scanner::ID, 1, &[(1, Value::U64(3))])).unwrap();
+    let records = records.records();
     assert_eq!(records.len(), 3);
     assert_eq!(records[1][0], (1, text("net")));
     assert_eq!(records[2][1], (2, Value::I64(-2)));
 
     let none = block_on(registry.invoke(Scanner::ID, 1, &[(1, Value::U64(0))])).unwrap();
+    let none = none.records();
     assert!(none.is_empty());
 }
 

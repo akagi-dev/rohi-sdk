@@ -220,8 +220,9 @@ pub mod service;
 pub mod status;
 
 pub use action::{
-    Action, ActionDescriptor, ActionError, ActionOutput, MAX_ACTION_ARGS, MAX_RECORD_FIELDS,
-    MAX_RECORDS, Records,
+    Action, ActionDescriptor, ActionError, ActionOutput, ActionResult, MAX_ACTION_ARGS,
+    MAX_RECORD_FIELDS, MAX_RECORDS, MAX_STREAM_CHUNK, MAX_STREAM_FILES, Records, StreamChunk,
+    StreamFile, StreamInfo,
 };
 pub use config::{
     Config, ConfigEntry, ConfigError, ConfigRegistry, ConfigSectionOps, ConfigUpdate, EntryState,
