@@ -25,11 +25,14 @@
 //! on a device. A backend with files (an SD card) implements `LogStorage`
 //! directly.
 
+mod flash;
 mod medium;
 mod ring;
 
 #[cfg(test)]
 mod contract;
+#[cfg(test)]
+mod flash_tests;
 #[cfg(test)]
 mod ring_tests;
 
@@ -37,6 +40,7 @@ use core::fmt;
 
 use heapless::Vec;
 
+pub use flash::{FlashMedium, FlashMediumError};
 pub use medium::{Medium, RamError, RamMedium, SECTOR_SIZE};
 pub use ring::RingStorage;
 
@@ -249,3 +253,6 @@ pub trait LogStorage {
 /// A log storage in RAM, with the layout and the rules of NOR flash: for
 /// hosts, tests and devices that keep the log only until the next reset.
 pub type RamLogStorage<const SECTORS: usize> = RingStorage<RamMedium<SECTORS>>;
+
+/// A log storage on a region of internal flash.
+pub type FlashLogStorage<F> = RingStorage<FlashMedium<F>>;

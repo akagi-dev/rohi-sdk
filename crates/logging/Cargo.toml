@@ -20,6 +20,7 @@ rohi-time.workspace = true
 minicbor.workspace = true
 heapless.workspace = true
 embassy-sync.workspace = true
+embedded-storage.workspace = true
 log.workspace = true
 
 [dev-dependencies]
