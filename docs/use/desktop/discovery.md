@@ -1,6 +1,6 @@
 # Discovery & connection
 
-Every `rohi` command first finds a device and opens a Bluetooth LE link to it. This page covers how the device is chosen and what to check when that fails. No Wi-Fi or cloud connectivity is needed: the link is local BLE.
+Commands that operate on a device first find it and open a Bluetooth LE link to it. This page covers how the device is chosen and what to check when that fails. No Wi-Fi or cloud connectivity is needed: the link is local BLE.
 
 ```bash
 rohi scan                  # list nearby ROHI devices
