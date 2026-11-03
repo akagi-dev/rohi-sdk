@@ -15,7 +15,6 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////
 //! Validates the published matrix and exercises every rule of the validator on small broken variants.
 
 use rohi_support_matrix::{Matrix, RENDERED_PATH, render, repo_root, validate};
