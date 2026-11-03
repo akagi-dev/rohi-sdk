@@ -1,64 +1,31 @@
 # Architecture
 
-The SDK is layered: portable crates define typed models, contracts and logic; thin `*-esp` platform crates implement
-those contracts on the ESP32; the firmware composes them and owns the product decisions (resource sizes, which
-features run). This page shows the complete dependency model; [Crate map](crate-map.md) lists every crate.
+The SDK is layered. **Portable crates** define typed models, contracts and logic and build and test on a developer
+machine. Thin **`*-esp` platform crates** implement those contracts on the ESP32-C3 and ESP32-C6. The **firmware**
+composes them and owns the product decisions: which features run and how much RAM each resource gets. Everything sits
+on Embassy, `esp-rtos` and `esp-hal` / `esp-radio`; ROHI adds contracts on top, not another runtime.
 
-```text
-                    firmwares/altruist-urban   (product: composition, tasks, resources.rs)
- ┌──────────────────────────────┼───────────────────────────────────────────┐
- │                              │                                           │
- sensors + runtime        configuration                  networking / control
- ─────────────────        ─────────────                  ────────────────────
- rohi-hal                 rohi-config                    rohi-control-ble ─► rohi-control ─► rohi-control-proto
-   drivers, Runner          ConfigStore                    (BLE binding)      (dispatcher)      (protobuf schema)
-   MeasurementStore         ConfigSection, rohi-identity         │                  │
-   MeasurementHandle        (derive: rohi-config-derive)         ▼                  ▼
-       │                         │                          rohi-net ◄────── rohi-hal (measurement types)
-       ▼                         ▼                            WifiHandle / WifiManager     (Wi-Fi control plane)
- rohi-hal-esp              rohi-config-esp                    NetworkHandle / IpBackend    (IP data plane)
-   board pins, I²C,          flash region,                    BleTransport                 (BLE transport)
-   UART, I²S, clock          esp-storage                            │
-       │                         │                          rohi-net-esp  (EspWireless, EspWifi, EspIp, EspBle)
-       └────────────┬────────────┴────────────────────────────────┘
-                    ▼
-        Embassy  ─  esp-rtos  ─  esp-hal / esp-radio / embassy-net / TrouBLE
-```
+Five rules keep the layering true:
 
-Rules that keep this picture true:
+1. Dependencies point from platform and product towards portable crates, never the other way.
+2. A feature crate owns its own configuration sections; `rohi-config` knows none of them.
+3. Every stateful service has one owner task and is reached through bounded handles
+   ([Runtime ownership](runtime-ownership.md)).
+4. Vendor types never cross a portable API ([Portability](portability.md)).
+5. The product, not the platform crate, decides the RAM budget ([Memory model](memory-model.md)).
 
-1. **Dependencies point from platform and product towards portable crates.** `rohi-net` never depends on
-   `rohi-net-esp` or on `rohi-control*`; `rohi-hal` never depends on `rohi-net`; portable crates never depend on
-   `esp-*` crates. See [Portability](portability.md).
-2. **Feature crates own their own config sections.** `rohi-config` never learns the set of application sections:
-   `rohi-net` owns `WifiConfig`, `NetworkConfig` and `BleSettings` (each the effective configuration, persisted as generated overrides), `rohi-identity` owns the `Identity` section. A section type lives next to the code that
-   interprets it, and the firmware only wires the section to its runtime. See
-   [Add a ConfigSection](../guides/add-config-section.md).
-3. **Stateful services have one owner task** and are reached through bounded handles:
-   see [Runtime ownership](runtime-ownership.md).
-4. **Platform types never cross a portable API.** Vendor types and errors are converted into ROHI types inside the
-   platform crate.
-5. **The product, not the platform crate, decides how much RAM the wireless stack takes**: see
-   [Memory model](memory-model.md).
+| Layer | Examples | Role |
+|-------|----------|------|
+| Firmware | `altruist-urban`, `examples` | composition, tasks, resource budget |
+| Platform (ESP) | `rohi-hal-esp`, `rohi-config-esp`, `rohi-net-esp` | implement the portable seams on the chip |
+| Portable | `rohi-hal`, `rohi-config`, `rohi-net`, `rohi-service`, `rohi-control*`, ... | models, contracts, logic |
 
-## Data flows
+The full dependency diagram, the data flows (sensors, control requests, configuration) and the "where does new code go"
+table are in the rustdoc; the [Crate map](crate-map.md) lists every crate.
 
-```text
-sensor tasks ─► SensorEvent ─► EVENTS (bounded) ─► store task ─► MeasurementStore
-                                                       ▲                │
-                                       MeasurementHandle (snapshot)     ▼
-                                                          rohi-control ─► BLE ─► rohi client
+## Reference
 
-BLE write ─► rohi-net-esp (EspBle, bounded RX) ─► rohi-control-ble (reassemble) ─► Controller
-          ◄─ bounded TX ◄─ fragment ◄─ response ◄─────────────────────────────────┘
-                                           │ ControlBackend (registries of rohi-service)
-                  config sections (ConfigHandle) · services (MeasurementHandle, WifiHandle, ...)
-
-ConfigHandle::set(WifiConfig) ─► config owner task ─ commit ─► publish desired Wi-Fi config ─► WifiManager
-                                                                                                 │
-                                          application ◄── NetworkHandle (DNS, TCP) ◄── EspIp ◄───┘ (link + DHCP)
-```
-
-## Where does new code go?
-
-See the table at the end of [Crate map](crate-map.md#where-does-new-code-go).
+- [`rohi_sdk::architecture`](https://docs.rs/rohi-sdk/latest/rohi_sdk/architecture/index.html): dependency model,
+  rules, data flows. Crate map and "where does new code go": [`rohi_sdk`](https://docs.rs/rohi-sdk/latest/rohi_sdk/index.html).
+- Source: [`crates/sdk`](https://github.com/akagi-dev/rohi-sdk/tree/master/crates/sdk).
+- Locally: `cargo doc --no-deps --open -p rohi-sdk`.

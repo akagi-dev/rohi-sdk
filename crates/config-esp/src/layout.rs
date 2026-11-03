@@ -15,13 +15,45 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////
 
 //! Platform-level source of truth for the configuration flash layout.
 //!
-//! `firmwares/altruist-urban/partitions-esp32c3.csv` and
-//! `partitions-esp32c6.csv` must agree with these constants; a host test of
-//! this module enforces it.
+//! The constants are the layout the shipped Altruist Urban partition tables
+//! provide; they are plain `usize`/`&str` values with no chip dependency.
+//!
+//! ```
+//! use rohi_config_esp::layout::{PARTITION_LABEL, REGION_SIZE, SECTOR_SIZE, SLOT_SIZE};
+//!
+//! assert_eq!(PARTITION_LABEL, "rohi-cfg");
+//! assert_eq!(SLOT_SIZE, 2 * SECTOR_SIZE);
+//! assert_eq!(REGION_SIZE, 2 * SLOT_SIZE);
+//! ```
+//!
+//! `firmwares/altruist-urban/partitions-esp32c3.csv` (4 MB flash) and
+//! `partitions-esp32c6.csv` (8 MB flash) are mirrored by the constants of this
+//! module; a host test of this module keeps both in sync. The tables differ
+//! only in the size of the `factory` partition (`0x3E0000` on ESP32-C3,
+//! `0x7E0000` on ESP32-C6).
+//!
+//! # Flash layout (Altruist Urban, ESP32-C3 4 MB / ESP32-C6 8 MB)
+//!
+//! ```text
+//! 0x09000  nvs        24 KiB
+//! 0x0f000  phy_init    4 KiB
+//! 0x10000  rohi-cfg   16 KiB   <- configuration region
+//!            ├─ slot A  8 KiB (2 sectors)
+//!            └─ slot B  8 KiB (2 sectors)
+//! 0x20000  factory    app (0x3E0000 bytes on ESP32-C3, 0x7E0000 on ESP32-C6)
+//! ```
+//!
+//! `cargo run` passes the table of the selected target to `espflash` (see
+//! `.cargo/config.toml`); run it from the repository root. The store sizes its
+//! two slots from the region: each slot is half of it rounded down to the
+//! erase size, at most [`MAX_SLOT_SIZE`](rohi_config::MAX_SLOT_SIZE) bytes.
+//!
+//! Flash region, slot, payload and stack figures of the store are listed with
+//! all other limits in the
+//! [resource limits](https://rohi.akagi.dev/reference/resource-limits.html#configuration-store).
 
 /// Label of the data partition holding the configuration region.
 pub const PARTITION_LABEL: &str = "rohi-cfg";

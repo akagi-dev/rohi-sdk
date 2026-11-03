@@ -1,121 +1,36 @@
 # Sensors
 
-Supported by the Altruist Urban firmware (ESP32-C3 and ESP32-C6). Each driver is hardware independent and publishes typed
-`rohi-hal` observations; see [Sensor HAL (rohi-hal)](hal.md) for lifecycle, timing and events.
+The sensor drivers live in `rohi-hal` (`crates/hal/src/sensors/`), not in a separate crate. They are hardware
+independent, publish typed `rohi-hal` observations and are run by the generic lifecycle runner described in
+[Sensor HAL](hal.md); the pins and buses of a board come from `rohi-hal-esp`. The Altruist Urban firmware (ESP32-C3 and
+ESP32-C6) runs all four drivers. Which sensors are present on which board and what is verified is in the
+[support matrix](../support/overview.md); no sensor is hardware-verified yet.
 
-| Sensor | Bus | Cadence | Notes |
-|--------|-----|---------|-------|
-| BMP280 / BME280 | I²C `0x76` / `0x77` | 10 s | Temperature, pressure, humidity (BME280 only) |
-| SCD40 / SCD41 | I²C `0x62` | 5 s | CO₂, temperature, humidity |
-| SDS011 | UART, 9600 baud | 125–150 s duty cycle | PM2.5, PM10, fan off between cycles |
-| I²S microphone | I²S | 5 s window | Noise level, dB SPL |
+| Sensor | Driver | Bus | Measures |
+|--------|--------|-----|----------|
+| BMP280 / BME280 | `sensors::bmx280` | I²C `0x76` / `0x77` | Temperature, pressure, humidity (BME280 only) |
+| SCD40 / SCD41 | `sensors::scd4x` | I²C `0x62` | CO₂, temperature, humidity |
+| SDS011 | `sensors::sds011` | UART, 9600 baud | PM2.5, PM10, fan off between duty cycles |
+| I²S microphone | `sensors::noise` | I²S | Noise level, unweighted dB SPL (not dBA) |
 
-## BMP280 / BME280
-
-Forced mode: temperature ×2, pressure ×4, humidity ×1, IIR filter off, one conversion (≈19 ms) per sample; the sensor
-sleeps in between.
-
-**Address.** The driver probes `0x76` first, then `0x77`, and uses the first address whose chip ID register reads a
-BMP280 (`0x56..=0x58`) or a BME280 (`0x60`); devices with another ID are skipped. Either strapping works without a
-rebuild. If valid sensors answer at both addresses, `0x76` wins (two BMx280 are not supported). Probing is repeated on
-every re-init, so a sensor moved to the other address is found again. If nothing is found, the failure is a bus error,
-an unsupported chip ID or no device, in that order of precedence; the last two keep the sensor `NotDetected`.
-
-## SCD40 / SCD41
-
-Probing stops any running measurement, reads and validates the serial number, then starts periodic measurement (a new
-value every 5 s). Each sample waits on the data-ready flag (poll every 500 ms, at most 20 polls) and validates every
-word with CRC-8. The first valid value arrives about 5 s after start, until then the sensor is `WarmingUp`.
-
-## SDS011
-
-The command flow and wire protocol (`sensors/sds011/protocol.rs`) are derived from the community
-[`sds011-rs`](https://github.com/kenohassler/sds011-rs) driver (MIT OR Apache-2.0). The sensor is kept in query mode
-and asleep between cycles, so the fan and laser run only while measuring:
-
-```text
-wake -> warm-up (30 s) -> sample 1..N -> filter / aggregate -> publish PM2.5 / PM10 -> sleep (90 s)
-```
-
-Constants (`sensors/sds011/mod.rs`), also available as `sds011::Config`:
-
-| Constant | Default | Meaning |
-|----------|---------|---------|
-| `WARMUP_MS` | 30 s | Fan spin-up before sampling |
-| `SAMPLE_COUNT` | 5 | Valid samples required per cycle |
-| `SAMPLE_INTERVAL_MS` | 1.5 s | Pause between two queries |
-| `CYCLE_TIMEOUT_MS` | 30 s | Sampling window |
-| `TRIM_MIN_MAX` | on | Discard the lowest and highest sample |
-| `SLEEP_MS` | 90 s | Pause between cycles (the poll interval) |
-
-These values are a starting point and are to be confirmed on hardware against the legacy firmware behaviour.
-
-* **Valid samples only.** Malformed, truncated and checksum-invalid frames and values above 999.9 µg/m³ are dropped.
-  Sampling stops when `SAMPLE_COUNT` valid samples exist or the window is over.
-* **Aggregation** (`sds011/aggregate.rs`, fixed arrays, no heap): rounded integer mean per channel; with at least
-  5 samples the lowest and highest are discarded first, independently for PM2.5 and PM10. Example, PM2.5
-  `10 12 11 80 9`: drop `9` and `80`, result `11`.
-* **Failure.** Too few valid samples give `Error::InsufficientSamples` and nothing is published. A silent sensor
-  fails the cycle at once (`NoResponse`). Either way the sensor is told to sleep and the runner retries after its
-  recovery backoff.
-* **Robustness.** Every UART read is bounded to 5 s, stale bytes (e.g. frames of a sensor still in active mode) are
-  discarded, unexpected frames are skipped and the wake-up is retried up to 3 times.
-* The first measurement starts right after boot; the cycle's own warm-up is the only wait.
-
-## Noise
-
-Metric: **sound pressure level in dB SPL (re 20 µPa), unweighted**. It is *not* dBA and no A-weighting is applied.
-
-| Property | Value |
-|----------|-------|
-| Microphone | ICS-43434 assumed: −26 dBFS at 94 dB SPL (1 kHz), so 24-bit full scale is 120 dB SPL |
-| Sample rate | 16 kHz mono, 24-bit samples |
-| Filtering | ≈10 Hz integer DC blocker only, otherwise flat |
-| Sub-window | 125 ms mean square gives one level |
-| Measurement window | 5 s (40 sub-windows), continuous; *average* is the energy average (`Leq`), *maximum* the loudest sub-window |
-| Calibration | factory sensitivity only (`CALIBRATION_OFFSET_DB`), no per-device calibration |
-
-Levels include the microphone's frequency response and the device's own noise (e.g. the SDS011 fan). They compare
-between devices with the same microphone model, not with a calibrated, A-weighted sound level meter. This is the v1
-metric the telemetry schema can rely on; an A-weighted level would be added as a separate, tested metric under its own
-name.
-
-Raw audio is never stored: a 256-sample stack chunk plus the 8 KiB DMA ring buffer (≈128 ms) are the only buffers.
+The model, store and status service also name the ZMOD4510, AGS3871 and RadSens sensors, but there is **no driver** for
+them in this crate. Driver details (probing, sampling, aggregation, noise metric) are in the rustdoc of each driver
+module. The telemetry encoder omits sensors the wire schema has no field for ([Telemetry](connectivity.md)).
 
 ## Status and the control plane
 
-The firmware keeps the strongly typed `rohi-hal` model. Only at the control boundary does it become the generic
-`sensors` [service](service.md) (`SensorsService` over a `MeasurementHandle`): every measurement of a present sensor is a
-status field named `<sensor>.<measurement>` in the **canonical unit** of its type, and is absent until the sensor has
-delivered a value. Observations of one quantity from different sensors are never merged. Every request takes a fresh
-snapshot, so values and states are correct at request time.
+At the control boundary the typed model becomes the generic `sensors` [service](service.md) (`SensorsService`): every
+measurement of a present sensor is a status field named `<sensor>.<measurement>` in the canonical unit of its type,
+for example `rohi status sensors` shows `bmx280.temperature`. Observations of one quantity from different sensors are
+never merged. The service is `disabled` when no sensor is detected, and a sensor in `degraded` or `error` state is
+reported as an issue. The field table, units and limits are in the rustdoc of `rohi_hal::sensors`.
 
-```console
-$ rohi status sensors
-Service:  sensors
-State:    running
-Health:   ok
-Ready:    yes
-Since:    2h 14m
+## Reference
 
-bmx280.temperature  21.5 C
-bmx280.humidity     45 %
-bmx280.pressure     100800 Pa
-scd4x.co2           640 ppm
-sds011.pm2_5        6.5 ug/m3
-```
+The crate rustdoc is the authoritative technical documentation:
 
-| Field | Unit | Field | Unit |
-|-------|------|-------|------|
-| `bmx280.temperature` | °C | `zmod4510.o3`, `zmod4510.no2` | ppb |
-| `bmx280.humidity` | % RH | `zmod4510.aqi_fast`, `zmod4510.aqi_epa` | index |
-| `bmx280.pressure` | Pa | `ags3871.co` | ppm |
-| `scd4x.co2` | ppm | `radsens.radiation` | µSv/h |
-| `scd4x.temperature`, `scd4x.humidity` | °C, % RH | `radsens.pulses` | pulses |
-| `sds011.pm2_5`, `sds011.pm10` | µg/m³ | `microphone.average`, `microphone.maximum` | dB |
-
-Service state: `disabled` when no sensor is detected (not an error), `starting` while every present sensor is
-initializing or warming up, otherwise `running` with health `ok`, `degraded` when some sensor is degraded or failed and
-`error` when all present sensors failed. A sensor in `error` or `degraded` state is an active issue with the code
-`<sensor>_error` or `<sensor>_degraded` (at most four are listed). The service is not essential for the device. The
-status schema has at most 20 fields.
+- `rohi-hal` (drivers): [docs.rs](https://docs.rs/rohi-hal), [source](https://github.com/akagi-dev/rohi-sdk/tree/master/crates/hal/src/sensors)
+- `rohi-hal-esp` (board support): [docs.rs](https://docs.rs/rohi-hal-esp), [source](https://github.com/akagi-dev/rohi-sdk/tree/master/crates/hal-esp)
+- SDK-level concepts: [docs.rs/rohi-sdk](https://docs.rs/rohi-sdk)
+- Locally: `cargo doc --no-deps --open -p rohi-hal`
+- Adding a driver: [Add a sensor](../guides/add-sensor.md)

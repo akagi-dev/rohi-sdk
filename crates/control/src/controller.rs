@@ -28,7 +28,13 @@ use rohi_service::{
 use crate::mapping;
 use crate::{AuthorizationPolicy, ControlBackend, LinkSecurity, Privilege};
 
-/// Dispatches control requests to a [`ControlBackend`].
+/// Dispatches control requests to a [`ControlBackend`], gated by an
+/// [`AuthorizationPolicy`].
+///
+/// It owns the backend and the policy and keeps no per-request state, so
+/// one controller serves every connection; the per-connection part is the
+/// [`LinkSecurity`] passed to [`handle`](Self::handle). See the
+/// [crate documentation](crate) for the operations, privileges and errors.
 pub struct Controller<B, P> {
     backend: B,
     policy: P,
@@ -52,6 +58,15 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
     /// requests and an undersized `response` buffer, is answered with a typed
     /// error response; the transport is never expected to disconnect. `0` is
     /// returned only if not even an error fits into `response`.
+    ///
+    /// A request that is too long or cannot be decoded is answered with
+    /// `InvalidArgument` and `request_id` 0, since the id cannot be trusted.
+    /// A response too large for `response` is replaced by an `Internal`
+    /// error. The future holds no state: dropping it abandons the request, but
+    /// anything a registry already committed stays committed.
+    ///
+    /// Secret values in the decoded request are wiped before this returns; the
+    /// bytes of `request` stay with the caller.
     pub async fn handle(&self, link: &LinkSecurity, request: &[u8], response: &mut [u8]) -> usize {
         let (request_id, reply) = self.dispatch(link, request).await;
         let message = pb::Response {

@@ -21,27 +21,44 @@
 //!
 //! - only [`MeasurementState::Valid`] measurements are emitted: a cached value
 //!   of a `WarmingUp`, `Stale` or `Error` measurement is never sent;
+//! - every `Urban` sensor message carries one measurement, so each
+//!   measurement is one `UrbanSensor` entry;
 //! - one physical sensor is never relabeled as another: a measurement without
 //!   an unambiguous representation in the pinned schema is omitted and counted
-//!   in [`EncodeStats::omitted_unsupported`];
-//! - values that cannot be represented (NaN, infinite, out of range) are
-//!   omitted and counted, never clamped to a misleading number (relative
-//!   humidity is the exception: sensor noise slightly outside `0..=100 %` is
-//!   clamped, the schema defines that range).
+//!   in [`EncodeStats::omitted_unsupported`] (in the service:
+//!   [`Diagnostics::measurements_unsupported`](crate::Diagnostics));
+//! - values that cannot be represented (NaN, infinite, negative where the
+//!   field is unsigned) are omitted and counted
+//!   ([`EncodeStats::omitted_out_of_range`], in the service
+//!   [`Diagnostics::measurements_out_of_range`](crate::Diagnostics)), never
+//!   clamped to a misleading number (relative humidity is the exception:
+//!   sensor noise slightly outside `0..=100 %` is clamped, the schema defines
+//!   that range).
 //!
 //! | Rohi observation | Protocol field | Unit conversion |
 //! |---|---|---|
-//! | BME280 temperature (`Bmx280`, with humidity channel) | `BME280.temperature` | °C → 0.01 °C |
-//! | BME280 humidity | `BME280.humidity` | % → 0.01 % |
+//! | BME280 temperature (`Bmx280`, only when the humidity channel exists) | `BME280.temperature` | °C → 0.01 °C (`sint32`) |
+//! | BME280 humidity | `BME280.humidity` | % → 0.01 % (clamped to 0..100 %) |
 //! | BME280 pressure | `BME280.pressure` | Pa → 0.1 Pa |
 //! | SDS011 PM2.5 / PM10 | `SDS011.pm25` / `SDS011.pm10` | µg/m³ → 0.1 µg/m³ |
 //! | Microphone average / maximum | `ICS43434.noise_avg` / `noise_max` | dB → whole dB |
 //! | BMP280 (no humidity channel), SCD4x, ZMOD4510, AGS3871, RadSens | none | omitted |
+//! | Location of the device (see [`rohi_location`]) | `GPS` (`lat`, `lon`, `height_m`) | WGS84 degrees; first entry; height 0 when unknown |
 //!
-//! The location of the device (see `rohi-location`) is the `GPS` entry in
-//! front of the sensors when one is known: WGS84 degrees, height 0 when it is
-//! not known (the schema says so). It is not a measurement: a frame with a
-//! location but no valid measurement is still not sent.
+//! Supporting SCD4x or a generic BMx280 needs a protocol change and is out of
+//! scope.
+//!
+//! # Location
+//!
+//! The location of the device is the `GPS` entry in front of the sensors when
+//! one is known: WGS84 degrees, height 0 when it is not known (the schema
+//! says so). It is context, not a measurement: it is not counted as one, and
+//! a frame with a location but no valid measurement is still not sent
+//! ([`EncodeError::NothingToSend`]). A position that is not a finite number is
+//! left out and counted as out of range. Without a location the frame is
+//! still sent without the entry
+//! ([`Diagnostics::frames_without_location`](crate::Diagnostics)) and the
+//! service is reported as degraded, see [`managed`](crate::managed).
 
 use core::fmt;
 
@@ -117,6 +134,10 @@ impl EncodedMessage {
 }
 
 /// Encoder of the Altruist Urban telemetry payload (`device.v1.Urban`).
+///
+/// It is stateless: every method maps one snapshot to one message. The
+/// mapping policy and the table of conversions are in the
+/// [module documentation](self).
 pub struct UrbanEncoder;
 
 impl UrbanEncoder {
@@ -184,6 +205,22 @@ impl UrbanEncoder {
     ///
     /// `timestamp_ms` is the Unix UTC time of the measurement set, in
     /// milliseconds.
+    ///
+    /// # Errors
+    ///
+    /// [`EncodeError::NothingToSend`] if the snapshot has no valid supported
+    /// measurement, [`EncodeError::TooLarge`] if the message does not fit.
+    ///
+    /// ```
+    /// use rohi_connectivity::{EncodeError, UrbanEncoder};
+    /// use rohi_hal::{MeasurementStore, MonotonicTimestamp};
+    ///
+    /// let empty = MeasurementStore::new().snapshot(MonotonicTimestamp::from_millis(1_000));
+    /// assert_eq!(
+    ///     UrbanEncoder::encode_snapshot(&empty, 7, 1_700_000_000_123).unwrap_err(),
+    ///     EncodeError::NothingToSend
+    /// );
+    /// ```
     pub fn encode_snapshot(
         snapshot: &MeasurementsSnapshot,
         node_id: u64,
@@ -194,6 +231,46 @@ impl UrbanEncoder {
 
     /// Like [`encode_snapshot`](Self::encode_snapshot), with the location of
     /// the device when one is known.
+    ///
+    /// # Errors
+    ///
+    /// As [`encode_snapshot`](Self::encode_snapshot). A location alone is not
+    /// enough for a frame.
+    ///
+    /// ```
+    /// use rohi_connectivity::UrbanEncoder;
+    /// use rohi_connectivity_proto::core_v1::Message;
+    /// use rohi_connectivity_proto::decode;
+    /// use rohi_hal::{
+    ///     Bmx280Update, Celsius, MeasurementStore, MeasurementUpdate, MonotonicTimestamp, Pascal,
+    ///     RelativeHumidity, SensorEvent,
+    /// };
+    /// use rohi_location::{Location, LocationSourceKind};
+    ///
+    /// let at = |ms| MonotonicTimestamp::from_millis(ms);
+    /// let mut store = MeasurementStore::new();
+    /// store.apply(SensorEvent::Measurements(MeasurementUpdate::Bmx280(
+    ///     Bmx280Update::bme280(Celsius(23.47), RelativeHumidity(53.42), Pascal(101_325.0), at(900)),
+    /// )));
+    /// let snapshot = store.snapshot(at(1_000));
+    ///
+    /// let location = Location {
+    ///     latitude: 52.52,
+    ///     longitude: 13.405,
+    ///     height_m: None,
+    ///     source: LocationSourceKind::Configured,
+    /// };
+    /// let encoded = UrbanEncoder::encode_snapshot_at(
+    ///     &snapshot, 7, 1_700_000_000_123, Some(&location),
+    /// )
+    /// .unwrap();
+    ///
+    /// let stats = encoded.stats();
+    /// assert_eq!(stats.emitted, 3); // temperature, humidity, pressure
+    /// assert!(stats.location_included); // context, not counted as a measurement
+    /// let message: Message = decode(encoded.as_bytes()).unwrap();
+    /// assert_eq!(message.metadata().unwrap().timestamp, 1_700_000_000_123);
+    /// ```
     pub fn encode_snapshot_at(
         snapshot: &MeasurementsSnapshot,
         node_id: u64,

@@ -13,7 +13,7 @@ EspWireless::new(WIFI, BT, heap)     one owner of radio peripherals and the wire
 
 ## Bring-up
 
-```rust,ignore
+```text
 let heap = rohi_net_esp::wireless_heap!(WIRELESS_HEAP_SIZE);    // adds the single wireless heap
 let mut wireless = EspWireless::new(peripherals.WIFI, peripherals.BT, heap);
 esp_rtos::start(...);

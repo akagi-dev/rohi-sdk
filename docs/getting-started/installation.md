@@ -44,6 +44,6 @@ nix develop
 
 ## Verify the installation
 
-Build and test the SDK as described in [Build and test](build-and-test.md): `cargo test` on the host, and
+Run the [First device](first-device.md) example, then build and test the SDK as described in [Build and test](build-and-test.md): `cargo test` on the host, and
 `cargo check-esp32c3` / `cargo check-esp32c6` for the two chips. Documentation tooling (`mdbook`, link check) is covered
 in [Documentation style and policy](../contributing/docs-style.md); the Nix shell provides it.

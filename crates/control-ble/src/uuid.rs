@@ -22,7 +22,20 @@
 //! - RX: the central writes request frames (write, write without response);
 //! - TX: the peripheral notifies response frames.
 //!
-//! UUIDs are 128-bit values in big-endian (canonical) byte order.
+//! UUIDs are 128-bit values in big-endian (canonical) byte order. The same
+//! constants are used by the firmware (to register the GATT service) and by
+//! the `rohi` host tool (to find it).
+//!
+//! ```
+//! use rohi_control_ble::uuid::{RX_CHARACTERISTIC_UUID, SERVICE_UUID, TX_CHARACTERISTIC_UUID};
+//!
+//! // The first 32 bits spell "rohi", the last 48 "contro".
+//! assert_eq!(SERVICE_UUID >> 96, u128::from(u32::from_be_bytes(*b"rohi")));
+//! assert_eq!(SERVICE_UUID & 0xffff_ffff_ffff, 0x636f6e74726f);
+//! // The characteristics differ from the service only in the second group.
+//! assert_eq!(RX_CHARACTERISTIC_UUID - SERVICE_UUID, 1 << 80);
+//! assert_eq!(TX_CHARACTERISTIC_UUID - SERVICE_UUID, 2 << 80);
+//! ```
 
 /// ROHI Control Service: `726f6869-0001-4d00-8000-636f6e74726f`.
 pub const SERVICE_UUID: u128 = 0x726f6869_0001_4d00_8000_636f6e74726f;

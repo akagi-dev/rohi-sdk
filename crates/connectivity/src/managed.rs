@@ -16,6 +16,32 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 //! The telemetry configuration and status in the generic management plane.
+//!
+//! [`ConnectivityStatusService`] is the `connectivity` service of the status
+//! plane (see [`rohi_service`]). It reports the
+//! state of [`ConnectivityShared`] and the counters without any cooperation
+//! from the sending task. It is not essential for the device. The effective
+//! configuration is not repeated in the status, see
+//! [`config`](crate::config).
+//!
+//! | State of the sender | Service state / health / ready | Issue code |
+//! |---|---|---|
+//! | telemetry disabled by the effective configuration | `disabled` / unknown / no | |
+//! | `Starting` | `starting` / unknown / no | |
+//! | `Idle` | `running` / **ok** / yes, **degraded** while no location is set | `no_location` |
+//! | `WaitingForIdentity` | `running` / degraded / no | `no_identity` |
+//! | `WaitingForUtc` | `running` / degraded / no | `no_utc_time` |
+//! | `Backoff(error)` | `running` / degraded / no | [`issue::NETWORK_UNAVAILABLE`], [`issue::DNS_FAILED`], [`issue::CONNECT_FAILED`], [`issue::CONNECTION_TIMEOUT`], [`issue::IO_ERROR`], [`issue::BAD_RESPONSE`], [`issue::DELIVERY_REJECTED`] |
+//! | `Unauthorized` | `running` / **error** / no | `unauthorized` |
+//!
+//! Status fields ([`status_field`]): `frames_created`, `frames_delivered`,
+//! `send_retries`, `frames_rejected`, `queue_depth` and
+//! `frames_without_location`.
+//!
+//! Without a location an otherwise healthy service is `degraded` with the
+//! warning `no_location` (and so is the device health), because the frames are
+//! sent but incomplete; `rohi config location latitude=.. longitude=..` fixes
+//! it, see [`rohi_location`].
 
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use heapless::Vec;
@@ -109,6 +135,34 @@ fn transport_issue(error: TransportError) -> Issue {
 /// Telemetry without a location still flows but is incomplete: while the
 /// device does not know where it is, an otherwise healthy service is
 /// `degraded` with the issue `no_location`.
+///
+/// ```
+/// use embassy_futures::block_on;
+/// use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+/// use rohi_connectivity::{ConnectivityConfig, ConnectivityShared, ConnectivityStatusService};
+/// use rohi_location::NoLocation;
+/// use rohi_service::{ServiceHealth, ServiceState, Status};
+///
+/// fn disabled() -> Option<ConnectivityConfig> {
+///     None
+/// }
+/// fn enabled() -> Option<ConnectivityConfig> {
+///     Some(ConnectivityConfig::default())
+/// }
+///
+/// let shared = ConnectivityShared::<NoopRawMutex>::new();
+///
+/// // No endpoint configured: disabled, which is not an error.
+/// let service = ConnectivityStatusService::new(&shared, disabled, &NoLocation);
+/// assert_eq!(block_on(service.summary()).state, ServiceState::Disabled);
+///
+/// // Enabled, but the sender has not run yet.
+/// let service = ConnectivityStatusService::new(&shared, enabled, &NoLocation);
+/// let summary = block_on(service.summary());
+/// assert_eq!(summary.state, ServiceState::Starting);
+/// assert_eq!(summary.health, ServiceHealth::Unknown);
+/// assert!(!summary.ready);
+/// ```
 #[derive(Service)]
 #[service(name = "connectivity")]
 pub struct ConnectivityStatusService<'a, M: RawMutex> {

@@ -43,6 +43,18 @@ pub struct LinkSecurity {
 /// The transport only reports link properties; this is the single place
 /// where they become authorization decisions. Secret-carrying actions use
 /// the same mechanism.
+///
+/// ```
+/// use rohi_control::{
+///     AuthorizationPolicy, LinkSecurity, Privilege, RequireAuthenticated, RequireEncryption,
+/// };
+///
+/// let encrypted = LinkSecurity { encrypted: true, authenticated: false };
+/// assert!(RequireEncryption.allows(Privilege::Mutate, &encrypted));
+/// assert!(!RequireAuthenticated.allows(Privilege::Mutate, &encrypted));
+/// // Reads are open under both.
+/// assert!(RequireAuthenticated.allows(Privilege::Read, &LinkSecurity::default()));
+/// ```
 pub trait AuthorizationPolicy {
     /// `true` when the operation is allowed.
     fn allows(&self, privilege: Privilege, link: &LinkSecurity) -> bool;

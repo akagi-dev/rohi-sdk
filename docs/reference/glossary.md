@@ -5,14 +5,14 @@
 | **ABI (persistent)** | The stored byte format other firmware versions rely on: container, section IDs, CBOR payloads. See [Persistent ABI](persistent-abi.md) |
 | **Backend** | A platform implementation of a portable trait: `WifiBackend`, `IpBackend`, `BleTransport`, `ConfigStorage` |
 | **BleTransport** | Portable BLE peripheral API: one connected central as a bounded byte pipe |
-| **Action** | An explicit operation a service declares (scan, reconnect, provision) with typed arguments and result records; listed and run through the control plane. Status never changes anything. See [Service pipeline](../sdk/service.md#actions) |
+| **Action** | An explicit operation a service declares (scan, reconnect, provision) with typed arguments and result records; listed and run through the control plane. Status never changes anything. See [Service pipeline](../sdk/service.md) |
 | **Config section** | A named group of typed, described fields of persistent desired state (`wifi`, `connectivity`, `location`), patched atomically; owned by a feature crate via `ManagedConfig`. What is persisted are its *overrides* |
 | **Command** | A transient, bounded request to an owner task (scan, reconnect). Contrast *desired state* |
 | **ConfigHandle / ConfigStore / ConfigSection** | Handle to the configuration owner task / the transactional store / one persisted section (the overrides struct for a user-configurable section) owned by a feature crate |
 | **Control plane (BLE)** | The local protobuf protocol served over BLE by `rohi-control` + `rohi-control-ble`: info, config, status and actions, driven by schemas the device publishes |
 | **Control plane (Wi-Fi)** | `WifiHandle` / `WifiManager`: configuration, scan, status, reconnect, disconnect. Not DNS or TCP |
 | **Desired state** | The latest value a runtime should converge to (for example the desired `WifiConfig`); published, not queued. See [Runtime ownership](../concepts/runtime-ownership.md#state-versus-command) |
-| **Effective configuration** | What a runtime uses and `rohi config SECTION` shows: `C::default()`, the firmware overrides compiled into the product and the user's overrides, in that order (`materialize`). A changed firmware override or default reaches every field that is not overridden. See [Service pipeline](../sdk/service.md#config-sections) |
+| **Effective configuration** | What a runtime uses and `rohi config SECTION` shows: `C::default()`, the firmware overrides compiled into the product and the user's overrides, in that order (`materialize`). A changed firmware override or default reaches every field that is not overridden. See [Service pipeline](../sdk/service.md) |
 | **EspWireless** | The single owner of the ESP radio peripherals and the wireless heap; creates the Wi-Fi and BLE drivers |
 | **Golden test** | A test pinning exact encoded bytes or IDs so accidental ABI changes fail |
 | **Device health** | The overall `ok` / `degraded` / `error` of the device, decided by the firmware from its services, never by a client |
@@ -28,7 +28,7 @@
 | **Reconciliation** | The Wi-Fi manager continuously moving the actual radio state towards the latest desired configuration |
 | **Section ID** | FNV-1a 64-bit hash of the Rust struct name identifying a `ConfigSection` (for an overrides struct: the name of the section type) |
 | **SensorDriver / Runner** | Driver trait for one sensor / the generic task loop handling probing, polling, backoff and recovery |
-| **Service (status)** | A runtime part exposed through `ManagedService`: state, health, readiness, active issues, values and actions, by name; see [Services and status](../getting-started/services.md) |
+| **Service (status)** | A runtime part exposed through `ManagedService`: state, health, readiness, active issues, values and actions, by name; see [Status & diagnostics](../use/desktop/status.md) |
 | **Status revision** | A counter that changes when a service's state, health, readiness or issues change; lets a poller fetch details only when needed |
 | **Slot (A/B)** | One of the two flash slots of the configuration region; updates go to the inactive one and commit last |
 | **Time anchor** | The accepted absolute time together with the monotonic instant it was accepted at; wall-clock time is `anchor + monotonic elapsed`. See [Time service](../sdk/time.md) |

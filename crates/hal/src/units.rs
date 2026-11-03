@@ -15,13 +15,29 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////
 //! Typed measurement units.
 //!
 //! Every physical quantity has its own wrapper so values in different units
-//! cannot be mixed by accident. Wrappers are `repr(transparent)` and hold the
-//! plain numeric value; fixed-point encoding for constrained transports is the
-//! concern of the future protocol adapters, not of this crate.
+//! cannot be mixed by accident. Wrappers are `repr(transparent)` newtypes with a
+//! public field that hold the plain numeric value (`f32`, except [`Aqi`] `u16`
+//! and [`PulseCount`] `u32`); they are `Copy`, `PartialOrd` and print as the
+//! value followed by their [`Unit::SYMBOL`]. Conversion to a wire format
+//! (fixed-point or otherwise) is not done here: consumers such as
+//! [`SensorsService`](crate::SensorsService) map the value into their own
+//! representation.
+//!
+//! ```
+//! use rohi_hal::{Celsius, Ppm, Unit};
+//!
+//! let temperature = Celsius(22.5);
+//! assert_eq!(temperature.0, 22.5);
+//! assert_eq!(Celsius::SYMBOL, "°C");
+//! assert_eq!(format!("{temperature}"), "22.5 °C");
+//!
+//! // Different quantities are different types: `Celsius(1.0) == Ppm(1.0)` does
+//! // not compile.
+//! assert!(Ppm(800.0) > Ppm(420.0));
+//! ```
 
 use core::fmt;
 

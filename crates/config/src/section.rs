@@ -15,7 +15,6 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////
 
 use minicbor::{CborLen, Decode, Encode};
 
@@ -29,7 +28,11 @@ use crate::{SectionError, SectionId, codec};
 /// size attribute.
 ///
 /// The default section ID is derived from the Rust struct name, so renaming a
-/// persisted section type is a storage ABI change.
+/// persisted section type is a storage ABI change. The derive attributes
+/// (`version`, `id`, `decode_versioned`) are documented in
+/// [`#[derive(ConfigSection)]`](rohi_config_derive::ConfigSection); the rules for
+/// versioning are in the
+/// [persistent ABI reference](https://rohi.akagi.dev/reference/persistent-abi.html#section-versioning).
 pub trait ConfigSection: Encode<()> + CborLen<()> + for<'b> Decode<'b, ()> + Sized {
     /// Stable persistent section identifier.
     const ID: SectionId;

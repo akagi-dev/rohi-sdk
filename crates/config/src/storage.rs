@@ -15,7 +15,6 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////
 
 /// Byte-addressable, flash-like storage region.
 ///
@@ -31,7 +30,20 @@
 ///   zero before erasing its slot, so re-programming a word with a value that
 ///   only clears bits must be supported;
 /// - out-of-bounds or misaligned requests return an error.
+///
+/// The store accepts a `WRITE_SIZE` of 1, 2 or 4 and splits the region into two
+/// slots of at most [`MAX_SLOT_SIZE`](crate::MAX_SLOT_SIZE) bytes each.
+///
+/// # Backends
+///
+/// - [`MemoryStorage`](crate::MemoryStorage) emulates flash for host tests
+///   (erase to `0xFF`, writes may only clear bits, deterministic fault
+///   injection).
+/// - `EspConfigStorage` of [`rohi_config_esp`](../rohi_config_esp/index.html)
+///   restricts an `embedded-storage` NOR flash to a bounded region of ESP32
+///   flash. It knows nothing about CBOR, sections or any feature configuration.
 pub trait ConfigStorage {
+    /// The backend failure, carried as [`ConfigError::Storage`](crate::ConfigError::Storage).
     type Error;
 
     /// Erase granularity in bytes (must be a power of two).
@@ -42,9 +54,24 @@ pub trait ConfigStorage {
     /// Region size in bytes.
     fn capacity(&self) -> usize;
 
+    /// Fills `output` from `offset`.
+    ///
+    /// # Errors
+    ///
+    /// Out-of-bounds requests and backend failures.
     fn read(&mut self, offset: usize, output: &mut [u8]) -> Result<(), Self::Error>;
 
+    /// Programs `data` at `offset`; offset and length are multiples of [`WRITE_SIZE`](Self::WRITE_SIZE).
+    ///
+    /// # Errors
+    ///
+    /// Misaligned or out-of-bounds requests and backend failures.
     fn write(&mut self, offset: usize, data: &[u8]) -> Result<(), Self::Error>;
 
+    /// Erases `len` bytes at `offset` to `0xFF`; both are multiples of [`ERASE_SIZE`](Self::ERASE_SIZE).
+    ///
+    /// # Errors
+    ///
+    /// Misaligned or out-of-bounds requests and backend failures.
     fn erase(&mut self, offset: usize, len: usize) -> Result<(), Self::Error>;
 }

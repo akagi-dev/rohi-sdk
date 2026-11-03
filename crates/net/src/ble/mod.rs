@@ -22,6 +22,23 @@
 //! bytes and reports link properties; framing and protocol meaning belong to
 //! the layers above. No platform (controller, host stack) type appears in
 //! this API.
+//!
+//! | Item | Role |
+//! |------|------|
+//! | [`BleTransport`] | The byte pipe: `recv`, `send`, link properties, connection epoch |
+//! | [`BleConfig`] | Peripheral configuration: default name prefix, configured [`BleName`], [`BleGattSpec`] |
+//! | [`BleState`] / [`BleConnectionInfo`] / [`BleError`] | Published state, link security, errors |
+//! | [`BleSettings`] / [`BleOverrides`] | The persistent `ble` section |
+//! | [`BleService`] / [`BleProbe`] | The `ble` service and its platform readings |
+//!
+//! # The `ble` section and service
+//!
+//! The section has one property, `name` (1 to [`MAX_BLE_NAME_LEN`] bytes,
+//! optional): without an override the firmware default applies,
+//! `<PREFIX>-<last two MAC bytes>` (see [`BleConfig::name_prefix`]). It is
+//! read when the peripheral starts, so a change applies after a reboot. The service reports `state`
+//! (`disabled`, `advertising`, `connected`, `error`; see [`state`]), `name`,
+//! `encrypted`, `authenticated` and `max_payload`; it has no actions.
 
 use core::fmt;
 
@@ -57,6 +74,25 @@ pub struct BleGattSpec {
 }
 
 /// BLE peripheral configuration.
+///
+/// ```
+/// use rohi_net::{BleConfig, BleGattSpec, BleName, BleSettings};
+///
+/// let config = BleConfig {
+///     name_prefix: "ALTRUIST-URBAN",
+///     name: None,
+///     gatt: BleGattSpec {
+///         service: 0x1111_2222_3333_4444_5555_6666_7777_8888,
+///         rx: 0x1111_2222_3333_4444_5555_6666_7777_8889,
+///         tx: 0x1111_2222_3333_4444_5555_6666_7777_888a,
+///     },
+/// };
+///
+/// // The persisted `ble` section replaces the default name.
+/// let settings = BleSettings { name: BleName::new("kitchen") };
+/// let config = config.with_settings(&settings);
+/// assert_eq!(config.name.unwrap().as_str(), "kitchen");
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BleConfig {
     /// Prefix of the default advertised and GAP device name, used while
@@ -91,6 +127,8 @@ pub struct BleConnectionInfo {
 }
 
 /// Platform-independent BLE error.
+///
+/// A backend maps every driver failure into one of these variants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BleError {
     /// No central is connected, or it disconnected. Returned once from
@@ -131,7 +169,12 @@ pub enum BleState {
     Error(BleError),
 }
 
-/// A connected central seen as a bounded byte pipe.
+/// A connected central seen as a bounded byte pipe, implemented by the
+/// platform (`EspBle` in `rohi-net-esp`) and consumed by the control link.
+///
+/// A backend serves one central at a time. It is used with `&mut self`, so
+/// one task owns a transport; a read-only view for diagnostics is a
+/// [`BleProbe`].
 ///
 /// One chunk corresponds to one ATT write (`recv`) or one notification
 /// (`send`). Chunks are never merged or split by the transport. Futures must

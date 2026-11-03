@@ -15,7 +15,6 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////
 
 use core::fmt;
 
@@ -164,6 +163,25 @@ impl fmt::Display for Corruption {
     }
 }
 
+/// Failure of a [`ConfigStore`](crate::ConfigStore) operation.
+///
+/// | Error | Meaning |
+/// |-------|---------|
+/// | [`SectionError::Decode`] (as [`Section`](Self::Section)) | Payload is not a valid CBOR encoding of the type |
+/// | [`SectionError::TrailingBytes`] | Valid value followed by extra bytes |
+/// | [`SectionError::UnsupportedSectionVersion`] | Stored version unknown to this firmware |
+/// | [`SectionTooLarge`](Self::SectionTooLarge) | Encoded section above [`MAX_SECTION_PAYLOAD`](crate::MAX_SECTION_PAYLOAD) |
+/// | [`StorageFull`](Self::StorageFull) | Resulting document does not fit a slot (nothing was written) |
+/// | [`TooManySections`](Self::TooManySections) | More than [`MAX_SECTIONS`](crate::MAX_SECTIONS) sections |
+/// | [`CorruptStorage`](Self::CorruptStorage) | Committed configuration unreadable, with the [`Corruption`] reason (`Envelope`, `Crc`, `Payload`, `Record`, `DuplicateSection`, `TooManySections`, `UnsupportedFormatVersion`) |
+/// | [`Storage`](Self::Storage) | The storage backend failed |
+///
+/// The remaining variants report a geometry that cannot hold two slots
+/// ([`InvalidStorage`](Self::InvalidStorage)), a failed sizing or read-back
+/// check of an update ([`EncodeMismatch`](Self::EncodeMismatch),
+/// [`VerifyFailed`](Self::VerifyFailed)), a failed encode
+/// ([`Encode`](Self::Encode)) and a too small caller buffer
+/// ([`BufferTooSmall`](Self::BufferTooSmall)).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConfigError<E> {
     /// The storage backend failed.

@@ -15,10 +15,10 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////
 //! Shared view of sensor runtime states.
 //!
-//! A lightweight read-only hook for runtime policies (for example a future
+//! A lightweight shared view, written by the [`Reporter`](super::Reporter)s and
+//! read-only for everybody else, for runtime policies (for example a future
 //! noise acquisition policy that depends on SDS011 activity) so they can react
 //! to sensor state without coupling drivers to each other. It does not replace
 //! the `MeasurementStore`, which stays the single owner of measurements.
@@ -30,6 +30,21 @@ use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::RawMutex;
 
 /// Current [`SensorState`] of every sensor.
+///
+/// Written by the [`Reporter`](super::Reporter)s that were given this view with
+/// [`with_shared_states`](super::Reporter::with_shared_states), readable from
+/// anywhere. The mutex flavour `M` is the one used by the rest of the runtime.
+///
+/// ```
+/// use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+/// use rohi_hal::runtime::SensorStates;
+/// use rohi_hal::{SensorKind, SensorState};
+///
+/// let states = SensorStates::<NoopRawMutex>::new();
+/// assert_eq!(states.get(SensorKind::Sds011), SensorState::NotDetected);
+/// states.set(SensorKind::Sds011, SensorState::WarmingUp);
+/// assert_eq!(states.get(SensorKind::Sds011), SensorState::WarmingUp);
+/// ```
 pub struct SensorStates<M: RawMutex> {
     states: Mutex<M, Cell<[SensorState; SensorKind::COUNT]>>,
 }

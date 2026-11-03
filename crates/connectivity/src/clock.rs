@@ -16,6 +16,23 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 //! Time and entropy boundaries of the telemetry service.
+//!
+//! # UTC
+//!
+//! `Meta.timestamp` is **UTC**, from a [`UtcClock`]; monotonic time
+//! (`embassy_time::Instant`, [`rohi_hal::MonotonicTimestamp`]) is never used as
+//! UTC. The timestamp is the UTC time of the measurement set: UTC now minus
+//! the age of the snapshot (`monotonic now − snapshot.generated_at`).
+//! [`TimeService`] implements [`UtcClock`]; while it is not synchronized (or
+//! the age exceeds the clock value) **no frame is created** and sensing
+//! continues. See the [`rohi_time`] crate.
+//!
+//! # Entropy
+//!
+//! [`NonceSource`] supplies the 16-byte nonce ([`NONCE_LEN`]), requested once
+//! per frame before the frame exists. The firmware uses the hardware RNG (true
+//! random while the radio runs; nonces only need to be unique for replay
+//! protection). Without entropy no frame is created.
 
 use core::fmt;
 
@@ -44,8 +61,27 @@ impl core::error::Error for ClockError {}
 /// `embassy_time::Instant`, [`rohi_hal::MonotonicTimestamp`]) is never UTC and
 /// must not be returned here: a clock that is not synchronized reports
 /// [`ClockError`].
+///
+/// ```
+/// use rohi_connectivity::{ClockError, UtcClock};
+///
+/// struct Rtc(Option<u64>);
+///
+/// impl UtcClock for Rtc {
+///     fn now_unix_ms(&self) -> Result<u64, ClockError> {
+///         self.0.ok_or(ClockError)
+///     }
+/// }
+///
+/// assert_eq!(Rtc(Some(1_700_000_000_000)).now_unix_ms(), Ok(1_700_000_000_000));
+/// assert_eq!(Rtc(None).now_unix_ms(), Err(ClockError));
+/// ```
 pub trait UtcClock {
     /// Milliseconds since the Unix epoch, UTC.
+    ///
+    /// # Errors
+    ///
+    /// [`ClockError`] while UTC is not known.
     fn now_unix_ms(&self) -> Result<u64, ClockError>;
 }
 
@@ -74,5 +110,9 @@ impl core::error::Error for NonceError {}
 /// frame is created.
 pub trait NonceSource {
     /// Fills `dst` with unpredictable bytes.
+    ///
+    /// # Errors
+    ///
+    /// [`NonceError`] when no entropy is available.
     fn fill_nonce(&mut self, dst: &mut [u8; NONCE_LEN]) -> Result<(), NonceError>;
 }

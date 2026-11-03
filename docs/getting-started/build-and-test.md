@@ -33,7 +33,7 @@ cargo run --release -p altruist-urban --features esp32c6 --target riscv32imac-un
 ```
 
 The runner flashes the chip's partition table, which reserves the configuration region
-([Flash layout](../sdk/config.md#flash-layout-altruist-urban-esp32-c3-4-mb--esp32-c6-8-mb)). Examples are built the same
+([configuration store](../sdk/config.md)). Examples are built the same
 way with `-p rohi-examples --features esp32c3 --target riscv32imc-unknown-none-elf --bin example-<name>`.
 
 ## Documentation
@@ -48,5 +48,5 @@ See [Documentation style and policy](../contributing/docs-style.md) for the chec
 
 ## Next
 
-[First device](first-device.md) runs a sensor example on hardware; [Hardware testing](../validation/hardware-testing.md)
-lists what is validated on devices.
+[Create & customize](../build/create-and-customize.md) shows how to add your own capabilities, also with an AI assistant;
+[Hardware testing](../validation/hardware-testing.md) lists what is validated on devices.

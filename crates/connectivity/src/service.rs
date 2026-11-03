@@ -21,8 +21,9 @@
 //! interval
 //!    │
 //!    ▼
-//! identity? ── no ──► skip (WaitingForIdentity)
-//! UTC?      ── no ──► skip (WaitingForUtc)
+//! outbox full? ── yes ─► skip (skipped_outbox_full)
+//! identity?    ── no  ─► skip (WaitingForIdentity)
+//! UTC?         ── no  ─► skip (WaitingForUtc)
 //!    │
 //!    ▼
 //! snapshot ─► encode once ─► nonce ─► sign ─► envelope once ─► outbox
@@ -31,9 +32,157 @@
 //!                         retryable ─► backoff, same bytes again
 //! ```
 //!
-//! The service runs in its own task and only reads snapshots: sensing and the
-//! measurement store do not depend on it, so no Wi-Fi, DNS, TCP, server, time
-//! or authentication failure can stop or delay them.
+//! [`ConnectivityService::run`] is one task, separate from sensing: every
+//! [`interval`](ServiceConfig::interval_ms) it creates a frame (outbox room?
+//! identity? UTC? snapshot, encode, sign), queues it in the bounded in-memory
+//! [`Outbox`] (no allocation), and delivers the oldest frame. A snapshot that
+//! the owner of the store does not answer within 5 s counts as
+//! [`Diagnostics::skipped_no_snapshot`]. The timestamp of a frame is the UTC
+//! time of the snapshot: UTC now minus the age of the snapshot.
+//!
+//! - Retryable failures keep the frame at the front and back off exponentially
+//!   (2 s, doubling, capped at 5 min, see [`ServiceConfig::new`]); a success
+//!   resets the backoff. There is never a zero-length wait.
+//! - A permanent rejection drops the frame. An authorization failure
+//!   (HTTP 401/403) drops it too and pauses delivery for the longest backoff
+//!   ([`ServiceConfig::retry_max_ms`]), so there is no hot loop. See
+//!   [`transport`](crate::transport) for the classification.
+//! - When the outbox is full, **no new frame is created** (nothing is
+//!   evicted) and [`Diagnostics::skipped_outbox_full`] is incremented.
+//! - The service only reads snapshots: sensing and the measurement store do
+//!   not depend on it, so no Wi-Fi, DNS, TCP, server, time or authorization
+//!   failure can stop or delay them.
+//! - The queue is in memory: frames are lost on reboot (a flash spool is out
+//!   of scope).
+//! - [`ConnectivityShared::status`] publishes the state ([`ConnectivityState`]:
+//!   `Idle`, `WaitingForUtc`, `WaitingForIdentity`, `Backoff(error)`,
+//!   `Unauthorized(error)`, and `Starting` before the first interval) and the
+//!   [`Diagnostics`] counters, readable from any task. The
+//!   [`managed`](crate::managed) module turns them into the `connectivity`
+//!   service of the status plane.
+//!
+//! The firmware stops and replaces the service when the `connectivity`
+//! configuration changes, see [`config`](crate::config).
+//!
+//! # Example
+//!
+//! The service is exercised step by step with [`produce`] and [`deliver`]
+//! (what [`run`] does on a timer). A transport that fails twice shows the
+//! retry of the same bytes and the backoff:
+//!
+//! ```
+//! use core::cell::{Cell, RefCell};
+//!
+//! use embassy_futures::block_on;
+//! use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+//! use embedded_hal_async::delay::DelayNs;
+//! use rohi_connectivity::{
+//!     ClockError, ConnectivityService, ConnectivityShared, ConnectivityState, EnvelopeFrame,
+//!     EnvelopeTransport, NONCE_LEN, NonceError, NonceSource, ServiceConfig, SnapshotSource,
+//!     TransportAck, TransportError, UtcClock,
+//! };
+//! use rohi_hal::runtime::Clock;
+//! use rohi_hal::{
+//!     Bmx280Update, Celsius, MeasurementStore, MeasurementUpdate, MeasurementsSnapshot,
+//!     MonotonicTimestamp, Pascal, RelativeHumidity, SensorEvent,
+//! };
+//! use rohi_identity::Identity;
+//! use rohi_location::NoLocation;
+//!
+//! struct Source(MeasurementsSnapshot);
+//! impl SnapshotSource for Source {
+//!     async fn snapshot(&self) -> Option<MeasurementsSnapshot> {
+//!         Some(self.0)
+//!     }
+//! }
+//! struct Uptime<'a>(&'a Cell<u64>);
+//! impl Clock for Uptime<'_> {
+//!     fn now(&self) -> MonotonicTimestamp {
+//!         MonotonicTimestamp::from_millis(self.0.get())
+//!     }
+//! }
+//! struct Utc;
+//! impl UtcClock for Utc {
+//!     fn now_unix_ms(&self) -> Result<u64, ClockError> {
+//!         Ok(1_700_000_000_000)
+//!     }
+//! }
+//! struct Counter(u8);
+//! impl NonceSource for Counter {
+//!     fn fill_nonce(&mut self, dst: &mut [u8; NONCE_LEN]) -> Result<(), NonceError> {
+//!         self.0 += 1;
+//!         dst.fill(self.0);
+//!         Ok(())
+//!     }
+//! }
+//! // The first two attempts fail, the third is accepted.
+//! struct Flaky<'a>(&'a RefCell<Vec<Vec<u8>>>);
+//! impl EnvelopeTransport for Flaky<'_> {
+//!     async fn send(&mut self, frame: &EnvelopeFrame) -> Result<TransportAck, TransportError> {
+//!         let mut sent = self.0.borrow_mut();
+//!         sent.push(frame.as_bytes().to_vec());
+//!         if sent.len() < 3 { Err(TransportError::Timeout) } else { Ok(TransportAck { status: 202 }) }
+//!     }
+//! }
+//! struct NoDelay;
+//! impl DelayNs for NoDelay {
+//!     async fn delay_ns(&mut self, _ns: u32) {}
+//! }
+//!
+//! let now = Cell::new(10_000);
+//! let mut store = MeasurementStore::new();
+//! store.apply(SensorEvent::Measurements(MeasurementUpdate::Bmx280(Bmx280Update::bme280(
+//!     Celsius(20.0),
+//!     RelativeHumidity(50.0),
+//!     Pascal(100_000.0),
+//!     MonotonicTimestamp::from_millis(9_500),
+//! ))));
+//! let snapshot = store.snapshot(MonotonicTimestamp::from_millis(9_900));
+//!
+//! let signer = Identity::from_secret(&[7; 32]).unwrap().signer();
+//! let shared = ConnectivityShared::<NoopRawMutex>::new();
+//! let sent = RefCell::new(Vec::new());
+//! let mut service: ConnectivityService<'_, NoopRawMutex, _, _, _, _, _, _, _, 4> =
+//!     ConnectivityService::new(
+//!         ServiceConfig::new(1, 60_000),
+//!         &shared,
+//!         Source(snapshot),
+//!         &NoLocation,
+//!         Uptime(&now),
+//!         &Utc,
+//!         &signer,
+//!         Counter(0),
+//!         Flaky(&sent),
+//!         NoDelay,
+//!     );
+//!
+//! block_on(async {
+//!     service.produce().await;
+//!     service.deliver().await; // timeout: retry after 2 s
+//!     assert_eq!(service.state(), ConnectivityState::Backoff(TransportError::Timeout));
+//!     assert_eq!(service.retry_at_ms(), 12_000);
+//!
+//!     now.set(12_000);
+//!     service.deliver().await; // timeout again: the delay doubles
+//!     assert_eq!(service.retry_at_ms(), 16_000);
+//!
+//!     now.set(16_000);
+//!     service.deliver().await; // accepted: removed, backoff reset
+//! });
+//! assert_eq!(service.state(), ConnectivityState::Idle);
+//! assert_eq!(service.queued(), 0);
+//!
+//! // Three attempts, one frame: the very same bytes each time.
+//! let sent = sent.borrow();
+//! assert_eq!(sent.len(), 3);
+//! assert!(sent.iter().all(|attempt| *attempt == sent[0]));
+//! let diagnostics = shared.status().diagnostics;
+//! assert_eq!((diagnostics.frames_created, diagnostics.send_retries), (1, 2));
+//! ```
+//!
+//! [`produce`]: ConnectivityService::produce
+//! [`deliver`]: ConnectivityService::deliver
+//! [`run`]: ConnectivityService::run
 
 use core::cell::Cell;
 
@@ -71,7 +220,17 @@ pub struct ServiceConfig {
 }
 
 impl ServiceConfig {
-    /// Default retry delays: 2 s, doubling up to 5 min.
+    /// Default retry delays: 2 s, doubling up to 5 min. The delays are exact
+    /// doublings without jitter, and the longest one is also the pause after
+    /// an authorization failure.
+    ///
+    /// ```
+    /// use rohi_connectivity::ServiceConfig;
+    ///
+    /// let config = ServiceConfig::new(7, 60_000);
+    /// assert_eq!((config.node_id, config.interval_ms), (7, 60_000));
+    /// assert_eq!((config.retry_initial_ms, config.retry_max_ms), (2_000, 300_000));
+    /// ```
     pub const fn new(node_id: u64, interval_ms: u64) -> Self {
         Self {
             node_id,
@@ -83,6 +242,11 @@ impl ServiceConfig {
 }
 
 /// Where the service takes immutable snapshots from.
+///
+/// It is implemented for [`MeasurementHandle`], the handle the firmware
+/// receives from the owner of the measurement store. The service waits at
+/// most 5 s for an answer and then skips the frame
+/// ([`Diagnostics::skipped_no_snapshot`]), so a stuck store cannot stall it.
 #[allow(async_fn_in_trait)]
 pub trait SnapshotSource {
     /// The current snapshot, `None` if it cannot be obtained.
@@ -95,7 +259,11 @@ impl<M: RawMutex> SnapshotSource for MeasurementHandle<'_, M> {
     }
 }
 
-/// Counters of the service. They only grow (saturating).
+/// Counters of the service. They only grow (saturating) and restart from zero
+/// when the service is replaced (a configuration change).
+///
+/// The `skipped_*` counters and `build_failures` partition the reasons why a
+/// tick created no frame; `frames_created` counts those that did.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Diagnostics {
     /// Frames signed and queued.
@@ -164,6 +332,21 @@ pub struct ConnectivityStatus {
 }
 
 /// Status of the service, readable from any task.
+///
+/// The service publishes after every step; readers (the status plane, the
+/// firmware) only copy the latest [`ConnectivityStatus`] out of a blocking
+/// mutex of type `M`, so reading never waits for the network.
+///
+/// ```
+/// use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+/// use rohi_connectivity::{ConnectivityShared, ConnectivityState};
+///
+/// let shared = ConnectivityShared::<NoopRawMutex>::new();
+/// let status = shared.status();
+/// assert_eq!(status.state, ConnectivityState::Starting);
+/// assert_eq!(status.outbox_len, 0);
+/// assert_eq!(status.diagnostics.frames_created, 0);
+/// ```
 pub struct ConnectivityShared<M: RawMutex> {
     status: Mutex<M, Cell<ConnectivityStatus>>,
 }
@@ -299,6 +482,12 @@ where
 
     /// Runs forever: one frame per interval, delivery with backoff.
     ///
+    /// Each turn creates a frame when the interval elapsed, delivers the oldest
+    /// frame when its backoff expired, publishes the status and sleeps until
+    /// the next of the two (never less than 1 ms). A delivery attempt is
+    /// bounded by the transport's own timeout, and frame creation waits for
+    /// it, so the interval is a lower bound.
+    ///
     /// Cancellation: safe at any point; queued frames are lost, which is the
     /// contract of the in-memory outbox.
     pub async fn run(&mut self) -> ! {
@@ -326,7 +515,9 @@ where
 
     /// Creates and queues one frame if everything it needs is available.
     ///
-    /// Never blocks sensing: it only reads a snapshot.
+    /// Never blocks sensing: it only reads a snapshot. Every reason not to
+    /// create a frame is counted in [`Diagnostics`]; nothing is returned
+    /// because the next interval simply tries again.
     pub async fn produce(&mut self) {
         let d = &mut self.diagnostics;
         if self.outbox.is_full() {

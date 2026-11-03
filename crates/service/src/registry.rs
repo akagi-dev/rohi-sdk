@@ -22,12 +22,82 @@
 //! implement an optional trait. The firmware therefore passes one tuple per
 //! capability, built from the same service instances:
 //!
-//! ```text
-//! let wifi = Startup::new(WifiService::new(..), network_failed);   // Status + Action
-//! let sensors = SensorsService::new(..);                           // Status only
+//! ```
+//! use embassy_futures::block_on;
+//! use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+//! use rohi_service::{
+//!     Action, ActionDescriptor, ActionError, ActionOutput, ActionRegistry, FieldDescriptor,
+//!     Service, ServiceHealth, ServiceState, ServiceSummary, Status, StatusError,
+//!     StatusRegistry, StatusWriter, Statuses, Value, ValueKind, WriteError,
+//! };
 //!
-//! statuses: Statuses::new((&wifi, &sensors))   -> StatusRegistry
-//! actions:  (&wifi,)                           -> ActionRegistry
+//! #[derive(Service)]
+//! struct WifiService;
+//!
+//! impl Status for WifiService {
+//!     const VERSION: u16 = 1;
+//!     const STATUS_SCHEMA: &'static [FieldDescriptor] =
+//!         &[FieldDescriptor::new(1, "connected", ValueKind::Bool)];
+//!
+//!     async fn summary(&self) -> ServiceSummary {
+//!         ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true)
+//!     }
+//!
+//!     async fn status(&self, out: &mut impl StatusWriter) -> Result<(), WriteError> {
+//!         out.bool(1, true)
+//!     }
+//! }
+//!
+//! impl Action for WifiService {
+//!     const ACTIONS: &'static [ActionDescriptor] = &[ActionDescriptor::new(1, "reconnect")];
+//!
+//!     async fn invoke(
+//!         &self,
+//!         action: u32,
+//!         _args: &[(u32, Value)],
+//!         _out: &mut impl ActionOutput,
+//!     ) -> Result<(), ActionError> {
+//!         if action == 1 { Ok(()) } else { Err(ActionError::UnknownAction) }
+//!     }
+//! }
+//!
+//! // Status only: no actions.
+//! #[derive(Service)]
+//! struct SensorsService;
+//!
+//! impl Status for SensorsService {
+//!     const VERSION: u16 = 1;
+//!     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[];
+//!
+//!     async fn summary(&self) -> ServiceSummary {
+//!         ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true)
+//!     }
+//!
+//!     async fn status(&self, _out: &mut impl StatusWriter) -> Result<(), WriteError> {
+//!         Ok(())
+//!     }
+//! }
+//!
+//! let wifi = WifiService;
+//! let sensors = SensorsService;
+//!
+//! // One tuple per capability, over the same instances.
+//! let statuses = Statuses::<NoopRawMutex, _>::new((&wifi, &sensors));
+//! let actions = (&wifi,);
+//!
+//! assert_eq!(statuses.service_count(), 2);
+//! assert!(block_on(statuses.status(WifiService::ID, 1_000)).is_ok());
+//! assert!(block_on(actions.invoke(WifiService::ID, 1, &[])).is_ok());
+//! // `sensors` has no actions; the status registry still knows it.
+//! assert!(!actions.contains(SensorsService::ID));
+//! assert_eq!(
+//!     block_on(actions.invoke(SensorsService::ID, 1, &[])),
+//!     Err(ActionError::UnknownService)
+//! );
+//! assert!(matches!(
+//!     block_on(statuses.status(0, 1_000)),
+//!     Err(StatusError::UnknownService)
+//! ));
 //! ```
 //!
 //! A tuple of `&S` where every `S: Status` is a [`StatusSet`] and, wrapped in
@@ -41,6 +111,72 @@
 //! A service that is in neither tuple is invisible to clients; one that is
 //! only in the status tuple answers action requests with "not supported" (the
 //! control plane tells it from an unknown service by asking both registries).
+//!
+//! Both registry traits are implemented for `()` (a device with no services)
+//! and for tuples of up to [`MAX_REGISTRY_ENTRIES`](crate::MAX_REGISTRY_ENTRIES)
+//! (12) services; [`ConfigRegistry`](crate::ConfigRegistry) is the same kind of
+//! tuple over config sections.
+//!
+//! # Bookkeeping
+//!
+//! [`Statuses`] keeps one [`Tracker`] per service. It adds what every service
+//! needs without its cooperation: a **status revision** that changes when
+//! state, health, readiness or the active issues change (values that vary all
+//! the time, such as counters or signal strength, deliberately do not bump
+//! it), and the **time in the current state**. Revisions and ages are derived
+//! from what the service reports when a client asks, with the device uptime
+//! given by the caller.
+//!
+//! # Ids and names
+//!
+//! Requests address sections, services and actions by their numeric ids,
+//! which must be unique within a registry; names are for discovery. A service
+//! id is [`service_id`](crate::service_id) of its name. Two services with the
+//! same id are a build error ([`Statuses::new`] and `Device::new` of
+//! [`rohi-control`](../../rohi_control/index.html) check it in a `const`
+//! block); two config sections with the same id are caught by
+//! `Device::new` of [`rohi-control`](../../rohi_control/index.html), which
+//! panics in every build, including release.
+//!
+//! # Schema validation
+//!
+//! Schemas are validated when the section or service is built, as a
+//! compile-time error: section, service, action, field and issue names are
+//! not empty and at most [`MAX_NAME_LEN`](crate::MAX_NAME_LEN) (24) bytes
+//! (variant names [`MAX_VARIANT_NAME_LEN`](crate::MAX_VARIANT_NAME_LEN), 16),
+//! so nothing is ever truncated on the wire. Field ids and names are unique
+//! within a schema, action ids and names within a service, issue codes and
+//! names within a service (codes from
+//! [`FIRST_SERVICE_ISSUE`](crate::FIRST_SERVICE_ISSUE), or the SDK startup
+//! code), enum ids are non-zero and unique, and variant values and names are
+//! unique within their enum. An enum field must refer to an enum of its
+//! table, no other field may. A section, service or action has at most one
+//! enum ([`MAX_ENUMS`](crate::MAX_ENUMS)), a constraint of the compact
+//! protocol, with at most [`MAX_ENUM_VARIANTS`](crate::MAX_ENUM_VARIANTS)
+//! variants. Tables are also bounded by the limits of the crate, see the
+//! [crate documentation](crate#limits).
+//!
+//! # What lives where
+//!
+//! | Crate | Config section | Service | Actions |
+//! |-------|----------------|---------|---------|
+//! | [`rohi-net`](../../rohi_net/index.html) | `wifi` (`ssid`, `password` secret, timeouts, backoff), `network` (address mode, static IPv4, host name, DHCP timeout), `ble` (`name`) | `wifi` (link, radio heap), `network` (address, sockets), `ble` (state, name, link security) | `wifi`: `scan`, `reconnect`, `disconnect` |
+//! | [`rohi-connectivity`](../../rohi_connectivity/index.html) | `connectivity` | `connectivity` (queue, counters, endpoint) | |
+//! | [`rohi-location`](../../rohi_location/index.html) | `location` | `location` | |
+//! | [`rohi-time`](../../rohi_time/index.html) / [`rohi-time-ntp`](../../rohi_time_ntp/index.html) | `time` (NTP servers, `rohi-time-ntp`) | `time` (unix time, source, age, failures) | |
+//! | [`rohi-hal`](../../rohi_hal/index.html) | | `sensors` (`<sensor>.<measurement>` values) | |
+//! | [`rohi-identity`](../../rohi_identity/index.html) | | `identity` (provisioned, public key) | `provision`, `erase` |
+//!
+//! The firmware (`altruist-urban/src/control.rs`) builds the tuples over its
+//! runtime handles and gives them to the dispatcher. The steps to add a
+//! service are in the
+//! [Add a service](https://rohi.akagi.dev/guides/add-service.html) guide.
+//!
+//! # Limits
+//!
+//! The in-memory limits of the services and registries are listed in the
+//! [crate documentation](crate#limits); the wire limits are defined once in
+//! the build script of `rohi-control-proto`.
 
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use heapless::Vec;
@@ -217,6 +353,11 @@ pub trait StatusSet<M: RawMutex> {
         now_ms: u64,
     ) -> Option<ServiceStatusSummary>;
     /// Detailed status of the service with the given id.
+    ///
+    /// # Errors
+    ///
+    /// [`StatusError::UnknownService`] when no service has this id. A failing
+    /// [`Status::status`] is not an error here, see there.
     async fn status(
         &self,
         tracks: &Self::Tracks,
@@ -277,9 +418,9 @@ impl StatusRegistry for () {
 
 /// The status registry: a tuple of `&S` services and their trackers.
 ///
-/// ```ignore
-/// let statuses = Statuses::<RawMutex, _>::new((&wifi, &network, &sensors));
-/// ```
+/// The tuple holds shared references to the services, so a registry never
+/// copies service state. `M` is the raw mutex of the trackers, see
+/// [`Tracker`]. The module documentation has a complete example.
 pub struct Statuses<M: RawMutex, T: StatusSet<M>> {
     services: T,
     tracks: T::Tracks,

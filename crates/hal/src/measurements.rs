@@ -15,12 +15,69 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////
 //! Measurements organized by the physical sensor that produced them.
 //!
 //! Observations of the same physical quantity from different sensors are never
 //! merged: BME280 and SCD4x temperatures are independent fields. The model
 //! records observations, it does not interpret them.
+//!
+//! # Freshness
+//!
+//! A valid measurement becomes [`MeasurementState::Stale`] when it is older
+//! than the [`FreshnessPolicy`] of its sensor. Defaults come from
+//! [`FreshnessPolicy::default_for`] and can be tuned with
+//! [`MeasurementStore::set_freshness_policy`](crate::MeasurementStore::set_freshness_policy).
+//! A host test asserts that every default exceeds the worst healthy cadence of
+//! its sensor by at least 1.5x:
+//!
+//! | Sensor | Worst healthy cadence | Stale after |
+//! |--------|-----------------------|-------------|
+//! | BMx280 | 10 s | 60 s |
+//! | SCD4x | 15 s | 30 s |
+//! | SDS011 | 150 s (warm-up + sampling window + sleep) | 300 s |
+//! | Noise | 5 s | 30 s |
+//!
+//! Errors do not make a value stale; they mark it
+//! [`MeasurementState::Error`] while the last valid value is preserved.
+//!
+//! ```
+//! use rohi_hal::{
+//!     Celsius, MeasurementState, MeasurementStore, MeasurementUpdate, MonotonicTimestamp,
+//!     Pascal, SensorErrorCode, SensorEvent, SensorKind, Bmx280Update,
+//! };
+//!
+//! let mut store = MeasurementStore::new();
+//! let at = MonotonicTimestamp::from_millis(0);
+//! store.apply(SensorEvent::Measurements(MeasurementUpdate::Bmx280(
+//!     Bmx280Update::bmp280(Celsius(20.0), Pascal(101_300.0), at),
+//! )));
+//!
+//! let temperature = |store: &MeasurementStore, now_ms: u64| {
+//!     store
+//!         .snapshot(MonotonicTimestamp::from_millis(now_ms))
+//!         .measurements
+//!         .bmx280
+//!         .unwrap()
+//!         .temperature
+//! };
+//!
+//! // Within the 60 s default for the BMx280 the value is valid ...
+//! assert_eq!(temperature(&store, 60_000).state, MeasurementState::Valid);
+//! // ... one millisecond later it is stale, but still there.
+//! let stale = temperature(&store, 60_001);
+//! assert_eq!(stale.state, MeasurementState::Stale);
+//! assert_eq!(stale.value, Some(Celsius(20.0)));
+//!
+//! // An error marks the measurement as failed and keeps the last valid value.
+//! store.apply(SensorEvent::Error {
+//!     sensor: SensorKind::Bmx280,
+//!     error: SensorErrorCode::Bus,
+//!     timestamp: MonotonicTimestamp::from_millis(70_000),
+//! });
+//! let failed = temperature(&store, 70_000);
+//! assert_eq!(failed.state, MeasurementState::Error);
+//! assert_eq!(failed.value, Some(Celsius(20.0)));
+//! ```
 
 use crate::sensor::{SensorKind, SensorStatuses};
 use crate::time::MonotonicTimestamp;
@@ -47,6 +104,18 @@ pub enum MeasurementState {
 }
 
 /// A measurement of a single quantity.
+///
+/// ```
+/// use rohi_hal::{Celsius, Measurement, MeasurementState, MonotonicTimestamp};
+///
+/// let never_measured = Measurement::<Celsius>::unavailable();
+/// assert_eq!(never_measured.state, MeasurementState::Unavailable);
+/// assert_eq!(never_measured.value, None);
+///
+/// let m = Measurement::valid(Celsius(21.0), MonotonicTimestamp::from_millis(5));
+/// assert!(m.is_valid());
+/// assert_eq!(m.updated_at, Some(MonotonicTimestamp::from_millis(5)));
+/// ```
 ///
 /// `value` and `updated_at` describe the last valid observation and are kept
 /// while the state is [`MeasurementState::Error`] or
@@ -138,10 +207,20 @@ impl FreshnessPolicy {
         Self { stale_after_ms }
     }
 
-    /// Default policy for a sensor: several times its measurement cadence, so
-    /// normal operation never shows `Stale`. The WP2 sensors are checked
-    /// against their driver cadences by tests in `rohi-hal`; thresholds can
-    /// still be tuned through [`crate::MeasurementStore::set_freshness_policy`].
+    /// Default policy for a sensor, chosen longer than its measurement cadence
+    /// so that normal operation never shows `Stale`. The four sensors with a
+    /// driver (BMx280, SCD4x, SDS011, microphone) are checked against their
+    /// driver cadences by tests in `rohi-hal`; the defaults of the sensors
+    /// without a driver (ZMOD4510, AGS3871, RadSens) are not checked against
+    /// anything. Thresholds can be tuned through
+    /// [`crate::MeasurementStore::set_freshness_policy`].
+    ///
+    /// ```
+    /// use rohi_hal::{FreshnessPolicy, SensorKind};
+    ///
+    /// assert_eq!(FreshnessPolicy::default_for(SensorKind::Bmx280).stale_after_ms, 60_000);
+    /// assert_eq!(FreshnessPolicy::new(5_000).stale_after_ms, 5_000);
+    /// ```
     pub const fn default_for(sensor: SensorKind) -> Self {
         match sensor {
             // Every 10 s.
@@ -289,8 +368,10 @@ impl Group for RadSensMeasurements {
 
 /// Measurements of all supported sensors, grouped by physical source.
 ///
-/// A sensor that is not detected has no entry (`None`). The structure has a
-/// fixed size and never allocates.
+/// A sensor that was never reported has no entry (`None`), and a sensor that
+/// changes to [`SensorState::NotDetected`](crate::SensorState::NotDetected) loses
+/// its entry. Any other state or observation creates the entry. The structure
+/// has a fixed size and never allocates.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Measurements {
     /// BMP280 / BME280.

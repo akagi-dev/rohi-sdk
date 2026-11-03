@@ -15,7 +15,6 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////
 //! SDS011 wire protocol: command encoding and reply parsing.
 //!
 //! Derived from the message layer of the community
@@ -67,6 +66,14 @@ fn checksum(bytes: &[u8]) -> u8 {
 }
 
 /// Build the 19 bytes of `command`.
+///
+/// ```
+/// use rohi_hal::sensors::sds011::protocol::{Command, encode};
+///
+/// let packet = encode(Command::Query);
+/// assert_eq!(packet[..5], [0xAA, 0xB4, 0x04, 0x00, 0x00]);
+/// assert_eq!(packet[15..], [0xFF, 0xFF, 0x02, 0xAB]);
+/// ```
 pub fn encode(command: Command) -> [u8; COMMAND_LEN] {
     let (sub, data1, data2) = match command {
         Command::QueryMode => (SUB_REPORTING_MODE, 1, 1),
@@ -122,7 +129,7 @@ pub enum Reply {
 /// A valid frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Frame {
-    /// Sensor ID.
+    /// Sensor ID, bytes 6 and 7 of the frame as a big-endian number.
     pub id: u16,
     /// Content.
     pub reply: Reply,
@@ -150,6 +157,20 @@ fn flag(value: u8) -> Result<bool, ParseError> {
 }
 
 /// Validate and decode a frame.
+///
+/// # Errors
+///
+/// [`ParseError`] if the checksum, head or tail is wrong, the frame or command
+/// ID is unknown, or a flag is neither 0 nor 1.
+///
+/// ```
+/// use rohi_hal::sensors::sds011::protocol::{Reply, parse};
+///
+/// // PM2.5 = 12.3 µg/m³ (123), PM10 = 45.6 µg/m³ (456), device ID 0xA160.
+/// let frame = [0xAA, 0xC0, 123, 0, 0xC8, 0x01, 0xA1, 0x60, 0x45, 0xAB];
+/// let frame = parse(&frame).unwrap();
+/// assert_eq!(frame.reply, Reply::Measurement { pm25: 123, pm10: 456 });
+/// ```
 pub fn parse(data: &[u8; REPLY_LEN]) -> Result<Frame, ParseError> {
     if checksum(&data[2..8]) != data[8] {
         return Err(ParseError::Checksum);

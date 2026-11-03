@@ -24,6 +24,20 @@ use embedded_nal_async::AddrType;
 use super::{NetError, UdpSocket};
 
 /// How many of the statically bounded sockets of an [`IpBackend`] are in use.
+///
+/// ```
+/// use rohi_net::testing::FakeIp;
+/// use rohi_net::{IpBackend, IpUsage, NetworkHandle};
+///
+/// let ip = FakeIp::<2, 128>::new();
+/// ip.set_ready(true);
+/// let net = NetworkHandle::new(&ip);
+/// let socket = net.udp_socket().unwrap();
+/// let usage: IpUsage = net.usage();
+/// assert_eq!(usage.udp_in_use, 1);
+/// assert!(usage.udp_in_use <= usage.udp_capacity);
+/// drop(socket);
+/// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct IpUsage {
     /// TCP connections currently open.

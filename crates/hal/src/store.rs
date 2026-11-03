@@ -15,8 +15,14 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////
 //! Measurement store: records sensor observations and produces snapshots.
+//!
+//! The store has exactly one owner, the store task of the firmware, which is
+//! the only component that applies events; other tasks get snapshots through a
+//! [`MeasurementHandle`](crate::runtime::MeasurementHandle). Success is one
+//! event: a `Measurements` event stores the values, their timestamp and
+//! `Ready` in one step, see [`MeasurementStore::apply`]. Freshness is applied
+//! when a snapshot is produced, see [`measurements`](crate::measurements).
 
 use crate::measurements::{
     Ags3871Measurements, Bmx280Measurements, FreshnessPolicy, Measurement, MeasurementState,
@@ -38,7 +44,46 @@ use crate::time::MonotonicTimestamp;
 /// runtime code and never allocates; sharing it between tasks is up to the
 /// caller.
 ///
-/// Events must be applied in chronological order.
+/// Events must be applied in chronological order. The store has a fixed size
+/// and is `Copy`.
+///
+/// ```
+/// use rohi_hal::{
+///     Celsius, MeasurementState, MeasurementStore, MeasurementUpdate, MonotonicTimestamp, Ppm,
+///     RelativeHumidity, Scd4xUpdate, SensorEvent, SensorKind, SensorState,
+/// };
+///
+/// let at = |ms| MonotonicTimestamp::from_millis(ms);
+/// let mut store = MeasurementStore::new();
+///
+/// store.apply(SensorEvent::StateChanged {
+///     sensor: SensorKind::Scd4x,
+///     state: SensorState::WarmingUp,
+///     timestamp: at(0),
+/// });
+/// let warming = store.snapshot(at(100)).measurements.scd4x.unwrap();
+/// assert_eq!(warming.co2.state, MeasurementState::WarmingUp);
+/// assert_eq!(warming.co2.value, None);
+///
+/// // The first observation stores the values and makes the sensor `Ready` in one step.
+/// store.apply(SensorEvent::Measurements(MeasurementUpdate::Scd4x(Scd4xUpdate {
+///     co2: Ppm(700.0),
+///     temperature: Celsius(22.0),
+///     humidity: RelativeHumidity(40.0),
+///     timestamp: at(5_000),
+/// })));
+/// let snapshot = store.snapshot(at(5_100));
+/// assert_eq!(snapshot.measurements.scd4x.unwrap().co2.state, MeasurementState::Valid);
+/// assert_eq!(snapshot.sensor_statuses.get(SensorKind::Scd4x).state, SensorState::Ready);
+///
+/// // Removing the sensor removes its measurements.
+/// store.apply(SensorEvent::StateChanged {
+///     sensor: SensorKind::Scd4x,
+///     state: SensorState::NotDetected,
+///     timestamp: at(6_000),
+/// });
+/// assert!(store.snapshot(at(6_100)).measurements.scd4x.is_none());
+/// ```
 #[derive(Debug, Clone, Copy)]
 pub struct MeasurementStore {
     measurements: Measurements,

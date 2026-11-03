@@ -42,7 +42,18 @@ fn within(value: u32, (min, max): (u32, u32)) -> bool {
     (min..=max).contains(&value)
 }
 
-/// An IPv4 address stored as its big-endian integer.
+/// An IPv4 address stored as its big-endian integer (the CBOR form of the
+/// `ip`, `gateway` and `dns` properties). Convert from and to
+/// [`core::net::Ipv4Addr`].
+///
+/// ```
+/// use core::net::Ipv4Addr;
+/// use rohi_net::Ipv4;
+///
+/// let address = Ipv4::from(Ipv4Addr::new(192, 168, 1, 50));
+/// assert_eq!(Ipv4Addr::from(address), Ipv4Addr::new(192, 168, 1, 50));
+/// assert_eq!(format!("{address:?}"), "192.168.1.50");
+/// ```
 #[derive(Clone, Copy, PartialEq, Eq, Encode, Decode, CborLen)]
 #[cbor(transparent)]
 pub struct Ipv4(#[n(0)] u32);
@@ -83,6 +94,16 @@ pub enum AddressMode {
 ///
 /// One label of letters, digits and `-`, not starting or ending with `-`, at
 /// most [`MAX_HOSTNAME_LEN`] bytes.
+///
+/// ```
+/// use rohi_net::Hostname;
+///
+/// assert_eq!(Hostname::new("altruist-urban").unwrap().as_str(), "altruist-urban");
+/// assert!(Hostname::new("").is_none());
+/// assert!(Hostname::new("-lead").is_none());
+/// assert!(Hostname::new("has space").is_none());
+/// assert!(Hostname::new("a.b").is_none()); // one label only
+/// ```
 #[derive(Clone, PartialEq, Eq, Encode, Decode, CborLen)]
 #[cbor(transparent)]
 pub struct Hostname(
@@ -130,6 +151,37 @@ impl fmt::Debug for Hostname {
 ///
 /// The static address fields are used only in [`AddressMode::Static`] and
 /// kept otherwise, so switching the mode back and forth does not lose them.
+///
+/// In static mode `ip`, `prefix_len` (1 to 30) and `gateway` are required, the
+/// gateway must be on the same network as the address and must differ from it;
+/// the DHCP timeout must lie in [`DHCP_TIMEOUT_RANGE_MS`].
+///
+/// ```
+/// use core::net::Ipv4Addr;
+/// use rohi_net::{AddressMode, NetworkConfig, WifiError};
+///
+/// // The default is DHCP.
+/// let mut config = NetworkConfig::default();
+/// assert_eq!(config.address_mode, AddressMode::Dhcp);
+/// assert!(config.validate().is_ok());
+/// assert!(config.static_settings().is_none());
+///
+/// // Static mode without a complete address is invalid.
+/// config.address_mode = AddressMode::Static;
+/// assert_eq!(config.validate(), Err(WifiError::InvalidConfig));
+///
+/// config.static_ip = Some(Ipv4Addr::new(192, 168, 1, 50).into());
+/// config.prefix_len = Some(24);
+/// config.gateway = Some(Ipv4Addr::new(192, 168, 1, 1).into());
+/// assert!(config.validate().is_ok());
+/// let settings = config.static_settings().unwrap();
+/// assert_eq!(settings.gateway, Ipv4Addr::new(192, 168, 1, 1));
+/// assert_eq!(settings.dns, None);
+///
+/// // A gateway outside the network of the address is rejected.
+/// config.gateway = Some(Ipv4Addr::new(10, 0, 0, 1).into());
+/// assert!(config.validate().is_err());
+/// ```
 #[derive(Clone, PartialEq, Eq, Debug, Config)]
 #[config(
     name = "network",
@@ -203,6 +255,13 @@ impl NetworkConfig {
     }
 
     /// Checks the configuration before it is persisted or applied.
+    ///
+    /// # Errors
+    ///
+    /// [`WifiError::InvalidConfig`] when static mode lacks `ip`, `prefix_len`
+    /// or `gateway`, the gateway is not on the link of the address or equals
+    /// it, `prefix_len` is outside 1 to 30, or the DHCP timeout is outside
+    /// [`DHCP_TIMEOUT_RANGE_MS`].
     pub fn validate(&self) -> Result<(), WifiError> {
         let valid = (self.address_mode == AddressMode::Dhcp || self.static_is_complete())
             && self.prefix_len.is_none_or(|len| (1..=30).contains(&len))

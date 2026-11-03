@@ -53,14 +53,21 @@ impl WirelessHeapRegion {
     }
 }
 
-/// Adds a wireless heap of `` bytes (a constant expression) to the
+/// Adds a wireless heap of `$size` bytes (a constant expression) to the
 /// global allocator and returns the [`WirelessHeapRegion`] that
 /// [`EspWireless::new`] needs. Call it once, before `esp_rtos::start`.
 ///
-/// ```ignore
+/// The region is a `static` in internal RAM that is registered with the global
+/// allocator, so its size is part of the RAM budget of the firmware.
+///
+/// The macro needs a chip target, so the example is not compiled by rustdoc:
+///
+/// ```text
 /// let heap = rohi_net_esp::wireless_heap!(WIRELESS_HEAP_SIZE);
 /// let mut wireless = EspWireless::new(peripherals.WIFI, peripherals.BT, heap);
 /// ```
+///
+/// See `firmwares/altruist-urban/src/bin/main.rs` for the maintained call.
 #[macro_export]
 macro_rules! wireless_heap {
     ($size:expr) => {{
@@ -82,7 +89,8 @@ pub struct WirelessHeap {
 }
 
 impl WirelessHeap {
-    /// The portable form, as reported by the `network` service.
+    /// The portable form, as reported by the heap fields of the `wifi`
+    /// service ([`rohi_net::WifiProbe`]).
     pub const fn stats(&self) -> rohi_net::HeapStats {
         rohi_net::HeapStats {
             size: self.size,
@@ -92,7 +100,9 @@ impl WirelessHeap {
     }
 }
 
-/// A driver was requested twice, or BLE could not be started.
+/// A driver was requested twice, or BLE could not be started. Returned by
+/// [`EspWireless::ble`]; a second [`EspWireless::wifi`] call reports
+/// [`WifiError::DriverError`] instead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WirelessError {
     /// The driver was already created.
@@ -111,6 +121,9 @@ impl core::fmt::Display for WirelessError {
 }
 
 /// Owner of the shared ESP wireless resources.
+///
+/// Both drivers are handed out at most once; the peripherals are moved in, so
+/// a second `EspWireless` cannot be built from the same ones.
 ///
 /// ```text
 /// EspWireless::new(WIFI, BT)      allocator, radio peripherals
@@ -137,7 +150,8 @@ impl EspWireless {
         }
     }
 
-    /// Brings up Wi-Fi in station mode and the IP stack (DHCPv4).
+    /// Brings up Wi-Fi in station mode and the IP stack (DHCPv4 by default;
+    /// a static address is applied by the connection attempt).
     ///
     /// `resources` is the static storage of the IP stack, sized by the
     /// firmware. Returns the Wi-Fi driver for the `WifiManager`, the runner
@@ -145,6 +159,12 @@ impl EspWireless {
     /// [`NetworkHandle`](rohi_net::NetworkHandle).
     ///
     /// The `esp-rtos` scheduler must be running. May be called once.
+    ///
+    /// # Errors
+    ///
+    /// [`WifiError::DriverError`] when the Wi-Fi driver was already taken, and
+    /// the mapped error of the vendor driver when it fails to initialize.
+    /// Nothing panics; the firmware can carry on without Wi-Fi.
     pub fn wifi<
         const SOCKETS: usize,
         const TCP: usize,
@@ -168,6 +188,17 @@ impl EspWireless {
     ///
     /// The `esp-rtos` scheduler must be running. May be called once. The
     /// returned runner must be polled for the transport to work.
+    ///
+    /// # Errors
+    ///
+    /// [`WirelessError::AlreadyTaken`] on a second call and
+    /// [`WirelessError::BleInit`] when the BLE controller fails to
+    /// initialize.
+    ///
+    /// # Panics
+    ///
+    /// The BLE task panics when it starts if `ATTRIBUTES` is too small for
+    /// the attribute table (see [`BleResources`]).
     #[allow(clippy::type_complexity)]
     pub fn ble<
         const RX_DEPTH: usize,
@@ -205,13 +236,15 @@ impl EspWireless {
         crate::ble::new(bt, config, resources)
     }
 
-    /// Current usage of the shared wireless heap.
+    /// Current usage of the shared wireless heap; same as [`wireless_heap()`].
     pub fn heap(&self) -> WirelessHeap {
         wireless_heap()
     }
 }
 
 /// Current usage of the shared wireless heap; usable from any task.
+/// `min_free` is `Some` only with the `heap-stats` feature, as an estimate from
+/// the allocator's maximum usage.
 pub fn wireless_heap() -> WirelessHeap {
     let stats = esp_alloc::HEAP.stats();
     WirelessHeap {

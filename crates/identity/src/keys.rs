@@ -15,7 +15,6 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////
 
 use core::fmt;
 
@@ -41,6 +40,14 @@ fn hex(f: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::Result {
 ///
 /// Displayed as `0x` followed by 64 lowercase hex digits. Public keys are not
 /// secret.
+///
+/// ```
+/// use rohi_identity::{PUBLIC_KEY_LEN, PublicKey};
+///
+/// let key = PublicKey::from_bytes([0xab; PUBLIC_KEY_LEN]);
+/// assert_eq!(key.to_string(), format!("0x{}", "ab".repeat(32)));
+/// assert_eq!(PublicKey::from_slice(&[0; 5]), None); // wrong length
+/// ```
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PublicKey([u8; PUBLIC_KEY_LEN]);
 
@@ -66,7 +73,24 @@ impl PublicKey {
         &self.0
     }
 
-    /// Checks `signature` over exactly `message`.
+    /// Checks `signature` over exactly `message`, with the `ed25519-zebra`
+    /// (ZIP 215) rules.
+    ///
+    /// # Errors
+    ///
+    /// [`IdentityError::InvalidPublicKey`] if the key bytes are not a curve
+    /// point, [`IdentityError::InvalidSignature`] if the signature does not
+    /// verify.
+    ///
+    /// ```
+    /// use rohi_identity::{Identity, IdentityError, Signer};
+    ///
+    /// let identity = Identity::from_secret(&[1; 32]).unwrap();
+    /// let signature = identity.signer().sign(b"data").unwrap();
+    /// let key = identity.public_key();
+    /// assert_eq!(key.verify(b"data", &signature), Ok(()));
+    /// assert_eq!(key.verify(b"tampered", &signature), Err(IdentityError::InvalidSignature));
+    /// ```
     pub fn verify(&self, message: &[u8], signature: &Signature) -> Result<(), IdentityError> {
         let key = VerificationKey::try_from(self.0).map_err(|_| IdentityError::InvalidPublicKey)?;
         key.verify(&ed25519_zebra::Signature::from_bytes(&signature.0), message)
@@ -88,7 +112,8 @@ impl fmt::Debug for PublicKey {
     }
 }
 
-/// Ed25519 signature.
+/// Ed25519 signature: 64 raw bytes, produced by a [`Signer`](crate::Signer) and
+/// checked with [`PublicKey::verify`].
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Signature([u8; SIGNATURE_LEN]);
 

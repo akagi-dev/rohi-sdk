@@ -15,13 +15,29 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////
 //! Retry backoff and bounded waits.
+//!
+//! [`Backoff`] produces the recovery delays of the runner (1 s, 2 s, 4 s ...
+//! capped at 30 s by default, see [`RunnerConfig`](super::RunnerConfig));
+//! [`with_timeout`] bounds any future in time, which the bounded I2C and UART
+//! reads of the drivers are built on.
 
 use embassy_futures::select::{Either, select};
 use embedded_hal_async::delay::DelayNs;
 
 /// Exponential backoff: `initial`, `2 * initial`, ... capped at `max`.
+///
+/// ```
+/// use rohi_hal::runtime::Backoff;
+///
+/// let mut backoff = Backoff::new(1_000, 30_000);
+/// assert_eq!(backoff.next_delay_ms(), 1_000);
+/// assert_eq!(backoff.next_delay_ms(), 2_000);
+/// assert_eq!(backoff.next_delay_ms(), 4_000);
+/// // ... 8 s, 16 s, then capped at 30 s.
+/// backoff.reset();
+/// assert_eq!(backoff.next_delay_ms(), 1_000);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Backoff {
     initial_ms: u32,
@@ -57,6 +73,14 @@ impl Backoff {
 pub struct TimedOut;
 
 /// Run `future`, giving up after `timeout_ms`.
+///
+/// The timeout is a `select` between `future` and `delay.delay_ms(timeout_ms)`;
+/// when the delay wins, `future` is dropped, so it must be cancel-safe for the
+/// caller (an I²C transaction or UART read is cut short).
+///
+/// # Errors
+///
+/// [`TimedOut`] if `future` did not complete within `timeout_ms`.
 pub async fn with_timeout<D: DelayNs, F: core::future::Future>(
     delay: &mut D,
     timeout_ms: u32,

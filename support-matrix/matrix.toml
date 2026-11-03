@@ -1,0 +1,993 @@
+# ROHI hardware and capability support matrix. Schema and status definitions: docs/support/README.md.
+# The page docs/support/matrix.md is generated from this file (`cargo run -p rohi-support-matrix -- render --write`).
+# Missing evidence is `not-verified`, never success or failure. `hardware_verification = "verified"` requires a
+# `hw-report` evidence item.
+schema_version = 1
+reviewed = "2026-11-02"
+
+# --- Boards ---------------------------------------------------------------------------------------------------
+
+[[hardware]]
+id = "altruist-urban-esp32c6"
+name = "Altruist Urban"
+revision = "ES-ALTRUIST-URB-1, ESP32-C6-WROOM-1-N8"
+chip = "esp32c6"
+rohi_support = "supported"
+firmware = ["rohi-altruist-urban", "altruist-firmware"]
+summary = "Outdoor air-quality station: SDS011, BME280 and ICS-43434 microphone. The ROHI C6 pin map is taken from the upstream schematic and is not yet verified on hardware."
+upstream = ["up-urban"]
+
+[[hardware]]
+id = "altruist-urban-esp32c3"
+name = "Altruist Urban (legacy)"
+revision = "legacy ESP32-C3 Urban"
+chip = "esp32c3"
+rohi_support = "supported"
+firmware = ["rohi-altruist-urban", "altruist-firmware"]
+summary = "Legacy ESP32-C3 variant of the Urban. The ROHI pin map is checked against the Urban pinout, but airalab/hardware documents only the ESP32-C6 board, so there is no upstream schematic for this variant."
+upstream = ["up-altruist-fw"]
+
+[[hardware]]
+id = "altruist-insight-esp32c6"
+name = "Altruist Insight"
+revision = "ESP32-C6 (airalab/hardware, Altruist/Insight)"
+chip = "esp32c6"
+rohi_support = "other-firmware-only"
+firmware = ["altruist-firmware"]
+summary = "Indoor station with a display and an SCD4x CO2 sensor. ROHI has no Insight board module, firmware or display driver; only the independent altruist-firmware targets it."
+upstream = ["up-insight"]
+
+# --- Firmware -------------------------------------------------------------------------------------------------
+
+[[firmware]]
+id = "rohi-altruist-urban"
+name = "ROHI altruist-urban"
+owner = "rohi"
+location = "firmwares/altruist-urban"
+chips = ["esp32c3", "esp32c6"]
+summary = "Rust firmware of this repository, selected per chip by the `esp32c3` / `esp32c6` feature."
+
+[[firmware]]
+id = "altruist-firmware"
+name = "altruist-firmware"
+owner = "external"
+location = "https://github.com/airalab/altruist-firmware"
+chips = ["esp32c3", "esp32c6"]
+summary = "Independent PlatformIO firmware of the Altruist devices with its own feature set; ROHI has not assessed it and its claims are not ROHI support."
+
+# --- Capabilities ---------------------------------------------------------------------------------------------
+
+[[capability]]
+id = "bmx280"
+kind = "sensor"
+name = "BMP280 / BME280 environment"
+provides = "temperature (°C), pressure (Pa), relative humidity (%, BME280 only)"
+source = "crates/hal/src/sensors/bmx280.rs"
+
+[[capability]]
+id = "scd4x"
+kind = "sensor"
+name = "SCD40 / SCD41 CO2"
+provides = "CO2 (ppm), temperature (°C), relative humidity (%)"
+source = "crates/hal/src/sensors/scd4x.rs"
+
+[[capability]]
+id = "sds011"
+kind = "sensor"
+name = "SDS011 particulate matter"
+provides = "PM2.5 and PM10 (µg/m³)"
+source = "crates/hal/src/sensors/sds011/mod.rs"
+
+[[capability]]
+id = "noise"
+kind = "sensor"
+name = "I²S microphone noise level"
+provides = "average and maximum sound level (dB SPL, unweighted)"
+source = "crates/hal/src/sensors/noise.rs"
+
+[[capability]]
+id = "display"
+kind = "interface"
+name = "Display"
+provides = "on-device display output"
+
+[[capability]]
+id = "wifi-ip"
+kind = "interface"
+name = "Wi-Fi station and IP networking"
+provides = "Wi-Fi connection, DNS and TCP"
+source = "crates/net"
+
+[[capability]]
+id = "time-ntp"
+kind = "service"
+name = "Time synchronisation (NTP)"
+provides = "wall-clock time"
+source = "crates/time-ntp"
+
+[[capability]]
+id = "telemetry"
+kind = "service"
+name = "Telemetry (connectivity)"
+provides = "signed measurement envelopes sent to a connectivity provider"
+source = "crates/connectivity"
+
+[[capability]]
+id = "ble-control"
+kind = "interface"
+name = "BLE control plane"
+provides = "configuration, status and actions for the `rohi` client over BLE"
+source = "crates/control-ble"
+
+[[capability]]
+id = "config-store"
+kind = "service"
+name = "Persistent configuration store"
+provides = "typed configuration sections in flash"
+source = "crates/config-esp"
+
+[[capability]]
+id = "identity"
+kind = "service"
+name = "Device identity"
+provides = "persistent Ed25519 key and signer"
+source = "crates/identity"
+
+# --- Use cases ------------------------------------------------------------------------------------------------
+
+[[use_case]]
+id = "uc-urban-co2"
+title = "Measure CO2 with Altruist Urban"
+verdict = "unsupported"
+summary = "The Urban board carries no SCD4x. The firmware runs the SCD4x driver and would read a sensor wired to the I²C bus, but no wiring is documented upstream and nothing was verified."
+capabilities = ["scd4x"]
+missing = [
+  "An upstream-documented way to attach an SCD4x to the Urban",
+  "A hardware report with an SCD4x on the Urban",
+]
+
+[[use_case]]
+id = "uc-noise"
+title = "Measure environmental noise with ROHI"
+verdict = "partial"
+summary = "The Urban microphone yields unweighted dB SPL from the nominal ICS-43434 sensitivity. There is no per-device calibration and no A-weighting, so it is not dBA and not comparable to a calibrated sound level meter."
+capabilities = ["noise"]
+missing = [
+  "A-weighting (dBA)",
+  "Per-device calibration against a reference meter",
+  "Hardware verification on a board",
+]
+
+[[use_case]]
+id = "uc-insight"
+title = "Run ROHI on Altruist Insight"
+verdict = "unsupported"
+summary = "No ROHI firmware or board module exists for the Insight and no display driver exists. The SCD4x driver exists in the SDK, but nothing integrates it on this board."
+capabilities = ["scd4x", "display"]
+missing = [
+  "Insight board module in rohi-hal-esp",
+  "Display driver",
+  "Insight firmware",
+  "Hardware verification",
+]
+
+[[use_case]]
+id = "uc-water-quality"
+title = "Build a water-quality monitor with existing ROHI firmware"
+verdict = "unsupported"
+summary = "ROHI has no water-quality sensor driver (pH, turbidity, conductivity, temperature probes), no such board and no firmware. A new device would reuse the SDK services but needs all sensing work."
+missing = [
+  "Sensor drivers",
+  "A board definition and firmware",
+  "Calibration procedures",
+  "Hardware verification",
+]
+
+# --- Evidence -------------------------------------------------------------------------------------------------
+
+[[evidence]]
+id = "up-urban"
+kind = "upstream"
+title = "airalab/hardware: Altruist Urban"
+reference = "https://github.com/airalab/hardware/tree/73a4d5cd97b85a514f8f8a19c6285d21fb3797e4/Altruist/Urban"
+
+[[evidence]]
+id = "up-urban-sensors"
+kind = "upstream"
+title = "Altruist Urban sensor specification"
+reference = "https://github.com/airalab/hardware/blob/73a4d5cd97b85a514f8f8a19c6285d21fb3797e4/Altruist/Urban/README.md"
+
+[[evidence]]
+id = "up-insight"
+kind = "upstream"
+title = "airalab/hardware: Altruist Insight"
+reference = "https://github.com/airalab/hardware/tree/73a4d5cd97b85a514f8f8a19c6285d21fb3797e4/Altruist/Insight"
+
+[[evidence]]
+id = "up-insight-scd4x"
+kind = "upstream"
+title = "Insight SCD4x datasheet"
+reference = "https://github.com/airalab/hardware/blob/73a4d5cd97b85a514f8f8a19c6285d21fb3797e4/Altruist/Insight/Docs/Datasheets/CD_DS_SCD4x_Datasheet_D1.pdf"
+
+[[evidence]]
+id = "up-altruist-fw"
+kind = "upstream"
+title = "airalab/altruist-firmware README"
+reference = "https://github.com/airalab/altruist-firmware#readme"
+
+[[evidence]]
+id = "src-bmx280"
+kind = "source"
+title = "bmx280.rs"
+reference = "crates/hal/src/sensors/bmx280.rs"
+
+[[evidence]]
+id = "src-scd4x"
+kind = "source"
+title = "scd4x.rs"
+reference = "crates/hal/src/sensors/scd4x.rs"
+
+[[evidence]]
+id = "src-sds011"
+kind = "source"
+title = "sds011"
+reference = "crates/hal/src/sensors/sds011"
+
+[[evidence]]
+id = "src-noise"
+kind = "source"
+title = "noise.rs"
+reference = "crates/hal/src/sensors/noise.rs"
+
+[[evidence]]
+id = "src-net"
+kind = "source"
+title = "rohi-net"
+reference = "crates/net"
+
+[[evidence]]
+id = "src-time"
+kind = "source"
+title = "rohi-time-ntp"
+reference = "crates/time-ntp"
+
+[[evidence]]
+id = "src-connectivity"
+kind = "source"
+title = "rohi-connectivity"
+reference = "crates/connectivity"
+
+[[evidence]]
+id = "src-control-ble"
+kind = "source"
+title = "rohi-control-ble"
+reference = "crates/control-ble"
+
+[[evidence]]
+id = "src-config-esp"
+kind = "source"
+title = "rohi-config-esp"
+reference = "crates/config-esp"
+
+[[evidence]]
+id = "src-identity"
+kind = "source"
+title = "rohi-identity"
+reference = "crates/identity"
+
+[[evidence]]
+id = "src-fw-sensors"
+kind = "source"
+title = "firmware sensor tasks"
+reference = "firmwares/altruist-urban/src/tasks/sensors.rs"
+
+[[evidence]]
+id = "src-fw-main"
+kind = "source"
+title = "firmware startup"
+reference = "firmwares/altruist-urban/src/bin/main.rs"
+
+[[evidence]]
+id = "src-board-c3"
+kind = "source"
+title = "C3 board module"
+reference = "crates/hal-esp/src/board/altruist_urban/esp32c3.rs"
+
+[[evidence]]
+id = "src-board-c6"
+kind = "source"
+title = "C6 board module"
+reference = "crates/hal-esp/src/board/altruist_urban/esp32c6.rs"
+
+[[evidence]]
+id = "test-bmx280"
+kind = "test"
+title = "bmx280 tests"
+reference = "crates/hal/src/sensors/bmx280.rs"
+
+[[evidence]]
+id = "test-scd4x"
+kind = "test"
+title = "scd4x tests"
+reference = "crates/hal/src/sensors/scd4x.rs"
+
+[[evidence]]
+id = "test-sds011"
+kind = "test"
+title = "sds011 tests"
+reference = "crates/hal/src/sensors/sds011"
+
+[[evidence]]
+id = "test-noise"
+kind = "test"
+title = "noise tests"
+reference = "crates/hal/src/sensors/noise.rs"
+
+[[evidence]]
+id = "test-net"
+kind = "test"
+title = "rohi-net tests"
+reference = "crates/net/tests"
+
+[[evidence]]
+id = "test-time"
+kind = "test"
+title = "rohi-time-ntp tests"
+reference = "crates/time-ntp/src/tests.rs"
+
+[[evidence]]
+id = "test-connectivity"
+kind = "test"
+title = "rohi-connectivity tests"
+reference = "crates/connectivity/tests"
+
+[[evidence]]
+id = "test-control-ble"
+kind = "test"
+title = "rohi-control-ble tests"
+reference = "crates/control-ble/src/tests.rs"
+
+[[evidence]]
+id = "test-config"
+kind = "test"
+title = "rohi-config store tests"
+reference = "crates/config/tests/store.rs"
+
+[[evidence]]
+id = "test-identity"
+kind = "test"
+title = "rohi-identity tests"
+reference = "crates/identity/src/tests.rs"
+
+[[evidence]]
+id = "ci-workflow"
+kind = "ci"
+title = "CI"
+reference = ".github/workflows/ci.yml"
+
+[[evidence]]
+id = "doc-boards"
+kind = "source"
+title = "Boards"
+reference = "docs/platform/boards.md"
+
+[[evidence]]
+id = "doc-sensors"
+kind = "source"
+title = "Sensors"
+reference = "docs/sdk/sensors.md"
+
+[[evidence]]
+id = "doc-hwtest"
+kind = "source"
+title = "Hardware testing status"
+reference = "docs/validation/hardware-testing.md"
+
+# --- Entries: board × firmware × capability -------------------------------------------------------------
+
+[[entry]]
+hardware = "altruist-urban-esp32c6"
+firmware = "rohi-altruist-urban"
+capability = "bmx280"
+board_part = "documented"
+implementation = "implemented"
+integration = "integrated"
+host_tests = "passing"
+simulation = "none"
+target_build = "ci-built"
+hardware_verification = "not-verified"
+limitations = [
+  "The ESP32-C6 pin map comes from the upstream schematic and is not verified on hardware.",
+  "The driver handles BMP280 (no humidity) and BME280; the Urban documents a BME280.",
+]
+evidence = [
+  "src-bmx280",
+  "test-bmx280",
+  "src-fw-sensors",
+  "src-board-c6",
+  "doc-boards",
+  "ci-workflow",
+  "up-urban-sensors",
+  "doc-hwtest",
+]
+
+[[entry]]
+hardware = "altruist-urban-esp32c6"
+firmware = "rohi-altruist-urban"
+capability = "scd4x"
+board_part = "not-on-board"
+implementation = "implemented"
+integration = "integrated"
+host_tests = "passing"
+simulation = "none"
+target_build = "ci-built"
+hardware_verification = "not-verified"
+limitations = [
+  "The Urban sensor list has no SCD4x; the firmware starts the driver anyway and reports no measurement and an unhealthy sensor state when none answers on the I²C bus.",
+  "Attaching an external SCD4x is not documented upstream and not verified.",
+]
+evidence = [
+  "src-scd4x",
+  "test-scd4x",
+  "src-fw-sensors",
+  "src-board-c6",
+  "doc-boards",
+  "ci-workflow",
+  "up-urban-sensors",
+]
+
+[[entry]]
+hardware = "altruist-urban-esp32c6"
+firmware = "rohi-altruist-urban"
+capability = "sds011"
+board_part = "documented"
+implementation = "implemented"
+integration = "integrated"
+host_tests = "passing"
+simulation = "none"
+target_build = "ci-built"
+hardware_verification = "not-verified"
+limitations = [
+  "The ESP32-C6 pin map comes from the upstream schematic and is not verified on hardware.",
+  "The schematic names the SDS011 nets PM_TX and PM_RX without a viewpoint; swap the pins if the sensor stays silent.",
+  "The SDS011 accuracy is ±10 µg/m³ or ±15 % (upstream datasheet figure).",
+]
+evidence = [
+  "src-sds011",
+  "test-sds011",
+  "src-fw-sensors",
+  "src-board-c6",
+  "doc-boards",
+  "ci-workflow",
+  "up-urban-sensors",
+  "doc-hwtest",
+]
+
+[[entry]]
+hardware = "altruist-urban-esp32c6"
+firmware = "rohi-altruist-urban"
+capability = "noise"
+board_part = "documented"
+implementation = "implemented"
+integration = "integrated"
+host_tests = "passing"
+simulation = "none"
+target_build = "ci-built"
+hardware_verification = "not-verified"
+limitations = [
+  "The ESP32-C6 pin map comes from the upstream schematic and is not verified on hardware.",
+  "Unweighted dB SPL (not dBA) from the nominal ICS-43434 sensitivity (-26 dBFS at 94 dB SPL); no per-device calibration, so values include the microphone response and the device's own noise.",
+  "Not comparable to a calibrated, A-weighted sound level meter.",
+]
+evidence = [
+  "src-noise",
+  "test-noise",
+  "src-fw-sensors",
+  "src-board-c6",
+  "doc-boards",
+  "ci-workflow",
+  "up-urban-sensors",
+  "doc-sensors",
+]
+
+[[entry]]
+hardware = "altruist-urban-esp32c6"
+firmware = "rohi-altruist-urban"
+capability = "wifi-ip"
+board_part = "not-applicable"
+implementation = "implemented"
+integration = "integrated"
+host_tests = "passing"
+simulation = "none"
+target_build = "ci-built"
+hardware_verification = "not-verified"
+limitations = [
+  "Scan, connect, reconnect, wrong password, heap minimum and 24 h stability are listed as not yet measured on hardware.",
+]
+evidence = ["src-net", "test-net", "src-fw-main", "ci-workflow", "doc-hwtest"]
+
+[[entry]]
+hardware = "altruist-urban-esp32c6"
+firmware = "rohi-altruist-urban"
+capability = "time-ntp"
+board_part = "not-applicable"
+implementation = "implemented"
+integration = "integrated"
+host_tests = "passing"
+simulation = "none"
+target_build = "ci-built"
+hardware_verification = "not-verified"
+limitations = [
+  "Depends on a working Wi-Fi connection; no hardware run recorded.",
+]
+evidence = ["src-time", "test-time", "src-fw-main", "ci-workflow", "doc-hwtest"]
+
+[[entry]]
+hardware = "altruist-urban-esp32c6"
+firmware = "rohi-altruist-urban"
+capability = "telemetry"
+board_part = "not-applicable"
+implementation = "implemented"
+integration = "integrated"
+host_tests = "passing"
+simulation = "none"
+target_build = "ci-built"
+hardware_verification = "not-verified"
+limitations = [
+  "Depends on Wi-Fi, time and a provisioned device identity; no hardware run against a connectivity provider is recorded.",
+  "The independent altruist-firmware reports to Robonomics through its own mechanism; the two are not interchangeable.",
+]
+evidence = [
+  "src-connectivity",
+  "test-connectivity",
+  "src-fw-main",
+  "ci-workflow",
+  "doc-hwtest",
+]
+
+[[entry]]
+hardware = "altruist-urban-esp32c6"
+firmware = "rohi-altruist-urban"
+capability = "ble-control"
+board_part = "not-applicable"
+implementation = "implemented"
+integration = "integrated"
+host_tests = "passing"
+simulation = "none"
+target_build = "ci-built"
+hardware_verification = "not-verified"
+limitations = [
+  "One heap measurement exists (Wi-Fi and BLE running, chip not recorded); advertising, coexistence, MTU and 24 h stability are not measured.",
+  "No BLE pairing or encryption yet.",
+]
+evidence = [
+  "src-control-ble",
+  "test-control-ble",
+  "src-fw-main",
+  "ci-workflow",
+  "doc-hwtest",
+]
+
+[[entry]]
+hardware = "altruist-urban-esp32c6"
+firmware = "rohi-altruist-urban"
+capability = "config-store"
+board_part = "not-applicable"
+implementation = "implemented"
+integration = "integrated"
+host_tests = "passing"
+simulation = "none"
+target_build = "ci-built"
+hardware_verification = "not-verified"
+limitations = [
+  "The flash self-test (example-config) exists, but no run is recorded.",
+]
+evidence = [
+  "src-config-esp",
+  "test-config",
+  "src-fw-main",
+  "ci-workflow",
+  "doc-hwtest",
+]
+
+[[entry]]
+hardware = "altruist-urban-esp32c6"
+firmware = "rohi-altruist-urban"
+capability = "identity"
+board_part = "not-applicable"
+implementation = "implemented"
+integration = "integrated"
+host_tests = "passing"
+simulation = "none"
+target_build = "ci-built"
+hardware_verification = "not-verified"
+limitations = [
+  "The hardware checklist (provision, reboot, erase, re-provision) has no recorded results.",
+]
+evidence = [
+  "src-identity",
+  "test-identity",
+  "src-fw-main",
+  "ci-workflow",
+  "doc-hwtest",
+]
+
+[[entry]]
+hardware = "altruist-urban-esp32c3"
+firmware = "rohi-altruist-urban"
+capability = "bmx280"
+board_part = "undocumented"
+implementation = "implemented"
+integration = "integrated"
+host_tests = "passing"
+simulation = "none"
+target_build = "ci-built"
+hardware_verification = "not-verified"
+limitations = [
+  "The ESP32-C3 pin map is checked against the Urban pinout, but this variant has no schematic in airalab/hardware and no recorded hardware run.",
+  "The driver handles BMP280 (no humidity) and BME280; the Urban documents a BME280.",
+]
+evidence = [
+  "src-bmx280",
+  "test-bmx280",
+  "src-fw-sensors",
+  "src-board-c3",
+  "doc-boards",
+  "ci-workflow",
+  "doc-hwtest",
+]
+
+[[entry]]
+hardware = "altruist-urban-esp32c3"
+firmware = "rohi-altruist-urban"
+capability = "scd4x"
+board_part = "undocumented"
+implementation = "implemented"
+integration = "integrated"
+host_tests = "passing"
+simulation = "none"
+target_build = "ci-built"
+hardware_verification = "not-verified"
+limitations = [
+  "No upstream documentation of the variant's sensors; the firmware starts the SCD4x driver and reports no measurement and an unhealthy sensor state when none answers.",
+]
+evidence = [
+  "src-scd4x",
+  "test-scd4x",
+  "src-fw-sensors",
+  "src-board-c3",
+  "doc-boards",
+  "ci-workflow",
+]
+
+[[entry]]
+hardware = "altruist-urban-esp32c3"
+firmware = "rohi-altruist-urban"
+capability = "sds011"
+board_part = "undocumented"
+implementation = "implemented"
+integration = "integrated"
+host_tests = "passing"
+simulation = "none"
+target_build = "ci-built"
+hardware_verification = "not-verified"
+limitations = [
+  "The ESP32-C3 pin map is checked against the Urban pinout, but this variant has no schematic in airalab/hardware and no recorded hardware run.",
+  "The UART wiring was not recorded in a hardware report.",
+  "The SDS011 accuracy is ±10 µg/m³ or ±15 % (upstream datasheet figure).",
+]
+evidence = [
+  "src-sds011",
+  "test-sds011",
+  "src-fw-sensors",
+  "src-board-c3",
+  "doc-boards",
+  "ci-workflow",
+  "doc-hwtest",
+]
+
+[[entry]]
+hardware = "altruist-urban-esp32c3"
+firmware = "rohi-altruist-urban"
+capability = "noise"
+board_part = "undocumented"
+implementation = "implemented"
+integration = "integrated"
+host_tests = "passing"
+simulation = "none"
+target_build = "ci-built"
+hardware_verification = "not-verified"
+limitations = [
+  "The ESP32-C3 pin map is checked against the Urban pinout, but this variant has no schematic in airalab/hardware and no recorded hardware run.",
+  "Unweighted dB SPL (not dBA) from the nominal ICS-43434 sensitivity (-26 dBFS at 94 dB SPL); no per-device calibration, so values include the microphone response and the device's own noise.",
+  "Not comparable to a calibrated, A-weighted sound level meter.",
+]
+evidence = [
+  "src-noise",
+  "test-noise",
+  "src-fw-sensors",
+  "src-board-c3",
+  "doc-boards",
+  "ci-workflow",
+  "doc-sensors",
+]
+
+[[entry]]
+hardware = "altruist-urban-esp32c3"
+firmware = "rohi-altruist-urban"
+capability = "wifi-ip"
+board_part = "not-applicable"
+implementation = "implemented"
+integration = "integrated"
+host_tests = "passing"
+simulation = "none"
+target_build = "ci-built"
+hardware_verification = "not-verified"
+limitations = [
+  "Scan, connect, reconnect, wrong password, heap minimum and 24 h stability are listed as not yet measured on hardware.",
+]
+evidence = ["src-net", "test-net", "src-fw-main", "ci-workflow", "doc-hwtest"]
+
+[[entry]]
+hardware = "altruist-urban-esp32c3"
+firmware = "rohi-altruist-urban"
+capability = "time-ntp"
+board_part = "not-applicable"
+implementation = "implemented"
+integration = "integrated"
+host_tests = "passing"
+simulation = "none"
+target_build = "ci-built"
+hardware_verification = "not-verified"
+limitations = [
+  "Depends on a working Wi-Fi connection; no hardware run recorded.",
+]
+evidence = ["src-time", "test-time", "src-fw-main", "ci-workflow", "doc-hwtest"]
+
+[[entry]]
+hardware = "altruist-urban-esp32c3"
+firmware = "rohi-altruist-urban"
+capability = "telemetry"
+board_part = "not-applicable"
+implementation = "implemented"
+integration = "integrated"
+host_tests = "passing"
+simulation = "none"
+target_build = "ci-built"
+hardware_verification = "not-verified"
+limitations = [
+  "Depends on Wi-Fi, time and a provisioned device identity; no hardware run against a connectivity provider is recorded.",
+  "The independent altruist-firmware reports to Robonomics through its own mechanism; the two are not interchangeable.",
+]
+evidence = [
+  "src-connectivity",
+  "test-connectivity",
+  "src-fw-main",
+  "ci-workflow",
+  "doc-hwtest",
+]
+
+[[entry]]
+hardware = "altruist-urban-esp32c3"
+firmware = "rohi-altruist-urban"
+capability = "ble-control"
+board_part = "not-applicable"
+implementation = "implemented"
+integration = "integrated"
+host_tests = "passing"
+simulation = "none"
+target_build = "ci-built"
+hardware_verification = "not-verified"
+limitations = [
+  "One heap measurement exists (Wi-Fi and BLE running, chip not recorded); advertising, coexistence, MTU and 24 h stability are not measured.",
+  "No BLE pairing or encryption yet.",
+]
+evidence = [
+  "src-control-ble",
+  "test-control-ble",
+  "src-fw-main",
+  "ci-workflow",
+  "doc-hwtest",
+]
+
+[[entry]]
+hardware = "altruist-urban-esp32c3"
+firmware = "rohi-altruist-urban"
+capability = "config-store"
+board_part = "not-applicable"
+implementation = "implemented"
+integration = "integrated"
+host_tests = "passing"
+simulation = "none"
+target_build = "ci-built"
+hardware_verification = "not-verified"
+limitations = [
+  "The flash self-test (example-config) exists, but no run is recorded.",
+]
+evidence = [
+  "src-config-esp",
+  "test-config",
+  "src-fw-main",
+  "ci-workflow",
+  "doc-hwtest",
+]
+
+[[entry]]
+hardware = "altruist-urban-esp32c3"
+firmware = "rohi-altruist-urban"
+capability = "identity"
+board_part = "not-applicable"
+implementation = "implemented"
+integration = "integrated"
+host_tests = "passing"
+simulation = "none"
+target_build = "ci-built"
+hardware_verification = "not-verified"
+limitations = [
+  "The hardware checklist (provision, reboot, erase, re-provision) has no recorded results.",
+]
+evidence = [
+  "src-identity",
+  "test-identity",
+  "src-fw-main",
+  "ci-workflow",
+  "doc-hwtest",
+]
+
+[[entry]]
+hardware = "altruist-urban-esp32c6"
+firmware = "altruist-firmware"
+capability = "bmx280"
+board_part = "documented"
+implementation = "external"
+integration = "not-applicable"
+host_tests = "none"
+simulation = "none"
+target_build = "not-applicable"
+hardware_verification = "not-verified"
+limitations = [
+  "Claimed by the altruist-firmware README; ROHI has not built or verified it.",
+]
+evidence = ["up-altruist-fw", "up-urban-sensors"]
+
+[[entry]]
+hardware = "altruist-urban-esp32c6"
+firmware = "altruist-firmware"
+capability = "sds011"
+board_part = "documented"
+implementation = "external"
+integration = "not-applicable"
+host_tests = "none"
+simulation = "none"
+target_build = "not-applicable"
+hardware_verification = "not-verified"
+limitations = [
+  "Claimed by the altruist-firmware README; ROHI has not built or verified it.",
+]
+evidence = ["up-altruist-fw", "up-urban-sensors"]
+
+[[entry]]
+hardware = "altruist-urban-esp32c6"
+firmware = "altruist-firmware"
+capability = "noise"
+board_part = "documented"
+implementation = "external"
+integration = "not-applicable"
+host_tests = "none"
+simulation = "none"
+target_build = "not-applicable"
+hardware_verification = "not-verified"
+limitations = [
+  "Claimed by the altruist-firmware README; ROHI has not built or verified it.",
+  "Reports the level in dBA, a different metric from the unweighted dB SPL of ROHI; the values must not be compared.",
+]
+evidence = ["up-altruist-fw", "up-urban-sensors"]
+
+[[entry]]
+hardware = "altruist-urban-esp32c3"
+firmware = "altruist-firmware"
+capability = "bmx280"
+board_part = "undocumented"
+implementation = "external"
+integration = "not-applicable"
+host_tests = "none"
+simulation = "none"
+target_build = "not-applicable"
+hardware_verification = "not-verified"
+limitations = [
+  "Claimed by the altruist-firmware README; ROHI has not built or verified it.",
+]
+evidence = ["up-altruist-fw"]
+
+[[entry]]
+hardware = "altruist-urban-esp32c3"
+firmware = "altruist-firmware"
+capability = "sds011"
+board_part = "undocumented"
+implementation = "external"
+integration = "not-applicable"
+host_tests = "none"
+simulation = "none"
+target_build = "not-applicable"
+hardware_verification = "not-verified"
+limitations = [
+  "Claimed by the altruist-firmware README; ROHI has not built or verified it.",
+]
+evidence = ["up-altruist-fw"]
+
+[[entry]]
+hardware = "altruist-urban-esp32c3"
+firmware = "altruist-firmware"
+capability = "noise"
+board_part = "undocumented"
+implementation = "external"
+integration = "not-applicable"
+host_tests = "none"
+simulation = "none"
+target_build = "not-applicable"
+hardware_verification = "not-verified"
+limitations = [
+  "Claimed by the altruist-firmware README; ROHI has not built or verified it.",
+  "Reports the level in dBA, a different metric from the unweighted dB SPL of ROHI; the values must not be compared.",
+]
+evidence = ["up-altruist-fw"]
+
+[[entry]]
+hardware = "altruist-insight-esp32c6"
+capability = "scd4x"
+board_part = "documented"
+implementation = "implemented"
+integration = "not-integrated"
+host_tests = "passing"
+simulation = "none"
+target_build = "not-built"
+hardware_verification = "not-verified"
+limitations = [
+  "The driver exists, but no ROHI firmware or Insight board module wires it.",
+]
+evidence = ["src-scd4x", "test-scd4x", "up-insight-scd4x"]
+
+[[entry]]
+hardware = "altruist-insight-esp32c6"
+capability = "display"
+board_part = "documented"
+implementation = "not-implemented"
+integration = "not-integrated"
+host_tests = "none"
+simulation = "none"
+target_build = "not-built"
+hardware_verification = "not-verified"
+limitations = ["ROHI has no display driver."]
+evidence = ["up-insight"]
+
+[[entry]]
+hardware = "altruist-insight-esp32c6"
+firmware = "altruist-firmware"
+capability = "scd4x"
+board_part = "documented"
+implementation = "external"
+integration = "not-applicable"
+host_tests = "none"
+simulation = "none"
+target_build = "not-applicable"
+hardware_verification = "not-verified"
+limitations = [
+  "Claimed by the altruist-firmware README; ROHI has not built or verified it.",
+]
+evidence = ["up-altruist-fw", "up-insight-scd4x"]
+
+[[entry]]
+hardware = "altruist-insight-esp32c6"
+firmware = "altruist-firmware"
+capability = "display"
+board_part = "documented"
+implementation = "external"
+integration = "not-applicable"
+host_tests = "none"
+simulation = "none"
+target_build = "not-applicable"
+hardware_verification = "not-verified"
+limitations = [
+  "Claimed by the altruist-firmware README (display and QR code); ROHI has not built or verified it.",
+]
+evidence = ["up-altruist-fw", "up-insight"]

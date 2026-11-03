@@ -22,6 +22,25 @@
 //! name, DHCP timing); the Wi-Fi station itself is the [`wifi`](crate::wifi)
 //! section and service. Its observed state is the [`NetworkService`]: the
 //! address and the socket usage.
+//!
+//! # The `network` section
+//!
+//! [`NetworkConfig`] holds `address_mode` ([`AddressMode::Dhcp`] or
+//! [`AddressMode::Static`]), `ip`, `prefix_len`, `gateway`, `dns`, `hostname`
+//! (DHCP option 12) and `dhcp_timeout` (ms). Static mode needs `ip`,
+//! `prefix_len` and `gateway` on the same link. A change of the section
+//! reconnects, because the address is obtained while joining the network (see
+//! [`WifiHandle::set_network_config`](crate::WifiHandle::set_network_config)).
+//!
+//! # The `network` service
+//!
+//! Status fields: `ip`, `gateway`, `dns`, `tcp_in_use`, `tcp_capacity`,
+//! `udp_in_use` and `udp_capacity`; the socket numbers come from a
+//! [`NetworkProbe`] the firmware passes to [`NetworkService`], so this crate
+//! stays free of platform types. The service has no actions: the link is
+//! operated through the `wifi` service. It shares the link state with `wifi`:
+//! `network` is `running` when the link is up and reports `dhcp_failed` as its
+//! issue ([`issue`]); every other link error is an issue of `wifi`.
 
 mod config;
 mod managed;

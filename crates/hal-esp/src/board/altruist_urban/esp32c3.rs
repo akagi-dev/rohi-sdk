@@ -15,12 +15,11 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////
 //! Altruist Urban (ESP32-C3) pin map and peripheral bundle.
 //!
 //! All GPIO assignments of the board live in this file; drivers never name
 //! pins. Hardware production documentation:
-//! * https://github.com/airalab/hardware/tree/main/Altruist
+//! * <https://github.com/airalab/hardware/tree/main/Altruist>
 //!
 //! Device: <https://robonomics.network/devices/altruist/>
 //!

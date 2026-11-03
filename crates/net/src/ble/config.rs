@@ -30,6 +30,15 @@ pub const MAX_BLE_NAME_LEN: usize = 29;
 
 /// The name a BLE central sees: 1 to [`MAX_BLE_NAME_LEN`] bytes of UTF-8
 /// without control characters.
+///
+/// ```
+/// use rohi_net::{BleName, MAX_BLE_NAME_LEN};
+///
+/// assert_eq!(BleName::new("ALTRUIST-URBAN-A1B2").unwrap().as_str(), "ALTRUIST-URBAN-A1B2");
+/// assert!(BleName::new("").is_none());
+/// assert!(BleName::new("two\nlines").is_none());
+/// assert!(BleName::new(&"a".repeat(MAX_BLE_NAME_LEN + 1)).is_none());
+/// ```
 #[derive(Clone, PartialEq, Eq, Encode, Decode, CborLen)]
 #[cbor(transparent)]
 pub struct BleName(
@@ -68,6 +77,15 @@ impl fmt::Debug for BleName {
 /// The name is read when the peripheral starts: a change takes effect after
 /// a restart. What is stored are the explicit user overrides of it,
 /// [`BleOverrides`].
+///
+/// ```
+/// use rohi_net::{BleName, BleSettings};
+///
+/// // The default keeps the firmware name.
+/// assert_eq!(BleSettings::default().name, None);
+/// let settings = BleSettings { name: BleName::new("kitchen") };
+/// assert_eq!(settings.name.unwrap().as_str(), "kitchen");
+/// ```
 #[derive(Clone, Debug, Default, PartialEq, Eq, Config)]
 #[config(name = "ble", overrides = BleOverrides, version = 1)]
 pub struct BleSettings {

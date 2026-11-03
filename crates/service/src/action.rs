@@ -18,13 +18,110 @@
 //! Actions: explicit runtime operations a service offers, with typed
 //! arguments and results.
 //!
-//! Status is read-only; anything that changes the runtime (scan, reconnect,
-//! provision an identity) is an action declared by the owning service. Clients
-//! discover actions and their argument and result fields dynamically.
+//! Status is read-only; everything that *does* something (scan, reconnect,
+//! provision an identity) is an action declared by the owning service through
+//! [`Action`]. Clients discover actions and their argument and result fields
+//! dynamically (`ListActions`, `GetActionSchema`, `InvokeAction`).
 //!
-//! An action returns zero or more *records*; each record is a list of field
-//! values described by [`ActionDescriptor::results`]. A scan returns one
-//! record per network, a reconnect returns none.
+//! ```
+//! use rohi_service::{ActionDescriptor, FieldDescriptor, Unit, ValueKind};
+//!
+//! const SCAN_RESULT: &[FieldDescriptor] = &[
+//!     FieldDescriptor::new(1, "ssid", ValueKind::String),
+//!     FieldDescriptor::new(2, "rssi", ValueKind::I64).unit(Unit::Dbm),
+//! ];
+//!
+//! const ACTIONS: &[ActionDescriptor] = &[
+//!     ActionDescriptor::new(1, "scan").results(SCAN_RESULT),
+//!     ActionDescriptor::new(2, "reconnect").privileged(),
+//! ];
+//!
+//! assert!(ACTIONS[1].privileged);
+//! ```
+//!
+//! A service implements [`Action`] next to its [`Service`] identity. The
+//! action registry ([`ActionRegistry`](crate::ActionRegistry), a tuple of
+//! `&S`) checks the arguments and calls [`Action::invoke`]:
+//!
+//! ```
+//! use embassy_futures::block_on;
+//! use rohi_service::{
+//!     Action, ActionDescriptor, ActionError, ActionOutput, ActionRegistry, FieldDescriptor,
+//!     Service, Unit, Value, ValueKind,
+//! };
+//!
+//! #[derive(Service)]
+//! struct WifiService;
+//!
+//! const SCAN_RESULT: &[FieldDescriptor] = &[
+//!     FieldDescriptor::new(1, "ssid", ValueKind::String),
+//!     FieldDescriptor::new(2, "rssi", ValueKind::I64).unit(Unit::Dbm),
+//! ];
+//!
+//! impl Action for WifiService {
+//!     const ACTIONS: &'static [ActionDescriptor] = &[
+//!         ActionDescriptor::new(1, "scan").results(SCAN_RESULT),
+//!         ActionDescriptor::new(2, "reconnect").privileged(),
+//!     ];
+//!
+//!     async fn invoke(
+//!         &self,
+//!         action: u32,
+//!         _args: &[(u32, Value)],
+//!         out: &mut impl ActionOutput,
+//!     ) -> Result<(), ActionError> {
+//!         match action {
+//!             1 => {
+//!                 // One record per network found.
+//!                 out.text(1, "home").map_err(|_| ActionError::Internal)?;
+//!                 out.i64(2, -61).map_err(|_| ActionError::Internal)?;
+//!                 out.next_record().map_err(|_| ActionError::Internal)?;
+//!                 out.text(1, "guest").map_err(|_| ActionError::Internal)?;
+//!                 out.i64(2, -80).map_err(|_| ActionError::Internal)?;
+//!                 Ok(())
+//!             }
+//!             2 => Ok(()),
+//!             _ => Err(ActionError::UnknownAction),
+//!         }
+//!     }
+//! }
+//!
+//! let wifi = WifiService;
+//! let actions = (&wifi,);
+//! let records = block_on(actions.invoke(WifiService::ID, 1, &[])).unwrap();
+//! assert_eq!(records.len(), 2);
+//! assert_eq!(records[0][1], (2, Value::I64(-61)));
+//! assert_eq!(
+//!     block_on(actions.invoke(WifiService::ID, 9, &[])),
+//!     Err(ActionError::UnknownAction)
+//! );
+//! ```
+//!
+//! An action takes typed **arguments** (all required, checked against the
+//! descriptor before [`Action::invoke`] runs: every argument is known, of the
+//! right kind and present exactly once) and returns zero or more **records**
+//! of typed fields described by [`ActionDescriptor::results`]: a scan returns
+//! one record per network, a reconnect none. A record is started with
+//! [`ActionOutput::next_record`]; the first field written without it starts
+//! the first record.
+//!
+//! [`privileged`](ActionDescriptor::privileged) requires the mutating
+//! privilege of the link policy, enforced by the control plane
+//! ([`rohi-control`](../../rohi_control/index.html)), not by this crate;
+//! [`secret`](ActionDescriptor::secret) marks arguments that are secrets
+//! (identity provisioning): it implies `privileged`, maps to the `Provision`
+//! privilege of the control plane, and the control plane wipes the secret
+//! arguments after the call.
+//!
+//! An action fails with an [`ActionError`]: `InvalidArgument`, `Busy`,
+//! `Unavailable`, `Internal` or `Rejected("code")`, a refusal with a stable
+//! machine-readable reason such as `already_provisioned`.
+//!
+//! Limits: at most [`MAX_ACTION_ARGS`] arguments, [`MAX_RECORDS`] records of
+//! at most [`MAX_RECORD_FIELDS`] fields; a result string or bytes value is at
+//! most [`MAX_FIELD_VALUE_LEN`](crate::MAX_FIELD_VALUE_LEN) bytes, an argument
+//! at most [`MAX_VALUE_LEN`](crate::MAX_VALUE_LEN). An action has at most one
+//! enum ([`MAX_ENUMS`](crate::MAX_ENUMS)).
 
 use heapless::Vec;
 
@@ -114,9 +211,9 @@ impl ActionDescriptor {
 /// `WifiService` exposes `scan`, `reconnect` and `disconnect`. A
 /// service implements it independently of [`Status`](crate::Status).
 ///
-/// The action registry has already authorized the call and checked the
-/// arguments against the descriptor when [`invoke`](Self::invoke) runs;
-/// secret arguments are wiped by the caller after it returns.
+/// The action registry has already checked the arguments against the
+/// descriptor when [`invoke`](Self::invoke) runs; the control plane has
+/// authorized the call and wipes secret arguments after it returns.
 #[allow(async_fn_in_trait)]
 pub trait Action: Service {
     /// The actions of the service, see [`ActionDescriptor`].
@@ -124,6 +221,14 @@ pub trait Action: Service {
 
     /// Runs one of [`ACTIONS`](Self::ACTIONS); results are written to `out`
     /// as records.
+    ///
+    /// # Errors
+    ///
+    /// [`ActionError::UnknownAction`] for an id outside [`ACTIONS`](Self::ACTIONS),
+    /// [`ActionError::Rejected`] for a refusal with a stable reason and the
+    /// other variants as described there. A failed write into `out` converts
+    /// to [`ActionError::Internal`] with `?`; nothing is returned to the
+    /// client when the action fails.
     async fn invoke(
         &self,
         action: u32,

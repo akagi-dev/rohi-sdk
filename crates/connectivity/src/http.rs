@@ -19,7 +19,7 @@
 //!
 //! ```text
 //! POST /v1/telemetry HTTP/1.1
-//! Host: <host>
+//! Host: <host>[:<port>]
 //! Content-Type: application/protobuf
 //! Content-Length: <frame length>
 //! Connection: close
@@ -27,9 +27,17 @@
 //! <exact SignedEnvelope bytes>
 //! ```
 //!
-//! One request per connection. The response body is ignored; only the status
-//! line is read (see [`classify_status`]). The transport is plain HTTP: TLS
-//! can later wrap the connection without touching the message or signature.
+//! The port is part of the `Host` header unless it is 80. The request goes
+//! over plain TCP (DNS or an IPv4 literal, then `NetworkHandle::connect`),
+//! one request per connection, with a total timeout per attempt
+//! ([`DEFAULT_TIMEOUT_MS`], 20 s). The response body is ignored; only the
+//! status line is read (see [`classify_status`], the classification table is
+//! in [`transport`](crate::transport)). The transport is plain HTTP: TLS can
+//! later wrap the connection without touching the message or signature.
+//!
+//! The timeout is a `select` against [`DelayNs`]: when it fires the exchange
+//! future is dropped and the attempt counts as
+//! [`TransportError::Timeout`].
 
 use core::fmt::Write as _;
 use core::net::{IpAddr, SocketAddr};
@@ -56,6 +64,77 @@ const HEAD_CAPACITY: usize = 256;
 const RESPONSE_CAPACITY: usize = 64;
 
 /// HTTP transport of [`EnvelopeFrame`]s.
+///
+/// One attempt resolves the host (an IP literal skips DNS), opens a
+/// connection through the [`NetworkHandle`], writes the request head and the
+/// exact frame bytes and reads the status line; everything is bounded by the
+/// timeout of the transport. Only `202` is an acknowledgement, see
+/// [`classify_status`].
+///
+/// The example talks to a scripted server on the in-memory IP backend of
+/// `rohi-net` (feature `testing`):
+///
+/// ```
+/// use core::net::{IpAddr, Ipv4Addr, SocketAddr};
+///
+/// use embassy_futures::{block_on, join::join, yield_now};
+/// use embedded_hal_async::delay::DelayNs;
+/// use rohi_connectivity::http::request_head;
+/// use rohi_connectivity::{
+///     Endpoint, EnvelopeBuilder, EnvelopeFrame, EnvelopeTransport, HttpTransport, NONCE_LEN,
+///     NonceError, NonceSource, TransportAck,
+/// };
+/// use rohi_identity::Identity;
+/// use rohi_net::NetworkHandle;
+/// use rohi_net::testing::FakeIp;
+///
+/// struct Counter;
+/// impl NonceSource for Counter {
+///     fn fill_nonce(&mut self, dst: &mut [u8; NONCE_LEN]) -> Result<(), NonceError> {
+///         dst.fill(1);
+///         Ok(())
+///     }
+/// }
+/// // A timeout that never fires; the firmware passes its embassy delay.
+/// struct NeverDelay;
+/// impl DelayNs for NeverDelay {
+///     async fn delay_ns(&mut self, _ns: u32) {
+///         core::future::pending::<()>().await
+///     }
+/// }
+///
+/// let signer = Identity::from_secret(&[7; 32]).unwrap().signer();
+/// let frame: EnvelopeFrame = EnvelopeBuilder::new(&signer, &mut Counter)
+///     .sign(&[0x0a, 0x04, 0x08, 0x07, 0x10, 0x01])
+///     .unwrap();
+///
+/// let server_addr = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7));
+/// let ip = FakeIp::<2, 1024>::new();
+/// ip.set_ready(true);
+/// ip.add_host("ingress.test", server_addr);
+///
+/// let endpoint = Endpoint::parse("http://ingress.test").unwrap();
+/// let head = request_head(endpoint, frame.len()).unwrap();
+/// let mut transport = HttpTransport::new(NetworkHandle::new(&ip), endpoint, NeverDelay);
+///
+/// // The server: wait for head and frame, answer `202 Accepted`.
+/// let remote = SocketAddr::new(server_addr, 80);
+/// let server = async {
+///     let mut received = Vec::new();
+///     while received.len() < head.len() + frame.len() {
+///         received.extend_from_slice(&ip.peer_received(remote));
+///         yield_now().await;
+///     }
+///     ip.peer_send(remote, b"HTTP/1.1 202 Accepted\r\n\r\n");
+///     ip.peer_close(remote);
+///     received
+/// };
+///
+/// let (result, received) = block_on(join(transport.send(&frame), server));
+/// assert_eq!(result, Ok(TransportAck { status: 202 }));
+/// assert!(received.starts_with(head.as_bytes()));
+/// assert!(received.ends_with(frame.as_bytes())); // the exact signed bytes
+/// ```
 pub struct HttpTransport<'a, B, D> {
     net: NetworkHandle<'a, B>,
     endpoint: Endpoint<'a>,
@@ -148,6 +227,26 @@ fn map_error(error: NetError) -> TransportError {
 }
 
 /// The request line and headers for a body of `content_length` bytes.
+///
+/// # Errors
+///
+/// [`TransportError::BadResponse`] if the head does not fit its 256-byte
+/// buffer (a host and port that the endpoint parser would not accept).
+///
+/// ```
+/// use rohi_connectivity::Endpoint;
+/// use rohi_connectivity::http::request_head;
+///
+/// let endpoint = Endpoint::parse("http://ingress.example.org:8080").unwrap();
+/// assert_eq!(
+///     request_head(endpoint, 194).unwrap().as_str(),
+///     "POST /v1/telemetry HTTP/1.1\r\n\
+///      Host: ingress.example.org:8080\r\n\
+///      Content-Type: application/protobuf\r\n\
+///      Content-Length: 194\r\n\
+///      Connection: close\r\n\r\n"
+/// );
+/// ```
 pub fn request_head(
     endpoint: Endpoint<'_>,
     content_length: usize,

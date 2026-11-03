@@ -74,7 +74,13 @@ impl EnumVariant {
 /// The variants of an enum, referenced by [`FieldDescriptor::enum_id`].
 ///
 /// Variants are not part of the field: a section, service or action lists
-/// its enums once and fields that are no enums carry nothing.
+/// its enums once (see [`crate::Config::ENUMS`], [`crate::Status::ENUMS`] and
+/// [`crate::ActionDescriptor::enums`]) as
+/// `EnumDescriptor::new(id, &[EnumVariant::new(value, "name"), ..])`, and
+/// fields that are no enums carry nothing. A checked value must be one of the
+/// variants. A section, service or action has at most one enum
+/// ([`MAX_ENUMS`](crate::MAX_ENUMS)), a constraint of the compact control
+/// protocol.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EnumDescriptor {
     /// Non-zero, unique within the section, service or action.
@@ -120,7 +126,21 @@ pub(crate) fn enum_allows(enums: &[EnumDescriptor], id: u32, value: u32) -> bool
 }
 
 /// Static description of one field of a config section, a service or an
-/// action.
+/// action, declared once as a `const`:
+///
+/// ```
+/// use rohi_service::{FieldDescriptor, Unit, ValueKind};
+///
+/// const RSSI: FieldDescriptor = FieldDescriptor::new(2, "rssi", ValueKind::I64).unit(Unit::Dbm);
+/// assert_eq!(RSSI.name, "rssi");
+/// ```
+///
+/// The [`Unit`] is a code, not text, and there is no description: the
+/// documentation belongs to the rustdoc and the book, not to every response
+/// of the firmware. Ids are stable and only ever added; nested fields use
+/// dotted names (`bmx280.temperature`). An enum field refers to the
+/// [`EnumDescriptor`] of its table with [`with_enum`](Self::with_enum): an
+/// enum field must refer to an enum of its table and no other field may.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FieldDescriptor {
     /// Stable within the section or service: only ever added, never reused.
@@ -186,6 +206,24 @@ impl Bounds {
 }
 
 /// A [`FieldDescriptor`] extended with the config-only attributes.
+///
+/// A field is **writable** unless marked [`read_only`](Self::read_only), and
+/// **required** unless marked [`optional`](Self::optional): an optional field
+/// may have no value (its default is none), distinct from an empty string or
+/// zero. A [`secret`](Self::secret) field is write-only: a read reports it as
+/// set, never its value. [`Bounds`] are checked by the device and not sent to
+/// clients; the schema expresses only simple constraints (kind, enum
+/// variants, numeric range), everything else stays in the typed
+/// [`crate::Config::validate`], which remains authoritative.
+///
+/// ```
+/// use rohi_service::{Bounds, ConfigField, Unit, ValueKind};
+///
+/// const INTERVAL: ConfigField = ConfigField::new(3, "interval_s", ValueKind::U64)
+///     .unit(Unit::S)
+///     .bounds(Bounds::U64(10, 86_400));
+/// assert!(INTERVAL.writable);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ConfigField {
     /// Common description.

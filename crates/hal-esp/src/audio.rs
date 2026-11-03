@@ -15,12 +15,17 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////
 //! I2S microphone audio source for ESP32.
 //!
 //! Receives mono 32-bit Philips frames over DMA into a fixed ring buffer and
-//! converts them to signed 24-bit samples. Samples are handed to the level
-//! meter right away; nothing is stored.
+//! converts them to signed 24-bit samples (the 24-bit data is left-aligned in
+//! the 32-bit slot and shifted down). Samples are handed to the level meter
+//! right away; nothing is stored.
+//!
+//! [`I2sMicrophone`] implements [`AudioSource`], the input of the noise driver
+//! [`Noise`](rohi_hal::sensors::noise::Noise). The ring buffer is created by
+//! the board support ([`AltruistUrban::new`](crate::board::altruist_urban::AltruistUrban::new))
+//! and its size bounds how long the reader may stay away from it.
 
 use esp_hal::Async;
 use esp_hal::dma::{DmaError, DmaRxStreamBuf};
@@ -33,6 +38,10 @@ use rohi_hal::sensors::noise::AudioSource;
 const SAMPLES_PER_READ: usize = 64;
 
 /// I2S microphone error.
+///
+/// Mapped to `SensorErrorCode::Bus` by the noise driver (as
+/// [`Error::Source`](rohi_hal::sensors::noise::Error::Source)); the sensor
+/// runner then recovers with backoff.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Error {
     /// The DMA transfer failed; the next read starts a fresh one.
@@ -51,6 +60,18 @@ enum State {
 }
 
 /// DMA backed I2S microphone, one 32-bit slot per sample.
+///
+/// The DMA transfer runs only while a read is in progress: it starts on the
+/// first [`read`](AudioSource::read) and is stopped after a failed one, because
+/// an undrained ring overflows with a DMA descriptor error. Every read hands out
+/// at most 64 samples (the per-read stack buffer) regardless of the size of
+/// `out`, and returns whatever the ring already holds before waiting for more.
+///
+/// # Cancellation
+///
+/// A dropped `read` future only abandons the wait; the transfer keeps running
+/// and the next read continues from the ring (or fails with
+/// [`Error::Dma`] if the ring overflowed in the meantime).
 pub struct I2sMicrophone {
     state: State,
 }
@@ -58,6 +79,10 @@ pub struct I2sMicrophone {
 impl I2sMicrophone {
     /// Prepare to receive into `buffer`. The transfer starts on the first
     /// read, so the ring is drained as soon as it starts to fill.
+    ///
+    /// # Errors
+    ///
+    /// Currently always returns `Ok`.
     pub fn new(rx: I2sRx<'static, Async>, buffer: DmaRxStreamBuf) -> Result<Self, Error> {
         Ok(Self {
             state: State::Idle(rx, buffer),

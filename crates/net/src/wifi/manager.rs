@@ -38,7 +38,8 @@ use crate::{
     WifiState, WifiStatus,
 };
 
-/// Number of tasks that can wait for status changes at the same time.
+/// Number of tasks that can wait for status changes at the same time, see
+/// [`WifiHandle::status_receiver`].
 pub const STATUS_RECEIVERS: usize = 3;
 
 /// Transient, imperative requests. Persistent configuration is never a
@@ -84,7 +85,9 @@ pub struct LinkMetrics {
 
 /// State shared between the [`WifiManager`] task and its [`WifiHandle`]s.
 ///
-/// Place it in a `static`; all storage is inline and bounded.
+/// Place it in a `static`; all storage is inline and bounded. `M` is the raw
+/// mutex of the firmware (for example `CriticalSectionRawMutex`, or
+/// `NoopRawMutex` when everything runs on one executor).
 pub struct WifiShared<M: RawMutex> {
     desired: BlockingMutex<M, RefCell<Desired>>,
     desired_changed: Signal<M, ()>,
@@ -97,6 +100,8 @@ pub struct WifiShared<M: RawMutex> {
 }
 
 impl<M: RawMutex> WifiShared<M> {
+    /// Empty shared state: nothing configured, status
+    /// [`WifiState::NotConfigured`].
     pub const fn new() -> Self {
         Self {
             desired: BlockingMutex::new(RefCell::new(Desired {
@@ -141,6 +146,28 @@ impl<M: RawMutex> Default for WifiShared<M> {
 /// (scan, reconnect, disconnect) are bounded commands. No handle method
 /// touches the platform driver. IP traffic (DNS, TCP) does not go through
 /// this handle, see [`NetworkHandle`](crate::NetworkHandle).
+///
+/// ```
+/// use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+/// use rohi_net::{WifiConfig, WifiError, WifiShared, WifiSsid, WifiState};
+///
+/// let shared = WifiShared::<NoopRawMutex>::new();
+/// let wifi = shared.handle();
+/// assert_eq!(wifi.status().state, WifiState::NotConfigured);
+/// assert!(!wifi.is_configured());
+///
+/// // The latest published value wins; no manager has to run for this.
+/// let ssid = WifiSsid::from_bytes(b"office").unwrap();
+/// wifi.set_wifi_config(WifiConfig::default().with_ssid(ssid));
+/// assert!(wifi.is_configured());
+/// assert_eq!(wifi.wifi_config().unwrap().ssid.unwrap().as_str(), Some("office"));
+///
+/// // Commands wait in a bounded queue until a manager serves them.
+/// for _ in 0..4 {
+///     wifi.reconnect().unwrap();
+/// }
+/// assert_eq!(wifi.reconnect(), Err(WifiError::Busy));
+/// ```
 pub struct WifiHandle<'a, M: RawMutex> {
     shared: &'a WifiShared<M>,
 }
@@ -267,6 +294,9 @@ impl<M: RawMutex> WifiHandle<'_, M> {
         self.shared.scan.wait().await
     }
 
+    /// The latest published status; [`WifiState::NotConfigured`] until the
+    /// manager published one. Use [`status_receiver`](Self::status_receiver)
+    /// to wait for changes.
     pub fn status(&self) -> WifiStatus {
         self.shared
             .status
@@ -280,6 +310,7 @@ impl<M: RawMutex> WifiHandle<'_, M> {
     }
 
     /// Receiver for status changes, `None` if all [`STATUS_RECEIVERS`] are taken.
+    /// A receiver keeps its slot until it is dropped.
     pub fn status_receiver(&self) -> Option<Receiver<'_, M, WifiStatus, STATUS_RECEIVERS>> {
         self.shared.status.receiver()
     }
@@ -288,7 +319,10 @@ impl<M: RawMutex> WifiHandle<'_, M> {
 /// Reconnect and refresh timing of the [`WifiManager`].
 #[derive(Clone, Copy, Debug)]
 pub struct ManagerConfig {
+    /// First delay before a reconnect attempt, doubling up to
+    /// [`backoff_max_ms`](Self::backoff_max_ms).
     pub backoff_initial_ms: u32,
+    /// Longest delay between reconnect attempts.
     pub backoff_max_ms: u32,
     /// How often connection details (RSSI) are refreshed while connected.
     ///
@@ -302,6 +336,7 @@ pub struct ManagerConfig {
 }
 
 impl ManagerConfig {
+    /// The defaults of [`WifiConfig`] and no clock.
     pub const DEFAULT: Self = Self {
         backoff_initial_ms: DEFAULT_BACKOFF_INITIAL_MS,
         backoff_max_ms: DEFAULT_BACKOFF_MAX_MS,
@@ -377,6 +412,10 @@ pub struct WifiManager<'a, B, D, M: RawMutex> {
 }
 
 impl<'a, B: WifiBackend, D: DelayNs, M: RawMutex> WifiManager<'a, B, D, M> {
+    /// A manager that owns `backend` and publishes through `shared`. `delay`
+    /// times the reconnect backoff and the link refresh; `settings` is the
+    /// initial timing, replaced by the timing of every configuration the
+    /// manager takes.
     pub fn new(backend: B, delay: D, shared: &'a WifiShared<M>, settings: ManagerConfig) -> Self {
         Self {
             backend,
@@ -392,6 +431,10 @@ impl<'a, B: WifiBackend, D: DelayNs, M: RawMutex> WifiManager<'a, B, D, M> {
     }
 
     /// Runs the manager forever. Spawn it as the only task using the backend.
+    ///
+    /// It never returns and is not meant to be cancelled: run it for the
+    /// lifetime of the firmware. Use [`step`](Self::step) to drive it by hand,
+    /// for example in tests.
     pub async fn run(&mut self) -> ! {
         loop {
             self.step().await;

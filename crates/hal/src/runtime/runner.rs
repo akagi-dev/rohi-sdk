@@ -15,41 +15,65 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////
 //! Generic sensor lifecycle runner.
 //!
 //! Translates driver results into the `rohi-hal` lifecycle:
 //!
 //! ```text
-//! NotDetected / Initializing -> WarmingUp -> Ready
-//!        Ready -> Degraded -> Error -> (re-init) -> Ready
+//! NotDetected -> Initializing -> WarmingUp -> Ready
+//! Ready -> Degraded -> Error -> (re-init) -> Initializing -> Ready
 //! ```
 //!
-//! Sensor absence is not an error: a sensor that was never detected is
-//! reported as `NotDetected` and probed again periodically. A sensor that was
-//! detected before and then disappears is reported as `Error` and keeps being
-//! recovered with exponential backoff, so reconnecting needs no reboot.
+//! * Sensor absence is not an error: a sensor that was never detected is
+//!   reported as `NotDetected` and probed again every
+//!   [`RunnerConfig::reprobe_interval_ms`] (10 s by default).
+//! * A sensor that was detected before and then stops answering is reported as
+//!   `Error` and keeps being recovered with exponential backoff, so a
+//!   reconnected sensor returns to `Ready` without a reboot.
+//! * The first failure gives `Degraded`; [`RunnerConfig::error_after`] (3)
+//!   consecutive failures give `Error`, and [`RunnerConfig::reinit_after`] (3)
+//!   consecutive failures re-initialize the driver.
+//! * Errors never erase the last valid observation; they are published as
+//!   `SensorEvent::Error`.
+//! * After a successful init the sensor is `WarmingUp`
+//!   ([`SensorDriver::WARMS_UP`]: SCD4x, SDS011) or still `Initializing`
+//!   (BMx280, noise) until its first measurement arrives.
 //!
 //! # Timing
 //!
-//! Four delays exist and are never combined:
+//! Four delays exist and are never added up:
 //!
-//! * **initial delay** ([`SensorDriver::initial_delay_ms`]): wait before the
-//!   very first sample after the sensor was first detected, `0` by default;
-//! * **poll interval** ([`SensorDriver::poll_interval_ms`]): wait after a
-//!   successful sample before the next one;
-//! * **recovery backoff** ([`RunnerConfig`]): wait after a failed sample or
-//!   init, growing exponentially up to a bound and reset by the next success.
-//!   A retry waits for the backoff only, not for the poll interval on top;
-//! * **sensor-internal warm-up**: owned by the driver, inside
-//!   [`SensorDriver::sample`] (e.g. the SDS011 fan spin-up).
+//! | Delay | Owner | Meaning |
+//! |-------|-------|---------|
+//! | Initial delay | driver ([`SensorDriver::initial_delay_ms`], default 0) | Wait before the first sample after first detection. No current driver needs one |
+//! | Poll interval | driver ([`SensorDriver::poll_interval_ms`]) | Wait **after a successful** sample before the next one |
+//! | Recovery backoff | runner ([`RunnerConfig`]) | Wait **after a failed** sample or init: 1 s, 2 s, 4 s ... capped at 30 s; reset by the next successful *measurement* |
+//! | Warm-up | driver, inside [`SensorDriver::sample`] | Hardware specific: SDS011 fan spin-up, SCD4x first reading |
+//!
+//! ```text
+//! success:  sample -> publish -> poll interval -> sample
+//! failure:  sample -> error   -> backoff       -> sample   (no poll interval on top)
+//! ```
+//!
+//! A retry therefore never waits "backoff + a full poll interval" (for the
+//! SDS011 that would be over 90 s), and the first sample after boot is taken
+//! immediately.
 //!
 //! # Events
 //!
 //! A successful sample is reported by one `Measurements` event; the store
 //! derives `Ready` from it, so no observer can see `Ready` with an old value.
 //! After a successful init the state is `WarmingUp` ([`SensorDriver::WARMS_UP`])
-//! or still `Initializing`, until the first measurement arrives.
+//! or still `Initializing`, until the first measurement arrives. The event
+//! kinds are described in [`bus`](super::bus).
+//!
+//! # Cancellation
+//!
+//! [`Runner::step`] may be dropped: the runner keeps its phase and the next
+//! step repeats the interrupted attempt. A sensor transaction in flight is cut
+//! short, so sensor tasks run `step` to completion and are not cancelled other
+//! than at shutdown. The initial delay is not lost when a step is dropped
+//! during the wait.
 
 use core::fmt::Debug;
 
@@ -62,6 +86,9 @@ use super::clock::Clock;
 use super::reporter::Reporter;
 
 /// Error of a sensor driver, mapped into the domain model.
+///
+/// Implemented by the error type of every driver in [`sensors`](crate::sensors);
+/// the [`Runner`] uses it to decide between "sensor absent" and "sensor failed".
 pub trait DriverError: Debug {
     /// Domain error code.
     fn code(&self) -> SensorErrorCode;
@@ -83,9 +110,22 @@ pub trait SensorDriver {
     type Error: DriverError;
 
     /// Probe and configure the sensor. Called again to recover after failures.
+    ///
+    /// # Errors
+    ///
+    /// An error for which [`DriverError::is_absent`] is true means the sensor
+    /// is not there, which the runner reports as `NotDetected` (and probes
+    /// again) as long as the sensor was never detected; any other error is
+    /// reported as a failure and retried with backoff.
     async fn init(&mut self) -> Result<(), Self::Error>;
 
     /// Wait for and read the next observation. `Ok(None)`: no data yet.
+    ///
+    /// # Errors
+    ///
+    /// Any error counts as a failed sample: it is published as
+    /// `SensorEvent::Error`, moves the sensor to `Degraded` / `Error` and
+    /// starts the recovery backoff, see the [module documentation](self).
     async fn sample<C: Clock>(
         &mut self,
         clock: &C,
@@ -144,6 +184,90 @@ enum Phase {
 }
 
 /// Drives one sensor: probing, periodic sampling and error recovery.
+///
+/// A runner owns its driver, its [`Reporter`] and a delay; call
+/// [`run`](Self::run) in a dedicated task (or [`step`](Self::step) in a loop
+/// of your own). It publishes through the reporter only; it never touches the
+/// store.
+///
+/// ```
+/// use embassy_futures::block_on;
+/// use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+/// use embedded_hal_async::delay::DelayNs;
+/// use rohi_hal::runtime::{
+///     Clock, DriverError, EventBus, Reporter, Runner, RunnerConfig, SensorDriver,
+/// };
+/// use rohi_hal::{
+///     Ags3871Update, MeasurementStore, MeasurementUpdate, MonotonicTimestamp, Ppm,
+///     SensorErrorCode, SensorKind, SensorState,
+/// };
+///
+/// struct BootClock;
+/// impl Clock for BootClock {
+///     fn now(&self) -> MonotonicTimestamp {
+///         MonotonicTimestamp::from_millis(0)
+///     }
+/// }
+///
+/// // Returns at once; on a device use `embassy_time::Delay`.
+/// struct NoDelay;
+/// impl DelayNs for NoDelay {
+///     async fn delay_ns(&mut self, _ns: u32) {}
+/// }
+///
+/// #[derive(Debug)]
+/// struct NeverFails;
+/// impl DriverError for NeverFails {
+///     fn code(&self) -> SensorErrorCode {
+///         SensorErrorCode::Unknown
+///     }
+///     fn is_absent(&self) -> bool {
+///         false
+///     }
+/// }
+///
+/// struct CarbonMonoxide;
+/// impl SensorDriver for CarbonMonoxide {
+///     const KIND: SensorKind = SensorKind::Ags3871;
+///     const WARMS_UP: bool = false;
+///     type Error = NeverFails;
+///
+///     async fn init(&mut self) -> Result<(), NeverFails> {
+///         Ok(())
+///     }
+///     async fn sample<C: Clock>(
+///         &mut self,
+///         clock: &C,
+///     ) -> Result<Option<MeasurementUpdate>, NeverFails> {
+///         Ok(Some(MeasurementUpdate::Ags3871(Ags3871Update {
+///             co: Ppm(1.5),
+///             timestamp: clock.now(),
+///         })))
+///     }
+///     fn poll_interval_ms(&self) -> u32 {
+///         10_000
+///     }
+/// }
+///
+/// let bus = EventBus::<NoopRawMutex, 16>::new();
+/// let reporter = Reporter::new(SensorKind::Ags3871, &bus, BootClock);
+/// let mut runner = Runner::new(CarbonMonoxide, reporter, NoDelay, RunnerConfig::DEFAULT);
+///
+/// // First step probes the sensor, the second takes the first sample.
+/// block_on(async {
+///     runner.step().await;
+///     runner.step().await;
+/// });
+///
+/// // The store task would normally do this with `bus.receive().await`.
+/// let mut store = MeasurementStore::new();
+/// while let Some(event) = bus.try_receive() {
+///     store.apply(event);
+/// }
+/// let snapshot = store.snapshot(MonotonicTimestamp::from_millis(1));
+/// assert_eq!(snapshot.sensor_statuses.get(SensorKind::Ags3871).state, SensorState::Ready);
+/// assert_eq!(snapshot.measurements.ags3871.unwrap().co.value, Some(Ppm(1.5)));
+/// ```
 pub struct Runner<'a, D, M, C, T, const N: usize>
 where
     D: SensorDriver,

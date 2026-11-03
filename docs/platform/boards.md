@@ -21,6 +21,7 @@ from the ESP32-C6 side, so swap them if the sensor stays silent. GPIO4 and GPIO5
 only select the JTAG source when the `JTAG_SEL_ENABLE` eFuse is burned, so the SDS011 does not affect booting. The C6 board also
 wires a button (GPIO7), a data-logging LED (GPIO0) and the CN4 expansion connector that the firmware does not drive.
 The firmware drives no sensor power or control pins. A board revision with a different pin map must get its own module
-instead of an edit of these tables. Hardware production documentation:
+instead of an edit of these tables. What is verified per board and capability is in the
+[support matrix](../support/overview.md). Hardware production documentation:
 [airalab/hardware](https://github.com/airalab/hardware/tree/main/Altruist), device page:
 <https://robonomics.network/devices/altruist/>.

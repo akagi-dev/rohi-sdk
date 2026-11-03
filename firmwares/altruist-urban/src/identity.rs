@@ -30,7 +30,7 @@
 //! ```text
 //! control protocol -> IdentityHandle -> ConfigHandle -> ConfigStore (Identity section)
 //!                          |
-//!                          +-> STATE -> IdentityHandle::sign (future signed telemetry)
+//!                          +-> STATE -> IdentityHandle::sign (signed telemetry)
 //! ```
 //!
 //! `STATE` is the runtime view of the stored identity: published by the

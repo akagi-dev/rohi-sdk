@@ -9,3 +9,7 @@ git-repository-url = "https://github.com/akagi-dev/rohi-sdk"
 
 [rust]
 edition = "2021"
+
+[output.html.redirect]
+"/getting-started/rohi-tool.html" = "../use/desktop/index.html"
+"/getting-started/services.html" = "../use/desktop/status.html"

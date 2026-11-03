@@ -15,8 +15,11 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////
 //! Per-sensor event reporter.
+//!
+//! A [`Reporter`] publishes the three kinds of event (see [`bus`](super::bus))
+//! of one sensor and optionally mirrors its state into a shared
+//! [`SensorStates`] view.
 
 use crate::{MeasurementUpdate, SensorErrorCode, SensorEvent, SensorKind, SensorState};
 use embassy_sync::blocking_mutex::raw::RawMutex;

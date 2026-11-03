@@ -15,6 +15,48 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
+//! Time sources: the [`TimeSource`] trait and the samples and failure
+//! categories it exchanges with the [`TimeService`](crate::TimeService).
+//!
+//! A source only produces samples. A hardware RTC source would implement the
+//! same trait, so a board with an RTC can establish the initial time before
+//! the network exists and let NTP refine it later; consumers do not change.
+//! A source must bound its own waits and be cancel-safe. The NTP source is
+//! [`NtpTimeSource`](../../rohi_time_ntp/struct.NtpTimeSource.html).
+//!
+//! # Implementing a source
+//!
+//! ```
+//! use core::time::Duration;
+//! use rohi_time::{SyncFailure, TimeSample, TimeSource, TimeSourceKind, UnixTime};
+//!
+//! /// A battery-backed clock chip, reduced to the bus read.
+//! struct Rtc {
+//!     bus_ok: bool,
+//! }
+//!
+//! impl TimeSource for Rtc {
+//!     // Any error type that converts into the coarse `SyncFailure`.
+//!     type Error = SyncFailure;
+//!
+//!     fn kind(&self) -> TimeSourceKind {
+//!         TimeSourceKind::Rtc
+//!     }
+//!
+//!     async fn sample(&mut self) -> Result<TimeSample, SyncFailure> {
+//!         if !self.bus_ok {
+//!             return Err(SyncFailure::Source);
+//!         }
+//!         Ok(TimeSample {
+//!             unix_time: UnixTime::from_secs(1_780_000_000),
+//!             uncertainty: Some(Duration::from_secs(1)),
+//!         })
+//!     }
+//! }
+//!
+//! // `is_available` defaults to `true`; `Synchronizer` and `sync_once` take it from here.
+//! assert!(Rtc { bus_ok: true }.is_available());
+//! ```
 
 use core::time::Duration;
 

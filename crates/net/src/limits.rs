@@ -18,6 +18,48 @@
 
 //! Resource limits of the network layer. Every application-facing buffer and
 //! queue in this crate is bounded by one of these constants.
+//!
+//! | Limit | Value | Where it applies |
+//! |-------|-------|------------------|
+//! | [`MAX_SSID_LEN`] | 32 bytes | [`WifiSsid`](crate::WifiSsid) |
+//! | [`MAX_WIFI_PASSWORD_LEN`] / [`MIN_WIFI_PASSWORD_LEN`] | 64 / 8 bytes | [`WifiPassword`](crate::WifiPassword) |
+//! | [`MAX_WIFI_SCAN_RESULTS`] | 16 networks | [`WifiScanResults`](crate::WifiScanResults) of one scan |
+//! | [`WIFI_COMMAND_QUEUE_DEPTH`] | 4 commands | scan, reconnect, disconnect queue of the [`WifiManager`](crate::WifiManager) |
+//! | [`STATUS_RECEIVERS`](crate::STATUS_RECEIVERS) | 3 tasks | waiters for Wi-Fi status changes |
+//! | [`MAX_HOSTNAME_LEN`](crate::MAX_HOSTNAME_LEN) | 32 bytes | DHCP host name |
+//! | [`MAX_BLE_NAME_LEN`](crate::MAX_BLE_NAME_LEN) | 29 bytes | advertised BLE name |
+//! | [`MAX_BLE_PAYLOAD`](crate::MAX_BLE_PAYLOAD) | 244 bytes | largest BLE chunk |
+//!
+//! The reconnect timing defaults and ranges are on [`WifiConfig`](crate::WifiConfig)
+//! (backoff 1 s doubling up to 60 s, link refresh 10 s, scan timeout 20 s,
+//! connect timeout 30 s), the DHCP timeout on [`NetworkConfig`](crate::NetworkConfig)
+//! (20 s). The number of TCP connections and UDP sockets and their buffer sizes
+//! are not constants of this crate: the product sizes them in the platform
+//! backend (see [`IpUsage`](crate::IpUsage) and
+//! `NetResources` of [`rohi-net-esp`](../../rohi_net_esp/index.html)). A scan lists
+//! at most six networks to a client of the `wifi` service. The numbers of the
+//! whole SDK are collected at
+//! <https://rohi.akagi.dev/reference/resource-limits.html>.
+//!
+//! # Example
+//!
+//! The limits are enforced where the values are built:
+//!
+//! ```
+//! use rohi_net::{
+//!     MAX_SSID_LEN, MAX_WIFI_PASSWORD_LEN, MIN_WIFI_PASSWORD_LEN, WifiConfig, WifiPassword,
+//!     WifiSsid,
+//! };
+//!
+//! assert!(WifiSsid::from_bytes(&[b'a'; MAX_SSID_LEN]).is_some());
+//! assert!(WifiSsid::from_bytes(&[b'a'; MAX_SSID_LEN + 1]).is_none());
+//! assert!(WifiPassword::from_bytes(&[b'a'; MAX_WIFI_PASSWORD_LEN + 1]).is_none());
+//!
+//! // The minimum is checked when a configuration is validated.
+//! let short = WifiPassword::from_bytes(&[b'a'; MIN_WIFI_PASSWORD_LEN - 1]).unwrap();
+//! let ssid = WifiSsid::from_bytes(b"office").unwrap();
+//! assert!(WifiConfig::new(ssid, Some(short)).validate().is_err());
+//! ```
 
 /// Maximum SSID length in bytes (IEEE 802.11).
 pub const MAX_SSID_LEN: usize = 32;

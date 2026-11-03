@@ -15,10 +15,10 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////
 //! BMP280 / BME280 driver.
 //!
-//! Detects the chip variant from its ID register, reads factory calibration and
+//! Detects the chip variant from its ID register (`0x56..=0x58` is a BMP280,
+//! `0x60` a BME280), reads factory calibration and
 //! performs compensated forced-mode measurements using the integer algorithms
 //! from the Bosch datasheet. BMP280 has no humidity channel.
 //!
@@ -26,8 +26,14 @@
 //!
 //! Temperature oversampling x2, pressure x4, humidity x1, IIR filter off,
 //! forced mode (one conversion per [`SensorDriver::sample`] call; the sensor
-//! sleeps in between). One conversion takes at most about 19 ms.
-//! [`MEASUREMENT_INTERVAL_MS`] is the cadence between conversions.
+//! sleeps in between). After starting a conversion the driver waits 10 ms and
+//! then polls the status register up to 12 times, 5 ms apart, and fails with
+//! [`Error::Timeout`] if the conversion is still running.
+//! [`MEASUREMENT_INTERVAL_MS`] (10 s) is the cadence between conversions.
+//!
+//! Readings outside the datasheet operating range (-40..85 °C, 30 000..110 000
+//! Pa) and skipped conversions are rejected as [`Error::InvalidData`]. Pressure
+//! is reported in Pascal.
 //!
 //! # Address
 //!

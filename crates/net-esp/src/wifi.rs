@@ -27,6 +27,31 @@
 //! The driver is created through [`EspWireless::wifi`](crate::EspWireless::wifi),
 //! which owns the shared radio heap and peripherals. Higher layers use
 //! [`WifiHandle`](rohi_net::WifiHandle) only.
+//!
+//! # Behaviour
+//!
+//! * **Security.** A configured password selects WPA/WPA2 personal, no
+//!   password selects an open network. WPA3-only networks are not supported
+//!   (scans still report WPA3 networks, see
+//!   [`WifiSecurity`](rohi_net::WifiSecurity)).
+//! * **Timeouts.** Association is bounded by the `connect_timeout` of the
+//!   [`WifiConfig`] (`WifiError::Timeout`); obtaining the address is bounded
+//!   separately by `dhcp_timeout` of the [`NetworkConfig`]: a missing DHCP
+//!   lease is `WifiError::DhcpFailed`, a static address that does not see the
+//!   link in time is `WifiError::Timeout`. A scan has no timeout of its own;
+//!   the `wifi` service bounds it with `scan_timeout`.
+//! * **Scans.** At most 48 raw access points are converted, hidden networks
+//!   and duplicate SSIDs are removed and the strongest
+//!   [`MAX_WIFI_SCAN_RESULTS`](rohi_net::MAX_WIFI_SCAN_RESULTS) are kept
+//!   ([`ScanCollector`]).
+//! * **Error mapping.** No access point found maps to
+//!   `NetworkNotFound`; failed authentication or a 4-way handshake timeout to
+//!   `AuthenticationFailed`; a beacon or association timeout to `Timeout`;
+//!   invalid SSID or password to `InvalidConfig`; any other vendor failure to
+//!   `AssociationFailed` (while connecting) or `DriverError`.
+//! * **Stale leases.** Before a DHCP connect the backend waits (at most 2 s)
+//!   until the IP configuration of the previous connection is gone, so a
+//!   stale lease is never taken for the new one.
 
 use core::net::Ipv4Addr;
 
@@ -61,12 +86,19 @@ const STALE_CONFIG_LIMIT: u32 = 40;
 pub struct NetRunner(Runner<'static, Interface>);
 
 impl NetRunner {
+    /// Runs the IP stack forever. Spawn it on its own task; the IP data plane
+    /// does not make progress without it.
     pub async fn run(mut self) -> ! {
         self.0.run().await
     }
 }
 
 /// ESP32 implementation of [`WifiBackend`].
+///
+/// Created by [`EspWireless::wifi`](crate::EspWireless::wifi) and owned by the
+/// single [`WifiManager`](rohi_net::WifiManager). When the manager drops a
+/// pending `connect` because a command or a new configuration arrived, it
+/// calls `disconnect` afterwards; a failed `connect` disconnects by itself.
 pub struct EspWifi {
     controller: WifiController<'static>,
     stack: Stack<'static>,

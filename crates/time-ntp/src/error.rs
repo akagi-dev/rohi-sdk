@@ -15,6 +15,26 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
+//! [`NtpError`]: why one NTP exchange did not produce a sample, and its
+//! mapping to the coarse [`SyncFailure`] categories of the time service.
+//!
+//! | `NtpError` | `SyncFailure` |
+//! |------------|---------------|
+//! | `NetworkUnavailable` | `NetworkUnavailable` |
+//! | `Resolve` | `Resolve` |
+//! | `Timeout` | `Timeout` |
+//! | `InvalidResponse` | `InvalidResponse` |
+//! | `Rejected` (kiss-o'-death, unsynchronized server, excessive root distance) | `Rejected` |
+//! | `NoSocket`, `Network` | `Source` |
+//!
+//! ```
+//! use rohi_time::SyncFailure;
+//! use rohi_time_ntp::NtpError;
+//!
+//! assert_eq!(SyncFailure::from(NtpError::Timeout), SyncFailure::Timeout);
+//! assert_eq!(SyncFailure::from(NtpError::NoSocket), SyncFailure::Source);
+//! assert_eq!(NtpError::Rejected.to_string(), "NTP server refused to serve");
+//! ```
 
 use core::fmt;
 

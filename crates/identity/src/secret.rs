@@ -15,7 +15,6 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////
 
 use core::fmt;
 
@@ -31,7 +30,16 @@ use zeroize::Zeroize;
 /// - the value is only reachable through [`expose_secret`](Self::expose_secret).
 ///
 /// Its CBOR encoding (a byte string for `Secret<[u8; N]>`) exists only to
-/// persist it in the configuration store.
+/// persist it in the configuration store. Cloning copies the secret: every
+/// copy is zeroized when dropped.
+///
+/// ```
+/// use rohi_identity::Secret;
+///
+/// let secret = Secret::new([7u8; 32]);
+/// assert_eq!(format!("{secret:?}"), "Secret(<redacted>)");
+/// assert_eq!(secret.expose_secret(), &[7u8; 32]);
+/// ```
 pub struct Secret<T: Zeroize>(T);
 
 impl<T: Zeroize> Secret<T> {

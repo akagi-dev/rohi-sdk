@@ -15,9 +15,7 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////
-//! Robonomics Open Hardware development board collection.
-//! Device list available on https://robonomics.network/devices/
+//! Robonomics Open Hardware development board collection: board support of ROHI devices.
+//! Device list available on <https://robonomics.network/devices/>.
 
-/// Altruist Urban pin assignments and peripheral bundle, selected by chip feature.
 pub mod altruist_urban;

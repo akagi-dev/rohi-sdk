@@ -15,9 +15,22 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////
 
 //! ESP32 flash driver and configuration partition lookup.
+//!
+//! [`config_storage`] reads the partition table from flash, finds the data
+//! partition labelled [`PARTITION_LABEL`]
+//! (`rohi-cfg`; only the label and the data type identify it, the sub-type is
+//! not parsed), requires at least two erase sectors and builds an
+//! [`EspConfigStorage`] on the `esp-storage` driver. The errors are the typed
+//! [`PartitionError`]. `esp-storage`'s `FlashStorage` implements
+//! [`MultiwriteNorFlash`](embedded_storage::nor_flash::MultiwriteNorFlash),
+//! which the store needs to program a commit word more than once; encrypted
+//! flash would not qualify. The storage knows nothing about CBOR, sections or
+//! any feature's configuration.
+//!
+//! Enabled by the `esp32c3` or `esp32c6` feature (exactly one). The expected
+//! partition tables are described in [`layout`](crate::layout).
 
 use esp_bootloader_esp_idf::partitions::{
     PARTITION_TABLE_MAX_LEN, PartitionTable, read_partition_table,
@@ -61,6 +74,13 @@ fn find_region(table: &PartitionTable<'_>) -> Result<FlashRegion, PartitionError
 }
 
 /// Resolves the configuration region from the on-flash partition table.
+///
+/// # Errors
+///
+/// [`PartitionError::PartitionTable`] if the table cannot be read,
+/// [`PartitionError::NotFound`] if there is no data partition labelled
+/// `rohi-cfg`, [`PartitionError::TooSmall`] if it is smaller than two erase
+/// sectors.
 pub fn partition_region(flash: &mut FlashStorage<'_>) -> Result<FlashRegion, PartitionError> {
     let mut buffer = [0u8; PARTITION_TABLE_MAX_LEN];
     let table =
@@ -69,6 +89,17 @@ pub fn partition_region(flash: &mut FlashStorage<'_>) -> Result<FlashRegion, Par
 }
 
 /// Builds the configuration storage on the `rohi-cfg` partition.
+///
+/// Takes the flash driver by value: the returned storage owns it. Pass it to
+/// [`rohi_config::ConfigStore::open`] (see
+/// `firmwares/altruist-urban/src/config.rs` and `examples/src/bin/config.rs`
+/// for complete use).
+///
+/// # Errors
+///
+/// The errors of [`partition_region`], and [`PartitionError::Region`] if the
+/// partition is not a valid [`FlashRegion`] for the flash (for example not
+/// erase-sector aligned).
 pub fn config_storage(
     mut flash: FlashStorage<'static>,
 ) -> Result<EspConfigStorage<FlashStorage<'static>>, PartitionError> {

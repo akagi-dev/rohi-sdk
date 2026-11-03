@@ -38,7 +38,8 @@ use crate::{WifiError, WifiHandle, WifiSecurity, WifiState};
 const _: () = assert!(crate::MAX_SSID_LEN <= MAX_FIELD_VALUE_LEN);
 const _: () = assert!("00:00:00:00:00:00".len() <= MAX_FIELD_VALUE_LEN);
 
-/// Usage of the memory the radio drivers allocate from.
+/// Usage of the memory the radio drivers allocate from, reported as the heap
+/// fields of the `wifi` service.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HeapStats {
     /// Total size in bytes.
@@ -263,8 +264,56 @@ const fn bytes(descriptor: FieldDescriptor) -> FieldDescriptor {
 /// The Wi-Fi link as a `wifi` service: the connection, the radio heap, and
 /// the `scan`, `reconnect` and `disconnect` actions.
 ///
-/// A scan is bounded by the `scan_timeout` of the configuration, measured
-/// with `delay`.
+/// Wi-Fi reaches clients through the generic service pipeline
+/// ([`rohi_service`]), with no protocol of its own:
+///
+/// | Plane | What | `rohi` |
+/// |-------|------|--------|
+/// | config section `wifi` | `ssid` (text, 1 to 32 bytes) and `password` (write-only secret, 8 to 64 bytes, optional: no override means an open network) | `rohi config wifi ssid=office password=-` |
+/// | service `wifi` | state, `ssid`, `rssi` (dBm), `channel`, `mac`, `reconnects`, `link_uptime` (ms), `heap_size`, `heap_free`, `heap_min_free` (bytes; the heap fields only when the [`WifiProbe`] reports them) | `rohi status wifi` |
+/// | action `scan` | one record per network, strongest first: `ssid`, `rssi`, `channel`, `security` | `rohi action wifi scan` |
+/// | actions `reconnect`, `disconnect` (privileged) | drop the link and connect again / stay idle | `rohi action wifi reconnect` |
+///
+/// The service maps [`WifiState`] to lifecycle and health: `NotConfigured` is
+/// `disabled` (not an error), `Idle` is `stopped`, `Scanning` and `Connecting`
+/// are `starting`, `Connected` is `running`/`ok`/ready, `Disconnected` is
+/// `running`/`degraded` (not ready) and `Error` is `failed`/`error`. The last
+/// error is the active issue while the state is `Error` or `Disconnected`
+/// (`authentication_failed`, `network_not_found`, `association_failed`,
+/// `disconnected`, `driver_error`, ...; see [`issue`](mod@issue)); the IP-layer
+/// error `dhcp_failed` is reported by the `network` service
+/// ([`NetworkService`](crate::NetworkService)) instead.
+///
+/// A scan is bounded by the `scan_timeout` of the configuration (20 s by
+/// default), measured with `delay`, and lists at most six networks (the
+/// record limit of an action result); networks whose name is not UTF-8 are not
+/// listed. Storing a configuration means it is stored and handed to the
+/// manager, not that the access point was reached: watch the status. SSIDs
+/// that are not UTF-8 keep working but are not shown by the `wifi` section.
+///
+/// ```
+/// use embassy_futures::block_on;
+/// use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+/// use embedded_hal_async::delay::DelayNs;
+/// use rohi_net::{WifiService, WifiShared};
+/// use rohi_service::{ServiceState, Status};
+///
+/// #[derive(Clone)]
+/// struct Delay;
+///
+/// impl DelayNs for Delay {
+///     async fn delay_ns(&mut self, _ns: u32) {}
+/// }
+///
+/// let shared = WifiShared::<NoopRawMutex>::new();
+/// // `()` is a probe that reports neither a heap nor a clock.
+/// let service = WifiService::new(shared.handle(), Delay, ());
+///
+/// // Not configured is `disabled`, not an error.
+/// let summary = block_on(service.summary());
+/// assert_eq!(summary.state, ServiceState::Disabled);
+/// assert!(!summary.ready);
+/// ```
 #[derive(Service)]
 pub struct WifiService<'a, M: RawMutex, D, P> {
     handle: WifiHandle<'a, M>,

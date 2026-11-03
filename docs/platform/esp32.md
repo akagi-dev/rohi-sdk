@@ -30,9 +30,9 @@ module of the board, the partition table and the chip features of the platform c
 
 Embassy runs on `esp-rtos` (thread-mode executor, 1 MHz `embassy-time` driver), which `esp-radio` requires. Both chips
 are single-core RISC-V; Wi-Fi and BLE share one radio ([Wireless runtime](wireless.md)). Flash erase and programming
-stall the whole CPU (cache disabled), see [Configuration store](../sdk/config.md#runtime-ownership-altruist-urban).
+stall the whole CPU (cache disabled), see [Configuration store](../sdk/config.md).
 
 ## Wireless features
 
 `esp-radio` is built with `wifi`, `ble`, `coex`, `esp-alloc` and `unstable`. WPA3-only networks are not supported by the
-station configuration currently used ([Networking](../sdk/net.md#out-of-scope)).
+station configuration currently used ([Networking](../sdk/net.md)).

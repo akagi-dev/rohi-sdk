@@ -25,24 +25,37 @@ use crate::{MAX_WIFI_SCAN_RESULTS, WifiSsid};
 /// Authentication mode of a scanned network.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WifiSecurity {
+    /// No encryption.
     Open,
+    /// WEP.
     Wep,
+    /// WPA personal.
     Wpa,
+    /// WPA2 personal.
     Wpa2,
+    /// WPA and WPA2 personal.
     WpaWpa2,
+    /// WPA3 personal. Reported by scans; the ESP backend does not request
+    /// WPA3 when connecting.
     Wpa3,
+    /// WPA2 and WPA3 personal.
     Wpa2Wpa3,
     /// WPA enterprise (802.1X); not supported for connecting.
     Enterprise,
+    /// The driver reported no or an unknown mode.
     Unknown,
 }
 
 /// One network found by a scan.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WifiNetwork {
+    /// Network name.
     pub ssid: WifiSsid,
+    /// Signal strength in dBm; higher (closer to zero) is stronger.
     pub rssi_dbm: i8,
+    /// Authentication mode.
     pub security: WifiSecurity,
+    /// Channel number.
     pub channel: u8,
 }
 
@@ -67,18 +80,44 @@ pub type WifiScanResults = Vec<WifiNetwork, MAX_WIFI_SCAN_RESULTS>;
 /// - hidden networks (empty SSID) are skipped;
 /// - several access points with the same SSID collapse to the strongest one;
 /// - when more distinct networks are seen than fit, the strongest are kept.
+///
+/// ```
+/// use rohi_net::{ScanCollector, WifiNetwork, WifiSecurity, WifiSsid};
+///
+/// let network = |name: &str, rssi_dbm, channel| WifiNetwork {
+///     ssid: WifiSsid::from_bytes(name.as_bytes()).unwrap(),
+///     rssi_dbm,
+///     security: WifiSecurity::Wpa2,
+///     channel,
+/// };
+///
+/// let mut scan = ScanCollector::new();
+/// scan.insert(network("guest", -80, 1));
+/// scan.insert(network("office", -70, 1)); // weaker access point, same name
+/// scan.insert(network("office", -45, 11));
+/// scan.insert(network("", -30, 6)); // hidden: skipped
+///
+/// let results = scan.finish();
+/// assert_eq!(results.len(), 2);
+/// assert_eq!(results[0].ssid.as_str(), Some("office")); // strongest first
+/// assert_eq!(results[0].channel, 11);
+/// assert_eq!(results[1].ssid.as_str(), Some("guest"));
+/// ```
 #[derive(Debug, Default)]
 pub struct ScanCollector {
     results: WifiScanResults,
 }
 
 impl ScanCollector {
+    /// An empty collector.
     pub const fn new() -> Self {
         Self {
             results: Vec::new(),
         }
     }
 
+    /// Adds one observation; see the type documentation for how hidden,
+    /// duplicate and surplus networks are handled.
     pub fn insert(&mut self, network: WifiNetwork) {
         if network.ssid.is_empty() {
             return;

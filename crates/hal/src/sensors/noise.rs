@@ -15,7 +15,6 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////
 //! Noise level measurement from a digital MEMS microphone (I2S).
 //!
 //! Raw audio is never retained: samples are processed in small fixed-size
@@ -57,6 +56,18 @@
 //! device itself (e.g. the SDS011 fan). If an A-weighted level is ever needed
 //! it must be added as a separate, tested weighting stage and exposed under its
 //! own name; this metric stays unweighted dB SPL.
+//!
+//! This is the v1 noise metric the telemetry schema can rely on.
+//!
+//! # Buffers and load
+//!
+//! Raw audio is never stored: the [`CHUNK_SAMPLES`] (256) sample stack chunk
+//! processed per read and the DMA ring buffer of the platform audio source
+//! (4 KiB, 64 ms on the Altruist Urban board, see
+//! [`rohi-hal-esp`](../../../rohi_hal_esp/index.html)) are the only buffers.
+//! The reader must drain the ring buffer in time or the DMA stops. The status
+//! plane exposes the result as `microphone.average` and `microphone.maximum`
+//! in dB, see [`crate::sensors`].
 //!
 //! CPU load is a handful of integer operations per sample plus one logarithm
 //! per sub-window.
@@ -120,6 +131,27 @@ pub struct NoiseLevels {
 }
 
 /// Streaming level meter holding only running statistics.
+///
+/// Feed it chunks of 24-bit samples with [`process`](Self::process); it returns
+/// a result each time a whole measurement window completed.
+///
+/// ```
+/// use rohi_hal::sensors::noise::{Config, LevelMeter};
+///
+/// // Tiny windows to keep the example short: 4 samples per sub-window, 2 per window.
+/// let config = Config { sub_window_samples: 4, sub_windows_per_window: 2, ..Config::DEFAULT };
+///
+/// let mut meter = LevelMeter::new(config);
+/// assert_eq!(meter.process(&[0; 7]), None); // window not complete yet
+/// let silence = meter.process(&[0]).expect("8 samples complete one window");
+/// // Silence is clamped to one LSB of power: about -18 dB SPL, never -infinity.
+/// assert!((silence.average + 18.47).abs() < 0.1);
+///
+/// let mut meter = LevelMeter::new(config);
+/// let loud = meter.process(&[1 << 20, -(1 << 20), 1 << 20, -(1 << 20), 1 << 20, -(1 << 20), 1 << 20, -(1 << 20)]).unwrap();
+/// assert!(loud.average > 60.0);
+/// assert!(loud.maximum >= loud.average);
+/// ```
 #[derive(Debug, Clone, Copy)]
 pub struct LevelMeter {
     config: Config,

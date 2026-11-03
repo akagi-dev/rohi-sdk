@@ -15,7 +15,6 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////
 //! Monotonic clock backed by `embassy-time`.
 
 use embassy_time::Instant;
@@ -23,6 +22,16 @@ use rohi_hal::MonotonicTimestamp;
 use rohi_hal::runtime::Clock;
 
 /// Time since boot, from the Embassy time driver.
+///
+/// A [`Clock`] returning [`Instant::now`] in milliseconds as a
+/// [`MonotonicTimestamp`]. It is monotonic, not wall-clock time, and needs the
+/// Embassy time driver to be running (the firmware starts it with `esp-rtos`).
+/// Cheap to copy; give one to every [`Reporter`](rohi_hal::runtime::Reporter)
+/// and to the store task.
+///
+/// ```text
+/// let reporter = Reporter::new(SensorKind::Bmx280, &EVENTS, EmbassyClock);
+/// ```
 #[derive(Debug, Clone, Copy, Default)]
 pub struct EmbassyClock;
 

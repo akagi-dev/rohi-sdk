@@ -15,8 +15,36 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////
 //! Sensor identity, runtime state, errors and events.
+//!
+//! [`SensorKind`] identifies a physical sensor, [`SensorState`] and
+//! [`SensorStatus`] describe its health, the `*Update` structs carry one
+//! successful observation each, and [`SensorEvent`] is what sensor tasks send
+//! to the [`MeasurementStore`](crate::MeasurementStore).
+//!
+//! ```
+//! use rohi_hal::{
+//!     Celsius, MeasurementStore, MeasurementUpdate, MonotonicTimestamp, Ppm, RelativeHumidity,
+//!     Scd4xUpdate, SensorEvent, SensorKind, SensorState, SensorStatuses,
+//! };
+//!
+//! // Every sensor starts as not detected.
+//! assert_eq!(SensorStatuses::new().get(SensorKind::Scd4x).state, SensorState::NotDetected);
+//!
+//! // One successful observation implies `Ready`.
+//! let update = MeasurementUpdate::Scd4x(Scd4xUpdate {
+//!     co2: Ppm(640.0),
+//!     temperature: Celsius(22.0),
+//!     humidity: RelativeHumidity(41.0),
+//!     timestamp: MonotonicTimestamp::from_millis(10_000),
+//! });
+//! assert_eq!(update.sensor(), SensorKind::Scd4x);
+//!
+//! let mut store = MeasurementStore::new();
+//! store.apply(SensorEvent::Measurements(update));
+//! let snapshot = store.snapshot(MonotonicTimestamp::from_millis(10_500));
+//! assert_eq!(snapshot.sensor_statuses.get(SensorKind::Scd4x).state, SensorState::Ready);
+//! ```
 
 use crate::time::MonotonicTimestamp;
 use crate::units::{
@@ -24,7 +52,25 @@ use crate::units::{
     RelativeHumidity,
 };
 
-/// Supported Altruist Urban sensors.
+/// Sensors known to the measurement model.
+///
+/// The model, the store and the `sensors` status service cover every variant,
+/// but `rohi-hal` ships drivers only for [`Bmx280`](Self::Bmx280),
+/// [`Scd4x`](Self::Scd4x), [`Sds011`](Self::Sds011) and
+/// [`Microphone`](Self::Microphone), see [`sensors`](crate::sensors).
+/// [`Zmod4510`](Self::Zmod4510), [`Ags3871`](Self::Ags3871) and
+/// [`RadSens`](Self::RadSens) have no driver here.
+///
+/// The declaration order is the stable [`index`](Self::index) order of
+/// [`SensorKind::ALL`].
+///
+/// ```
+/// use rohi_hal::SensorKind;
+///
+/// assert_eq!(SensorKind::ALL.len(), SensorKind::COUNT);
+/// assert_eq!(SensorKind::Bmx280.index(), 0);
+/// assert!(SensorKind::ALL.iter().enumerate().all(|(i, kind)| kind.index() == i));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SensorKind {
     /// BMP280 / BME280 pressure, temperature and (BME280 only) humidity sensor.
@@ -65,6 +111,12 @@ impl SensorKind {
 }
 
 /// Runtime state of a sensor, separate from its measurement values.
+///
+/// The [`Runner`](crate::runtime::Runner) drives the lifecycle
+/// `NotDetected` -> `Initializing` -> (`WarmingUp`) -> `Ready`, with
+/// `Degraded` after a first failure and `Error` after repeated failures; see
+/// [`runtime::runner`](crate::runtime::runner). The default is
+/// [`NotDetected`](Self::NotDetected).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum SensorState {
     /// The sensor is not present.
@@ -83,7 +135,7 @@ pub enum SensorState {
 }
 
 /// Domain-level sensor error. Driver specific errors are mapped into these
-/// codes outside of this crate.
+/// codes by [`DriverError::code`](crate::runtime::DriverError::code).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SensorErrorCode {
     /// The sensor did not answer in time.
