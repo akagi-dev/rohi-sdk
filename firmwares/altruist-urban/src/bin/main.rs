@@ -35,7 +35,7 @@ use altruist_urban::reboot::reboot_task;
 use altruist_urban::resources::WIRELESS_HEAP_SIZE;
 use altruist_urban::tasks::sensors;
 use altruist_urban::tasks::store;
-use altruist_urban::{connectivity, control, identity, net, time};
+use altruist_urban::{connectivity, control, flash, identity, net, time};
 use rohi_sdk::esp::hal::board::altruist_urban::{AltruistUrban, Hardware};
 use rohi_sdk::esp::net::{EspWireless, wireless_heap};
 
@@ -68,7 +68,13 @@ async fn main(spawner: Spawner) -> ! {
     // uses the handle. A missing partition (old partition table) or corrupted
     // configuration must not stop the sensors. It publishes every section to
     // its consumer before they start.
-    let config = config::start(spawner, runtime.flash, ConfigRuntime::new(net::handle()));
+    let (flash, partitions) = flash::init(runtime.flash);
+    let config = config::start(
+        spawner,
+        flash,
+        partitions.config,
+        ConfigRuntime::new(net::handle()),
+    );
     // Identity is provisioned from the host, never generated; a fresh device
     // simply has none and keeps sensing.
     let identity = identity::start(config);

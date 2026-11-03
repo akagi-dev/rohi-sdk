@@ -3809,6 +3809,8 @@ dependencies = [
 name = "rohi-config-esp"
 version = "0.6.0"
 dependencies = [
+ "critical-section",
+ "embassy-sync 0.8.0",
  "embedded-storage",
  "esp-bootloader-esp-idf",
  "esp-storage",
@@ -3961,6 +3963,7 @@ dependencies = [
  "critical-section",
  "embassy-futures",
  "embassy-sync 0.8.0",
+ "embedded-storage",
  "heapless 0.9.3",
  "log",
  "lz4_flex",

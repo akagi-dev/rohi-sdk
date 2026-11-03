@@ -74,14 +74,13 @@ use core::fmt;
 use embassy_executor::Spawner;
 use embassy_sync::channel::Channel;
 use embassy_sync::mutex::Mutex;
-use esp_hal::peripherals::FLASH;
 use log::{error, info, warn};
 use rohi_sdk::config::{
     ConfigError, ConfigOpenState, ConfigSection, ConfigStore, Corruption, EncodeError,
     HasOverrides, MAX_SECTION_PAYLOAD, SectionError, SectionId, materialize,
 };
-use rohi_sdk::esp::config::esp::{PartitionError, config_storage, esp_storage::FlashStorage};
-use rohi_sdk::esp::config::{EspConfigStorage, EspStorageError};
+use rohi_sdk::esp::config::esp::PartitionError;
+use rohi_sdk::esp::config::{EspConfigStorage, EspStorageError, FlashRegion};
 
 use rohi_sdk::service::{
     Config, ConfigError as RegistryError, ConfigRegistry, FactoryReset, Mutation, Patched,
@@ -92,10 +91,11 @@ use crate::bindings::{
     Binding, BleBinding, ConfigRuntime, ConnectivityBinding, IdentityBinding, LocationBinding,
     NetworkBinding, PrivateBinding, TimeBinding, WifiBinding,
 };
+use crate::flash::Flash;
 use crate::tasks::RawMutex;
 
 /// Configuration storage of the Altruist Urban.
-pub type Storage = EspConfigStorage<FlashStorage<'static>>;
+pub type Storage = EspConfigStorage<Flash>;
 
 /// Why the configuration store is not usable.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -561,11 +561,22 @@ impl Owner {
     }
 }
 
-fn open(flash: FLASH<'static>) -> Owner {
-    let storage = match config_storage(FlashStorage::new(flash)) {
-        Ok(storage) => storage,
+fn open(flash: Flash, region: Result<FlashRegion, PartitionError>) -> Owner {
+    let region = match region {
+        Ok(region) => region,
         Err(error) => {
             error!("Configuration partition unavailable: {:?}", error);
+            return Owner::Unavailable {
+                reason: Unavailable::Partition(error),
+                storage: None,
+            };
+        }
+    };
+    let storage = match EspConfigStorage::new(flash, region) {
+        Ok(storage) => storage,
+        Err(error) => {
+            let error = PartitionError::Region(error);
+            error!("Configuration partition unusable: {:?}", error);
             return Owner::Unavailable {
                 reason: Unavailable::Partition(error),
                 storage: None,
@@ -637,8 +648,13 @@ async fn config_task(service: &'static ConfigService, mut owner: Owner, runtime:
 /// the stored overrides or the firmware policy, and again after every commit,
 /// see the module documentation. The consumers therefore never read the store
 /// themselves at start.
-pub fn start(spawner: Spawner, flash: FLASH<'static>, runtime: ConfigRuntime) -> ConfigHandle {
-    let mut owner = open(flash);
+pub fn start(
+    spawner: Spawner,
+    flash: Flash,
+    region: Result<FlashRegion, PartitionError>,
+    runtime: ConfigRuntime,
+) -> ConfigHandle {
+    let mut owner = open(flash, region);
     publish_boot(
         match &mut owner {
             Owner::Ready(store) => Some(store),

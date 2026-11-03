@@ -44,6 +44,8 @@ pub mod config;
 pub mod connectivity;
 /// Local control plane over BLE.
 pub mod control;
+/// The shared SPI flash and its partitions.
+pub mod flash;
 /// Device identity runtime.
 pub mod identity;
 pub mod location;
