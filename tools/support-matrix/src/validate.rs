@@ -421,12 +421,25 @@ impl Validator<'_> {
 
 fn is_date(text: &str) -> bool {
     let b = text.as_bytes();
-    b.len() == 10
-        && b.iter().enumerate().all(|(i, c)| {
-            if i == 4 || i == 7 {
-                *c == b'-'
-            } else {
-                c.is_ascii_digit()
-            }
-        })
+    if b.len() != 10
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || !b.iter().enumerate().all(|(i, c)| (i == 4 || i == 7) == (*c == b'-') || (i != 4 && i != 7 && c.is_ascii_digit()))
+    {
+        return false;
+    }
+    let year = text[0..4].parse::<u32>().ok();
+    let month = text[5..7].parse::<u32>().ok();
+    let day = text[8..10].parse::<u32>().ok();
+    let (Some(year), Some(month), Some(day)) = (year, month, day) else {
+        return false;
+    };
+    let max_day = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if year % 400 == 0 || (year % 4 == 0 && year % 100 != 0) => 29,
+        2 => 28,
+        _ => return false,
+    };
+    (1..=max_day).contains(&day)
 }
