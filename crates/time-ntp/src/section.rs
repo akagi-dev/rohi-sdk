@@ -147,7 +147,7 @@ impl fmt::Debug for ServerName {
 /// map `{1: server1, 2: server2, 3: server3, 4: server4}` of text strings
 /// (`null` is the explicit "no value"; a key is absent when the slot is not
 /// overridden). Tests pin the bytes and the ID; see the [persistent ABI
-/// reference](https://rohi.akagi.dev/reference/persistent-abi.html).
+/// reference](https://docs.rs/rohi-config).
 ///
 /// ```
 /// use rohi_config::{ConfigSection, Override, SectionId};

@@ -17,7 +17,7 @@ ROHI separates the three:
 
 - **Reusable firmware components.** Sensor drivers, a power-fail-safe configuration store, Wi-Fi and IP networking,
   time, telemetry, device identity and a BLE control plane are libraries with documented contracts. A firmware is a
-  composition of them; [Altruist Urban](../platform/boards.md) is the reference.
+  composition of them; [Altruist Urban](https://docs.rs/rohi-hal-esp) is the reference.
 - **Shared applications.** A client learns what a device offers from the device itself: its settings, its live status
   and its operations. A new firmware module shows up in the client without changing the client.
 - **AI-assisted customization.** Because the pieces, their contracts and their support status are written down, in

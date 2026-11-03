@@ -148,8 +148,8 @@
 //! - **Persistent ABI.** Field numbers, the explicit `#[cbor(array)]` /
 //!   `#[cbor(map)]` representation, strict decode, section IDs and versions,
 //!   the container format and unknown-section preservation are persistent ABI,
-//!   documented once in the
-//!   [persistent ABI reference](https://rohi.akagi.dev/reference/persistent-abi.html);
+//!   documented in this crate and in the
+//!   [`rohi-sdk` versioning rules](https://docs.rs/rohi-sdk/latest/rohi_sdk/versioning/index.html);
 //!   the recipe is the
 //!   [add a ConfigSection guide](https://rohi.akagi.dev/guides/add-config-section.html).
 //!   Decoding is strict: trailing bytes are an error
@@ -159,8 +159,9 @@
 //!   into flash and copies unrelated records in 64 byte chunks, so there is
 //!   never a second copy of the configuration in RAM; [`ConfigStore::get`]
 //!   decodes through a [`MAX_SECTION_PAYLOAD`] byte stack buffer. The flash
-//!   region and the other limits are listed in the
-//!   [resource limits](https://rohi.akagi.dev/reference/resource-limits.html#configuration-store).
+//!   region and the other limits are the constants of this crate and of
+//!   `rohi-config-esp`, see also the
+//!   [`rohi-sdk` memory model](https://docs.rs/rohi-sdk/latest/rohi_sdk/memory/index.html).
 //! - **Geometry.** The storage must have a power-of-two erase size and a write
 //!   size of 1, 2 or 4 bytes, and hold two slots of at least 64 bytes;
 //!   otherwise [`ConfigError::InvalidStorage`] is returned.

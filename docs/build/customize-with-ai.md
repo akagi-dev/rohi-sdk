@@ -20,7 +20,7 @@ Open the `rohi-sdk` repository (or a repository that depends on it) in the assis
 | [`firmwares/altruist-urban`](https://github.com/akagi-dev/rohi-sdk/tree/master/firmwares/altruist-urban) | the reference composition to copy from |
 | [`examples/`](https://github.com/akagi-dev/rohi-sdk/tree/master/examples/src/bin) | one small program per sensor |
 | the crate rustdoc (`cargo doc --no-deps`) | APIs and contracts |
-| [Targets and features](../reference/targets-and-features.md) | the exact build commands per chip |
+| [Targets and features](https://docs.rs/rohi-sdk/latest/rohi_sdk/portability/index.html#targets-and-features) | the exact build commands per chip |
 
 A short standing instruction in your assistant's project instructions file helps. This one is a starting point:
 
@@ -29,7 +29,7 @@ This is a Rust no_std firmware workspace for ESP32-C3 and ESP32-C6 built on the 
 - Before changing anything read the matching guide in docs/guides/ and copy the structure of
   firmwares/altruist-urban; do not invent APIs, read the crate source.
 - Hardware facts (boards, pins, sensors) come only from support-matrix/matrix.toml and
-  docs/platform/boards.md. If a fact is missing, say so; never guess pin numbers.
+  crates/hal-esp/src/board/altruist_urban/mod.rs. If a fact is missing, say so; never guess pin numbers.
 - Never claim that something works on hardware. Report what you ran: cargo test,
   cargo check-esp32c3, cargo check-esp32c6.
 - Drivers contain no pin numbers. Application code does not allocate. Config field ids are
@@ -78,8 +78,8 @@ cargo check-esp32c6, and update the support matrix without marking anything veri
 ```text
 Add a configuration section `sampling` with a field `interval_s` (u32, default 60,
 allowed 10..=3600) and use it as the poll interval of the [SDS011] sensor task.
-Follow docs/guides/add-config-section.md: typed section, ConfigOverrides, stable field
-ids, whole-section validation, golden test of the stored bytes, ManagedConfig so that
+Follow docs/guides/add-config-section.md: typed section, stable field
+ids, whole-section validation and a golden test of the stored bytes, so that
 `rohi config sampling` works. Do not change the control protocol or the rohi tool.
 ```
 
@@ -91,7 +91,7 @@ ids, whole-section validation, golden test of the stored bytes, ManagedConfig so
 Add a service `[battery]` that reports state, health, readiness and the field
 `voltage` in volts, with an issue `low_voltage` below [3.3] V. Follow
 docs/guides/add-service.md and copy the structure of the location service. Register it
-in the Services tuple in firmwares/altruist-urban/src/control.rs. Add host tests for
+in firmwares/altruist-urban/src/control.rs. Add host tests for
 every state and show me the expected `rohi status [battery]` output.
 ```
 
@@ -102,7 +102,7 @@ every state and show me the expected `rohi status [battery]` output.
 ```text
 Add an action `calibrate` to the `[sensors]` service that takes the argument
 `reference_ppm` (u64) and is privileged. Follow docs/guides/add-control-operation.md,
-check cancellation safety, and add a test through ServiceRegistry::invoke including the
+check cancellation safety, and add a host test of the action including the
 refusal case with a stable reason code.
 ```
 
@@ -147,7 +147,7 @@ or add an allow attribute.
 ## Pitfalls
 
 - **Hardware facts.** Assistants invent pin numbers and part numbers. Pin maps live in
-  [Boards](../platform/boards.md); verified status lives in the [support matrix](../support/matrix.md).
+  the [board module rustdoc](https://docs.rs/rohi-hal-esp); verified status lives in the [support matrix](../support/matrix.md).
 - **Compiles is not works.** A passing build says nothing about wiring, timing or calibration.
 - **Wrong layer.** A new feature usually belongs in a feature crate plus a firmware registration, not in the control
   protocol or the desktop tool; those need no change ([Create & customize](create-and-customize.md)).

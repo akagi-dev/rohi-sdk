@@ -5,7 +5,7 @@ that a firmware author describes a device once, in [Config, Status and Action](c
 use it without a firmware-specific integration.
 
 ```text
- Firmware        sections · services · actions (rohi-service)
+ Firmware        sections · services · actions
     │            described by schemas the device publishes
  Protocol        request/response messages (protobuf), one schema, bounded sizes
     │
@@ -37,5 +37,4 @@ use it without a firmware-specific integration.
 - Operate a device: [Desktop application](../use/desktop/index.md), [Mobile application](../use/mobile.md) (planned).
 - The authoritative definition is the schema [`control.proto`](https://github.com/akagi-dev/rohi-sdk/blob/master/crates/control-proto/proto/rohi/control/v1/control.proto)
   and the rustdoc of `rohi-control-proto`, `rohi-control` and `rohi-control-ble`, see [SDK crates](sdk-crates.md).
-- Overview of the crates and their status: [Control plane (BLE)](../sdk/control.md).
 - Extend the protocol: [Add a control operation or an action](../guides/add-control-operation.md).

@@ -91,7 +91,7 @@ Adapt the emphasis, not the skeleton:
 //! - **Limits:** at most N entries, sizes are wire ABI ([Resource limits]).
 //! - **Targets:** host-tested; hardware verification: not verified ([support matrix]).
 //!
-//! [Resource limits]: https://rohi.akagi.dev/reference/resource-limits.html
+//! [Resource limits]: https://docs.rs/rohi-sdk/latest/rohi_sdk/memory/index.html
 //! [support matrix]: https://rohi.akagi.dev/support/overview.html
 ```
 
@@ -113,9 +113,9 @@ Adapt the emphasis, not the skeleton:
   Do not link with intra-doc links to items that do not exist in every documented configuration (see
   [Validation](#validation)); use plain code font instead.
 - **Constants and limits:** state the value only if it is the single source of truth (the constant itself); otherwise link
-  to [Resource limits](../reference/resource-limits.md).
+  to [Resource limits](https://docs.rs/rohi-sdk/latest/rohi_sdk/memory/index.html).
 - **Persistent and wire formats:** state what is ABI (ids, field numbers, section versions) and link
-  [Persistent ABI](../reference/persistent-abi.md).
+  [Persistent ABI](https://docs.rs/rohi-config).
 - **Public vs internal:** `pub(crate)` and private items need comments only when they hold an invariant. Do not
   document internals on public pages; put them in plain `//` comments next to the code.
 
@@ -180,14 +180,14 @@ Then classify each statement:
 |------|------------------|
 | Public guarantee (callers may rely on it, changing it is breaking) | item docs, stated as contract |
 | Implementation detail (may change) | plain code comments, or label it "currently" |
-| Wire/persistent ABI | item docs plus a link to [Persistent ABI](../reference/persistent-abi.md) |
+| Wire/persistent ABI | item docs plus a link to [Persistent ABI](https://docs.rs/rohi-config) |
 | Unmeasured or unverified | say so explicitly |
 
 Always document, where relevant:
 
 - **Ownership:** who owns the peripheral, buffer or task; what `&mut self` / `&self` implies; what must be `'static`.
 - **Async and cancellation:** whether dropping a future mid-way is safe and what state remains. The canonical rules are
-  in [Async and cancellation](../concepts/async-and-cancellation.md); link them, do not restate them.
+  in [Async and cancellation](https://docs.rs/rohi-sdk/latest/rohi_sdk/cancellation/index.html); link them, do not restate them.
 - **Resource bounds:** capacities of `heapless` collections, buffer sizes, queue depths, timeouts and what happens
   at the limit (error, drop, block).
 - **Compatibility:** section ids and versions, field numbers, hash algorithms (these are ABI).
@@ -272,7 +272,7 @@ mdbook build docs && mdbook test docs
 
 CI (`.github/workflows/ci.yml`, job `docs`) runs the same rustdoc commands with `-D warnings` for the portable crates
 and for the ESP crates on both chips; the `host` job runs `cargo test` (which includes doctests). A failing doc build
-blocks the PR. Targets and features: [Targets and features](../reference/targets-and-features.md).
+blocks the PR. Targets and features: [Targets and features](https://docs.rs/rohi-sdk/latest/rohi_sdk/portability/index.html#targets-and-features).
 
 Doctests of derive macros live in the macro crate and use the runtime crate (`rohi-service`, `rohi-config`) as a
 dev-dependency.

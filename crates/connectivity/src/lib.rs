@@ -277,7 +277,7 @@
 //! data.
 //!
 //! **Resource bounds** (allocation free; see also the
-//! [Resource limits](https://rohi.akagi.dev/reference/resource-limits.html)
+//! [Resource limits](https://docs.rs/rohi-sdk/latest/rohi_sdk/memory/index.html)
 //! reference):
 //!
 //! | Constant | Value |

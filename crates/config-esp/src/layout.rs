@@ -51,9 +51,8 @@
 //! two slots from the region: each slot is half of it rounded down to the
 //! erase size, at most [`MAX_SLOT_SIZE`](rohi_config::MAX_SLOT_SIZE) bytes.
 //!
-//! Flash region, slot, payload and stack figures of the store are listed with
-//! all other limits in the
-//! [resource limits](https://rohi.akagi.dev/reference/resource-limits.html#configuration-store).
+//! Flash region, slot, payload and stack figures of the store are the constants
+//! of this module and of [`rohi_config`] (`MAX_SLOT_SIZE`, `MAX_SECTION_PAYLOAD`).
 
 /// Label of the data partition holding the configuration region.
 pub const PARTITION_LABEL: &str = "rohi-cfg";

@@ -15,14 +15,14 @@ rohi-sdk/
 └── docs                                       this book (mdBook)
 ```
 
-The crate responsibilities and the allowed dependency directions are in [Crate map](../concepts/crate-map.md).
+The crate responsibilities and the allowed dependency directions are in [Crate map](https://docs.rs/rohi-sdk).
 
 ## Default members and targets
 
 `cargo test` and `cargo clippy` at the repository root cover the **portable crates and desktop tools** only
 (`default-members`). Firmware and examples are built per chip with the aliases from `.cargo/config.toml`; the repository
 has no default embedded target. The chip is always selected explicitly by the `esp32c3` or `esp32c6` feature, never
-globally. See [Targets and features](../reference/targets-and-features.md).
+globally. See [Targets and features](https://docs.rs/rohi-sdk/latest/rohi_sdk/portability/index.html#targets-and-features).
 
 ## Toolchain
 

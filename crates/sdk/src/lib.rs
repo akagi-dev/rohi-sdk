@@ -58,7 +58,7 @@
 //! | Location | Where the device is (user-configured; no GNSS runtime exists yet), sent in telemetry | [`rohi-location`](../rohi_location/index.html) |
 //! | Identity | Provisioned Ed25519 device identity and signer | [`rohi-identity`](../rohi_identity/index.html) |
 //! | Telemetry | Measurement snapshots as signed `connectivity-protocol` frames | [`rohi-connectivity`](../rohi_connectivity/index.html) |
-//! | Firmware | Altruist Urban, a complete product built from the above | `firmwares/altruist-urban`, [Boards](https://rohi.akagi.dev/platform/boards.html) |
+//! | Firmware | Altruist Urban, a complete product built from the above | `firmwares/altruist-urban`, [Boards](https://docs.rs/rohi-hal-esp) |
 //!
 //! The desktop client is described in the
 //! [desktop application](https://rohi.akagi.dev/use/desktop/index.html) guide
@@ -77,8 +77,7 @@
 //! - **Cancellation is normal.** Public async APIs document their cancellation
 //!   semantics; see [`cancellation`].
 //! - **Persistent data is an ABI.** See [`versioning`] and the
-//!   [persistent ABI](https://rohi.akagi.dev/reference/persistent-abi.html)
-//!   reference.
+//!   [`rohi-config`](https://docs.rs/rohi-config).
 //!
 //! # The layers
 //!
@@ -144,7 +143,7 @@
 //!
 //! The firmware and the examples are built per chip and are not part of the
 //! host documentation tree; see
-//! [Targets and features](https://rohi.akagi.dev/reference/targets-and-features.html).
+//! [Targets and features](https://docs.rs/rohi-sdk/latest/rohi_sdk/portability/index.html#targets-and-features).
 //!
 //! ## Allowed dependency direction
 //!
@@ -199,11 +198,8 @@
 //! Exact Rust APIs are in the generated API documentation of each crate
 //! (`cargo doc --no-deps`, published on docs.rs for released crates). The
 //! [book](https://rohi.akagi.dev/) keeps the product view, the guides and the
-//! workflows; the
-//! [resource limits](https://rohi.akagi.dev/reference/resource-limits.html),
-//! [targets and features](https://rohi.akagi.dev/reference/targets-and-features.html)
-//! and [platform](https://rohi.akagi.dev/platform/esp32.html) pages are
-//! reference material that stays there.
+//! workflows. Resource limits are in [`memory`], targets and features in
+//! [`portability`] and persistent formats in [`versioning`] and `rohi-config`.
 
 pub mod architecture;
 pub mod cancellation;

@@ -63,7 +63,7 @@ verified on hardware.
 
 **Can I measure environmental noise, and how is it calibrated?** Partly. The level is unweighted dB SPL (not dBA) from
 the nominal ICS-43434 sensitivity, with no per-device calibration, so it is not comparable to a calibrated sound level
-meter. See [Sensors](../sdk/sensors.md).
+meter. See [Sensors](https://docs.rs/rohi-hal/latest/rohi_hal/sensors/index.html).
 
 **Can I build a water-quality monitor with the existing firmware?** No. There are no water-quality sensor drivers, board
 or firmware. The SDK services (configuration, Wi-Fi, telemetry, BLE control) can be reused by a new firmware.

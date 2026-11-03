@@ -68,7 +68,7 @@
 //! A board revision with a different pin map must get its own module instead of
 //! an edit of these tables. The same tables, the verification status per board
 //! and capability, and the board guides are in
-//! <https://rohi.akagi.dev/platform/boards.html> and the support matrix
+//! <https://docs.rs/rohi-hal-esp> and the support matrix
 //! <https://rohi.akagi.dev/support/overview.html>.
 //!
 //! # Microphone

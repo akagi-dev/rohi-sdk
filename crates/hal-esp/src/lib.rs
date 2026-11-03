@@ -138,7 +138,7 @@
 //!   reviewed 2026-11-02) **no board and capability is recorded as verified on
 //!   hardware**; both chips are covered by CI target builds and clippy, and the
 //!   drivers by host tests in `rohi-hal`. See
-//!   <https://rohi.akagi.dev/platform/boards.html>,
+//!   <https://docs.rs/rohi-hal-esp>,
 //!   <https://rohi.akagi.dev/support/overview.html> and the hardware status in
 //!   <https://rohi.akagi.dev/validation/hardware-testing.html>. Adding a board:
 //!   <https://rohi.akagi.dev/guides/add-board.html>.

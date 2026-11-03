@@ -169,8 +169,8 @@
 //! - A section holds at most `rohi_config::MAX_SECTION_PAYLOAD` bytes encoded;
 //!   the derive cannot check this, the store reports it at write time.
 //! - The rules of section versioning and the container format are persistent
-//!   ABI, documented once in the
-//!   [persistent ABI reference](https://rohi.akagi.dev/reference/persistent-abi.html);
+//!   ABI, documented in
+//!   [`rohi-config`](https://docs.rs/rohi-config);
 //!   the step by step recipe is the
 //!   [add a ConfigSection guide](https://rohi.akagi.dev/guides/add-config-section.html).
 //!

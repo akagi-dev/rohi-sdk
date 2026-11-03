@@ -39,7 +39,7 @@
 //! `NetResources` of [`rohi-net-esp`](../../rohi_net_esp/index.html)). A scan lists
 //! at most six networks to a client of the `wifi` service. The numbers of the
 //! whole SDK are collected at
-//! <https://rohi.akagi.dev/reference/resource-limits.html>.
+//! <https://docs.rs/rohi-sdk/latest/rohi_sdk/memory/index.html>.
 //!
 //! # Example
 //!

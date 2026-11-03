@@ -27,7 +27,7 @@ rohi action identity provision secret=-               # 32-byte secret as hex, f
 rohi action identity erase
 ```
 
-The secret is derived on a trusted machine (`rohi::derive_identity`, see [Device identity](../../sdk/identity.md)) and
+The secret is derived on a trusted machine (`rohi::derive_identity`, see [Device identity](https://docs.rs/rohi-identity)) and
 only the derived secret is sent. `rohi factory-reset` erases it with the rest of the configuration storage. A malformed secret is reported
 without echoing it.
 

@@ -32,7 +32,7 @@ use crate::{SectionError, SectionId, codec};
 /// (`version`, `id`, `decode_versioned`) are documented in
 /// [`#[derive(ConfigSection)]`](rohi_config_derive::ConfigSection); the rules for
 /// versioning are in the
-/// [persistent ABI reference](https://rohi.akagi.dev/reference/persistent-abi.html#section-versioning).
+/// [`rohi-sdk` versioning rules](https://docs.rs/rohi-sdk/latest/rohi_sdk/versioning/index.html).
 pub trait ConfigSection: Encode<()> + CborLen<()> + for<'b> Decode<'b, ()> + Sized {
     /// Stable persistent section identifier.
     const ID: SectionId;

@@ -48,7 +48,7 @@
 //!   selected only by the firmware's features and forwarded to the platform
 //!   crates; it never leaks into portable crates. Exactly one chip feature must
 //!   be enabled by a final build; see
-//!   [Targets and features](https://rohi.akagi.dev/reference/targets-and-features.html).
+//!   [Targets and features](#targets-and-features).
 //!
 //! # What can and cannot be tested on the host
 //!
@@ -68,3 +68,48 @@
 //! firmware or board module that composes them. The portable crates should need
 //! no change; if one does, the seam was leaking a platform detail and should be
 //! fixed there.
+//!
+//! # Targets and features
+//!
+//! | Target | Chip | Cargo feature | Rust target | Commands |
+//! |--------|------|---------------|-------------|----------|
+//! | Host | developer machine | none | the host triple | `cargo test`, `cargo clippy`, `cargo doc` |
+//! | ESP32-C3 | ESP32-C3 | `esp32c3` | `riscv32imc-unknown-none-elf` | `cargo check-esp32c3`, `cargo build-esp32c3` |
+//! | ESP32-C6 | ESP32-C6 | `esp32c6` | `riscv32imac-unknown-none-elf` | `cargo check-esp32c6`, `cargo build-esp32c6` |
+//!
+//! The `check-*` and `build-*` aliases are defined in `.cargo/config.toml` and
+//! expand to `cargo [check|build --release] -p altruist-urban --no-default-features
+//! --features <chip> --target <triple>`. CI additionally runs
+//! `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings` on the
+//! host and clippy for the ESP packages per chip.
+//!
+//! **One chip at a time.** Never validate with `--all-features` or
+//! `--workspace`: `esp32c3` and `esp32c6` are mutually exclusive. The firmware
+//! features forward to chip-specific `esp-hal` features, and the build scripts
+//! and `compile_error!`s reject both (or none) at once. Check each chip in its
+//! own invocation. The repository has no default embedded target: a plain
+//! `cargo` command builds for the host and the chip is always explicit.
+//!
+//! **Host default members.** `cargo test` and `cargo clippy` at the root run on
+//! `default-members`: `crates/*` and `tools/*`. The platform crates compile on
+//! the host without a chip feature (they are empty), so they are covered;
+//! firmware and examples are built per chip only.
+//!
+//! | Crate | Feature | Meaning |
+//! |-------|---------|---------|
+//! | `altruist-urban` | `esp32c3` / `esp32c6` | chip selection, forwarded to every `*-esp` crate and `esp-*` dependency |
+//! | `rohi-hal-esp`, `rohi-config-esp`, `rohi-net-esp` | `esp32c3` / `esp32c6` | chip selection; no feature means an empty crate |
+//! | `rohi-net-esp` | `heap-stats` | track the minimum free wireless heap (small runtime overhead); enabled by the firmware |
+//! | `rohi-net` | `testing` | in-memory `IpBackend` (`rohi_net::testing`) for host tests; not for firmware |
+//!
+//! **Network stack features.** `embassy-net` is built with `tcp`, `udp`, `dns`,
+//! `dhcpv4` and `medium-ethernet` (the Ethernet medium is what `esp-radio`
+//! uses). Platform and network protocol features are enabled only when a
+//! current SDK component uses them; a change that needs another feature (IPv6,
+//! mDNS, ...) enables it together with the component and documents why.
+//!
+//! **Toolchain.** `rust-toolchain.toml` pins the Rust toolchain, `rust-src`,
+//! `rustfmt`, `clippy` and both RISC-V targets; CI uses the same toolchain.
+//! `protoc` is needed to build `rohi-control-proto`, `libdbus` and `pkg-config`
+//! to build `tools/rohi` on Linux; the Nix development shell provides all of
+//! them.

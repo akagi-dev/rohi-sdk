@@ -135,7 +135,7 @@
 //! [`udp_socket`](NetworkHandle::udp_socket) never wait for a free slot. A slot
 //! is released when the connection or socket is dropped. The capacity is a
 //! product decision made in the platform backend (see [`IpUsage`] and
-//! <https://rohi.akagi.dev/reference/resource-limits.html>).
+//! <https://docs.rs/rohi-sdk/latest/rohi_sdk/memory/index.html>).
 //!
 //! # UDP
 //!

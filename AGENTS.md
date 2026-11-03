@@ -16,7 +16,7 @@ mdbook build docs && mdbook test docs        # the book
 ```
 
 Never use `--all-features` or `--workspace`: `esp32c3` and `esp32c6` are mutually exclusive.
-See [Targets and features](docs/reference/targets-and-features.md).
+See [Targets and features](crates/sdk/src/portability.rs) (rustdoc of `rohi-sdk`).
 
 ## Documentation
 

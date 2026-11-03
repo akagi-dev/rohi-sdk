@@ -50,38 +50,6 @@
   - [Resource budget](validation/resource-budget.md)
 - [Firmware distribution](verify/distribution.md)
 
-# Technical reference
-
-- [What is the ROHI SDK?](getting-started/overview.md)
-- [Architecture](concepts/architecture.md)
-- [Crate map](concepts/crate-map.md)
-- [Runtime ownership](concepts/runtime-ownership.md)
-- [Async and cancellation](concepts/async-and-cancellation.md)
-- [Portability](concepts/portability.md)
-- [Memory model](concepts/memory-model.md)
-- [Versioning and ABI](concepts/versioning-and-abi.md)
-- [Sensor HAL (rohi-hal)](sdk/hal.md)
-- [Sensors](sdk/sensors.md)
-- [Configuration store](sdk/config.md)
-- [Networking (rohi-net)](sdk/net.md)
-- [Service pipeline (rohi-service)](sdk/service.md)
-- [Control plane (BLE)](sdk/control.md)
-- [Device identity](sdk/identity.md)
-- [Time service](sdk/time.md)
-- [Telemetry (rohi-connectivity)](sdk/connectivity.md)
-- [Location](sdk/location.md)
-
-# Platform and reference
-
-- [ESP32-C3 and ESP32-C6](platform/esp32.md)
-- [Boards](platform/boards.md)
-- [Wireless runtime](platform/wireless.md)
-- [Resource limits](reference/resource-limits.md)
-- [Targets and features](reference/targets-and-features.md)
-- [Errors](reference/errors.md)
-- [Persistent ABI](reference/persistent-abi.md)
-- [Glossary](reference/glossary.md)
-
 # Contributing
 
 - [Documentation style and policy](contributing/docs-style.md)

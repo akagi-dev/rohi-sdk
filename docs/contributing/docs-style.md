@@ -12,10 +12,9 @@
 | [Support matrix](../support/overview.md) | hardware compatibility, firmware support, verification levels and evidence |
 
 The book explains how to use and extend ROHI; the crates explain how ROHI works internally. All 18 crates carry their
-technical documentation in rustdoc. The pages grouped under *Technical reference* in the navigation (see
-[SDK crates](../build/sdk-crates.md)) are short overviews that state the purpose of a crate or concept and link to its
-rustdoc; they hold no API listings or contracts. Do not add new detailed contracts to the book when the crate can hold
-them.
+technical documentation in rustdoc, and the book has **no** technical reference section: no API listings, contracts,
+limits tables, ABI or protocol details. Link to the rustdoc instead (see [SDK crates](../build/sdk-crates.md)) and put a
+new contract in the crate that owns it.
 
 How to write and validate crate rustdoc (structure, templates, doctest policy, agent workflow, checklist): [Rustdoc authoring guide](rustdoc-for-agents.md).
 
@@ -23,27 +22,26 @@ How to write and validate crate rustdoc (structure, templates, doctest policy, a
 
 A fact lives on exactly one page; other pages link to it. Canonical pages:
 
-| Concept | Page |
-|---------|------|
-| Resource limits and constants | [Resource limits](../reference/resource-limits.md) |
-| Persistent ABI rules | [Persistent ABI](../reference/persistent-abi.md) |
-| Targets, features and commands | [Targets and features](../reference/targets-and-features.md) |
-| Control protocol and its limits | [`rohi-control-proto` rustdoc](https://docs.rs/rohi-control-proto); overview: [Control plane](../sdk/control.md); concept: [Control protocol](../build/control-protocol.md) |
-| Desktop workflows (`rohi` commands) | [Desktop application](../use/desktop/index.md) |
-| Cancellation rules | [`rohi-sdk` cancellation rustdoc](https://docs.rs/rohi-sdk/latest/rohi_sdk/cancellation/index.html); overview: [Async and cancellation](../concepts/async-and-cancellation.md) |
+| Concept | Where |
+|---------|-------|
+| Resource limits and constants | the product constants in `firmwares/altruist-urban/src/resources.rs` and the [`rohi-sdk` memory rustdoc](https://docs.rs/rohi-sdk/latest/rohi_sdk/memory/index.html) |
+| Persistent ABI rules | the [`rohi-config` rustdoc](https://docs.rs/rohi-config) and the [`rohi-sdk` versioning rustdoc](https://docs.rs/rohi-sdk/latest/rohi_sdk/versioning/index.html) |
+| Targets, features and commands | the [`rohi-sdk` portability rustdoc](https://docs.rs/rohi-sdk/latest/rohi_sdk/portability/index.html#targets-and-features) |
+| Control protocol and its limits | the [`rohi-control-proto` rustdoc](https://docs.rs/rohi-control-proto); concept: [Control protocol](../build/control-protocol.md) |
+| Cancellation rules | the [`rohi-sdk` cancellation rustdoc](https://docs.rs/rohi-sdk/latest/rohi_sdk/cancellation/index.html) |
 | Measurements and sizes | [Resource budget](../validation/resource-budget.md) |
 | Supported boards, firmware and verification evidence | [Support matrix](../support/overview.md) |
 
 ## Style
 
 - Mark what is **implemented**, **planned** and **not verified** explicitly; never describe a plan as a feature (see the mobile application page).
-- Describe the **current** architecture with stable source names (`WifiHandle`, `resources.rs`), small diagrams, concrete
-  examples and explicit ownership and dependency boundaries. Link to source and rustdoc instead of pasting them.
+- Describe the **current** product behaviour and workflows with concrete examples (commands, what a client shows). Keep
+  Rust API names, contracts, limits and architecture out of the book: link to the rustdoc instead of pasting them.
 - Do not leave obsolete work-package terminology or history in normative pages; history belongs to the commit log and
   the measured-data tables of the validation pages.
 - Mark claims that are **not validated on hardware** explicitly ("not yet measured", "not verified on hardware").
 - State security limitations plainly (no BLE pairing, no TLS yet).
-- Prefer tables for limits and error maps, text diagrams for structure, and short paragraphs.
+- Prefer tables for support and verification status, and short paragraphs.
 - Examples are compiled where possible: put host-compilable code in a test file, show it with
   `\{{#include path:anchor}}` and mark the block `rust,ignore`; use `text` or `rust,ignore` for hardware-only snippets.
 

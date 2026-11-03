@@ -180,7 +180,7 @@ provisioning, are always read from stdin or a hidden prompt: `rohi action identi
 `rohi config` lists the sections of the device, shows the **effective** configuration of a section (the firmware
 defaults with your explicit **overrides** applied) and changes overrides with patches that are applied atomically per
 section. Secrets are write-only. It is covered on [Configuration](configuration.md); the rules are in
-[Service pipeline](../../sdk/service.md).
+[Service pipeline](https://docs.rs/rohi-service).
 
 ## What the services are
 
@@ -193,7 +193,7 @@ section. Secrets are write-only. It is covered on [Configuration](configuration.
 | `time` | wall-clock time, source, age, failures | `network_unavailable`, `timeout`, `implausible` |
 | `sensors` | `<sensor>.<measurement>` values in canonical units | `bmx280_error`, `sds011_degraded`, ... |
 | `identity` | provisioned or not, public key | `not_provisioned` |
-| `location` | where the device is and where that comes from ([Location](../../sdk/location.md)) | `not_set` |
+| `location` | where the device is and where that comes from ([Location](https://docs.rs/rohi-location)) | `not_set` |
 
 A firmware may offer more or fewer; `rohi status` shows what the connected device really has. Adding a service needs
 no change to the tool: [Add a service](../../guides/add-service.md).

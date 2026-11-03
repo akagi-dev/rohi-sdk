@@ -39,5 +39,5 @@ without `--device` keeps looking for a couple of seconds after the first device 
 | `multiple ROHI devices found` | pass `--device` or set `ROHI_DEVICE`; `rohi scan` lists them |
 | `the device has no section …` / `NotFound` | the name is not one the device lists: `rohi config`, `rohi status`, `rohi action` |
 | a section shows fewer fields than expected | the tool is older than the firmware; rebuild `rohi` from the same revision |
-| `the device refused the request: permission denied` | the change needs an encrypted or authenticated link, see [Control plane](../../sdk/control.md) |
+| `the device refused the request: permission denied` | the change needs an encrypted or authenticated link, see [Control plane](https://docs.rs/rohi-control) |
 

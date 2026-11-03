@@ -6,7 +6,7 @@ compilation is not hardware validation.
 | Level | How | Where |
 |-------|-----|-------|
 | Host tests | `cargo test`, in-memory devices and mocked buses, no hardware | [Host testing](../validation/host-testing.md) |
-| Target builds | `cargo check-esp32c3`, `cargo check-esp32c6` and the firmware builds in CI | [Targets and features](../reference/targets-and-features.md) |
+| Target builds | `cargo check-esp32c3`, `cargo check-esp32c6` and the firmware builds in CI | [Targets and features](https://docs.rs/rohi-sdk/latest/rohi_sdk/portability/index.html#targets-and-features) |
 | Resource budget | measured flash, RAM and stack | [Resource budget](../validation/resource-budget.md) |
 | Hardware | a recorded run on a physical board | [Hardware testing](../validation/hardware-testing.md) |
 

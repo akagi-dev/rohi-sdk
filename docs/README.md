@@ -21,7 +21,7 @@ The SDK in this repository is the Rust toolkit behind it: libraries, a reference
 | know whether my hardware is supported | [Supported devices](support/overview.md) |
 | write firmware | [Build Firmware](build/quick-start.md): [Core concepts](build/core-concepts.md), [Create & customize](build/create-and-customize.md) |
 | trust or share a firmware | [Verify & Share](verify/compatibility.md) |
-| look something up | [Reference](reference/resource-limits.md), the [crate rustdoc](build/sdk-crates.md) |
+| look something up | the [crate rustdoc](build/sdk-crates.md) |
 
 ## How the documentation is organised
 

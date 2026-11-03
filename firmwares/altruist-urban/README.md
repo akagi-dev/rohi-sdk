@@ -34,7 +34,7 @@ The chip is selected by exactly one of the features `esp32c3` / `esp32c6`; witho
 `cargo build-esp32c6` are shortcuts for checking and building.
 
 The runner flashes the per-chip partition table (`partitions-esp32c3.csv` or `partitions-esp32c6.csv`), which reserves the `rohi-cfg` region used by the
-[configuration store](../../docs/sdk/config.md). Run the command from the repository root.
+[configuration store](https://docs.rs/rohi-config). Run the command from the repository root.
 
 ## Sensors
 
@@ -48,11 +48,11 @@ The firmware detects and runs BMP280/BME280, SCD40/SCD41, SDS011 and the I²S no
 | SDS011 (multi-sample duty cycle) | UART | ≈2 min |
 | Noise microphone (unweighted dB SPL) | I²S | 5 s window |
 
-See [HAL](../../docs/sdk/hal.md), [Sensors](../../docs/sdk/sensors.md) and [Boards](../../docs/platform/boards.md).
+See [HAL](https://docs.rs/rohi-hal), [Sensors](https://docs.rs/rohi-hal/latest/rohi_hal/sensors/index.html) and [Boards](https://docs.rs/rohi-hal-esp).
 
 ## Wi-Fi
 
-The firmware starts a Wi-Fi station through [`rohi-net`](../../docs/sdk/net.md). If the `wifi` configuration section has overrides (an SSID, set as the effective `WifiConfig`) they are
+The firmware starts a Wi-Fi station through [`rohi-net`](https://docs.rs/rohi-net). If the `wifi` configuration section has overrides (an SSID, set as the effective `WifiConfig`) they are
 applied and it connects automatically (and reconnects with bounded backoff); otherwise the state stays `NotConfigured`.
 Wi-Fi can be provisioned over BLE with the `rohi` tool, see below.
 
@@ -69,12 +69,12 @@ cargo run -p rohi -- config wifi ssid=<SSID> password=-   # asks for the passwor
 ```
 
 > **Security:** there is no BLE pairing and no authorization policy in this version, so anyone in radio range can read
-> sensors and change the configuration. See [Control plane](../../docs/sdk/control.md#security).
+> sensors and change the configuration. See [Control plane](https://docs.rs/rohi-control).
 
-See [Control plane (BLE)](../../docs/sdk/control.md) for the protocol, framing, limits and the `rohi` command line.
+See [Control plane (BLE)](https://docs.rs/rohi-control) for the protocol, framing, limits and the `rohi` command line.
 
 ## Resource budget
 
 The static RAM budget of the wireless stack (wireless heap, IP stack sockets and TCP buffers, BLE queues) is defined in one
 place, [`src/resources.rs`](src/resources.rs), with the rationale and exhaustion behaviour of every constant. See
-[Resource limits](../../docs/reference/resource-limits.md).
+[Resource limits](https://docs.rs/rohi-sdk/latest/rohi_sdk/memory/index.html).

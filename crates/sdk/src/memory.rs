@@ -70,16 +70,14 @@
 //!
 //! Each constant documents what consumes it, why it has its value, what
 //! happens when it is exhausted and what has been measured; the values are
-//! summarised in
-//! [Resource limits](https://rohi.akagi.dev/reference/resource-limits.html).
+//! summarised in the table above.
 //! Invariants that would otherwise abort at runtime are `const` assertions
 //! (for example the IP stack needs
 //! `SOCKETS ≥ TCP connections + UDP sockets + DHCP + DNS`).
 //!
 //! Adding a new static resource: put its type in the platform crate with const
 //! generics, its size in `resources.rs` with the four-point documentation, and
-//! a line in
-//! [Resource limits](https://rohi.akagi.dev/reference/resource-limits.html).
+//! a row in the table above.
 //!
 //! # Exhaustion behaviour
 //!

@@ -43,7 +43,7 @@ pub const SECRET_LEN: usize = 32;
 ///   name), version 1.
 /// * CBOR: `[bytes(32)]` (`#[cbor(array)]`), pinned by the golden byte test
 ///   `cbor_encoding_is_stable`. The section ID and this encoding are persistent
-///   ABI; see the [persistent ABI reference](https://rohi.akagi.dev/reference/persistent-abi.html).
+///   ABI; see the [persistent ABI reference](https://docs.rs/rohi-config).
 /// * The identity is **not** a config section of the generic configuration
 ///   API: `identity` is a service whose secret is a write-only action argument
 ///   ([`IdentityService`](crate::IdentityService)), so no config request can

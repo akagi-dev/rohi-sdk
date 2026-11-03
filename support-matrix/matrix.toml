@@ -369,13 +369,13 @@ reference = ".github/workflows/ci.yml"
 id = "doc-boards"
 kind = "source"
 title = "Boards"
-reference = "docs/platform/boards.md"
+reference = "crates/hal-esp/src/board/altruist_urban/mod.rs"
 
 [[evidence]]
 id = "doc-sensors"
 kind = "source"
 title = "Sensors"
-reference = "docs/sdk/sensors.md"
+reference = "crates/hal/src/sensors/mod.rs"
 
 [[evidence]]
 id = "doc-hwtest"

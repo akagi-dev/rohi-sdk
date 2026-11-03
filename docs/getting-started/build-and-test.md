@@ -1,7 +1,7 @@
 # Build and test
 
 All commands run from the repository root (inside `nix develop` if you use Nix). The authoritative description of
-targets, chip features and why they are never combined is [Targets and features](../reference/targets-and-features.md).
+targets, chip features and why they are never combined is [Targets and features](https://docs.rs/rohi-sdk/latest/rohi_sdk/portability/index.html#targets-and-features).
 
 ## On the host
 
@@ -33,7 +33,7 @@ cargo run --release -p altruist-urban --features esp32c6 --target riscv32imac-un
 ```
 
 The runner flashes the chip's partition table, which reserves the configuration region
-([configuration store](../sdk/config.md)). Examples are built the same
+([configuration store](https://docs.rs/rohi-config)). Examples are built the same
 way with `-p rohi-examples --features esp32c3 --target riscv32imc-unknown-none-elf --bin example-<name>`.
 
 ## Documentation

@@ -177,7 +177,7 @@
 //!   no socket is free the attempt fails with [`NtpError::NoSocket`] and is
 //!   retried with backoff by the [`Synchronizer`](rohi_time::Synchronizer).
 //!   See [Resource
-//!   limits](https://rohi.akagi.dev/reference/resource-limits.html).
+//!   limits](https://docs.rs/rohi-sdk/latest/rohi_sdk/memory/index.html).
 //! * **Bounds**: at most [`MAX_SERVERS`] servers, names up to
 //!   [`MAX_NAME_LEN`] bytes, DNS and the exchange each bounded by
 //!   [`NtpConfig::timeout_ms`].

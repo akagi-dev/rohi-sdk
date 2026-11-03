@@ -7,7 +7,7 @@ validated on hardware yet. The per-board, per-capability status and evidence is 
 
 ## Procedure
 
-Build and flash with the per-chip commands in [Targets and features](../reference/targets-and-features.md); the runner
+Build and flash with the per-chip commands in [Targets and features](https://docs.rs/rohi-sdk/latest/rohi_sdk/portability/index.html#targets-and-features); the runner
 flashes the chip's partition table. Examples (one per sensor and a configuration self-test) live in `examples/` and print
 typed results; the firmware logs a snapshot summary every 30 s.
 
@@ -28,7 +28,7 @@ $EXAMPLE --bin example-config        # configuration persistence self-test
 Combined test checklist: BMx280 keeps updating; SCD4x keeps updating; SDS011 completes its duty cycle and sleeps; noise
 windows keep arriving; no sensor starves another. Hot-reconnect check: unplug and replug an I²C sensor and confirm
 `Error → Initializing → Ready` without a reboot; repeat for the SDS011 UART. The ESP32-C6 pin map is **not yet verified
-on hardware** (see [Boards](../platform/boards.md)).
+on hardware** (see [Boards](https://docs.rs/rohi-hal-esp)).
 
 ## Configuration store
 
@@ -46,7 +46,7 @@ here together with the final `WIRELESS_HEAP_SIZE`.
 
 ## Device identity
 
-The hardware checklist (provision, reboot, erase, re-provision) is in the [`rohi-identity` rustdoc](https://docs.rs/rohi-identity) (see also [Device identity](../sdk/identity.md)); its results are not yet recorded.
+The hardware checklist (provision, reboot, erase, re-provision) is in the [`rohi-identity` rustdoc](https://docs.rs/rohi-identity) (see also [Device identity](https://docs.rs/rohi-identity)); its results are not yet recorded.
 
 ## BLE control
 

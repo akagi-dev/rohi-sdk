@@ -82,7 +82,7 @@
 //! firmware). A source holds its own bounded
 //! resources (the NTP source uses one UDP socket per exchange from the
 //! `NetResources` pool, see [`rohi_time_ntp`](../../rohi_time_ntp/index.html)).
-//! See [Resource limits](https://rohi.akagi.dev/reference/resource-limits.html).
+//! See [Resource limits](https://docs.rs/rohi-sdk/latest/rohi_sdk/memory/index.html).
 
 use core::cell::RefCell;
 use core::time::Duration;

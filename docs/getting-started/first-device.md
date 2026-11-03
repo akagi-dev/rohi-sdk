@@ -42,7 +42,7 @@ Behind the scenes:
    cycle, a PM2.5 / PM10 measurement.
 
 If nothing is printed, the sensor may not be wired as the pin map of your board revision says: see
-[Boards](../platform/boards.md). The ESP32-C6 pin map is not yet verified on hardware.
+[Boards](https://docs.rs/rohi-hal-esp). The ESP32-C6 pin map is not yet verified on hardware.
 
 ## 3. Read the example
 

@@ -1,7 +1,7 @@
 # Resource budget (measurements)
 
 Measured sizes of the firmware and the libraries, per hardware or build run. The **limits** themselves (queue depths,
-buffer sizes, heap size) are defined and explained in [Resource limits](../reference/resource-limits.md); this page only
+buffer sizes, heap size) are defined and explained in [Resource limits](https://docs.rs/rohi-sdk/latest/rohi_sdk/memory/index.html); this page only
 records what was measured with them. Numbers here are history, not contracts: they change with every dependency update
 and are re-measured when the limits change.
 
@@ -33,7 +33,7 @@ the radio drivers use the wireless heap.
 | `.rodata` (flash) | 24 096 B |
 | `.rwtext` + `.data` (RAM) | 1 700 B + 2 132 B |
 | `.bss` (RAM, includes task futures) | 9 160 B |
-| Heap | fixed radio heap only (see [Memory model](../concepts/memory-model.md)); application code does not allocate |
+| Heap | fixed radio heap only (see [Memory model](https://docs.rs/rohi-sdk/latest/rohi_sdk/memory/index.html)); application code does not allocate |
 | Event queue | 16 events |
 | Noise buffers | 256 samples (1 KiB) stack + 8 KiB DMA ring |
 
@@ -138,7 +138,7 @@ independently of this measurement.
 
 ## Configuration store
 
-The store uses no heap; see [Resource limits](../reference/resource-limits.md#configuration-store) for its bounds. Its
+The store uses no heap; see [Resource limits](https://docs.rs/rohi-sdk/latest/rohi_sdk/memory/index.html) for its bounds. Its
 RAM cost is a few words of state plus the stack workspace during a call.
 
 ## IP stack, TCP and UDP pools

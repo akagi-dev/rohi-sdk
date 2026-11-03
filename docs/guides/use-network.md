@@ -1,45 +1,31 @@
 # Use IP networking
 
-Open DNS and TCP connections through `NetworkHandle`. Never use `embassy-net` or any vendor type directly: code written
-against the standard traits is portable, testable on the host and independent of the stack. Background:
-[Networking](../sdk/net.md).
+Open DNS and TCP connections through the network handle of `rohi-net`. Never use `embassy-net` or any vendor type
+directly: code written against the standard `embedded-nal-async` and `embedded-io-async` traits is portable, testable on
+the host and independent of the stack. The API, its errors and its limits are in the
+[`rohi-net` rustdoc](https://docs.rs/rohi-net).
 
 ## Write portable code
 
-Make your layer generic over `embedded_nal_async::{Dns, TcpConnect}` and `embedded_io_async::{Read, Write}`:
+Make your layer generic over the standard traits (see the example in the rustdoc) and handle the typed network errors:
 
-```rust,ignore
-{{#include ../../crates/net/tests/network_example.rs:fetch}}
-```
+- **network unavailable**: Wi-Fi is not connected or DHCP is incomplete; wait for the connection and retry. This is not
+  a server problem.
+- **DNS or connect failure**: the network is up but the name or endpoint failed; apply your own retry policy.
+- **no socket available**: all TCP slots of the product are in use; the call does not wait. Close a connection first.
+- **reset or timeout**: the connection is gone; reconnect.
 
-Handle the typed `NetError`:
-
-- `NetworkUnavailable`: Wi-Fi is not connected (or DHCP incomplete). Wait for `WifiStatus` `Connected` (see
-  `WifiHandle::status_receiver`) and retry; this is not a server problem.
-- `DnsFailed` / `ConnectFailed`: the network is up but the name or endpoint failed; apply your own retry policy.
-- `NoSocketAvailable`: all TCP slots of the product are in use; the call does **not** wait. Close a connection first.
-- `ConnectionReset` / `Timeout`: the connection is gone; reconnect.
-
-Always drop connections you no longer need: the slot is released on drop. Bound waits with your own timeout
-(`embassy_time::with_timeout`); dropping a pending `connect` is safe and frees its slot
-([cancellation](../concepts/async-and-cancellation.md)).
+Drop connections you no longer need and bound waits with your own timeout; dropping a pending connect is safe
+([cancellation](https://docs.rs/rohi-sdk/latest/rohi_sdk/cancellation/index.html)).
 
 ## Test on the host
 
-```rust,ignore
-let ip = rohi_net::testing::FakeIp::<2, 128>::new();   // feature `testing`
-ip.add_host("uplink.example", server);
-ip.set_ready(true);
-let net = NetworkHandle::new(&ip);
-```
-
-`FakeIp` scripts DNS answers, refused connections, readiness changes, slot exhaustion and held operations and lets you
-play the peer. See `crates/net/src/ip/tests.rs` and `tests/network_example.rs`.
+`rohi-net` ships an in-memory fake network (the `testing` feature) that scripts DNS answers, refused connections,
+readiness and slot exhaustion and lets the test play the peer. Use it from your crate's tests.
 
 ## On the device
 
-The firmware creates the handle when it starts Wi-Fi (`altruist_urban::net::start` returns
-`(EspWifi, NetRunner, NetworkHandle<'static, Ip>)`) and hands it to the component that needs it. Capacity (`TCP_CONNECTIONS`,
-buffer sizes) is a product decision in `firmwares/altruist-urban/src/resources.rs`
-([Resource limits](../reference/resource-limits.md#ip-data-plane)). Remember there is no TLS yet: do not send secrets
-in clear text.
+The firmware creates the handle when it starts Wi-Fi and hands it to the component that needs it. Capacity is a product
+decision in `firmwares/altruist-urban/src/resources.rs` (see the
+[memory model](https://docs.rs/rohi-sdk/latest/rohi_sdk/memory/index.html)). There is no TLS yet: do not send secrets in
+clear text.

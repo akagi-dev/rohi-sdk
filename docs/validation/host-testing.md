@@ -27,11 +27,10 @@ long-running stability tests          ← Hardware testing
 
 Everything in the portable crates, behind its seam trait:
 
-- sensor drivers and the runner (mock I²C/UART, recording delay);
-- the configuration store, including power-fail safety (`MemoryStorage` fault injection: every torn write and erase);
-- the Wi-Fi manager and reconciliation (mock `WifiBackend` with scripted outcomes, held connects/scans/delays);
-- the IP data plane (`rohi_net::testing::FakeIp`: readiness, DNS, refused connections, slot exhaustion, read/write, UDP);
-- the time service (`rohi-time`: fake clock and fake sources) and the NTP source (`rohi-time-ntp`: a scripted NTP server over `FakeIp`, no Internet);
+- sensor drivers and their runner (mock buses, recording delay);
+- the configuration store, including power-fail safety (injected write and erase faults at every byte);
+- the Wi-Fi manager and the IP data plane (scripted backends, no radio, no Internet);
+- the time service and the NTP source (fake clock and sources);
 - the control protocol, dispatcher, framing and the `rohi` client (in-memory transport);
 - cancellation of all of the above.
 
@@ -40,20 +39,13 @@ found in one of those, add a host test for the logic part and record the hardwar
 
 ## Fakes and mocks
 
-| Seam | Host implementation |
-|------|---------------------|
-| `ConfigStorage` | `rohi_config::MemoryStorage` |
-| `WifiBackend` | mock in `rohi-net/src/wifi/manager/tests.rs` |
-| `IpBackend` | `rohi_net::testing::FakeIp` (feature `testing`) |
-| `BleTransport` | scripted fake in `rohi-control-ble` tests; in-memory transport in `tools/rohi` |
-| `ControlBackend` / registries | `Device` built from fake services in `rohi-control` and `rohi-control-ble` tests; the real sections and services in `tools/rohi` tests |
-| sensor buses and delays | `MockI2c`, `RecordingDelay`, `FixedClock` in `rohi-hal` |
+Every hardware seam has a host implementation (in-memory storage, mock radios, a fake IP stack, scripted BLE transports,
+mock buses); the seams and their fakes are described in the [portability rustdoc](https://docs.rs/rohi-sdk/latest/rohi_sdk/portability/index.html).
 
 ## Cancellation tests
 
 For every public async operation with non-trivial cancellation semantics
-([Async and cancellation](../concepts/async-and-cancellation.md)) test the hazard with `embassy_futures::poll_once` and a
-pinned future that is dropped while pending:
+([Async and cancellation](https://docs.rs/rohi-sdk/latest/rohi_sdk/cancellation/index.html)) test the hazard by starting the operation, polling it once and dropping it while pending:
 
 ```text
 start the operation ── poll once (pending) ── drop it ── then verify:
@@ -64,10 +56,8 @@ start the operation ── poll once (pending) ── drop it ── then verify
   - the next operation succeeds
 ```
 
-Existing examples: dropped Wi-Fi scan (`dropped_scan_does_not_leak_into_the_next_one`), configuration change during
-connecting/backoff/scanning, dropped measurement snapshot, cancelled `connect` / read / write / DNS on `FakeIp`,
-cancelled control request (`cancelled_step_abandons_the_request_and_the_next_one_works`), dropped sensor step during
-its warm-up wait.
+Existing tests cover dropped Wi-Fi scans, configuration changes while connecting, cancelled network operations,
+cancelled control requests and dropped sensor steps; find them with `cargo test cancel`.
 
 ## Book examples
 

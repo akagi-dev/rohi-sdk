@@ -162,7 +162,7 @@
 //! | BLE queues | `RX_DEPTH`, `TX_DEPTH` chunks | RX full: the ATT response to the write is delayed (backpressure); TX full: `send` waits |
 //!
 //! The numbers the Altruist Urban firmware chose are in its
-//! `src/resources.rs` and in <https://rohi.akagi.dev/reference/resource-limits.html>.
+//! `src/resources.rs` and in <https://docs.rs/rohi-sdk/latest/rohi_sdk/memory/index.html>.
 //!
 //! **Platform behaviour.** The Wi-Fi backend always requests WPA/WPA2
 //! personal security for a configured password and open security without one;
@@ -170,7 +170,7 @@
 //! a static address, DNS A records, TCP, UDP); `embassy-net` is built with
 //! `tcp`, `udp`, `dns`, `dhcpv4`, `dhcpv4-hostname` and `medium-ethernet`, and
 //! features are added only together with the component that needs them (see
-//! <https://rohi.akagi.dev/reference/targets-and-features.html#network-stack-features>).
+//! <https://docs.rs/rohi-sdk/latest/rohi_sdk/portability/index.html#targets-and-features>).
 //! The BLE peripheral advertises connectable and scannable with the 128-bit
 //! service UUID, puts the name into the scan response and serves one central at
 //! a time; it reports the security level the stack negotiated but the crate
@@ -191,7 +191,7 @@
 //! point is one wireless heap measurement with Wi-Fi and BLE running (chip not
 //! recorded), which led to the 128 KiB heap of the firmware. See
 //! <https://rohi.akagi.dev/validation/hardware-testing.html> and
-//! <https://rohi.akagi.dev/platform/wireless.html>.
+//! <https://docs.rs/rohi-net-esp>.
 
 #[cfg(all(feature = "esp32c3", feature = "esp32c6"))]
 compile_error!(

@@ -124,7 +124,7 @@
 //!
 //! The Altruist Urban firmware runs Embassy on top of `esp-rtos`; its only
 //! heap is the fixed radio heap owned by the ESP wireless runtime (see
-//! <https://rohi.akagi.dev/platform/wireless.html>). Sensor and application
+//! <https://docs.rs/rohi-net-esp>). Sensor and application
 //! code of this crate is heapless.
 //!
 //! # API navigation

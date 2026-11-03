@@ -88,7 +88,7 @@ use crate::{Location, LocationSourceKind};
 /// height_m}` of 64-bit floats (a key is absent when the field is not
 /// overridden; the default has `NaN` coordinates, which read as "no value").
 /// Tests pin the bytes and the ID; see the
-/// [persistent ABI reference](https://rohi.akagi.dev/reference/persistent-abi.html).
+/// [persistent ABI reference](https://docs.rs/rohi-config).
 ///
 /// ```
 /// use rohi_config::{ConfigSection, Override, SectionId};

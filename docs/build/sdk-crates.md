@@ -23,7 +23,4 @@ Released crates are also published on docs.rs, for example [`rohi-sdk`](https://
 | `rohi-location` | device location |
 | `rohi` (`tools/rohi`) | desktop client library and CLI: [Desktop application](../use/desktop/index.md) |
 
-The dependency rules and "where does new code go" are in the [Crate map](../concepts/crate-map.md).
-
-The pages under *Technical reference* in the navigation are short overviews: each says what a crate is for and links to
-its rustdoc. They do not carry API listings or contracts; those live in the rustdoc of the crate.
+The dependency rules and "where does new code go" are in the [`rohi-sdk` rustdoc](https://docs.rs/rohi-sdk).

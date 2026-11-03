@@ -44,7 +44,7 @@
 //! `{2: node_id, 3: interval_s, 4: endpoint}` where a key is absent when the
 //! field is not overridden (the default is the empty map `0xa0`). The bytes
 //! and the ID are pinned by tests; see the
-//! [persistent ABI reference](https://rohi.akagi.dev/reference/persistent-abi.html).
+//! [persistent ABI reference](https://docs.rs/rohi-config).
 //!
 //! ```
 //! use rohi_config::{ConfigSection, Override, SectionId, encode_to_slice, materialize};

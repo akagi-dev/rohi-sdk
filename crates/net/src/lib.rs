@@ -230,7 +230,7 @@
 //! TCP connections, UDP sockets and their buffers are sized by the product in
 //! the platform backend and fail immediately with
 //! [`NetError::NoSocketAvailable`] when exhausted. The numbers of the whole
-//! SDK are collected in <https://rohi.akagi.dev/reference/resource-limits.html>.
+//! SDK are collected in <https://docs.rs/rohi-sdk/latest/rohi_sdk/memory/index.html>.
 //!
 //! **Cancellation.** Publishing a configuration is synchronous, so a caller
 //! cannot be cancelled between persisting and publishing. `scan`, `connect`,
@@ -267,7 +267,7 @@
 //! <https://rohi.akagi.dev/validation/hardware-testing.html> and
 //! <https://rohi.akagi.dev/validation/host-testing.html>. How a product uses
 //! the layers: <https://rohi.akagi.dev/guides/use-network.html> and
-//! <https://rohi.akagi.dev/platform/wireless.html>.
+//! <https://docs.rs/rohi-net-esp>.
 
 #[cfg(test)]
 extern crate std;

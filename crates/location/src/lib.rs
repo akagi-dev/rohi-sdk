@@ -210,7 +210,7 @@
 //!
 //! The persistent ABI is described on [`LocationConfig`] and in the
 //! [persistent ABI
-//! reference](https://rohi.akagi.dev/reference/persistent-abi.html). Services,
+//! reference](https://docs.rs/rohi-config). Services,
 //! config sections and the status plane are described in [`rohi_service`].
 //!
 //! # Guarantees & Limitations

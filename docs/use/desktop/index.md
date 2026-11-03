@@ -24,7 +24,7 @@ cargo run -p rohi -- status         # or run it without installing
 ```
 
 On Linux the build needs `libdbus` and `pkg-config` (provided by `nix develop`) and `protoc`; see
-[Targets and features](../../reference/targets-and-features.md). Bluetooth must be enabled, and the device must be
+[Targets and features](https://docs.rs/rohi-sdk/latest/rohi_sdk/portability/index.html#targets-and-features). Bluetooth must be enabled, and the device must be
 advertising and not connected to another client: a device accepts a single connection at a time.
 
 `rohi --help` and `rohi <COMMAND> --help` describe every command with examples. Keep the tool and the firmware from the
