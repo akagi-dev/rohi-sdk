@@ -37,6 +37,7 @@ mod config;
 mod diagnostic;
 mod dto;
 mod factory_reset;
+mod logs;
 mod reboot;
 mod status;
 mod target;
@@ -49,7 +50,7 @@ use std::time::Duration;
 
 use clap::Parser;
 
-pub use args::{Cli, ColorChoice, Command, ConfigAction, OutputFormat};
+pub use args::{Cli, ColorChoice, Command, ConfigAction, LogsAction, OutputFormat};
 pub use diagnostic::{CliError, Diagnostic, PartialApply};
 pub use target::{Match, Target, resolve};
 pub use terminal::Io;
@@ -70,6 +71,8 @@ pub struct Ctx {
     pub uri: Option<String>,
     /// Stops `status --watch` after this many printed documents; for tests.
     pub watch_limit: Option<usize>,
+    /// How often `logs --follow` asks for new records.
+    pub follow_interval: Duration,
 }
 
 impl Ctx {
@@ -81,6 +84,7 @@ impl Ctx {
             paint: Paint::plain(),
             uri: None,
             watch_limit: None,
+            follow_interval: Duration::from_secs(1),
         }
     }
 
@@ -152,6 +156,11 @@ pub async fn execute<T: ClientTransport>(
             };
             action::run(device, request, ctx).await
         }
+        Command::Logs {
+            action,
+            lines,
+            follow,
+        } => logs::run(device, action, lines, follow, ctx).await,
     }
 }
 

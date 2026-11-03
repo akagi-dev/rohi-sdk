@@ -1049,3 +1049,24 @@ fn the_task_takes_records_when_they_arrive() {
     });
     assert!(embassy_futures::poll_once(task.as_mut()).is_pending());
 }
+
+#[test]
+fn clear_opens_the_backend_when_the_task_has_not_run_yet() {
+    let rig = Rig::new();
+    let logging = rig.logging(CONFIG);
+    assert!(invoke(&logging, action::CLEAR, &[]).is_ok());
+    assert_eq!(summary(&logging).0, ServiceState::Running);
+}
+
+#[test]
+fn clear_also_drops_the_records_still_waiting_in_ram() {
+    let rig = Rig::new();
+    let logging = rig.logging(CONFIG);
+    log_many(&logging, 5, 1);
+    assert!(invoke(&logging, action::CLEAR, &[]).is_ok());
+    assert_eq!(logging.sink().queued(), 0);
+    log(&logging, "after");
+    let records = read(&logging, 0, 10);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].message.as_str(), "after");
+}

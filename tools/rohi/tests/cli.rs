@@ -220,6 +220,9 @@ fn help_texts_are_snapshots() {
         &["factory-reset"],
         &["reboot"],
         &["action"],
+        &["logs"],
+        &["logs", "download"],
+        &["logs", "clear"],
     ];
     for page in pages {
         let name = format!("help-{}.txt", page.join("-")).replace("help-.txt", "help.txt");
@@ -233,7 +236,7 @@ fn help_groups_options_and_hides_transport_tuning() {
     for heading in ["Target:", "Output:", "Connection:"] {
         assert!(top.contains(heading), "{heading}\n{top}");
     }
-    assert!(top.contains("--device <DEVICE>"));
+    assert!(top.contains("-D, --device <DEVICE>"));
     assert!(top.contains("ROHI_DEVICE"));
     assert!(top.contains("--output <FORMAT>"));
     assert!(top.contains("--scan-timeout <SECONDS>"));
@@ -285,7 +288,8 @@ fn the_command_tree_has_no_module_specific_commands() {
             "config",
             "factory-reset",
             "reboot",
-            "action"
+            "action",
+            "logs"
         ]
     );
     for gone in ["wifi", "connectivity", "backup", "sensors", "time", "info"] {

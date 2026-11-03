@@ -29,6 +29,7 @@ serde = ["dep:serde"]
 cli = [
   "serde",
   "dep:chrono",
+  "dep:rohi-logging",
   "dep:clap",
   "dep:rpassword",
   "dep:terminal_size",
@@ -43,6 +44,7 @@ rohi-control-proto.workspace = true
 rohi-control-ble.workspace = true
 rohi-net.workspace = true
 rohi-identity = { workspace = true, features = ["std"] }
+rohi-logging = { workspace = true, optional = true }
 zeroize = { workspace = true, features = ["std"] }
 heapless.workspace = true
 btleplug.workspace = true
@@ -63,6 +65,8 @@ rohi-control.workspace = true
 rohi-service.workspace = true
 rohi-connectivity.workspace = true
 rohi-location.workspace = true
+rohi-time.workspace = true
+log.workspace = true
 rohi-config = { workspace = true, features = ["std"] }
 rohi-time-ntp.workspace = true
 minicbor = { workspace = true, features = ["std"] }
@@ -75,4 +79,8 @@ required-features = ["cli"]
 
 [[test]]
 name = "cli"
+required-features = ["cli"]
+
+[[test]]
+name = "logs"
 required-features = ["cli"]

@@ -959,8 +959,18 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
 
     async fn clear(&self) -> Result<(), ActionError> {
         let mut inner = self.inner.lock().await;
+        // The backend may not be open yet (the task has not run): open it, so a
+        // clear right after boot works.
+        let now = self.now();
+        self.reconcile(&mut inner, now).await;
+        if inner.storage.is_none() {
+            return Err(ActionError::Unavailable);
+        }
         self.release_streams(&mut inner, true);
         inner.batch.clear();
+        // Records still waiting in RAM belong to the history being removed.
+        inner.carry = None;
+        while self.sink.try_recv().is_some() {}
         inner.open_codec = None;
         let Some(storage) = inner.storage.as_mut() else {
             return Err(ActionError::Unavailable);

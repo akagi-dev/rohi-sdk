@@ -28,6 +28,7 @@ Commands:
   factory-reset  Format the configuration storage of the device
   reboot         Reboot the device
   action         List and run the actions of the services.
+  logs           Show, follow, download or clear the device log
   help           Print this message or the help of the given subcommand(s)
 
 Options:
@@ -38,7 +39,7 @@ Options:
           Print version
 
 Target:
-  -d, --device <DEVICE>
+  -D, --device <DEVICE>
           Target device: advertised name, ID, or a unique prefix or suffix of either; or a URI such as ble://NAME or tcp://HOST:PORT. Without it the only device found is used, or you choose among several
           
           [env: ROHI_DEVICE=]

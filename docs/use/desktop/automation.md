@@ -7,10 +7,10 @@ Command results go to stdout. Prompts, progress, warnings and diagnostics go to 
 clean. `-o json` (`--output json`) prints a JSON document with a stable, versioned schema instead of text:
 
 ```bash
-rohi -d A12F -o json status network | jq -r '.values.ip'
-rohi -d A12F -o json status sensors | jq '.values["scd4x.co2"]'
-rohi -d A12F -o json status | jq -r '.services[] | select(.health != "ok") | .service'
-rohi -d A12F -o json config wifi | jq '.overridden'   # {"section", "values", "overridden": [field names]}
+rohi -D A12F -o json status network | jq -r '.values.ip'
+rohi -D A12F -o json status sensors | jq '.values["scd4x.co2"]'
+rohi -D A12F -o json status | jq -r '.services[] | select(.health != "ok") | .service'
+rohi -D A12F -o json config wifi | jq '.overridden'   # {"section", "values", "overridden": [field names]}
 ```
 
 Every JSON document has `"schema_version": 1`. The schemas are owned by the command line, not by the library types.
