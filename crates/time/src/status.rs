@@ -15,6 +15,12 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
+//! Synchronization state and diagnostics of the
+//! [`TimeService`](crate::TimeService): [`TimeSyncState`], [`TimeStatus`] and
+//! [`TimeSnapshot`].
+//!
+//! Every field describes the synchronization, not the authenticity of the
+//! time: plain NTP is not authenticated, see the [crate documentation](crate).
 
 use core::time::Duration;
 

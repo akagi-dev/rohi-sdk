@@ -203,7 +203,26 @@ fn summary(snapshot: &MeasurementsSnapshot) -> ServiceSummary {
     ServiceSummary::new(ServiceState::Running, health, ready)
 }
 
-/// The measurement runtime as a `sensors` service of the status plane.
+/// The measurement runtime as the `sensors` service of the status plane.
+///
+/// Wraps a [`MeasurementHandle`]: every request takes a fresh snapshot from the
+/// store owner task. The status fields (`<sensor>.<measurement>`, canonical
+/// units, at most 20) are listed in [`crate::sensors`].
+///
+/// * **State.** `disabled` when no sensor is detected (not an error);
+///   `starting` while every present sensor is initializing or warming up;
+///   otherwise `running`. The service is ready when some sensor is `Ready`.
+/// * **Health** (of a running service). `ok`; `degraded` when some sensor is
+///   degraded or failed; `error` when all present sensors failed. If the
+///   measurement owner does not answer, the service is `running` with unknown
+///   health and an empty status.
+/// * **Issues.** A sensor in `Error` or `Degraded` state is an active issue
+///   with the code `<sensor>_fault` (`bmx280_fault`, `scd4x_fault`,
+///   `sds011_fault`, `microphone_fault`, `zmod4510_fault`, `ags3871_fault`,
+///   `radsens_fault`); its severity tells a failure (error) from a degradation
+///   (warning). At most four issues are listed.
+/// * **Essential.** The service is not essential for the device: a device
+///   without a working sensor still serves its other roles.
 #[derive(Service)]
 pub struct SensorsService<'a, M: RawMutex>(pub MeasurementHandle<'a, M>);
 

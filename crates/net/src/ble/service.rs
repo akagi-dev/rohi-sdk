@@ -96,6 +96,36 @@ pub const STATES: &[EnumDescriptor] = &[EnumDescriptor::new(
 
 /// The BLE peripheral as a `ble` service. It has no actions; it is
 /// configured through the `ble` section.
+///
+/// Advertising and connected both read as `running`/ready; only a failed
+/// peripheral is `failed` with the error as issue. The encryption fields and
+/// `max_payload` are reported while a central is connected.
+///
+/// ```
+/// use embassy_futures::block_on;
+/// use rohi_net::{BleName, BleProbe, BleService, BleState};
+/// use rohi_service::{ServiceState, Status};
+///
+/// struct Radio;
+///
+/// impl BleProbe for Radio {
+///     fn state(&self) -> BleState {
+///         BleState::Advertising
+///     }
+///
+///     fn max_payload(&self) -> usize {
+///         20
+///     }
+///
+///     fn name(&self) -> Option<BleName> {
+///         BleName::new("ALTRUIST-URBAN-A1B2")
+///     }
+/// }
+///
+/// let summary = block_on(BleService(Radio).summary());
+/// assert_eq!(summary.state, ServiceState::Running);
+/// assert!(summary.ready);
+/// ```
 #[derive(Service)]
 pub struct BleService<P>(pub P);
 

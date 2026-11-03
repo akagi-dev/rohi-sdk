@@ -120,7 +120,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@v1
         with:
-          target: riscv32imc-unknown-none-elf
+          targets: riscv32imc-unknown-none-elf,riscv32imac-unknown-none-elf
           toolchain: 1.99.1
           components: rust-src
       - name: Enable caching
@@ -140,13 +140,15 @@ jobs:
         with:
           args: --offline --include-fragments --exclude-path docs/book/404.html docs/book
           fail: true
-      - name: Rustdoc (host crates)
+      - name: Rustdoc (portable crates, warnings and broken links are errors)
         run: cargo doc --no-deps
-      - name: Rustdoc (crates of the SDK contracts, warnings are errors)
-        run: cargo doc --no-deps -p rohi-net -p rohi-config -p rohi-control -p rohi-control-ble -p rohi-time -p rohi-time-ntp
         env:
           RUSTDOCFLAGS: -D warnings
-      - name: Rustdoc (ESP backend)
-        run: cargo doc --no-deps -p rohi-net-esp --no-default-features --features esp32c3 --target riscv32imc-unknown-none-elf
+      - name: Rustdoc (ESP crates, esp32c3)
+        run: cargo doc --no-deps -p rohi-hal-esp -p rohi-config-esp -p rohi-net-esp --no-default-features --features esp32c3 --target riscv32imc-unknown-none-elf
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: Rustdoc (ESP crates, esp32c6)
+        run: cargo doc --no-deps -p rohi-hal-esp -p rohi-config-esp -p rohi-net-esp --no-default-features --features esp32c6 --target riscv32imac-unknown-none-elf
         env:
           RUSTDOCFLAGS: -D warnings

@@ -18,13 +18,23 @@
 ///////////////////////////////////////////////////////////////////////////////
 //! SCD40 / SCD41 driver.
 //!
-//! Probing stops any running measurement, reads the serial number (validating
-//! its CRC) and the sensor variant, then starts periodic measurement (a new
-//! value every 5 s). Each sample waits on the data-ready flag, reads CO2,
-//! temperature and humidity and validates every word with CRC-8.
+//! The sensor is on I2C address [`ADDRESS`] (`0x62`). Probing stops any
+//! running measurement, re-initializes the sensor, reads the serial number
+//! (validating its CRC) and the sensor variant, then starts periodic measurement (a new value every
+//! [`MEASUREMENT_INTERVAL_MS`], 5 s). Each sample waits on the data-ready flag
+//! (polled every [`POLL_INTERVAL_MS`], 500 ms, at most [`MAX_READY_POLLS`], 20,
+//! times), reads CO2, temperature and humidity and validates every word with
+//! CRC-8.
 //!
 //! The first valid measurement arrives about 5 s after start, so the sensor
-//! reports `WarmingUp` until then.
+//! reports `WarmingUp` until then. A CO2 value of `0` or above 40 000 ppm is
+//! rejected as [`Error::InvalidData`]. Absence (no ACK, or a variant word that
+//! is neither SCD40 nor SCD41) is reported as "sensor absent" to the runner.
+//! Temperature and humidity use the datasheet formulas of [`Reading`].
+//!
+//! On the Altruist Urban board no SCD4x is documented upstream; the firmware
+//! starts the driver anyway, and the sensor stays `NotDetected` when nothing
+//! answers on the bus (see the support matrix).
 
 use core::fmt::Debug;
 
@@ -113,6 +123,13 @@ impl<E: Debug> DriverError for Error<E> {
 }
 
 /// Sensirion CRC-8: polynomial `0x31`, initial value `0xFF`.
+///
+/// ```
+/// use rohi_hal::sensors::scd4x::crc8;
+///
+/// // Check value from the Sensirion datasheet.
+/// assert_eq!(crc8(&[0xBE, 0xEF]), 0x92);
+/// ```
 pub fn crc8(data: &[u8]) -> u8 {
     let mut crc = 0xFFu8;
     for &byte in data {
@@ -129,6 +146,19 @@ pub fn crc8(data: &[u8]) -> u8 {
 }
 
 /// Decode `N` CRC-protected words (3 bytes each: 2 data + CRC).
+///
+/// # Errors
+///
+/// [`DecodeError::Length`] if `bytes` is not exactly `3 * N` bytes long,
+/// [`DecodeError::Crc`] if a word fails its CRC.
+///
+/// ```
+/// use rohi_hal::sensors::scd4x::{DecodeError, decode_words};
+///
+/// assert_eq!(decode_words::<1>(&[0xBE, 0xEF, 0x92]), Ok([0xBEEF]));
+/// assert_eq!(decode_words::<1>(&[0xBE, 0xEF, 0x00]), Err(DecodeError::Crc));
+/// assert_eq!(decode_words::<1>(&[0xBE, 0xEF]), Err(DecodeError::Length));
+/// ```
 pub fn decode_words<const N: usize>(bytes: &[u8]) -> Result<[u16; N], DecodeError> {
     if bytes.len() != N * 3 {
         return Err(DecodeError::Length);

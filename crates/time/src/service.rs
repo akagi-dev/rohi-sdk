@@ -15,8 +15,74 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-//! The [`TimeService`]: the anchored wall-clock time and its `time` status in the
-//! generic service pipeline.
+//! The [`TimeService`]: the anchored wall-clock time, its validation and its
+//! `time` status in the generic service pipeline.
+//!
+//! # Validation
+//!
+//! [`TimeConfig`] (named, documented values) decides whether a sample may
+//! become the anchor:
+//!
+//! | Rule | Default |
+//! |------|---------|
+//! | `not_before` (plausibility floor) | firmware build time (`BUILD_TIMESTAMP`, set by the firmware `build.rs`); [`TimeConfig::new`] takes it as an argument |
+//! | `not_after` | floor + [`DEFAULT_HORIZON`] (40 years) |
+//! | `max_uncertainty` | [`DEFAULT_MAX_UNCERTAINTY`] (5 s) |
+//! | `stale_after` | [`DEFAULT_STALE_AFTER`] (6 h) |
+//!
+//! A rejected sample is recorded as [`SyncFailure::Implausible`] and the
+//! existing anchor is kept.
+//!
+//! # Control plane
+//!
+//! [`TimeService`] is the read-only `time` service of the status plane (no
+//! secure link needed, not essential for the device). It reports its state
+//! and, when synchronized, `unix_time` (ms; absent while unsynchronized),
+//! `source`, `sync_age`, `uncertainty` and `consecutive_failures` (see
+//! [`status_field`] and [`source_value`]). The time servers are in the `time`
+//! config section ([`rohi_time_ntp`](../../rohi_time_ntp/section/index.html)),
+//! not repeated in the status.
+//!
+//! | Sync state | Service state | Health | Ready |
+//! |------------|---------------|--------|-------|
+//! | `Unsynchronized`, nothing failed yet | `starting` | unknown | no |
+//! | `Unsynchronized`, after failures | `running` | `degraded` | no |
+//! | `Synchronized` | `running` | `ok` | yes |
+//! | `Stale` (usable, may have drifted) | `running` | `degraded` | yes |
+//!
+//! While the last attempt failed, the active issue is the one of the last
+//! failure category ([`issue`]): `network_unavailable`, `resolve_failed`,
+//! `timeout`, `invalid_response`, `rejected`, `implausible`,
+//! `source_failure`.
+//!
+//! ```text
+//! $ rohi status time
+//! Service:  time
+//! State:    running
+//! Health:   ok
+//! Ready:    yes
+//! Since:    2h 13m
+//!
+//! unix_time                1780000000250 ms
+//! source                   ntp
+//! sync_age                 90000 ms
+//! uncertainty              40 ms
+//! consecutive_failures     0
+//! ```
+//!
+//! Manual resynchronization is not offered: periodic automatic
+//! synchronization is authoritative. See the
+//! [desktop application](https://rohi.akagi.dev/use/desktop/status.html) for
+//! `rohi status`.
+//!
+//! # Resources
+//!
+//! All storage is static and bounded: the anchor and the counters are a few
+//! words behind the mutex `M` of the service (a critical-section mutex in the
+//! firmware). A source holds its own bounded
+//! resources (the NTP source uses one UDP socket per exchange from the
+//! `NetResources` pool, see [`rohi_time_ntp`](../../rohi_time_ntp/index.html)).
+//! See [Resource limits](https://rohi.akagi.dev/reference/resource-limits.html).
 
 use core::cell::RefCell;
 use core::time::Duration;
@@ -55,6 +121,23 @@ pub const DEFAULT_HORIZON: Duration = Duration::from_secs(40 * 365 * 24 * 60 * 6
 ///
 /// The floor is the firmware build time on a device without any better
 /// absolute time: a device cannot be running before its firmware was built.
+///
+/// ```
+/// use core::time::Duration;
+/// use rohi_time::{DEFAULT_HORIZON, DEFAULT_MAX_UNCERTAINTY, DEFAULT_STALE_AFTER};
+/// use rohi_time::{TimeConfig, UnixTime};
+///
+/// let floor = UnixTime::from_secs(1_767_225_600);
+/// let config = TimeConfig::new(floor);
+/// assert_eq!(config.not_before, floor);
+/// assert_eq!(
+///     config.not_after.as_secs(),
+///     floor.as_secs() + DEFAULT_HORIZON.as_secs()
+/// );
+/// assert_eq!(config.stale_after, DEFAULT_STALE_AFTER);
+/// assert_eq!(config.max_uncertainty, DEFAULT_MAX_UNCERTAINTY);
+/// assert_eq!(DEFAULT_MAX_UNCERTAINTY, Duration::from_secs(5));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TimeConfig {
     /// Earliest plausible time.
@@ -116,9 +199,53 @@ struct Inner {
 /// `anchor + monotonic elapsed`. Reading never touches the network or a
 /// hardware clock and never allocates.
 ///
-/// All methods take `&self`; place the service in a `static`. See the
-/// [crate documentation](crate) for the guarantees, in particular that the
+/// All methods take `&self`; place the service in a `static`. `C` is the
+/// monotonic [`Clock`], `M` the [`RawMutex`] that guards the anchor and the
+/// counters; each call is one short critical section and nothing awaits. See
+/// the [crate documentation](crate) for the guarantees, in particular that the
 /// wall-clock time may step.
+///
+/// ```
+/// use core::cell::Cell;
+/// use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+/// use rohi_hal::MonotonicTimestamp;
+/// use rohi_hal::runtime::Clock;
+/// use rohi_time::{
+///     SyncFailure, TimeConfig, TimeSample, TimeService, TimeSourceKind, TimeSyncState,
+///     UnixTime,
+/// };
+///
+/// struct Uptime<'a>(&'a Cell<u64>);
+/// impl Clock for Uptime<'_> {
+///     fn now(&self) -> MonotonicTimestamp {
+///         MonotonicTimestamp::from_millis(self.0.get())
+///     }
+/// }
+///
+/// let uptime = Cell::new(0);
+/// let floor = UnixTime::from_secs(1_767_225_600);
+/// let time = TimeService::<_, NoopRawMutex>::new(Uptime(&uptime), TimeConfig::new(floor));
+///
+/// // An implausible sample (before the floor) is refused and counted.
+/// let early = TimeSample { unix_time: UnixTime::from_secs(1_000), uncertainty: None };
+/// assert_eq!(time.submit(TimeSourceKind::Ntp, early), Err(SyncFailure::Implausible));
+/// assert_eq!(time.now(), None);
+/// assert_eq!(time.status().consecutive_failures, 1);
+///
+/// // A plausible one becomes the anchor; the time then advances with the clock.
+/// let sample = TimeSample { unix_time: UnixTime::from_secs(1_780_000_000), uncertainty: None };
+/// time.submit(TimeSourceKind::Ntp, sample).unwrap();
+/// uptime.set(2_500);
+/// assert_eq!(time.now(), Some(UnixTime::from_millis(1_780_000_002_500)));
+/// let snapshot = time.snapshot();
+/// assert_eq!(snapshot.monotonic.millis, 2_500);
+/// assert_eq!(snapshot.state, TimeSyncState::Synchronized);
+///
+/// // Six hours later without a new sample the time is stale but still usable.
+/// uptime.set(2_500 + 6 * 3_600_000 + 1);
+/// assert_eq!(time.status().state, TimeSyncState::Stale);
+/// assert!(time.now().is_some());
+/// ```
 #[derive(Service)]
 pub struct TimeService<C, M: RawMutex> {
     clock: C,
@@ -175,7 +302,8 @@ impl<C: Clock, M: RawMutex> TimeService<C, M> {
         })
     }
 
-    /// Monotonic and wall-clock time of the same instant, plus the state.
+    /// Monotonic and wall-clock time of the same instant (one reading of the
+    /// clock), plus the state.
     pub fn snapshot(&self) -> TimeSnapshot {
         let now = self.clock.now();
         self.inner.lock(|inner| {
@@ -211,7 +339,14 @@ impl<C: Clock, M: RawMutex> TimeService<C, M> {
     ///
     /// The previous anchor is replaced at once, so the wall-clock time can
     /// step forward or backward. A rejected sample leaves the anchor
-    /// untouched and counts as a failure ([`SyncFailure::Implausible`]).
+    /// untouched and counts as a failure ([`SyncFailure::Implausible`]); an
+    /// accepted one clears the failure counter and the last failure.
+    ///
+    /// # Errors
+    ///
+    /// [`SyncFailure::Implausible`] when the sample is outside
+    /// `not_before..=not_after` of the [`TimeConfig`] or its uncertainty
+    /// exceeds `max_uncertainty`.
     pub fn submit(&self, source: TimeSourceKind, sample: TimeSample) -> Result<(), SyncFailure> {
         if !self.is_plausible(&sample) {
             warn!(
@@ -248,7 +383,9 @@ impl<C: Clock, M: RawMutex> TimeService<C, M> {
         Ok(())
     }
 
-    /// Records a failed synchronization attempt. The anchor is untouched.
+    /// Records a failed synchronization attempt: the failure counter grows
+    /// (saturating) and `failure` becomes the last failure. The anchor is
+    /// untouched.
     pub fn record_failure(&self, failure: SyncFailure) {
         self.inner.lock(|inner| {
             let mut inner = inner.borrow_mut();
@@ -306,7 +443,8 @@ pub mod issue {
     pub const SOURCE_FAILURE: u32 = BASE + 6;
 }
 
-/// Values of the `source` status field.
+/// Values of the `source` status field, the wire values of
+/// [`TimeSourceKind`].
 pub mod source_value {
     /// Network time protocol.
     pub const NTP: u32 = 0;

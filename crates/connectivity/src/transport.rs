@@ -16,6 +16,46 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 //! Transport abstraction and error classification.
+//!
+//! [`EnvelopeTransport`] operates on the immutable
+//! [`EnvelopeFrame`]: a transport cannot change what was
+//! signed. [`HttpTransport`](crate::HttpTransport) is the implementation
+//! shipped.
+//!
+//! ```
+//! use rohi_connectivity::{EnvelopeFrame, EnvelopeTransport, TransportAck, TransportError};
+//!
+//! /// Accepts every frame and counts the bytes it was given.
+//! struct Sink(usize);
+//!
+//! impl EnvelopeTransport for Sink {
+//!     async fn send(&mut self, frame: &EnvelopeFrame) -> Result<TransportAck, TransportError> {
+//!         self.0 += frame.len();
+//!         Ok(TransportAck { status: 202 })
+//!     }
+//! }
+//! ```
+//!
+//! [`HttpTransport`](crate::HttpTransport) is the maintained implementation; a
+//! complete host exchange against an in-memory network is in its
+//! documentation.
+//!
+//! # Error classification
+//!
+//! Centralized in [`TransportError::disposition`] and [`classify_status`]:
+//!
+//! | Result | Disposition |
+//! |--------|-------------|
+//! | `202 Accepted` | delivered, frame removed |
+//! | network unavailable, DNS, connect, timeout, I/O error, malformed response | [`Retry`](Disposition::Retry): the same frame with backoff |
+//! | `408`, `429`, `5xx` | retry with backoff |
+//! | `1xx`, `3xx`, `2xx` other than `202` (captive portal, proxy) | retry (not an acceptance) |
+//! | `401`, `403` | [`Unauthorized`](Disposition::Unauthorized): frame dropped, pause for the longest backoff (no hot loop) |
+//! | `400`, `413`, any other `4xx` | [`Permanent`](Disposition::Permanent): frame dropped |
+//!
+//! The service applies the disposition in
+//! [`ConnectivityService::deliver`](crate::ConnectivityService::deliver) and
+//! its backoff is described in [`service`](crate::service).
 
 use core::fmt;
 
@@ -62,6 +102,17 @@ pub enum Disposition {
 
 impl TransportError {
     /// How the failure is handled. The only place that classifies errors.
+    ///
+    /// ```
+    /// use rohi_connectivity::{Disposition, TransportError};
+    ///
+    /// assert_eq!(TransportError::Timeout.disposition(), Disposition::Retry);
+    /// assert_eq!(TransportError::Status(503).disposition(), Disposition::Retry);
+    /// // Not an acceptance (a captive portal answers 200): the frame is kept.
+    /// assert_eq!(TransportError::Status(200).disposition(), Disposition::Retry);
+    /// assert_eq!(TransportError::Status(401).disposition(), Disposition::Unauthorized);
+    /// assert_eq!(TransportError::Status(413).disposition(), Disposition::Permanent);
+    /// ```
     pub const fn disposition(self) -> Disposition {
         match self {
             Self::NetworkUnavailable
@@ -90,6 +141,18 @@ const fn classify_status_code(status: u16) -> Disposition {
 
 /// Maps an HTTP status code to the delivery result: only `202 Accepted`
 /// commits the frame.
+///
+/// # Errors
+///
+/// [`TransportError::Status`] for every status other than `202`; its
+/// [`disposition`](TransportError::disposition) says what to do with it.
+///
+/// ```
+/// use rohi_connectivity::{TransportAck, TransportError, classify_status};
+///
+/// assert_eq!(classify_status(202), Ok(TransportAck { status: 202 }));
+/// assert_eq!(classify_status(200), Err(TransportError::Status(200)));
+/// ```
 pub const fn classify_status(status: u16) -> Result<TransportAck, TransportError> {
     if status == 202 {
         Ok(TransportAck { status })
@@ -123,6 +186,13 @@ pub trait EnvelopeTransport {
     /// Sends `frame` and waits for the acknowledgement.
     ///
     /// Cancellation: safe at any point; the frame is not modified, so it can
-    /// be sent again.
+    /// be sent again (the ingress may or may not have received the cancelled
+    /// attempt).
+    ///
+    /// # Errors
+    ///
+    /// A [`TransportError`], classified by
+    /// [`TransportError::disposition`]. Only an acknowledgement
+    /// ([`TransportAck`]) lets the service remove the frame.
     async fn send(&mut self, frame: &EnvelopeFrame) -> Result<TransportAck, TransportError>;
 }

@@ -15,23 +15,58 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-//! CBOR codecs of the bounded containers the persisted types are made of, for
-//! `#[cbor(encode_with = "...", decode_with = "...", cbor_len = "...")]`.
+
+//! CBOR codecs of the bounded containers the persisted types are made of.
 //!
-//! A value that does not fit the bound is a decode error, never cut:
+//! [`text`] and [`bytes`] encode a `heapless::String<N>` as a CBOR text string
+//! and a `heapless::Vec<u8, N>` as a CBOR byte string; `minicbor` has no
+//! implementation of these types, so a persisted field names the functions
+//! with `#[cbor(encode_with = "...", decode_with = "...", cbor_len = "...")]`.
 //!
-//! ```ignore
-//! #[derive(minicbor::Encode, minicbor::Decode, minicbor::CborLen)]
-//! #[cbor(transparent)]
-//! pub struct Name(
+//! A value that does not fit the bound `N` is a decode error carrying the
+//! position of the item, never silently cut. Decoding borrows nothing and
+//! allocates nothing. The wire form is plain CBOR (major type 3 and 2), so
+//! the bound is not part of the encoding: raising `N` later stays compatible
+//! with data written earlier, lowering it makes longer stored values fail to
+//! decode.
+//!
+//! ```
+//! use heapless::{String, Vec};
+//! use minicbor::{CborLen, Decode, Encode};
+//! use rohi_config::{decode_exact, encode_to_slice};
+//!
+//! #[derive(Debug, PartialEq, Encode, Decode, CborLen)]
+//! #[cbor(array)]
+//! struct Entry {
 //!     #[n(0)]
 //!     #[cbor(
 //!         encode_with = "rohi_config::cbor::text::encode",
 //!         decode_with = "rohi_config::cbor::text::decode",
 //!         cbor_len = "rohi_config::cbor::text::cbor_len"
 //!     )]
-//!     heapless::String<32>,
-//! );
+//!     name: String<4>,
+//!     #[n(1)]
+//!     #[cbor(
+//!         encode_with = "rohi_config::cbor::bytes::encode",
+//!         decode_with = "rohi_config::cbor::bytes::decode",
+//!         cbor_len = "rohi_config::cbor::bytes::cbor_len"
+//!     )]
+//!     data: Vec<u8, 3>,
+//! }
+//!
+//! let entry = Entry {
+//!     name: String::try_from("ab").unwrap(),
+//!     data: Vec::from_slice(&[1, 2]).unwrap(),
+//! };
+//! let mut buffer = [0u8; 16];
+//! let used = encode_to_slice(&entry, &mut buffer).unwrap();
+//! // [ "ab", h'0102' ]
+//! assert_eq!(&buffer[..used], [0x82, 0x62, b'a', b'b', 0x42, 1, 2]);
+//! assert_eq!(decode_exact::<Entry>(&buffer[..used]), Ok(entry));
+//!
+//! // Five bytes of text do not fit `String<4>`: an error, not a cut value.
+//! let too_long = [0x82, 0x65, b'a', b'b', b'c', b'd', b'e', 0x40];
+//! assert!(decode_exact::<Entry>(&too_long).is_err());
 //! ```
 
 /// A bounded text, a CBOR text string.

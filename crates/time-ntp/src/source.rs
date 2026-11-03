@@ -15,6 +15,19 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
+//! [`NtpTimeSource`]: the SNTP client as a [`TimeSource`].
+//!
+//! One [`sample`](rohi_time::TimeSource::sample) resolves one server with
+//! `NetworkHandle` DNS (IPv4), sends one SNTPv4 datagram over a UDP socket of
+//! the same handle and maps the result with the [`sntpc`] client. DNS and the
+//! exchange are each bounded by [`NtpConfig::timeout_ms`](crate::NtpConfig)
+//! (5 s by default); the UDP socket is held only for the duration of one
+//! exchange. The server is taken from the configured list in rotation, up to
+//! [`MAX_SERVERS`](crate::MAX_SERVERS) (4), and the next sample uses the next
+//! one. The reported time is the server's transmit time plus half the round
+//! trip; its uncertainty is half the round trip plus half the server's root
+//! delay plus its root dispersion. The local offset computed by `sntpc` is not
+//! used, the local clock is only the pivot (see [the NTP era](crate#ntp-era)).
 
 use core::cell::Cell;
 use core::net::SocketAddr;
@@ -37,12 +50,55 @@ use crate::{NTP_PORT, NtpConfig, NtpError};
 ///   the [crate documentation](crate#ntp-era).
 ///
 /// Each [`sample`](TimeSource::sample) uses one server of the configuration
-/// and one short-lived UDP socket, so nothing is held between samples. After
-/// a failure the next sample uses the next server. The source is available
-/// while the network is ready; a dead network is therefore not a failure of
-/// the synchronization loop.
+/// and one short-lived UDP socket, so nothing is held between samples. The
+/// next sample uses the next server, after a failure and after a success. The
+/// source is available while the network is ready; a dead network is
+/// therefore not a failure of the synchronization loop.
 ///
-/// Cancellation: `sample` is cancel-safe; dropping it closes the socket.
+/// # Errors
+///
+/// [`sample`](TimeSource::sample) returns an [`NtpError`], which converts to
+/// the coarse [`SyncFailure`](rohi_time::SyncFailure) of the service, see
+/// [`error`](crate::error). The server index advances after every attempt,
+/// also a failed one, so a dead server does not block the others.
+///
+/// # Cancellation
+///
+/// `sample` is cancel-safe: dropping it closes the UDP socket and records
+/// nothing; the server index only advances when the attempt completed.
+///
+/// ```
+/// use core::future::pending;
+///
+/// use embassy_futures::block_on;
+/// use embedded_hal_async::delay::DelayNs;
+/// use rohi_net::NetworkHandle;
+/// use rohi_net::testing::FakeIp;
+/// use rohi_time::{TimeSource, UnixTime};
+/// use rohi_time_ntp::{NtpConfig, NtpError, NtpTimeSource};
+///
+/// struct NeverDelay;
+/// impl DelayNs for NeverDelay {
+///     async fn delay_ns(&mut self, _ns: u32) {
+///         pending::<()>().await
+///     }
+/// }
+///
+/// // The network is down: the source reports it is not available and a forced
+/// // attempt fails without touching a socket.
+/// let ip = FakeIp::<1, 64>::new();
+/// ip.set_ready(false);
+/// let servers = ["ntp.example"];
+/// let mut source = NtpTimeSource::new(
+///     NetworkHandle::new(&ip),
+///     NeverDelay,
+///     NtpConfig::new(&servers),
+///     || UnixTime::from_secs(1_780_000_000),
+/// );
+/// assert!(!source.is_available());
+/// assert_eq!(block_on(source.sample()).err(), Some(NtpError::NetworkUnavailable));
+/// assert_eq!(ip.open_udp_sockets(), 0);
+/// ```
 pub struct NtpTimeSource<'a, B: IpBackend, D, P> {
     net: NetworkHandle<'a, B>,
     delay: D,
@@ -137,8 +193,8 @@ where
     }
 }
 
-/// The server's transmit time moved forward by half the round trip, with the
-/// round trip and the server's own error bounds as uncertainty.
+/// The server's transmit time moved forward by half the round trip, with half
+/// the round trip, half the root delay and the root dispersion as uncertainty.
 ///
 /// The local offset reported by `sntpc` is not used: the local clock is only
 /// the pivot, not a time reference.

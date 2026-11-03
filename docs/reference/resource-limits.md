@@ -58,9 +58,9 @@ Queue depths, connections and attribute count are product constants (table above
 
 ## Control protocol
 
-Protocol limits (`MAX_REQUEST_LEN` 768 B, `MAX_RESPONSE_LEN` 2048 B, `MAX_SENSORS` 8, `MAX_MEASUREMENTS_PER_SENSOR` 4,
+Protocol limits (`MAX_REQUEST_LEN` 768 B, `MAX_RESPONSE_LEN` 2048 B,
 text/SSID/password lengths, ATT payload) are defined once in `rohi-control-proto/build.rs` and tabulated in
-[Control plane › Limits](../sdk/control.md#limits).
+the [`rohi-control-proto` rustdoc](https://docs.rs/rohi-control-proto) (see [Control plane](../sdk/control.md)).
 
 ## Configuration store
 

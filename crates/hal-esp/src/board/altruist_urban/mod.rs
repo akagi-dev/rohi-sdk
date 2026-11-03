@@ -18,11 +18,75 @@
 ///////////////////////////////////////////////////////////////////////////////
 //! Altruist Urban board support.
 //!
-//! The board is exposed by a chip independent API; the Cargo feature
-//! `esp32c3` or `esp32c6` selects the backend module that owns the pin map and
-//! the chip specific peripheral types. Drivers never name pins.
+//! This module is the single place that names GPIO pins and configures the
+//! buses. The API is chip independent; the Cargo feature `esp32c3` or `esp32c6`
+//! (exactly one, forwarded by the firmware) selects the backend module
+//! (`esp32c3.rs` or `esp32c6.rs`) that owns the pin map and the chip specific
+//! peripheral types. Drivers and firmware tasks never name pins.
+//!
+//! ```text
+//! let (hardware, runtime) = Hardware::split(peripherals);
+//! let board = AltruistUrban::new(hardware)?;
+//! // board.i2c, board.sds011_uart, board.microphone go to the sensor drivers;
+//! // runtime carries the timer, the radios and the flash for the runtime.
+//! ```
+//!
+//! The compiled version of this sequence is
+//! `firmwares/altruist-urban/src/bin/main.rs`; the examples in `examples/` do
+//! the same through `rohi_examples::run`. The code needs a chip feature and the
+//! matching bare-metal target, so it cannot be a doctest.
+//!
+//! [`Hardware::split`] divides the chip peripherals into the board hardware and
+//! the [`Runtime`] peripherals (timer group 0 and the software interrupt of
+//! `esp-rtos`, the Wi-Fi and Bluetooth radios, the flash).
+//! [`AltruistUrban::new`] configures the buses without talking to any sensor
+//! and returns the configured I2C bus (BMx280 and SCD4x), the SDS011 UART
+//! ([`SDS011_BAUD_RATE`], 9600 baud) and the I2S microphone, ready to be
+//! handed to the sensor drivers.
+//!
+//! # Pin map
+//!
+//! | Function | ESP32-C3 | ESP32-C6 |
+//! |----------|----------|----------|
+//! | I2C0 SDA / SCL | GPIO3 / GPIO0 | GPIO3 / GPIO2 |
+//! | SDS011 UART1 TX / RX | GPIO10 / GPIO1 | GPIO5 / GPIO4 |
+//! | I2S BCLK / WS / DIN | GPIO7 / GPIO6 / GPIO8 | GPIO10 / GPIO1 / GPIO11 |
+//!
+//! The ESP32-C3 map was checked by the maintainer against the Altruist Urban
+//! pinout; upstream publishes no schematic of this legacy variant. The ESP32-C6
+//! map comes from the Altruist Urban main board schematic (ESP32-C6-WROOM-1-N8,
+//! "GPIO Map" sheet). Neither map is recorded as verified on hardware (every
+//! board entry of `support-matrix/matrix.toml` has `hardware_verification =
+//! "not-verified"`). The schematic
+//! names the SDS011 nets `PM_TX` (GPIO5) and `PM_RX` (GPIO4) without a
+//! viewpoint; they are taken from the ESP32-C6 side, so swap them if the sensor
+//! stays silent. GPIO4 and GPIO5 are strapping pins, but they only select the
+//! JTAG source when the `JTAG_SEL_ENABLE` eFuse is burned, so the SDS011 does
+//! not affect booting. The C6 board also wires a button (GPIO7), a
+//! data-logging LED (GPIO0) and the CN4 expansion connector that the firmware
+//! does not drive. The firmware drives no sensor power or control pins.
+//!
+//! A board revision with a different pin map must get its own module instead of
+//! an edit of these tables. The same tables, the verification status per board
+//! and capability, and the board guides are in
+//! <https://rohi.akagi.dev/platform/boards.html> and the support matrix
+//! <https://rohi.akagi.dev/support/overview.html>.
+//!
+//! # Microphone
+//!
+//! The I2S microphone runs at the noise sample rate of `rohi-hal`
+//! ([`SAMPLE_RATE_HZ`]), mono, 32-bit Philips frames. The DMA ring buffer is
+//! 4 KiB (64 ms, 16 chunks of 256 bytes); the noise task must drain it within
+//! that time or the DMA transfer fails, which [`I2sMicrophone`] reports as an
+//! error and restarts on the next read.
+//!
+//! # Errors
+//!
+//! [`AltruistUrban::new`] returns [`Error`] when a bus configuration is
+//! rejected by `esp-hal` or the microphone transfer cannot be prepared.
+//!
 //! Hardware production documentation:
-//! * https://github.com/airalab/hardware/tree/main/Altruist
+//! * <https://github.com/airalab/hardware/tree/main/Altruist>
 //!
 //! Device: <https://robonomics.network/devices/altruist/>
 
@@ -49,7 +113,7 @@ use crate::I2sMicrophone;
 
 pub use chip::Hardware;
 
-/// SDS011 UART baud rate.
+/// SDS011 UART baud rate (9600 baud).
 pub const SDS011_BAUD_RATE: u32 = 9_600;
 
 /// I2S DMA ring buffer size in bytes: 4 KiB, 64 ms of 16 kHz 32-bit mono.
@@ -72,7 +136,7 @@ pub struct Runtime {
     pub flash: FLASH<'static>,
 }
 
-/// Board initialization failure.
+/// Board initialization failure, returned by [`AltruistUrban::new`].
 #[derive(Debug)]
 pub enum Error {
     /// I2C configuration is invalid.
@@ -86,6 +150,9 @@ pub enum Error {
 }
 
 /// Board peripherals, ready to be handed to sensor drivers.
+///
+/// Created once by [`AltruistUrban::new`]; the fields are moved into the sensor
+/// tasks (see `firmwares/altruist-urban/src/tasks/sensors.rs`).
 pub struct AltruistUrban {
     /// I2C bus of BMx280 and SCD4x.
     pub i2c: I2c<'static, Async>,
@@ -97,6 +164,17 @@ pub struct AltruistUrban {
 
 impl AltruistUrban {
     /// Configure buses and peripherals. Does not talk to any sensor.
+    ///
+    /// The I2C bus runs at the `esp-hal` default of 100 kHz with the hardware
+    /// bus timeout at its maximum; the UART runs at [`SDS011_BAUD_RATE`] with an
+    /// RX FIFO threshold of 10 bytes; the I2S receiver runs mono, 32-bit Philips
+    /// frames at [`SAMPLE_RATE_HZ`]. The I2S DMA transfer starts on the first
+    /// read of the microphone, not here.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::I2c`], [`Error::Uart`] or [`Error::I2s`] if `esp-hal` rejects the
+    /// configuration; [`Error::Microphone`] if the microphone cannot be prepared.
     pub fn new(hardware: Hardware) -> Result<Self, Error> {
         let i2c = I2c::new(
             hardware.i2c,

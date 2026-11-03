@@ -31,6 +31,32 @@
 //! is the backpressure) and responses leave through the bounded TX queue.
 //! Every connection gets a new epoch; chunks of an earlier connection are
 //! never delivered to or sent for a later one.
+//!
+//! # Behaviour
+//!
+//! * **Advertising.** Connectable and scannable undirected advertising with
+//!   the flags and the incomplete list of the 128-bit service UUID; the device
+//!   name is in the scan response. The default name is
+//!   `<name_prefix>-<last two MAC bytes>` in upper-case hex, with a long prefix
+//!   cut on a character boundary; a configured
+//!   [`BleName`](rohi_net::BleName) replaces it. The address is a static
+//!   random address derived from the factory MAC.
+//! * **GATT.** One service with a write (and write-without-response)
+//!   characteristic for `rx` and a notify characteristic for `tx`, as
+//!   described by the [`BleGattSpec`](rohi_net::BleGattSpec). A write longer
+//!   than [`MAX_BLE_PAYLOAD`] or at a non-zero offset is rejected with an ATT
+//!   error.
+//! * **Payload.** 20 bytes until the central negotiates a larger ATT MTU, then
+//!   the MTU minus 3 bytes, at most [`MAX_BLE_PAYLOAD`].
+//! * **Link events.** When a central disconnects, `recv` returns
+//!   `Disconnected` exactly once and advertising restarts. The TX queue is
+//!   emptied when a connection ends and both queues when the next one starts.
+//!   A driver or advertising error sets the state to `Error` and is retried
+//!   after one second.
+//! * **One central.** The peripheral serves one connection at a time.
+//! * **Security.** The link properties reported through
+//!   [`BleConnectionInfo`] come from the security level the host stack
+//!   negotiated. This module configures no pairing or bonding.
 
 use core::cell::{Cell, RefCell};
 
@@ -205,6 +231,12 @@ impl<
 }
 
 /// The connected central as a [`BleTransport`].
+///
+/// Created together with its [`BleRunner`] by
+/// [`EspWireless::ble`](crate::EspWireless::ble); the runner must be running
+/// for the transport to do anything. `recv` and `send` are cancel-safe. A
+/// chunk that does not fit the buffer given to `recv` is reported as
+/// [`BleError::BufferTooSmall`] and consumed.
 pub struct EspBle<const RX_DEPTH: usize, const TX_DEPTH: usize> {
     shared: &'static Shared<RX_DEPTH, TX_DEPTH>,
 }
@@ -296,7 +328,7 @@ impl<const RX_DEPTH: usize, const TX_DEPTH: usize> BleTransport for EspBle<RX_DE
 }
 
 /// Drives the BLE controller, host stack, advertising and GATT server.
-/// Run it on its own task: `runner.run().await`.
+/// Run it on its own task: `runner.run().await`. It never finishes.
 pub struct BleRunner<
     const RX_DEPTH: usize,
     const TX_DEPTH: usize,
@@ -404,6 +436,12 @@ impl<
 {
     /// Runs the BLE stack forever. Errors restart advertising; they never
     /// stop the rest of the firmware.
+    ///
+    /// # Panics
+    ///
+    /// Building the GATT attribute table panics inside TrouBLE when the
+    /// `ATTRIBUTES` bound of [`BleResources`] is too small, so a bad value is
+    /// caught at the first start.
     pub async fn run(self) -> ! {
         let controller: ExternalController<_, CONTROLLER_SLOTS> =
             ExternalController::new(self.connector);

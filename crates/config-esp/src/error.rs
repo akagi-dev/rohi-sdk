@@ -20,6 +20,25 @@
 use core::fmt;
 
 /// Platform error of the ESP configuration flash backend.
+///
+/// - `OutOfBounds`, `InvalidAlignment` and `InvalidRegion` are detected before
+///   the flash is touched;
+/// - `ReadFailed`, `WriteFailed` and `EraseFailed` report a failure of the
+///   underlying flash driver, whose own error is not preserved.
+///
+/// It implements [`Display`](core::fmt::Display) and [`core::error::Error`],
+/// and is the `ConfigStorage::Error` of
+/// [`EspConfigStorage`](crate::EspConfigStorage), so a store failure
+/// surfaces as `rohi_config::ConfigError<EspStorageError>`.
+///
+/// ```
+/// use rohi_config_esp::EspStorageError;
+///
+/// assert_eq!(
+///     EspStorageError::InvalidAlignment.to_string(),
+///     "unaligned flash access"
+/// );
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EspStorageError {
     /// The access leaves the configuration region.
@@ -28,8 +47,11 @@ pub enum EspStorageError {
     InvalidAlignment,
     /// The region is not usable (unaligned, beyond flash capacity or empty).
     InvalidRegion,
+    /// The flash driver failed to read.
     ReadFailed,
+    /// The flash driver failed to program.
     WriteFailed,
+    /// The flash driver failed to erase.
     EraseFailed,
 }
 

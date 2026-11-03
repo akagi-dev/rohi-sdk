@@ -17,8 +17,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 //! On-demand access to measurement snapshots.
 //!
-//! The `MeasurementStore` has exactly one owner task. Other tasks (the future
-//! control layer included) never see the store; they ask the owner for a
+//! The `MeasurementStore` has exactly one owner task. Other tasks (the control layer included) never see the store; they ask the owner for a
 //! snapshot through a [`MeasurementHandle`]:
 //!
 //! ```text
@@ -30,10 +29,24 @@
 //! ```
 //!
 //! The owner generates every snapshot when it serves the request, with the
-//! monotonic time of that moment, so `Valid`/`Stale` and `age_ms` are correct
-//! at request time. The request path is bounded: one request slot and one
+//! monotonic time of that moment, so `Valid`/`Stale` is correct at request
+//! time. The request path is bounded: one request slot and one
 //! response slot, callers are serialized, and the owner never blocks on a
 //! caller that gave up.
+//!
+//! [`MeasurementHandle::snapshot`] waits for its turn;
+//! [`MeasurementHandle::try_snapshot`] returns
+//! [`MeasurementServiceError::Busy`] instead of waiting for another request in
+//! flight. The owner side is [`MeasurementService::accept`] and
+//! [`SnapshotRequest::respond`].
+//!
+//! # Cancellation
+//!
+//! [`MeasurementService::accept`] is cancel-safe, so the owner can `select` it
+//! next to the sensor event queue. [`MeasurementHandle::snapshot`] and
+//! [`MeasurementHandle::try_snapshot`] can be dropped at any point: the
+//! request only reads state, a stale answer is never delivered to a later
+//! caller, and neither the request slot nor the call lock stays occupied.
 
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embassy_sync::channel::Channel;
@@ -53,6 +66,26 @@ pub enum MeasurementServiceError {
 /// Request/response channel between the owner task and its handles.
 ///
 /// Place it in a `static`; all storage is inline and bounded.
+///
+/// ```
+/// use embassy_futures::{block_on, join::join};
+/// use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+/// use rohi_hal::runtime::MeasurementService;
+/// use rohi_hal::{MeasurementStore, MonotonicTimestamp};
+///
+/// let service = MeasurementService::<NoopRawMutex>::new();
+/// let store = MeasurementStore::new();
+/// let handle = service.handle();
+///
+/// // The owner answers with a snapshot generated at request time ...
+/// let owner = async {
+///     let request = service.accept().await;
+///     request.respond(store.snapshot(MonotonicTimestamp::from_millis(42)));
+/// };
+/// // ... while any other task asks for it.
+/// let (snapshot, ()) = block_on(join(handle.snapshot(), owner));
+/// assert_eq!(snapshot.unwrap().generated_at.millis, 42);
+/// ```
 pub struct MeasurementService<M: RawMutex> {
     requests: Channel<M, u32, 1>,
     responses: Signal<M, (u32, MeasurementsSnapshot)>,

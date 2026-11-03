@@ -19,15 +19,38 @@
 //! Bounded sensor event queue.
 //!
 //! All sensor tasks publish [`SensorEvent`]s into one [`EventBus`]; a single
-//! consumer task owns the `MeasurementStore` and applies them.
+//! consumer task owns the `MeasurementStore` and is the only component that
+//! mutates it.
+//!
+//! # Events
+//!
+//! Sensors publish three kinds of [`SensorEvent`]:
+//!
+//! * `Measurements`: a successful observation;
+//! * `StateChanged`: an actual lifecycle transition, published only when the
+//!   state changes;
+//! * `Error`: a failed operation.
+//!
+//! **Success is one event.** The `MeasurementStore` derives `Ready` from a
+//! `Measurements` event: the new values, their timestamp and `Ready` are
+//! applied in one step, also when recovering from `Degraded` or `Error`. There
+//! is no separate `StateChanged(Ready)`, so a consumer can never observe
+//! `Ready` together with an old value, and one successful cycle costs one
+//! queue slot.
 //!
 //! # Overflow policy
 //!
 //! For environmental telemetry the newest state is more useful than a backlog,
 //! so when the queue is full [`EventBus::publish`] discards the **oldest**
-//! queued event, enqueues the new one and counts the drop. Producers never
-//! block. Because sensors publish at most a few events every several seconds,
-//! [`EVENT_QUEUE_CAPACITY`] events leave ample headroom.
+//! queued event, enqueues the new one and counts the drop
+//! ([`EventBus::dropped`]; the firmware logs it with every snapshot).
+//! Producers never block. Because sensors publish at most a few events every
+//! several seconds, [`EVENT_QUEUE_CAPACITY`] (16) events leave ample headroom.
+//!
+//! # Cancellation
+//!
+//! [`EventBus::receive`] is cancel-safe: an event is taken from the queue only
+//! when it is returned. [`EventBus::publish`] never waits.
 
 use core::cell::Cell;
 
@@ -40,6 +63,31 @@ use embassy_sync::channel::{Channel, TrySendError};
 pub const EVENT_QUEUE_CAPACITY: usize = 16;
 
 /// Bounded multi-producer queue of sensor events.
+///
+/// Place it in a `static`; the storage is inline. `N` is the capacity in
+/// events, [`EVENT_QUEUE_CAPACITY`] is the recommended value.
+///
+/// ```
+/// use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+/// use rohi_hal::runtime::EventBus;
+/// use rohi_hal::{MonotonicTimestamp, SensorErrorCode, SensorEvent, SensorKind};
+///
+/// let error_at = |ms| SensorEvent::Error {
+///     sensor: SensorKind::Scd4x,
+///     error: SensorErrorCode::Crc,
+///     timestamp: MonotonicTimestamp::from_millis(ms),
+/// };
+///
+/// // A full queue drops the oldest event and counts it.
+/// let bus = EventBus::<NoopRawMutex, 2>::new();
+/// for ms in 1..=3 {
+///     bus.publish(error_at(ms));
+/// }
+/// assert_eq!(bus.dropped(), 1);
+/// assert_eq!(bus.try_receive(), Some(error_at(2)));
+/// assert_eq!(bus.try_receive(), Some(error_at(3)));
+/// assert_eq!(bus.try_receive(), None);
+/// ```
 pub struct EventBus<M: RawMutex, const N: usize> {
     channel: Channel<M, SensorEvent, N>,
     dropped: Mutex<M, Cell<u32>>,

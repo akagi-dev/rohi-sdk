@@ -61,7 +61,7 @@ summary = "Independent PlatformIO firmware of the Altruist devices with its own 
 id = "bmx280"
 kind = "sensor"
 name = "BMP280 / BME280 environment"
-provides = "temperature (°C), pressure (hPa), relative humidity (%, BME280 only)"
+provides = "temperature (°C), pressure (Pa), relative humidity (%, BME280 only)"
 source = "crates/hal/src/sensors/bmx280.rs"
 
 [[capability]]

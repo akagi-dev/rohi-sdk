@@ -44,7 +44,7 @@ Only when the operation fits none of the planes (config, status, actions, info):
    `PROTOCOL_VERSION`; the protocol is under development.
 2. **Dispatch** (`rohi-control/src/controller.rs`): handle the call in `execute`, decide its `Privilege` in `dispatch`,
    and map types in `mapping.rs`; protobuf types do not leak into other crates. Failures map to the typed errors
-   (`INVALID_ARGUMENT`, `NOT_FOUND`, `BUSY`, `UNAVAILABLE`, `PERMISSION_DENIED`, `CONFLICT`, `REJECTED`, `INTERNAL`);
+   (`INVALID_ARGUMENT`, `NOT_FOUND`, `BUSY`, `UNAVAILABLE`, `PERMISSION_DENIED`, `REJECTED`, `INTERNAL`);
    secrets are never returned or logged.
 3. **Backend**: if the dispatcher needs something from the firmware, add it to `ControlBackend` (the dispatcher never
    sees stores, flash or radio drivers) and update the implementations: `Device`, the fakes in `rohi-control-ble` and

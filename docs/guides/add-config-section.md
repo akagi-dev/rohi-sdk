@@ -60,7 +60,7 @@ compiled into the product, never persisted), plus the user overrides.
    publication, and a restart-required section (`RESTART_REQUIRED`) is published at boot only.
 5. **Expose it to clients** (optional, but this is how users set it): implement `ManagedConfig` for the typed section in
    the same crate (`NAME`, `FIELDS`, `read_field`, `field_is_set`, `set_field`, `set_none` for the optional fields, `validate`;
-   see [Service pipeline](../sdk/service.md#config-sections)), implement `SectionStore<UplinkConfig>` (with
+   see [Service pipeline](../sdk/service.md)), implement `SectionStore<UplinkConfig>` (with
    `firmware_overrides()`) over the configuration handle in the firmware (`Stored<YourBinding>`, generated into the config registry by
    `firmware_configs!`). The protocol, the client and the `rohi` CLI need **no change**: `rohi config
    <section>` and `rohi config <section> FIELD=VALUE` work at once. `FIELD=none` sets an optional field to no
@@ -76,4 +76,4 @@ compiled into the product, never persisted), plus the user overrides.
    [Configuration store](../sdk/config.md).
 
 A destructive "erase all" is deliberately not part of `ConfigHandle`; per-section removal must never touch sections of
-other features (a future identity).
+other features (for example the identity).

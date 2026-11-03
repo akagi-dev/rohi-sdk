@@ -18,10 +18,24 @@
 
 use crate::WifiError;
 
-/// Platform-independent Wi-Fi runtime state.
+/// Platform-independent Wi-Fi runtime state, published by the
+/// [`WifiManager`](crate::WifiManager).
+///
+/// ```text
+/// NotConfigured --configure----> Connecting --success--> Connected
+/// Connecting ----failure-------> Error --backoff elapsed--> Connecting
+/// Connected -----link lost-----> Disconnected --backoff elapsed--> Connecting
+/// configured ----disconnect----> Idle --reconnect or new config--> Connecting
+/// ```
+///
+/// `Scanning` is shown while a scan runs and the link is not connected;
+/// `Idle` after a `disconnect` request. See
+/// [`WifiService`](crate::WifiService) for how the states read as service
+/// states.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum WifiState {
-    /// No configuration is stored; nothing is attempted.
+    /// No network is configured (no SSID, or the configuration was rejected as
+    /// invalid, which sets [`WifiStatus::error`]); nothing is attempted.
     #[default]
     NotConfigured,
     /// Configured but deliberately not connected (after a disconnect request).
@@ -39,18 +53,33 @@ pub enum WifiState {
 }
 
 /// Published state together with the error of the last failed attempt.
+///
+/// ```
+/// use rohi_net::{WifiError, WifiState, WifiStatus};
+///
+/// let status = WifiStatus::failed(WifiState::Error, WifiError::AuthenticationFailed);
+/// assert!(!status.is_network_ready());
+/// assert_eq!(status.error, Some(WifiError::AuthenticationFailed));
+///
+/// assert!(WifiStatus::new(WifiState::Connected).is_network_ready());
+/// assert_eq!(WifiStatus::default().state, WifiState::NotConfigured);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct WifiStatus {
+    /// The state of the link.
     pub state: WifiState,
-    /// Set in [`WifiState::Error`] and [`WifiState::Disconnected`].
+    /// Set in [`WifiState::Error`] and [`WifiState::Disconnected`], and in
+    /// [`WifiState::NotConfigured`] when a configuration was rejected.
     pub error: Option<WifiError>,
 }
 
 impl WifiStatus {
+    /// A status without an error.
     pub const fn new(state: WifiState) -> Self {
         Self { state, error: None }
     }
 
+    /// A status with the error of the failed attempt or lost link.
     pub const fn failed(state: WifiState, error: WifiError) -> Self {
         Self {
             state,

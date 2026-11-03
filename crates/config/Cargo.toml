@@ -25,3 +25,4 @@ std = []
 [dev-dependencies]
 minicbor = { workspace = true, features = ["std"] }
 proptest.workspace = true
+rohi-service.workspace = true

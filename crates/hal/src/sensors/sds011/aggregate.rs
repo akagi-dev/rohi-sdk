@@ -34,6 +34,18 @@ pub const MAX_SAMPLES: usize = 16;
 pub const TRIM_MIN_SAMPLES: usize = 5;
 
 /// Valid samples of one measurement cycle.
+///
+/// ```
+/// use rohi_hal::sensors::sds011::aggregate::Samples;
+///
+/// let mut samples = Samples::new();
+/// for (pm25, pm10) in [(10, 20), (12, 21), (11, 22), (80, 90), (9, 19)] {
+///     assert!(samples.push(pm25, pm10));
+/// }
+/// // Raw sensor units, 0.1 µg/m³. Lowest and highest sample are dropped.
+/// assert_eq!(samples.aggregate(true), Some((11, 21)));
+/// assert_eq!(samples.aggregate(false), Some((24, 34)));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Samples {
     pm25: [u16; MAX_SAMPLES],

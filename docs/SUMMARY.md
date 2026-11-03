@@ -50,7 +50,7 @@
   - [Resource budget](validation/resource-budget.md)
 - [Firmware distribution](verify/distribution.md)
 
-# Technical reference (moving to crate rustdoc)
+# Technical reference
 
 - [What is the ROHI SDK?](getting-started/overview.md)
 - [Architecture](concepts/architecture.md)
@@ -85,3 +85,4 @@
 # Contributing
 
 - [Documentation style and policy](contributing/docs-style.md)
+- [Rustdoc authoring guide](contributing/rustdoc-for-agents.md)

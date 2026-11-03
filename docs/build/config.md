@@ -46,5 +46,5 @@ The user's view of these operations is [Configuration](../use/desktop/configurat
 |-------|------|
 | Step by step | [Add a ConfigSection](../guides/add-config-section.md) |
 | The store, transactions, recovery, flash layout | [Configuration store](../sdk/config.md) |
-| The section/field model and validation | [Service pipeline](../sdk/service.md#config-sections) |
+| The section/field model and validation | [Service pipeline](../sdk/service.md) |
 | Stored encoding rules | [Persistent ABI](../reference/persistent-abi.md) |

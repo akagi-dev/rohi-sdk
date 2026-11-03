@@ -17,8 +17,8 @@
 ///////////////////////////////////////////////////////////////////////////////
 
 //! Host-compiled example of the IP data plane, included in the SDK book
-//! (`docs/sdk/net.md`, `docs/guides/use-network.md`). Keep the anchored
-//! regions self-contained: they are shown verbatim.
+//! (`docs/guides/use-network.md`) and mirrored by the doctest of `rohi_net::ip`.
+//! Keep the anchored regions self-contained: they are shown verbatim.
 
 use core::net::{IpAddr, Ipv4Addr, SocketAddr};
 

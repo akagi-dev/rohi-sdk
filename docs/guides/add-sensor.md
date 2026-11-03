@@ -24,7 +24,7 @@ spawns one task. Drivers know nothing about networks or serialization. Backgroun
    `main.rs` with the other sensor tasks. I²C sensors share one bus through `i2c_handle`.
 6. **Expose it** to the control plane if it should be visible: add its measurements as status fields (stable ids, names
    `<sensor>.<measurement>`, canonical units) and its issue codes in `rohi-hal/src/sensors_service.rs`; the table in
-   [Sensors](../sdk/sensors.md#status-and-the-control-plane) lists them. The protocol and the `rohi` tool need no change
+   the [`rohi_hal::sensors`](https://docs.rs/rohi-hal) rustdoc lists them. The protocol and the `rohi` tool need no change
    (see [Add a service](add-service.md)).
 7. **Add a hardware example** in `examples/src/bin/` if useful, and record the validation in
    [Hardware testing](../validation/hardware-testing.md).

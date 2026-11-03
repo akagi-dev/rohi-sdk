@@ -15,6 +15,28 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
+//! Servers and timeouts of an [`NtpTimeSource`](crate::NtpTimeSource).
+//!
+//! The source rotates through at most [`MAX_SERVERS`] (4) servers. DNS
+//! resolution and the SNTP exchange are each bounded by
+//! [`NtpConfig::timeout_ms`] ([`DEFAULT_TIMEOUT_MS`], 5 s). The defaults are
+//! the public servers `pool.ntp.org` and `time.cloudflare.com`. In the
+//! firmware the servers come from the persistent `time` section, see
+//! [`section`](crate::section).
+//!
+//! ```
+//! use rohi_time_ntp::{DEFAULT_SERVERS, DEFAULT_TIMEOUT_MS, MAX_SERVERS, NtpConfig};
+//!
+//! let config = NtpConfig::new(&["ntp.example.org", "time.example.net"]);
+//! assert_eq!(config.servers().len(), 2);
+//! assert_eq!(config.timeout_ms, DEFAULT_TIMEOUT_MS);
+//!
+//! // The public defaults, with a tighter timeout.
+//! let mut config = NtpConfig::default();
+//! assert_eq!(config.servers(), DEFAULT_SERVERS);
+//! config.timeout_ms = 2_000;
+//! assert!(DEFAULT_SERVERS.len() <= MAX_SERVERS);
+//! ```
 
 /// UDP port of NTP servers.
 pub const NTP_PORT: u16 = 123;
@@ -29,6 +51,10 @@ pub const DEFAULT_TIMEOUT_MS: u32 = 5_000;
 pub const DEFAULT_SERVERS: &[&str] = &["pool.ntp.org", "time.cloudflare.com"];
 
 /// Servers and timeouts of an [`NtpTimeSource`](crate::NtpTimeSource).
+///
+/// The configuration borrows its server names; it is `Copy` and cheap to
+/// rebuild when the `time` section changes (see
+/// [`NtpServersConfig::servers`](crate::NtpServersConfig::servers)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NtpConfig<'a> {
     servers: &'a [&'a str],
@@ -45,6 +71,12 @@ impl<'a> NtpConfig<'a> {
     ///
     /// If `servers` is empty or has more than [`MAX_SERVERS`] entries. In a
     /// `const` context this is a build error.
+    ///
+    /// ```should_panic
+    /// use rohi_time_ntp::NtpConfig;
+    ///
+    /// NtpConfig::new(&[]);
+    /// ```
     pub const fn new(servers: &'a [&'a str]) -> Self {
         assert!(
             !servers.is_empty() && servers.len() <= MAX_SERVERS,

@@ -16,34 +16,113 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-//! `#[derive(Service)]` for `rohi-service`.
+//! Derive macro for the service identity of `rohi-service`.
 //!
-//! ```ignore
+//! # Overview
+//!
+//! `#[derive(Service)]` implements [`rohi_service::Service`] for a struct or
+//! an enum of Robonomics Open Hardware Interface (ROHI) firmware: a stable
+//! public `NAME` and a numeric `ID`. The macro only generates that identity;
+//! status and actions are separate capability traits
+//! ([`rohi_service::Status`], [`rohi_service::Action`]) that a service
+//! implements by hand. This crate is a `proc-macro` crate; use the derive
+//! through the re-export `rohi_service::Service`, next to the trait it
+//! implements.
+//!
+//! # Quick example
+//!
+//! ```
+//! use rohi_service::Service;
+//!
 //! #[derive(Service)]
-//! pub struct WifiService { /* ... */ }
+//! pub struct WifiService;
 //!
 //! #[derive(Service)]
 //! #[service(name = "wifi")]
-//! pub struct WirelessService { /* ... */ }
+//! pub struct WirelessService;
+//!
+//! assert_eq!(WifiService::NAME, "wifi");
+//! assert_eq!(WifiService::ID, rohi_service::service_id("wifi"));
+//! // The id follows the name only, never the Rust type.
+//! assert_eq!(WifiService::ID, WirelessService::ID);
 //! ```
 //!
-//! The derive implements `rohi_service::Service` for the type: `NAME` is the
-//! public service name and `ID` is `rohi_service::service_id(NAME)`, a
-//! deterministic hash of the name alone, never of the module path or the
-//! platform.
+//! # Core concepts
+//!
+//! | Generated item | Value |
+//! |----------------|-------|
+//! | `Service::NAME` | the explicit `#[service(name = "...")]`, else the default name below |
+//! | `Service::ID` | [`rohi_service::service_id`]`(NAME)`, the 32-bit FNV-1a hash of the UTF-8 bytes of the name |
+//! | compile-time check | [`rohi_service::assert_service_name`]`(NAME)` in a `const` item |
 //!
 //! The default name is the type name without a trailing `Service`, in
 //! `snake_case`: `WifiService` is `wifi`, `TimeSyncService` is `time_sync`,
 //! `BLEService` is `ble`. A type that is called just `Service` keeps the name
-//! `service`. Acronyms stay together: a new word starts at an upper-case letter
-//! that follows a lower-case letter or digit, or that is followed by a
-//! lower-case letter after an upper-case one. `#[service(name = "...")]`
-//! replaces the rule.
+//! `service`. Acronyms stay together: a new word starts at an upper-case
+//! letter that follows a lower-case letter or digit, or that is followed by a
+//! lower-case letter after an upper-case one. A raw identifier (`r#Type`) is
+//! named like `Type`. `#[service(name = "...")]` replaces the rule; it is the
+//! only attribute key and may appear once.
 //!
-//! A name must match `[a-z][a-z0-9_]*` and fit `rohi_service::MAX_NAME_LEN`
-//! bytes. The derive checks the characters while expanding and the type
-//! system checks the length, so a bad name is a build error. Generic types are
-//! supported; identity never depends on the type parameters.
+//! The id depends on the name alone, never on the module path, the crate, the
+//! type parameters or the platform. The algorithm and the names are wire ABI:
+//! requests address a service by this id, so renaming a service changes its
+//! id.
+//!
+//! # Architecture and integration
+//!
+//! ```text
+//! #[derive(Service)] ──► impl Service (NAME, ID)
+//!                              │
+//!        impl Status / impl Action (by hand, in the feature crate)
+//!                              │
+//!        Statuses::new((&svc,)) / (&svc,) as ActionRegistry   (rohi-service)
+//!                              │
+//!        Device::new(..) ──► Controller::handle(..)           (rohi-control)
+//! ```
+//!
+//! The expansion refers to the runtime crate as `::rohi_service` (or under its
+//! renamed name in `Cargo.toml`), so a crate using the derive must depend on
+//! `rohi-service`. The service guides and the registries are described in the
+//! `rohi-service` crate documentation.
+//!
+//! # API navigation
+//!
+//! - [`Service`] - the derive macro of this crate.
+//! - [`rohi_service::Service`] - the trait it implements, with the id rules.
+//! - [`rohi_service::service_id`], [`rohi_service::service_name_is_valid`],
+//!   [`rohi_service::MAX_NAME_LEN`]: the id and name rules as `const fn`s.
+//!
+//! # Guarantees and limitations
+//!
+//! - A name must match `[a-z][a-z0-9_]*`. The derive checks the characters
+//!   while expanding and reports a compile error at the name; the length
+//!   limit ([`rohi_service::MAX_NAME_LEN`], 24 bytes) is checked by a
+//!   `const` assertion, so both are build errors, never runtime failures.
+//! - Structs and enums are supported, unions are rejected. Generic types and
+//!   lifetimes are supported: the generated impl keeps the generics and the
+//!   identity does not depend on them.
+//! - Unknown or duplicate `service` keys are compile errors.
+//! - Two services of one firmware must not share an id; the registries of
+//!   `rohi-service` and `rohi_control::Device::new` check it.
+//!
+//! An invalid name does not compile:
+//!
+//! ```compile_fail
+//! use rohi_service::Service;
+//!
+//! #[derive(Service)]
+//! #[service(name = "Wi-Fi")]
+//! pub struct WifiService;
+//! ```
+//!
+//! [`rohi_service::Service`]: ../rohi_service/trait.Service.html
+//! [`rohi_service::Status`]: ../rohi_service/trait.Status.html
+//! [`rohi_service::Action`]: ../rohi_service/trait.Action.html
+//! [`rohi_service::service_id`]: ../rohi_service/fn.service_id.html
+//! [`rohi_service::service_name_is_valid`]: ../rohi_service/fn.service_name_is_valid.html
+//! [`rohi_service::assert_service_name`]: ../rohi_service/fn.assert_service_name.html
+//! [`rohi_service::MAX_NAME_LEN`]: ../rohi_service/constant.MAX_NAME_LEN.html
 
 use proc_macro::TokenStream;
 use proc_macro_crate::{FoundCrate, crate_name};
@@ -53,7 +132,17 @@ use syn::ext::IdentExt;
 use syn::spanned::Spanned;
 use syn::{Data, DeriveInput, LitStr, parse_macro_input};
 
-/// Derives `rohi_service::Service`.
+/// Derives [`rohi_service::Service`](../rohi_service/trait.Service.html) for a struct or an enum.
+///
+/// `NAME` is the explicit `#[service(name = "...")]` or the type name without
+/// a trailing `Service` in `snake_case`, `ID` is `service_id(NAME)`. See the
+/// [crate documentation](crate) for the naming rules.
+///
+/// # Errors
+///
+/// Compile errors for a union, an invalid name (not `[a-z][a-z0-9_]*`, or
+/// longer than `rohi_service::MAX_NAME_LEN`), an unknown `service` key and a
+/// duplicate `name`.
 #[proc_macro_derive(Service, attributes(service))]
 pub fn derive_service(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);

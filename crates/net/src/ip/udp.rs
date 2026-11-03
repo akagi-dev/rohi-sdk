@@ -33,6 +33,35 @@ use super::NetError;
 /// nothing: a datagram that arrives is delivered to the next call. Dropping
 /// `send_to` before it completes may or may not have queued the datagram;
 /// UDP gives no delivery guarantee anyway.
+///
+/// ```
+/// use core::net::{IpAddr, Ipv4Addr, SocketAddr};
+///
+/// use embassy_futures::block_on;
+/// use rohi_net::testing::FakeIp;
+/// use rohi_net::{NetworkHandle, UdpSocket};
+///
+/// let ip = FakeIp::<2, 128>::new();
+/// ip.set_ready(true);
+/// let net = NetworkHandle::new(&ip);
+/// let server = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 123)), 123);
+///
+/// let socket = net.udp_socket().unwrap();
+/// block_on(socket.send_to(b"ping", server)).unwrap();
+/// let (destination, datagram) = ip.udp_peer_received().unwrap();
+/// assert_eq!((destination, datagram.as_slice()), (server, &b"ping"[..]));
+///
+/// // The peer answers; a datagram longer than the buffer would be discarded.
+/// assert!(ip.udp_peer_send(server, b"pong"));
+/// let mut buffer = [0u8; 16];
+/// let (len, from) = block_on(socket.recv_from(&mut buffer)).unwrap();
+/// assert_eq!((len, from), (4, server));
+/// assert_eq!(&buffer[..len], b"pong");
+///
+/// // Dropping the socket frees its slot.
+/// drop(socket);
+/// assert_eq!(net.usage().udp_in_use, 0);
+/// ```
 #[allow(async_fn_in_trait)]
 pub trait UdpSocket {
     /// Sends one datagram to `remote`.

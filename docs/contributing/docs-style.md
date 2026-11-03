@@ -6,15 +6,18 @@
 |-------|---------|
 | `README.md` | project landing page and the shortest quickstart, with links to this book and the API docs |
 | **This book** (mdBook, `docs/`) | product vision, current capabilities, user journeys (Use a Device, Build Firmware, Verify & Share), tutorials and navigation |
-| **Rustdoc** (`cargo doc --no-deps`) | the authoritative technical documentation of each crate: APIs, contracts, ownership, resource constraints, integration examples; do not copy API listings into the book |
+| **Rustdoc** (`cargo doc --no-deps`, [docs.rs](https://docs.rs/rohi-sdk)) | the authoritative technical documentation of each crate and of the cross-cutting concepts (`rohi-sdk`): APIs, contracts, ownership, cancellation, resource constraints, integration examples; do not copy API listings into the book |
 | Crate and module comments | local implementation contracts: invariants, cancellation semantics, safety |
 | Source and protocol definitions | authoritative schemas (`control.proto`), implementations, tests, platform behaviour |
 | [Support matrix](../support/overview.md) | hardware compatibility, firmware support, verification levels and evidence |
 
-The book explains how to use and extend ROHI; the crates explain how ROHI works internally. Some SDK component and
-concept pages still carry technical detail that belongs in the crate rustdoc; they are grouped under
-*Technical reference* in the navigation (see [SDK crates](../build/sdk-crates.md)) and are migrated crate by crate, not copied. Do not add new detailed contracts to the
-book when the crate can hold them.
+The book explains how to use and extend ROHI; the crates explain how ROHI works internally. All 18 crates carry their
+technical documentation in rustdoc. The pages grouped under *Technical reference* in the navigation (see
+[SDK crates](../build/sdk-crates.md)) are short overviews that state the purpose of a crate or concept and link to its
+rustdoc; they hold no API listings or contracts. Do not add new detailed contracts to the book when the crate can hold
+them.
+
+How to write and validate crate rustdoc (structure, templates, doctest policy, agent workflow, checklist): [Rustdoc authoring guide](rustdoc-for-agents.md).
 
 ## One authoritative location per concept
 
@@ -25,9 +28,9 @@ A fact lives on exactly one page; other pages link to it. Canonical pages:
 | Resource limits and constants | [Resource limits](../reference/resource-limits.md) |
 | Persistent ABI rules | [Persistent ABI](../reference/persistent-abi.md) |
 | Targets, features and commands | [Targets and features](../reference/targets-and-features.md) |
-| Control protocol and its limits | [Control plane](../sdk/control.md); concept: [Control protocol](../build/control-protocol.md) |
+| Control protocol and its limits | [`rohi-control-proto` rustdoc](https://docs.rs/rohi-control-proto); overview: [Control plane](../sdk/control.md); concept: [Control protocol](../build/control-protocol.md) |
 | Desktop workflows (`rohi` commands) | [Desktop application](../use/desktop/index.md) |
-| Cancellation rules | [Async and cancellation](../concepts/async-and-cancellation.md) |
+| Cancellation rules | [`rohi-sdk` cancellation rustdoc](https://docs.rs/rohi-sdk/latest/rohi_sdk/cancellation/index.html); overview: [Async and cancellation](../concepts/async-and-cancellation.md) |
 | Measurements and sizes | [Resource budget](../validation/resource-budget.md) |
 | Supported boards, firmware and verification evidence | [Support matrix](../support/overview.md) |
 

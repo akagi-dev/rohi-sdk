@@ -17,6 +17,12 @@
 ///////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 //! I2C bus wrapper bounding every transaction in time.
+//!
+//! Lightweight I2C sensors share one bus. [`TimeoutI2c`] fails every
+//! transaction that takes longer than its time budget with
+//! [`TimeoutError::TimedOut`], so a stuck device cannot block the bus (and the
+//! sensor tasks sharing it) forever. The Altruist Urban firmware bounds every
+//! transaction to 200 ms.
 
 use embedded_hal::i2c::{Error as I2cError, ErrorKind, ErrorType, Operation};
 use embedded_hal_async::delay::DelayNs;

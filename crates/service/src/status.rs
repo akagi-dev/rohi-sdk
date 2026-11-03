@@ -17,13 +17,97 @@
 ///////////////////////////////////////////////////////////////////////////////
 //! Read-only runtime status of services behind a generic interface.
 //!
-//! A service implements [`Status`] on top of its live runtime state; no
-//! duplicated status struct is needed. The [`StatusRegistry`](crate::StatusRegistry)
+//! A service implements [`Status`] on top of its **live** runtime state; there
+//! is no stored status struct to duplicate. The [`StatusRegistry`](crate::StatusRegistry)
 //! adds the bookkeeping every service needs (status revision, time in the
-//! current state) without the service cooperating.
+//! current state) without the service cooperating, see
+//! [`Tracker`](crate::Tracker).
 //!
-//! State, health and readiness are independent: a running service can be
-//! degraded and not ready, and a disabled service is not an error.
+//! ```
+//! use embassy_futures::block_on;
+//! use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+//! use rohi_service::{
+//!     FieldDescriptor, Service, ServiceHealth, ServiceState, ServiceSummary, Status,
+//!     StatusRegistry, StatusWriter, Statuses, Unit, ValueKind, WriteError,
+//! };
+//!
+//! #[derive(Service)]
+//! struct WifiService {
+//!     rssi: i64,
+//! }
+//!
+//! impl Status for WifiService {
+//!     const VERSION: u16 = 1;
+//!     const STATUS_SCHEMA: &'static [FieldDescriptor] =
+//!         &[FieldDescriptor::new(1, "rssi", ValueKind::I64).unit(Unit::Dbm)];
+//!
+//!     async fn summary(&self) -> ServiceSummary {
+//!         ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true)
+//!     }
+//!
+//!     async fn status(&self, out: &mut impl StatusWriter) -> Result<(), WriteError> {
+//!         out.i64(1, self.rssi)
+//!     }
+//! }
+//!
+//! let wifi = WifiService { rssi: -61 };
+//! let statuses = Statuses::<NoopRawMutex, _>::new((&wifi,));
+//! let status = block_on(statuses.status(WifiService::ID, 1_000)).unwrap();
+//! assert_eq!(status.summary.state, ServiceState::Running);
+//! assert_eq!(status.fields.len(), 1);
+//! ```
+//!
+//! The service reports a [`ServiceSummary`] ([`Status::summary`]), its active
+//! [`Issue`]s ([`Status::issues`]) and the service-specific fields
+//! ([`Status::status`], written through a [`StatusWriter`] that checks them
+//! against [`Status::STATUS_SCHEMA`]; a string or bytes value is at most
+//! [`MAX_FIELD_VALUE_LEN`] bytes and never cut). Field ids are stable and only
+//! ever added.
+//!
+//! # State, health and readiness
+//!
+//! State, health and readiness are **separate** values, never one big enum:
+//!
+//! | | Values |
+//! |---|---|
+//! | [`ServiceState`] (lifecycle) | `disabled`, `stopped`, `starting`, `running`, `stopping`, `failed` |
+//! | [`ServiceHealth`] (quality) | `unknown`, `ok`, `degraded`, `error` |
+//! | `ready` | whether the service can currently do its job |
+//!
+//! Examples: a connecting Wi-Fi is `starting / unknown / not ready`; a
+//! telemetry service that cannot reach its backend is
+//! `running / degraded / not ready`; an optional GPS turned off is
+//! `disabled / unknown / not ready`, which is **not an error**.
+//!
+//! # Issues
+//!
+//! [`Issue`]s are the currently active problems, each with a stable numeric
+//! `code`, an [`IssueSeverity`] (`info`, `warning`, `error`, `critical`) and an
+//! age. The names of the codes are listed once in [`Status::ISSUES`] and sent
+//! with the schema, never with every status; there is no message text. Codes
+//! below [`FIRST_SERVICE_ISSUE`] (256) are reserved for the SDK
+//! ([`Startup`] reports [`ISSUE_STARTUP_FAILED`]); services start at
+//! `FIRST_SERVICE_ISSUE`. History does not belong here: it is diagnostics.
+//!
+//! # Revision and state age
+//!
+//! The registry derives a **status revision** that changes when state,
+//! health, readiness or the active issues change (values that vary all the
+//! time, such as counters or signal strength, deliberately do not bump it),
+//! and the **time in the current state**. Revisions and ages are derived from
+//! what the service reports when a client asks; an issue that carries no age
+//! is aged by the time since the set of active issues last changed.
+//!
+//! # Device health
+//!
+//! **Device health** is decided by the firmware, never by the client.
+//! `ControlBackend::device_health` of
+//! [`rohi-control`](../../rohi_control/index.html) defaults to
+//! [`default_device_health`]: disabled services do not count; a failed or
+//! `error` service is an error for the device when it is
+//! [`ESSENTIAL`](Status::ESSENTIAL) (the default) and a degradation otherwise;
+//! a `degraded` service, or a running one that is not ready, degrades the
+//! device. Firmware with other redundancy rules overrides it.
 
 use core::cell::Cell;
 
@@ -246,7 +330,7 @@ impl StatusWriter for Collector {
 /// service; the service only reports what it knows.
 ///
 /// A service implements `Status` only if it has runtime state to show, and
-/// independently of [`Action`](crate::Action).
+/// independently of [`Action`].
 #[allow(async_fn_in_trait)]
 pub trait Status: Service {
     /// Version of the status schema.
@@ -257,7 +341,7 @@ pub trait Status: Service {
     /// The enums the status fields refer to, see [`EnumDescriptor`].
     const ENUMS: &'static [EnumDescriptor] = &[];
     /// The names of the issues the service reports, at most
-    /// [`MAX_ISSUE_DESCRIPTORS`].
+    /// [`MAX_ISSUE_DESCRIPTORS`](crate::MAX_ISSUE_DESCRIPTORS).
     const ISSUES: &'static [IssueDescriptor] = &[];
     /// Whether the device is impaired when this service is not working.
     /// Optional services degrade the device health at most.
@@ -270,6 +354,15 @@ pub trait Status: Service {
     async fn issues(&self, _out: &mut Vec<Issue, MAX_ISSUES>) {}
 
     /// Writes the service-specific fields that currently have a value.
+    ///
+    /// # Errors
+    ///
+    /// The [`WriteError`] of the first rejected write: an id outside
+    /// [`STATUS_SCHEMA`](Self::STATUS_SCHEMA), a value of the wrong kind or an
+    /// enum variant that is not listed, a string or bytes value above
+    /// [`MAX_FIELD_VALUE_LEN`], or more than [`MAX_FIELDS`] fields. The
+    /// registry ignores the error and reports the fields written until then,
+    /// so a service that stops at the first error (`?`) omits the rest.
     async fn status(&self, out: &mut impl StatusWriter) -> Result<(), WriteError>;
 }
 
@@ -396,7 +489,7 @@ pub struct ServiceStatus {
 /// Failure of a status query.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StatusError {
-    /// No service with this name.
+    /// No service with this id.
     UnknownService,
 }
 

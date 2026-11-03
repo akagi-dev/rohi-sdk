@@ -5,7 +5,7 @@
 [services](status.md), reads and changes its configuration, and runs its actions. It is the quickest way to check
 that a flashed device (see [First device](../../getting-started/first-device.md)) is alive and talking.
 
-`rohi` is a thin layer over the [`Device`](../../sdk/control.md#rohi-desktop-client) API of the `rohi` library, and the
+`rohi` is a thin layer over the [`Device`](https://github.com/akagi-dev/rohi-sdk/tree/master/tools/rohi) API of the `rohi` library, and the
 command tree **knows no device module**: `status`, `config` and `action` take the names of services, sections and
 actions that the device lists, and parse values with the field descriptions the device sends (type, unit, enum variants; the wire carries ids and numbers, the tool translates them with the schema). A new firmware module
 appears in `rohi` without changing the tool. The tool owns only the terminal side: arguments, device selection,

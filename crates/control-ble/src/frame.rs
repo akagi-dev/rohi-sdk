@@ -33,7 +33,34 @@
 //!
 //! The framing knows nothing about the payload and never allocates: the
 //! [`Reassembler`] works in a fixed buffer, the [`Fragmenter`] borrows the
-//! message.
+//! message. It is used on both sides of the link: by the firmware
+//! ([`ControlBle`](crate::ControlBle)) and by the `rohi` host tool.
+//!
+//! ```
+//! use rohi_control_ble::frame::{Fragmenter, HEADER_LEN, Reassembler};
+//!
+//! let message = b"a control message that does not fit one chunk";
+//!
+//! // 16 bytes per chunk: 6 of header and 10 of message each.
+//! let mut fragmenter = Fragmenter::new(9, message, 16).unwrap();
+//! assert_eq!(fragmenter.count(), message.len().div_ceil(16 - HEADER_LEN));
+//!
+//! let mut receiver = Reassembler::<64>::new();
+//! let mut chunk = [0u8; 16];
+//! let mut received = None;
+//! while let Some(len) = fragmenter.next_frame(&mut chunk) {
+//!     if let Some(done) = receiver.push(&chunk[..len]).unwrap() {
+//!         received = Some((done.id, done.bytes.to_vec()));
+//!     }
+//! }
+//! assert_eq!(received, Some((9, message.to_vec())));
+//!
+//! // A message above the reassembler's capacity is rejected at its first frame.
+//! let mut small = Reassembler::<8>::new();
+//! let mut first = Fragmenter::new(1, message, 16).unwrap();
+//! let len = first.next_frame(&mut chunk).unwrap();
+//! assert!(small.push(&chunk[..len]).is_err());
+//! ```
 
 use core::fmt;
 
@@ -168,6 +195,12 @@ impl<const N: usize> Reassembler<N> {
     ///
     /// On error the partial message is dropped and the following fragments of
     /// the same message are skipped until a new first fragment arrives.
+    ///
+    /// # Errors
+    ///
+    /// A [`FrameError`] for the first frame that is rejected; the continuation
+    /// frames of that message that follow return `Ok(None)` so that one
+    /// failure is reported once.
     pub fn push(&mut self, frame: &[u8]) -> Result<Option<Message<'_>>, FrameError> {
         match self.accept(frame) {
             Ok(true) => {
@@ -268,6 +301,13 @@ pub struct Fragmenter<'a> {
 
 impl<'a> Fragmenter<'a> {
     /// Frames `message` for a link carrying `max_payload` bytes per chunk.
+    ///
+    /// # Errors
+    ///
+    /// [`FrameError::PayloadTooSmall`] when `max_payload` leaves no room for
+    /// data after the [`HEADER_LEN`]-byte header, and [`FrameError::TooLarge`]
+    /// for an empty message, one above 65535 bytes or one that needs more than
+    /// [`MAX_FRAGMENTS`] frames.
     pub fn new(id: u8, message: &'a [u8], max_payload: usize) -> Result<Self, FrameError> {
         let chunk = max_payload
             .checked_sub(HEADER_LEN)
@@ -296,6 +336,11 @@ impl<'a> Fragmenter<'a> {
 
     /// Writes the next frame into `out` and returns its length, `None` when
     /// all frames were produced. `out` must hold `max_payload` bytes.
+    ///
+    /// # Panics
+    ///
+    /// When `out` is shorter than the frame, which is at most the `max_payload`
+    /// given to [`new`](Self::new).
     pub fn next_frame(&mut self, out: &mut [u8]) -> Option<usize> {
         if self.next == self.count {
             return None;

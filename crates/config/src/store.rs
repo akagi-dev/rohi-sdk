@@ -130,7 +130,91 @@ where
 /// complete new CBOR document into the inactive slot, verifies it and only then
 /// programs the commit word, so after power loss at any point either the
 /// previous or the new configuration is loadable. Sections with unknown IDs are
-/// copied byte-for-byte on every update.
+/// copied byte-for-byte on every update. The caller works with typed sections
+/// ([`get`](Self::get), [`set`](Self::set), [`remove`](Self::remove),
+/// [`clear`](Self::clear)) and never handles section IDs, record framing, CRCs,
+/// slots or generations.
+///
+/// # Transactions
+///
+/// Every update streams the complete new document into the **inactive** slot;
+/// the active slot is never modified:
+///
+/// ```text
+/// plan (exact CBOR sizes, nothing written; StorageFull / SectionTooLarge / TooManySections)
+///  -> clear the inactive slot's commit word (program it to 0), then erase the slot
+///  -> stream envelope, payload and records: the replaced section is encoded, all others copied byte-for-byte
+///  -> write CRC
+///  -> read back and verify the whole slot
+///  -> write commit word LAST
+/// ```
+///
+/// After interruption at any point during an update, the previous valid
+/// configuration or the completely committed new configuration remains
+/// loadable. The host tests prove it by failing the storage after every
+/// possible number of programmed bytes (torn writes, including a torn commit
+/// word) and erased bytes, then reopening the store; the erase faults include
+/// documents that reach into the sector holding the commit word.
+///
+/// The generation is a `u32` inside the `ConfigPayload`. [`open`](Self::open)
+/// picks the committed, valid slot with the newest generation using wrap-safe
+/// serial arithmetic, so `u32::MAX -> 0` is handled. The store also exposes
+/// [`generation`](Self::generation), [`active_slot`](Self::active_slot) and
+/// [`section_count`](Self::section_count) for diagnostics.
+///
+/// # Open states: empty versus corrupt
+///
+/// [`open`](Self::open) distinguishes a fresh device from damaged
+/// configuration:
+///
+/// | Flash | Result |
+/// |-------|--------|
+/// | Neither slot has a commit word (erased, or first write interrupted before the commit) | [`ConfigOpenState::Empty`] |
+/// | Every committed slot validates | [`ConfigOpenState::Valid`] (newest generation is used) |
+/// | One committed slot is invalid, the other validates | [`ConfigOpenState::Recovered`] (the valid slot is used) |
+/// | Committed slot(s) exist but none validates | `Err(`[`ConfigError::CorruptStorage`]`(reason))` |
+///
+/// `Recovered` does not say which slot was newer: the generation of the
+/// damaged slot cannot be read, so the active configuration may be older than
+/// an update that was lost, or the damage may have hit the older, inactive
+/// copy. The next successful update overwrites the damaged slot.
+/// [`open_state`](Self::open_state) keeps reporting how the flash looked at
+/// open; [`state`](Self::state) is the current health and turns `Valid` after
+/// that update (and after the first update of an empty store).
+///
+/// Corruption is never reported as an empty store, so a corrupted `Identity`
+/// cannot look like "not provisioned". Only genuinely erased storage reads as
+/// absent.
+///
+/// # Recovering corrupt storage
+///
+/// [`open`](Self::open) drops the storage on failure.
+/// [`try_open`](Self::try_open) returns an [`OpenFailure`] instead, so the
+/// caller can decide what to do with the flash. [`format`](Self::format) is the
+/// explicit way out of `CorruptStorage`: it clears both commit words, erases
+/// both slots and returns an empty store, discarding every section (known,
+/// unknown or corrupted). An interrupted format never leaves a committed,
+/// half-erased slot: each slot is either untouched or uncommitted, and running
+/// `format` again completes it.
+///
+/// ```
+/// use rohi_config::{ConfigError, ConfigOpenState, ConfigStore, MemoryStorage};
+///
+/// let mut store = ConfigStore::open(MemoryStorage::<16384>::new()).unwrap();
+/// assert_eq!(store.state(), ConfigOpenState::Empty);
+/// store.set_raw(rohi_config::SectionId(1), 1, &[0xA0]).unwrap();
+/// assert_eq!(store.state(), ConfigOpenState::Valid);
+///
+/// // Damage the only committed slot: the store is corrupt, not empty.
+/// let mut storage = store.into_storage();
+/// storage.as_bytes_mut()[8] ^= 0xFF;
+/// let failure = ConfigStore::try_open(storage).err().unwrap();
+/// assert!(matches!(failure.error, ConfigError::CorruptStorage(_)));
+///
+/// // `format` discards everything and returns an empty store.
+/// let store = ConfigStore::format(failure.storage).unwrap();
+/// assert_eq!(store.open_state(), ConfigOpenState::Empty);
+/// ```
 pub struct ConfigStore<S: ConfigStorage> {
     storage: S,
     slot_size: usize,
@@ -335,6 +419,16 @@ impl<S: ConfigStorage> ConfigStore<S> {
     }
 
     /// Loads section `T`, or `None` if it was never stored.
+    ///
+    /// The payload is decoded through a [`MAX_SECTION_PAYLOAD`](crate::MAX_SECTION_PAYLOAD) stack buffer
+    /// with [`ConfigSection::decode_versioned`].
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::Storage`] when the backend fails, [`ConfigError::Section`]
+    /// when the stored payload or version cannot be decoded as `T`, and
+    /// [`ConfigError::CorruptStorage`] when the records of the active slot are
+    /// malformed.
     pub fn get<T: ConfigSection>(&mut self) -> Result<Option<T>, ConfigError<S::Error>> {
         let Some(entry) = self.find(T::ID)? else {
             return Ok(None);
@@ -349,11 +443,20 @@ impl<S: ConfigStorage> ConfigStore<S> {
     }
 
     /// Whether the section `T` is stored (without decoding it).
+    ///
+    /// # Errors
+    ///
+    /// As [`get`](Self::get), except that no decode error is possible.
     pub fn contains<T: ConfigSection>(&mut self) -> Result<bool, ConfigError<S::Error>> {
         Ok(self.find(T::ID)?.is_some())
     }
 
     /// Calls `f` for every stored section, known or not, without decoding.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::Storage`] or [`ConfigError::CorruptStorage`] when a record
+    /// cannot be read; `f` may already have been called for earlier sections.
     pub fn for_each_section(
         &mut self,
         mut f: impl FnMut(SectionInfo),
@@ -369,6 +472,13 @@ impl<S: ConfigStorage> ConfigStore<S> {
     }
 
     /// Copies the raw typed payload of section `id` into `output`.
+    ///
+    /// Returns `None` when the section is not stored.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::BufferTooSmall`] (with the required length) when `output`
+    /// is shorter than the payload, otherwise as [`get`](Self::get).
     pub fn read_raw(
         &mut self,
         id: SectionId,
@@ -389,6 +499,20 @@ impl<S: ConfigStorage> ConfigStore<S> {
 
     /// Stores `value`, replacing the previous section `T` and preserving all
     /// other sections. The encoded size is taken from `minicbor::len`.
+    ///
+    /// The update is atomic: it is written to the inactive slot and becomes
+    /// the configuration only when its commit word is programmed last. If it
+    /// fails or power is lost before that, the previous configuration stays
+    /// active.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::SectionTooLarge`] above [`MAX_SECTION_PAYLOAD`](crate::MAX_SECTION_PAYLOAD),
+    /// [`ConfigError::StorageFull`] when the resulting document does not fit a
+    /// slot, [`ConfigError::TooManySections`] above [`MAX_SECTIONS`](crate::MAX_SECTIONS),
+    /// [`ConfigError::Storage`] when the backend fails and
+    /// [`ConfigError::VerifyFailed`] when the read-back check of the written
+    /// slot fails.
     pub fn set<T: ConfigSection>(&mut self, value: &T) -> Result<(), ConfigError<S::Error>> {
         let len = minicbor::len(value);
         self.check_section_size(T::ID, len)?;
@@ -406,6 +530,10 @@ impl<S: ConfigStorage> ConfigStore<S> {
     ///
     /// The payload is stored as is; typed code is responsible for it being a
     /// valid encoding of the section type that owns `id`.
+    ///
+    /// # Errors
+    ///
+    /// As [`set`](Self::set).
     pub fn set_raw(
         &mut self,
         id: SectionId,
@@ -436,11 +564,22 @@ impl<S: ConfigStorage> ConfigStore<S> {
     }
 
     /// Removes section `T`; a no-op if it is absent.
+    ///
+    /// # Errors
+    ///
+    /// As [`remove_raw`](Self::remove_raw).
     pub fn remove<T: ConfigSection>(&mut self) -> Result<(), ConfigError<S::Error>> {
         self.remove_raw(T::ID)
     }
 
     /// Removes the section with the given ID, known or unknown to this firmware.
+    ///
+    /// Atomic like [`set`](Self::set).
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::Storage`], [`ConfigError::CorruptStorage`] or
+    /// [`ConfigError::VerifyFailed`], as for [`set`](Self::set).
     pub fn remove_raw(&mut self, id: SectionId) -> Result<(), ConfigError<S::Error>> {
         self.commit(Edit::Remove(id), |_| Ok(()))
     }
@@ -449,6 +588,10 @@ impl<S: ConfigStorage> ConfigStore<S> {
     ///
     /// Low-level: runtime APIs must not expose this as a generic reset, since
     /// it also erases sections the firmware does not know about.
+    ///
+    /// # Errors
+    ///
+    /// As [`remove_raw`](Self::remove_raw).
     pub fn clear(&mut self) -> Result<(), ConfigError<S::Error>> {
         self.commit(Edit::Clear, |_| Ok(()))
     }

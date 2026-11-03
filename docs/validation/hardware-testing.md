@@ -46,7 +46,7 @@ here together with the final `WIRELESS_HEAP_SIZE`.
 
 ## Device identity
 
-The hardware checklist (provision, reboot, erase, re-provision) is in [Device identity](../sdk/identity.md#validation-checklist-hardware); its results are not yet recorded.
+The hardware checklist (provision, reboot, erase, re-provision) is in the [`rohi-identity` rustdoc](https://docs.rs/rohi-identity) (see also [Device identity](../sdk/identity.md)); its results are not yet recorded.
 
 ## BLE control
 

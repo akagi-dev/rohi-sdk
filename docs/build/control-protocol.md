@@ -37,5 +37,5 @@ use it without a firmware-specific integration.
 - Operate a device: [Desktop application](../use/desktop/index.md), [Mobile application](../use/mobile.md) (planned).
 - The authoritative definition is the schema [`control.proto`](https://github.com/akagi-dev/rohi-sdk/blob/master/crates/control-proto/proto/rohi/control/v1/control.proto)
   and the rustdoc of `rohi-control-proto`, `rohi-control` and `rohi-control-ble`, see [SDK crates](sdk-crates.md).
-- Planes, framing, limits and security in detail: [Control plane (BLE)](../sdk/control.md).
+- Overview of the crates and their status: [Control plane (BLE)](../sdk/control.md).
 - Extend the protocol: [Add a control operation or an action](../guides/add-control-operation.md).

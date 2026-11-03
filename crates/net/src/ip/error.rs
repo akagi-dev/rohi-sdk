@@ -24,6 +24,19 @@ use embedded_io_async::ErrorKind;
 ///
 /// Backends map every IP stack or vendor error into one of these categories;
 /// raw stack errors never reach higher layers.
+///
+/// The error implements [`core::error::Error`] and
+/// [`embedded_io_async::Error`], so it can be used directly as the error of
+/// `embedded-io-async` and `embedded-nal-async` traits.
+///
+/// ```
+/// use embedded_io_async::{Error, ErrorKind};
+/// use rohi_net::NetError;
+///
+/// assert_eq!(NetError::NetworkUnavailable.kind(), ErrorKind::NotConnected);
+/// assert_eq!(NetError::NoSocketAvailable.kind(), ErrorKind::OutOfMemory);
+/// assert_eq!(NetError::DnsFailed.to_string(), "DNS lookup failed");
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NetError {
     /// The network cannot carry traffic: Wi-Fi not configured, still

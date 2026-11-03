@@ -21,7 +21,7 @@
 //! All GPIO assignments of the board live in this file; drivers never name
 //! pins. Source: the Altruist Urban main board schematic (ESP32-C6-WROOM-1-N8,
 //! "GPIO Map" sheet, 2025-11-24) and `Docs/CN4_PINOUT.md` of
-//! https://github.com/airalab/hardware/tree/main/Altruist/Urban
+//! <https://github.com/airalab/hardware/tree/main/Altruist/Urban>
 //!
 //! # Pin map
 //!

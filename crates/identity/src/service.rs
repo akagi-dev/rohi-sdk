@@ -51,6 +51,13 @@ impl From<StoreError> for ActionError {
 
 /// Persistence of the identity, implemented by the firmware over its
 /// configuration store. Only the identity section may be touched.
+///
+/// The methods are `async` because the store is shared with other tasks.
+/// `store` and `erase` are durable mutations: a caller that is cancelled before
+/// the request was queued changed nothing, afterwards the operation is
+/// logically completed (see the [durable-mutation
+/// rule](../rohi_sdk/cancellation/index.html#durable-mutation)). The secret is
+/// never returned: reading gives the public key only.
 #[allow(async_fn_in_trait)]
 pub trait IdentityStore {
     /// Public key of the stored identity, `None` when not provisioned. The
@@ -97,7 +104,91 @@ pub mod action_field {
 }
 
 /// The identity as an `identity` service with the `provision` and `erase`
-/// actions.
+/// actions, over an [`IdentityStore`] that the firmware implements on its
+/// configuration handle.
+///
+/// # Requests
+///
+/// | Request | Link privilege | Effect |
+/// |---------|----------------|--------|
+/// | `GetServiceStatus identity` | read | `provisioned` and the 32-byte `public_key` (absent when not provisioned) |
+/// | `InvokeAction identity.provision { secret }` | provision (secret argument) | stores the identity, returns its public key |
+/// | `InvokeAction identity.erase` | mutate | removes the identity section; no-op when absent |
+///
+/// The privileges are those of
+/// [`rohi-control`](../rohi_control/index.html): a secret argument needs
+/// [`Privilege::Provision`](../rohi_control/enum.Privilege.html#variant.Provision),
+/// a privileged action [`Privilege::Mutate`](../rohi_control/enum.Privilege.html#variant.Mutate).
+/// See the security status in the [crate documentation](crate#security-status).
+///
+/// # Behaviour
+///
+/// * A status of `stopped` with the informational issue `not_provisioned` is
+///   the normal state of a fresh device. An unreadable storage is `failed`
+///   with the error issue `storage_unavailable`.
+/// * `provision` succeeds only when not provisioned, otherwise it is
+///   *rejected* with the reason `already_provisioned`. An existing identity is
+///   never silently replaced; erase it explicitly first.
+/// * A secret that is not exactly 32 bytes is `INVALID_ARGUMENT`. After
+///   storing, the device reads the identity back and compares the public key
+///   before answering.
+/// * No response or status ever carries the secret. The `Debug`
+///   output of the invoke request never shows its arguments and they are
+///   overwritten after the call, so the secret cannot reach a log.
+/// * Errors: `REJECTED` (`already_provisioned`), `INVALID_ARGUMENT`,
+///   `UNAVAILABLE`, `INTERNAL`, `PERMISSION_DENIED`.
+/// * The master seed, the number and the derivation path are never sent to the
+///   device.
+///
+/// The command line forms are in the [crate documentation](crate#control-plane-and-command-line).
+///
+/// ```
+/// use core::cell::RefCell;
+///
+/// use embassy_futures::block_on;
+/// use rohi_identity::{
+///     Identity, IdentityService, IdentityStore, IdentityStoreError, PublicKey, action_field,
+/// };
+/// use rohi_service::{ActionError, ActionRegistry, ServiceState, Status, Value, service_id};
+///
+/// // The firmware implements the store on its configuration handle; this one
+/// // lives in memory.
+/// #[derive(Default)]
+/// struct Memory(RefCell<Option<PublicKey>>);
+///
+/// impl IdentityStore for &Memory {
+///     async fn public_key(&self) -> Result<Option<PublicKey>, IdentityStoreError> {
+///         Ok(*self.0.borrow())
+///     }
+///     async fn store(&self, identity: &Identity) -> Result<(), IdentityStoreError> {
+///         *self.0.borrow_mut() = Some(identity.public_key());
+///         Ok(())
+///     }
+///     async fn erase(&self) -> Result<(), IdentityStoreError> {
+///         *self.0.borrow_mut() = None;
+///         Ok(())
+///     }
+/// }
+///
+/// let memory = Memory::default();
+/// let service = IdentityService(&memory);
+/// // A fresh device is stopped, not failed.
+/// assert_eq!(block_on(service.summary()).state, ServiceState::Stopped);
+///
+/// // Action 1 is `provision`, action 2 is `erase`.
+/// let identity = service_id("identity");
+/// let registry = (&service,);
+/// let secret = [(action_field::SECRET, Value::bytes(&[7; 32]).unwrap())];
+/// block_on(registry.invoke(identity, 1, &secret)).unwrap();
+/// assert_eq!(block_on(service.summary()).state, ServiceState::Running);
+///
+/// // An existing identity is never replaced silently.
+/// let other = [(action_field::SECRET, Value::bytes(&[8; 32]).unwrap())];
+/// assert_eq!(
+///     block_on(registry.invoke(identity, 1, &other)),
+///     Err(ActionError::Rejected("already_provisioned"))
+/// );
+/// ```
 #[derive(Service)]
 pub struct IdentityService<S>(pub S);
 

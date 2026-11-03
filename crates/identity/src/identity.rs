@@ -33,9 +33,26 @@ pub const SECRET_LEN: usize = 32;
 /// It is written exclusively by identity provisioning and removed only by an
 /// explicit identity erase, never by ordinary configuration changes.
 ///
-/// The section ID (FNV-1a of `Identity`, `0x94d63573d312fe9b`) and the CBOR
-/// representation (`[bytes(32)]`) are persistent ABI; see
-/// `cbor_encoding_is_stable`.
+/// # Storage
+///
+/// The identity lives in the normal configuration store
+/// ([`rohi-config`](../rohi_config/index.html)), so it inherits A/B
+/// transactional writes, generation tracking, CRC validation and power-loss
+/// recovery. There is no separate identity storage or partition.
+///
+/// * Section type `Identity`, ID `0x94d63573d312fe9b` (FNV-1a of the struct
+///   name), version 1.
+/// * CBOR: `[bytes(32)]` (`#[cbor(array)]`), pinned by the golden byte test
+///   `cbor_encoding_is_stable`. The section ID and this encoding are persistent
+///   ABI; see the [persistent ABI reference](https://rohi.akagi.dev/reference/persistent-abi.html).
+/// * The identity is **not** a config section of the generic configuration
+///   API: `identity` is a service whose secret is a write-only action argument
+///   ([`IdentityService`](crate::IdentityService)), so no config request can
+///   read, patch or reset it.
+/// * Ordinary configuration changes and removing another section never touch
+///   it. Only the `erase` action removes it.
+/// * A corrupted store is reported as unavailable, never as "not
+///   provisioned".
 #[derive(Clone, Encode, Decode, CborLen, ConfigSection)]
 #[cbor(array)]
 #[config(version = 1)]
@@ -45,9 +62,24 @@ pub struct Identity {
 }
 
 impl Identity {
-    /// Identity from a received secret; fails with
-    /// [`IdentityError::InvalidSecret`] unless it is exactly [`SECRET_LEN`]
-    /// bytes. Every 32-byte value is a valid Ed25519 secret key.
+    /// Identity from a received secret. Every 32-byte value is a valid
+    /// Ed25519 secret key. The temporary copy of the secret made here is
+    /// zeroized.
+    ///
+    /// # Errors
+    ///
+    /// [`IdentityError::InvalidSecret`] unless `secret` is exactly
+    /// [`SECRET_LEN`] bytes.
+    ///
+    /// ```
+    /// use rohi_identity::{Identity, IdentityError};
+    ///
+    /// assert!(Identity::from_secret(&[1; 32]).is_ok());
+    /// assert!(matches!(
+    ///     Identity::from_secret(&[1; 31]),
+    ///     Err(IdentityError::InvalidSecret)
+    /// ));
+    /// ```
     pub fn from_secret(secret: &[u8]) -> Result<Self, IdentityError> {
         let mut bytes: [u8; SECRET_LEN] = secret
             .try_into()
@@ -59,12 +91,13 @@ impl Identity {
         Ok(identity)
     }
 
-    /// Identity owning `secret`.
+    /// Identity owning `secret`, already of the right size.
     pub const fn new(secret: Secret<[u8; SECRET_LEN]>) -> Self {
         Self { secret }
     }
 
-    /// The Ed25519 public key.
+    /// The Ed25519 public key, derived from the secret on every call (the
+    /// public key is never persisted).
     pub fn public_key(&self) -> PublicKey {
         self.signer().public_key()
     }

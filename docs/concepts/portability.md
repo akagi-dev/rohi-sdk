@@ -1,38 +1,24 @@
 # Portability
 
 The SDK separates **portable** code from **platform** code so that most of it can be tested on a developer machine and
-reused on another MCU.
+reused on another MCU. Portable crates are `no_std`, allocation free and contain no MCU HAL; the `*-esp` crates are the
+only ones that depend on `esp-hal`, `esp-radio`, `esp-storage`, `embassy-net` or TrouBLE; the firmware picks the chip and
+sizes the resources; the host tool `rohi` is a `std` desktop client.
 
-| Category | Crates | Properties |
-|----------|--------|------------|
-| Portable | `rohi-hal`, `rohi-config`, `rohi-config-derive`, `rohi-net`, `rohi-control-proto`, `rohi-control`, `rohi-control-ble` | `no_std`, no allocation, no MCU HAL, builds and tests on the host |
-| ESP-specific | `rohi-hal-esp`, `rohi-config-esp`, `rohi-net-esp` | `no_std`, depend on `esp-hal` / `esp-radio` / `esp-storage` / `embassy-net` / TrouBLE; empty without a chip feature, so they stay buildable on the host |
-| Product | `altruist-urban`, `examples` | choose the chip, size the resources, spawn the tasks |
-| Desktop | `tools/rohi` | `std`; talks to a device over BLE |
+Portability comes from four habits: traits at the seams (sensors, flash storage, radio and IP backends, the control
+backend), ROHI types in public APIs (vendor types and errors are converted inside the platform crate), injected time and
+clocks, and a single chip feature selected only by the firmware. Portable crates are fully testable on the host,
+including timing, reconnects, cancellation and storage faults; platform crates are only compile-checked for both chips
+and need hardware for behaviour ([Host testing](../validation/host-testing.md),
+[Hardware testing](../validation/hardware-testing.md)). Porting to another MCU means implementing the seam traits in a
+new platform crate; the portable crates should need no change.
 
-## How portability is achieved
+Which crates are portable and which features select the chip: [Crate map](crate-map.md),
+[Targets and features](../reference/targets-and-features.md).
 
-- **Traits at the seams.** `SensorDriver` + `embedded-hal(-async)` for sensors; `ConfigStorage` for flash; `WifiBackend`,
-  `IpBackend` and `BleTransport` for the radio and IP stack; `ControlBackend` and the `rohi-service` registries for the control plane. Portable code is
-  generic over them and ships a fake or in-memory implementation for tests (`MemoryStorage`, `rohi_net::testing::FakeIp`,
-  mocks in the test modules).
-- **ROHI types in public APIs.** Vendor types and errors are converted into ROHI types inside the platform crate; a
-  portable signature never mentions `esp-*` or `embassy-net`. `NetworkHandle` is generic over `IpBackend`, and higher
-  layers should depend on the standard `embedded-nal-async` / `embedded-io-async` traits.
-- **Time and clocks are injected.** Portable code takes a `Clock` / `DelayNs`; nothing reads a hardware timer or wall
-  clock.
-- **One chip feature at the edge.** The chip (`esp32c3` or `esp32c6`) is selected only by the firmware's features and
-  forwarded to the platform crates; it never leaks into portable crates.
+## Reference
 
-## What can and cannot be tested on the host
-
-Portable crates are fully testable on the host, including timing (mock delays), reconnect logic (mock backends),
-cancellation (dropped futures) and storage faults (`MemoryStorage` fault injection). Platform crates are only
-**compile-checked** for both chips; their behaviour needs hardware, see [Host testing](../validation/host-testing.md) and
-[Hardware testing](../validation/hardware-testing.md).
-
-## Porting to another platform
-
-Implement the seam traits in a new platform crate (for example `rohi-hal-<mcu>`, `rohi-net-<mcu>`), keep vendor types
-inside, and add a firmware or board module that composes them. The portable crates should need no change; if one does,
-the seam was leaking a platform detail and should be fixed there.
+- [`rohi_sdk::portability`](https://docs.rs/rohi-sdk/latest/rohi_sdk/portability/index.html) and
+  [docs.rs/rohi-sdk](https://docs.rs/rohi-sdk).
+- Source: [`crates/sdk`](https://github.com/akagi-dev/rohi-sdk/tree/master/crates/sdk).
+- Locally: `cargo doc --no-deps --open -p rohi-sdk`.

@@ -3791,6 +3791,7 @@ dependencies = [
  "minicbor",
  "proptest",
  "rohi-config-derive",
+ "rohi-service",
  "zeroize",
 ]
 
@@ -3798,9 +3799,13 @@ dependencies = [
 name = "rohi-config-derive"
 version = "0.5.0"
 dependencies = [
+ "heapless 0.9.3",
+ "minicbor",
  "proc-macro-crate",
  "proc-macro2",
  "quote",
+ "rohi-config",
+ "rohi-service",
  "syn 2.0.119",
 ]
 
@@ -3993,6 +3998,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rohi-sdk"
+version = "0.5.0"
+
+[[package]]
 name = "rohi-service"
 version = "0.5.0"
 dependencies = [
@@ -4014,6 +4023,7 @@ dependencies = [
  "proc-macro-crate",
  "proc-macro2",
  "quote",
+ "rohi-service",
  "syn 2.0.119",
 ]
 

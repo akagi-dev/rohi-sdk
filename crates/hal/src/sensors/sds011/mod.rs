@@ -22,9 +22,15 @@
 //! the laser run for the warm-up and sampling time only:
 //!
 //! ```text
-//! wake -> query mode -> warm-up -> N x query -> aggregate -> sleep
-//!      -> wait Config::sleep_ms
+//! wake -> query mode -> firmware date -> (discarded query) -> warm-up
+//!      -> N x query -> aggregate -> sleep -> wait Config::sleep_ms
 //! ```
+//!
+//! [`SensorDriver::init`] runs the same session without measuring: it wakes
+//! the sensor, sets the query mode, reads the firmware date and puts the sensor
+//! back to sleep, which is how the runner detects the sensor. The first reply
+//! after waking up is not trusted: the driver sends one query only to see
+//! whether the sensor is silent and discards the answer.
 //!
 //! The command flow follows the community
 //! [`sds011-rs`](https://github.com/kenohassler/sds011-rs) driver (see
@@ -62,6 +68,31 @@
 //! ends the cycle through its own read timeout ([`READ_TIMEOUT_MS`]) and a
 //! rejected frame costs no measurable time. Buffers are fixed-size arrays,
 //! nothing allocates.
+//!
+//! # Defaults
+//!
+//! The cycle parameters are the fields of [`Config`]; the defaults are the
+//! constants below:
+//!
+//! | Constant | Default | Meaning |
+//! |----------|---------|---------|
+//! | [`WARMUP_MS`] | 30 s | Fan spin-up before sampling |
+//! | [`SAMPLE_COUNT`] | 5 | Valid samples required per cycle |
+//! | [`SAMPLE_INTERVAL_MS`] | 1.5 s | Pause between two queries |
+//! | [`CYCLE_TIMEOUT_MS`] | 30 s | Sampling window |
+//! | [`TRIM_MIN_MAX`] | on | Discard the lowest and highest sample |
+//! | [`SLEEP_MS`] | 90 s | Pause between cycles (the poll interval) |
+//!
+//! The sensor is on a UART at 9600 baud (configured by the board support,
+//! see [`rohi-hal-esp`](../../../rohi_hal_esp/index.html)). These values are a
+//! starting point; they have not been confirmed on hardware against the legacy
+//! firmware behaviour.
+//!
+//! The first measurement session starts right after a successful `init`; the
+//! warm-up of the cycle is the only wait before it. The longest time between
+//! two measurements of a healthy sensor is [`Config::max_cadence_ms`] (150 s with the defaults), which the
+//! default freshness policy outlasts, see
+//! [`measurements`](crate::measurements).
 
 pub mod aggregate;
 pub mod protocol;
@@ -86,12 +117,11 @@ pub const INIT_ATTEMPTS: u32 = 3;
 /// Highest value of the sensor range, in 0.1 µg/m³ (999.9 µg/m³).
 pub const MAX_RAW_VALUE: u16 = 9_999;
 
-/// Fan spin-up before sampling; 30 s as recommended by the manufacturer.
+/// Fan spin-up before sampling.
 pub const WARMUP_MS: u32 = 30_000;
 /// Valid samples required per measurement cycle.
 pub const SAMPLE_COUNT: usize = 5;
-/// Pause between two queries. The sensor refreshes its reading about once a
-/// second, a slightly longer pause makes consecutive samples distinct.
+/// Pause between two queries.
 pub const SAMPLE_INTERVAL_MS: u32 = 1_500;
 /// Sampling window; ends the cycle with an error if not enough valid samples
 /// arrived (allows about 4 times the required number of queries).
@@ -142,7 +172,14 @@ impl Config {
     };
 
     /// Longest time between two measurements of a healthy sensor: warm-up,
-    /// the whole sampling window and the sleep.
+    /// the whole sampling window and the sleep. The default freshness policy
+    /// is chosen above 1.5 times this value.
+    ///
+    /// ```
+    /// use rohi_hal::sensors::sds011::Config;
+    ///
+    /// assert_eq!(Config::DEFAULT.max_cadence_ms(), 150_000);
+    /// ```
     pub const fn max_cadence_ms(&self) -> u32 {
         self.warmup_ms + self.cycle_timeout_ms + self.sleep_ms
     }

@@ -20,7 +20,7 @@
 //!
 //! All GPIO assignments of the board live in this file; drivers never name
 //! pins. Hardware production documentation:
-//! * https://github.com/airalab/hardware/tree/main/Altruist
+//! * <https://github.com/airalab/hardware/tree/main/Altruist>
 //!
 //! Device: <https://robonomics.network/devices/altruist/>
 //!

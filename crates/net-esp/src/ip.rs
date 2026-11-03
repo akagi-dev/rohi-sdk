@@ -27,6 +27,21 @@
 //! all entries are in use `connect` fails at once with
 //! [`NetError::NoSocketAvailable`]. UDP sockets use a second fixed pool the
 //! same way, see [`IpBackend::udp_socket`]. No `embassy-net` type is public.
+//!
+//! # Behaviour
+//!
+//! * **Readiness.** The stack is ready when the link is up and the IPv4
+//!   configuration is complete.
+//! * **IPv4 only.** Name resolution asks for A records; an IPv6 request fails
+//!   with `DnsFailed`, an IPv6 TCP remote with `ConnectFailed` and an IPv6
+//!   UDP destination with `Backend`.
+//! * **Errors.** A TCP connect timeout is `Timeout`, an invalid socket state
+//!   `Backend`, anything else `ConnectFailed`; read and write failures are
+//!   `ConnectionReset`. `send_to` without a route is `NetworkUnavailable`.
+//!   `recv_from` returns `NetworkUnavailable` when the link or the address is
+//!   lost while waiting and skips datagrams larger than the buffer.
+//! * **Cancellation.** Dropping a pending `connect` aborts the socket and
+//!   frees its pool entry; dropping a connection aborts it.
 
 use core::cell::{Cell, UnsafeCell};
 use core::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -42,7 +57,8 @@ use embedded_io_async::{ErrorType, Read, Write};
 use embedded_nal_async::AddrType;
 use rohi_net::{IpBackend, IpUsage, NetError, UdpSocket};
 
-/// Sockets the stack itself needs: DHCPv4 and DNS.
+/// Sockets the stack itself needs: DHCPv4 and DNS. [`NetResources`] checks at
+/// compile time that `SOCKETS` covers them plus every TCP and UDP socket.
 pub const STACK_INTERNAL_SOCKETS: usize = 2;
 
 struct TcpBuffers<const RX: usize, const TX: usize> {
@@ -138,7 +154,8 @@ impl<const N: usize, const RX: usize, const TX: usize> Drop for PoolEntry<'_, N,
     }
 }
 
-/// Datagrams each UDP socket can queue per direction.
+/// Datagrams each UDP socket can queue per direction. A datagram needs both a
+/// metadata slot and room in the socket buffer.
 pub const UDP_PACKETS: usize = 2;
 
 struct UdpBuffers<const BUF: usize> {
@@ -230,7 +247,15 @@ impl<const N: usize, const BUF: usize> Drop for UdpEntry<'_, N, BUF> {
 ///   each direction queues at most [`UDP_PACKETS`] datagrams.
 ///
 /// RAM use is about `TCP * (RX + TX) + UDP * 2 * UDP_BUF` plus the stack's
-/// socket table.
+/// socket table. Each pool holds at most 32 entries.
+///
+/// The Altruist Urban sizes and the reasoning behind them are in
+/// `firmwares/altruist-urban/src/resources.rs`.
+///
+/// # Panics
+///
+/// Building the value fails at compile time (an assertion in a constant) when
+/// `SOCKETS < TCP + UDP + STACK_INTERNAL_SOCKETS` or a pool exceeds 32 entries.
 pub struct NetResources<
     const SOCKETS: usize,
     const TCP: usize,
@@ -260,6 +285,7 @@ impl<
         "SOCKETS must cover DHCP and DNS plus every TCP connection and UDP socket"
     );
 
+    /// Empty storage; usable in a `const` or `static` initializer.
     pub const fn new() -> Self {
         let () = Self::BUDGET_OK;
         Self {

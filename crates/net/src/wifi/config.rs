@@ -27,7 +27,25 @@ use super::managed::validate_section;
 use crate::network::NetworkConfig;
 use crate::{MAX_SSID_LEN, MAX_WIFI_PASSWORD_LEN, MIN_WIFI_PASSWORD_LEN, WifiError};
 
-/// Wi-Fi network name: 0..=[`MAX_SSID_LEN`] arbitrary bytes.
+/// Wi-Fi network name: 0..=[`MAX_SSID_LEN`] arbitrary bytes (IEEE 802.11 does
+/// not require UTF-8).
+///
+/// An empty SSID is representable (hidden networks in scans) but is not a
+/// valid network to connect to, see [`WifiConfig::validate`].
+///
+/// ```
+/// use rohi_net::{MAX_SSID_LEN, WifiSsid};
+///
+/// let ssid = WifiSsid::from_bytes(b"office").unwrap();
+/// assert_eq!(ssid.as_str(), Some("office"));
+/// assert_eq!(ssid.to_string(), "office"); // Display
+///
+/// // Not UTF-8: still a valid SSID, shown as hex.
+/// let raw = WifiSsid::from_bytes(&[0xff, 0x00]).unwrap();
+/// assert_eq!(raw.as_str(), None);
+///
+/// assert!(WifiSsid::from_bytes(&[b'a'; MAX_SSID_LEN + 1]).is_none());
+/// ```
 #[derive(Clone, PartialEq, Eq, Encode, Decode, CborLen)]
 #[cbor(transparent)]
 pub struct WifiSsid(
@@ -41,6 +59,7 @@ pub struct WifiSsid(
 );
 
 impl WifiSsid {
+    /// The empty SSID.
     pub const fn empty() -> Self {
         Self(Vec::new())
     }
@@ -50,6 +69,7 @@ impl WifiSsid {
         Vec::from_slice(value).ok().map(Self)
     }
 
+    /// The raw bytes.
     pub fn as_bytes(&self) -> &[u8] {
         self.0.as_slice()
     }
@@ -59,6 +79,7 @@ impl WifiSsid {
         core::str::from_utf8(self.as_bytes()).ok()
     }
 
+    /// Whether the name has no bytes.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -82,7 +103,23 @@ impl fmt::Display for WifiSsid {
     }
 }
 
-/// Wi-Fi password. Secret: its `Debug` output never reveals the value.
+/// Wi-Fi password: 0..=[`MAX_WIFI_PASSWORD_LEN`] bytes. Secret: its `Debug`
+/// output never reveals the value.
+///
+/// The length limit is enforced here; the minimum of
+/// [`MIN_WIFI_PASSWORD_LEN`] bytes when a password is set is checked by
+/// [`WifiConfig::validate`]. An open network has no password at all
+/// (`None`), never an empty one.
+///
+/// ```
+/// use rohi_net::WifiPassword;
+///
+/// let password = WifiPassword::from_bytes(b"correct horse").unwrap();
+/// assert_eq!(format!("{password:?}"), "WifiPassword(<redacted>)");
+/// assert_eq!(password.len(), 13);
+/// // Reserved for the platform backend that hands it to the radio driver.
+/// assert_eq!(password.expose_secret(), b"correct horse");
+/// ```
 #[derive(Clone, PartialEq, Eq, Encode, Decode, CborLen)]
 #[cbor(transparent)]
 pub struct WifiPassword(
@@ -106,10 +143,12 @@ impl WifiPassword {
         self.0.as_slice()
     }
 
+    /// Length in bytes.
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
+    /// Whether the password has no bytes.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -132,15 +171,16 @@ pub const DEFAULT_SCAN_TIMEOUT_MS: u32 = 20_000;
 /// Default bound of associating with the access point.
 pub const DEFAULT_CONNECT_TIMEOUT_MS: u32 = 30_000;
 
-/// Inclusive bounds of the timing fields, in milliseconds.
+/// Inclusive bounds of the timing fields, in milliseconds. This one bounds
+/// `backoff_initial`: 100 ms to 10 minutes.
 pub const BACKOFF_INITIAL_RANGE_MS: (u32, u32) = (100, 600_000);
-/// See [`BACKOFF_INITIAL_RANGE_MS`].
+/// Bounds of `backoff_max`: 100 ms to 1 hour. See [`BACKOFF_INITIAL_RANGE_MS`].
 pub const BACKOFF_MAX_RANGE_MS: (u32, u32) = (100, 3_600_000);
-/// See [`BACKOFF_INITIAL_RANGE_MS`].
+/// Bounds of `link_refresh`: 1 s to 10 minutes. See [`BACKOFF_INITIAL_RANGE_MS`].
 pub const LINK_REFRESH_RANGE_MS: (u32, u32) = (1_000, 600_000);
-/// See [`BACKOFF_INITIAL_RANGE_MS`].
+/// Bounds of `scan_timeout`: 1 s to 2 minutes. See [`BACKOFF_INITIAL_RANGE_MS`].
 pub const SCAN_TIMEOUT_RANGE_MS: (u32, u32) = (1_000, 120_000);
-/// See [`BACKOFF_INITIAL_RANGE_MS`].
+/// Bounds of `connect_timeout`: 5 s to 2 minutes. See [`BACKOFF_INITIAL_RANGE_MS`].
 pub const CONNECT_TIMEOUT_RANGE_MS: (u32, u32) = (5_000, 120_000);
 
 fn within(value: u32, (min, max): (u32, u32)) -> bool {
@@ -156,6 +196,28 @@ fn within(value: u32, (min, max): (u32, u32)) -> bool {
 ///
 /// An open network is represented by `password == None`, never by an empty
 /// password.
+///
+/// The ranges of the timing fields are the `*_RANGE_MS` constants of this
+/// module; the backoff start must not exceed the backoff maximum.
+///
+/// ```
+/// use rohi_net::{DEFAULT_SCAN_TIMEOUT_MS, WifiConfig, WifiError, WifiPassword, WifiSsid};
+///
+/// // The default is "no network": Wi-Fi is disabled and the radio stays idle.
+/// let none = WifiConfig::default();
+/// assert!(!none.is_configured());
+/// assert_eq!(none.validate(), Err(WifiError::InvalidConfig));
+/// assert_eq!(none.scan_timeout_ms, DEFAULT_SCAN_TIMEOUT_MS);
+///
+/// let ssid = WifiSsid::from_bytes(b"office").unwrap();
+/// let password = WifiPassword::from_bytes(b"correct horse").unwrap();
+/// let mut config = WifiConfig::new(ssid, Some(password));
+/// assert_eq!(config.validate(), Ok(()));
+///
+/// // A timing outside its range is rejected.
+/// config.scan_timeout_ms = 500;
+/// assert_eq!(config.validate(), Err(WifiError::InvalidConfig));
+/// ```
 #[derive(Clone, PartialEq, Eq, Config)]
 #[config(name = "wifi", overrides = WifiOverrides, version = 1, validate = validate_section)]
 pub struct WifiConfig {
@@ -261,6 +323,11 @@ impl WifiConfig {
 
     /// Checks the configuration before it is applied by the radio: a network
     /// must be configured.
+    ///
+    /// # Errors
+    ///
+    /// [`WifiError::InvalidConfig`] when no SSID is set or when
+    /// [`validate_settings`](Self::validate_settings) fails.
     pub fn validate(&self) -> Result<(), WifiError> {
         if !self.is_configured() {
             return Err(WifiError::InvalidConfig);
@@ -270,6 +337,12 @@ impl WifiConfig {
 
     /// Checks the SSID, the credentials and the timing, which may belong to a
     /// section with Wi-Fi disabled (see [`is_configured`](Self::is_configured)).
+    ///
+    /// # Errors
+    ///
+    /// [`WifiError::InvalidConfig`] when a set SSID is empty, a set password
+    /// is shorter than [`MIN_WIFI_PASSWORD_LEN`], a timing is outside its
+    /// range, or `backoff_initial_ms` exceeds `backoff_max_ms`.
     pub fn validate_settings(&self) -> Result<(), WifiError> {
         let valid = self.ssid.as_ref().is_none_or(|ssid| !ssid.is_empty())
             && self
@@ -318,6 +391,16 @@ impl fmt::Debug for WifiConfig {
 
 /// Everything the radio needs to join a network and get an address: the
 /// [`WifiConfig`] and the IPv4 settings of the [`NetworkConfig`].
+///
+/// ```
+/// use rohi_net::{LinkConfig, NetworkConfig, WifiConfig, WifiSsid};
+///
+/// let link = LinkConfig {
+///     wifi: WifiConfig::default().with_ssid(WifiSsid::from_bytes(b"office").unwrap()),
+///     network: NetworkConfig::new(),
+/// };
+/// assert!(link.validate().is_ok());
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LinkConfig {
     /// Network, credentials and timing.
@@ -328,6 +411,11 @@ pub struct LinkConfig {
 
 impl LinkConfig {
     /// Checks both parts.
+    ///
+    /// # Errors
+    ///
+    /// [`WifiError::InvalidConfig`] when either part is invalid, see
+    /// [`WifiConfig::validate`] and [`NetworkConfig::validate`].
     pub fn validate(&self) -> Result<(), WifiError> {
         self.wifi.validate()?;
         self.network.validate()

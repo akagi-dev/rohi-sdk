@@ -16,6 +16,34 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 //! Signed envelope construction and the immutable frame.
+//!
+//! # Wire contract
+//!
+//! `crypto.v1.SignedEnvelope` has exactly `sensor_id`, `nonce`, `message` and
+//! `signature` at the pinned revision of the protocol; there is no envelope
+//! timestamp. The signature covers `sensor_id ‖ nonce ‖ message`, where
+//! `message` is the exact serialized `core.v1.Message`. The timestamp is
+//! `core.v1.Meta.timestamp`, Unix UTC milliseconds.
+//!
+//! - The message is serialized **once**, signed as those bytes, wrapped in the
+//!   envelope, and the envelope is serialized **once** into an
+//!   [`EnvelopeFrame`].
+//! - A retry resends the same frame byte for byte: nonce, timestamp and
+//!   signature are never regenerated and nothing is re-encoded from decoded
+//!   fields.
+//! - The signing preimage is documented and tested in
+//!   [`rohi_connectivity_proto::signing_preimage`]; golden vectors generated
+//!   with `robins` pin the whole chain (see the
+//!   [crate documentation](crate#testing-and-interoperability)).
+//!
+//! # Identity
+//!
+//! The service sees a [`FrameSigner`] ([`sensor_id`](FrameSigner::sensor_id)
+//! and [`sign_payload`](FrameSigner::sign_payload)): only the public key and
+//! signatures cross the boundary, never key bytes. Every
+//! [`rohi_identity::Signer`] is a `FrameSigner`. The firmware's `StaticSigner`
+//! follows the runtime identity (provisioned or erased at any time). Without
+//! identity no frame is created.
 
 use core::fmt;
 
@@ -88,9 +116,18 @@ impl From<IdentityError> for SignError {
 /// [`IdentityError`] is a `FrameSigner`.
 pub trait FrameSigner {
     /// Public key of the identity: the `sensor_id` of the envelope.
+    ///
+    /// # Errors
+    ///
+    /// [`SignError::NotProvisioned`] while the device has no identity.
     fn sensor_id(&self) -> Result<PublicKey, SignError>;
 
     /// Ed25519 signature over exactly `message`.
+    ///
+    /// # Errors
+    ///
+    /// [`SignError::NotProvisioned`] without an identity, [`SignError::Failed`]
+    /// if signing failed.
     fn sign_payload(&self, message: &[u8]) -> Result<Signature, SignError>;
 }
 
@@ -146,7 +183,58 @@ impl<'a, S: FrameSigner, N: NonceSource> EnvelopeBuilder<'a, S, N> {
     /// Signs the serialized `core.v1.Message` `message` and wraps it.
     ///
     /// `message` is used byte-for-byte; it is not decoded, modified or
-    /// re-encoded. A new nonce is drawn for every call.
+    /// re-encoded. A new nonce is drawn for every call, so two calls with the
+    /// same message give two different frames; resend one frame instead of
+    /// building it again.
+    ///
+    /// # Errors
+    ///
+    /// * [`BuildError::TooLarge`]: `message` is longer than
+    ///   [`MAX_MESSAGE_LEN`] or the envelope does not fit `FRAME` bytes.
+    /// * [`BuildError::NotProvisioned`]: the signer has no identity.
+    /// * [`BuildError::Signing`]: the signer failed.
+    /// * [`BuildError::Nonce`]: the nonce source has no entropy.
+    ///
+    /// ```
+    /// use rohi_connectivity::{
+    ///     BuildError, EnvelopeBuilder, EnvelopeFrame, NONCE_LEN, NonceError, NonceSource,
+    /// };
+    /// use rohi_connectivity_proto::crypto_v1::SignedEnvelope;
+    /// use rohi_connectivity_proto::decode;
+    /// use rohi_identity::Identity;
+    ///
+    /// struct Counter(u8);
+    /// impl NonceSource for Counter {
+    ///     fn fill_nonce(&mut self, dst: &mut [u8; NONCE_LEN]) -> Result<(), NonceError> {
+    ///         self.0 += 1;
+    ///         dst.fill(self.0);
+    ///         Ok(())
+    ///     }
+    /// }
+    ///
+    /// let identity = Identity::from_secret(&[7; 32]).unwrap();
+    /// let signer = identity.signer();
+    /// let mut nonce = Counter(0);
+    /// let mut builder = EnvelopeBuilder::new(&signer, &mut nonce);
+    ///
+    /// // A serialized `core.v1.Message` (here only its `Meta`).
+    /// let message = [0x0a, 0x04, 0x08, 0x07, 0x10, 0x01];
+    /// let frame: EnvelopeFrame = builder.sign(&message).unwrap();
+    ///
+    /// // The message is carried byte for byte next to the identity's key.
+    /// let envelope: SignedEnvelope = decode(frame.as_bytes()).unwrap();
+    /// assert_eq!(envelope.message.as_slice(), &message);
+    /// assert_eq!(envelope.sensor_id.as_slice(), identity.public_key().as_bytes());
+    ///
+    /// // A new nonce for every frame ...
+    /// let again: EnvelopeFrame = builder.sign(&message).unwrap();
+    /// assert_ne!(frame, again);
+    /// // ... and the bounds are enforced.
+    /// assert_eq!(
+    ///     builder.sign::<544>(&[0; 401]),
+    ///     Err(BuildError::TooLarge)
+    /// );
+    /// ```
     pub fn sign<const FRAME: usize>(
         &mut self,
         message: &[u8],

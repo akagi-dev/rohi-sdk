@@ -180,7 +180,7 @@ provisioning, are always read from stdin or a hidden prompt: `rohi action identi
 `rohi config` lists the sections of the device, shows the **effective** configuration of a section (the firmware
 defaults with your explicit **overrides** applied) and changes overrides with patches that are applied atomically per
 section. Secrets are write-only. It is covered on [Configuration](configuration.md); the rules are in
-[Service pipeline](../../sdk/service.md#config-sections).
+[Service pipeline](../../sdk/service.md).
 
 ## What the services are
 

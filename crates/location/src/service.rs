@@ -29,7 +29,7 @@ use crate::{LocationShared, LocationSourceKind};
 
 /// Issue codes of the `location` service.
 pub mod issue {
-    /// No location is set; `rohi config set location latitude=.. longitude=..`.
+    /// No location is set; `rohi config location latitude=.. longitude=..`.
     pub const NOT_SET: u32 = super::FIRST_SERVICE_ISSUE;
 }
 
@@ -37,7 +37,7 @@ pub mod issue {
 pub mod source {
     /// Set through the config section.
     pub const CONFIGURED: u32 = 0;
-    /// Reported by a GPS receiver.
+    /// Reported by a GNSS (GPS) receiver.
     pub const GPS: u32 = 1;
 }
 
@@ -53,11 +53,42 @@ pub mod status_field {
     pub const SOURCE: u32 = 4;
 }
 
-/// The current location as a `location` service.
+/// The current location as a `location` service of the status plane (see
+/// [`rohi_service::Status`]).
 ///
 /// Not knowing where the device is is not an error, so the service is
-/// `disabled` until a location is set; consumers that need it (telemetry)
-/// report their own degradation.
+/// `disabled` (with the informational issue `not_set`) until a location is
+/// set, then `running`, `ok` and ready; consumers that need it (telemetry)
+/// report their own degradation. Status fields (see [`status_field`]):
+/// `latitude`, `longitude`, `height_m` (absent when unknown) and `source`
+/// (`configured` or `gps`, see [`source`]). It is not essential for the device
+/// and reports no further issues.
+///
+/// The service only reads the [`LocationShared`]; it owns nothing and its
+/// methods do not wait.
+///
+/// ```
+/// use embassy_futures::block_on;
+/// use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+/// use rohi_location::{LocationConfig, LocationService, LocationShared};
+/// use rohi_service::{Service, ServiceState, Status};
+///
+/// let shared = LocationShared::<NoopRawMutex>::new();
+/// let service = LocationService(&shared);
+/// assert_eq!(<LocationService<NoopRawMutex> as Service>::NAME, "location");
+///
+/// // Nothing is known: disabled, not an error.
+/// assert_eq!(block_on(service.summary()).state, ServiceState::Disabled);
+///
+/// shared.publish_configured(Some(&LocationConfig {
+///     latitude: 52.52,
+///     longitude: 13.405,
+///     height_m: None,
+/// }));
+/// let summary = block_on(service.summary());
+/// assert_eq!(summary.state, ServiceState::Running);
+/// assert!(summary.ready);
+/// ```
 #[derive(Service)]
 pub struct LocationService<'a, M: RawMutex>(pub &'a LocationShared<M>);
 

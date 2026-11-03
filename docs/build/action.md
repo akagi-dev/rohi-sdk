@@ -37,4 +37,4 @@ The user's view is [Actions](../use/desktop/actions.md).
 | Topic | Page |
 |-------|------|
 | Step by step | [Add a control operation or an action](../guides/add-control-operation.md) |
-| Descriptor, privileges, errors | [Service pipeline](../sdk/service.md#actions) |
+| Descriptor, privileges, errors | [Service pipeline](../sdk/service.md) |

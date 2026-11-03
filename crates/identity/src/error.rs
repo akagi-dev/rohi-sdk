@@ -19,7 +19,10 @@
 
 use core::fmt;
 
-/// Identity failure.
+/// Identity failure: the single error type of keys, signatures and
+/// provisioning in this crate. It is `Copy`, implements
+/// [`Display`](core::fmt::Display) and [`core::error::Error`], and carries no
+/// secret.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IdentityError {
     /// The device has no identity; it has to be provisioned first.

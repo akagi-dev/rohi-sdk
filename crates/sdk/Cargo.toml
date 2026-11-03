@@ -1,0 +1,13 @@
+[package]
+name = "rohi-sdk"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "ROHI SDK architecture and cross-cutting contracts (documentation only)"
+
+[badges]
+maintenance = { status = "actively-developed" }

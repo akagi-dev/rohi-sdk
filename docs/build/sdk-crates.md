@@ -8,7 +8,7 @@ with:
 cargo doc --no-deps --open
 ```
 
-Released crates are also published on [docs.rs](https://docs.rs/rohi-hal).
+Released crates are also published on docs.rs, for example [`rohi-sdk`](https://docs.rs/rohi-sdk) (the entry point and cross-cutting concepts) and [`rohi-hal`](https://docs.rs/rohi-hal). The source is in [`crates/`](https://github.com/akagi-dev/rohi-sdk/tree/master/crates).
 
 | Crate | What it is |
 |-------|-----------|
@@ -16,7 +16,7 @@ Released crates are also published on [docs.rs](https://docs.rs/rohi-hal).
 | `rohi-config`, `rohi-config-derive`, `rohi-config-esp` | transactional configuration store, derive macros and flash backend |
 | `rohi-service`, `rohi-service-derive` | the config, status and action model and registries |
 | `rohi-net`, `rohi-net-esp` | Wi-Fi and IP networking, BLE transport traits, ESP backend |
-| `rohi-control-proto`, `rohi-control`, `rohi-control-ble` | the control protocol, its dispatcher and its BLE binding |
+| `rohi-control-proto`, `rohi-control`, `rohi-control-ble` | the control protocol, its dispatcher and its firmware-side BLE binding (the `rohi` tool reuses only its frame and uuid modules) |
 | `rohi-connectivity`, `rohi-connectivity-proto` | signed telemetry |
 | `rohi-time`, `rohi-time-ntp` | wall-clock time |
 | `rohi-identity` | device identity and signer |
@@ -25,5 +25,5 @@ Released crates are also published on [docs.rs](https://docs.rs/rohi-hal).
 
 The dependency rules and "where does new code go" are in the [Crate map](../concepts/crate-map.md).
 
-> Detailed technical documentation is being moved from this book into the rustdoc of each crate. Until a crate has
-> it, the pages under *Technical reference* in the navigation remain authoritative and are not copied elsewhere.
+The pages under *Technical reference* in the navigation are short overviews: each says what a crate is for and links to
+its rustdoc. They do not carry API listings or contracts; those live in the rustdoc of the crate.

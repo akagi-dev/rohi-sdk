@@ -17,6 +17,19 @@
 ///////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 //! Transport-neutral uplink types.
+//!
+//! Vocabulary only: this crate has no uplink logic, and nothing else in this
+//! workspace uses these types yet. In particular there is no Meshtastic
+//! implementation; [`UplinkMode::Meshtastic`] and [`ActiveUplink::Meshtastic`]
+//! name an option for future transports.
+//!
+//! ```
+//! use rohi_hal::{ActiveUplink, UplinkMode, UplinkState};
+//!
+//! assert_eq!(UplinkMode::default(), UplinkMode::Auto);
+//! assert_eq!(ActiveUplink::default(), ActiveUplink::None);
+//! assert_eq!(UplinkState::default(), UplinkState::Disabled);
+//! ```
 
 /// Configured uplink selection policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]

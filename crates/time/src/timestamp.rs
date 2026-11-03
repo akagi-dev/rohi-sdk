@@ -15,6 +15,11 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
+//! [`UnixTime`], the wall-clock timestamp type.
+//!
+//! It is a distinct type from
+//! [`MonotonicTimestamp`](rohi_hal::MonotonicTimestamp), see the
+//! [crate documentation](crate) for when to use which.
 
 use core::time::Duration;
 
@@ -24,6 +29,21 @@ use core::time::Duration;
 /// This is a different type from
 /// [`MonotonicTimestamp`](rohi_hal::MonotonicTimestamp) on purpose: the two
 /// can never be confused or compared by accident.
+///
+/// ```
+/// use core::time::Duration;
+/// use rohi_time::UnixTime;
+///
+/// let time = UnixTime::from_millis(1_700_000_000_250);
+/// assert_eq!(time.as_secs(), 1_700_000_000);
+/// assert_eq!(time.subsec_millis(), 250);
+/// assert_eq!(
+///     time.checked_add(Duration::from_secs(1)),
+///     Some(UnixTime::from_millis(1_700_000_001_250))
+/// );
+/// // Arithmetic never wraps.
+/// assert_eq!(UnixTime::from_millis(u64::MAX).checked_add(Duration::from_millis(1)), None);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct UnixTime {
     millis: u64,

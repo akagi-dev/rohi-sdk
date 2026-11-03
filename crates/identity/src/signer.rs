@@ -29,6 +29,23 @@ use crate::{Identity, IdentityError, PublicKey, SECRET_LEN, Secret, Signature};
 /// Signs exactly the given bytes: callers serialize their message once and
 /// must not decode, modify or re-encode the payload after signing. There is
 /// deliberately no access to the private key.
+///
+/// Consumers take `impl Signer` (or a generic `S: Signer`) instead of an
+/// [`Identity`], so the same code runs with a stored identity, with the
+/// firmware's runtime identity and with a test signer.
+///
+/// ```
+/// use rohi_identity::{Identity, Signature, Signer};
+///
+/// fn sign_twice<S: Signer>(signer: &S, message: &[u8]) -> Result<[Signature; 2], S::Error> {
+///     Ok([signer.sign(message)?, signer.sign(message)?])
+/// }
+///
+/// let identity = Identity::from_secret(&[3; 32]).unwrap();
+/// let [first, second] = sign_twice(&identity.signer(), b"frame").unwrap();
+/// // Ed25519 signatures are deterministic.
+/// assert_eq!(first, second);
+/// ```
 pub trait Signer {
     /// Signing failure.
     type Error;
@@ -42,7 +59,9 @@ pub trait Signer {
 
 /// [`Signer`] backed by a provisioned [`Identity`].
 ///
-/// The key is zeroized on drop and never printed.
+/// The key is zeroized on drop and never printed. Cloning copies the key; all
+/// copies are zeroized when dropped. Signing with it never fails
+/// ([`Signer::Error`] is [`IdentityError`] only for the trait's sake).
 #[derive(Clone)]
 pub struct IdentitySigner {
     key: SigningKey,
@@ -56,8 +75,24 @@ impl IdentitySigner {
         Self { key, public }
     }
 
-    /// Signer of a stored identity: [`IdentityError::NotProvisioned`] when
-    /// there is none. A missing identity is never replaced by a generated one.
+    /// Signer of a stored identity. A missing identity is never replaced by a
+    /// generated one.
+    ///
+    /// # Errors
+    ///
+    /// [`IdentityError::NotProvisioned`] when `identity` is `None`.
+    ///
+    /// ```
+    /// use rohi_identity::{Identity, IdentityError, IdentitySigner, Signer};
+    ///
+    /// let identity = Identity::from_secret(&[9; 32]).unwrap();
+    /// let signer = IdentitySigner::provisioned(Some(&identity)).unwrap();
+    /// assert_eq!(signer.public_key(), identity.public_key());
+    /// assert!(matches!(
+    ///     IdentitySigner::provisioned(None),
+    ///     Err(IdentityError::NotProvisioned)
+    /// ));
+    /// ```
     pub fn provisioned(identity: Option<&Identity>) -> Result<Self, IdentityError> {
         identity
             .map(Identity::signer)

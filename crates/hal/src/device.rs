@@ -20,8 +20,15 @@
 
 /// High-level state of the device.
 ///
-/// Intended to drive BLE status, LED state, diagnostics and the supervisor.
-/// The state machine itself is not part of this crate.
+/// A plain vocabulary type for status reporting (BLE status, LED state,
+/// diagnostics, a supervisor). This crate defines no transitions and nothing
+/// else in this workspace produces or consumes it yet.
+///
+/// ```
+/// use rohi_hal::DeviceState;
+///
+/// assert_eq!(DeviceState::default(), DeviceState::Booting);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum DeviceState {
     /// The device is starting up.

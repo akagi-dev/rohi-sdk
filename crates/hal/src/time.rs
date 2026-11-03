@@ -21,10 +21,21 @@
 /// Monotonic point in time, in milliseconds since an arbitrary epoch
 /// (usually device boot).
 ///
-/// This crate never requires UTC. Wall-clock timestamps are produced by
-/// the connectivity layer, so valid measurements can be collected before time
-/// synchronization succeeds. The caller supplies all timestamps; this crate
-/// never reads a clock.
+/// This crate never requires UTC, so valid measurements can be collected
+/// before time synchronization succeeds. The caller supplies all timestamps
+/// (on ESP32 `rohi_hal_esp::EmbassyClock`, through [`Clock`](crate::runtime::Clock));
+/// this crate never reads a clock. Ordering and equality compare the
+/// millisecond value.
+///
+/// ```
+/// use rohi_hal::MonotonicTimestamp;
+///
+/// let boot_plus_1s = MonotonicTimestamp::from_millis(1_000);
+/// let boot_plus_3s = MonotonicTimestamp::from_millis(3_000);
+/// assert_eq!(boot_plus_3s.saturating_millis_since(boot_plus_1s), 2_000);
+/// // Never underflows, even for timestamps from the future.
+/// assert_eq!(boot_plus_1s.saturating_millis_since(boot_plus_3s), 0);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct MonotonicTimestamp {
     /// Milliseconds since the epoch.

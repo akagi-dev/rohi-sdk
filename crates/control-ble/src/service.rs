@@ -31,9 +31,16 @@ use crate::frame::{Fragmenter, Reassembler};
 /// ```
 ///
 /// One connection, one request in flight, one response. All buffers are
-/// inline and fixed; place the value in a `static` or in the future of the
-/// control task. Nothing here runs from a radio callback: the transport
-/// queues chunks and this loop does the work.
+/// inline and fixed (about 3 KiB: [`MAX_REQUEST_LEN`] reassembly,
+/// [`MAX_RESPONSE_LEN`] response, [`MAX_BLE_PAYLOAD`] chunk); place the value
+/// in a `static` or in the future of the control task. Nothing here runs from
+/// a radio callback: the transport queues chunks and this loop does the work.
+///
+/// The [crate documentation](crate) has a complete example over an in-memory
+/// transport. The authorization of requests follows the
+/// [`LinkSecurity`] derived from
+/// [`BleTransport::connection_info`]; a link without a connection is treated
+/// as the default (unencrypted, unauthenticated) one.
 pub struct ControlBle<'c, T, S, P> {
     transport: T,
     controller: &'c Controller<S, P>,
@@ -66,6 +73,9 @@ where
 
     /// Serves requests forever. Failures end the current exchange only;
     /// the next connection starts from a clean state.
+    ///
+    /// Never returns; cancel it by dropping the future (see
+    /// [`step`](Self::step) for what that means).
     pub async fn run(&mut self) -> ! {
         loop {
             self.step().await;

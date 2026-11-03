@@ -16,6 +16,44 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 //! Bounded in-memory outbox of signed frames.
+//!
+//! The queue is statically bounded and allocation free
+//! ([`DEFAULT_OUTBOX_DEPTH`](crate::service::DEFAULT_OUTBOX_DEPTH) frames by
+//! default, 4 in the Altruist Urban firmware). When it is full **no new frame
+//! is created** (nothing is evicted) and `skipped_outbox_full` is
+//! incremented. The queue is in memory: frames are lost on reboot or when the
+//! service is replaced (a flash spool is out of scope).
+//!
+//! ```
+//! use rohi_connectivity::{EnvelopeBuilder, EnvelopeFrame, NONCE_LEN, NonceError, NonceSource, Outbox};
+//! use rohi_identity::Identity;
+//!
+//! struct Counter(u8);
+//! impl NonceSource for Counter {
+//!     fn fill_nonce(&mut self, dst: &mut [u8; NONCE_LEN]) -> Result<(), NonceError> {
+//!         self.0 += 1;
+//!         dst.fill(self.0);
+//!         Ok(())
+//!     }
+//! }
+//!
+//! let signer = Identity::from_secret(&[1; 32]).unwrap().signer();
+//! let mut nonce = Counter(0);
+//! let mut frame = || -> EnvelopeFrame {
+//!     EnvelopeBuilder::new(&signer, &mut nonce).sign(&[0x0a, 0x00]).unwrap()
+//! };
+//!
+//! let mut outbox = Outbox::<2>::new();
+//! let (first, second) = (frame(), frame());
+//! outbox.push(first.clone()).unwrap();
+//! outbox.push(second).unwrap();
+//! // Full: the third frame is refused, nothing is evicted.
+//! assert!(outbox.is_full());
+//! assert!(outbox.push(frame()).is_err());
+//! assert_eq!(outbox.front(), Some(&first));
+//! assert_eq!(outbox.pop(), Some(first));
+//! assert_eq!(outbox.len(), 1);
+//! ```
 
 use heapless::Deque;
 
@@ -45,6 +83,11 @@ impl<const DEPTH: usize> Outbox<DEPTH> {
     }
 
     /// Queues `frame` behind the others.
+    ///
+    /// # Errors
+    ///
+    /// [`OutboxFull`] when `DEPTH` frames are already queued; the queue is
+    /// left unchanged.
     pub fn push(&mut self, frame: EnvelopeFrame) -> Result<(), OutboxFull> {
         self.frames.push_back(frame).map_err(|_| OutboxFull)
     }

@@ -37,5 +37,5 @@ values and issues. How users read this is [Status & diagnostics](../use/desktop/
 | Topic | Page |
 |-------|------|
 | Step by step | [Add a service](../guides/add-service.md) |
-| Traits, limits, device health rules | [Service pipeline](../sdk/service.md#status) |
+| Traits, limits, device health rules | [Service pipeline](../sdk/service.md) |
 | A complete small example | [Location](../sdk/location.md) |

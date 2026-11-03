@@ -23,7 +23,7 @@ use std::path::PathBuf;
 
 use micropb_gen::{Config, Generator};
 
-/// Vendored schema, a verbatim copy of the revision in `UPSTREAM_REV`.
+/// Vendored schema at the revision in `UPSTREAM_REV`; see the crate docs for the deliberate difference.
 const PROTO_ROOT: &str = "proto";
 const PROTOS: &[&str] = &[
     "proto/core/v1/message.proto",

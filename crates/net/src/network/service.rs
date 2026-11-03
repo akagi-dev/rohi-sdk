@@ -69,6 +69,18 @@ pub mod status_field {
 
 /// The IP layer of the Wi-Fi link as a `network` service: address and
 /// socket usage. It has no actions; the link is operated through `wifi`.
+///
+/// ```
+/// use embassy_futures::block_on;
+/// use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+/// use rohi_net::{NetworkService, WifiShared};
+/// use rohi_service::{ServiceState, Status};
+///
+/// let shared = WifiShared::<NoopRawMutex>::new();
+/// // `()` is a probe without an IP stack: no socket numbers are reported.
+/// let service = NetworkService::new(shared.handle(), ());
+/// assert_eq!(block_on(service.summary()).state, ServiceState::Disabled);
+/// ```
 #[derive(Service)]
 pub struct NetworkService<'a, M: RawMutex, P> {
     handle: WifiHandle<'a, M>,

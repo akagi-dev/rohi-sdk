@@ -51,7 +51,8 @@ More: [usage examples](examples/src/bin) and the **[ROHI SDK Book](https://rohi.
 * **[ROHI Book](https://rohi.akagi.dev)** — vision, using a device (`rohi` desktop client), building firmware, verifying and sharing
   (sources in [`docs/`](docs/README.md)).
 * [Support matrix](docs/support/overview.md) — what is supported per board, firmware and capability, and what is verified.
-* [API documentation](https://docs.rs/rohi-hal) (`cargo doc --no-deps` for the whole workspace).
+* [API documentation](https://docs.rs/rohi-sdk) — SDK overview and crate map (`cargo doc --no-deps` for the whole workspace).
+* [Rustdoc authoring guide](docs/contributing/rustdoc-for-agents.md) — how crate documentation is written and validated (also for AI agents).
 * [Robonomics Wiki](https://wiki.robonomics.network/), [Espressif Rust](https://docs.esp-rs.org/book/),
   [Embassy Framework](https://embassy.dev/book/)
 
