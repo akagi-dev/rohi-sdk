@@ -85,6 +85,7 @@
 //! - **Not verified on hardware.**
 
 mod clock;
+mod config;
 mod level;
 mod record;
 mod sink;
@@ -93,9 +94,13 @@ mod sink;
 extern crate std;
 
 #[cfg(test)]
+mod config_tests;
+
+#[cfg(test)]
 mod tests;
 
 pub use clock::LogClock;
+pub use config::*;
 pub use level::LogLevel;
 pub use record::{LogRecord, MAX_MESSAGE_LEN, MAX_TARGET_LEN};
 pub use sink::{INTERNAL_TARGET, LogSink};

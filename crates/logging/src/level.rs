@@ -17,23 +17,33 @@
 ///////////////////////////////////////////////////////////////////////////////
 //! Severity of a persistent log record.
 
+use minicbor::{CborLen, Decode, Encode};
+
 /// The levels the persistent log can keep, from nothing to `debug`.
 ///
 /// The numeric values are ordered by verbosity: a record is kept when its
 /// level is at most the configured one. `trace` is not offered.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Encode, Decode, CborLen,
+)]
+#[cbor(index_only)]
 #[repr(u8)]
 pub enum LogLevel {
     /// Nothing is persisted.
+    #[n(0)]
     Off = 0,
     /// Errors only.
+    #[n(1)]
     Error = 1,
     /// Warnings and errors.
     #[default]
+    #[n(2)]
     Warn = 2,
     /// Informational records and above.
+    #[n(3)]
     Info = 3,
     /// Everything but `trace`.
+    #[n(4)]
     Debug = 4,
 }
 

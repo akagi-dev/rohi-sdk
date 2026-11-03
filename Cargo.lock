@@ -3954,7 +3954,10 @@ dependencies = [
  "embassy-sync 0.8.0",
  "heapless 0.9.3",
  "log",
+ "minicbor",
+ "rohi-config",
  "rohi-hal",
+ "rohi-service",
  "rohi-time",
 ]
 
