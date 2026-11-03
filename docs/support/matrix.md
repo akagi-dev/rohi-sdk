@@ -2,7 +2,7 @@
 
 # Support matrix
 
-Reviewed on 2026-11-02, schema version 1. The data is published as [`support-matrix/matrix.toml`](https://github.com/akagi-dev/rohi-sdk/blob/master/support-matrix/matrix.toml); how to read the statuses is explained in [Reading the matrix](overview.md).
+Reviewed on 2026-11-03, schema version 1. The data is published as [`support-matrix/matrix.toml`](https://github.com/akagi-dev/rohi-sdk/blob/master/support-matrix/matrix.toml); how to read the statuses is explained in [Reading the matrix](overview.md).
 
 ## Boards
 
@@ -42,6 +42,7 @@ Reviewed on 2026-11-02, schema version 1. The data is published as [`support-mat
 | BLE control plane | not-applicable | implemented | integrated | passing | none | ci-built | **not-verified** | source [rohi-control-ble](https://github.com/akagi-dev/rohi-sdk/blob/master/crates/control-ble), test [rohi-control-ble tests](https://github.com/akagi-dev/rohi-sdk/blob/master/crates/control-ble/src/tests.rs), source [firmware startup](https://github.com/akagi-dev/rohi-sdk/blob/master/firmwares/altruist-urban/src/bin/main.rs), ci [CI](https://github.com/akagi-dev/rohi-sdk/blob/master/.github/workflows/ci.yml), source [Hardware testing status](https://github.com/akagi-dev/rohi-sdk/blob/master/docs/validation/hardware-testing.md) |
 | Persistent configuration store | not-applicable | implemented | integrated | passing | none | ci-built | **not-verified** | source [rohi-config-esp](https://github.com/akagi-dev/rohi-sdk/blob/master/crates/config-esp), test [rohi-config store tests](https://github.com/akagi-dev/rohi-sdk/blob/master/crates/config/tests/store.rs), source [firmware startup](https://github.com/akagi-dev/rohi-sdk/blob/master/firmwares/altruist-urban/src/bin/main.rs), ci [CI](https://github.com/akagi-dev/rohi-sdk/blob/master/.github/workflows/ci.yml), source [Hardware testing status](https://github.com/akagi-dev/rohi-sdk/blob/master/docs/validation/hardware-testing.md) |
 | Device identity | not-applicable | implemented | integrated | passing | none | ci-built | **not-verified** | source [rohi-identity](https://github.com/akagi-dev/rohi-sdk/blob/master/crates/identity), test [rohi-identity tests](https://github.com/akagi-dev/rohi-sdk/blob/master/crates/identity/src/tests.rs), source [firmware startup](https://github.com/akagi-dev/rohi-sdk/blob/master/firmwares/altruist-urban/src/bin/main.rs), ci [CI](https://github.com/akagi-dev/rohi-sdk/blob/master/.github/workflows/ci.yml), source [Hardware testing status](https://github.com/akagi-dev/rohi-sdk/blob/master/docs/validation/hardware-testing.md) |
+| Persistent logging | not-applicable | implemented | integrated | passing | none | ci-built | **not-verified** | source [rohi-logging](https://github.com/akagi-dev/rohi-sdk/blob/master/crates/logging), source [altruist-urban logging task and log backend](https://github.com/akagi-dev/rohi-sdk/blob/master/firmwares/altruist-urban/src/logging.rs), test [rohi-logging service and storage tests](https://github.com/akagi-dev/rohi-sdk/blob/master/crates/logging/src/service_tests.rs), test [rohi logs against the real logging service](https://github.com/akagi-dev/rohi-sdk/blob/master/tools/rohi/tests/logs.rs), ci [CI](https://github.com/akagi-dev/rohi-sdk/blob/master/.github/workflows/ci.yml), source [Hardware testing status](https://github.com/akagi-dev/rohi-sdk/blob/master/docs/validation/hardware-testing.md) |
 
 Limitations of BMP280 / BME280 environment:
 
@@ -91,6 +92,12 @@ Limitations of Device identity:
 
 - The hardware checklist (provision, reboot, erase, re-provision) has no recorded results.
 
+Limitations of Persistent logging:
+
+- Only the internal-flash backend exists; the SD backend is not implemented and `storage = sd` reports `storage_unavailable`.
+- Flash erase and programming stall the whole CPU for tens of milliseconds per sector; the effect on Wi-Fi, BLE and the microphone DMA ring is not measured.
+- Persistence across reset, power-loss recovery, flash wear and the transfer speed of `rohi logs download` over BLE are covered by host emulation only; no hardware run is recorded.
+
 ### Altruist Urban with altruist-firmware (esp32c6)
 
 | Capability | Board part | Implementation | Integration | Host tests | Simulation | Target build | Hardware | Evidence |
@@ -126,6 +133,7 @@ Limitations of I²S microphone noise level:
 | BLE control plane | not-applicable | implemented | integrated | passing | none | ci-built | **not-verified** | source [rohi-control-ble](https://github.com/akagi-dev/rohi-sdk/blob/master/crates/control-ble), test [rohi-control-ble tests](https://github.com/akagi-dev/rohi-sdk/blob/master/crates/control-ble/src/tests.rs), source [firmware startup](https://github.com/akagi-dev/rohi-sdk/blob/master/firmwares/altruist-urban/src/bin/main.rs), ci [CI](https://github.com/akagi-dev/rohi-sdk/blob/master/.github/workflows/ci.yml), source [Hardware testing status](https://github.com/akagi-dev/rohi-sdk/blob/master/docs/validation/hardware-testing.md) |
 | Persistent configuration store | not-applicable | implemented | integrated | passing | none | ci-built | **not-verified** | source [rohi-config-esp](https://github.com/akagi-dev/rohi-sdk/blob/master/crates/config-esp), test [rohi-config store tests](https://github.com/akagi-dev/rohi-sdk/blob/master/crates/config/tests/store.rs), source [firmware startup](https://github.com/akagi-dev/rohi-sdk/blob/master/firmwares/altruist-urban/src/bin/main.rs), ci [CI](https://github.com/akagi-dev/rohi-sdk/blob/master/.github/workflows/ci.yml), source [Hardware testing status](https://github.com/akagi-dev/rohi-sdk/blob/master/docs/validation/hardware-testing.md) |
 | Device identity | not-applicable | implemented | integrated | passing | none | ci-built | **not-verified** | source [rohi-identity](https://github.com/akagi-dev/rohi-sdk/blob/master/crates/identity), test [rohi-identity tests](https://github.com/akagi-dev/rohi-sdk/blob/master/crates/identity/src/tests.rs), source [firmware startup](https://github.com/akagi-dev/rohi-sdk/blob/master/firmwares/altruist-urban/src/bin/main.rs), ci [CI](https://github.com/akagi-dev/rohi-sdk/blob/master/.github/workflows/ci.yml), source [Hardware testing status](https://github.com/akagi-dev/rohi-sdk/blob/master/docs/validation/hardware-testing.md) |
+| Persistent logging | not-applicable | implemented | integrated | passing | none | ci-built | **not-verified** | source [rohi-logging](https://github.com/akagi-dev/rohi-sdk/blob/master/crates/logging), source [altruist-urban logging task and log backend](https://github.com/akagi-dev/rohi-sdk/blob/master/firmwares/altruist-urban/src/logging.rs), test [rohi-logging service and storage tests](https://github.com/akagi-dev/rohi-sdk/blob/master/crates/logging/src/service_tests.rs), test [rohi logs against the real logging service](https://github.com/akagi-dev/rohi-sdk/blob/master/tools/rohi/tests/logs.rs), ci [CI](https://github.com/akagi-dev/rohi-sdk/blob/master/.github/workflows/ci.yml), source [Hardware testing status](https://github.com/akagi-dev/rohi-sdk/blob/master/docs/validation/hardware-testing.md) |
 
 Limitations of BMP280 / BME280 environment:
 
@@ -173,6 +181,12 @@ Limitations of Persistent configuration store:
 Limitations of Device identity:
 
 - The hardware checklist (provision, reboot, erase, re-provision) has no recorded results.
+
+Limitations of Persistent logging:
+
+- Only the internal-flash backend exists; the SD backend is not implemented and `storage = sd` reports `storage_unavailable`.
+- Flash erase and programming stall the whole CPU for tens of milliseconds per sector; the effect on Wi-Fi, BLE and the microphone DMA ring is not measured.
+- Persistence across reset, power-loss recovery, flash wear and the transfer speed of `rohi logs download` over BLE are covered by host emulation only; no hardware run is recorded.
 
 ### Altruist Urban (legacy) with altruist-firmware (esp32c3)
 

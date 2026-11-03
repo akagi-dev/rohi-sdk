@@ -12,6 +12,7 @@ this page is an overview.
 | Services | config, status and actions of every module, discovered by name: [Service pipeline](https://docs.rs/rohi-service) |
 | Control | local BLE control plane and the `rohi` desktop client, without pairing: [Control plane](https://docs.rs/rohi-control) |
 | Telemetry, time, identity, location | [Telemetry](https://docs.rs/rohi-connectivity), [Time](https://docs.rs/rohi-time), [Identity](https://docs.rs/rohi-identity), [Location](https://docs.rs/rohi-location) |
+| Logging | persistent, rotated, compressed device log in internal flash, read with `rohi logs`; SD backend not implemented: [Device log](../use/desktop/logs.md), [Logging](https://docs.rs/rohi-logging) |
 | Hardware validation | host tests and CI builds for both chips; hardware results are mostly **not yet recorded**: [Hardware testing](../validation/hardware-testing.md) |
 
 ## Not available

@@ -21,6 +21,7 @@ Released crates are also published on docs.rs, for example [`rohi-sdk`](https://
 | `rohi-time`, `rohi-time-ntp` | wall-clock time |
 | `rohi-identity` | device identity and signer |
 | `rohi-location` | device location |
+| `rohi-logging` | persistent logging: the `log` sink, segment format, storage backends and the `logging` service |
 | `rohi` (`tools/rohi`) | desktop client library and CLI: [Desktop application](../use/desktop/index.md) |
 | `rohi-sdk` | umbrella crate: re-exports the crates above behind Cargo features (`service`, `hal`, `net`, `esp`, ...); the firmware depends on it alone |
 

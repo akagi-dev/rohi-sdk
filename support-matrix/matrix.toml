@@ -3,7 +3,7 @@
 # Missing evidence is `not-verified`, never success or failure. `hardware_verification = "verified"` requires a
 # `hw-report` evidence item.
 schema_version = 1
-reviewed = "2026-11-02"
+reviewed = "2026-11-03"
 
 # --- Boards ---------------------------------------------------------------------------------------------------
 
@@ -132,6 +132,13 @@ kind = "service"
 name = "Device identity"
 provides = "persistent Ed25519 key and signer"
 source = "crates/identity"
+
+[[capability]]
+id = "logging"
+kind = "service"
+name = "Persistent logging"
+provides = "the `log` facade persisted to a bounded, rotated, LZ4-compressed ring in internal flash, read, followed, downloaded and cleared with `rohi logs`"
+source = "crates/logging"
 
 # --- Use cases ------------------------------------------------------------------------------------------------
 
@@ -382,6 +389,30 @@ id = "doc-hwtest"
 kind = "source"
 title = "Hardware testing status"
 reference = "docs/validation/hardware-testing.md"
+[[evidence]]
+id = "src-logging"
+kind = "source"
+title = "rohi-logging"
+reference = "crates/logging"
+
+[[evidence]]
+id = "src-fw-logging"
+kind = "source"
+title = "altruist-urban logging task and log backend"
+reference = "firmwares/altruist-urban/src/logging.rs"
+
+[[evidence]]
+id = "test-logging"
+kind = "test"
+title = "rohi-logging service and storage tests"
+reference = "crates/logging/src/service_tests.rs"
+
+[[evidence]]
+id = "test-rohi-logs"
+kind = "test"
+title = "rohi logs against the real logging service"
+reference = "tools/rohi/tests/logs.rs"
+
 
 # --- Entries: board × firmware × capability -------------------------------------------------------------
 
@@ -991,3 +1022,53 @@ limitations = [
   "Claimed by the altruist-firmware README (display and QR code); ROHI has not built or verified it.",
 ]
 evidence = ["up-altruist-fw", "up-insight"]
+
+[[entry]]
+hardware = "altruist-urban-esp32c6"
+firmware = "rohi-altruist-urban"
+capability = "logging"
+board_part = "not-applicable"
+implementation = "implemented"
+integration = "integrated"
+host_tests = "passing"
+simulation = "none"
+target_build = "ci-built"
+hardware_verification = "not-verified"
+limitations = [
+  "Only the internal-flash backend exists; the SD backend is not implemented and `storage = sd` reports `storage_unavailable`.",
+  "Flash erase and programming stall the whole CPU for tens of milliseconds per sector; the effect on Wi-Fi, BLE and the microphone DMA ring is not measured.",
+  "Persistence across reset, power-loss recovery, flash wear and the transfer speed of `rohi logs download` over BLE are covered by host emulation only; no hardware run is recorded.",
+]
+evidence = [
+  "src-logging",
+  "src-fw-logging",
+  "test-logging",
+  "test-rohi-logs",
+  "ci-workflow",
+  "doc-hwtest",
+]
+
+[[entry]]
+hardware = "altruist-urban-esp32c3"
+firmware = "rohi-altruist-urban"
+capability = "logging"
+board_part = "not-applicable"
+implementation = "implemented"
+integration = "integrated"
+host_tests = "passing"
+simulation = "none"
+target_build = "ci-built"
+hardware_verification = "not-verified"
+limitations = [
+  "Only the internal-flash backend exists; the SD backend is not implemented and `storage = sd` reports `storage_unavailable`.",
+  "Flash erase and programming stall the whole CPU for tens of milliseconds per sector; the effect on Wi-Fi, BLE and the microphone DMA ring is not measured.",
+  "Persistence across reset, power-loss recovery, flash wear and the transfer speed of `rohi logs download` over BLE are covered by host emulation only; no hardware run is recorded.",
+]
+evidence = [
+  "src-logging",
+  "src-fw-logging",
+  "test-logging",
+  "test-rohi-logs",
+  "ci-workflow",
+  "doc-hwtest",
+]

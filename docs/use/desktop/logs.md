@@ -1,0 +1,75 @@
+# Device log
+
+The device keeps a persistent log: what its firmware reports through the standard Rust `log` facade (Wi-Fi came up,
+a request timed out, a storage write failed), kept in a bounded ring in internal flash, so it survives a reset. `rohi logs`
+reads it. Nothing here is a special protocol: the log is the `logging` [service](status.md) with its own status,
+configuration section and three [actions](actions.md), and `rohi logs` is a convenience over them.
+
+> **Status.** The behaviour below is covered by host tests, including an emulated flash with power-loss injection. It has not
+> been run on a device: see the [support matrix](../../support/overview.md). The SD card backend is **not implemented**.
+
+```bash
+rohi logs                       # the latest 20 records, oldest first
+rohi logs -n 100                # the latest 100
+rohi logs -f                    # follow new records like `tail -f` (Ctrl-C to stop)
+rohi logs -n 100 -f             # the latest 100, then follow
+
+rohi logs download              # save every retained log file to the current directory
+rohi logs download -d ./logs    # ... to another directory
+rohi logs clear                 # remove the history of the active storage (asks first)
+rohi -o json logs -n 50
+```
+
+A record is one line:
+
+```text
+42 12345 2026-11-03T05:24:43.221Z WARN wifi: connected to home
+```
+
+the sequence number, milliseconds since boot, the wall-clock time in UTC (`-` while the device has no synchronized
+time), the level (`*` after it when the message was cut), the target and the message. Sequence numbers only grow, also across
+resets, so they tell a gap from a quiet device. `-o json` prints `{ "schema_version", "records": [..] }`; with `-f` it
+prints one such document per line.
+
+## What is kept
+
+`rohi config logging` shows and changes what the device persists. A change applies at once, without a reboot.
+
+| Field | Meaning |
+|-------|---------|
+| `level` | `off`, `error`, `warn`, `info` or `debug`. The default is `warn` in a release build and `info` in a development build. Only the persistent log is affected, not the serial console |
+| `storage` | `internal` (flash). `sd` is selectable but this firmware has no card: the service then reports `storage_unavailable` and does **not** fall back to flash |
+| `compression` | `lz4` or `none`, for **new** segments only; old segments keep their form |
+| `retention_bytes`, `segment_bytes` | the budget of the history and the size at which a file is closed; the oldest files are dropped when the budget is used |
+| `flush_interval` | the longest a record waits in RAM before it is written |
+
+Records are written in small batches and files are compressed one batch at a time, so a power loss costs at most the
+records not yet written, never the history. When the queue between the firmware and the log task is full, new records are dropped and
+counted, and the application is never slowed down.
+
+`rohi status logging` shows the state: `capacity_bytes`, `used_bytes` and `free_bytes` of the active storage, the number of
+retained segments and records, `dropped_records` and the oldest and newest sequence. `free_bytes = 0` is normal for a full
+ring: the next write replaces the oldest file.
+
+## Download
+
+`rohi logs download` saves the retained files exactly as the device keeps them, oldest first: `rohi1.log.lz4`,
+`rohi2.log.lz4`, ... (`.log` for segments written with `compression=none`). They are standard LZ4 files of UTF-8 text:
+
+```bash
+lz4 -d rohi1.log.lz4            # or: lz4 -dc rohi*.log.lz4 | less
+```
+
+The device closes the file being written, starts a new one for the records that come next, and holds the retained files
+until the download ends, so records logged meanwhile are not part of it. `rohi` does not overwrite existing files unless you pass
+`--force`, and removes a file it could not finish.
+
+## Clear
+
+`rohi logs clear` removes the history of the active storage after you confirm (`--yes` skips the question, a script
+must pass it). It does not touch the configuration, the identity or another storage.
+
+## Secrets
+
+The log can be downloaded by anyone who can reach the device, so firmware must never log secrets. The Altruist Urban
+firmware logs no Wi-Fi passwords, keys or provisioning secrets.

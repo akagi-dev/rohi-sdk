@@ -123,6 +123,19 @@
 //! most [`MAX_FIELD_VALUE_LEN`](crate::MAX_FIELD_VALUE_LEN) bytes, an argument
 //! at most [`MAX_VALUE_LEN`](crate::MAX_VALUE_LEN). An action has at most one
 //! enum ([`MAX_ENUMS`](crate::MAX_ENUMS)).
+//!
+//! # Streams
+//!
+//! A result that does not fit the bounded records (a log history, a bundle) is
+//! returned as a **stream**: the action is declared with
+//! [`ActionDescriptor::stream`] and calls [`ActionOutput::stream`] with a
+//! [`StreamInfo`], a snapshot of up to [`MAX_STREAM_FILES`] named files. The client
+//! reads each file in chunks of at most [`MAX_STREAM_CHUNK`] bytes by offset
+//! ([`Action::read_stream`], repeatable and idempotent) and closes the stream
+//! ([`Action::close_stream`]). The service releases what a stream holds when it is
+//! closed, when it times out and when the control link is lost
+//! ([`Action::link_lost`]); a service that has no free stream answers
+//! [`ActionError::Busy`]. An action returns records or a stream, never both.
 
 use heapless::Vec;
 

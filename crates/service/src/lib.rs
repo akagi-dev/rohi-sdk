@@ -200,6 +200,7 @@
 //! | issue descriptors per service ([`MAX_ISSUE_DESCRIPTORS`]) | 12 |
 //! | action arguments ([`MAX_ACTION_ARGS`]) | 3 |
 //! | action records ([`MAX_RECORDS`]) | 6 |
+//! | files of a stream ([`MAX_STREAM_FILES`]), bytes of a stream chunk ([`MAX_STREAM_CHUNK`]) | 24, 512 |
 //! | fields per record ([`MAX_RECORD_FIELDS`]) | 4 |
 //! | string or bytes status value or action result ([`MAX_FIELD_VALUE_LEN`]) | 32 bytes |
 //! | string or bytes config value or action argument ([`MAX_VALUE_LEN`]) | 64 bytes |
