@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 
 //! The telemetry uplink on the ESP: the portable service of
 //! [`crate::connectivity`] with the hardware RNG and the ESP IP stack.

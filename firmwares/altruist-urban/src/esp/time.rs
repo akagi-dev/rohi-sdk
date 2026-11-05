@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 
 //! NTP synchronization on the ESP: the portable task of [`crate::time`] over
 //! the ESP IP stack.

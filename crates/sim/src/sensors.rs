@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 
 //! Simulated sensors: the BMx280, SCD4x, SDS011 and noise drivers over the
 //! [`World`](crate::world::World).

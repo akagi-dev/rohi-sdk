@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 
 //! Process harness of the end-to-end tests: starts a device on free ports,
 //! waits for its READY line (no sleeps), talks to it through the real `rohi`

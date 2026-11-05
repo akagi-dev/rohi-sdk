@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 #![cfg_attr(not(feature = "std"), no_std)]
 
 //! Altruist Urban firmware: the portable application and its ESP platform.

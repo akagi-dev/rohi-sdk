@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 
 //! End-to-end tests: a real simulator process driven through the real `rohi`
 //! client over the TCP control transport and the management interface.
