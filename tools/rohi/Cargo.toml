@@ -41,6 +41,7 @@ provision = ["dep:sp-core"]
 [dependencies]
 rohi-control-proto.workspace = true
 rohi-control-ble.workspace = true
+rohi-control-tcp.workspace = true
 rohi-net.workspace = true
 rohi-identity = { workspace = true, features = ["std"] }
 zeroize = { workspace = true, features = ["std"] }

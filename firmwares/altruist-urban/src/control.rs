@@ -18,7 +18,7 @@
 //! Local control plane: the Altruist Urban side of `rohi-control`.
 //!
 //! ```text
-//! control link (BLE on the ESP, TCP in the simulator) -> rohi-control
+//! control link (BLE on the ESP; BLE and/or TCP on `std`) -> rohi-control
 //!                                                              |
 //!                                             UrbanDevice (this module)
 //!                          config sections: wifi, connectivity, location, time
@@ -224,4 +224,26 @@ pub fn device<I: IpBackend + 'static, B: BleProbe + 'static>(
         (&services.wifi, &services.identity),
     )
     .with_reboot(reboot_fn)
+}
+
+/// GATT layout of the ROHI Control Service, the same on every platform.
+pub const GATT: rohi_sdk::net::BleGattSpec = rohi_sdk::net::BleGattSpec {
+    service: rohi_sdk::ble::uuid::SERVICE_UUID,
+    rx: rohi_sdk::ble::uuid::RX_CHARACTERISTIC_UUID,
+    tx: rohi_sdk::ble::uuid::TX_CHARACTERISTIC_UUID,
+};
+
+/// BLE defaults of the Altruist Urban: the name is `ALTRUIST-URBAN-` and the
+/// last two bytes of the MAC until the `ble` section sets one.
+pub const BLE_CONFIG: rohi_sdk::net::BleConfig = rohi_sdk::net::BleConfig {
+    name_prefix: "ALTRUIST-URBAN",
+    name: None,
+    gatt: GATT,
+};
+
+/// [`BLE_CONFIG`] with the name of the `ble` section as the configuration
+/// owner published it at boot: the defaults, the firmware overrides and the
+/// stored overrides. The name is read once, when the peripheral starts.
+pub fn ble_config() -> rohi_sdk::net::BleConfig {
+    BLE_CONFIG.with_settings(&crate::bindings::ble_settings())
 }

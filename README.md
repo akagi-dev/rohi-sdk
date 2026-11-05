@@ -60,9 +60,9 @@ More: [usage examples](examples/src/bin) and the **[ROHI SDK Book](https://rohi.
 
 | Path | Content |
 |------|---------|
-| [`crates/`](crates) | SDK libraries: `rohi-hal`, `rohi-config`, `rohi-net`, `rohi-control*` and their ESP platform crates |
+| [`crates/`](crates) | SDK libraries: `rohi-hal`, `rohi-config`, `rohi-net`, `rohi-control*` and their ESP and `std` platform crates (`rohi-net-std`, `rohi-sim`) |
 | [`firmwares/altruist-urban`](firmwares/altruist-urban) | [Altruist Urban](https://robonomics.network/devices/altruist/) firmware |
-| [`firmwares/altruist-sim`](firmwares/altruist-sim) | the same application as a host process: simulated sensors, native Wi-Fi/IP, TCP control (`cargo run -p altruist-sim`) |
+| [`firmwares/altruist-urban`](firmwares/altruist-urban) `--features std` | the same application as a host process: host IP, TCP and BlueZ BLE control, optional simulated sensors (`cargo run -p altruist-urban --bin altruist-urban --features std,std-tcp,sensor-simulator`) |
 | [`examples/`](examples/src/bin) | one hardware example per sensor and a configuration self-test |
 | [`tools/rohi`](tools/rohi) | BLE and TCP client library and command line tool |
 | [`support-matrix/`](support-matrix) | machine-readable support matrix (validated by `tools/support-matrix`) |

@@ -66,7 +66,7 @@
 //! // runtime.{timg0, sw_interrupt, wifi, bt, flash} -> esp-rtos, radios, config store
 //! ```
 //!
-//! The complete, compiled code is `firmwares/altruist-urban/src/bin/main.rs`
+//! The complete, compiled code is `firmwares/altruist-urban/src/bin/firmware.rs`
 //! (board initialization) and `firmwares/altruist-urban/src/esp/sensors.rs`
 //! (how each peripheral goes into a `rohi_hal` `Runner`); `examples/` holds one
 //! small program per sensor.

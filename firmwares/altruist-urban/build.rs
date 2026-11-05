@@ -20,7 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() {
     // Only the ESP binary is linked with the `esp-hal` linker script.
-    println!("cargo:rustc-link-arg-bins=-Tlinkall.x");
+    println!("cargo:rustc-link-arg-bin=altruist-urban-firmware=-Tlinkall.x");
 
     // `BUILD_TIMESTAMP`: the build time as Unix seconds. It is the floor of
     // plausible wall-clock time, see `src/time.rs`.

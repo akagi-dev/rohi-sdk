@@ -24,13 +24,13 @@
 //!        = effective C  ──►  Binding::publish(&ConfigRuntime, &C)
 //! ```
 //!
-//! A [`Binding`](crate::bindings::Binding) is the one firmware-local description of a managed section:
+//! A [`Binding`] is the one firmware-local description of a managed section:
 //! the product policy (the firmware overrides) and the consumer that gets the
 //! validated effective value. It is a zero-sized marker type, not a registry or
 //! a service locator: [`firmware_configs!`](crate::firmware_configs) lists the
 //! bindings once, at compile time, and the configuration owner task uses that
 //! list for boot, commits, removals and factory reset alike. A private persisted
-//! section (the identity) is a [`PrivateBinding`](crate::bindings::PrivateBinding): it is not user-visible and
+//! section (the identity) is a [`PrivateBinding`]: it is not user-visible and
 //! has no overrides.
 //!
 //! Portable feature crates know nothing of the bindings.

@@ -25,7 +25,7 @@ readiness and slot exhaustion and lets the test play the peer. Use it from your 
 
 ## Try it against real services
 
-The [simulated Altruist](altruist-sim.md) implements the same network handle on the IP stack of your computer, so code
+The [Altruist Urban on std](altruist-urban-std.md) implements the same network handle on the IP stack of your computer (`rohi-net-std`), so code
 that uses `NetworkHandle` can talk to `127.0.0.1`, containers and local test servers without hardware.
 
 ## On the device

@@ -276,7 +276,7 @@ fn device_diagnostic(error: &Error) -> Diagnostic {
             .hint("a device accepts a single connection: close other apps connected to it"),
         Error::Tcp(message) => {
             Diagnostic::new(format!("cannot talk to the device over TCP: {message}"))
-                .hint("is the simulator running? start it with `cargo run -p altruist-sim`")
+                .hint("is the device running? start the std Altruist Urban with `cargo run -p altruist-urban --bin altruist-urban --features std,std-tcp,sensor-simulator`")
                 .hint("a device accepts a single connection: close other clients connected to it")
         }
         Error::Timeout => Diagnostic::new("timed out waiting for the device")

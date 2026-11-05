@@ -31,7 +31,7 @@
 //! ```
 //!
 //! The compiled version of this sequence is
-//! `firmwares/altruist-urban/src/bin/main.rs`; the examples in `examples/` do
+//! `firmwares/altruist-urban/src/bin/firmware.rs`; the examples in `examples/` do
 //! the same through `rohi_examples::run`. The code needs a chip feature and the
 //! matching bare-metal target, so it cannot be a doctest.
 //!

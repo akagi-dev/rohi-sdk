@@ -19,7 +19,7 @@
 //!
 //! The control `Reboot` request must still deliver its response, so
 //! [`request`] only signals; the platform task waits for [`due`] and then
-//! resets (the chip on the ESP, a process restart in the simulator).
+//! resets (the chip on the ESP, a process restart on `std`).
 
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Timer};

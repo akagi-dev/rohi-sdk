@@ -8,15 +8,18 @@ ROHI SDK: Rust libraries, firmware and desktop tools for Robonomics Open Hardwar
 `cargo` may not be on `PATH`: run it as `nix develop --command bash -c '<cargo command>'`.
 
 ```bash
-cargo test                                   # host: crates/*, tools/* and firmwares/altruist-sim (includes doctests and the simulator end-to-end tests)
+cargo test                                   # host: crates/*, tools/* and crates/*, tools/* and the portable part of firmwares/altruist-urban (includes doctests)
+cargo test -p altruist-urban --features std,std-tcp,sensor-simulator   # the std platform, incl. end-to-end tests
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all -- --check
 cargo check-esp32c3 && cargo check-esp32c6   # firmware, one chip per invocation
 mdbook build docs && mdbook test docs        # the book
-cargo run -p altruist-sim                      # the Altruist firmware stack on the host, see docs/guides/altruist-sim.md
+cargo run -p altruist-urban --bin altruist-urban --features std,std-tcp,sensor-simulator   # Altruist Urban on std, see docs/guides/altruist-urban-std.md
 ```
 
-Never use `--all-features` or `--workspace`: `esp32c3` and `esp32c6` are mutually exclusive.
+Never use `--all-features` or `--workspace`: `esp32c3` and `esp32c6` are mutually exclusive, and so are `std` and the ESP
+features of `altruist-urban`. The std platform uses one reactor (tokio, inside `rohi-net-std`); do not add `async-io` or
+`blocking`.
 See [Targets and features](crates/sdk/src/portability.rs) (rustdoc of `rohi-sdk`).
 
 ## Documentation

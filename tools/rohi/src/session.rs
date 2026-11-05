@@ -15,7 +15,7 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-//! Request/response exchange over a chunked transport.
+//! Request/response exchange over a chunked or a message transport.
 
 use std::time::Duration;
 
@@ -33,20 +33,39 @@ use crate::model::ErrorCode;
 /// Default time to wait for a response.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// What one `send` and one `recv` of a [`ClientTransport`] carry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Framing {
+    /// Chunks of a message that the [`Session`] fragments and reassembles with
+    /// [`rohi_control_ble::frame`]: the BLE link.
+    #[default]
+    Chunks,
+    /// Whole messages: the link keeps message boundaries itself, as the TCP
+    /// records of [`rohi_control_tcp::frame`] do.
+    Messages,
+}
+
 /// A link to a device that moves chunks of at most
-/// [`ClientTransport::max_payload`] bytes in both directions.
+/// [`ClientTransport::max_payload`] bytes, or whole messages, in both
+/// directions.
 ///
-/// Implemented over BLE by [`BleLink`](crate::BleLink); tests implement it in
-/// memory.
+/// Implemented over BLE by [`BleLink`](crate::BleLink) (chunks) and over TCP by
+/// [`TcpLink`](crate::TcpLink) (messages); tests implement it in memory.
 #[allow(async_fn_in_trait)]
 pub trait ClientTransport {
-    /// Largest chunk the link carries.
+    /// Largest chunk the link carries; for [`Framing::Messages`] the largest
+    /// message.
     fn max_payload(&self) -> usize;
 
-    /// Writes one chunk to the device.
+    /// What `send` and `recv` carry. Chunks unless the link says otherwise.
+    fn framing(&self) -> Framing {
+        Framing::Chunks
+    }
+
+    /// Writes one chunk (or message) to the device.
     async fn send(&mut self, chunk: &[u8]) -> Result<()>;
 
-    /// Waits for the next chunk notified by the device.
+    /// Waits for the next chunk (or message) the device sent.
     async fn recv(&mut self) -> Result<Vec<u8>>;
 }
 
@@ -112,6 +131,18 @@ impl<T: ClientTransport> Session<T> {
             &mut wire,
         )?;
 
+        if self.transport.framing() == Framing::Messages {
+            let sent = self.transport.send(&wire[..len]).await;
+            wire.fill(0);
+            sent?;
+            loop {
+                let bytes = self.transport.recv().await?;
+                if let Some(result) = answer(&bytes, request_id)? {
+                    return result;
+                }
+            }
+        }
+
         let max_payload = self.transport.max_payload();
         let mut fragments = Fragmenter::new(message_id, &wire[..len], max_payload)?;
         let mut chunk = vec![0u8; max_payload];
@@ -131,27 +162,35 @@ impl<T: ClientTransport> Session<T> {
                 // Late response of an earlier, abandoned request.
                 continue;
             }
-            let response: pb::Response = decode(message.bytes)?;
-            if response.protocol_version != PROTOCOL_VERSION {
-                return Err(Error::Protocol(format!(
-                    "device speaks protocol version {}, expected {}",
-                    response.protocol_version, PROTOCOL_VERSION
-                )));
+            if let Some(result) = answer(message.bytes, request_id)? {
+                return result;
             }
-            // Id 0: the device could not even parse the request.
-            if response.request_id != request_id && response.request_id != 0 {
-                continue;
-            }
-            return match response.response {
-                Some(Reply::Error(error)) => Err(match error.reason() {
-                    Some(reason) if error.code == pb::ErrorCode::Rejected => {
-                        Error::Rejected(reason.as_str().to_owned())
-                    }
-                    _ => Error::Device(ErrorCode::from_proto(error.code)),
-                }),
-                Some(reply) => Ok(reply),
-                None => Err(Error::Protocol("empty response".into())),
-            };
         }
     }
+}
+
+/// Interprets one complete response message: `None` when it answers another
+/// request, which the caller skips.
+fn answer(bytes: &[u8], request_id: u32) -> Result<Option<Result<Reply>>> {
+    let response: pb::Response = decode(bytes)?;
+    if response.protocol_version != PROTOCOL_VERSION {
+        return Err(Error::Protocol(format!(
+            "device speaks protocol version {}, expected {}",
+            response.protocol_version, PROTOCOL_VERSION
+        )));
+    }
+    // Id 0: the device could not even parse the request.
+    if response.request_id != request_id && response.request_id != 0 {
+        return Ok(None);
+    }
+    Ok(Some(match response.response {
+        Some(Reply::Error(error)) => Err(match error.reason() {
+            Some(reason) if error.code == pb::ErrorCode::Rejected => {
+                Error::Rejected(reason.as_str().to_owned())
+            }
+            _ => Error::Device(ErrorCode::from_proto(error.code)),
+        }),
+        Some(reply) => Ok(reply),
+        None => Err(Error::Protocol("empty response".into())),
+    }))
 }

@@ -39,7 +39,8 @@
   - [Use IP networking](guides/use-network.md)
   - [Add a service](guides/add-service.md)
   - [Add a control operation or an action](guides/add-control-operation.md)
-  - [Run a simulated Altruist](guides/altruist-sim.md)
+  - [Run Altruist Urban on std](guides/altruist-urban-std.md)
+  - [Linux BLE peripheral and mobile testing](guides/linux-ble.md)
 - [SDK crates](build/sdk-crates.md)
 
 # Verify & Share

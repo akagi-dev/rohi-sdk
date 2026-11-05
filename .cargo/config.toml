@@ -23,8 +23,8 @@ rustflags = ["-C", "force-frame-pointers"]
 check-esp32c3 = "check -p altruist-urban --no-default-features --features esp32c3 --target riscv32imc-unknown-none-elf"
 check-esp32c6 = "check -p altruist-urban --no-default-features --features esp32c6 --target riscv32imac-unknown-none-elf"
 
-build-esp32c3 = "build --release -p altruist-urban --no-default-features --features esp32c3 --target riscv32imc-unknown-none-elf"
+build-esp32c3 = "build --profile firmware -p altruist-urban --no-default-features --features esp32c3 --target riscv32imc-unknown-none-elf"
 build-esp32c6 = "build --release -p altruist-urban --no-default-features --features esp32c6 --target riscv32imac-unknown-none-elf"
 
-flash-esp32c3 = "run --release -p altruist-urban --features esp32c3 --target riscv32imc-unknown-none-elf"
-flash-esp32c6 = "run --release -p altruist-urban --features esp32c6 --target riscv32imac-unknown-none-elf"
+flash-esp32c3 = "run --profile firmware -p altruist-urban --bin altruist-urban-firmware --features esp32c3 --target riscv32imc-unknown-none-elf"
+flash-esp32c6 = "run --profile firmware -p altruist-urban --bin altruist-urban-firmware --features esp32c6 --target riscv32imac-unknown-none-elf"

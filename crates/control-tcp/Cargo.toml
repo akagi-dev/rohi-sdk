@@ -1,0 +1,22 @@
+[package]
+name = "rohi-control-tcp"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Robonomics Open Hardware control protocol over TCP: length-prefixed Protobuf records and the serving loop"
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[dependencies]
+rohi-control-proto.workspace = true
+rohi-control.workspace = true
+embedded-io-async.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+embassy-futures.workspace = true

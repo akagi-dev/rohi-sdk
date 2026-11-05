@@ -46,7 +46,7 @@
 //! own: [`StorageMaintenance::factory_reset`] formats the whole region.
 //!
 //! The published value is always `C::default() + firmware overrides + stored
-//! user overrides` (see [`crate::policy`], [`materialize`]), also for a section
+//! user overrides` (see [`crate::bindings`], [`materialize`]), also for a section
 //! that is not stored: a removal publishes the firmware overrides alone.
 //!
 //! Persistent configuration is *state*. The sections and their consumers are
@@ -71,7 +71,7 @@
 //! updates are rare and must not be issued from timing-critical paths.
 //!
 //! The owner is generic over the [`ConfigStorage`] backend, so the same logic
-//! runs on the ESP flash and on the file-backed flash of the host simulator.
+//! runs on the ESP flash and on the file-backed flash of the `std` platform.
 //! The backend error is erased into a [`StorageFault`] at the owner boundary,
 //! which keeps [`ConfigHandle`] and everything that holds it non-generic.
 
@@ -483,7 +483,7 @@ impl<R: ConfigRegistry> ConfigRegistry for StorageConfig<R> {
 pub enum ConfigOwner<S: ConfigStorage> {
     Ready(ConfigStore<S>),
     /// The storage is kept whenever the region exists, so that
-    /// [`Command::FormatStorage`] can format it.
+    /// the storage can be formatted by [`StorageMaintenance::format_storage`].
     Unavailable {
         reason: Unavailable,
         storage: Option<S>,

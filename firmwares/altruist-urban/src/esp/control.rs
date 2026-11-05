@@ -35,7 +35,6 @@ use rohi_sdk::net::NetworkHandle;
 use static_cell::StaticCell;
 
 use super::resources::{BleResources, BleRunner, BleStatus, BleTransport, Ip};
-use crate::bindings::ble_settings;
 use crate::config::ConfigHandle;
 use crate::control::{Platform, ServicesSlot, UrbanDevice};
 use crate::identity::IdentityHandle;
@@ -84,27 +83,7 @@ pub fn device(
     )
 }
 
-/// GATT layout of the ROHI Control Service.
-pub const GATT: rohi_sdk::net::BleGattSpec = rohi_sdk::net::BleGattSpec {
-    service: rohi_sdk::ble::uuid::SERVICE_UUID,
-    rx: rohi_sdk::ble::uuid::RX_CHARACTERISTIC_UUID,
-    tx: rohi_sdk::ble::uuid::TX_CHARACTERISTIC_UUID,
-};
-
-/// BLE defaults of the Altruist Urban: the name is `ALTRUIST-URBAN-` and the
-/// last two bytes of the MAC until the `ble` section sets one.
-pub const BLE_CONFIG: rohi_sdk::net::BleConfig = rohi_sdk::net::BleConfig {
-    name_prefix: "ALTRUIST-URBAN",
-    name: None,
-    gatt: GATT,
-};
-
-/// [`BLE_CONFIG`] with the name of the `ble` section as the configuration
-/// owner published it at boot: the defaults, the firmware overrides and the
-/// stored overrides. The name is read once, when the peripheral starts.
-pub fn ble_config() -> rohi_sdk::net::BleConfig {
-    BLE_CONFIG.with_settings(&ble_settings())
-}
+pub use crate::control::{BLE_CONFIG, GATT, ble_config};
 
 /// Static storage of the BLE peripheral, sized by [`super::resources`].
 pub static BLE_RESOURCES: StaticCell<BleResources> = StaticCell::new();

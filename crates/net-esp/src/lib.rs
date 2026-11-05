@@ -61,7 +61,7 @@
 //!
 //! The firmware creates one `EspWireless`, then asks it once for each driver
 //! and spawns the runners and the portable managers on Embassy tasks (a
-//! sketch; the real, maintained code is `firmwares/altruist-urban/src/bin/main.rs`,
+//! sketch; the real, maintained code is `firmwares/altruist-urban/src/bin/firmware.rs`,
 //! `src/net.rs` and `src/control.rs`):
 //!
 //! ```text
@@ -116,7 +116,7 @@
 //! | `WirelessHeap`, `wireless_heap()` | | Heap usage, also `WirelessHeap::stats` for [`rohi_net::WifiProbe`] |
 //!
 //! The Altruist Urban firmware wires these pieces in
-//! `firmwares/altruist-urban/src/` (`bin/main.rs`: bring-up order; `esp/net.rs`:
+//! `firmwares/altruist-urban/src/` (`bin/firmware.rs`: bring-up order; `esp/net.rs`:
 //! Wi-Fi tasks; `esp/control.rs`: BLE control task; `esp/resources.rs`: the
 //! sizes and the reasoning behind each). The portable side is documented in
 //! [`rohi_net`], the control protocol over BLE in `rohi-control-ble`.

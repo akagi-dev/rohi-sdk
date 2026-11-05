@@ -19,7 +19,7 @@
 //! Embassy tasks around the portable application of this crate.
 //!
 //! Everything here needs a chip feature (`esp32c3` or `esp32c6`); the rest of
-//! the crate builds without one and runs on the host simulator too.
+//! the crate builds without one and runs on the `std` platform too.
 
 #[cfg(all(feature = "esp32c3", feature = "esp32c6"))]
 compile_error!(

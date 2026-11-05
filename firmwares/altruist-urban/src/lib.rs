@@ -14,7 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
 
 //! Altruist Urban firmware: the portable application and its ESP platform.
 //!
@@ -39,34 +39,26 @@
 //!                              |
 //!            +-----------------+------------------+
 //!            |                                    |
-//!   `esp` module (feature esp32c3 / esp32c6)   `altruist-sim` (host)
-//!   flash, radio, BLE, sensors, resources      file flash, native Wi-Fi/IP,
-//!                                              TCP control, simulated sensors
+//!   `esp` module (feature esp32c3 / esp32c6)   `host` module (feature std)
+//!   flash, radio, BLE, sensors, resources      file flash, simulated Wi-Fi, host IP,
+//!                                              TCP and BlueZ BLE control, simulated sensors
 //! ```
 //!
 //! Without a chip feature only the portable part is built.
 
-/// Firmware config bindings: product policy and runtime consumers.
 pub mod bindings;
-/// Persistent configuration service (single owner and handle).
 pub mod config;
-/// Telemetry uplink.
 pub mod connectivity;
-/// Local control plane composition.
 pub mod control;
-/// Device identity runtime.
 pub mod identity;
-/// The location of the device.
 pub mod location;
-/// Wi-Fi station runtime.
 pub mod net;
-/// Deferred device reboot.
 pub mod reboot;
-/// The sensor runtime.
 pub mod tasks;
-/// Synchronized wall-clock time.
 pub mod time;
 
-/// The ESP platform.
 #[cfg(feature = "esp")]
 pub mod esp;
+
+#[cfg(feature = "std")]
+pub mod host;

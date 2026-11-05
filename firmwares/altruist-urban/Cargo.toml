@@ -15,14 +15,19 @@ maintenance = { status = "actively-developed" }
 name = "altruist_urban"
 
 [[bin]]
+name = "altruist-urban-firmware"
+path = "./src/bin/firmware.rs"
+required-features = ["esp"]
+
+[[bin]]
 name = "altruist-urban"
 path = "./src/bin/main.rs"
-required-features = ["esp"]
+required-features = ["std"]
 
 [dependencies]
 # The portable application: services, bindings, configuration owner and
 # control composition. It runs on every platform that provides the backends
-# (ESP with the `esp32c3` / `esp32c6` features, the host with `altruist-sim`).
+# (ESP with the `esp32c3` / `esp32c6` features, the host with the `std` feature).
 rohi-sdk = { workspace = true, features = [
   "config",
   "service",
@@ -45,6 +50,12 @@ static_cell = { workspace = true }
 heapless = { workspace = true }
 log = { workspace = true }
 
+# Host platform, only with the `std` feature.
+clap = { workspace = true, optional = true }
+env_logger = { workspace = true, optional = true }
+ctrlc = { workspace = true, optional = true }
+critical-section = { workspace = true, optional = true }
+
 # ESP platform, only with a chip feature.
 esp-hal = { workspace = true, optional = true }
 esp-println = { workspace = true, optional = true }
@@ -54,11 +65,29 @@ esp-rtos = { workspace = true, optional = true }
 embassy-embedded-hal = { workspace = true, optional = true }
 
 [features]
-# Without a feature only the portable application is built (for the host
-# simulator). A chip feature adds the ESP platform: exactly one must be
-# selected, use `cargo check-esp32c3`, `cargo check-esp32c6`,
-# `cargo build-esp32c3` or `cargo build-esp32c6`.
+# Without a feature only the portable application is built. A platform feature
+# adds one platform: `std` (a host process, with `std-tcp` and/or `std-ble` as
+# control transports and `sensor-simulator` for simulated sensors) or, for
+# hardware, a chip feature of which exactly one must be selected, use
+# `cargo check-esp32c3`, `cargo check-esp32c6`, `cargo build-esp32c3` or
+# `cargo build-esp32c6`. The host and the ESP platforms exclude each other.
 default = []
+std = [
+  "rohi-sdk/sim",
+  "embassy-executor/platform-std",
+  "embassy-executor/executor-thread",
+  "embassy-time/std",
+  "dep:clap",
+  "dep:env_logger",
+  "dep:ctrlc",
+  "dep:critical-section",
+]
+# ROHI control over TCP (development transport, loopback by default).
+std-tcp = ["std"]
+# ROHI control over a BlueZ BLE peripheral (Linux).
+std-ble = ["std", "rohi-sdk/host-ble"]
+# Simulated BMx280, SCD4x, SDS011 and noise sensors and scenarios.
+sensor-simulator = ["std", "rohi-sdk/sim-sensors"]
 esp = [
   "rohi-sdk/esp",
   "rohi-sdk/heap-stats",
@@ -87,3 +116,23 @@ esp32c6 = [
   "esp-rtos/esp32c6",
   "rohi-sdk/esp32c6",
 ]
+
+[dev-dependencies]
+minicbor = { workspace = true, features = ["std"] }
+tempfile = "3"
+tokio = { workspace = true, features = ["rt", "macros", "time", "sync", "io-util", "net"] }
+rohi = { path = "../../tools/rohi", default-features = false }
+rohi-control-proto.workspace = true
+rohi-control-tcp.workspace = true
+
+[[test]]
+name = "std"
+required-features = ["std", "std-tcp", "sensor-simulator"]
+
+[[test]]
+name = "std_plain"
+required-features = ["std", "std-tcp"]
+
+[[test]]
+name = "std_ble"
+required-features = ["std", "std-tcp", "std-ble"]

@@ -67,7 +67,7 @@ impl WirelessHeapRegion {
 /// let mut wireless = EspWireless::new(peripherals.WIFI, peripherals.BT, heap);
 /// ```
 ///
-/// See `firmwares/altruist-urban/src/bin/main.rs` for the maintained call.
+/// See `firmwares/altruist-urban/src/bin/firmware.rs` for the maintained call.
 #[macro_export]
 macro_rules! wireless_heap {
     ($size:expr) => {{

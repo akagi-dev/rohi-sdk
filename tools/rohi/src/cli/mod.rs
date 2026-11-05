@@ -217,7 +217,7 @@ async fn connect_ble(
 }
 
 /// Connects to a device that speaks the control protocol over TCP, such as
-/// the `altruist-sim` simulator.
+/// the `std` Altruist Urban (`altruist-urban`).
 async fn connect_tcp(
     cli: &Cli,
     endpoint: &str,

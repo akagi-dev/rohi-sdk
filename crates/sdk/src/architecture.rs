@@ -48,13 +48,14 @@
 //!
 //! In the picture `->` means "depends on".
 //!
-//! # Platforms: ESP and native
+//! # Platforms: ESP and `std`
 //!
 //! A product is the portable application on one platform. The ESP platform
-//! implements the seams on the ESP32; the **native platform** implements the
-//! same seams on a host, so the same application runs without hardware as the
-//! `altruist-sim` simulator. The simulator is a platform implementation, not a
-//! different application or protocol stack.
+//! implements the seams on the ESP32; the **`std` platform** implements the
+//! same seams on a host operating system, so the same application runs without
+//! hardware as the process `altruist-urban` (the `std` feature of
+//! `altruist-urban`). It is a platform implementation, not a different
+//! application or protocol stack.
 //!
 //! ```text
 //!                         portable ROHI SDK
@@ -64,24 +65,27 @@
 //!                   ┌────────────┴─────────────┐
 //!                   ▼                          ▼
 //!              ESP platform               native platform
-//!   rohi-*-esp, `altruist-urban::esp`      `firmwares/altruist-sim`
-//!   esp-rtos, esp-hal, esp-radio           Embassy platform-std, host sockets
+//!   rohi-*-esp, `altruist-urban::esp`      rohi-net-std, rohi-sim, `altruist-urban::host`
+//!   esp-rtos, esp-hal, esp-radio           Embassy platform-std, host sockets, BlueZ
 //!                   │                          │
-//!             altruist-urban              altruist-sim
+//!             altruist-urban              altruist-urban (feature `std`)
 //! ```
 //!
 //! | Seam | ESP platform | Native platform |
 //! |------|--------------|-----------------|
 //! | `SensorDriver` | I²C / UART / I²S drivers | simulated drivers fed by a scenario |
-//! | `ConfigStorage` | `EspConfigStorage` on the `rohi-cfg` partition | `FileFlash`, a file with NOR rules |
-//! | `WifiBackend` | `EspWifi` | `NativeWifi` over simulated access points |
-//! | `IpBackend` | `EspIp` on `embassy-net` | `NativeIp` on host sockets |
-//! | `BleTransport` | `EspBle` | `TcpTransport`, the same frames over TCP |
+//! | `ConfigStorage` | `EspConfigStorage` on the `rohi-cfg` partition | `FileFlash` of `rohi-sim`, a file with NOR rules |
+//! | `WifiBackend` | `EspWifi` | `SimWifi` of `rohi-sim` over simulated access points |
+//! | `IpBackend` | `EspIp` on `embassy-net` | `NativeIp` of `rohi-net-std` on host sockets, behind the faults of `SimIp` |
+//! | `BleTransport` | `EspBle` | `BluezBle` of `rohi-net-std` (Linux, feature `std-ble`) |
+//! | Control over TCP | none | `ControlTcp` of `rohi-control-tcp` over `TcpAcceptor` (feature `std-tcp`) |
 //!
-//! The native platform never depends on an ESP crate. It simulates logic, not
-//! hardware: CPU timing, RF, electrical bus behaviour and DMA remain
+//! BLE and TCP are independent transports of the same `Controller`; TCP is not
+//! BLE framing over a socket. The `std` platform never depends on an ESP crate
+//! and the two platforms exclude each other at build time. It simulates logic,
+//! not hardware: CPU timing, RF, electrical bus behaviour and DMA remain
 //! hardware-validation concerns. See
-//! [Run a simulated Altruist](https://rohi.akagi.dev/guides/altruist-sim.html).
+//! [Run Altruist Urban on std](https://rohi.akagi.dev/guides/altruist-urban-std.html).
 //!
 //! # Rules that keep this picture true
 //!

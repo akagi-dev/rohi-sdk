@@ -25,7 +25,7 @@ export ROHI_DEVICE=ALTRUIST-URBAN-A12F
 
 The value may also be a URI, so the transport is explicit: `ble://ALTRUIST-URBAN-A12F`. Without a scheme the transport
 follows from the content: `host:port` is TCP, anything else is a Bluetooth name or ID. `tcp://HOST:PORT` connects to a device
-that serves the control protocol over a socket, today the [simulated Altruist](../../guides/altruist-sim.md); a real
+that serves the control protocol over a socket, today the [`std` Altruist Urban](../../guides/altruist-urban-std.md); a real
 device is reached over BLE.
 
 `--scan-timeout <SECONDS>` bounds the search for the device (or the connection to a TCP endpoint) and `--timeout <SECONDS>` the wait for each response. A scan

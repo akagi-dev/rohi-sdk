@@ -285,7 +285,7 @@ reference = "firmwares/altruist-urban/src/esp/sensors.rs"
 id = "src-fw-main"
 kind = "source"
 title = "firmware startup"
-reference = "firmwares/altruist-urban/src/bin/main.rs"
+reference = "firmwares/altruist-urban/src/bin/firmware.rs"
 
 [[evidence]]
 id = "src-board-c3"

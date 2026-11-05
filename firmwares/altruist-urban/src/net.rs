@@ -23,7 +23,7 @@
 //! reaches the manager as desired state, published by the configuration owner
 //! task, see [`crate::config`].
 //!
-//! The backend (`EspWifi` on the ESP, the native backend of the simulator) and
+//! The backend (`EspWifi` on the ESP, the simulated backend of the `std` platform) and
 //! the IP stack are the platform's; this module holds what is common: the
 //! shared state, the manager loop, the probe of the `wifi` and `network`
 //! services and the wait for the first attempt.
