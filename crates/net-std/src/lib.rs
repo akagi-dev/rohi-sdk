@@ -106,7 +106,7 @@
 //! ControlTcp (rohi-control-tcp) ◄── TcpAcceptor ◄── TcpListener
 //! ```
 //!
-//! * The Altruist Urban composes it in `firmwares/altruist-urban/src/std`.
+//! * The Altruist Urban composes it in `firmwares/altruist-urban/src/host`.
 //! * A simulator injects faults above the socket layer by wrapping
 //!   [`NativeIp`] in its own [`IpBackend`](rohi_net::IpBackend), see `rohi-sim`.
 //!
