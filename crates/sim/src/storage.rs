@@ -43,7 +43,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use log::{error, info, warn};
-use rohi_config::{COMMIT_WORD, COMMIT_WORD_SIZE, ConfigStorage, MemoryError, MemoryStorage};
+use rohi_config::{COMMIT_WORD_SIZE, ConfigStorage, ConfigStore, MemoryError, MemoryStorage};
 
 use crate::command::StorageFault;
 
@@ -97,7 +97,6 @@ struct Inner {
     path: Option<PathBuf>,
     power_loss: PowerLoss,
     dead: bool,
-    last_commit_slot: Option<usize>,
 }
 
 /// The configuration flash of the simulated device. Clones share the flash:
@@ -175,7 +174,6 @@ impl FileFlash {
                 path,
                 power_loss: PowerLoss::Exit,
                 dead: false,
-                last_commit_slot: None,
             })),
         }
     }
@@ -238,24 +236,19 @@ impl FileFlash {
 }
 
 impl Inner {
-    fn committed_slots(&self) -> Vec<usize> {
-        (0..2)
-            .filter(|slot| {
-                let end = (slot + 1) * SLOT_SIZE;
-                let word = &self.memory.as_bytes()[end - COMMIT_WORD_SIZE..end];
-                word == COMMIT_WORD.to_le_bytes()
-            })
-            .collect()
+    fn active_slot(&self) -> Option<usize> {
+        let mut memory = Memory::new();
+        memory
+            .as_bytes_mut()
+            .copy_from_slice(self.memory.as_bytes());
+        ConfigStore::try_open(memory).ok()?.active_slot()
     }
 
     /// Flips `mask` in the byte `at(slot)` of the active slot.
     fn corrupt(&mut self, at: impl Fn(usize) -> usize, mask: u8) -> Result<(), String> {
-        let committed = self.committed_slots();
-        let slot = match committed.as_slice() {
-            [] => return Err("the storage holds no committed configuration".into()),
-            [only] => *only,
-            _ => self.last_commit_slot.unwrap_or(0),
-        };
+        let slot = self
+            .active_slot()
+            .ok_or("the storage holds no valid committed configuration")?;
         let offset = at(slot);
         self.memory.as_bytes_mut()[offset] ^= mask;
         self.persist(offset, 1).map_err(|e| format!("{e:?}"))?;
@@ -264,10 +257,14 @@ impl Inner {
     }
 
     fn persist(&mut self, offset: usize, len: usize) -> Result<(), StorageError> {
+        let end = offset
+            .checked_add(len)
+            .filter(|end| *end <= self.memory.as_bytes().len())
+            .ok_or(StorageError::Flash(MemoryError::OutOfBounds))?;
         let Some(file) = &mut self.file else {
             return Ok(());
         };
-        let bytes = &self.memory.as_bytes()[offset..offset + len];
+        let bytes = &self.memory.as_bytes()[offset..end];
         file.seek(SeekFrom::Start(offset as u64))
             .and_then(|_| file.write_all(bytes))
             .map_err(|e| StorageError::File(e.kind()))
@@ -321,12 +318,6 @@ impl ConfigStorage for FileFlash {
             return Err(StorageError::PowerLost);
         }
         let result = inner.memory.write(offset, data);
-        if result.is_ok()
-            && offset % SLOT_SIZE == SLOT_SIZE - COMMIT_WORD_SIZE
-            && data == COMMIT_WORD.to_le_bytes()
-        {
-            inner.last_commit_slot = Some(offset / SLOT_SIZE);
-        }
         inner.after(offset, data.len(), result)
     }
 
@@ -380,6 +371,45 @@ mod tests {
         let flash = FileFlash::open(&path).unwrap();
         let mut store = ConfigStore::try_open(flash).map_err(|e| e.error).unwrap();
         assert_eq!(store.get::<Probe>().unwrap(), Some(Probe { value: 7 }));
+    }
+
+    #[test]
+    fn corruption_after_restart_targets_the_newest_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("device.flash");
+        {
+            let flash = FileFlash::open(&path).unwrap();
+            let mut store = ConfigStore::format(flash).map_err(|e| e.error).unwrap();
+            store.set(&Probe { value: 1 }).unwrap();
+            store.set(&Probe { value: 2 }).unwrap();
+            assert_eq!(store.active_slot(), Some(1));
+        }
+
+        let flash = FileFlash::open(&path).unwrap();
+        let before = flash.image();
+        flash.inject(StorageFault::CorruptCrc).unwrap();
+        let after = flash.image();
+        assert_eq!(before[16], after[16]);
+        assert_ne!(before[SLOT_SIZE + 16], after[SLOT_SIZE + 16]);
+    }
+
+    #[test]
+    fn invalid_ranges_return_errors_without_panicking() {
+        let mut flash = FileFlash::ephemeral();
+
+        let mut output = [0; 1];
+        assert_eq!(
+            flash.read(REGION_SIZE, &mut output),
+            Err(StorageError::Flash(MemoryError::OutOfBounds))
+        );
+        assert_eq!(
+            flash.write(usize::MAX, &[0; 4]),
+            Err(StorageError::Flash(MemoryError::OutOfBounds))
+        );
+        assert_eq!(
+            flash.erase(REGION_SIZE, SECTOR_SIZE),
+            Err(StorageError::Flash(MemoryError::OutOfBounds))
+        );
     }
 
     #[test]

@@ -62,9 +62,11 @@ The same steps work with the desktop tool over BLE from another machine or a sec
 
 ## Limitations
 
-- **Software integration only.** The automated tests exercise the transport bridge with `rohi-control-ble` on top and
-  the process with and without an adapter; they never talk to BlueZ or a phone. A real adapter and a phone are needed for
-  the smoke test above, and no result of it is recorded in the support matrix.
+- **Software integration only; not verified on physical hardware.** The automated tests exercise the transport bridge
+  with `rohi-control-ble` on top and the process with and without an adapter; they never talk to BlueZ or a phone. No
+  adapter-and-mobile-app smoke-test result is available for this change. Keep Linux BLE at software-integration status
+  until discovery, connection, Config, Status, Action and reconnection have been exercised on a real adapter and phone,
+  and the result and platform limitations are recorded in the [support matrix](../support/overview.md).
 - **No pairing or encryption.** The link is reported as unencrypted and unauthenticated and the control dispatcher
   allows everything. Do not treat this as production-secure.
 - **Connection detection.** BlueZ does not report an ATT connection to a GATT application. A central counts as connected

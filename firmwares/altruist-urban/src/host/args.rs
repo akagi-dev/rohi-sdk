@@ -68,7 +68,7 @@ pub struct Args {
     /// Configuration flash image. It survives restarts.
     #[arg(
         long,
-        default_value = "altruist-urban.flash",
+        default_value = ".altruist-urban/device.flash",
         value_name = "FILE",
         conflicts_with = "ephemeral"
     )]
@@ -124,5 +124,16 @@ impl Args {
             port => port.wrapping_add(1),
         });
         (control, manage)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn storage_defaults_to_the_ignored_device_directory() {
+        let args = Args::try_parse_from(["altruist-urban"]).unwrap();
+        assert_eq!(args.storage, PathBuf::from(".altruist-urban/device.flash"));
     }
 }

@@ -169,8 +169,15 @@ async fn serve(mut stream: TcpStream, storage: FileFlash, hooks: Hooks) {
     let mut pending: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 256];
     loop {
-        while let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
-            let line: Vec<u8> = pending.drain(..=end).collect();
+        loop {
+            let line = match take_line(&mut pending) {
+                Ok(Some(line)) => line,
+                Ok(None) => break,
+                Err(()) => {
+                    let _ = within(stream.write_all(b"error: command too long\n")).await;
+                    return;
+                }
+            };
             let line = String::from_utf8_lossy(&line);
             let line = line.trim();
             if line.is_empty() {
@@ -187,15 +194,21 @@ async fn serve(mut stream: TcpStream, storage: FileFlash, hooks: Hooks) {
                 return;
             }
         }
-        if pending.len() > MAX_LINE {
-            let _ = within(stream.write_all(b"error: command too long\n")).await;
-            return;
-        }
         match within(stream.read(&mut chunk)).await {
             Ok(0) | Err(_) => return,
             Ok(read) => pending.extend_from_slice(&chunk[..read]),
         }
     }
+}
+
+fn take_line(pending: &mut Vec<u8>) -> Result<Option<Vec<u8>>, ()> {
+    let Some(end) = pending.iter().position(|byte| *byte == b'\n') else {
+        return (pending.len() <= MAX_LINE).then_some(None).ok_or(());
+    };
+    if end > MAX_LINE {
+        return Err(());
+    }
+    Ok(Some(pending.drain(..=end).collect()))
 }
 
 /// Simultaneous management connections.
@@ -247,6 +260,44 @@ pub fn start(
     };
     spawner.spawn(listen_task(listener, storage, hooks, spawner).unwrap());
     Ok(address)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_overlong_lines_before_extracting_them() {
+        let mut pending = vec![b'x'; MAX_LINE + 1];
+        pending.push(b'\n');
+        pending.extend_from_slice(b"status\n");
+        assert!(take_line(&mut pending).is_err());
+        assert_eq!(pending.len(), MAX_LINE + 1 + 1 + 7);
+    }
+
+    #[test]
+    fn accepts_bounded_lines_and_checks_each_batched_line() {
+        let mut pending = b"status\n".to_vec();
+        pending.extend(std::iter::repeat_n(b'x', MAX_LINE + 1));
+        pending.extend_from_slice(b"\nstatus\n");
+
+        assert_eq!(take_line(&mut pending).unwrap(), Some(b"status\n".to_vec()));
+        assert!(take_line(&mut pending).is_err());
+        assert!(pending.ends_with(b"\nstatus\n"));
+
+        let mut bounded = vec![b'x'; MAX_LINE];
+        bounded.push(b'\n');
+        assert_eq!(
+            take_line(&mut bounded).unwrap().unwrap().len(),
+            MAX_LINE + 1
+        );
+    }
+
+    #[test]
+    fn rejects_overlong_unterminated_input() {
+        let mut pending = vec![b'x'; MAX_LINE + 1];
+        assert!(take_line(&mut pending).is_err());
+    }
 }
 
 #[embassy_executor::task]
