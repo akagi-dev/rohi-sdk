@@ -8,7 +8,7 @@ ROHI SDK: Rust libraries, firmware and desktop tools for Robonomics Open Hardwar
 `cargo` may not be on `PATH`: run it as `nix develop --command bash -c '<cargo command>'`.
 
 ```bash
-cargo test                                   # host: crates/*, tools/* and crates/*, tools/* and the portable part of firmwares/altruist-urban (includes doctests)
+`cargo test`                                   # host: crates/*, tools/* and the portable part of firmwares/altruist-urban (includes doctests)
 cargo test -p altruist-urban --features std,std-tcp,sensor-simulator   # the std platform, incl. end-to-end tests
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all -- --check
