@@ -14,7 +14,7 @@ freshness) are in the [`rohi-hal` rustdoc](https://docs.rs/rohi-hal) and the
    exact decoding of datasheet examples. See [Host testing](../validation/host-testing.md).
 4. **Wire the bus** in the board module of `rohi-hal-esp` if the sensor needs pins or a new peripheral (see
    [Add a board](add-board.md)); drivers never name pins.
-5. **Spawn a task** in `firmwares/altruist-urban/src/esp/sensors.rs` and start it in `main.rs` with the other sensor
+5. **Spawn a task** in `firmwares/altruist-urban/src/esp/sensors.rs` and start it in `src/bin/firmware.rs` with the other sensor
    tasks.
 6. **Expose it** to the control plane if it should be visible: add its measurements and issue codes to the `sensors`
    service (`crates/hal/src/sensors_service.rs`). The protocol and the `rohi` tool need no change; see
