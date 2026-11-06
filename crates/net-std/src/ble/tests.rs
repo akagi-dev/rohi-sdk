@@ -160,6 +160,17 @@ fn chunks_cross_the_bridge_in_both_directions() {
 }
 
 #[test]
+fn queued_notifications_are_discarded_when_a_session_ends() {
+    let (mut transport, peripheral) = bridge();
+    peripheral.connected();
+    block_on(transport.send(b"old response")).unwrap();
+
+    let mut outbox = peripheral.outbox.try_lock().unwrap();
+    discard_queued(&mut outbox);
+    assert!(outbox.try_recv().is_err());
+}
+
+#[test]
 fn nothing_is_sent_without_a_connection() {
     let (mut transport, _peripheral) = bridge();
     assert_eq!(block_on(transport.send(b"x")), Err(BleError::Disconnected));

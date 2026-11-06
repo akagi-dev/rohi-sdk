@@ -463,8 +463,13 @@ async fn notifications(
             }
         }
     }
+    discard_queued(&mut outbox);
     drop(outbox);
     peripheral.disconnected().await;
+}
+
+fn discard_queued(outbox: &mut mpsc::Receiver<Vec<u8>>) {
+    while outbox.try_recv().is_ok() {}
 }
 
 #[cfg(test)]
