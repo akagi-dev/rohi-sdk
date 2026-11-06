@@ -79,7 +79,7 @@
 //! # Architecture and Integration
 //!
 //! The application composes these backends where a device composes the ESP ones
-//! (`firmwares/altruist-urban/src/std`). Simulated measurements reach clients through the ordinary
+//! (`firmwares/altruist-urban/src/host`). Simulated measurements reach clients through the ordinary
 //! `SensorDriver → Runner → MeasurementStore → Status` pipeline and the control
 //! protocol; no simulator-specific branch exists in the services.
 //!
