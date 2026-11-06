@@ -24,13 +24,13 @@
 //!        = effective C  ──►  Binding::publish(&ConfigRuntime, &C)
 //! ```
 //!
-//! A [`Binding`](crate::bindings::Binding) is the one firmware-local description of a managed section:
+//! A [`Binding`] is the one firmware-local description of a managed section:
 //! the product policy (the firmware overrides) and the consumer that gets the
 //! validated effective value. It is a zero-sized marker type, not a registry or
 //! a service locator: [`firmware_configs!`](crate::firmware_configs) lists the
 //! bindings once, at compile time, and the configuration owner task uses that
 //! list for boot, commits, removals and factory reset alike. A private persisted
-//! section (the identity) is a [`PrivateBinding`](crate::bindings::PrivateBinding): it is not user-visible and
+//! section (the identity) is a [`PrivateBinding`]: it is not user-visible and
 //! has no overrides.
 //!
 //! Portable feature crates know nothing of the bindings.
@@ -357,7 +357,12 @@ macro_rules! firmware_configs {
         /// consumer starts from the same effective value a commit would give.
         /// `None`: the store is unavailable, so the firmware policy applies and
         /// private sections stay unknown.
-        fn publish_boot(store: Option<&mut ConfigStore<Storage>>, runtime: &ConfigRuntime) {
+        fn publish_boot<S: ConfigStorage>(
+            store: Option<&mut ConfigStore<S>>,
+            runtime: &ConfigRuntime,
+        ) where
+            S::Error: ::core::fmt::Debug,
+        {
             let Some(store) = store else {
                 $(publish_managed::<$managed>(runtime, None, true);)+
                 $(<$private as $crate::bindings::PrivateBinding>::unreadable(
@@ -365,8 +370,8 @@ macro_rules! firmware_configs {
                 );)+
                 return;
             };
-            $(boot_managed::<$managed>(store, runtime);)+
-            $(boot_private::<$private>(store);)+
+            $(boot_managed::<$managed, S>(store, runtime);)+
+            $(boot_private::<$private, S>(store);)+
         }
 
         /// Publishes the state after a factory reset: nothing is stored.

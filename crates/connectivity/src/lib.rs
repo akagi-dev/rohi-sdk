@@ -79,7 +79,7 @@
 //! use rohi_location::NoLocation;
 //!
 //! // The firmware wires real implementations of these (see the firmware in
-//! // `firmwares/altruist-urban`, `src/connectivity.rs`).
+//! // `firmwares/altruist-urban`, `src/connectivity.rs`, `src/esp/connectivity.rs`).
 //! struct Source(MeasurementsSnapshot);
 //! impl SnapshotSource for Source {
 //!     async fn snapshot(&self) -> Option<MeasurementsSnapshot> {

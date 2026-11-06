@@ -20,7 +20,7 @@
 
 //! SDS011 example: prints PM2.5 and PM10 once per duty cycle (about 2 minutes).
 
-use altruist_urban::tasks::sensors::sds011_task;
+use altruist_urban::esp::sensors::sds011_task;
 use esp_backtrace as _;
 use rohi_examples::{print_events_task, run};
 

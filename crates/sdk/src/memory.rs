@@ -58,7 +58,7 @@
 //!
 //! Platform crates provide mechanisms with const generics; the **firmware**
 //! states the numbers in one file,
-//! `firmwares/altruist-urban/src/resources.rs`, which is the authoritative RAM
+//! `firmwares/altruist-urban/src/esp/resources.rs`, which is the authoritative RAM
 //! budget of the product:
 //!
 //! | Resource | Type / constant | Consumed by |

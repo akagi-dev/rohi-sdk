@@ -15,8 +15,6 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-//! Local control plane: the Altruist Urban side of `rohi-control`.
-
 //! Device identity runtime.
 //!
 //! The Ed25519 identity is provisioned from the host through the control

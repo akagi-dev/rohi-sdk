@@ -279,13 +279,13 @@ reference = "crates/identity"
 id = "src-fw-sensors"
 kind = "source"
 title = "firmware sensor tasks"
-reference = "firmwares/altruist-urban/src/tasks/sensors.rs"
+reference = "firmwares/altruist-urban/src/esp/sensors.rs"
 
 [[evidence]]
 id = "src-fw-main"
 kind = "source"
 title = "firmware startup"
-reference = "firmwares/altruist-urban/src/bin/main.rs"
+reference = "firmwares/altruist-urban/src/bin/firmware.rs"
 
 [[evidence]]
 id = "src-board-c3"

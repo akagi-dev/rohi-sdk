@@ -32,7 +32,8 @@ today and those of a firmware that did not exist when the client was built.
 |-------|-------|
 | Control protocol v1 (protobuf), schema-driven config, status, actions | implemented; still under development, keep client and firmware on the same revision |
 | BLE as the control transport | implemented |
-| Other transports (for example TCP) | planned: the `tcp://` device URI is parsed but not implemented |
+| TCP as a control transport | implemented for the [`std` Altruist Urban](../guides/altruist-urban-std.md) (`tcp://127.0.0.1:9300`, independent of BLE); no TCP transport on hardware |
+| Other transports | planned |
 | `rohi` desktop client | implemented |
 | Shared mobile application | planned, not implemented: [Mobile application](../use/mobile.md) |
 | BLE pairing and encryption | not implemented yet: anyone in radio range can use the control plane |

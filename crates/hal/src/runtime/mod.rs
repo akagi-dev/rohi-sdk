@@ -37,7 +37,7 @@
 //! any other task: MeasurementHandle::snapshot().await
 //! ```
 //!
-//! `firmwares/altruist-urban/src/tasks/` is the maintained wiring of these
+//! `firmwares/altruist-urban/src/tasks/` and `src/esp/sensors.rs` are the maintained wiring of these
 //! pieces; the doctest of [`Runner`] shows the pieces on a host.
 //!
 //! The capacities are fixed at compile time: [`EVENT_QUEUE_CAPACITY`] events
@@ -76,6 +76,8 @@ pub mod states;
 pub use backoff::{Backoff, TimedOut, with_timeout};
 pub use bus::{EVENT_QUEUE_CAPACITY, EventBus};
 pub use clock::Clock;
+#[cfg(feature = "embassy-time")]
+pub use clock::EmbassyClock;
 pub use i2c::{TimeoutError, TimeoutI2c};
 pub use reporter::Reporter;
 pub use runner::{DriverError, Runner, RunnerConfig, SensorDriver};

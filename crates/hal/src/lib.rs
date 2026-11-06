@@ -65,7 +65,7 @@
 //!
 //! On a device the events come from sensor tasks, see
 //! [Architecture & integration](#architecture--integration). The maintained
-//! wiring is in `firmwares/altruist-urban` (`src/tasks/sensors.rs` and
+//! wiring is in `firmwares/altruist-urban` (`src/esp/sensors.rs` and
 //! `src/tasks/store.rs`); one program per sensor is in `examples/`.
 //!
 //! # Core concepts

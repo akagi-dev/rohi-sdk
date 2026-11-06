@@ -37,8 +37,6 @@ pub enum CliError {
     Device(Error),
     /// A command line value is not usable.
     Usage(String),
-    /// The target needs a transport this version of `rohi` does not have.
-    UnsupportedTransport(String),
     /// The `--device` selector matches no device that was found.
     NoMatch {
         /// What the user asked for.
@@ -197,10 +195,6 @@ impl CliError {
         match self {
             Self::Device(error) => device_diagnostic(error),
             Self::Usage(message) => Diagnostic::new(message.clone()),
-            Self::UnsupportedTransport(scheme) => {
-                Diagnostic::new(format!("the {scheme} transport is not supported yet"))
-                    .hint("use a Bluetooth LE device: --device ble://<NAME>")
-            }
             Self::NoMatch { selector, found } => {
                 let mut diagnostic =
                     Diagnostic::new(format!("no ROHI device matches `{selector}`"));
@@ -280,6 +274,11 @@ fn device_diagnostic(error: &Error) -> Diagnostic {
         Error::Transport(message) => Diagnostic::new(format!("Bluetooth: {message}"))
             .hint("make sure Bluetooth is enabled and the device is in range")
             .hint("a device accepts a single connection: close other apps connected to it"),
+        Error::Tcp(message) => {
+            Diagnostic::new(format!("cannot talk to the device over TCP: {message}"))
+                .hint("is the device running? start the std Altruist Urban with `cargo run -p altruist-urban --bin altruist-urban --features std,std-tcp,sensor-simulator`")
+                .hint("a device accepts a single connection: close other clients connected to it")
+        }
         Error::Timeout => Diagnostic::new("timed out waiting for the device")
             .hint("make sure the device is in range and no other client is connected to it")
             .hint("a slow device may need a longer --timeout <SECONDS>"),

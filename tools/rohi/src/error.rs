@@ -31,6 +31,9 @@ pub enum Error {
     /// The BLE link failed (adapter, discovery, connection, GATT).
     #[error("BLE transport: {0}")]
     Transport(String),
+    /// The TCP link failed (connection, read or write).
+    #[error("TCP transport: {0}")]
+    Tcp(String),
     /// No device was found.
     #[error("no device found")]
     DeviceNotFound,

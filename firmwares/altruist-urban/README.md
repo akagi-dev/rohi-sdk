@@ -24,9 +24,9 @@ cd rohi-sdk && nix develop
 
 ```bash
 # ESP32-C3
-cargo run --release -p altruist-urban --features esp32c3 --target riscv32imc-unknown-none-elf
+cargo run --release -p altruist-urban --bin altruist-urban-firmware --features esp32c3 --target riscv32imc-unknown-none-elf
 # ESP32-C6
-cargo run --release -p altruist-urban --features esp32c6 --target riscv32imac-unknown-none-elf
+cargo run --release -p altruist-urban --bin altruist-urban-firmware --features esp32c6 --target riscv32imac-unknown-none-elf
 ```
 
 The chip is selected by exactly one of the features `esp32c3` / `esp32c6`; without a feature, or with both, the
@@ -78,3 +78,17 @@ See [Control plane (BLE)](https://docs.rs/rohi-control) for the protocol, framin
 The static RAM budget of the wireless stack (wireless heap, IP stack sockets and TCP buffers, BLE queues) is defined in one
 place, [`src/resources.rs`](src/resources.rs), with the rationale and exhaustion behaviour of every constant. See
 [Resource limits](https://docs.rs/rohi-sdk/latest/rohi_sdk/memory/index.html).
+
+## Source layout
+
+The crate is the portable application of the Altruist Urban plus, with a chip feature, its ESP platform:
+
+| Path | Content |
+|------|---------|
+| `src/{config,bindings,control,net,connectivity,time,identity,location,reboot}.rs`, `src/tasks/` | the portable application: configuration owner and bindings, control device, Wi-Fi manager, telemetry, NTP time, identity, location, measurement store |
+| `src/esp/` (features `esp32c3` / `esp32c6`) | the ESP platform: flash, radio, BLE, sensors, resource budget (`resources.rs`) and the Embassy tasks around the portable owners |
+| `src/bin/firmware.rs` | the ESP entry point (binary `altruist-urban-firmware`) (requires a chip feature) |
+| `src/host/` (feature `std`) | the host platform: composition root, arguments, TCP and BLE control tasks, simulated sensors; entry point `src/bin/main.rs` (binary `altruist-urban`) |
+
+Without a platform feature only the portable part is built; the `std` platform (`cargo run -p altruist-urban --bin altruist-urban --features std,std-tcp,sensor-simulator`, see [the guide](../../docs/guides/altruist-urban-std.md)) runs it on
+a native platform. `cargo check-esp32c3` / `cargo check-esp32c6` build the ESP firmware as before.

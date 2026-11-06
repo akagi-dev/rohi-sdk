@@ -12,6 +12,10 @@ cargo clippy --all-targets -- -D warnings
 ```
 
 No board is needed. What the host tests cover and what they cannot is in [Host testing](../validation/host-testing.md).
+To run the Altruist Urban application itself on the host, use
+`cargo run -p altruist-urban --bin altruist-urban --features std,std-tcp,sensor-simulator`, see
+[Run Altruist Urban on std](../guides/altruist-urban-std.md). Its end-to-end tests need the features:
+`cargo test -p altruist-urban --features std,std-tcp,sensor-simulator`.
 
 ## For the ESP chips
 

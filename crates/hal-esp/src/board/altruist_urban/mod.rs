@@ -31,7 +31,7 @@
 //! ```
 //!
 //! The compiled version of this sequence is
-//! `firmwares/altruist-urban/src/bin/main.rs`; the examples in `examples/` do
+//! `firmwares/altruist-urban/src/bin/firmware.rs`; the examples in `examples/` do
 //! the same through `rohi_examples::run`. The code needs a chip feature and the
 //! matching bare-metal target, so it cannot be a doctest.
 //!
@@ -151,7 +151,7 @@ pub enum Error {
 /// Board peripherals, ready to be handed to sensor drivers.
 ///
 /// Created once by [`AltruistUrban::new`]; the fields are moved into the sensor
-/// tasks (see `firmwares/altruist-urban/src/tasks/sensors.rs`).
+/// tasks (see `firmwares/altruist-urban/src/esp/sensors.rs`).
 pub struct AltruistUrban {
     /// I2C bus of BMx280 and SCD4x.
     pub i2c: I2c<'static, Async>,

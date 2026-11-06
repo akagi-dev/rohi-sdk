@@ -39,7 +39,7 @@
 //! desired configuration; every other task only holds a [`WifiHandle`]. This
 //! example drives the manager by hand against a fake radio. On a device the
 //! backend is `EspWifi` and [`WifiManager::run`] is the body of one task, see
-//! `firmwares/altruist-urban/src/net.rs`.
+//! `firmwares/altruist-urban/src/net.rs` (`esp/net.rs` for the ESP backend).
 //!
 //! ```
 //! use core::future::pending;
@@ -185,7 +185,7 @@
 //! The Altruist Urban firmware wires these pieces in `firmwares/altruist-urban`:
 //! `src/net.rs` (manager task, probes), `src/config.rs` (the configuration
 //! owner publishes the effective [`WifiConfig`] and [`NetworkConfig`] right
-//! after a commit and once at boot), `src/resources.rs` (sizes of every static
+//! after a commit and once at boot), `src/esp/resources.rs` (sizes of every static
 //! resource). The platform side is described in the
 //! [`rohi-net-esp`](../rohi_net_esp/index.html) crate documentation.
 //!

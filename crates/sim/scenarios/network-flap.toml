@@ -1,0 +1,30 @@
+# A Wi-Fi network that comes and goes: configure it with
+#
+#   rohi --device tcp://127.0.0.1:9300 config wifi ssid=ROHI-LAB password=-
+#
+# and watch `rohi status wifi` while the access point disappears, the link
+# flaps and the first connection attempts after the outage fail.
+
+[wifi]
+connect_delay = "500ms"
+networks = ["ROHI-LAB", "Office"]
+
+[[events]]
+at = "20s"
+action = "ap"
+ssid = "ROHI-LAB"
+target = "down"
+
+[[events]]
+at = "35s"
+action = "ap"
+ssid = "ROHI-LAB"
+target = "up"
+
+[[events]]
+at = "50s"
+command = "wifi flap 4000 2000"
+
+[[events]]
+at = "90s"
+command = "wifi flap off"
