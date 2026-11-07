@@ -1,12 +1,13 @@
 # Device log
 
 The device keeps a persistent log: what its firmware reports through the standard Rust `log` facade (Wi-Fi came up,
-a request timed out, a storage write failed), kept in a bounded ring in internal flash, so it survives a reset. `rohi logs`
+a request timed out, a storage write failed), kept in a bounded ring in internal flash (a file next to the configuration flash for the simulated device), so it survives a reset. `rohi logs`
 reads it. Nothing here is a special protocol: the log is the `logging` [service](status.md) with its own status,
 configuration section and three [actions](actions.md), and `rohi logs` is a convenience over them.
 
-> **Status.** The behaviour below is covered by host tests, including an emulated flash with power-loss injection. It has not
-> been run on a device: see the [support matrix](../../support/overview.md). The SD card backend is **not implemented**.
+> **Status.** The behaviour below is covered by host tests, including an emulated flash with power-loss injection, and by
+> end-to-end tests of the `altruist-urban` host process. It has not been run on a device: see the
+> [support matrix](../../support/overview.md). The SD card backend is **not implemented**.
 
 ```bash
 rohi logs                       # the latest 20 records, oldest first
@@ -38,7 +39,7 @@ prints one such document per line.
 | Field | Meaning |
 |-------|---------|
 | `level` | `off`, `error`, `warn`, `info` or `debug`. The default is `warn` in a release build and `info` in a development build. Only the persistent log is affected, not the serial console |
-| `storage` | `internal` (flash). `sd` is selectable but this firmware has no card: the service then reports `storage_unavailable` and does **not** fall back to flash |
+| `storage` | `internal` (flash; a file on the host). `sd` is selectable but this firmware has no card: the service then reports `storage_unavailable` and does **not** fall back to flash |
 | `compression` | `lz4` or `none`, for **new** segments only; old segments keep their form |
 | `retention_bytes`, `segment_bytes` | the budget of the history and the size at which a file is closed; the oldest files are dropped when the budget is used |
 | `flush_interval` | the longest a record waits in RAM before it is written |
@@ -72,4 +73,5 @@ must pass it). It does not touch the configuration, the identity or another stor
 ## Secrets
 
 The log can be downloaded by anyone who can reach the device, so firmware must never log secrets. The Altruist Urban
-firmware logs no Wi-Fi passwords, keys or provisioning secrets.
+firmware logs no Wi-Fi passwords, keys or provisioning secrets. Third-party drivers can log at `debug`, which is the highest level the persistent log can be set to: keep it at
+`warn` or `info` unless you are diagnosing a problem, and review a download before you share it.

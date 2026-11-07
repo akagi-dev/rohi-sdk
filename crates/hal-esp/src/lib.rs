@@ -36,7 +36,7 @@
 //!
 //! | Feature | Chip | Rust target | Effect |
 //! |---------|------|-------------|--------|
-//! | `esp32c3` | ESP32-C3 | `riscv32imc-unknown-none-elf` | Enables `esp-hal` and `embassy-time` for the chip and all items below |
+//! | `esp32c3` | ESP32-C3 | `riscv32imc-unknown-none-elf` | Enables `esp-hal` and the `embassy-time` clock for the chip and all items below |
 //! | `esp32c6` | ESP32-C6 | `riscv32imac-unknown-none-elf` | As above for the ESP32-C6 |
 //! | none (default) | any | any | Empty crate, nothing is exported |
 //!
@@ -66,8 +66,8 @@
 //! // runtime.{timg0, sw_interrupt, wifi, bt, flash} -> esp-rtos, radios, config store
 //! ```
 //!
-//! The complete, compiled code is `firmwares/altruist-urban/src/bin/main.rs`
-//! (board initialization) and `firmwares/altruist-urban/src/tasks/sensors.rs`
+//! The complete, compiled code is `firmwares/altruist-urban/src/bin/firmware.rs`
+//! (board initialization) and `firmwares/altruist-urban/src/esp/sensors.rs`
 //! (how each peripheral goes into a `rohi_hal` `Runner`); `examples/` holds one
 //! small program per sensor.
 //!
@@ -150,8 +150,6 @@ compile_error!(
 
 #[cfg(any(feature = "esp32c3", feature = "esp32c6"))]
 mod audio;
-#[cfg(any(feature = "esp32c3", feature = "esp32c6"))]
-mod clock;
 
 #[cfg(any(feature = "esp32c3", feature = "esp32c6"))]
 pub mod board;
@@ -159,4 +157,4 @@ pub mod board;
 #[cfg(any(feature = "esp32c3", feature = "esp32c6"))]
 pub use audio::{Error as MicrophoneError, I2sMicrophone};
 #[cfg(any(feature = "esp32c3", feature = "esp32c6"))]
-pub use clock::EmbassyClock;
+pub use rohi_hal::runtime::EmbassyClock;

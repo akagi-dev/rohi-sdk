@@ -200,32 +200,3 @@ pub type BleRunner = rohi_sdk::esp::net::BleRunner<
     BLE_ATTRIBUTES,
     BLE_CONTROLLER_SLOTS,
 >;
-
-/// Frames the telemetry outbox holds while the uplink is down. Each frame is
-/// up to `rohi_connectivity_proto::limits::MAX_ENVELOPE_LEN` bytes; when the
-/// outbox is full new frames are skipped, never queued over old ones.
-pub const CONNECTIVITY_OUTBOX_DEPTH: usize = 4;
-
-/// Records the persistent log queue holds between the logging calls and the
-/// logging task.
-///
-/// - Consumer: `rohi_sdk::logging::LogSink`, one `LogRecord` of about 200 bytes
-///   per entry, so this is about 5 KiB of static RAM.
-/// - Why: the task takes the queue empty every time it runs; the depth covers
-///   a burst of boot messages before the task and the flash are up, and the
-///   stall while a flash sector is erased (tens of milliseconds).
-/// - Exhausted: the new record is dropped and counted in the `dropped_records`
-///   status field of the `logging` service; the caller never waits.
-/// - Measured: not measured.
-pub const LOG_QUEUE_DEPTH: usize = 24;
-
-/// Bytes of text one `logging.read` returns.
-///
-/// - Consumer: each open `read` stream of the `logging` service holds its
-///   answer in RAM, two streams at most (`rohi_sdk::logging` keeps two).
-/// - Why: about twenty records of text per call keeps a read to a few
-///   round trips on BLE and the memory small.
-/// - Exhausted: the answer ends at the last record that fits and the client
-///   asks again after the last sequence it got.
-/// - Measured: not measured.
-pub const LOG_READ_BYTES: usize = 2048;

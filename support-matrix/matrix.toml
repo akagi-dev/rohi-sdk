@@ -286,13 +286,13 @@ reference = "crates/identity"
 id = "src-fw-sensors"
 kind = "source"
 title = "firmware sensor tasks"
-reference = "firmwares/altruist-urban/src/tasks/sensors.rs"
+reference = "firmwares/altruist-urban/src/esp/sensors.rs"
 
 [[evidence]]
 id = "src-fw-main"
 kind = "source"
 title = "firmware startup"
-reference = "firmwares/altruist-urban/src/bin/main.rs"
+reference = "firmwares/altruist-urban/src/bin/firmware.rs"
 
 [[evidence]]
 id = "src-board-c3"
@@ -399,13 +399,19 @@ reference = "crates/logging"
 id = "src-fw-logging"
 kind = "source"
 title = "altruist-urban logging task and log backend"
-reference = "firmwares/altruist-urban/src/logging.rs"
+reference = "firmwares/altruist-urban/src/esp/logging.rs"
 
 [[evidence]]
 id = "test-logging"
 kind = "test"
 title = "rohi-logging service and storage tests"
 reference = "crates/logging/src/service_tests.rs"
+
+[[evidence]]
+id = "test-std-logging"
+kind = "test"
+title = "altruist-urban host process: logging service, file-backed log flash, restart"
+reference = "firmwares/altruist-urban/tests/std_logging.rs"
 
 [[evidence]]
 id = "test-rohi-logs"
@@ -1043,6 +1049,7 @@ evidence = [
   "src-logging",
   "src-fw-logging",
   "test-logging",
+  "test-std-logging",
   "test-rohi-logs",
   "ci-workflow",
   "doc-hwtest",
@@ -1068,6 +1075,7 @@ evidence = [
   "src-logging",
   "src-fw-logging",
   "test-logging",
+  "test-std-logging",
   "test-rohi-logs",
   "ci-workflow",
   "doc-hwtest",

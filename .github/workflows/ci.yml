@@ -20,12 +20,8 @@ jobs:
       - name: Checkout the source code
         uses: actions/checkout@v5
 
-      - name: Check license
-        uses: viperproject/check-license-header@v2
-        with:
-          path: ./
-          config: ./.github/license-check/config.json
-          strict: false
+      - name: Check license header
+        run: ./scripts/check-license.sh
 
   host:
     name: Host
@@ -54,6 +50,45 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Run command
         run: cargo ${{ matrix.action.command }} ${{ matrix.action.args }}
+
+  std:
+    name: Altruist Urban on std
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libdbus-1-dev pkg-config
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.99.1
+          components: rust-src
+      - name: Enable caching
+        uses: Swatinem/rust-cache@v2
+      - name: Check the feature combinations (no platform feature builds the portable part)
+        run: |
+          for features in std std,std-tcp std,std-ble std,std-tcp,std-ble std,sensor-simulator std,std-tcp,std-ble,sensor-simulator; do
+            cargo check -p altruist-urban --features "$features"
+          done
+      - name: Test the portable part
+        run: cargo test -p altruist-urban
+      - name: Test TCP with simulated sensors (unit and end-to-end)
+        run: cargo test -p altruist-urban --features std,std-tcp,sensor-simulator
+      - name: Test TCP without simulated sensors
+        run: cargo test -p altruist-urban --features std,std-tcp --test std_plain
+      - name: Test the BLE peripheral without an adapter
+        run: |
+          cargo test -p altruist-urban --features std,std-tcp,std-ble --test std_ble
+          cargo test -p rohi-net-std --features ble
+      - name: Clippy
+        run: cargo clippy -p altruist-urban -p rohi-sim -p rohi-net-std --all-targets --features altruist-urban/std,altruist-urban/std-tcp,altruist-urban/std-ble,altruist-urban/sensor-simulator,rohi-net-std/ble,rohi-sim/sensors -- -D warnings
+      - name: No ESP, async-io or blocking dependency
+        run: |
+          tree=$(cargo tree -p altruist-urban --features std,std-tcp,std-ble,sensor-simulator -e normal --prefix none)
+          if echo "$tree" | grep -E '^(esp-|rohi-(hal|net|config)-esp|async-io|blocking) '; then
+            echo "the std platform must not depend on ESP crates, async-io or blocking"; exit 1
+          fi
 
   esp32c3:
     name: ESP32-C3

@@ -31,7 +31,8 @@
 //!
 //! It provides a ring journal over any erasable medium
 //! ([`RingStorage`](storage::RingStorage)), an adapter for NOR flash
-//! ([`FlashMedium`](storage::FlashMedium)) and a RAM medium for tests and hosts.
+//! ([`FlashMedium`](storage::FlashMedium)) and a RAM medium for tests; a host application
+//! can implement [`Medium`](storage::Medium) over a file, as `rohi-sim` does.
 //! An SD backend is **not** implemented; the [`Backends`] trait is where it
 //! would plug in.
 //!
@@ -87,9 +88,9 @@
 //!
 //! Records of a download are held in sealed segments that the storage will not
 //! evict while a stream is open; the producer never waits for that: when the
-//! history cannot make room, records are dropped and counted. The firmware
-//! (`firmwares/altruist-urban/src/logging.rs`) installs the `log` backend, owns
-//! the flash region and spawns the task.
+//! history cannot make room, records are dropped and counted. The platforms of the Altruist Urban
+//! (`firmwares/altruist-urban/src/esp/logging.rs` on the device, `host/logging.rs` on the host) install
+//! the `log` backend, own the log medium and spawn the task.
 //!
 //! # API Navigation
 //!

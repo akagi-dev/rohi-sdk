@@ -9,11 +9,12 @@ rust-version = "1.99.1"
 
 [workspace]
 members = ["crates/*", "firmwares/*", "tools/*", "examples"]
-# Host commands (`cargo test`, `cargo clippy`) cover the portable crates and
-# the desktop tools only.
-# Firmware and examples are built per chip, see the `check-*` / `build-*`
-# aliases in `.cargo/config.toml`.
-default-members = ["crates/*", "tools/*"]
+# Host commands (`cargo test`, `cargo clippy`) cover the portable crates, the
+# desktop tools and the portable part of `altruist-urban`. Its host platform is
+# built with `--features std,std-tcp,sensor-simulator`; its ESP platform and the
+# examples are built per chip, see the `check-*` / `build-*` aliases in
+# `.cargo/config.toml`.
+default-members = ["crates/*", "tools/*", "firmwares/altruist-urban"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -28,6 +29,8 @@ rohi-config-derive = { path = "crates/config-derive" }
 rohi-config-esp = { path = "crates/config-esp" }
 rohi-net = { path = "crates/net" }
 rohi-net-esp = { path = "crates/net-esp" }
+rohi-net-std = { path = "crates/net-std" }
+rohi-sim = { path = "crates/sim" }
 rohi-service = { path = "crates/service" }
 rohi-service-derive = { path = "crates/service-derive" }
 rohi-control-proto = { path = "crates/control-proto" }
@@ -35,6 +38,7 @@ rohi-connectivity-proto = { path = "crates/connectivity-proto" }
 rohi-connectivity = { path = "crates/connectivity" }
 rohi-control = { path = "crates/control" }
 rohi-control-ble = { path = "crates/control-ble" }
+rohi-control-tcp = { path = "crates/control-tcp" }
 rohi-identity = { path = "crates/identity" }
 rohi-location = { path = "crates/location" }
 rohi-logging = { path = "crates/logging" }
@@ -121,6 +125,12 @@ quote = "1.0"
 proc-macro2 = "1.0"
 proc-macro-crate = "3.5"
 
+# Host platform (std only)
+bluer = { version = "0.17", features = ["bluetoothd"] }
+ctrlc = { version = "3", features = ["termination"] }
+critical-section = { version = "1", features = ["std"] }
+env_logger = { version = "0.11", default-features = false, features = ["humantime"] }
+
 # Desktop tools (std only, never used by firmware)
 btleplug = "0.13"
 tokio = { version = "1", default-features = false, features = [
@@ -156,12 +166,21 @@ static_cell = "2.1.1"
 # For debug builds always builds with some optimization
 opt-level = "s"
 
-[profile.release]
+[profile.firmware]
 # LLVM can perform better optimizations using a single thread
 codegen-units = 1
 debug = 2
 debug-assertions = false
 incremental = false
 lto = 'fat'
-opt-level = 's'
 overflow-checks = false
+inherits = 'dev'
+
+[profile.release]
+panic = "unwind"
+opt-level = 3
+
+[profile.production]
+inherits = "release"
+lto = true
+codegen-units = 1

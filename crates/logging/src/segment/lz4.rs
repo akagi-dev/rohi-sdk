@@ -13,6 +13,9 @@
 //  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
+//
+///////////////////////////////////////////////////////////////////////////////
+
 //! LZ4 for log segments: the block format, the frame format around it and the
 //! xxHash32 checksum both use.
 //!

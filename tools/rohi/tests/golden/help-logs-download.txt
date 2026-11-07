@@ -48,7 +48,7 @@ Output:
 
 Connection:
       --scan-timeout <SECONDS>
-          How long to search for the target device
+          How long to search for the target device, or to connect to a TCP endpoint
           
           [default: 10]
 

@@ -13,6 +13,9 @@
 //  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
+//
+///////////////////////////////////////////////////////////////////////////////
+
 //! The persistent form of the log: line text, LZ4 frames, segment headers and
 //! the batches and decoders that connect them.
 //!

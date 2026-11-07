@@ -141,7 +141,7 @@
 //! ```
 //!
 //! The firmware builds a [`Device`] over its registries
-//! (`firmwares/altruist-urban/src/control.rs`) and hands a [`Controller`] to a
+//! (`firmwares/altruist-urban/src/control.rs`, portable) and hands a [`Controller`] to a
 //! transport such as [`rohi-control-ble`](../rohi_control_ble/index.html). The
 //! transport reports the [`LinkSecurity`] of the connection; it does not
 //! interpret requests. The message schema, the size limits and the

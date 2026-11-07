@@ -15,8 +15,10 @@ Released crates are also published on docs.rs, for example [`rohi-sdk`](https://
 | `rohi-hal`, `rohi-hal-esp` | typed measurements, sensor drivers and runtime; ESP boards |
 | `rohi-config`, `rohi-config-derive`, `rohi-config-esp` | transactional configuration store, derive macros and flash backend |
 | `rohi-service`, `rohi-service-derive` | the config, status and action model and registries |
-| `rohi-net`, `rohi-net-esp` | Wi-Fi and IP networking, BLE transport traits, ESP backend |
+| `rohi-net`, `rohi-net-esp`, `rohi-net-std` | Wi-Fi and IP networking, BLE transport traits, ESP backend, host (`std`) backend |
 | `rohi-control-proto`, `rohi-control`, `rohi-control-ble` | the control protocol, its dispatcher and its firmware-side BLE binding (the `rohi` tool reuses only its frame and uuid modules) |
+| `rohi-control-tcp` | the control protocol over TCP: independent length-prefixed records and the serving loop |
+| `rohi-sim` | the simulated world of a `std` application: sensors, Wi-Fi, IP faults, flash file, scenarios |
 | `rohi-connectivity`, `rohi-connectivity-proto` | signed telemetry |
 | `rohi-time`, `rohi-time-ntp` | wall-clock time |
 | `rohi-identity` | device identity and signer |

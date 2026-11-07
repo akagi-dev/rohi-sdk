@@ -127,7 +127,7 @@
 //! lookup and builds the storage in one call. A complete, maintained example
 //! that persists and reads back sections on real flash is
 //! `examples/src/bin/config.rs`; the firmware wiring is
-//! `firmwares/altruist-urban/src/config.rs`.
+//! `firmwares/altruist-urban/src/esp/config.rs`.
 //!
 //! # Core Concepts
 //!
@@ -177,7 +177,8 @@
 //!
 //! ## Runtime ownership in the Altruist Urban firmware
 //!
-//! The firmware (`firmwares/altruist-urban/src/config.rs`) opens the store
+//! The firmware (the portable `firmwares/altruist-urban/src/config.rs`, opened on the flash by
+//! `src/esp/config.rs`) opens the store
 //! once at boot and hands it to a single configuration task. Everything else
 //! talks to the task through a cloneable `ConfigHandle` (`get`, `set`,
 //! `remove`, `status`) and a bounded request channel, so there is no global

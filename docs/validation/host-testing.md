@@ -19,6 +19,7 @@ long-running stability tests          ← Hardware testing
 |-------|---------|----------------|-----------------|
 | Host unit tests | `cargo test` | codecs, state machines, bounds, error mapping, golden encodings | no |
 | Host service / integration | `cargo test` | owner + handle + mock backend: reconnect logic, reconciliation, dispatcher, framing, `rohi` client end to end against the real dispatcher, cancellation | no |
+| `std` platform end to end | `cargo test -p altruist-urban --features std,std-tcp,sensor-simulator` | the composed application on the host (sensors, storage, Wi-Fi, TCP control, restarts) driven through the real `rohi` client; see [Run Altruist Urban on std](../guides/altruist-urban-std.md). The BLE peripheral is tested without an adapter; a real adapter and phone are a manual [smoke test](../guides/linux-ble.md), not hardware validation | no |
 | ESP compile checks | `cargo check-esp32c3`, `cargo check-esp32c6`, `cargo build-esp32c3/6`, ESP `clippy` | the platform crates and firmware type-check and link for both chips | no |
 | Hardware functional validation | flash + examples/firmware | radios, flash, buses, pins, heap high-water mark | **yes** ([Hardware testing](hardware-testing.md)) |
 | Long-running stability | 24–72 h soak | leaks, deadlocks, recovery under churn | **yes** |
@@ -40,7 +41,7 @@ found in one of those, add a host test for the logic part and record the hardwar
 ## Fakes and mocks
 
 Every hardware seam has a host implementation (in-memory storage, mock radios, a fake IP stack, scripted BLE transports,
-mock buses); the seams and their fakes are described in the [portability rustdoc](https://docs.rs/rohi-sdk/latest/rohi_sdk/portability/index.html).
+mock buses), and the whole composed application runs on the host as the [`std` Altruist Urban](../guides/altruist-urban-std.md); the seams and their fakes are described in the [portability rustdoc](https://docs.rs/rohi-sdk/latest/rohi_sdk/portability/index.html).
 
 ## Cancellation tests
 

@@ -13,6 +13,9 @@
 //  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
+//
+///////////////////////////////////////////////////////////////////////////////
+
 extern crate std;
 
 use core::cell::{Cell, RefCell};
@@ -770,6 +773,25 @@ fn clear_removes_the_history_of_the_active_backend_only() {
 }
 
 #[test]
+fn switching_to_an_unavailable_backend_reports_no_data_of_the_old_one() {
+    let rig = Rig::new();
+    let logging = rig.logging(CONFIG);
+    log_many(&logging, 10, 1);
+    settle(&rig, &logging);
+    assert_eq!(number(&logging, status_field::STORED_RECORDS), Some(10));
+
+    logging.apply(LoggingConfig {
+        storage: LogStorageKind::Sd,
+        ..CONFIG
+    });
+    step(&rig, &logging);
+    assert_eq!(issues(&logging), [issue::STORAGE_UNAVAILABLE]);
+    assert_eq!(number(&logging, status_field::STORED_RECORDS), Some(0));
+    assert_eq!(number(&logging, status_field::USED_BYTES), Some(0));
+    assert_eq!(number(&logging, status_field::NEWEST_SEQUENCE), None);
+}
+
+#[test]
 fn an_unavailable_backend_is_reported_and_never_replaced_by_another() {
     let rig = Rig::new();
     let logging = rig.logging(LoggingConfig {
@@ -1048,6 +1070,23 @@ fn the_task_takes_records_when_they_arrive() {
         ..CONFIG
     });
     assert!(embassy_futures::poll_once(task.as_mut()).is_pending());
+}
+
+#[test]
+fn records_that_cannot_be_stored_do_not_keep_the_task_spinning() {
+    let rig = Rig::new();
+    let logging = rig.logging(LoggingConfig {
+        storage: LogStorageKind::Sd,
+        ..CONFIG
+    });
+    let mut task = core::pin::pin!(logging.run(Never));
+    assert!(embassy_futures::poll_once(task.as_mut()).is_pending());
+    assert_eq!(issues(&logging), [issue::STORAGE_UNAVAILABLE]);
+
+    // The queue holds records nobody can take: the task must yield, not loop.
+    log_many(&logging, 5, 1);
+    assert!(embassy_futures::poll_once(task.as_mut()).is_pending());
+    assert_eq!(logging.sink().queued(), 5);
 }
 
 #[test]

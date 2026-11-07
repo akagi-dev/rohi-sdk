@@ -22,3 +22,9 @@ rohi-service.workspace = true
 heapless.workspace = true
 embassy-futures.workspace = true
 libm.workspace = true
+embassy-time = { workspace = true, optional = true }
+
+[features]
+default = []
+# `EmbassyClock`: the monotonic `Clock` over `embassy-time`.
+embassy-time = ["dep:embassy-time"]

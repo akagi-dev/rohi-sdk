@@ -13,6 +13,9 @@
 //  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
+//
+///////////////////////////////////////////////////////////////////////////////
+
 //! The erasable array of sectors a [`RingStorage`](super::RingStorage) is
 //! laid out on.
 

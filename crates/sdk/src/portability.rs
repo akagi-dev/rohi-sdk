@@ -24,8 +24,9 @@
 //! |----------|--------|------------|
 //! | Portable | [`rohi-hal`](../../rohi_hal/index.html), [`rohi-config`](../../rohi_config/index.html), [`rohi-config-derive`](../../rohi_config_derive/index.html), [`rohi-service`](../../rohi_service/index.html), [`rohi-service-derive`](../../rohi_service_derive/index.html), [`rohi-net`](../../rohi_net/index.html), [`rohi-identity`](../../rohi_identity/index.html), [`rohi-location`](../../rohi_location/index.html), [`rohi-time`](../../rohi_time/index.html), [`rohi-time-ntp`](../../rohi_time_ntp/index.html), [`rohi-connectivity-proto`](../../rohi_connectivity_proto/index.html), [`rohi-connectivity`](../../rohi_connectivity/index.html), [`rohi-control-proto`](../../rohi_control_proto/index.html), [`rohi-control`](../../rohi_control/index.html), [`rohi-control-ble`](../../rohi_control_ble/index.html) | `no_std`, no allocation, no MCU HAL, builds and tests on the host (the derive crates are proc-macros that run at build time) |
 //! | ESP-specific | [`rohi-hal-esp`](../../rohi_hal_esp/index.html), [`rohi-config-esp`](../../rohi_config_esp/index.html), [`rohi-net-esp`](../../rohi_net_esp/index.html) | `no_std`, depend on `esp-hal` / `esp-radio` / `esp-storage` / `embassy-net` / TrouBLE; empty without a chip feature, so they stay buildable on the host |
-//! | Product | `altruist-urban` (`firmwares/altruist-urban`), `examples` | choose the chip, size the resources, spawn the tasks |
-//! | Desktop | [`rohi`](../../rohi/index.html) (`tools/rohi`) | `std`; talks to a device over BLE |
+//! | Product | `altruist-urban` (`firmwares/altruist-urban`), `examples` | the portable application plus its platform: per chip feature the ESP platform (choose the chip, size the resources, spawn the tasks) or, with `std`, the host platform (`altruist-urban`) |
+//! | Host platform | [`rohi-net-std`](../../rohi_net_std/index.html), [`rohi-control-tcp`](../../rohi_control_tcp/index.html) (`no_std`), `rohi-sim` | `std`; host DNS, TCP and UDP, the BlueZ BLE peripheral, the TCP control transport and the simulated world; never depend on ESP crates |
+//! | Desktop | [`rohi`](../../rohi/index.html) (`tools/rohi`) | `std`; talks to a device over BLE, or over TCP to a device that serves it, such as the `std` Altruist Urban |
 //!
 //! # How portability is achieved
 //!
@@ -56,8 +57,12 @@
 //! delays), reconnect logic (mock backends), cancellation (dropped futures) and
 //! storage faults (`MemoryStorage` fault injection). Platform crates are only
 //! **compile-checked** for both chips; their behaviour needs hardware. The
-//! host commands cover the portable crates and the desktop tools
-//! (`default-members`); firmware and examples are built per chip. See
+//! host commands cover the portable crates, the desktop tools and the portable
+//! part of `altruist-urban` (`default-members`); the examples and the ESP
+//! platform are built per chip. The `std` platform (`--features std,std-tcp,sensor-simulator`)
+//! runs the composed application on the host,
+//! so cancellation, restart and failure flows of the whole stack are tested
+//! without hardware. See
 //! [Host testing](https://rohi.akagi.dev/validation/host-testing.html) and
 //! [Hardware testing](https://rohi.akagi.dev/validation/hardware-testing.html).
 //!
@@ -91,9 +96,13 @@
 //! `cargo` command builds for the host and the chip is always explicit.
 //!
 //! **Host default members.** `cargo test` and `cargo clippy` at the root run on
-//! `default-members`: `crates/*` and `tools/*`. The platform crates compile on
-//! the host without a chip feature (they are empty), so they are covered;
-//! firmware and examples are built per chip only.
+//! `default-members`: `crates/*`, `tools/*` and `firmwares/altruist-urban`. The platform
+//! crates compile on the host without a chip feature (they are empty), so they
+//! are covered; `altruist-urban` is covered through its portable part (no
+//! platform feature). Its `std` platform and end-to-end tests need features,
+//! `cargo test -p altruist-urban --features std,std-tcp,sensor-simulator`; the
+//! `std` and ESP platforms exclude each other. ESP firmware and examples are
+//! built per chip only.
 //!
 //! | Crate | Feature | Meaning |
 //! |-------|---------|---------|

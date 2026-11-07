@@ -28,7 +28,7 @@ use it without a firmware-specific integration.
 | Aspect | State |
 |--------|-------|
 | Protocol | version 1; **still under development** and changing without a version bump: keep client and firmware on the same revision |
-| Transport | BLE is the only implemented transport; the `tcp://` device URI is parsed but not implemented |
+| Transport | BLE on devices and, on Linux, on the [`std` Altruist Urban](../guides/linux-ble.md) (BlueZ); independently, TCP records (`tcp://HOST:PORT`: a 4-byte length and one Protobuf message, no BLE frames) for the [`std` Altruist Urban](../guides/altruist-urban-std.md#control-over-tcp-and-the-rohi-tool) |
 | Security | the link is not paired or encrypted yet; the policy hook exists, the reference firmware runs the open policy |
 | Scope | local control only; telemetry uplink is a separate service |
 

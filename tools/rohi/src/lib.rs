@@ -21,8 +21,12 @@
 //!
 //! - [`BleLink`] / [`scan`]: BLE central built on `btleplug`, finds devices
 //!   exposing the ROHI Control Service and moves chunks;
-//! - [`Session`]: frames requests with [`rohi_control_ble::frame`], matches
-//!   responses by request id, enforces timeouts;
+//! - [`TcpLink`]: length-prefixed Protobuf records over a TCP socket
+//!   ([`rohi_control_tcp::frame`]), for a device that serves the control
+//!   protocol over TCP such as the `std` Altruist Urban;
+//! - [`Session`]: on a chunked link frames requests with
+//!   [`rohi_control_ble::frame`]; matches responses by request id, enforces
+//!   timeouts;
 //! - [`Device`]: generic async API (`config_*`, `services*`, `invoke`)
 //!   returning the plain types of [`model`], never protobuf; it knows no
 //!   module by name;
@@ -42,6 +46,7 @@ pub mod format;
 pub mod model;
 mod provision;
 mod session;
+mod tcp;
 
 pub use ble::{BleLink, DiscoveredDevice, scan, scan_until};
 pub use client::Device;
@@ -52,4 +57,5 @@ pub use provision::derive_identity;
 #[cfg(feature = "provision")]
 pub use provision::ss58;
 pub use rohi_identity::PublicKey;
-pub use session::{ClientTransport, DEFAULT_TIMEOUT, Session};
+pub use session::{ClientTransport, DEFAULT_TIMEOUT, Framing, Session};
+pub use tcp::TcpLink;

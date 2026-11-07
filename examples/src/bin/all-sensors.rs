@@ -20,8 +20,8 @@
 
 //! Combined hardware test: runs every supported sensor concurrently and prints their events.
 
-use altruist_urban::tasks::sensors::{SharedI2cBus, i2c_handle};
-use altruist_urban::tasks::sensors::{bmx280_task, noise_task, scd4x_task, sds011_task};
+use altruist_urban::esp::sensors::{SharedI2cBus, i2c_handle};
+use altruist_urban::esp::sensors::{bmx280_task, noise_task, scd4x_task, sds011_task};
 use embassy_sync::mutex::Mutex;
 use esp_backtrace as _;
 use rohi_examples::{print_events_task, run};

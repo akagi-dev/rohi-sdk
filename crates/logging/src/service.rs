@@ -13,6 +13,9 @@
 //  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
+//
+///////////////////////////////////////////////////////////////////////////////
+
 //! The `logging` service: the runtime that turns the queue of records into
 //! segments, and what it exposes to the control plane.
 
@@ -303,6 +306,7 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
             self.release_streams(inner, true);
             self.with(|state| {
                 state.active = None;
+                state.stats = StorageStats::default();
                 state.write_failed_since = None;
                 state.read_failed_since = None;
                 state.corrupt_since = None;
@@ -561,14 +565,23 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
     /// task is meant to run for the life of the device.
     pub async fn run<D: DelayNs>(&self, mut delay: D) -> ! {
         loop {
-            let wait = {
+            let (wait, accepting) = {
                 let mut inner = self.inner.lock().await;
                 self.maintain(&mut inner).await;
-                self.next_wait(&inner)
+                let accepting = inner.storage.is_some()
+                    && !inner.faulted
+                    && self.now() >= inner.stalled_until_ms;
+                (self.next_wait(&inner), accepting)
             };
+            // Records that cannot be taken (no storage, a failed write, a pinned
+            // segment) stay queued and must not wake the task again and again:
+            // it waits for the retry deadline of `next_wait` instead.
             let ready = async {
-                self.sink.ready().await;
-                // Records usually come in bursts: let the batch fill.
+                if accepting {
+                    self.sink.ready().await;
+                } else {
+                    core::future::pending::<()>().await;
+                }
             };
             match wait {
                 Some(ms) => {

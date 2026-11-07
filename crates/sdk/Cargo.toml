@@ -27,6 +27,9 @@ features = [
   "control",
   "ble",
   "connectivity",
+  "tcp",
+  "host",
+  "sim",
 ]
 rustdoc-args = ["--cfg", "docsrs"]
 
@@ -42,10 +45,13 @@ rohi-location = { workspace = true, optional = true }
 rohi-logging = { workspace = true, optional = true }
 rohi-control = { workspace = true, optional = true }
 rohi-control-ble = { workspace = true, optional = true }
+rohi-control-tcp = { workspace = true, optional = true }
 rohi-connectivity = { workspace = true, optional = true }
 rohi-hal-esp = { workspace = true, optional = true }
 rohi-config-esp = { workspace = true, optional = true }
 rohi-net-esp = { workspace = true, optional = true }
+rohi-net-std = { workspace = true, optional = true }
+rohi-sim = { workspace = true, optional = true }
 
 [features]
 # Nothing is enabled by default: a product picks the areas it uses.
@@ -65,7 +71,21 @@ location = ["service", "dep:rohi-location"]
 logging = ["time", "dep:rohi-logging"]
 control = ["service", "dep:rohi-control"]
 ble = ["control", "net", "dep:rohi-control-ble"]
+tcp = ["control", "dep:rohi-control-tcp"]
+# `hal::runtime::EmbassyClock`, the monotonic clock over `embassy-time`.
+embassy-time = ["hal", "rohi-hal/embassy-time"]
 connectivity = ["hal", "identity", "location", "net", "time", "dep:rohi-connectivity"]
+
+# Host (`std`) backends, module `host`: DNS, TCP and UDP over the sockets of the
+# operating system and the TCP listener of the control transport.
+host = ["net", "tcp", "dep:rohi-net-std"]
+# BlueZ BLE peripheral of the host backends (Linux).
+host-ble = ["host", "ble", "rohi-net-std/ble"]
+# The simulated world of a `std` application (module `sim`): sensors, Wi-Fi, IP
+# faults, flash file, scenarios, management interface.
+sim = ["host", "hal", "config", "dep:rohi-sim"]
+# Simulated sensor drivers of `sim`.
+sim-sensors = ["sim", "rohi-sim/sensors"]
 
 # ESP backends (module `esp`). Exactly one chip feature must be enabled by the
 # final firmware build.

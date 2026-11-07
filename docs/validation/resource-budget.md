@@ -164,10 +164,10 @@ Release build of `altruist-urban`, measured with `nm -S` on the ELF (`cargo buil
 
 | Item | ESP32-C3 | ESP32-C6 |
 |------|---------:|---------:|
-| `altruist_urban::logging::LOGGING` (queue, batch, streams, status; initialized data in RAM) | 12 512 B | 12 512 B |
-| `altruist_urban::logging::logging_task` future (`.bss`) | 2 304 B | 2 304 B |
+| `altruist_urban::esp::logging::LOGGING` (queue, batch, streams, status; initialized data in RAM) | 12 512 B | 12 512 B |
+| `altruist_urban::esp::logging::logging_task` future (`.bss`) | 2 304 B | 2 304 B |
 
-The limits are in `firmwares/altruist-urban/src/resources.rs` (`LOG_QUEUE_DEPTH` 24 records, `LOG_READ_BYTES` 2 048 B per
+The limits are in `firmwares/altruist-urban/src/logging.rs` (`QUEUE_DEPTH` 24 records, `READ_BYTES` 2 048 B per
 open `read` stream, at most two streams) and in `rohi_logging` (batch of 2 KiB of text, one compressed block of at most 2 056 B). Flash:
 the `rohi-log` partition is 256 KiB of the 4 MB / 8 MB flash (the `factory` partition shrank by that amount).
 

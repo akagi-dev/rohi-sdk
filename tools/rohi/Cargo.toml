@@ -42,13 +42,14 @@ provision = ["dep:sp-core"]
 [dependencies]
 rohi-control-proto.workspace = true
 rohi-control-ble.workspace = true
+rohi-control-tcp.workspace = true
 rohi-net.workspace = true
 rohi-identity = { workspace = true, features = ["std"] }
 rohi-logging = { workspace = true, optional = true }
 zeroize = { workspace = true, features = ["std"] }
 heapless.workspace = true
 btleplug.workspace = true
-tokio = { workspace = true, features = ["signal"] }
+tokio = { workspace = true, features = ["signal", "net", "io-util"] }
 futures.workspace = true
 thiserror.workspace = true
 uuid.workspace = true

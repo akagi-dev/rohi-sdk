@@ -3,13 +3,11 @@
 ![ROHI Logo](./docs/images/robo-hw-logo-white.png#gh-dark-mode-only)
 ![ROHI Logo](./docs/images/robo-hw-logo-black.png#gh-light-mode-only)
   
-# Robonomics Open Hardware Interface SDK
+# Robonomics Open Hardware Interface (ROHI) SDK
 
 
-> **One App. Any Firmware.** ROHI is an open ecosystem where firmware implementing the common ROHI control protocol
-> can be operated through shared clients, whether created by developers, the community or you. This SDK provides the
-> components to build such firmware for devices powered by [Robonomics Network](https://robonomics.network/), a Web3
-> cloud platform designed to manage IoT devices and robotics.
+> This SDK provides the components to build such firmware for devices powered by [Robonomics Network](https://robonomics.network/),
+> a Web3 cloud platform designed to manage IoT devices and robotics.
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0) [![Crates.io Version](https://img.shields.io/crates/v/rohi-hal)](https://crates.io/crates/hal) [![Documentation](https://docs.rs/rohi-hal/badge.svg)](https://docs.rs/rohi-hal)
 
@@ -48,7 +46,7 @@ More: [usage examples](examples/src/bin) and the **[ROHI SDK Book](https://rohi.
 
 ## 📚 Documentation
 
-* **[ROHI Book](https://rohi.akagi.dev)** — vision, using a device (`rohi` desktop client), building firmware, verifying and sharing
+* **[The Book](https://rohi.akagi.dev)** — vision, using a device, building firmware, verifying and sharing
   (sources in [`docs/`](docs/README.md)).
 * [Support matrix](docs/support/overview.md) — what is supported per board, firmware and capability, and what is verified.
 * [API documentation](https://docs.rs/rohi-sdk) — SDK overview and crate map (`cargo doc --no-deps` for the whole workspace).
@@ -60,9 +58,10 @@ More: [usage examples](examples/src/bin) and the **[ROHI SDK Book](https://rohi.
 
 | Path | Content |
 |------|---------|
-| [`crates/`](crates) | SDK libraries: `rohi-hal`, `rohi-config`, `rohi-net`, `rohi-control*` and their ESP platform crates |
+| [`crates/`](crates) | SDK libraries: `rohi-hal`, `rohi-config`, `rohi-net`, `rohi-control*` and their ESP and `std` platform crates (`rohi-net-std`, `rohi-sim`) |
 | [`firmwares/altruist-urban`](firmwares/altruist-urban) | [Altruist Urban](https://robonomics.network/devices/altruist/) firmware |
+| [`firmwares/altruist-urban`](firmwares/altruist-urban) `--features std` | the same application as a host process: host IP, TCP and BlueZ BLE control, optional simulated sensors (`cargo run -p altruist-urban --bin altruist-urban --features std,std-tcp,sensor-simulator`) |
 | [`examples/`](examples/src/bin) | one hardware example per sensor and a configuration self-test |
-| [`tools/rohi`](tools/rohi) | BLE client library and command line tool |
+| [`tools/rohi`](tools/rohi) | BLE and TCP client library and command line tool |
 | [`support-matrix/`](support-matrix) | machine-readable support matrix (validated by `tools/support-matrix`) |
 | [`docs/`](docs) | the SDK book (mdBook) |

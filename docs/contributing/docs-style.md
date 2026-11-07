@@ -24,7 +24,7 @@ A fact lives on exactly one page; other pages link to it. Canonical pages:
 
 | Concept | Where |
 |---------|-------|
-| Resource limits and constants | the product constants in `firmwares/altruist-urban/src/resources.rs` and the [`rohi-sdk` memory rustdoc](https://docs.rs/rohi-sdk/latest/rohi_sdk/memory/index.html) |
+| Resource limits and constants | the product constants in `firmwares/altruist-urban/src/esp/resources.rs` and the [`rohi-sdk` memory rustdoc](https://docs.rs/rohi-sdk/latest/rohi_sdk/memory/index.html) |
 | Persistent ABI rules | the [`rohi-config` rustdoc](https://docs.rs/rohi-config) and the [`rohi-sdk` versioning rustdoc](https://docs.rs/rohi-sdk/latest/rohi_sdk/versioning/index.html) |
 | Targets, features and commands | the [`rohi-sdk` portability rustdoc](https://docs.rs/rohi-sdk/latest/rohi_sdk/portability/index.html#targets-and-features) |
 | Control protocol and its limits | the [`rohi-control-proto` rustdoc](https://docs.rs/rohi-control-proto); concept: [Control protocol](../build/control-protocol.md) |

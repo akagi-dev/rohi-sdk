@@ -20,8 +20,8 @@
 
 //! SCD40 / SCD41 example: prints CO2, temperature and humidity.
 
-use altruist_urban::tasks::sensors::scd4x_task;
-use altruist_urban::tasks::sensors::{SharedI2cBus, i2c_handle};
+use altruist_urban::esp::sensors::scd4x_task;
+use altruist_urban::esp::sensors::{SharedI2cBus, i2c_handle};
 use embassy_sync::mutex::Mutex;
 use esp_backtrace as _;
 use rohi_examples::{print_events_task, run};

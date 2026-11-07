@@ -15,10 +15,11 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
+
 //! Local control plane: the Altruist Urban side of `rohi-control`.
 //!
 //! ```text
-//! BLE radio -> rohi-net-esp (EspBle) -> rohi-control-ble -> rohi-control
+//! control link (BLE on the ESP; BLE and/or TCP on `std`) -> rohi-control
 //!                                                              |
 //!                                             UrbanDevice (this module)
 //!                          config sections: wifi, network, ble, connectivity, location, time, logging
@@ -31,45 +32,34 @@
 //! region or the radio. Adding a config section means adding its binding to
 //! `firmware_configs!` in [`crate::config`], which generates the section tuple
 //! and its construction. Adding a service means adding its instance to
-//! `UrbanServices` and to the tuple of every capability it has, the status
+//! [`UrbanServices`] and to the tuple of every capability it has, the status
 //! tuple if it implements `Status` and the action tuple if it implements
 //! `Action`: the Embassy control task needs the concrete type, so the types and
 //! the values of the tuples stay explicit. The protocol and the `rohi` tool
 //! need no change.
+//!
+//! The composition is generic over the IP backend `I`, the BLE probe `B` and the
+//! `logging` service `L` of the platform; the link, its task, the log storage and
+//! the static storage of the services are the platform's.
 
-use embassy_executor::Spawner;
 use embassy_time::Delay;
-use log::{error, info};
-use rohi_sdk::ble::ControlBle;
 use rohi_sdk::connectivity::ConnectivityStatusService;
-use rohi_sdk::control::{Controller, Device, DeviceInfo, OpenPolicy};
-use rohi_sdk::esp::net::EspWireless;
+use rohi_sdk::control::{Device, DeviceInfo};
 use rohi_sdk::hal::SensorsService;
 use rohi_sdk::identity::{Identity, IdentityService, IdentityStore, IdentityStoreError, PublicKey};
 use rohi_sdk::location::LocationService;
-use rohi_sdk::net::{BleService, NetworkHandle, NetworkService, WifiService};
-use rohi_sdk::service::{ActionRegistry, Startup, StatusSet, Statuses};
+use rohi_sdk::net::{BleProbe, BleService, IpBackend, NetworkHandle, NetworkService, WifiService};
+use rohi_sdk::service::{Action, ActionRegistry, Startup, Status, StatusSet, Statuses};
 use static_cell::StaticCell;
 
-use crate::bindings::ble_settings;
 use crate::config::{
     ConfigHandle, ConfigSections, ServiceError as ConfigError, StorageConfig, config_sections,
     maintenance,
 };
 use crate::identity::IdentityHandle;
-use crate::resources::{BleResources, BleRunner, BleStatus, BleTransport, Ip};
 use crate::tasks::RawMutex;
 use crate::tasks::store;
-use crate::{connectivity, location, logging, net, reboot, time};
-
-/// Firmware name and version.
-const FIRMWARE: &str = concat!(env!("CARGO_PKG_NAME"), "-", env!("CARGO_PKG_VERSION"));
-
-/// Board and chip.
-#[cfg(feature = "esp32c3")]
-const BOARD: &str = "urban-esp32c3";
-#[cfg(feature = "esp32c6")]
-const BOARD: &str = "urban-esp32c6";
+use crate::{connectivity, location, net, time};
 
 /// The identity section behind the configuration owner task.
 pub struct StoredIdentity(IdentityHandle);
@@ -103,91 +93,116 @@ pub type UrbanConfig = StorageConfig<ConfigSections>;
 static SECTIONS: StaticCell<ConfigSections> = StaticCell::new();
 
 /// The services of the device, by capability.
-type UrbanWifi = Startup<WifiService<'static, RawMutex, Delay, net::Probe>>;
-type UrbanNetwork = Startup<NetworkService<'static, RawMutex, net::Probe>>;
-type UrbanBle = BleService<BleStatus>;
+type UrbanWifi<I> = Startup<WifiService<'static, RawMutex, Delay, net::Probe<I>>>;
+type UrbanNetwork<I> = Startup<NetworkService<'static, RawMutex, net::Probe<I>>>;
+type UrbanBle<B> = BleService<B>;
 type UrbanConnectivity = Startup<ConnectivityStatusService<'static, RawMutex>>;
 type UrbanLocation = LocationService<'static, RawMutex>;
 type UrbanSensors = SensorsService<'static, RawMutex>;
 type UrbanIdentity = IdentityService<StoredIdentity>;
-type UrbanLogging = logging::Service;
 
 /// The instances of the services of the device.
 ///
 /// Each service is created once and referenced by the registries of the
 /// capabilities it has, so that no registry owns or copies a service.
-struct UrbanServices {
-    wifi: UrbanWifi,
-    network: UrbanNetwork,
-    ble: UrbanBle,
+pub struct UrbanServices<I: 'static, B, L> {
+    wifi: UrbanWifi<I>,
+    network: UrbanNetwork<I>,
+    ble: UrbanBle<B>,
     connectivity: UrbanConnectivity,
     location: UrbanLocation,
     sensors: UrbanSensors,
     identity: UrbanIdentity,
-    logging: UrbanLogging,
+    logging: L,
 }
 
 /// The services that report status. The `time` service is the time runtime
 /// itself.
-type UrbanStatusServices = (
-    &'static UrbanWifi,
-    &'static UrbanNetwork,
-    &'static UrbanBle,
+pub type UrbanStatusServices<I, B, L> = (
+    &'static UrbanWifi<I>,
+    &'static UrbanNetwork<I>,
+    &'static UrbanBle<B>,
     &'static UrbanConnectivity,
     &'static UrbanLocation,
     &'static time::Time,
     &'static UrbanSensors,
     &'static UrbanIdentity,
-    &'static UrbanLogging,
+    &'static L,
 );
 
 /// The status registry of the device.
-pub type UrbanStatuses = Statuses<RawMutex, UrbanStatusServices>;
+pub type UrbanStatuses<I, B, L> = Statuses<RawMutex, UrbanStatusServices<I, B, L>>;
 
 /// The services that offer actions.
-pub type UrbanActions = (
-    &'static UrbanWifi,
-    &'static UrbanIdentity,
-    &'static UrbanLogging,
-);
+pub type UrbanActions<I, L> = (&'static UrbanWifi<I>, &'static UrbanIdentity, &'static L);
 
-// Two services with one id would route requests to the wrong service; this is
-// a build error already in `cargo check`.
-const _: () = {
-    assert!(<UrbanStatusServices as StatusSet<RawMutex>>::IDS_UNIQUE);
-    assert!(<UrbanActions as ActionRegistry>::IDS_UNIQUE);
-};
+/// The control backend of the Altruist Urban over the IP backend `I` and the
+/// BLE probe `B` of the platform.
+pub type UrbanDevice<I, B, L> = Device<UrbanConfig, UrbanStatuses<I, B, L>, UrbanActions<I, L>>;
 
-/// The service instances, shared by the status and the action registry.
-static SERVICES: StaticCell<UrbanServices> = StaticCell::new();
-
-/// The control backend of the Altruist Urban.
-pub type UrbanDevice = Device<UrbanConfig, UrbanStatuses, UrbanActions>;
+/// The static slot of the service instances of the platform.
+pub type ServicesSlot<I, B, L> = StaticCell<UrbanServices<I, B, L>>;
 
 fn uptime_ms() -> u64 {
     time::service().monotonic_now().millis
 }
 
+/// What the platform brings to the device of [`device`].
+pub struct Platform<I: 'static, B: 'static, L: 'static> {
+    /// Firmware name and board, reported by `GetInfo`.
+    pub info: DeviceInfo,
+    /// The slot of the service instances, a `static` of the platform.
+    pub services: &'static ServicesSlot<I, B, L>,
+    /// The IP data plane; `None` tells that the network runtime did not
+    /// start: its services then report a failed start instead of looking
+    /// disabled.
+    pub network: Option<NetworkHandle<'static, I>>,
+    /// The probe of the wireless heap, if the platform has one.
+    pub heap: Option<fn() -> rohi_sdk::net::HeapStats>,
+    /// The view of the control link (BLE: the peripheral) for the `ble`
+    /// service.
+    pub ble: B,
+    /// The `logging` service of the platform: its runtime owns the log storage.
+    pub logging: L,
+    /// Schedules the reset of the device, see [`crate::reboot`].
+    pub reboot: fn(),
+}
+
 /// The device over the runtime handles of the firmware.
-///
-/// `network` is the IP data plane; `None` tells that the network runtime did
-/// not start: its services then report a failed start instead of looking
-/// disabled. `ble` is the view of the BLE peripheral taken from its transport.
-pub fn device(
+pub fn device<I, B, L>(
+    platform: Platform<I, B, L>,
     config: ConfigHandle,
     identity: IdentityHandle,
-    network: Option<NetworkHandle<'static, Ip>>,
-    ble: BleStatus,
-) -> UrbanDevice {
+) -> UrbanDevice<I, B, L>
+where
+    I: IpBackend + 'static,
+    B: BleProbe + 'static,
+    L: Status + Action + 'static,
+{
+    // Two services with one id would route requests to the wrong service; this
+    // is a build error already in `cargo check`.
+    const {
+        assert!(<UrbanStatusServices<I, B, L> as StatusSet<RawMutex>>::IDS_UNIQUE);
+        assert!(<UrbanActions<I, L> as ActionRegistry>::IDS_UNIQUE);
+    }
+    let Platform {
+        info,
+        services,
+        network,
+        heap,
+        ble,
+        logging,
+        reboot: reboot_fn,
+    } = platform;
     let network_failed = network.is_none();
     let sections: &'static ConfigSections = SECTIONS.init(config_sections(config));
-    let services: &'static UrbanServices = SERVICES.init(UrbanServices {
+    let services: &'static UrbanServices<I, B, L> = services.init(UrbanServices {
         wifi: Startup::new(
-            WifiService::new(net::handle(), Delay, net::Probe::new(network)),
+            WifiService::new(net::handle(), Delay, net::Probe::new(network, heap)),
             network_failed,
         ),
         network: Startup::new(
-            NetworkService::new(net::handle(), net::Probe::new(network)),
+            NetworkService::new(net::handle(), net::Probe::new(network, heap)),
             network_failed,
         ),
         ble: BleService(ble),
@@ -202,13 +217,10 @@ pub fn device(
         location: LocationService(location::shared()),
         sensors: SensorsService(store::handle()),
         identity: IdentityService(StoredIdentity(identity)),
-        logging: logging::runtime().service(),
+        logging,
     });
     Device::new(
-        DeviceInfo {
-            firmware: FIRMWARE,
-            board: BOARD,
-        },
+        info,
         uptime_ms,
         StorageConfig::new(sections, maintenance()),
         Statuses::new((
@@ -224,10 +236,10 @@ pub fn device(
         )),
         (&services.wifi, &services.identity, &services.logging),
     )
-    .with_reboot(reboot::request)
+    .with_reboot(reboot_fn)
 }
 
-/// GATT layout of the ROHI Control Service.
+/// GATT layout of the ROHI Control Service, the same on every platform.
 pub const GATT: rohi_sdk::net::BleGattSpec = rohi_sdk::net::BleGattSpec {
     service: rohi_sdk::ble::uuid::SERVICE_UUID,
     rx: rohi_sdk::ble::uuid::RX_CHARACTERISTIC_UUID,
@@ -246,52 +258,5 @@ pub const BLE_CONFIG: rohi_sdk::net::BleConfig = rohi_sdk::net::BleConfig {
 /// owner published it at boot: the defaults, the firmware overrides and the
 /// stored overrides. The name is read once, when the peripheral starts.
 pub fn ble_config() -> rohi_sdk::net::BleConfig {
-    BLE_CONFIG.with_settings(&ble_settings())
-}
-
-/// Static storage of the BLE peripheral, sized by [`crate::resources`].
-pub static BLE_RESOURCES: StaticCell<BleResources> = StaticCell::new();
-
-/// Runs the BLE controller and host stack.
-#[embassy_executor::task]
-pub async fn ble_task(runner: BleRunner) {
-    runner.run().await
-}
-
-/// Starts the BLE control plane on `wireless`: the peripheral with the name
-/// the configuration owner published at boot, and the control task over the
-/// device built from `config`, `identity` and `network`. A BLE failure must
-/// never stop the sensors: it is logged and the firmware carries on.
-pub fn start(
-    spawner: Spawner,
-    wireless: &mut EspWireless,
-    config: ConfigHandle,
-    identity: IdentityHandle,
-    network: Option<NetworkHandle<'static, Ip>>,
-) {
-    match wireless.ble(ble_config(), BLE_RESOURCES.init(Default::default())) {
-        Ok((transport, runner)) => {
-            let device = device(config, identity, network, transport.status());
-            spawner.spawn(ble_task(runner).unwrap());
-            spawner.spawn(control_task(transport, device).unwrap());
-            info!(
-                "BLE control started, wireless heap free {} B",
-                wireless.heap().free
-            );
-        }
-        Err(error) => error!("BLE unavailable: {}", error),
-    }
-}
-
-/// Serves control requests received over BLE.
-///
-/// There is no link security policy yet: the transport reports the link
-/// security and the policy hook is in place, but [`OpenPolicy`] allows
-/// everything, including identity provisioning and erase. Switch to a
-/// stricter policy once BLE pairing is enabled.
-#[embassy_executor::task]
-pub async fn control_task(transport: BleTransport, device: UrbanDevice) {
-    let controller = Controller::new(device, OpenPolicy);
-    let mut control = ControlBle::new(transport, &controller);
-    control.run().await
+    BLE_CONFIG.with_settings(&crate::bindings::ble_settings())
 }
