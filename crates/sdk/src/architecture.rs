@@ -75,6 +75,7 @@
 //! |------|--------------|-----------------|
 //! | `SensorDriver` | I²C / UART / I²S drivers | simulated drivers fed by a scenario |
 //! | `ConfigStorage` | `EspConfigStorage` on the `rohi-cfg` partition | `FileFlash` of `rohi-sim`, a file with NOR rules |
+//! | Log storage | `FlashLogStorage` (`RingStorage` over `FlashMedium`) on the `rohi-log` partition | `RingStorage` over `FileLogFlash` of `rohi-sim`, a file with NOR rules |
 //! | `WifiBackend` | `EspWifi` | `SimWifi` of `rohi-sim` over simulated access points |
 //! | `IpBackend` | `EspIp` on `embassy-net` | `NativeIp` of `rohi-net-std` on host sockets, behind the faults of `SimIp` |
 //! | `BleTransport` | `EspBle` | `BluezBle` of `rohi-net-std` (Linux, feature `std-ble`) |

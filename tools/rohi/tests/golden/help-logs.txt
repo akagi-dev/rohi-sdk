@@ -1,0 +1,76 @@
+Show, follow, download or clear the persistent log of the device.
+
+A convenience over the actions of the `logging` service: `rohi logs` runs
+`logging.read`, `logs download` runs `logging.download` and `logs clear`
+runs `logging.clear`. Everything it does is also possible with `rohi action
+logging ...`. What the device keeps (level, storage, compression, size) is
+the `logging` config section: `rohi config logging`.
+
+Usage: rohi logs [OPTIONS]
+       rohi logs <COMMAND>
+
+Commands:
+  download  Save the retained log files of the device
+  clear     Remove the log history of the active storage
+  help      Print this message or the help of the given subcommand(s)
+
+Options:
+  -n, --lines <N>
+          How many of the latest records to print first
+          
+          [default: 20]
+
+  -f, --follow
+          Keep printing new records as they arrive, until interrupted
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Target:
+  -D, --device <DEVICE>
+          Target device: advertised name, ID, or a unique prefix or suffix of either; or a URI such as ble://NAME or tcp://HOST:PORT. Without it the only device found is used, or you choose among several
+          
+          [env: ROHI_DEVICE=]
+
+Output:
+  -o, --output <FORMAT>
+          Output format
+
+          Possible values:
+          - human: Text for people
+          - json:  JSON with a stable, versioned schema, for scripts
+          
+          [default: human]
+
+      --color <WHEN>
+          Color the text output
+
+          Possible values:
+          - auto:   Color when stdout is a terminal, unless `NO_COLOR` is set or `TERM` is `dumb`
+          - always: Always color
+          - never:  Never color
+          
+          [default: auto]
+
+Connection:
+      --scan-timeout <SECONDS>
+          How long to search for the target device, or to connect to a TCP endpoint
+          
+          [default: 10]
+
+      --timeout <SECONDS>
+          How long to wait for a device response
+          
+          [default: 10]
+
+Examples:
+  rohi logs
+  rohi logs -n 100
+  rohi logs -f
+  rohi logs -n 100 -f
+  rohi logs download
+  rohi logs download -d ./logs
+  rohi logs download --force
+  rohi logs clear
+  rohi logs clear --yes
+  rohi -o json logs -n 50

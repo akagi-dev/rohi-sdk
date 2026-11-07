@@ -34,7 +34,7 @@ The chip is selected by exactly one of the features `esp32c3` / `esp32c6`; witho
 `cargo build-esp32c6` are shortcuts for checking and building.
 
 The runner flashes the per-chip partition table (`partitions-esp32c3.csv` or `partitions-esp32c6.csv`), which reserves the `rohi-cfg` region used by the
-[configuration store](https://docs.rs/rohi-config). Run the command from the repository root.
+[configuration store](https://docs.rs/rohi-config) and the 256 KiB `rohi-log` region of the persistent log (`rohi-logging`). Run the command from the repository root.
 
 ## Sensors
 

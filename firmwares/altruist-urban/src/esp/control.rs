@@ -35,6 +35,7 @@ use rohi_sdk::esp::net::EspWireless;
 use rohi_sdk::net::NetworkHandle;
 use static_cell::StaticCell;
 
+use super::logging;
 use super::resources::{BleResources, BleRunner, BleStatus, BleTransport, Ip};
 use crate::config::ConfigHandle;
 use crate::control::{Platform, ServicesSlot, UrbanDevice};
@@ -51,10 +52,10 @@ const BOARD: &str = "urban-esp32c3";
 const BOARD: &str = "urban-esp32c6";
 
 /// The control backend of the Altruist Urban on the ESP.
-pub type EspDevice = UrbanDevice<Ip, BleStatus>;
+pub type EspDevice = UrbanDevice<Ip, BleStatus, logging::Service>;
 
 /// The service instances, shared by the status and the action registry.
-static SERVICES: ServicesSlot<Ip, BleStatus> = StaticCell::new();
+static SERVICES: ServicesSlot<Ip, BleStatus, logging::Service> = StaticCell::new();
 
 /// The device over the runtime handles of the firmware.
 ///
@@ -77,6 +78,7 @@ pub fn device(
             network,
             heap: super::net::heap_probe(),
             ble,
+            logging: logging::runtime().service(),
             reboot: reboot::request,
         },
         config,
@@ -109,8 +111,8 @@ pub fn start(
     match wireless.ble(ble_config(), BLE_RESOURCES.init(Default::default())) {
         Ok((transport, runner)) => {
             let device = device(config, identity, network, transport.status());
-            spawner.spawn(ble_task(runner).unwrap());
-            spawner.spawn(control_task(transport, device).unwrap());
+            crate::tasks::spawn(spawner, "ble_task", ble_task(runner));
+            crate::tasks::spawn(spawner, "control_task", control_task(transport, device));
             info!(
                 "BLE control started, wireless heap free {} B",
                 wireless.heap().free

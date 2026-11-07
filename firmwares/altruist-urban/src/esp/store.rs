@@ -28,7 +28,7 @@ use crate::tasks::store;
 
 /// Starts the store task. Spawn it before the sensors that report to it.
 pub fn start(spawner: Spawner) {
-    spawner.spawn(store_task().unwrap());
+    crate::tasks::spawn(spawner, "store_task", store_task());
 }
 
 fn log_heap() {

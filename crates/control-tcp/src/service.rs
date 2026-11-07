@@ -62,11 +62,14 @@ pub trait Acceptor {
 /// the value in a `static` or in the future of the control task.
 ///
 /// The authorization of requests follows the [`LinkSecurity`] of the link, which
-/// is always the default one (unencrypted, unauthenticated): this transport
-/// has no pairing or encryption, see the [crate documentation](crate).
+/// is always unencrypted and unauthenticated: this transport has no pairing or
+/// encryption, see the [crate documentation](crate). Every connection is its
+/// own [`session`](LinkSecurity::session), so it cannot use the streams of
+/// another, and [`Controller::link_lost`] runs when it ends.
 pub struct ControlTcp<'c, A, S, P> {
     acceptor: A,
     controller: &'c Controller<S, P>,
+    sessions: u32,
     request: [u8; MAX_REQUEST_LEN],
     response: [u8; HEADER_LEN + MAX_RESPONSE_LEN],
 }
@@ -82,6 +85,7 @@ where
         Self {
             acceptor,
             controller,
+            sessions: 0,
             request: [0; MAX_REQUEST_LEN],
             response: [0; HEADER_LEN + MAX_RESPONSE_LEN],
         }
@@ -119,13 +123,18 @@ where
     pub async fn serve_next(&mut self) -> Result<(), A::Error> {
         let stream = self.acceptor.accept().await?;
         debug!("control: client connected");
+        self.sessions = self.sessions.wrapping_add(1);
         self.serve(stream).await;
+        self.controller.link_lost();
         debug!("control: client disconnected");
         Ok(())
     }
 
     async fn serve(&mut self, mut stream: A::Stream) {
-        let link = LinkSecurity::default();
+        let link = LinkSecurity {
+            session: self.sessions,
+            ..LinkSecurity::default()
+        };
         loop {
             let mut header = [0u8; HEADER_LEN];
             match read_header(&mut stream, &mut header).await {

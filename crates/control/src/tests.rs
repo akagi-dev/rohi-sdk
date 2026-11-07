@@ -214,6 +214,7 @@ fn radio() -> Radio {
 const PLAIN: LinkSecurity = LinkSecurity {
     encrypted: false,
     authenticated: false,
+    session: 0,
 };
 
 fn text<const N: usize>(value: &str) -> String<N> {
@@ -583,6 +584,7 @@ fn factory_reset_resets_every_section_and_needs_a_secure_link() {
     let encrypted = LinkSecurity {
         encrypted: true,
         authenticated: false,
+        session: 0,
     };
     call(
         &controller,
@@ -639,6 +641,7 @@ fn reboot_needs_the_hook_and_a_secure_link() {
     let encrypted = LinkSecurity {
         encrypted: true,
         authenticated: false,
+        session: 0,
     };
     assert!(matches!(
         call(&controller, &encrypted, request()),
@@ -863,10 +866,12 @@ fn the_policy_gates_writes_and_privileged_actions() {
     let encrypted = LinkSecurity {
         encrypted: true,
         authenticated: false,
+        session: 0,
     };
     let strong = LinkSecurity {
         encrypted: true,
         authenticated: true,
+        session: 0,
     };
 
     let write = || Call::PatchConfigSection(patch(1, &[mutation(3, string_value("a.io"))]));
@@ -1164,4 +1169,371 @@ fn a_service_with_one_capability_is_unsupported_for_the_other() {
             pb::ErrorCode::NotFound
         );
     }
+}
+
+#[derive(Service)]
+struct Files {
+    open: Cell<bool>,
+    lost: Cell<u32>,
+}
+
+const FILE_BYTES: &[u8] = b"0123456789abcdef";
+
+impl Action for Files {
+    const ACTIONS: &'static [ActionDescriptor] = &[
+        ActionDescriptor::new(1, "export").stream(),
+        ActionDescriptor::new(2, "list"),
+        ActionDescriptor::new(3, "export_private")
+            .stream()
+            .privileged(),
+    ];
+
+    async fn invoke(
+        &self,
+        action: u32,
+        _: &[(u32, Value)],
+        out: &mut impl ActionOutput,
+    ) -> Result<(), ActionError> {
+        match action {
+            1 | 3 if self.open.get() => Err(ActionError::Busy),
+            1 | 3 => {
+                self.open.set(true);
+                let mut files = Vec::new();
+                files
+                    .push(rohi_service::StreamFile {
+                        id: 3,
+                        name: String::try_from("rohi1.log.lz4").unwrap(),
+                        size_bytes: FILE_BYTES.len() as u64,
+                    })
+                    .unwrap();
+                out.stream(rohi_service::StreamInfo { id: 9, files })
+                    .map_err(|_| ActionError::Internal)
+            }
+            // Declared without a stream, so the output refuses one.
+            2 => out
+                .stream(rohi_service::StreamInfo {
+                    id: 1,
+                    files: Vec::new(),
+                })
+                .map_err(|_| ActionError::Internal),
+            _ => Err(ActionError::UnknownAction),
+        }
+    }
+
+    async fn read_stream(
+        &self,
+        stream: u32,
+        file: u32,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> Result<rohi_service::StreamChunk, ActionError> {
+        if !self.open.get() || stream != 9 || file != 3 {
+            return Err(ActionError::UnknownStream);
+        }
+        let offset = usize::try_from(offset).map_err(|_| ActionError::InvalidArgument)?;
+        let rest = FILE_BYTES
+            .get(offset..)
+            .ok_or(ActionError::InvalidArgument)?;
+        let len = rest.len().min(5).min(buf.len());
+        buf[..len].copy_from_slice(&rest[..len]);
+        Ok(rohi_service::StreamChunk {
+            len,
+            eof: len == rest.len(),
+        })
+    }
+
+    async fn close_stream(&self, stream: u32) -> Result<(), ActionError> {
+        if self.open.replace(false) && stream == 9 {
+            Ok(())
+        } else {
+            Err(ActionError::UnknownStream)
+        }
+    }
+
+    fn link_lost(&self) {
+        self.lost.set(self.lost.get() + 1);
+        self.open.set(false);
+    }
+}
+
+fn files_controller(files: &Files) -> Controller<Device<(), (), (&Files,)>, OpenPolicy> {
+    Controller::new(Device::new(INFO, uptime, (), (), (files,)), OpenPolicy)
+}
+
+fn files() -> Files {
+    Files {
+        open: Cell::new(false),
+        lost: Cell::new(0),
+    }
+}
+
+fn read_stream(offset: u64) -> Call {
+    Call::ReadStream(pb::ReadStreamRequest {
+        service_id: Files::ID,
+        stream_id: 9,
+        file_id: 3,
+        offset,
+    })
+}
+
+#[test]
+fn an_action_returns_a_stream_that_is_read_by_offset_and_closed() {
+    let files = files();
+    let controller = files_controller(&files);
+
+    let Reply::ActionStream(info) = call(
+        &controller,
+        &PLAIN,
+        Call::InvokeAction(pb::InvokeActionRequest {
+            service_id: Files::ID,
+            action_id: 1,
+            args: Vec::new(),
+        }),
+    ) else {
+        panic!("not a stream");
+    };
+    assert_eq!((info.service_id, info.id), (Files::ID, 9));
+    assert_eq!(info.files.len(), 1);
+    assert_eq!(info.files[0].name.as_str(), "rohi1.log.lz4");
+    assert_eq!(info.files[0].size_bytes, FILE_BYTES.len() as u64);
+
+    let mut data = std::vec::Vec::new();
+    loop {
+        let Reply::ReadStream(chunk) = call(&controller, &PLAIN, read_stream(data.len() as u64))
+        else {
+            panic!("not a chunk");
+        };
+        assert_eq!(chunk.offset, data.len() as u64);
+        data.extend_from_slice(&chunk.data);
+        if chunk.eof {
+            break;
+        }
+    }
+    assert_eq!(data, FILE_BYTES);
+
+    // A repeated read of the same offset gives the same bytes.
+    let (Reply::ReadStream(first), Reply::ReadStream(again)) = (
+        call(&controller, &PLAIN, read_stream(5)),
+        call(&controller, &PLAIN, read_stream(5)),
+    ) else {
+        panic!("not a chunk");
+    };
+    assert_eq!(first.data, again.data);
+
+    assert_eq!(
+        error_code(&call(&controller, &PLAIN, read_stream(99))),
+        pb::ErrorCode::InvalidArgument
+    );
+    let close = || {
+        Call::CloseStream(pb::CloseStreamRequest {
+            service_id: Files::ID,
+            stream_id: 9,
+        })
+    };
+    assert!(matches!(
+        call(&controller, &PLAIN, close()),
+        Reply::CloseStream(_)
+    ));
+    assert_eq!(
+        error_code(&call(&controller, &PLAIN, read_stream(0))),
+        pb::ErrorCode::NotFound
+    );
+    assert_eq!(
+        error_code(&call(&controller, &PLAIN, close())),
+        pb::ErrorCode::NotFound
+    );
+}
+
+#[test]
+fn a_stream_is_refused_when_busy_unknown_or_undeclared() {
+    let files = files();
+    let controller = files_controller(&files);
+    let invoke = |action| {
+        Call::InvokeAction(pb::InvokeActionRequest {
+            service_id: Files::ID,
+            action_id: action,
+            args: Vec::new(),
+        })
+    };
+    assert!(matches!(
+        call(&controller, &PLAIN, invoke(1)),
+        Reply::ActionStream(_)
+    ));
+    assert_eq!(
+        error_code(&call(&controller, &PLAIN, invoke(1))),
+        pb::ErrorCode::Busy
+    );
+    assert_eq!(
+        error_code(&call(&controller, &PLAIN, invoke(2))),
+        pb::ErrorCode::Internal
+    );
+    assert_eq!(
+        error_code(&call(
+            &controller,
+            &PLAIN,
+            Call::ReadStream(pb::ReadStreamRequest {
+                service_id: 12345,
+                ..Default::default()
+            }),
+        )),
+        pb::ErrorCode::NotFound
+    );
+}
+
+#[test]
+fn losing_the_link_releases_the_streams() {
+    let files = files();
+    let controller = files_controller(&files);
+    assert!(matches!(
+        call(
+            &controller,
+            &PLAIN,
+            Call::InvokeAction(pb::InvokeActionRequest {
+                service_id: Files::ID,
+                action_id: 1,
+                args: Vec::new(),
+            }),
+        ),
+        Reply::ActionStream(_)
+    ));
+    controller.link_lost();
+    assert_eq!(files.lost.get(), 1);
+    assert_eq!(
+        error_code(&call(&controller, &PLAIN, read_stream(0))),
+        pb::ErrorCode::NotFound
+    );
+}
+
+#[test]
+fn the_action_listing_tells_which_actions_return_a_stream() {
+    let files = files();
+    let controller = files_controller(&files);
+    let Reply::ListActions(list) = call(
+        &controller,
+        &PLAIN,
+        Call::ListActions(pb::ListActionsRequest {}),
+    ) else {
+        panic!("not a list");
+    };
+    let streams: std::vec::Vec<bool> = list.actions.iter().map(|a| a.returns_stream).collect();
+    assert_eq!(streams, [true, false, true]);
+}
+
+const OTHER: LinkSecurity = LinkSecurity {
+    encrypted: false,
+    authenticated: false,
+    session: 2,
+};
+
+fn export(action: u32) -> Call {
+    Call::InvokeAction(pb::InvokeActionRequest {
+        service_id: Files::ID,
+        action_id: action,
+        args: Vec::new(),
+    })
+}
+
+fn close_stream() -> Call {
+    Call::CloseStream(pb::CloseStreamRequest {
+        service_id: Files::ID,
+        stream_id: 9,
+    })
+}
+
+#[test]
+fn a_stream_cannot_be_read_or_closed_by_another_session() {
+    let files = files();
+    let controller = files_controller(&files);
+    assert!(matches!(
+        call(&controller, &PLAIN, export(1)),
+        Reply::ActionStream(_)
+    ));
+    assert_eq!(
+        error_code(&call(&controller, &OTHER, read_stream(0))),
+        pb::ErrorCode::NotFound
+    );
+    assert_eq!(
+        error_code(&call(&controller, &OTHER, close_stream())),
+        pb::ErrorCode::NotFound
+    );
+    // The owner still has it.
+    assert!(matches!(
+        call(&controller, &PLAIN, read_stream(0)),
+        Reply::ReadStream(_)
+    ));
+    assert!(matches!(
+        call(&controller, &PLAIN, close_stream()),
+        Reply::CloseStream(_)
+    ));
+}
+
+#[test]
+fn a_stream_needs_the_privilege_of_the_action_that_created_it() {
+    let files = files();
+    let controller = Controller::new(
+        Device::new(INFO, uptime, (), (), (&files,)),
+        RequireEncryption,
+    );
+    let encrypted = LinkSecurity {
+        encrypted: true,
+        authenticated: false,
+        session: 1,
+    };
+    assert_eq!(
+        error_code(&call(&controller, &PLAIN, export(3))),
+        pb::ErrorCode::PermissionDenied
+    );
+    assert!(matches!(
+        call(&controller, &encrypted, export(3)),
+        Reply::ActionStream(_)
+    ));
+    assert!(matches!(
+        call(&controller, &encrypted, read_stream(0)),
+        Reply::ReadStream(_)
+    ));
+    // The same session on a link that lost its encryption is refused.
+    let downgraded = LinkSecurity {
+        encrypted: false,
+        ..encrypted
+    };
+    assert_eq!(
+        error_code(&call(&controller, &downgraded, read_stream(0))),
+        pb::ErrorCode::PermissionDenied
+    );
+    assert_eq!(
+        error_code(&call(&controller, &downgraded, close_stream())),
+        pb::ErrorCode::PermissionDenied
+    );
+    assert!(matches!(
+        call(&controller, &encrypted, close_stream()),
+        Reply::CloseStream(_)
+    ));
+}
+
+#[test]
+fn a_new_session_cannot_use_the_streams_of_a_lost_link() {
+    let files = files();
+    let controller = files_controller(&files);
+    assert!(matches!(
+        call(&controller, &PLAIN, export(1)),
+        Reply::ActionStream(_)
+    ));
+    controller.link_lost();
+    assert_eq!(
+        error_code(&call(&controller, &PLAIN, read_stream(0))),
+        pb::ErrorCode::NotFound
+    );
+    // The id is free again for the next client.
+    assert!(matches!(
+        call(&controller, &OTHER, export(1)),
+        Reply::ActionStream(_)
+    ));
+    assert!(matches!(
+        call(&controller, &OTHER, read_stream(0)),
+        Reply::ReadStream(_)
+    ));
+    assert_eq!(
+        error_code(&call(&controller, &PLAIN, read_stream(0))),
+        pb::ErrorCode::NotFound
+    );
 }

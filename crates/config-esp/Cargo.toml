@@ -19,6 +19,7 @@ maintenance = { status = "actively-developed" }
 [dependencies]
 rohi-config.workspace = true
 embedded-storage.workspace = true
+embassy-sync.workspace = true
 
 esp-storage = { workspace = true, features = [
   "embedded-storage",
@@ -26,6 +27,7 @@ esp-storage = { workspace = true, features = [
 esp-bootloader-esp-idf = { workspace = true, optional = true }
 
 [dev-dependencies]
+critical-section = { version = "1", features = ["std"] }
 minicbor.workspace = true
 
 [features]

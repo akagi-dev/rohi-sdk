@@ -53,7 +53,7 @@ checksum = "c583acf993cf4245c4acb0a2cc2ab1f9cc097de73411bb6d3647ff6af2b1013d"
 
 [[package]]
 name = "altruist-urban"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "clap",
  "critical-section",
@@ -830,9 +830,9 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "cc"
-version = "1.11.0"
+version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "375989decec1a0fa424442bed520fa12ede43a48475ce8c7417d2c69b32b5f6b"
+checksum = "4ff2a8126fff0f8c839080d619675a585e61720bb12d2baceae45769fd66f155"
 dependencies = [
  "find-msvc-tools",
  "shlex",
@@ -3170,6 +3170,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lz4_flex"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ecbdfe44b1bd960b68170b417450a628c43f7cf56bb3c5317e61cb230ee7f226"
+dependencies = [
+ "twox-hash 2.1.5",
+]
+
+[[package]]
 name = "macaddr"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3916,14 +3925,16 @@ dependencies = [
 
 [[package]]
 name = "rohi"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "btleplug",
  "chrono",
  "clap",
+ "critical-section",
  "embassy-sync 0.8.0",
  "futures",
  "heapless 0.9.3",
+ "log",
  "minicbor",
  "rohi-config",
  "rohi-connectivity",
@@ -3933,8 +3944,10 @@ dependencies = [
  "rohi-control-tcp",
  "rohi-identity",
  "rohi-location",
+ "rohi-logging",
  "rohi-net",
  "rohi-service",
+ "rohi-time",
  "rohi-time-ntp",
  "rpassword",
  "serde",
@@ -3949,7 +3962,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-config"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "heapless 0.9.3",
  "minicbor",
@@ -3961,7 +3974,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-config-derive"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "heapless 0.9.3",
  "minicbor",
@@ -3975,8 +3988,10 @@ dependencies = [
 
 [[package]]
 name = "rohi-config-esp"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
+ "critical-section",
+ "embassy-sync 0.8.0",
  "embedded-storage",
  "esp-bootloader-esp-idf",
  "esp-storage",
@@ -3986,7 +4001,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-connectivity"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",
@@ -4009,7 +4024,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-connectivity-proto"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "heapless 0.9.3",
  "micropb",
@@ -4018,8 +4033,9 @@ dependencies = [
 
 [[package]]
 name = "rohi-control"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
+ "critical-section",
  "embassy-futures",
  "embassy-sync 0.8.0",
  "heapless 0.9.3",
@@ -4032,7 +4048,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-control-ble"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",
@@ -4046,7 +4062,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-control-proto"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "heapless 0.9.3",
  "micropb",
@@ -4055,18 +4071,21 @@ dependencies = [
 
 [[package]]
 name = "rohi-control-tcp"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
+ "critical-section",
  "embassy-futures",
  "embedded-io-async 0.7.0",
+ "heapless 0.9.3",
  "log",
  "rohi-control",
  "rohi-control-proto",
+ "rohi-service",
 ]
 
 [[package]]
 name = "rohi-examples"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "altruist-urban",
  "embassy-executor",
@@ -4085,7 +4104,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-hal"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",
@@ -4101,7 +4120,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-hal-esp"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "esp-hal",
  "rohi-hal",
@@ -4109,7 +4128,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-identity"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "ed25519-zebra",
  "embassy-futures",
@@ -4123,7 +4142,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-location"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",
@@ -4134,8 +4153,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "rohi-logging"
+version = "0.7.0"
+dependencies = [
+ "critical-section",
+ "embassy-futures",
+ "embassy-sync 0.8.0",
+ "embedded-hal-async",
+ "embedded-storage",
+ "heapless 0.9.3",
+ "log",
+ "lz4_flex",
+ "minicbor",
+ "rohi-config",
+ "rohi-hal",
+ "rohi-service",
+ "rohi-time",
+]
+
+[[package]]
 name = "rohi-net"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",
@@ -4152,7 +4190,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-net-esp"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "embassy-futures",
  "embassy-net",
@@ -4171,9 +4209,10 @@ dependencies = [
 
 [[package]]
 name = "rohi-net-std"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bluer",
+ "critical-section",
  "embassy-futures",
  "embedded-io-async 0.7.0",
  "embedded-nal-async",
@@ -4188,7 +4227,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-sdk"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "minicbor",
  "rohi-config",
@@ -4201,6 +4240,7 @@ dependencies = [
  "rohi-hal-esp",
  "rohi-identity",
  "rohi-location",
+ "rohi-logging",
  "rohi-net",
  "rohi-net-esp",
  "rohi-net-std",
@@ -4212,7 +4252,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-service"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",
@@ -4227,7 +4267,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-service-derive"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -4238,7 +4278,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-sim"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "critical-section",
  "embassy-executor",
@@ -4251,25 +4291,26 @@ dependencies = [
  "minicbor",
  "rohi-config",
  "rohi-hal",
+ "rohi-logging",
  "rohi-net",
  "rohi-net-std",
  "serde",
  "tempfile",
  "tokio",
- "toml 1.2.0+spec-1.1.0",
+ "toml 1.2.1+spec-1.1.0",
 ]
 
 [[package]]
 name = "rohi-support-matrix"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "serde",
- "toml 1.2.0+spec-1.1.0",
+ "toml 1.2.1+spec-1.1.0",
 ]
 
 [[package]]
 name = "rohi-time"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",
@@ -4282,7 +4323,7 @@ dependencies = [
 
 [[package]]
 name = "rohi-time-ntp"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",
@@ -4577,9 +4618,9 @@ dependencies = [
 
 [[package]]
 name = "serde_spanned"
-version = "1.1.2"
+version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e7523beb55eece201a2356bee0bbca0d1ab466c14c07703b2e0ee6d42cb0c2c"
+checksum = "9c187e0a369471c550af028cba56d4f4fa2a489ad28151ae95a4d340a2a8b782"
 dependencies = [
  "serde_core",
 ]
@@ -4731,9 +4772,9 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "smallvec"
-version = "1.16.4"
+version = "1.16.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0d5d4b1981b8bbbb7aed204cae5726d683d5d6ac7e74ec54122ea28f315e7c8"
+checksum = "149309498a5f7334b12ddae0cad8aba81ce785fe91755068867e017cf98fee46"
 
 [[package]]
 name = "smoltcp"
@@ -4852,7 +4893,7 @@ dependencies = [
  "digest 0.10.7",
  "sha2 0.10.9",
  "sha3",
- "twox-hash",
+ "twox-hash 1.6.3",
 ]
 
 [[package]]
@@ -5253,14 +5294,14 @@ dependencies = [
 
 [[package]]
 name = "toml"
-version = "1.2.0+spec-1.1.0"
+version = "1.2.1+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5ffcdf8f50436dbbfd675c1fe1b8e0854f42b7defea8584bdebe1aee900e561"
+checksum = "d5755c51863cdac711f1956baf8eb9588e060755f7d3c4c979e70ea1e1f32cd7"
 dependencies = [
  "indexmap 2.14.2",
  "serde_core",
  "serde_spanned",
- "toml_datetime 1.1.2+spec-1.1.0",
+ "toml_datetime 1.1.3+spec-1.1.0",
  "toml_parser",
  "toml_writer",
  "winnow 1.0.5",
@@ -5277,21 +5318,21 @@ dependencies = [
 
 [[package]]
 name = "toml_datetime"
-version = "1.1.2+spec-1.1.0"
+version = "1.1.3+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b86d767906c6c42421dcba507eb9d203e779497710a47782a224bb871653053"
+checksum = "173f25c883cd2176a2d8212155638c0a60d484a9d84546d270866f40f56b6e49"
 dependencies = [
  "serde_core",
 ]
 
 [[package]]
 name = "toml_edit"
-version = "0.25.18+spec-1.1.0"
+version = "0.25.19+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ec6e78bd70db9420d8d212fa9dc97f116448a1ceff5d00eabb991d407e21396"
+checksum = "dd43688c4858d7264ae1cf9a9f874a67c3feb74a883b1cd7bebd6a4ea8307218"
 dependencies = [
  "indexmap 2.14.2",
- "toml_datetime 1.1.2+spec-1.1.0",
+ "toml_datetime 1.1.3+spec-1.1.0",
  "toml_parser",
  "winnow 1.0.5",
 ]
@@ -5416,7 +5457,7 @@ dependencies = [
  "serde_json",
  "target-tuple",
  "termcolor",
- "toml 1.2.0+spec-1.1.0",
+ "toml 1.2.1+spec-1.1.0",
 ]
 
 [[package]]
@@ -5430,6 +5471,12 @@ dependencies = [
  "rand 0.8.8",
  "static_assertions",
 ]
+
+[[package]]
+name = "twox-hash"
+version = "2.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86a801b3cea342a06d468c8710662aa29e5e05e4f5c0d62f00bbb7f2ad7941c2"
 
 [[package]]
 name = "typenum"
@@ -5502,9 +5549,9 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "uuid"
-version = "1.29.0"
+version = "1.29.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a0e2d11620c50695fe12bbbfde96b3477fe606e7284c22d505c12ce51214514"
+checksum = "4a06f08a856b009bc7bbaf7d3e79808595d032dd19074c0c2ef26e49e03e6bdc"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",

@@ -61,10 +61,10 @@ pub fn start(spawner: Spawner, board: AltruistUrban) {
         microphone,
     } = board;
     let i2c_bus = I2C_BUS.init(Mutex::new(i2c));
-    spawner.spawn(bmx280_task(i2c_handle(i2c_bus)).unwrap());
-    spawner.spawn(scd4x_task(i2c_handle(i2c_bus)).unwrap());
-    spawner.spawn(sds011_task(sds011_uart).unwrap());
-    spawner.spawn(noise_task(microphone).unwrap());
+    crate::tasks::spawn(spawner, "bmx280_task", bmx280_task(i2c_handle(i2c_bus)));
+    crate::tasks::spawn(spawner, "scd4x_task", scd4x_task(i2c_handle(i2c_bus)));
+    crate::tasks::spawn(spawner, "sds011_task", sds011_task(sds011_uart));
+    crate::tasks::spawn(spawner, "noise_task", noise_task(microphone));
     info!("Sensor tasks started");
 }
 

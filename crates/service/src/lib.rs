@@ -200,6 +200,7 @@
 //! | issue descriptors per service ([`MAX_ISSUE_DESCRIPTORS`]) | 12 |
 //! | action arguments ([`MAX_ACTION_ARGS`]) | 3 |
 //! | action records ([`MAX_RECORDS`]) | 6 |
+//! | files of a stream ([`MAX_STREAM_FILES`]), bytes of a stream chunk ([`MAX_STREAM_CHUNK`]) | 24, 512 |
 //! | fields per record ([`MAX_RECORD_FIELDS`]) | 4 |
 //! | string or bytes status value or action result ([`MAX_FIELD_VALUE_LEN`]) | 32 bytes |
 //! | string or bytes config value or action argument ([`MAX_VALUE_LEN`]) | 64 bytes |
@@ -220,8 +221,9 @@ pub mod service;
 pub mod status;
 
 pub use action::{
-    Action, ActionDescriptor, ActionError, ActionOutput, MAX_ACTION_ARGS, MAX_RECORD_FIELDS,
-    MAX_RECORDS, Records,
+    Action, ActionDescriptor, ActionError, ActionOutput, ActionResult, MAX_ACTION_ARGS,
+    MAX_RECORD_FIELDS, MAX_RECORDS, MAX_STREAM_CHUNK, MAX_STREAM_FILES, Records, StreamChunk,
+    StreamFile, StreamInfo,
 };
 pub use config::{
     Config, ConfigEntry, ConfigError, ConfigRegistry, ConfigSectionOps, ConfigUpdate, EntryState,

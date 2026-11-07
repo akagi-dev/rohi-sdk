@@ -16,6 +16,7 @@
   - [Configuration](use/desktop/configuration.md)
   - [Status & diagnostics](use/desktop/status.md)
   - [Actions](use/desktop/actions.md)
+  - [Device log](use/desktop/logs.md)
   - [Automation](use/desktop/automation.md)
 - [Mobile application](use/mobile.md)
 

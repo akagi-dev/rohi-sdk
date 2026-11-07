@@ -35,6 +35,8 @@ compile_error!(
 pub mod config;
 pub mod connectivity;
 pub mod control;
+pub mod flash;
+pub mod logging;
 pub mod net;
 pub mod reboot;
 pub mod resources;

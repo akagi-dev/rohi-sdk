@@ -37,7 +37,7 @@ use esp_bootloader_esp_idf::partitions::{
 };
 use esp_storage::FlashStorage;
 
-use crate::layout::{PARTITION_LABEL, SECTOR_SIZE};
+use crate::layout::{LOG_PARTITION_LABEL, PARTITION_LABEL, SECTOR_SIZE};
 use crate::{EspConfigStorage, EspStorageError, FlashRegion};
 
 pub use esp_storage;
@@ -58,19 +58,43 @@ pub enum PartitionError {
 }
 
 fn find_region(table: &PartitionTable<'_>) -> Result<FlashRegion, PartitionError> {
+    find_labelled(table, PARTITION_LABEL, 2)
+}
+
+fn find_labelled(
+    table: &PartitionTable<'_>,
+    label: &str,
+    min_sectors: usize,
+) -> Result<FlashRegion, PartitionError> {
     let entry = table
         .iter()
         .find(|entry| {
             // The sub-type is deliberately not parsed: only the label and the
-            // data type identify the configuration partition.
-            entry.raw_type() == DATA_PARTITION_TYPE && entry.label_as_str() == PARTITION_LABEL
+            // data type identify a ROHI partition.
+            entry.raw_type() == DATA_PARTITION_TYPE && entry.label_as_str() == label
         })
         .ok_or(PartitionError::NotFound)?;
     let region = FlashRegion::new(entry.offset() as usize, entry.len() as usize);
-    if region.length < 2 * SECTOR_SIZE {
+    if region.length < min_sectors * SECTOR_SIZE {
         return Err(PartitionError::TooSmall);
     }
     Ok(region)
+}
+
+/// Resolves the persistent log region (`rohi-log`) from the on-flash partition
+/// table.
+///
+/// # Errors
+///
+/// [`PartitionError::PartitionTable`] if the table cannot be read,
+/// [`PartitionError::NotFound`] if there is no data partition labelled
+/// `rohi-log`, [`PartitionError::TooSmall`] if it is smaller than four erase
+/// sectors (two segments of one sector).
+pub fn log_partition_region(flash: &mut FlashStorage<'_>) -> Result<FlashRegion, PartitionError> {
+    let mut buffer = [0u8; PARTITION_TABLE_MAX_LEN];
+    let table =
+        read_partition_table(flash, &mut buffer).map_err(|_| PartitionError::PartitionTable)?;
+    find_labelled(&table, LOG_PARTITION_LABEL, 4)
 }
 
 /// Resolves the configuration region from the on-flash partition table.

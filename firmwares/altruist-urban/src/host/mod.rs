@@ -56,6 +56,7 @@ compile_error!("the `std-ble` feature needs BlueZ and is only available on Linux
 pub mod app;
 pub mod args;
 pub mod control;
+pub mod logging;
 pub mod process;
 #[cfg(feature = "sensor-simulator")]
 pub mod sensors;

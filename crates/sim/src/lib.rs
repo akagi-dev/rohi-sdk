@@ -37,6 +37,7 @@
 //! ```text
 //! simulated sensors --SensorDriver--> Runner --> store task --> MeasurementStore
 //! FileFlash (NOR rules) -------------ConfigStorage--> ConfigStore owner
+//! FileLogFlash (NOR rules) ----------Medium-----------> logging task (RingStorage)
 //! SimWifi ---------------------------WifiBackend----> WifiManager
 //! SimIp(NativeIp) -------------------IpBackend------> NetworkHandle
 //!        ▲ World: sensor values, access points, IP faults ◄── management / scenario
@@ -72,6 +73,7 @@
 //! | [`scenario::Scenario`] | Initial state and a timeline of commands, from a TOML file |
 //! | [`management`] | The line-based TCP interface that executes commands while the device runs |
 //! | [`storage::FileFlash`] | NOR flash with the geometry of the configuration partition, backed by a file |
+//! | [`log_storage::FileLogFlash`] | NOR flash with the geometry of the `rohi-log` partition, backed by a file, for the persistent log |
 //! | [`wifi::SimWifi`] | The `WifiBackend` over the simulated access points |
 //! | [`ip::SimIp`] | The `IpBackend` wrapper applying the IP faults of the world |
 //! | `sensors` | Simulated drivers for the real sensor runner (feature `sensors`) |
@@ -95,6 +97,7 @@
 //! | [`command::Command`] | parse and describe commands |
 //! | [`management::start`], [`management::Hooks`] | serve the management interface |
 //! | [`storage::FileFlash`] | open the persistent configuration flash |
+//! | [`log_storage::FileLogFlash`] | open the persistent log flash |
 //! | [`wifi::SimWifi`], [`ip::SimIp`] | provide the network backends |
 //!
 //! # Guarantees and Limitations
@@ -113,6 +116,7 @@
 
 pub mod command;
 pub mod ip;
+pub mod log_storage;
 pub mod management;
 pub mod scenario;
 #[cfg(feature = "sensors")]

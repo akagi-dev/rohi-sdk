@@ -67,8 +67,9 @@ What the columns mean and how status differs from configuration is explained in
 | `factory-reset [--yes]` | format the configuration storage, identity included |
 | `reboot` | reboot the device |
 | `action [SERVICE] [ACTION] [ARG=VALUE...]` | list and run the actions of the services |
+| `logs [-n N] [-f]`, `logs download [-d DIR]`, `logs clear` | read, follow, save and clear the persistent device log |
 
-Each command has its own page: [Discovery & connection](discovery.md), [Configuration](configuration.md), [Status & diagnostics](status.md), [Actions](actions.md) and [Automation](automation.md).
+Each command has its own page: [Discovery & connection](discovery.md), [Configuration](configuration.md), [Status & diagnostics](status.md), [Actions](actions.md), [Device log](logs.md) and [Automation](automation.md).
 
 ## Migrating from earlier versions
 

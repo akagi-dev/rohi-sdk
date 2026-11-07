@@ -13,13 +13,13 @@ rohi scan                  # list nearby ROHI devices
 | One device found | uses it |
 | Several devices, interactive terminal | shows a numbered list on stderr and asks |
 | Several devices, no terminal | fails and lists them; it never picks one for you |
-| `--device <DEVICE>` | uses the device that matches; fails if none or more than one does |
+| `-D`, `--device <DEVICE>` | uses the device that matches; fails if none or more than one does |
 
-`--device` (`-d`) accepts the exact platform ID, the exact advertised name, or a unique prefix or suffix of either
+`--device` (`-D`) accepts the exact platform ID, the exact advertised name, or a unique prefix or suffix of either
 (`A12F` for `ALTRUIST-URBAN-A12F`). Setting `ROHI_DEVICE` is the same as passing `--device`.
 
 ```bash
-rohi -d A12F status
+rohi -D A12F status
 export ROHI_DEVICE=ALTRUIST-URBAN-A12F
 ```
 

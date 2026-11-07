@@ -7,13 +7,14 @@ edition.workspace = true
 homepage.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Simulated world for ROHI applications on std: sensors, Wi-Fi, IP faults, file-backed config flash, scenarios and a management interface"
+description = "Simulated world for ROHI applications on std: sensors, Wi-Fi, IP faults, file-backed config and log flash, scenarios and a management interface"
 
 [badges]
 maintenance = { status = "actively-developed" }
 
 [dependencies]
 rohi-config.workspace = true
+rohi-logging.workspace = true
 rohi-net.workspace = true
 rohi-hal = { workspace = true, features = ["embassy-time"] }
 rohi-net-std.workspace = true

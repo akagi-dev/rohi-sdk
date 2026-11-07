@@ -32,7 +32,7 @@ Options:
           Print help; for an action, describe its arguments and results
 
 Target:
-  -d, --device <DEVICE>
+  -D, --device <DEVICE>
           Target device: advertised name, ID, or a unique prefix or suffix of either; or a URI such as ble://NAME or tcp://HOST:PORT. Without it the only device found is used, or you choose among several
           
           [env: ROHI_DEVICE=]

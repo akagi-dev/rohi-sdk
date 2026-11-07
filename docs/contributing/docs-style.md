@@ -11,7 +11,7 @@
 | Source and protocol definitions | authoritative schemas (`control.proto`), implementations, tests, platform behaviour |
 | [Support matrix](../support/overview.md) | hardware compatibility, firmware support, verification levels and evidence |
 
-The book explains how to use and extend ROHI; the crates explain how ROHI works internally. All 18 crates carry their
+The book explains how to use and extend ROHI; the crates explain how ROHI works internally. All 19 crates carry their
 technical documentation in rustdoc, and the book has **no** technical reference section: no API listings, contracts,
 limits tables, ABI or protocol details. Link to the rustdoc instead (see [SDK crates](../build/sdk-crates.md)) and put a
 new contract in the crate that owns it.

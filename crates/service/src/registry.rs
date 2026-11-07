@@ -181,7 +181,9 @@
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use heapless::Vec;
 
-use crate::action::{Action, ActionDescriptor, ActionError, RecordCollector, Records, check_args};
+use crate::action::{
+    Action, ActionDescriptor, ActionError, ActionResult, RecordCollector, StreamChunk, check_args,
+};
 use crate::schema::{actions_valid, enums_valid, fields_valid, issues_valid};
 use crate::service::{Service, distinct_ids, service_name_is_valid};
 use crate::status::{
@@ -313,7 +315,7 @@ async fn invoke_of<S: Action>(
     service: &S,
     action: u32,
     args: &[(u32, Value)],
-) -> Result<Records, ActionError> {
+) -> Result<ActionResult, ActionError> {
     let descriptor = S::ACTIONS
         .iter()
         .find(|descriptor| descriptor.id == action)
@@ -321,7 +323,11 @@ async fn invoke_of<S: Action>(
     check_args(descriptor, args)?;
     let mut out = RecordCollector::new(descriptor);
     service.invoke(action, args, &mut out).await?;
-    Ok(out.records)
+    match out.stream {
+        Some(_) if !out.records.is_empty() => Err(ActionError::Internal),
+        Some(stream) => Ok(ActionResult::Stream(stream)),
+        None => Ok(ActionResult::Records(out.records)),
+    }
 }
 
 /// A tuple of services that all implement [`Status`], with the tracks the
@@ -494,7 +500,21 @@ pub trait ActionRegistry {
         service: u32,
         action: u32,
         args: &[(u32, Value)],
-    ) -> Result<Records, ActionError>;
+    ) -> Result<ActionResult, ActionError>;
+    /// Reads a chunk of a file of an open stream of the service with the given
+    /// id into `buf`.
+    async fn read_stream(
+        &self,
+        service: u32,
+        stream: u32,
+        file: u32,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> Result<StreamChunk, ActionError>;
+    /// Closes a stream of the service with the given id.
+    async fn close_stream(&self, service: u32, stream: u32) -> Result<(), ActionError>;
+    /// The control link was lost: every service releases its open streams.
+    fn link_lost(&self);
 
     /// Whether a service with this id has actions.
     fn contains(&self, service: u32) -> bool {
@@ -525,9 +545,31 @@ impl ActionRegistry for () {
         Err(ActionError::UnknownService)
     }
 
-    async fn invoke(&self, _: u32, _: u32, _: &[(u32, Value)]) -> Result<Records, ActionError> {
+    async fn invoke(
+        &self,
+        _: u32,
+        _: u32,
+        _: &[(u32, Value)],
+    ) -> Result<ActionResult, ActionError> {
         Err(ActionError::UnknownService)
     }
+
+    async fn read_stream(
+        &self,
+        _: u32,
+        _: u32,
+        _: u32,
+        _: u64,
+        _: &mut [u8],
+    ) -> Result<StreamChunk, ActionError> {
+        Err(ActionError::UnknownService)
+    }
+
+    async fn close_stream(&self, _: u32, _: u32) -> Result<(), ActionError> {
+        Err(ActionError::UnknownService)
+    }
+
+    fn link_lost(&self) {}
 }
 
 // One tracker per tuple element; the generic `M` of the expanding impl is not
@@ -639,11 +681,36 @@ macro_rules! tuple_registries {
                 service: u32,
                 action: u32,
                 args: &[(u32, Value)],
-            ) -> Result<Records, ActionError> {
+            ) -> Result<ActionResult, ActionError> {
                 $(if $name::ID == service {
                     return invoke_of(self.$index, action, args).await;
                 })+
                 Err(ActionError::UnknownService)
+            }
+
+            async fn read_stream(
+                &self,
+                service: u32,
+                stream: u32,
+                file: u32,
+                offset: u64,
+                buf: &mut [u8],
+            ) -> Result<StreamChunk, ActionError> {
+                $(if $name::ID == service {
+                    return self.$index.read_stream(stream, file, offset, buf).await;
+                })+
+                Err(ActionError::UnknownService)
+            }
+
+            async fn close_stream(&self, service: u32, stream: u32) -> Result<(), ActionError> {
+                $(if $name::ID == service {
+                    return self.$index.close_stream(stream).await;
+                })+
+                Err(ActionError::UnknownService)
+            }
+
+            fn link_lost(&self) {
+                $(self.$index.link_lost();)+
             }
         }
     };

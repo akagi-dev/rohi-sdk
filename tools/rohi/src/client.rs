@@ -467,14 +467,36 @@ impl<T: ClientTransport> Device<T> {
         Ok(schema)
     }
 
-    /// Runs an action with the given arguments (all required) and returns
-    /// its result records.
+    /// Runs an action with the given arguments (all required) and returns its
+    /// result records.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Protocol`] when the action returns a stream: use
+    /// [`invoke_outcome`](Self::invoke_outcome) for those.
     pub async fn invoke(
         &mut self,
         service: &str,
         action: &str,
         args: &[FieldValue],
     ) -> Result<Vec<Record>> {
+        match self.invoke_outcome(service, action, args).await? {
+            ActionOutcome::Records(records) => Ok(records),
+            ActionOutcome::Stream(_) => Err(Error::Protocol(format!(
+                "{service} {action} returns a stream, which this call cannot show"
+            ))),
+        }
+    }
+
+    /// Runs an action and returns what it returned: records, or a stream the
+    /// caller reads with [`read_stream`](Self::read_stream) and must
+    /// [`close_stream`](Self::close_stream).
+    pub async fn invoke_outcome(
+        &mut self,
+        service: &str,
+        action: &str,
+        args: &[FieldValue],
+    ) -> Result<ActionOutcome> {
         let schema = self.action_schema(service, action).await?;
         let mut list = heapless::Vec::new();
         for arg in args {
@@ -493,17 +515,76 @@ impl<T: ClientTransport> Device<T> {
         let reply = self.call(Call::InvokeAction(request)).await;
         self.session.set_timeout(normal);
         match reply? {
-            Reply::InvokeAction(done) => Ok(done
-                .records
-                .iter()
-                .map(|record| {
-                    record
-                        .fields
-                        .iter()
-                        .filter_map(|field| convert::field_value(field, &schema.results))
-                        .collect()
+            Reply::ActionStream(info) => Ok(ActionOutcome::Stream(Stream {
+                service_id: info.service_id,
+                id: info.id,
+                files: info
+                    .files
+                    .iter()
+                    .map(|file| StreamFile {
+                        id: file.id,
+                        name: file.name.as_str().to_owned(),
+                        size_bytes: file.size_bytes,
+                    })
+                    .collect(),
+            })),
+            Reply::InvokeAction(done) => Ok(ActionOutcome::Records(
+                done.records
+                    .iter()
+                    .map(|record| {
+                        record
+                            .fields
+                            .iter()
+                            .filter_map(|field| convert::field_value(field, &schema.results))
+                            .collect()
+                    })
+                    .collect(),
+            )),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Reads the chunk of a stream file at `offset`. A read can be repeated
+    /// with the same offset: it returns the same bytes.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Device`] with [`ErrorCode::NotFound`] when the stream was
+    /// closed or timed out on the device.
+    pub async fn read_stream(
+        &mut self,
+        stream: &Stream,
+        file: u32,
+        offset: u64,
+    ) -> Result<StreamChunk> {
+        let call = Call::ReadStream(pb::ReadStreamRequest {
+            service_id: stream.service_id,
+            stream_id: stream.id,
+            file_id: file,
+            offset,
+        });
+        match self.call(call).await? {
+            Reply::ReadStream(chunk) => {
+                if chunk.stream_id != stream.id || chunk.file_id != file || chunk.offset != offset {
+                    return Err(Error::Protocol("a chunk of another read".into()));
+                }
+                Ok(StreamChunk {
+                    data: chunk.data.to_vec(),
+                    eof: chunk.eof,
                 })
-                .collect()),
+            }
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Closes a stream: the device releases what it holds for it.
+    pub async fn close_stream(&mut self, stream: &Stream) -> Result<()> {
+        let call = Call::CloseStream(pb::CloseStreamRequest {
+            service_id: stream.service_id,
+            stream_id: stream.id,
+        });
+        match self.call(call).await? {
+            Reply::CloseStream(_) => Ok(()),
             other => Err(unexpected(&other)),
         }
     }

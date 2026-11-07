@@ -72,7 +72,7 @@
 //! let Some(Reply::Error(error)) = denied.response else { panic!() };
 //! assert_eq!(error.code, pb::ErrorCode::PermissionDenied);
 //!
-//! let encrypted = LinkSecurity { encrypted: true, authenticated: false };
+//! let encrypted = LinkSecurity { encrypted: true, authenticated: false, session: 0 };
 //! let unsupported = ask(reboot(), &encrypted);
 //! let Some(Reply::Error(error)) = unsupported.response else { panic!() };
 //! assert_eq!(error.code, pb::ErrorCode::NotSupported);
@@ -98,6 +98,7 @@
 //! | `GetServicesStatus`, `GetServiceSchema`, `GetServiceStatus` | [`StatusRegistry`](rohi_service::StatusRegistry) | `Read` |
 //! | `ListActions`, `GetActionSchema` | [`ActionRegistry`](rohi_service::ActionRegistry) | `Read` |
 //! | `InvokeAction` | `ActionRegistry` | `Provision` if the action has secret arguments, `Mutate` if it is privileged, else `Read` |
+//! | `ReadStream`, `CloseStream` | `ActionRegistry` | that of the action that created the stream |
 //! | `Reboot` | [`ControlBackend::reboot`] | `Mutate` |
 //!
 //! The three built-in policies are [`OpenPolicy`] (everything),
@@ -107,6 +108,17 @@
 //! policy may demand more. For `InvokeAction` the action is resolved first to
 //! learn its privilege, so an unknown action is answered `NotFound` or
 //! `NotSupported` even to a link the policy would otherwise deny.
+//!
+//! ## Stream ownership
+//!
+//! A stream belongs to the [`LinkSecurity::session`] that invoked the action
+//! and carries that action's privilege. `ReadStream` and `CloseStream` from
+//! another session are answered `NotFound`, as if the stream did not exist,
+//! and the policy is applied with the privilege of the creating action.
+//! [`Controller::link_lost`] forgets every owner and makes the services
+//! release their streams. A transport must give each connection its own
+//! `session` (BLE uses the connection epoch) and call `link_lost` when a
+//! connection ends; a transport that never has two clients may keep 0.
 //!
 //! ## Errors on the wire
 //!
@@ -158,7 +170,8 @@
 //! # Guarantees and Limitations
 //!
 //! * **One response per request, no allocation.** The request and the response
-//!   are caller-owned slices; the dispatcher keeps no state between requests.
+//!   are caller-owned slices; the dispatcher keeps no state between requests
+//!   except the owners of the open streams ([`MAX_OPEN_STREAMS`]).
 //!   Malformed input is answered with an error response, not a panic or a
 //!   disconnect.
 //! * **Bounded messages.** Requests are limited to
@@ -198,7 +211,7 @@ mod policy;
 mod tests;
 
 pub use backend::{ControlBackend, Device, DeviceInfo};
-pub use controller::Controller;
+pub use controller::{Controller, MAX_OPEN_STREAMS};
 pub use policy::{
     AuthorizationPolicy, LinkSecurity, OpenPolicy, Privilege, RequireAuthenticated,
     RequireEncryption,

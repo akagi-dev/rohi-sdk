@@ -45,6 +45,7 @@ use rohi_sdk::config::{ConfigSection, HasOverrides, materialize};
 use rohi_sdk::connectivity::ConnectivityConfig;
 use rohi_sdk::identity::Identity;
 use rohi_sdk::location::LocationConfig;
+use rohi_sdk::logging::LoggingConfig;
 use rohi_sdk::net::{BleSettings, NetworkConfig, WifiConfig, WifiHandle};
 use rohi_sdk::ntp::NtpServersConfig;
 use rohi_sdk::service::{Config, SectionStore, StoreError};
@@ -58,12 +59,15 @@ use crate::{connectivity, identity, location, time};
 #[derive(Clone, Copy)]
 pub struct ConfigRuntime {
     wifi: WifiHandle<'static, RawMutex>,
+    logging: fn(LoggingConfig),
 }
 
 impl ConfigRuntime {
-    /// The runtime behind `wifi`, the desired state of the Wi-Fi manager.
-    pub const fn new(wifi: WifiHandle<'static, RawMutex>) -> Self {
-        Self { wifi }
+    /// The runtime behind `wifi`, the desired state of the Wi-Fi manager, and
+    /// the hook that hands the `logging` section to the logging runtime of the
+    /// platform, see [`crate::logging`].
+    pub const fn new(wifi: WifiHandle<'static, RawMutex>, logging: fn(LoggingConfig)) -> Self {
+        Self { wifi, logging }
     }
 }
 
@@ -254,6 +258,24 @@ impl Binding for TimeBinding {
 
     fn publish(_: &ConfigRuntime, effective: &NtpServersConfig) {
         time::publish(effective.clone());
+    }
+}
+
+/// `logging`: the level applies to the next log call, a new backend is opened
+/// by the logging task, a new codec or size applies to the next segment. The
+/// product policy is the persistent level of the build profile: `info` in a
+/// development build, `warn` in production.
+pub struct LoggingBinding;
+
+impl Binding for LoggingBinding {
+    type Config = LoggingConfig;
+
+    fn firmware_overrides() -> rohi_sdk::logging::LoggingOverrides {
+        LoggingConfig::firmware_overrides(cfg!(debug_assertions))
+    }
+
+    fn publish(runtime: &ConfigRuntime, effective: &LoggingConfig) {
+        (runtime.logging)(*effective);
     }
 }
 

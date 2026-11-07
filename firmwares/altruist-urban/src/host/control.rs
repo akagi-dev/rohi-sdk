@@ -40,6 +40,7 @@ use rohi_sdk::net::{BleName, BleProbe, BleState, DEFAULT_BLE_PAYLOAD, NetworkHan
 use rohi_sdk::sim::ip::SimIp;
 use static_cell::StaticCell;
 
+use super::logging;
 use crate::control::{Platform, ServicesSlot, UrbanDevice};
 use crate::{config, identity, reboot};
 
@@ -81,12 +82,12 @@ impl BleProbe for NoBle {
 }
 
 /// The control backend of the Altruist Urban on the host.
-pub type HostDevice = UrbanDevice<HostIp, HostBle>;
+pub type HostDevice = UrbanDevice<HostIp, HostBle, logging::Service>;
 
 /// The controller every transport serves.
 pub type HostController = Controller<HostDevice, OpenPolicy>;
 
-static SERVICES: ServicesSlot<HostIp, HostBle> = StaticCell::new();
+static SERVICES: ServicesSlot<HostIp, HostBle, logging::Service> = StaticCell::new();
 static CONTROLLER: StaticCell<HostController> = StaticCell::new();
 
 /// The controller over the runtime handles of the application, built once.
@@ -107,6 +108,7 @@ pub fn controller(
             network,
             heap: None,
             ble,
+            logging: logging::runtime().service(),
             reboot: reboot::request,
         },
         config::handle(),

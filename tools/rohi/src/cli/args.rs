@@ -85,7 +85,7 @@ pub struct Cli {
     /// either; or a URI such as ble://NAME or tcp://HOST:PORT. Without it the
     /// only device found is used, or you choose among several.
     #[arg(
-        short,
+        short = 'D',
         long,
         global = true,
         env = "ROHI_DEVICE",
@@ -322,6 +322,44 @@ Examples:
         #[arg(short = 'h', long = "help")]
         help: bool,
     },
+    #[command(
+        args_conflicts_with_subcommands = true,
+        about = "Show, follow, download or clear the device log",
+        long_about = "Show, follow, download or clear the persistent log of the device.\n\n\
+            A convenience over the actions of the `logging` service: `rohi logs` runs\n\
+            `logging.read`, `logs download` runs `logging.download` and `logs clear`\n\
+            runs `logging.clear`. Everything it does is also possible with `rohi action\n\
+            logging ...`. What the device keeps (level, storage, compression, size) is\n\
+            the `logging` config section: `rohi config logging`.",
+        after_help = "\
+Examples:
+  rohi logs
+  rohi logs -n 100
+  rohi logs -f
+  rohi logs -n 100 -f
+  rohi logs download
+  rohi logs download -d ./logs
+  rohi logs download --force
+  rohi logs clear
+  rohi logs clear --yes
+  rohi -o json logs -n 50"
+    )]
+    Logs {
+        #[command(subcommand)]
+        action: Option<LogsAction>,
+        /// How many of the latest records to print first.
+        #[arg(
+            short = 'n',
+            long = "lines",
+            value_name = "N",
+            default_value_t = 20,
+            global = false
+        )]
+        lines: usize,
+        /// Keep printing new records as they arrive, until interrupted.
+        #[arg(short, long)]
+        follow: bool,
+    },
 }
 
 /// The fixed commands of `rohi config`; any other name is a section.
@@ -399,6 +437,44 @@ Examples:
         #[arg(long)]
         dry_run: bool,
         /// Skip the confirmation prompt.
+        #[arg(long, short)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum LogsAction {
+    #[command(
+        about = "Save the retained log files of the device",
+        long_about = "Save every retained log file of the active storage of the device.\n\n\
+            The files are the compressed segments as the device keeps them\n\
+            (`rohi1.log.lz4`, ...; `.log` for plain segments), oldest first, and are\n\
+            written unchanged: `lz4 -d rohi1.log.lz4` shows the text. Records logged\n\
+            while the download runs are not part of it. A file that already exists is\n\
+            not replaced unless --force is given.",
+        after_help = "\
+Examples:
+  rohi logs download
+  rohi logs download -d ./logs
+  rohi logs download --force"
+    )]
+    Download {
+        /// The directory to write the files to; it is created when missing.
+        #[arg(short, long, value_name = "DIR", default_value = ".")]
+        directory: PathBuf,
+        /// Replace files that already exist.
+        #[arg(long)]
+        force: bool,
+    },
+    #[command(
+        about = "Remove the log history of the active storage",
+        after_help = "\
+Examples:
+  rohi logs clear
+  rohi logs clear --yes"
+    )]
+    Clear {
+        /// Do not ask for confirmation.
         #[arg(long, short)]
         yes: bool,
     },

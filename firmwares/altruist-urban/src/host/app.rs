@@ -50,6 +50,7 @@ use rohi_sdk::hal::{FreshnessPolicy, MeasurementStore, SensorKind};
 use rohi_sdk::host::NativeIp;
 use rohi_sdk::net::NetworkHandle;
 use rohi_sdk::sim::ip::SimIp;
+use rohi_sdk::sim::log_storage::FileLogFlash;
 use rohi_sdk::sim::management::{self, Hooks};
 use rohi_sdk::sim::scenario::Scenario;
 use rohi_sdk::sim::storage::FileFlash;
@@ -59,8 +60,9 @@ use static_cell::StaticCell;
 
 use super::args::Args;
 use super::control::{self, HostIp};
+use super::logging;
 use super::process::{
-    Failure, Interfaces, SHUTDOWN, StartupError, announce, finish, finished, init_logging,
+    Failure, Interfaces, SHUTDOWN, StartupError, announce, finish, finished,
     install_signal_handler, ready_line,
 };
 use crate::bindings::ConfigRuntime;
@@ -136,6 +138,7 @@ struct Prepared {
     args: Args,
     scenario: Scenario,
     storage: FileFlash,
+    log_storage: FileLogFlash,
     #[cfg(feature = "std-tcp")]
     control: TcpListener,
     manage: TcpListener,
@@ -164,6 +167,12 @@ fn prepare(args: Args) -> Result<Prepared, StartupError> {
         FileFlash::open(&args.storage)
             .map_err(|e| StartupError::new(Failure::Storage, e.to_string()))?
     };
+    let log_storage = if args.ephemeral {
+        FileLogFlash::ephemeral()
+    } else {
+        FileLogFlash::open(&args.log_storage())
+            .map_err(|e| StartupError::new(Failure::Storage, e.to_string()))?
+    };
     let (_control_port, manage_port) = args.ports();
     #[cfg(feature = "std-tcp")]
     let control = bind(SocketAddr::new(args.bind, _control_port), "control")?;
@@ -178,6 +187,7 @@ fn prepare(args: Args) -> Result<Prepared, StartupError> {
         args,
         scenario,
         storage,
+        log_storage,
         #[cfg(feature = "std-tcp")]
         control,
         manage,
@@ -197,6 +207,7 @@ fn start(spawner: Spawner, prepared: Prepared) -> Result<(), StartupError> {
         args,
         scenario,
         storage,
+        log_storage,
         #[cfg(feature = "std-tcp")]
         control,
         manage,
@@ -211,12 +222,16 @@ fn start(spawner: Spawner, prepared: Prepared) -> Result<(), StartupError> {
         env!("CARGO_PKG_VERSION")
     );
 
+    // The log task is the only user of the log flash; boot messages wait in its
+    // queue until it runs.
+    logging::start(spawner, log_storage.clone());
+
     // The configuration owner is the single owner of the store; it publishes
     // every section to its consumer before they start.
-    let runtime = ConfigRuntime::new(net::handle());
+    let runtime = ConfigRuntime::new(net::handle(), logging::apply);
     let mut owner = ConfigOwner::open(storage.clone());
     owner.publish_boot(&runtime);
-    spawner.spawn(config_task(owner, runtime).unwrap());
+    crate::tasks::spawn(spawner, "config_task", config_task(owner, runtime));
 
     let mut interfaces = Interfaces::default();
     #[cfg(feature = "std-tcp")]
@@ -232,23 +247,29 @@ fn start(spawner: Spawner, prepared: Prepared) -> Result<(), StartupError> {
         .map_err(|e| platform("management address", e))?;
     interfaces.manage = Some(manage_address);
 
-    spawner.spawn(
+    crate::tasks::spawn(
+        spawner,
+        "reboot_task",
         reboot_task(
             storage.clone(),
+            log_storage.clone(),
             args.clone(),
             interfaces.control.map_or(0, |address| address.port()),
             manage_address.port(),
-        )
-        .unwrap(),
+        ),
     );
 
-    spawner.spawn(store_task(scenario.stale_after_ms).unwrap());
+    crate::tasks::spawn(spawner, "store_task", store_task(scenario.stale_after_ms));
 
     let ip: &'static HostIp = IP.init(SimIp::new(NativeIp::new()));
     let network = NetworkHandle::new(ip);
-    spawner.spawn(wifi_task().unwrap());
-    spawner.spawn(ntp_task(network).unwrap());
-    spawner.spawn(connectivity_task(network, store::handle(), args.seed).unwrap());
+    crate::tasks::spawn(spawner, "wifi_task", wifi_task());
+    crate::tasks::spawn(spawner, "ntp_task", ntp_task(network));
+    crate::tasks::spawn(
+        spawner,
+        "connectivity_task",
+        connectivity_task(network, store::handle(), args.seed),
+    );
 
     #[cfg(feature = "std-ble")]
     let ble = {
@@ -267,12 +288,12 @@ fn start(spawner: Spawner, prepared: Prepared) -> Result<(), StartupError> {
     let probe = control::NoBle;
     let controller = control::controller(Some(network), probe);
     #[cfg(feature = "std-ble")]
-    spawner.spawn(control::ble_task(ble, controller).unwrap());
+    crate::tasks::spawn(spawner, "ble_task", control::ble_task(ble, controller));
     #[cfg(feature = "std-tcp")]
     {
         let acceptor = rohi_sdk::host::TcpAcceptor::new(control)
             .map_err(|e| platform("control listener", e))?;
-        spawner.spawn(control::tcp_task(acceptor, controller).unwrap());
+        crate::tasks::spawn(spawner, "tcp_task", control::tcp_task(acceptor, controller));
     }
     #[cfg(not(feature = "std-tcp"))]
     let _ = controller;
@@ -283,7 +304,11 @@ fn start(spawner: Spawner, prepared: Prepared) -> Result<(), StartupError> {
     #[cfg(feature = "sensor-simulator")]
     super::sensors::start(spawner, args.seed);
     management::start_timeline(spawner, scenario.events, storage.clone(), HOOKS);
-    spawner.spawn(shutdown_task(storage).unwrap());
+    crate::tasks::spawn(
+        spawner,
+        "shutdown_task",
+        shutdown_task(storage, log_storage),
+    );
 
     announce(&ready_line(&interfaces), args.ready_file.as_deref());
     Ok(())
@@ -319,9 +344,16 @@ async fn connectivity_task(
 }
 
 #[embassy_executor::task]
-async fn reboot_task(storage: FileFlash, args: Args, control: u16, manage: u16) {
+async fn reboot_task(
+    storage: FileFlash,
+    log_storage: FileLogFlash,
+    args: Args,
+    control: u16,
+    manage: u16,
+) {
     reboot::due().await;
     storage.flush();
+    log_storage.flush();
     restart(&args, control, manage);
     // Without `exec` the best a process can do is to end; a supervisor restarts it.
     error!("Reboot: cannot restart in place, exiting");
@@ -353,12 +385,13 @@ fn restart(args: &Args, control: u16, manage: u16) {
 fn restart(_: &Args, _: u16, _: u16) {}
 
 #[embassy_executor::task]
-async fn shutdown_task(storage: FileFlash) {
+async fn shutdown_task(storage: FileFlash, log_storage: FileLogFlash) {
     SHUTDOWN.wait().await;
     info!("Shutting down");
     // Let the response of a `shutdown` command or a final log line out.
     Timer::after_millis(SHUTDOWN_GRACE.as_millis() as u64).await;
     storage.flush();
+    log_storage.flush();
     finish();
 }
 
@@ -380,7 +413,7 @@ pub fn configure_store(stale_after_ms: Option<u64>) -> impl FnOnce(&mut Measurem
 
 /// Runs the device until it is told to stop.
 pub fn run(args: Args) -> Result<(), StartupError> {
-    init_logging(args.log_level);
+    logging::init_logger(args.log_level);
     let prepared = prepare(args)?;
     install_signal_handler()?;
     let executor = EXECUTOR.init(Executor::new());

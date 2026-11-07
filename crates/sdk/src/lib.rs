@@ -43,6 +43,7 @@
 //! | `ntp` | `ntp` | `rohi-time-ntp` | `time`, `net` |
 //! | `identity` | `identity` | `rohi-identity` | `service` |
 //! | `location` | `location` | `rohi-location` | `service` |
+//! | `logging` | `logging` | `rohi-logging` | `time` |
 //! | `control` | `control` | `rohi-control` | `service` |
 //! | `ble` | `ble` | `rohi-control-ble` | `control`, `net` |
 //! | `tcp` | `tcp` | `rohi-control-tcp` | `control` |
@@ -184,6 +185,7 @@
 //! | [`rohi-time`](../rohi_time/index.html) | Synchronized wall-clock time: `TimeService`, `TimeSource`, validation, background `Synchronizer` | portable | `TimeService`, `TimeSource`, `TimeSample`, `UnixTime`, `TimeStatus`, `Synchronizer` | `rohi-hal` (monotonic `Clock`, `Backoff`), `rohi-service`, Embassy sync | Network or clock hardware, any concrete source |
 //! | [`rohi-time-ntp`](../rohi_time_ntp/index.html) | NTP/SNTP `TimeSource` over the IP data plane | portable | `NtpTimeSource`, `NtpConfig`, `NtpServersConfig` (the `time` config section) | `rohi-time`, `rohi-net`, `rohi-hal`, `rohi-config`, `rohi-service`, `sntpc` | The global concept of time, the UDP stack |
 //! | [`rohi-location`](../rohi_location/index.html) | The location of the device (user-configured; no GNSS runtime exists yet): `LocationConfig` section, `LocationShared`, `LocationService` | portable | `Location`, `LocationConfig`, `LocationShared`, `LocationSource`, `LocationService` | `rohi-config`, `rohi-service`, Embassy sync | GNSS hardware, telemetry |
+//! | [`rohi-logging`](../rohi_logging/index.html) | Persistent logging: the `log` sink, segment format, flash ring storage over any `Medium`, `LoggingConfig` and the `logging` service | portable | `LogSink`, `LogRecord`, `LogLevel`, `LogClock`, `Logging`, `LoggingService`, `LoggingConfig`, `LogStorage`, `RingStorage` | `rohi-config`, `rohi-service`, `rohi-time`, `rohi-hal`, Embassy sync, `log` | The flash driver, an SD backend |
 //! | [`rohi-connectivity-proto`](../rohi_connectivity_proto/index.html) | Bounded bindings of `airalab/connectivity-protocol` (vendored, pinned revision) | portable | `core_v1`, `crypto_v1`, `device_v1`, `sensor_v1`, `limits` | `micropb` | Signing, mapping, transports |
 //! | [`rohi-connectivity`](../rohi_connectivity/index.html) | Telemetry: snapshot (+ location) to signed envelope frame, bounded outbox, retry, HTTP transport, `ConnectivityConfig` section, `connectivity` service | portable | `UrbanEncoder`, `EnvelopeBuilder`, `EnvelopeFrame`, `EnvelopeTransport`, `HttpTransport`, `ConnectivityService`, `UtcClock`, `NonceSource`, `FrameSigner` | `rohi-connectivity-proto`, `rohi-hal`, `rohi-identity`, `rohi-location`, `rohi-net`, `rohi-time`, `rohi-config`, `rohi-service` | Private keys, Wi-Fi lifecycle, sensors, backend logic |
 //! | [`rohi-net-esp`](../rohi_net_esp/index.html) | ESP backend of `rohi-net` | ESP | `EspWireless`, `EspWifi`, `EspIp`, `EspBle`, `NetResources`, `BleResources`, `wireless_heap!` | `rohi-net`, `esp-radio`, `embassy-net`, TrouBLE | Product resource sizes, control protocol |
@@ -193,7 +195,7 @@
 //! | `altruist-urban` (`firmwares/altruist-urban`) | Product composition: the portable application (always) and one platform: ESP (`esp` module, chip features) or host (`host` module, feature `std`, binary `altruist-urban`), resource budget | product | `config`, `net`, `control`, `time`, `connectivity`, `identity`, `location`, `tasks`; with a chip feature `esp::{config, net, control, resources, sensors, ...}`; with `std` `host::{app, args, control, process}` | `rohi-sdk` (the portable and ESP crates above) | Reusable library code |
 //! | [`rohi-control-tcp`](../rohi_control_tcp/index.html) | Control protocol over TCP: 4-byte length-prefixed Protobuf records, the serving loop and the `Acceptor` seam (independent of BLE framing) | portable | `ControlTcp`, `Acceptor`, `frame` | `rohi-control`, `rohi-control-proto`, `embedded-io-async` | Sockets, security |
 //! | [`rohi-net-std`](../rohi_net_std/index.html) | `std` backend of `rohi-net`: host DNS, TCP and UDP, the TCP acceptor of the control transport, the BlueZ BLE peripheral (feature `ble`, Linux) | host (`std`) | `NativeIp`, `TcpAcceptor`, `runtime`, `ble::BluezBle` | `rohi-net`, `rohi-control-tcp`, `tokio`, `bluer` (feature `ble`) | Wi-Fi, simulation, application logic |
-//! | `rohi-sim` (`crates/sim`) | Simulated world of a `std` application: sensors, Wi-Fi, IP faults, NOR flash in a file, scenarios, the management interface | host (`std`) | `World`, `Scenario`, `Command`, `FileFlash`, `SimWifi`, `SimIp`, `management` | `rohi-hal`, `rohi-net`, `rohi-config`, `rohi-net-std`, Embassy | The device control protocol, application logic |
+//! | `rohi-sim` (`crates/sim`) | Simulated world of a `std` application: sensors, Wi-Fi, IP faults, NOR flash in a file for the configuration and the log, scenarios, the management interface | host (`std`) | `World`, `Scenario`, `Command`, `FileFlash`, `FileLogFlash`, `SimWifi`, `SimIp`, `management` | `rohi-hal`, `rohi-net`, `rohi-config`, `rohi-net-std`, Embassy | The device control protocol, application logic |
 //! | `rohi-examples` (`examples/`) | One hardware example per sensor and a config self-test | product | binaries | `altruist-urban`, `rohi-sdk` | |
 //! | [`rohi`](../rohi/index.html) (`tools/rohi`) | Desktop client library and CLI over BLE and TCP | desktop (`std`) | `Device`, `Session`, `BleLink`, `TcpLink` | `rohi-control-ble` (`frame`), `rohi-control-tcp` (`frame`), `rohi-control-proto`, `rohi-net` (BLE payload size), `rohi-identity`, `btleplug` | Anything that runs on the device |
 //! | [`rohi-sdk`](crate) | Umbrella crate: feature-gated re-exports of the crates above and this documentation | portable | feature-gated modules (`service`, `hal`, `net`, `esp`, ...) | the crates above, each optional | |
@@ -291,6 +293,10 @@ pub use rohi_identity as identity;
 #[cfg(feature = "location")]
 #[cfg_attr(docsrs, doc(cfg(feature = "location")))]
 pub use rohi_location as location;
+
+#[cfg(feature = "logging")]
+#[cfg_attr(docsrs, doc(cfg(feature = "logging")))]
+pub use rohi_logging as logging;
 #[cfg(feature = "net")]
 #[cfg_attr(docsrs, doc(cfg(feature = "net")))]
 pub use rohi_net as net;

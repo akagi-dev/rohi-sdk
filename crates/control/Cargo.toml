@@ -15,11 +15,12 @@ maintenance = { status = "actively-developed" }
 [dependencies]
 rohi-control-proto.workspace = true
 rohi-service.workspace = true
+embassy-sync.workspace = true
 heapless.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
 embassy-futures.workspace = true
-embassy-sync.workspace = true
+critical-section.workspace = true
 rohi-config = { workspace = true, features = ["std"] }
 minicbor = { workspace = true, features = ["std"] }

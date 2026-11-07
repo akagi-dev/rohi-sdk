@@ -17,6 +17,18 @@
 ///////////////////////////////////////////////////////////////////////////////
 #![no_std]
 #![no_main]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented,
+        reason = "firmware must not panic: handle the error, see AGENTS.md"
+    )
+)]
 
 //! Combined hardware test: runs every supported sensor concurrently and prints their events.
 
@@ -32,12 +44,12 @@ esp_bootloader_esp_idf::esp_app_desc!();
 #[esp_hal::main]
 fn main() -> ! {
     run(|spawner, board| {
-        spawner.spawn(print_events_task().unwrap());
+        altruist_urban::tasks::spawn(spawner, "print_events_task", print_events_task());
         static I2C_BUS: StaticCell<SharedI2cBus> = StaticCell::new();
         let i2c_bus = I2C_BUS.init(Mutex::new(board.i2c));
-        spawner.spawn(bmx280_task(i2c_handle(i2c_bus)).unwrap());
-        spawner.spawn(scd4x_task(i2c_handle(i2c_bus)).unwrap());
-        spawner.spawn(sds011_task(board.sds011_uart).unwrap());
-        spawner.spawn(noise_task(board.microphone).unwrap());
+        altruist_urban::tasks::spawn(spawner, "bmx280_task", bmx280_task(i2c_handle(i2c_bus)));
+        altruist_urban::tasks::spawn(spawner, "scd4x_task", scd4x_task(i2c_handle(i2c_bus)));
+        altruist_urban::tasks::spawn(spawner, "sds011_task", sds011_task(board.sds011_uart));
+        altruist_urban::tasks::spawn(spawner, "noise_task", noise_task(board.microphone));
     })
 }

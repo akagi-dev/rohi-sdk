@@ -37,6 +37,7 @@ rohi-sdk = { workspace = true, features = [
   "ntp",
   "identity",
   "location",
+  "logging",
   "control",
   "ble",
   "connectivity",
@@ -131,6 +132,10 @@ required-features = ["std", "std-tcp", "sensor-simulator"]
 
 [[test]]
 name = "std_plain"
+required-features = ["std", "std-tcp"]
+
+[[test]]
+name = "std_logging"
 required-features = ["std", "std-tcp"]
 
 [[test]]

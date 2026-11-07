@@ -482,3 +482,48 @@ pub struct ActionSchema {
 
 /// One result record of an action.
 pub type Record = Vec<FieldValue>;
+
+// -- streams ------------------------------------------------------------------
+
+/// One file of a [`Stream`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StreamFile {
+    /// Id within the stream, the address of its reads.
+    pub id: u32,
+    /// Name the file is saved under.
+    pub name: String,
+    /// Size in bytes.
+    pub size_bytes: u64,
+}
+
+/// A result too large for one message: files the client reads in chunks and
+/// then closes. It is a snapshot; the device holds it until it is closed, the
+/// link is lost or it times out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Stream {
+    /// Numeric id of the service that owns the stream.
+    pub service_id: u32,
+    /// Id of the stream.
+    pub id: u32,
+    /// Its files, in order.
+    pub files: Vec<StreamFile>,
+}
+
+/// What an action returned.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ActionOutcome {
+    /// Typed records.
+    Records(Vec<Record>),
+    /// Files to read in chunks.
+    Stream(Stream),
+}
+
+/// A chunk of a stream file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StreamChunk {
+    /// The bytes at the requested offset; shorter than the device's chunk size
+    /// only at the end of the file.
+    pub data: Vec<u8>,
+    /// Whether the chunk ends the file.
+    pub eof: bool,
+}

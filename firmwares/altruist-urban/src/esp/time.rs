@@ -27,7 +27,7 @@ use crate::time;
 
 /// Starts the NTP synchronization of the time service, see [`time::run`].
 pub fn start(spawner: Spawner, network: NetworkHandle<'static, Ip>) {
-    spawner.spawn(ntp_task(network).unwrap());
+    crate::tasks::spawn(spawner, "ntp_task", ntp_task(network));
 }
 
 /// Keeps the time service synchronized over NTP.

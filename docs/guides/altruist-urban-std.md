@@ -81,8 +81,8 @@ with a panic.
 | `--control-port` | port of the TCP control transport (`std-tcp`; default 9300, `0` picks a free port) |
 | `--manage-port` | port of the management interface (default: control port + 1) |
 | `--ble-adapter` | the Bluetooth adapter, for example `hci0` (`std-ble`; default: the default adapter of BlueZ) |
-| `--storage FILE` | configuration flash image (default `.altruist-urban/device.flash`) |
-| `--ephemeral` | keep the flash in memory only |
+| `--storage FILE` | configuration flash image (default `.altruist-urban/device.flash`); the persistent log is kept next to it in `device.log.flash` |
+| `--ephemeral` | keep the flash and the persistent log in memory only |
 | `--scenario FILE` | scenario file, see below |
 | `--seed N` | seed of every random sequence of the simulation |
 | `--log-level` | `error`, `warn`, `info`, `debug`, `trace` (`RUST_LOG` overrides it) |
@@ -144,6 +144,10 @@ None of this is production-secure.
 The configuration lives in a flash image file and survives restarts. The process uses the real configuration store on it,
 so the A/B slots and the commit-last recovery behave as on the device. Use `--ephemeral` for throw-away runs and
 `--storage /tmp/device-a.flash` to keep several devices apart. A storage file can be used by one process at a time.
+
+The persistent [device log](../use/desktop/logs.md) is a second image file next to it (`device.flash` is paired with
+`device.log.flash`), with the geometry of the `rohi-log` partition, so `rohi logs` works against the process and the
+history survives a restart. There is no SD card on the host: `logging.storage = sd` reports `storage_unavailable`.
 
 ## Scenarios
 

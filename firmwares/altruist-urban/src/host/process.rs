@@ -28,7 +28,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
-use log::LevelFilter;
 
 /// Why the device did not start. Expected host problems are reported with a
 /// message and a status, never with a panic.
@@ -86,15 +85,6 @@ impl fmt::Display for StartupError {
 }
 
 impl std::error::Error for StartupError {}
-
-/// Initializes the logger: readable timestamps on stderr.
-pub fn init_logging(level: LevelFilter) {
-    let _ = env_logger::Builder::new()
-        .filter_level(level)
-        .parse_default_env()
-        .format_timestamp_millis()
-        .try_init();
-}
 
 /// The interfaces of a running device, as reported by the READY line.
 #[derive(Clone, Debug, Default)]

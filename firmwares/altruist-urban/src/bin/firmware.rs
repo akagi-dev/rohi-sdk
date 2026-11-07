@@ -17,6 +17,18 @@
 ///////////////////////////////////////////////////////////////////////////////
 #![no_std]
 #![no_main]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented,
+        reason = "firmware must not panic: handle the error, see AGENTS.md"
+    )
+)]
 #![deny(
     clippy::mem_forget,
     reason = "mem::forget is generally not safe to do with esp_hal types, especially those \
@@ -32,7 +44,9 @@ use log::{error, info};
 use altruist_urban::bindings::ConfigRuntime;
 use altruist_urban::esp::reboot::reboot_task;
 use altruist_urban::esp::resources::WIRELESS_HEAP_SIZE;
-use altruist_urban::esp::{config, connectivity, control, net, sensors, store, time};
+use altruist_urban::esp::{
+    config, connectivity, control, flash, logging, net, sensors, store, time,
+};
 use altruist_urban::{identity, net as wifi, tasks};
 use rohi_sdk::esp::hal::board::altruist_urban::{AltruistUrban, Hardware};
 use rohi_sdk::esp::net::{EspWireless, wireless_heap};
@@ -46,7 +60,7 @@ const WIFI_FIRST_ATTEMPT_WAIT: Duration = Duration::from_secs(30);
 
 #[esp_rtos::main]
 async fn main(spawner: Spawner) -> ! {
-    esp_println::logger::init_logger_from_env();
+    logging::init_logger();
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
     let (hardware, runtime) = Hardware::split(peripherals);
@@ -66,13 +80,30 @@ async fn main(spawner: Spawner) -> ! {
     // uses the handle. A missing partition (old partition table) or corrupted
     // configuration must not stop the sensors. It publishes every section to
     // its consumer before they start.
-    let config = config::start(spawner, runtime.flash, ConfigRuntime::new(wifi::handle()));
+    let (flash, partitions) = flash::init(runtime.flash);
+    // The log partition is the log task's alone; boot messages wait in its queue
+    // until it runs.
+    logging::start(spawner, flash, partitions.log);
+    let config = config::start(
+        spawner,
+        flash,
+        partitions.config,
+        ConfigRuntime::new(wifi::handle(), logging::apply),
+    );
     // Identity is provisioned from the host, never generated; a fresh device
     // simply has none and keeps sensing.
     let identity = identity::start(config);
-    spawner.spawn(reboot_task().unwrap());
+    altruist_urban::tasks::spawn(spawner, "reboot_task", reboot_task());
 
-    let board = AltruistUrban::new(hardware).expect("board initialization failed");
+    // Without the board there is no sensing, but configuration, Wi-Fi and the
+    // control link still work: the device stays reachable.
+    let board = match AltruistUrban::new(hardware) {
+        Ok(board) => Some(board),
+        Err(error) => {
+            error!("Board initialization failed, sensors disabled: {:?}", error);
+            None
+        }
+    };
     store::start(spawner);
 
     // A Wi-Fi or BLE failure must never stop the sensors: log and carry on.
@@ -103,7 +134,9 @@ async fn main(spawner: Spawner) -> ! {
     if wifi_configured {
         wifi::wait_first_attempt(WIFI_FIRST_ATTEMPT_WAIT).await;
     }
-    sensors::start(spawner, board);
+    if let Some(board) = board {
+        sensors::start(spawner, board);
+    }
 
     core::future::pending().await
 }

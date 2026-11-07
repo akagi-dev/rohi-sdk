@@ -65,9 +65,9 @@ async fn noise_task(seed: Option<u64>) {
 
 /// Starts one task per simulated sensor, like the firmware does.
 pub fn start(spawner: Spawner, seed: Option<u64>) {
-    spawner.spawn(bmx280_task(seed).unwrap());
-    spawner.spawn(scd4x_task(seed).unwrap());
-    spawner.spawn(sds011_task(seed).unwrap());
-    spawner.spawn(noise_task(seed).unwrap());
+    crate::tasks::spawn(spawner, "bmx280_task", bmx280_task(seed));
+    crate::tasks::spawn(spawner, "scd4x_task", scd4x_task(seed));
+    crate::tasks::spawn(spawner, "sds011_task", sds011_task(seed));
+    crate::tasks::spawn(spawner, "noise_task", noise_task(seed));
     info!("Sensor tasks started");
 }

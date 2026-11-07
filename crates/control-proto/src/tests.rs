@@ -437,6 +437,7 @@ fn every_action_listed_fits_the_response_limit() {
                 name: text(&"a".repeat(limits::MAX_NAME_LEN)),
                 privileged: true,
                 secret_args: true,
+                returns_stream: true,
                 service: text(&"s".repeat(limits::MAX_NAME_LEN)),
             })
             .ok()
@@ -469,6 +470,7 @@ fn a_full_action_schema_fits_the_response_limit() {
         name: text(&"a".repeat(limits::MAX_NAME_LEN)),
         privileged: true,
         secret_args: true,
+        returns_stream: true,
         service: text(&"s".repeat(limits::MAX_NAME_LEN)),
     });
     round_trip(response(Response_::Response::GetActionSchema(schema)));
@@ -607,4 +609,77 @@ fn generated_types_stay_within_their_memory_budgets() {
         std::println!("size_of::<{name}>() = {size}");
         assert!(size <= budget, "{name} is {size} bytes, budget {budget}");
     }
+}
+
+fn stream_info(files: usize) -> StreamInfo {
+    let mut info = StreamInfo {
+        service_id: u32::MAX,
+        id: u32::MAX,
+        ..Default::default()
+    };
+    for id in 0..files as u32 {
+        info.files
+            .push(StreamFile {
+                id,
+                name: text("rohi4294967295.log.lz4"),
+                size_bytes: u64::MAX,
+            })
+            .ok()
+            .unwrap();
+    }
+    info
+}
+
+#[test]
+fn an_action_returns_a_stream_of_the_most_files() {
+    let len = round_trip(response(Response_::Response::ActionStream(stream_info(
+        limits::MAX_STREAM_FILES,
+    ))));
+    assert!(len < limits::MAX_RESPONSE_LEN, "{len}");
+}
+
+#[test]
+fn a_stream_chunk_and_its_requests_round_trip() {
+    let read = Request {
+        protocol_version: PROTOCOL_VERSION,
+        request_id: u32::MAX,
+        request: Some(Request_::Request::ReadStream(ReadStreamRequest {
+            service_id: u32::MAX,
+            stream_id: u32::MAX,
+            file_id: u32::MAX,
+            offset: u64::MAX,
+        })),
+    };
+    let mut buf = [0u8; limits::MAX_REQUEST_LEN];
+    let len = encode(&read, &mut buf).unwrap();
+    assert!(decode::<Request>(&buf[..len]).unwrap() == read);
+
+    let close = Request {
+        protocol_version: PROTOCOL_VERSION,
+        request_id: 2,
+        request: Some(Request_::Request::CloseStream(CloseStreamRequest {
+            service_id: 7,
+            stream_id: 8,
+        })),
+    };
+    let len = encode(&close, &mut buf).unwrap();
+    assert!(decode::<Request>(&buf[..len]).unwrap() == close);
+
+    let chunk = ReadStreamResponse {
+        stream_id: u32::MAX,
+        file_id: u32::MAX,
+        offset: u64::MAX,
+        data: bytes(&[0xA5; limits::MAX_STREAM_CHUNK]),
+        eof: true,
+    };
+    let len = round_trip(response(Response_::Response::ReadStream(chunk)));
+    assert!(len < limits::MAX_RESPONSE_LEN, "{len}");
+    round_trip(response(Response_::Response::CloseStream(
+        CloseStreamResponse {},
+    )));
+}
+
+#[test]
+fn the_response_fits_the_limit_in_the_worst_case() {
+    assert!(Response::MAX_SIZE.unwrap() <= limits::MAX_RESPONSE_LEN);
 }

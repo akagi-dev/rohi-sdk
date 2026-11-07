@@ -22,10 +22,10 @@
 //! control link (BLE on the ESP; BLE and/or TCP on `std`) -> rohi-control
 //!                                                              |
 //!                                             UrbanDevice (this module)
-//!                          config sections: wifi, connectivity, location, time
+//!                          config sections: wifi, network, ble, connectivity, location, time, logging
 //!                          status: wifi, network, ble, connectivity, location, time,
-//!                                  sensors, identity
-//!                          actions: wifi, identity
+//!                                  sensors, identity, logging
+//!                          actions: wifi, identity, logging (read, download, clear)
 //! ```
 //!
 //! The registries only talk to runtime handles; they never own a store, a flash
@@ -38,9 +38,9 @@
 //! the values of the tuples stay explicit. The protocol and the `rohi` tool
 //! need no change.
 //!
-//! The composition is generic over the IP backend `I` and the BLE probe `B` of
-//! the platform; the link, its task and the static storage of the services are
-//! the platform's.
+//! The composition is generic over the IP backend `I`, the BLE probe `B` and the
+//! `logging` service `L` of the platform; the link, its task, the log storage and
+//! the static storage of the services are the platform's.
 
 use embassy_time::Delay;
 use rohi_sdk::connectivity::ConnectivityStatusService;
@@ -49,7 +49,7 @@ use rohi_sdk::hal::SensorsService;
 use rohi_sdk::identity::{Identity, IdentityService, IdentityStore, IdentityStoreError, PublicKey};
 use rohi_sdk::location::LocationService;
 use rohi_sdk::net::{BleProbe, BleService, IpBackend, NetworkHandle, NetworkService, WifiService};
-use rohi_sdk::service::{ActionRegistry, Startup, StatusSet, Statuses};
+use rohi_sdk::service::{Action, ActionRegistry, Startup, Status, StatusSet, Statuses};
 use static_cell::StaticCell;
 
 use crate::config::{
@@ -105,7 +105,7 @@ type UrbanIdentity = IdentityService<StoredIdentity>;
 ///
 /// Each service is created once and referenced by the registries of the
 /// capabilities it has, so that no registry owns or copies a service.
-pub struct UrbanServices<I: 'static, B> {
+pub struct UrbanServices<I: 'static, B, L> {
     wifi: UrbanWifi<I>,
     network: UrbanNetwork<I>,
     ble: UrbanBle<B>,
@@ -113,11 +113,12 @@ pub struct UrbanServices<I: 'static, B> {
     location: UrbanLocation,
     sensors: UrbanSensors,
     identity: UrbanIdentity,
+    logging: L,
 }
 
 /// The services that report status. The `time` service is the time runtime
 /// itself.
-pub type UrbanStatusServices<I, B> = (
+pub type UrbanStatusServices<I, B, L> = (
     &'static UrbanWifi<I>,
     &'static UrbanNetwork<I>,
     &'static UrbanBle<B>,
@@ -126,31 +127,32 @@ pub type UrbanStatusServices<I, B> = (
     &'static time::Time,
     &'static UrbanSensors,
     &'static UrbanIdentity,
+    &'static L,
 );
 
 /// The status registry of the device.
-pub type UrbanStatuses<I, B> = Statuses<RawMutex, UrbanStatusServices<I, B>>;
+pub type UrbanStatuses<I, B, L> = Statuses<RawMutex, UrbanStatusServices<I, B, L>>;
 
 /// The services that offer actions.
-pub type UrbanActions<I> = (&'static UrbanWifi<I>, &'static UrbanIdentity);
+pub type UrbanActions<I, L> = (&'static UrbanWifi<I>, &'static UrbanIdentity, &'static L);
 
 /// The control backend of the Altruist Urban over the IP backend `I` and the
 /// BLE probe `B` of the platform.
-pub type UrbanDevice<I, B> = Device<UrbanConfig, UrbanStatuses<I, B>, UrbanActions<I>>;
+pub type UrbanDevice<I, B, L> = Device<UrbanConfig, UrbanStatuses<I, B, L>, UrbanActions<I, L>>;
 
 /// The static slot of the service instances of the platform.
-pub type ServicesSlot<I, B> = StaticCell<UrbanServices<I, B>>;
+pub type ServicesSlot<I, B, L> = StaticCell<UrbanServices<I, B, L>>;
 
 fn uptime_ms() -> u64 {
     time::service().monotonic_now().millis
 }
 
 /// What the platform brings to the device of [`device`].
-pub struct Platform<I: 'static, B: 'static> {
+pub struct Platform<I: 'static, B: 'static, L: 'static> {
     /// Firmware name and board, reported by `GetInfo`.
     pub info: DeviceInfo,
     /// The slot of the service instances, a `static` of the platform.
-    pub services: &'static ServicesSlot<I, B>,
+    pub services: &'static ServicesSlot<I, B, L>,
     /// The IP data plane; `None` tells that the network runtime did not
     /// start: its services then report a failed start instead of looking
     /// disabled.
@@ -160,21 +162,28 @@ pub struct Platform<I: 'static, B: 'static> {
     /// The view of the control link (BLE: the peripheral) for the `ble`
     /// service.
     pub ble: B,
+    /// The `logging` service of the platform: its runtime owns the log storage.
+    pub logging: L,
     /// Schedules the reset of the device, see [`crate::reboot`].
     pub reboot: fn(),
 }
 
 /// The device over the runtime handles of the firmware.
-pub fn device<I: IpBackend + 'static, B: BleProbe + 'static>(
-    platform: Platform<I, B>,
+pub fn device<I, B, L>(
+    platform: Platform<I, B, L>,
     config: ConfigHandle,
     identity: IdentityHandle,
-) -> UrbanDevice<I, B> {
+) -> UrbanDevice<I, B, L>
+where
+    I: IpBackend + 'static,
+    B: BleProbe + 'static,
+    L: Status + Action + 'static,
+{
     // Two services with one id would route requests to the wrong service; this
     // is a build error already in `cargo check`.
     const {
-        assert!(<UrbanStatusServices<I, B> as StatusSet<RawMutex>>::IDS_UNIQUE);
-        assert!(<UrbanActions<I> as ActionRegistry>::IDS_UNIQUE);
+        assert!(<UrbanStatusServices<I, B, L> as StatusSet<RawMutex>>::IDS_UNIQUE);
+        assert!(<UrbanActions<I, L> as ActionRegistry>::IDS_UNIQUE);
     }
     let Platform {
         info,
@@ -182,11 +191,12 @@ pub fn device<I: IpBackend + 'static, B: BleProbe + 'static>(
         network,
         heap,
         ble,
+        logging,
         reboot: reboot_fn,
     } = platform;
     let network_failed = network.is_none();
     let sections: &'static ConfigSections = SECTIONS.init(config_sections(config));
-    let services: &'static UrbanServices<I, B> = services.init(UrbanServices {
+    let services: &'static UrbanServices<I, B, L> = services.init(UrbanServices {
         wifi: Startup::new(
             WifiService::new(net::handle(), Delay, net::Probe::new(network, heap)),
             network_failed,
@@ -207,6 +217,7 @@ pub fn device<I: IpBackend + 'static, B: BleProbe + 'static>(
         location: LocationService(location::shared()),
         sensors: SensorsService(store::handle()),
         identity: IdentityService(StoredIdentity(identity)),
+        logging,
     });
     Device::new(
         info,
@@ -221,8 +232,9 @@ pub fn device<I: IpBackend + 'static, B: BleProbe + 'static>(
             time::service(),
             &services.sensors,
             &services.identity,
+            &services.logging,
         )),
-        (&services.wifi, &services.identity),
+        (&services.wifi, &services.identity, &services.logging),
     )
     .with_reboot(reboot_fn)
 }

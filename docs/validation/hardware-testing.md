@@ -37,6 +37,19 @@ several sections, replacement preserving unrelated sections, repeated write cycl
 `SELFTEST FAIL`. On the third boot it corrupts the newest slot on purpose and checks that the store reports `Recovered`
 and falls back to the previous generation.
 
+## Persistent logging
+
+**Not validated on hardware.** The log ring is host-tested on an emulated NOR flash (4-byte write words, a word programmed at
+most twice, power-loss injected at every write). Checklist for a device:
+
+1. `rohi logs` shows boot records; reboot (`rohi reboot`) and confirm the earlier records are still there and the sequence continues.
+2. Pull power while `rohi config logging level=debug` is active and the device logs heavily; after power-up `rohi logs`
+   shows a contiguous history, `rohi status logging` has no `storage_corrupt` issue or only the one for the cut segment.
+3. `rohi logs download -d DIR` while Wi-Fi is connected: all files decode with `lz4 -d`, and record the time it takes over BLE.
+4. Watch Wi-Fi, BLE and the microphone (noise windows keep arriving) while the log fills the 128 KiB budget and the oldest segments are erased: measure
+   how long a flush stalls the CPU.
+5. Fill beyond the retention, confirm `dropped_records` stays 0 at the default `warn` level in normal operation.
+
 ## Wi-Fi and IP
 
 **Not yet measured on hardware:** scan, connect/DHCP, reconnect after reboot, wrong password, access point loss,

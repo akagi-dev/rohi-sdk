@@ -15,40 +15,72 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
+use core::cell::RefCell;
+
+use embassy_sync::blocking_mutex::Mutex;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use heapless::Vec;
 use rohi_control_proto::control::{
     self as pb, Request_::Request as Call, Response_::Response as Reply,
 };
 use rohi_control_proto::{PROTOCOL_VERSION, decode, encode, limits};
 use rohi_service::{
-    ActionError, ActionRegistry, ConfigError, ConfigRegistry, MAX_ACTION_ARGS, MAX_MUTATIONS,
-    Mutation, ServiceStatusSummary, StatusError, StatusRegistry, Value,
+    ActionError, ActionRegistry, ActionResult, ConfigError, ConfigRegistry, MAX_ACTION_ARGS,
+    MAX_MUTATIONS, Mutation, ServiceStatusSummary, StatusError, StatusRegistry, Value,
 };
 
 use crate::mapping;
 use crate::{AuthorizationPolicy, ControlBackend, LinkSecurity, Privilege};
 
+/// The most streams the controller tracks at once, over all services.
+pub const MAX_OPEN_STREAMS: usize = 16;
+
+/// A stream the controller handed to a client: who may use it and with what
+/// privilege.
+#[derive(Clone, Copy)]
+struct OwnedStream {
+    service: u32,
+    stream: u32,
+    session: u32,
+    privilege: Privilege,
+}
+
 /// Dispatches control requests to a [`ControlBackend`], gated by an
 /// [`AuthorizationPolicy`].
 ///
-/// It owns the backend and the policy and keeps no per-request state, so
-/// one controller serves every connection; the per-connection part is the
-/// [`LinkSecurity`] passed to [`handle`](Self::handle). See the
-/// [crate documentation](crate) for the operations, privileges and errors.
+/// It owns the backend and the policy. The only state it keeps between
+/// requests is who owns each open stream (see
+/// [`LinkSecurity::session`]), so one controller serves every connection; the
+/// per-connection part is the [`LinkSecurity`] passed to
+/// [`handle`](Self::handle). See the [crate documentation](crate) for the
+/// operations, privileges and errors.
 pub struct Controller<B, P> {
     backend: B,
     policy: P,
+    streams: Mutex<CriticalSectionRawMutex, RefCell<Vec<OwnedStream, MAX_OPEN_STREAMS>>>,
 }
 
 impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
     /// A dispatcher over `backend`, gated by `policy`.
     pub const fn new(backend: B, policy: P) -> Self {
-        Self { backend, policy }
+        Self {
+            backend,
+            policy,
+            streams: Mutex::new(RefCell::new(Vec::new())),
+        }
     }
 
     /// The wrapped backend.
     pub fn backend(&self) -> &B {
         &self.backend
+    }
+
+    /// The control link was lost or replaced: services release the streams
+    /// the previous client left open and the controller forgets who owned
+    /// them.
+    pub fn link_lost(&self) {
+        self.streams.lock(|streams| streams.borrow_mut().clear());
+        self.backend.actions().link_lost();
     }
 
     /// Handles one encoded request received on a link with the given
@@ -101,6 +133,18 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
         };
 
         let privilege = match &call {
+            Call::ReadStream(request) => {
+                match self.owned_privilege(link, request.service_id, request.stream_id) {
+                    Some(privilege) => privilege,
+                    None => return (id, action_error(ActionError::UnknownStream)),
+                }
+            }
+            Call::CloseStream(request) => {
+                match self.owned_privilege(link, request.service_id, request.stream_id) {
+                    Some(privilege) => privilege,
+                    None => return (id, action_error(ActionError::UnknownStream)),
+                }
+            }
             Call::PatchConfigSection(_) | Call::ResetConfigSection(_) => Privilege::Mutate,
             Call::FactoryReset(_) => Privilege::Provision,
             Call::Reboot(_) => Privilege::Mutate,
@@ -121,10 +165,53 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
         if !self.policy.allows(privilege, link) {
             return (id, error(pb::ErrorCode::PermissionDenied));
         }
-        (id, self.execute(call).await)
+        (id, self.execute(link, privilege, call).await)
     }
 
-    async fn execute(&self, call: Call) -> Reply {
+    // The privilege a stream was created with, when `link` is the session
+    // that created it. A stream of another session is reported as unknown.
+    fn owned_privilege(&self, link: &LinkSecurity, service: u32, stream: u32) -> Option<Privilege> {
+        self.streams.lock(|streams| {
+            streams
+                .borrow()
+                .iter()
+                .find(|owned| {
+                    owned.service == service
+                        && owned.stream == stream
+                        && owned.session == link.session
+                })
+                .map(|owned| owned.privilege)
+        })
+    }
+
+    fn forget_stream(&self, service: u32, stream: u32) {
+        self.streams.lock(|streams| {
+            streams
+                .borrow_mut()
+                .retain(|owned| owned.service != service || owned.stream != stream);
+        });
+    }
+
+    // Records the owner of a new stream. When the table is full the oldest
+    // stream is closed to make room: it is the likeliest to be abandoned.
+    async fn own_stream(&self, owned: OwnedStream) {
+        let evicted = self.streams.lock(|streams| {
+            let mut streams = streams.borrow_mut();
+            streams.retain(|old| old.service != owned.service || old.stream != owned.stream);
+            let evicted = streams.is_full().then(|| streams.remove(0));
+            let _ = streams.push(owned);
+            evicted
+        });
+        if let Some(old) = evicted {
+            let _ = self
+                .backend
+                .actions()
+                .close_stream(old.service, old.stream)
+                .await;
+        }
+    }
+
+    async fn execute(&self, link: &LinkSecurity, privilege: Privilege, call: Call) -> Reply {
         let backend = &self.backend;
         match call {
             Call::GetInfo(_) => {
@@ -318,7 +405,22 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
                     }
                 }
             }
-            Call::InvokeAction(request) => self.invoke(request).await,
+            Call::InvokeAction(request) => self.invoke(link, privilege, request).await,
+            Call::ReadStream(request) => self.read_stream(request).await,
+            Call::CloseStream(request) => {
+                let result = self
+                    .backend
+                    .actions()
+                    .close_stream(request.service_id, request.stream_id)
+                    .await;
+                if matches!(result, Ok(()) | Err(ActionError::UnknownStream)) {
+                    self.forget_stream(request.service_id, request.stream_id);
+                }
+                match result {
+                    Ok(()) => Reply::CloseStream(pb::CloseStreamResponse {}),
+                    Err(e) => self.action_failure(e, request.service_id),
+                }
+            }
         }
     }
 
@@ -385,7 +487,47 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
         }
     }
 
-    async fn invoke(&self, mut request: pb::InvokeActionRequest) -> Reply {
+    async fn read_stream(&self, request: pb::ReadStreamRequest) -> Reply {
+        let mut buf = [0u8; limits::MAX_STREAM_CHUNK];
+        match self
+            .backend
+            .actions()
+            .read_stream(
+                request.service_id,
+                request.stream_id,
+                request.file_id,
+                request.offset,
+                &mut buf,
+            )
+            .await
+        {
+            Ok(chunk) if chunk.len <= buf.len() => match Vec::from_slice(&buf[..chunk.len]) {
+                Ok(data) => Reply::ReadStream(pb::ReadStreamResponse {
+                    stream_id: request.stream_id,
+                    file_id: request.file_id,
+                    offset: request.offset,
+                    data,
+                    eof: chunk.eof,
+                }),
+                Err(_) => error(pb::ErrorCode::Internal),
+            },
+            Ok(_) => error(pb::ErrorCode::Internal),
+            Err(e) => {
+                if e == ActionError::UnknownStream {
+                    // Closed or timed out in the service.
+                    self.forget_stream(request.service_id, request.stream_id);
+                }
+                self.action_failure(e, request.service_id)
+            }
+        }
+    }
+
+    async fn invoke(
+        &self,
+        link: &LinkSecurity,
+        privilege: Privilege,
+        mut request: pb::InvokeActionRequest,
+    ) -> Reply {
         let mut args: Vec<(u32, Value), MAX_ACTION_ARGS> = Vec::new();
         let mut valid = true;
         for arg in &request.args {
@@ -410,7 +552,32 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
         }
         match result {
             Err(e) => self.action_failure(e, request.service_id),
-            Ok(records) => {
+            Ok(ActionResult::Stream(stream)) => {
+                self.own_stream(OwnedStream {
+                    service: request.service_id,
+                    stream: stream.id,
+                    session: link.session,
+                    privilege,
+                })
+                .await;
+                let mut files = Vec::new();
+                for file in &stream.files {
+                    let file = pb::StreamFile {
+                        id: file.id,
+                        name: mapping::text(&file.name),
+                        size_bytes: file.size_bytes,
+                    };
+                    if files.push(file).is_err() {
+                        break;
+                    }
+                }
+                Reply::ActionStream(pb::StreamInfo {
+                    service_id: request.service_id,
+                    id: stream.id,
+                    files,
+                })
+            }
+            Ok(ActionResult::Records(records)) => {
                 let mut out = Vec::new();
                 for record in &records {
                     let mut fields = Vec::new();
@@ -455,7 +622,9 @@ fn action_error(e: ActionError) -> Reply {
             out.set_reason(mapping::text(reason));
             Reply::Error(out)
         }
-        ActionError::UnknownService | ActionError::UnknownAction => error(pb::ErrorCode::NotFound),
+        ActionError::UnknownService | ActionError::UnknownAction | ActionError::UnknownStream => {
+            error(pb::ErrorCode::NotFound)
+        }
         ActionError::InvalidArgument => error(pb::ErrorCode::InvalidArgument),
         ActionError::Busy => error(pb::ErrorCode::Busy),
         ActionError::Unavailable => error(pb::ErrorCode::Unavailable),

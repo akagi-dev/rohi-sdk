@@ -16,6 +16,18 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 #![no_std]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented,
+        reason = "firmware must not panic: handle the error, see AGENTS.md"
+    )
+)]
 //! ESP32 flash backend for the `rohi-config` store.
 //!
 //! # Overview
@@ -165,7 +177,8 @@
 //!   0x09000  nvs        0x6000
 //!   0x0f000  phy_init   0x1000
 //!   0x10000  rohi-cfg   0x4000   <- FlashRegion: slot A (8 KiB) | slot B (8 KiB)
-//!   0x20000  factory    0x3E0000 (ESP32-C3, 4 MB) / 0x7E0000 (ESP32-C6, 8 MB)
+//!   0x20000  rohi-log   0x40000  <- persistent log ring (rohi-logging)
+//!   0x60000  factory    0x3A0000 (ESP32-C3, 4 MB) / 0x7A0000 (ESP32-C6, 8 MB)
 //! ```
 //!
 //! | Crate | Role |
@@ -210,7 +223,8 @@
 //! | [`EspStorageError`] | typed platform errors (`OutOfBounds`, `InvalidAlignment`, `InvalidRegion`, `ReadFailed`, `WriteFailed`, `EraseFailed`) |
 //! | [`layout`] | partition label, sector, slot and region sizes, kept in sync with the partition tables by a host test |
 //! | `esp::config_storage` | chip feature: partition lookup plus [`EspConfigStorage`] on `esp-storage` |
-//! | `esp::partition_region` | chip feature: only the `rohi-cfg` lookup, as a [`FlashRegion`] |
+//! | `esp::partition_region`, `esp::log_partition_region` | chip feature: the `rohi-cfg` and `rohi-log` lookups, as a [`FlashRegion`] |
+//! | [`SharedFlash`] | one flash driver behind a lock, shared by the owners of the partitions |
 //! | `esp::PartitionError` | chip feature: `PartitionTable`, `NotFound`, `TooSmall`, `Region` |
 //! | [`rohi_config::ConfigStore`] | the store itself, documented in [`rohi_config`] |
 //!
@@ -269,8 +283,10 @@ compile_error!(
 pub mod esp;
 pub mod layout;
 mod region;
+mod shared;
 mod storage;
 
 pub use error::EspStorageError;
 pub use region::FlashRegion;
+pub use shared::{FlashCell, SharedFlash};
 pub use storage::EspConfigStorage;

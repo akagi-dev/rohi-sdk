@@ -17,6 +17,18 @@
 ///////////////////////////////////////////////////////////////////////////////
 #![no_std]
 #![no_main]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented,
+        reason = "firmware must not panic: handle the error, see AGENTS.md"
+    )
+)]
 
 //! Configuration store hardware self-test for the ESP32-C3.
 //!
@@ -102,14 +114,26 @@ impl Report {
     }
 }
 
+/// Reports a failure the example cannot go on after and stops: examples never
+/// panic.
+fn halt(what: &str) -> ! {
+    error!("SELFTEST FAIL: {}", what);
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
 #[esp_hal::main]
 fn main() -> ! {
     esp_println::logger::init_logger(log::LevelFilter::Info);
     let peripherals = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()));
 
-    let storage = config_storage(FlashStorage::new(peripherals.FLASH))
-        .expect("rohi-cfg partition missing: flash with the repository partition table");
-    let mut store = ConfigStore::open(storage).expect("configuration store open failed");
+    let Ok(storage) = config_storage(FlashStorage::new(peripherals.FLASH)) else {
+        halt("rohi-cfg partition missing: flash with the repository partition table");
+    };
+    let Ok(mut store) = ConfigStore::open(storage) else {
+        halt("configuration store open failed");
+    };
     let mut report = Report { failures: 0 };
 
     let boot = match store.get::<BootCounter>() {
@@ -174,7 +198,10 @@ fn main() -> ! {
             storage.write(newest * SLOT_SIZE + 8, &[0; 4]).is_ok(),
             "corrupt newest slot",
         );
-        store = ConfigStore::open(storage).expect("reopen after corruption");
+        store = match ConfigStore::open(storage) {
+            Ok(store) => store,
+            Err(_) => halt("reopen after corruption"),
+        };
         report.check(
             store.open_state() == ConfigOpenState::Recovered,
             "recovery is reported",

@@ -1,5 +1,5 @@
 [workspace.package]
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 authors = ["Akagi Engineering <admin@akagi.dev>"]
 license = "Apache-2.0"
@@ -41,6 +41,7 @@ rohi-control-ble = { path = "crates/control-ble" }
 rohi-control-tcp = { path = "crates/control-tcp" }
 rohi-identity = { path = "crates/identity" }
 rohi-location = { path = "crates/location" }
+rohi-logging = { path = "crates/logging" }
 
 # ESP. Versions are pinned here; the chip (esp32c3 / esp32c6) is selected by
 # the firmware features, never globally.

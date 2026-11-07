@@ -157,3 +157,20 @@ cargo build-esp32c6 && size target/riscv32imac-unknown-none-elf/release/altruist
 
 The minimum free wireless heap comes from `rohi_net_esp::wireless_heap()` (the firmware logs it with its snapshot; the
 `heap-stats` feature adds the minimum).
+
+## Persistent logging (`rohi-logging`)
+
+Release build of `altruist-urban`, measured with `nm -S` on the ELF (`cargo build-esp32c3` / `cargo build-esp32c6`):
+
+| Item | ESP32-C3 | ESP32-C6 |
+|------|---------:|---------:|
+| `altruist_urban::esp::logging::LOGGING` (queue, batch, streams, status; initialized data in RAM) | 12 512 B | 12 512 B |
+| `altruist_urban::esp::logging::logging_task` future (`.bss`) | 2 304 B | 2 304 B |
+
+The limits are in `firmwares/altruist-urban/src/logging.rs` (`QUEUE_DEPTH` 24 records, `READ_BYTES` 2 048 B per
+open `read` stream, at most two streams) and in `rohi_logging` (batch of 2 KiB of text, one compressed block of at most 2 056 B). Flash:
+the `rohi-log` partition is 256 KiB of the 4 MB / 8 MB flash (the `factory` partition shrank by that amount).
+
+**Not measured:** the share of `.text` the logging code adds, stack depth of the logging task while it compresses (the
+LZ4 compressor keeps a 2 KiB table and the writer a 2 KiB chunk on the stack), the CPU time of a flush, and how long a
+flash sector erase stalls Wi-Fi, BLE and the microphone DMA ring. These need a device.

@@ -65,7 +65,8 @@ pub struct Args {
     #[arg(long, value_name = "ADAPTER")]
     pub ble_adapter: Option<String>,
 
-    /// Configuration flash image. It survives restarts.
+    /// Configuration flash image. It survives restarts, and so does the
+    /// persistent log, which is kept next to it in `<name>.log.flash`.
     #[arg(
         long,
         default_value = ".altruist-urban/device.flash",
@@ -74,7 +75,7 @@ pub struct Args {
     )]
     pub storage: PathBuf,
 
-    /// Keep the configuration flash in memory only.
+    /// Keep the configuration flash and the persistent log in memory only.
     #[arg(long)]
     pub ephemeral: bool,
 
@@ -125,6 +126,12 @@ impl Args {
         });
         (control, manage)
     }
+
+    /// The file of the persistent log flash: `device.flash` is paired with
+    /// `device.log.flash`.
+    pub fn log_storage(&self) -> PathBuf {
+        self.storage.with_extension("log.flash")
+    }
 }
 
 #[cfg(test)]
@@ -135,5 +142,9 @@ mod tests {
     fn storage_defaults_to_the_ignored_device_directory() {
         let args = Args::try_parse_from(["altruist-urban"]).unwrap();
         assert_eq!(args.storage, PathBuf::from(".altruist-urban/device.flash"));
+        assert_eq!(
+            args.log_storage(),
+            PathBuf::from(".altruist-urban/device.log.flash")
+        );
     }
 }

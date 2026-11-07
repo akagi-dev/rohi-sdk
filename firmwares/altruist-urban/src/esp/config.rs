@@ -20,16 +20,16 @@
 //! portable [`ConfigOwner`].
 
 use embassy_executor::Spawner;
-use esp_hal::peripherals::FLASH;
 use log::{error, info};
-use rohi_sdk::esp::config::EspConfigStorage;
-use rohi_sdk::esp::config::esp::{PartitionError, config_storage, esp_storage::FlashStorage};
+use rohi_sdk::esp::config::esp::PartitionError;
+use rohi_sdk::esp::config::{EspConfigStorage, FlashRegion};
 
+use super::flash::Flash;
 use crate::bindings::ConfigRuntime;
 use crate::config::{self, ConfigHandle, ConfigOwner};
 
 /// Configuration storage of the Altruist Urban.
-pub type Storage = EspConfigStorage<FlashStorage<'static>>;
+pub type Storage = EspConfigStorage<Flash>;
 
 fn describe(error: PartitionError) -> &'static str {
     match error {
@@ -40,10 +40,16 @@ fn describe(error: PartitionError) -> &'static str {
     }
 }
 
-fn open(flash: FLASH<'static>) -> ConfigOwner<Storage> {
-    match config_storage(FlashStorage::new(flash)) {
+fn open(flash: Flash, region: Result<FlashRegion, PartitionError>) -> ConfigOwner<Storage> {
+    let region = match region {
+        Ok(region) => region,
+        Err(error) => {
+            error!("Configuration partition unavailable: {:?}", error);
+            return ConfigOwner::unavailable(describe(error));
+        }
+    };
+    match EspConfigStorage::new(flash, region) {
         Ok(storage) => {
-            let region = storage.region();
             info!(
                 "Configuration region @ {:#x}+{:#x}",
                 region.offset, region.length
@@ -51,7 +57,8 @@ fn open(flash: FLASH<'static>) -> ConfigOwner<Storage> {
             ConfigOwner::open(storage)
         }
         Err(error) => {
-            error!("Configuration partition unavailable: {:?}", error);
+            let error = PartitionError::Region(error);
+            error!("Configuration partition unusable: {:?}", error);
             ConfigOwner::unavailable(describe(error))
         }
     }
@@ -69,9 +76,14 @@ async fn config_task(mut owner: ConfigOwner<Storage>, runtime: ConfigRuntime) {
 /// A missing partition or corrupted committed configuration does not stop the
 /// firmware, see [`ConfigOwner::open`]. Every section is published to its
 /// consumer once before the task runs, see [`ConfigOwner::publish_boot`].
-pub fn start(spawner: Spawner, flash: FLASH<'static>, runtime: ConfigRuntime) -> ConfigHandle {
-    let mut owner = open(flash);
+pub fn start(
+    spawner: Spawner,
+    flash: Flash,
+    region: Result<FlashRegion, PartitionError>,
+    runtime: ConfigRuntime,
+) -> ConfigHandle {
+    let mut owner = open(flash, region);
     owner.publish_boot(&runtime);
-    spawner.spawn(config_task(owner, runtime).unwrap());
+    crate::tasks::spawn(spawner, "config_task", config_task(owner, runtime));
     config::handle()
 }

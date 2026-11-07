@@ -93,7 +93,7 @@ use rohi_sdk::service::{
 
 use crate::bindings::{
     Binding, BleBinding, ConfigRuntime, ConnectivityBinding, IdentityBinding, LocationBinding,
-    NetworkBinding, PrivateBinding, TimeBinding, WifiBinding,
+    LoggingBinding, NetworkBinding, PrivateBinding, TimeBinding, WifiBinding,
 };
 use crate::tasks::RawMutex;
 
@@ -195,6 +195,9 @@ pub enum ServiceError {
     Section(SectionError),
     /// The value could not be encoded into a section payload.
     Encode(EncodeError),
+    /// The owner task answered another request than the one asked; never
+    /// expected, reported instead of trusting the answer.
+    Protocol,
 }
 
 impl fmt::Display for ServiceError {
@@ -205,6 +208,7 @@ impl fmt::Display for ServiceError {
             Self::Store(error) => write!(f, "{error}"),
             Self::Section(error) => write!(f, "{error}"),
             Self::Encode(error) => write!(f, "{error}"),
+            Self::Protocol => f.write_str("configuration owner answered another request"),
         }
     }
 }
@@ -309,7 +313,9 @@ impl ConfigHandle {
     pub async fn status(&self) -> ConfigStatus {
         match self.call(Command::Status).await {
             Outcome::Status(status) => status,
-            _ => unreachable!("status request answered with another outcome"),
+            _ => ConfigStatus::Unavailable(Unavailable::Partition(
+                "configuration owner answered another request",
+            )),
         }
     }
 
@@ -321,7 +327,7 @@ impl ConfigHandle {
                 .map_err(ServiceError::Section),
             Outcome::NotFound => Ok(None),
             Outcome::Failed(error) => Err(error),
-            _ => unreachable!("get request answered with another outcome"),
+            _ => Err(ServiceError::Protocol),
         }
     }
 
@@ -340,7 +346,7 @@ impl ConfigHandle {
         match self.call(command).await {
             Outcome::Done => Ok(()),
             Outcome::Failed(error) => Err(error),
-            _ => unreachable!("set request answered with another outcome"),
+            _ => Err(ServiceError::Protocol),
         }
     }
 
@@ -351,7 +357,7 @@ impl ConfigHandle {
         match self.call(Command::Remove(T::ID)).await {
             Outcome::Done => Ok(()),
             Outcome::Failed(error) => Err(error),
-            _ => unreachable!("remove request answered with another outcome"),
+            _ => Err(ServiceError::Protocol),
         }
     }
 }
@@ -382,7 +388,7 @@ impl StorageMaintenance {
         match handle.call(Command::FormatStorage).await {
             Outcome::Done => Ok(()),
             Outcome::Failed(error) => Err(error),
-            _ => unreachable!("format request answered with another outcome"),
+            _ => Err(ServiceError::Protocol),
         }
     }
 
@@ -400,7 +406,7 @@ impl StorageMaintenance {
         match handle.call(Command::FactoryReset).await {
             Outcome::Done => Ok(()),
             Outcome::Failed(error) => Err(error),
-            _ => unreachable!("factory reset request answered with another outcome"),
+            _ => Err(ServiceError::Protocol),
         }
     }
 }
@@ -615,7 +621,10 @@ where
                     }
                     Err(error) => Outcome::Failed(ServiceError::Store(erase(error))),
                 },
-                Command::FormatStorage | Command::FactoryReset => unreachable!("handled above"),
+                // Answered above.
+                Command::FormatStorage | Command::FactoryReset => {
+                    Outcome::Failed(ServiceError::Protocol)
+                }
             },
         }
     }
@@ -624,13 +633,6 @@ where
     /// defaults. Unlike [`Self::format_storage`] it also acts on a healthy
     /// store, so it erases the identity and sections unknown to this firmware.
     fn factory_reset(&mut self, runtime: &ConfigRuntime) -> Outcome {
-        if let Self::Unavailable {
-            reason,
-            storage: None,
-        } = self
-        {
-            return Outcome::Failed(ServiceError::Unavailable(reason.clone()));
-        }
         // Every path below puts a real state back.
         let taken = core::mem::replace(
             self,
@@ -644,7 +646,17 @@ where
             Self::Unavailable {
                 storage: Some(raw), ..
             } => raw,
-            Self::Unavailable { .. } => unreachable!("checked above"),
+            Self::Unavailable {
+                reason,
+                storage: None,
+            } => {
+                let error = ServiceError::Unavailable(reason.clone());
+                *self = Self::Unavailable {
+                    reason,
+                    storage: None,
+                };
+                return Outcome::Failed(error);
+            }
         };
         match ConfigStore::format(raw) {
             Ok(store) => {
@@ -836,6 +848,6 @@ fn effective<C: HasOverrides + Default>(
 }
 
 crate::firmware_configs! {
-    managed WifiBinding, NetworkBinding, BleBinding, ConnectivityBinding, LocationBinding, TimeBinding;
+    managed WifiBinding, NetworkBinding, BleBinding, ConnectivityBinding, LocationBinding, TimeBinding, LoggingBinding;
     private IdentityBinding
 }

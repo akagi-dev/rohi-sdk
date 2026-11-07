@@ -181,6 +181,7 @@ fn an_action_changes_what_status_reports_without_duplicating_state() {
     let actions = (&fw.reboot, &fw.wifi);
 
     let records = block_on(actions.invoke(WirelessService::ID, 1, &[])).unwrap();
+    let records = records.records();
     assert_eq!(records.len(), 1);
     assert_eq!(
         records[0].as_slice(),
