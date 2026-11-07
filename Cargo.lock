@@ -4212,6 +4212,7 @@ name = "rohi-net-std"
 version = "0.7.0"
 dependencies = [
  "bluer",
+ "critical-section",
  "embassy-futures",
  "embedded-io-async 0.7.0",
  "embedded-nal-async",

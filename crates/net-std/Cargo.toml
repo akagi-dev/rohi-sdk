@@ -28,6 +28,7 @@ embassy-futures.workspace = true
 tokio = { workspace = true, features = ["time"] }
 rohi-control.workspace = true
 rohi-control-proto.workspace = true
+critical-section.workspace = true
 
 [features]
 default = []
