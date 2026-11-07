@@ -17,6 +17,18 @@
 ///////////////////////////////////////////////////////////////////////////////
 #![no_std]
 #![no_main]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented,
+        reason = "firmware must not panic: handle the error, see AGENTS.md"
+    )
+)]
 #![deny(
     clippy::mem_forget,
     reason = "mem::forget is generally not safe to do with esp_hal types, especially those \
@@ -81,9 +93,17 @@ async fn main(spawner: Spawner) -> ! {
     // Identity is provisioned from the host, never generated; a fresh device
     // simply has none and keeps sensing.
     let identity = identity::start(config);
-    spawner.spawn(reboot_task().unwrap());
+    altruist_urban::tasks::spawn(spawner, "reboot_task", reboot_task());
 
-    let board = AltruistUrban::new(hardware).expect("board initialization failed");
+    // Without the board there is no sensing, but configuration, Wi-Fi and the
+    // control link still work: the device stays reachable.
+    let board = match AltruistUrban::new(hardware) {
+        Ok(board) => Some(board),
+        Err(error) => {
+            error!("Board initialization failed, sensors disabled: {:?}", error);
+            None
+        }
+    };
     store::start(spawner);
 
     // A Wi-Fi or BLE failure must never stop the sensors: log and carry on.
@@ -114,7 +134,9 @@ async fn main(spawner: Spawner) -> ! {
     if wifi_configured {
         wifi::wait_first_attempt(WIFI_FIRST_ATTEMPT_WAIT).await;
     }
-    sensors::start(spawner, board);
+    if let Some(board) = board {
+        sensors::start(spawner, board);
+    }
 
     core::future::pending().await
 }

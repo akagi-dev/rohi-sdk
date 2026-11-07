@@ -20,12 +20,23 @@
 //! The platform declares the Embassy tasks (one per sensor, one for the store)
 //! around these pieces, because a task cannot be generic.
 
+use embassy_executor::{SpawnError, SpawnToken, Spawner};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use log::error;
 use rohi_sdk::hal::SensorKind;
 use rohi_sdk::hal::runtime::{Clock, EVENT_QUEUE_CAPACITY, EventBus, Reporter, SensorStates};
 
 /// The `MeasurementStore` owner.
 pub mod store;
+
+/// Starts a task. A task that cannot start (its pool is full) is reported and
+/// the firmware goes on without it: spawning never panics.
+pub fn spawn<S>(spawner: Spawner, name: &str, task: Result<SpawnToken<S>, SpawnError>) {
+    match task {
+        Ok(token) => spawner.spawn(token),
+        Err(error) => error!("Task {} not started: {:?}", name, error),
+    }
+}
 
 /// Mutex flavour shared by the runtime primitives.
 pub type RawMutex = CriticalSectionRawMutex;

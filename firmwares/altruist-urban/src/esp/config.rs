@@ -84,6 +84,6 @@ pub fn start(
 ) -> ConfigHandle {
     let mut owner = open(flash, region);
     owner.publish_boot(&runtime);
-    spawner.spawn(config_task(owner, runtime).unwrap());
+    crate::tasks::spawn(spawner, "config_task", config_task(owner, runtime));
     config::handle()
 }

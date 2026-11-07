@@ -92,12 +92,18 @@ pub struct SegmentInfo {
 /// Space and content of a storage.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StorageStats {
-    /// Budget of the history: the retention, bounded by the medium.
+    /// Identifies the retained history. It changes when the history is
+    /// cleared or lost to damage, and survives a reboot; a cursor (a record
+    /// sequence) is meaningful only within one generation. Never 0.
+    pub generation: u32,
+    /// Budget of the history: the retention, bounded by the medium and by
+    /// [`MAX_SEGMENTS`] segments of the current size.
     pub capacity_bytes: u32,
     /// Storage allocated to retained segments, the open one included.
     pub used_bytes: u32,
     /// Storage that can be used before the oldest segment has to go: what is
-    /// left of the budget, bounded by what is physically free.
+    /// left of the budget, bounded by what is physically free and by the
+    /// segments [`MAX_SEGMENTS`] still leaves room for.
     pub free_bytes: u32,
     /// Retained segments.
     pub segments: u32,
@@ -118,6 +124,8 @@ pub struct Recovery {
     pub segments: u32,
     /// Segments that were damaged or empty and were dropped.
     pub dropped: u32,
+    /// Of those, sealed segments whose payload did not match its checksum.
+    pub corrupted: u32,
 }
 
 /// Why a storage operation failed.
@@ -185,8 +193,10 @@ pub trait LogStorage {
 
     /// Finds the history left on the medium after a reset: reads the sealed
     /// segments, cuts a segment that was torn by a power loss at its last
-    /// complete block and drops what cannot be read. Never fails because of
-    /// the content, only because of the medium.
+    /// complete block and drops what cannot be read. A sealed segment whose
+    /// payload does not match the checksum of its header is dropped whole and
+    /// counted in [`Recovery::corrupted`]. Never fails because of the
+    /// content, only because of the medium.
     async fn recover(&mut self) -> Result<Recovery, StorageError<Self::Error>>;
 
     /// Opens a new segment, sealing the open one first and dropping the oldest

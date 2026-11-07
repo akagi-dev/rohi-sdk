@@ -145,8 +145,8 @@ fn a_damaged_start_record_drops_that_segment_only() {
     writer.flush(&mut storage).unwrap();
     let infos = block_on(storage.segments()).unwrap();
     assert!(infos.len() >= 3);
-    // The first segment starts at sector 0.
-    *storage.medium().raw(9) ^= 0x01;
+    let start = storage.sector_of(infos[0].id).unwrap() * 4096;
+    *storage.medium().raw(start + 9) ^= 0x01;
     let mut storage = restart(storage);
     let left = block_on(storage.segments()).unwrap();
     assert_eq!(left.len(), infos.len() - 1);
@@ -242,6 +242,48 @@ fn at_most_the_segment_limit_is_retained() {
 }
 
 #[test]
+fn the_segment_limit_bounds_the_reported_capacity() {
+    let mut medium = std::boxed::Box::new(RamMedium::<64>::new());
+    medium.erase(0, 64).unwrap();
+    let mut storage = RingStorage::new(*medium);
+    block_on(storage.recover()).unwrap();
+    let limits = Limits {
+        segment_bytes: 4096,
+        retention_bytes: 64 * 4096,
+    };
+    let sector = 4096;
+    let mut writer = Writer::new(1, Compression::None, limits);
+    let mut seen_free = std::vec::Vec::new();
+    for _ in 0..60 {
+        writer.push_many(&mut storage, 100).unwrap();
+        let stats = block_on(storage.stats()).unwrap();
+        // The byte budget is 64 sectors, the segment limit allows 24.
+        let bound = MAX_SEGMENTS as u32 * sector;
+        if stats.segments > 0 {
+            assert_eq!(stats.capacity_bytes, bound, "{stats:?}");
+            assert!(stats.used_bytes <= stats.capacity_bytes, "{stats:?}");
+            assert!(
+                stats.free_bytes <= (MAX_SEGMENTS as u32 - stats.segments) * sector,
+                "{stats:?}"
+            );
+            assert_eq!(
+                stats.free_bytes,
+                stats.capacity_bytes - stats.used_bytes,
+                "{stats:?}"
+            );
+        }
+        seen_free.push((stats.segments, stats.free_bytes));
+    }
+    // The limit is really reached before the byte budget, and then nothing is
+    // left, although most of the medium is.
+    let full = seen_free
+        .iter()
+        .find(|(segments, _)| *segments as usize == MAX_SEGMENTS)
+        .expect("the segment limit is reached");
+    assert_eq!(full.1, 0);
+}
+
+#[test]
 fn a_recovery_keeps_the_pins_of_downloads() {
     let mut storage = fresh();
     let mut writer = Writer::new(1, Compression::None, LIMITS);
@@ -254,4 +296,98 @@ fn a_recovery_keeps_the_pins_of_downloads() {
     let after = block_on(storage.segments()).unwrap();
     assert!(after.iter().any(|info| info.id == oldest.id && info.pinned));
     assert_eq!(block_on(storage.clear()), Err(StorageError::Busy));
+}
+
+#[test]
+fn a_sealed_segment_with_a_damaged_payload_is_dropped_and_reported() {
+    for codec in [Compression::None, Compression::Lz4] {
+        let mut storage = fresh();
+        let mut writer = Writer::new(1, codec, LIMITS);
+        let count = if codec == Compression::None { 300 } else { 900 };
+        writer.push_many(&mut storage, count).unwrap();
+        writer.flush(&mut storage).unwrap();
+        block_on(storage.seal()).unwrap();
+        let before = block_on(storage.segments()).unwrap();
+        assert!(before.len() >= 3);
+
+        // A bit of the payload of the oldest segment flips; its header, with
+        // the old checksum, stays valid.
+        let start = storage.sector_of(before[0].id).unwrap() * 4096;
+        *storage.medium().raw(start + 100) ^= 0x04;
+        let mut medium = storage.into_medium();
+        medium.restore_power();
+        let mut storage = RingStorage::new(medium);
+        let recovery = block_on(storage.recover()).unwrap();
+        assert_eq!(recovery.corrupted, 1, "{codec:?}");
+        assert_eq!(recovery.dropped, 1, "{codec:?}");
+
+        let after = block_on(storage.segments()).unwrap();
+        assert_eq!(after.len(), before.len() - 1);
+        assert!(after.iter().all(|info| info.id != before[0].id));
+        let records = all_records(&mut storage);
+        assert_contiguous(&records);
+        assert_eq!(records.first().unwrap().sequence, after[0].first_sequence);
+        assert_eq!(records.last().unwrap().sequence, count);
+
+        // The damaged space is reusable and the decision is stable.
+        let mut storage = restart(storage);
+        assert_eq!(block_on(storage.segments()).unwrap(), after);
+        let recovery = block_on(storage.recover()).unwrap();
+        assert_eq!((recovery.corrupted, recovery.dropped), (0, 0));
+    }
+}
+
+fn generation(storage: &mut RingStorage<RamMedium<SECTORS>>) -> u32 {
+    block_on(storage.stats()).unwrap().generation
+}
+
+#[test]
+fn the_generation_changes_with_the_history_and_survives_reboots() {
+    let mut storage = fresh();
+    assert_eq!(generation(&mut storage), 1);
+    let mut writer = Writer::new(1, Compression::Lz4, LIMITS);
+    writer.push_many(&mut storage, 100).unwrap();
+    writer.flush(&mut storage).unwrap();
+    let mut storage = restart(storage);
+    assert_eq!(generation(&mut storage), 1);
+
+    block_on(storage.clear()).unwrap();
+    assert_eq!(generation(&mut storage), 2);
+    // Nothing is stored, yet a reboot knows it is not the first history.
+    let mut storage = restart(storage);
+    assert_eq!(generation(&mut storage), 2);
+    let mut storage = restart(storage);
+    assert_eq!(generation(&mut storage), 2);
+
+    let mut writer = Writer::new(1, Compression::Lz4, LIMITS);
+    writer.push_many(&mut storage, 100).unwrap();
+    writer.flush(&mut storage).unwrap();
+    assert_eq!(generation(&mut storage), 2);
+    let mut storage = restart(storage);
+    assert_eq!(generation(&mut storage), 2);
+
+    block_on(storage.clear()).unwrap();
+    block_on(storage.clear()).unwrap();
+    let mut storage = restart(storage);
+    assert_eq!(generation(&mut storage), 4);
+}
+
+#[test]
+fn a_history_lost_to_damage_gets_a_new_generation() {
+    let mut storage = fresh();
+    let mut writer = Writer::new(1, Compression::None, LIMITS);
+    writer.push_many(&mut storage, 20).unwrap();
+    writer.flush(&mut storage).unwrap();
+    let only = block_on(storage.segments()).unwrap();
+    assert_eq!(only.len(), 1);
+    // The open segment is torn down to nothing: its first block is damaged.
+    let start = storage.sector_of(only[0].id).unwrap() * 4096;
+    for offset in 0..64 {
+        *storage.medium().raw(start + 20 + offset) = 0x01;
+    }
+    let mut storage = restart(storage);
+    assert!(block_on(storage.segments()).unwrap().is_empty());
+    assert_eq!(generation(&mut storage), 2);
+    let mut storage = restart(storage);
+    assert_eq!(generation(&mut storage), 2);
 }

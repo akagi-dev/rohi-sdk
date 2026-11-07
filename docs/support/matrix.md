@@ -94,9 +94,9 @@ Limitations of Device identity:
 
 Limitations of Persistent logging:
 
-- Only the internal-flash backend exists; the SD backend is not implemented and `storage = sd` reports `storage_unavailable`.
+- Only the internal-flash backend exists; the SD backend is not implemented (issue #26 is implemented only in part) and `storage = sd` reports `storage_unavailable`.
 - Flash erase and programming stall the whole CPU for tens of milliseconds per sector; the effect on Wi-Fi, BLE and the microphone DMA ring is not measured.
-- Persistence across reset, power-loss recovery, flash wear and the transfer speed of `rohi logs download` over BLE are covered by host emulation only; no hardware run is recorded.
+- Persistence across reset, power-loss recovery (including payload checksum validation and the history generation), flash rotation, coexistence with the configuration partition and the transfer speed of `rohi logs download` over BLE are covered by host emulation only; no hardware run is recorded.
 
 ### Altruist Urban with altruist-firmware (esp32c6)
 
@@ -184,9 +184,9 @@ Limitations of Device identity:
 
 Limitations of Persistent logging:
 
-- Only the internal-flash backend exists; the SD backend is not implemented and `storage = sd` reports `storage_unavailable`.
+- Only the internal-flash backend exists; the SD backend is not implemented (issue #26 is implemented only in part) and `storage = sd` reports `storage_unavailable`.
 - Flash erase and programming stall the whole CPU for tens of milliseconds per sector; the effect on Wi-Fi, BLE and the microphone DMA ring is not measured.
-- Persistence across reset, power-loss recovery, flash wear and the transfer speed of `rohi logs download` over BLE are covered by host emulation only; no hardware run is recorded.
+- Persistence across reset, power-loss recovery (including payload checksum validation and the history generation), flash rotation, coexistence with the configuration partition and the transfer speed of `rohi logs download` over BLE are covered by host emulation only; no hardware run is recorded.
 
 ### Altruist Urban (legacy) with altruist-firmware (esp32c3)
 

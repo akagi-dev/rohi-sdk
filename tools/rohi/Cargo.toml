@@ -72,6 +72,7 @@ rohi-config = { workspace = true, features = ["std"] }
 rohi-time-ntp.workspace = true
 minicbor = { workspace = true, features = ["std"] }
 embassy-sync.workspace = true
+critical-section.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "time", "sync"] }
 
 [[test]]

@@ -329,3 +329,152 @@ fn the_response_buffer_covers_the_largest_response() {
         HEADER_LEN + MAX_RESPONSE_LEN
     );
 }
+
+use core::cell::Cell;
+
+use rohi_service::{
+    Action, ActionDescriptor, ActionError, ActionOutput, Service, StreamChunk, StreamFile,
+    StreamInfo, Value,
+};
+
+#[derive(Service)]
+struct Probe {
+    lost: Cell<u32>,
+    open: Cell<bool>,
+}
+
+impl Action for Probe {
+    const ACTIONS: &'static [ActionDescriptor] = &[ActionDescriptor::new(1, "export").stream()];
+
+    async fn invoke(
+        &self,
+        _: u32,
+        _: &[(u32, Value)],
+        out: &mut impl ActionOutput,
+    ) -> Result<(), ActionError> {
+        self.open.set(true);
+        let mut files = heapless::Vec::new();
+        files
+            .push(StreamFile {
+                id: 1,
+                name: heapless::String::try_from("a.log").unwrap(),
+                size_bytes: 3,
+            })
+            .unwrap();
+        out.stream(StreamInfo { id: 5, files })
+            .map_err(|_| ActionError::Internal)
+    }
+
+    async fn read_stream(
+        &self,
+        stream: u32,
+        _: u32,
+        _: u64,
+        buf: &mut [u8],
+    ) -> Result<StreamChunk, ActionError> {
+        if !self.open.get() || stream != 5 {
+            return Err(ActionError::UnknownStream);
+        }
+        buf[..3].copy_from_slice(b"abc");
+        Ok(StreamChunk { len: 3, eof: true })
+    }
+
+    async fn close_stream(&self, _: u32) -> Result<(), ActionError> {
+        Err(ActionError::UnknownStream)
+    }
+
+    fn link_lost(&self) {
+        self.lost.set(self.lost.get() + 1);
+        self.open.set(false);
+    }
+}
+
+fn call(id: u32, call: Call) -> Vec<u8> {
+    let request = pb::Request {
+        protocol_version: PROTOCOL_VERSION,
+        request_id: id,
+        request: Some(call),
+    };
+    let mut bytes = [0u8; 64];
+    let len = encode(&request, &mut bytes).unwrap();
+    record(&bytes[..len])
+}
+
+fn export() -> Vec<u8> {
+    call(
+        1,
+        Call::InvokeAction(pb::InvokeActionRequest {
+            service_id: <Probe as Service>::ID,
+            action_id: 1,
+            args: heapless::Vec::new(),
+        }),
+    )
+}
+
+fn read_stream() -> Vec<u8> {
+    call(
+        2,
+        Call::ReadStream(pb::ReadStreamRequest {
+            service_id: <Probe as Service>::ID,
+            stream_id: 5,
+            file_id: 1,
+            offset: 0,
+        }),
+    )
+}
+
+#[test]
+fn a_stream_is_released_with_its_connection_and_never_reaches_the_next_client() {
+    let probe = Probe {
+        lost: Cell::new(0),
+        open: Cell::new(false),
+    };
+    let info = DeviceInfo {
+        firmware: "demo-0.1.0",
+        board: "demo-board",
+    };
+    let controller = Controller::new(Device::new(info, || 0, (), (), (&probe,)), OpenPolicy);
+    let first = Connection::new(&[export(), read_stream()].concat(), 4096);
+    let second = Connection::new(&read_stream(), 4096);
+    let clients = Clients([first.clone(), second.clone()].into());
+    let mut control = ControlTcp::new(clients, &controller);
+
+    block_on(control.serve_next()).unwrap();
+    let answers = responses(&first.outgoing());
+    assert!(matches!(answers[0].response, Some(Reply::ActionStream(_))));
+    assert!(matches!(answers[1].response, Some(Reply::ReadStream(_))));
+    assert_eq!(probe.lost.get(), 1, "the disconnect releases the streams");
+
+    block_on(control.serve_next()).unwrap();
+    assert!(is_error(
+        &responses(&second.outgoing())[0],
+        pb::ErrorCode::NotFound
+    ));
+}
+
+#[test]
+fn a_stream_left_open_cannot_be_read_by_the_next_connection_even_if_it_lives() {
+    // A transport that never reports the end of the first connection (the
+    // future was dropped) still separates the sessions.
+    let probe = Probe {
+        lost: Cell::new(0),
+        open: Cell::new(false),
+    };
+    let info = DeviceInfo {
+        firmware: "demo-0.1.0",
+        board: "demo-board",
+    };
+    let controller = Controller::new(Device::new(info, || 0, (), (), (&probe,)), OpenPolicy);
+    let first = Connection::new(&export(), 4096);
+    let second = Connection::new(&read_stream(), 4096);
+    let clients = Clients([first.clone(), second.clone()].into());
+    let mut control = ControlTcp::new(clients, &controller);
+    block_on(control.serve_next()).unwrap();
+    // The service still has the stream: pretend it was not told.
+    probe.open.set(true);
+    block_on(control.serve_next()).unwrap();
+    assert!(is_error(
+        &responses(&second.outgoing())[0],
+        pb::ErrorCode::NotFound
+    ));
+}

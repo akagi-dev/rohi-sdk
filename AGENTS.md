@@ -31,6 +31,16 @@ See [Targets and features](crates/sdk/src/portability.rs) (rustdoc of `rohi-sdk`
 - Hardware support and verification evidence: [support matrix](support-matrix/matrix.toml); update it with any change to a
   board, sensor driver, firmware wiring or hardware result.
 
+## Exception safety (no panics in firmware)
+
+Firmware must not panic: `unwrap()`, `expect()`, `panic!`, `unreachable!`, `todo!` and `unimplemented!` are allowed **in tests only**.
+Handle the error instead: log it and degrade (a task that cannot start, a board that cannot initialize), return a typed error,
+or park. This is enforced with `#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic,
+clippy::unreachable, clippy::todo, clippy::unimplemented))]` in `altruist-urban` (ESP and std platform), `rohi-hal-esp`,
+`rohi-net-esp`, `rohi-config-esp` and `rohi-examples`; the CI clippy jobs of both chips and the host fail on a violation. Start
+Embassy tasks with `altruist_urban::tasks::spawn`, never `spawner.spawn(task().unwrap())`. Code in a new firmware or ESP crate
+carries the same attribute.
+
 ## Before you finish
 
 - `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`, `cargo test`, `cargo clippy --all-targets -- -D warnings` pass.

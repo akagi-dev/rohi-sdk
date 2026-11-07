@@ -20,3 +20,6 @@ log.workspace = true
 
 [dev-dependencies]
 embassy-futures.workspace = true
+critical-section.workspace = true
+heapless.workspace = true
+rohi-service.workspace = true

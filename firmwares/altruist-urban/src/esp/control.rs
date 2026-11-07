@@ -111,8 +111,8 @@ pub fn start(
     match wireless.ble(ble_config(), BLE_RESOURCES.init(Default::default())) {
         Ok((transport, runner)) => {
             let device = device(config, identity, network, transport.status());
-            spawner.spawn(ble_task(runner).unwrap());
-            spawner.spawn(control_task(transport, device).unwrap());
+            crate::tasks::spawn(spawner, "ble_task", ble_task(runner));
+            crate::tasks::spawn(spawner, "control_task", control_task(transport, device));
             info!(
                 "BLE control started, wireless heap free {} B",
                 wireless.heap().free

@@ -533,7 +533,10 @@ impl<
         };
 
         join(host, serve).await;
-        unreachable!("BLE tasks never end")
+        // Both loops above never end; park instead of panicking if that changes.
+        loop {
+            core::future::pending::<()>().await;
+        }
     }
 }
 

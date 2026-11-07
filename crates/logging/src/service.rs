@@ -87,6 +87,8 @@ pub mod status_field {
     pub const OLDEST_SEQUENCE: u32 = 10;
     /// Sequence of the newest retained record; absent when there is none.
     pub const NEWEST_SEQUENCE: u32 = 11;
+    /// Identifies the retained history; changes when it is cleared or lost.
+    pub const HISTORY: u32 = 12;
 }
 
 /// Action ids of the `logging` service.
@@ -114,10 +116,34 @@ pub const MAX_READ_RECORDS: u64 = 200;
 pub const STREAM_TIMEOUT_MS: u64 = 60_000;
 /// Records were dropped "recently" when the last drop is younger than this.
 pub const OVERFLOW_WINDOW_MS: u64 = 30_000;
-/// The name of the one file `read` returns.
-pub const READ_FILE_NAME: &str = "records.log";
+/// The longest name of the file `read` returns.
+pub const MAX_READ_FILE_NAME_LEN: usize = 22;
+/// The reason of the `rejected` error of a `read` that met a damaged segment.
+pub const READ_CORRUPT: &str = "segment_corrupt";
 /// The id of the one file `read` returns.
 pub const READ_FILE_ID: u32 = 1;
+
+/// The name of the file `read` returns for the history `history`:
+/// `records-<history>.log`.
+///
+/// A cursor (the sequence of a record) belongs to one history, the
+/// `history` of the status. The name tells which history the records come
+/// from, so a client that follows the log sees that it was cleared or lost
+/// and starts over instead of waiting for sequences it already passed.
+pub fn read_file_name(history: u32) -> heapless::String<MAX_READ_FILE_NAME_LEN> {
+    use core::fmt::Write;
+    let mut name = heapless::String::new();
+    let _ = write!(name, "records-{history}.log");
+    name
+}
+
+/// The history a file name of `read` belongs to, see [`read_file_name`].
+pub fn history_of_read_file(name: &str) -> Option<u32> {
+    name.strip_prefix("records-")?
+        .strip_suffix(".log")?
+        .parse()
+        .ok()
+}
 
 const MAX_STREAMS: usize = 2;
 const RETRY_MS: u64 = 10_000;
@@ -219,6 +245,7 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
                     records: 0,
                     oldest_sequence: None,
                     newest_sequence: None,
+                    generation: 0,
                 },
                 active: None,
                 lost: 0,
@@ -367,7 +394,12 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
                 }
                 inner.faulted = false;
                 inner.open_codec = None;
-                self.with(|state| state.write_failed_since = None);
+                self.with(|state| {
+                    state.write_failed_since = None;
+                    if recovery.dropped > 0 {
+                        state.corrupt_since.get_or_insert(now);
+                    }
+                });
             }
             Err(_) => inner.retry_at_ms = now + RETRY_MS,
         }
@@ -395,6 +427,8 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
                 for (id, _) in files {
                     storage.unpin(id);
                 }
+                // The segments the stall waited for may be free now.
+                inner.stalled_until_ms = 0;
             }
         }
     }
@@ -423,7 +457,7 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
     }
 
     async fn flush(&self, inner: &mut Inner<B>, now: u64) {
-        if inner.batch.is_empty() {
+        if inner.batch.is_empty() || now < inner.stalled_until_ms {
             return;
         }
         let Some(storage) = inner.storage.as_mut() else {
@@ -511,6 +545,7 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
             let full = self.drain(inner, now);
             let interval = u64::from(self.config().flush_interval_ms);
             let due = !inner.batch.is_empty()
+                && now >= inner.stalled_until_ms
                 && (full || now.saturating_sub(inner.batch_since_ms) >= interval);
             if !due {
                 break;
@@ -544,7 +579,11 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
             wait = Some(wait.map_or(ms, |current| current.min(ms)));
         };
         if !inner.batch.is_empty() {
-            at(inner.batch_since_ms + u64::from(self.config().flush_interval_ms));
+            // A stalled batch is not retried before the stall ends.
+            at(
+                (inner.batch_since_ms + u64::from(self.config().flush_interval_ms))
+                    .max(inner.stalled_until_ms),
+            );
         }
         if inner.stalled_until_ms > now {
             at(inner.stalled_until_ms);
@@ -644,6 +683,7 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize> S
             "newest_sequence",
             ValueKind::U64,
         ),
+        FieldDescriptor::new(status_field::HISTORY, "history", ValueKind::U64),
     ];
     const ENUMS: &'static [EnumDescriptor] = LEVELS;
     const ISSUES: &'static [IssueDescriptor] = &[
@@ -742,6 +782,9 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize> S
         }
         if let Some(newest) = stats.newest_sequence {
             out.u64(status_field::NEWEST_SEQUENCE, newest)?;
+        }
+        if stats.generation != 0 {
+            out.u64(status_field::HISTORY, u64::from(stats.generation))?;
         }
         Ok(())
     }
@@ -852,27 +895,38 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
         let result = Self::collect(storage, after, limit, &mut records).await;
         match result {
             Ok(()) => self.with(|state| state.read_failed_since = None),
-            Err(()) => {
+            Err(error) => {
                 let now = self.now();
                 self.with(|state| {
                     state.read_failed_since.get_or_insert(now);
                 });
-                return Err(ActionError::Internal);
+                return Err(error);
             }
         }
         let size = records.len() as u64;
+        let history = storage
+            .stats()
+            .await
+            .map_err(|_| ActionError::Internal)?
+            .generation;
         let id = self.register(Content::Records(records))?;
-        Self::stream_info(id, &[(READ_FILE_ID, READ_FILE_NAME, size)])
+        let name = read_file_name(history);
+        Self::stream_info(id, &[(READ_FILE_ID, name.as_str(), size)])
     }
 
-    // Decodes the segments that can hold records above `after`.
+    // Decodes the segments that can hold records above `after`. Stopping at
+    // the limit or at the end of the buffer is the pagination of a read; a
+    // segment that cannot be read to its end is an error.
     async fn collect(
         storage: &mut B::Storage,
         after: u64,
         limit: u64,
         records: &mut Vec<u8, READ>,
-    ) -> Result<(), ()> {
-        let segments = storage.segments().await.map_err(|_| ())?;
+    ) -> Result<(), ActionError> {
+        let segments = storage
+            .segments()
+            .await
+            .map_err(|_| ActionError::Internal)?;
         let mut taken = 0u64;
         let mut finished = false;
         for info in segments.iter().filter(|info| info.last_sequence > after) {
@@ -883,12 +937,12 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
                 let count = storage
                     .read(info.id, offset, &mut piece)
                     .await
-                    .map_err(|_| ())?;
+                    .map_err(|_| ActionError::Internal)?;
                 if count == 0 {
                     break;
                 }
                 offset += count as u32;
-                let _ = decoder.push(&piece[..count], &mut |record: LogRecord| {
+                let pushed = decoder.push(&piece[..count], &mut |record: LogRecord| {
                     if finished || record.sequence <= after {
                         return;
                     }
@@ -902,9 +956,15 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
                     }
                     taken += 1;
                 });
+                if pushed.is_err() {
+                    return Err(ActionError::Rejected(READ_CORRUPT));
+                }
             }
             if finished {
                 break;
+            }
+            if !decoder.is_complete() {
+                return Err(ActionError::Rejected(READ_CORRUPT));
             }
         }
         Ok(())
@@ -1079,8 +1139,10 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
                 for (id, _) in files {
                     storage.unpin(id);
                 }
+                inner.stalled_until_ms = 0;
             }
         }
+        self.wake.signal(());
         Ok(())
     }
 }

@@ -490,6 +490,44 @@ async fn follow_prints_the_latest_and_then_only_new_records() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn follow_notices_that_the_history_was_cleared_and_goes_on() {
+    let bench = Bench::new();
+    bench.log(1, 10);
+    let injector = async {
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        bench.log(11, 2);
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        run(&bench, &["logs", "clear", "--yes"]).await.ok();
+        bench.log(13, 2);
+    };
+    let outcome = run_with(
+        &bench,
+        &["logs", "-n", "1", "-f"],
+        Terminal {
+            interactive: false,
+            input: &[],
+        },
+        Some((5, Box::new(injector))),
+    )
+    .await;
+    outcome.ok();
+    assert!(
+        outcome.stderr.contains("cleared or reset"),
+        "{}",
+        outcome.stderr
+    );
+    let messages: Vec<u64> = outcome
+        .lines()
+        .iter()
+        .map(|(sequence, _)| *sequence)
+        .collect();
+    // What was cleared is not repeated; what came after it is all there.
+    assert_eq!(messages.last(), Some(&14));
+    assert!(messages.contains(&13), "{messages:?}");
+    assert_eq!(messages.iter().filter(|s| **s == 13).count(), 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn follow_with_n_zero_starts_at_the_end_and_json_is_one_document_per_line() {
     let bench = Bench::new();
     bench.log(1, 10);

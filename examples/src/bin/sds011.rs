@@ -17,6 +17,18 @@
 ///////////////////////////////////////////////////////////////////////////////
 #![no_std]
 #![no_main]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented,
+        reason = "firmware must not panic: handle the error, see AGENTS.md"
+    )
+)]
 
 //! SDS011 example: prints PM2.5 and PM10 once per duty cycle (about 2 minutes).
 
@@ -29,7 +41,7 @@ esp_bootloader_esp_idf::esp_app_desc!();
 #[esp_hal::main]
 fn main() -> ! {
     run(|spawner, board| {
-        spawner.spawn(print_events_task().unwrap());
-        spawner.spawn(sds011_task(board.sds011_uart).unwrap());
+        altruist_urban::tasks::spawn(spawner, "print_events_task", print_events_task());
+        altruist_urban::tasks::spawn(spawner, "sds011_task", sds011_task(board.sds011_uart));
     })
 }

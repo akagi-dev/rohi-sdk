@@ -231,7 +231,7 @@ fn start(spawner: Spawner, prepared: Prepared) -> Result<(), StartupError> {
     let runtime = ConfigRuntime::new(net::handle(), logging::apply);
     let mut owner = ConfigOwner::open(storage.clone());
     owner.publish_boot(&runtime);
-    spawner.spawn(config_task(owner, runtime).unwrap());
+    crate::tasks::spawn(spawner, "config_task", config_task(owner, runtime));
 
     let mut interfaces = Interfaces::default();
     #[cfg(feature = "std-tcp")]
@@ -247,24 +247,29 @@ fn start(spawner: Spawner, prepared: Prepared) -> Result<(), StartupError> {
         .map_err(|e| platform("management address", e))?;
     interfaces.manage = Some(manage_address);
 
-    spawner.spawn(
+    crate::tasks::spawn(
+        spawner,
+        "reboot_task",
         reboot_task(
             storage.clone(),
             log_storage.clone(),
             args.clone(),
             interfaces.control.map_or(0, |address| address.port()),
             manage_address.port(),
-        )
-        .unwrap(),
+        ),
     );
 
-    spawner.spawn(store_task(scenario.stale_after_ms).unwrap());
+    crate::tasks::spawn(spawner, "store_task", store_task(scenario.stale_after_ms));
 
     let ip: &'static HostIp = IP.init(SimIp::new(NativeIp::new()));
     let network = NetworkHandle::new(ip);
-    spawner.spawn(wifi_task().unwrap());
-    spawner.spawn(ntp_task(network).unwrap());
-    spawner.spawn(connectivity_task(network, store::handle(), args.seed).unwrap());
+    crate::tasks::spawn(spawner, "wifi_task", wifi_task());
+    crate::tasks::spawn(spawner, "ntp_task", ntp_task(network));
+    crate::tasks::spawn(
+        spawner,
+        "connectivity_task",
+        connectivity_task(network, store::handle(), args.seed),
+    );
 
     #[cfg(feature = "std-ble")]
     let ble = {
@@ -283,12 +288,12 @@ fn start(spawner: Spawner, prepared: Prepared) -> Result<(), StartupError> {
     let probe = control::NoBle;
     let controller = control::controller(Some(network), probe);
     #[cfg(feature = "std-ble")]
-    spawner.spawn(control::ble_task(ble, controller).unwrap());
+    crate::tasks::spawn(spawner, "ble_task", control::ble_task(ble, controller));
     #[cfg(feature = "std-tcp")]
     {
         let acceptor = rohi_sdk::host::TcpAcceptor::new(control)
             .map_err(|e| platform("control listener", e))?;
-        spawner.spawn(control::tcp_task(acceptor, controller).unwrap());
+        crate::tasks::spawn(spawner, "tcp_task", control::tcp_task(acceptor, controller));
     }
     #[cfg(not(feature = "std-tcp"))]
     let _ = controller;
@@ -299,7 +304,11 @@ fn start(spawner: Spawner, prepared: Prepared) -> Result<(), StartupError> {
     #[cfg(feature = "sensor-simulator")]
     super::sensors::start(spawner, args.seed);
     management::start_timeline(spawner, scenario.events, storage.clone(), HOOKS);
-    spawner.spawn(shutdown_task(storage, log_storage).unwrap());
+    crate::tasks::spawn(
+        spawner,
+        "shutdown_task",
+        shutdown_task(storage, log_storage),
+    );
 
     announce(&ready_line(&interfaces), args.ready_file.as_deref());
     Ok(())

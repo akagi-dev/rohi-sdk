@@ -114,8 +114,12 @@ where
             .map(|info| LinkSecurity {
                 encrypted: info.encrypted,
                 authenticated: info.authenticated,
+                session: epoch,
             })
-            .unwrap_or_default();
+            .unwrap_or(LinkSecurity {
+                session: epoch,
+                ..LinkSecurity::default()
+            });
 
         let outcome = match self.request.push(&self.chunk[..len]) {
             Ok(None) => return,

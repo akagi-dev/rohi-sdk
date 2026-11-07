@@ -163,7 +163,8 @@ pub fn init_logger() {
     // SAFETY: called once, before any other task runs and before interrupts
     // that log are enabled; the same sequence `esp-println` uses.
     unsafe {
-        log::set_logger_racy(&Fanout).unwrap();
+        // Only fails when a logger is already installed: keep it.
+        let _ = log::set_logger_racy(&Fanout);
         log::set_max_level_racy(LevelFilter::Debug);
     }
 }
@@ -177,5 +178,5 @@ async fn logging_task() {
 /// does not stop the firmware: the service reports `storage_unavailable`.
 pub fn start(spawner: Spawner, flash: Flash, region: Result<FlashRegion, PartitionError>) {
     PARTITION.lock(|cell| cell.set(Some((flash, region))));
-    spawner.spawn(logging_task().unwrap());
+    crate::tasks::spawn(spawner, "logging_task", logging_task());
 }

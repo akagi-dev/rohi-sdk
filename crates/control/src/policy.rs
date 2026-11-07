@@ -36,6 +36,11 @@ pub struct LinkSecurity {
     pub encrypted: bool,
     /// The link is encrypted with an authenticated key.
     pub authenticated: bool,
+    /// Identity of the connection, different for every connection of a
+    /// transport (for BLE, the connection epoch). A stream belongs to the
+    /// session that invoked the action and is unknown to every other one.
+    /// A transport that serves a single client may leave it 0.
+    pub session: u32,
 }
 
 /// Decides whether a request with the given [`Privilege`] may run on a link.
@@ -49,7 +54,7 @@ pub struct LinkSecurity {
 ///     AuthorizationPolicy, LinkSecurity, Privilege, RequireAuthenticated, RequireEncryption,
 /// };
 ///
-/// let encrypted = LinkSecurity { encrypted: true, authenticated: false };
+/// let encrypted = LinkSecurity { encrypted: true, authenticated: false, session: 0 };
 /// assert!(RequireEncryption.allows(Privilege::Mutate, &encrypted));
 /// assert!(!RequireAuthenticated.allows(Privilege::Mutate, &encrypted));
 /// // Reads are open under both.

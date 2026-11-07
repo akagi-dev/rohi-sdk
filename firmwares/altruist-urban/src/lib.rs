@@ -16,6 +16,18 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 #![cfg_attr(not(feature = "std"), no_std)]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented,
+        reason = "firmware must not panic: handle the error, see AGENTS.md"
+    )
+)]
 
 //! Altruist Urban firmware: the portable application and its ESP platform.
 //!

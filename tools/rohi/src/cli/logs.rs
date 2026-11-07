@@ -26,8 +26,8 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use rohi_logging::LogRecord;
 use rohi_logging::segment::text::{parse_line, write_line};
+use rohi_logging::{LogRecord, history_of_read_file};
 use serde::Serialize;
 
 use super::args::LogsAction;
@@ -122,12 +122,19 @@ fn status_u64(schema: &ServiceSchema, status: &ServiceStatus, name: &str) -> Opt
         })
 }
 
+/// What a read returned: the history the records belong to, when the device
+/// says, and the records.
+struct Page {
+    history: Option<u32>,
+    records: Vec<LogRecord>,
+}
+
 /// One `logging.read`: up to `limit` records after `after`, oldest first.
 async fn read_page<T: ClientTransport>(
     device: &mut Device<T>,
     after: u64,
     limit: u64,
-) -> Result<Vec<LogRecord>, CliError> {
+) -> Result<Page, CliError> {
     let schema = device.action_schema(SERVICE, "read").await?;
     let mut args = Vec::new();
     for (name, value) in [("after", after), ("limit", limit)] {
@@ -147,12 +154,19 @@ async fn read_page<T: ClientTransport>(
             return Err(Error::Protocol("logging.read returned records".into()).into());
         }
     };
+    let history = stream
+        .files
+        .first()
+        .and_then(|file| history_of_read_file(&file.name));
     let data = read_all(device, &stream).await;
     // Whatever happened, release the stream; its content is already here.
     let _ = device.close_stream(&stream).await;
     let text = String::from_utf8_lossy(&data?).into_owned();
     // A line that is not a record is skipped, never trusted.
-    Ok(text.lines().filter_map(parse_line).collect())
+    Ok(Page {
+        history,
+        records: text.lines().filter_map(parse_line).collect(),
+    })
 }
 
 /// The first file of a stream, whole.
@@ -178,26 +192,37 @@ async fn read_all<T: ClientTransport>(
     }
 }
 
-/// Every record after `after`, a page at a time.
+/// Every record after `after`, a page at a time, and the history they are
+/// from. A history that changes while reading (the log was cleared) restarts
+/// the read from the beginning of the new one.
 async fn read_after<T: ClientTransport>(
     device: &mut Device<T>,
     mut after: u64,
-) -> Result<Vec<LogRecord>, CliError> {
+) -> Result<(Option<u32>, Vec<LogRecord>), CliError> {
     let mut all = Vec::new();
+    let mut history = None;
     loop {
         let page = read_page(device, after, PAGE).await?;
-        let Some(last) = page.last().map(|record| record.sequence) else {
-            return Ok(all);
+        if page.history.is_some() && history.is_some() && page.history != history {
+            history = page.history;
+            all.clear();
+            after = 0;
+            continue;
+        }
+        history = history.or(page.history);
+        let Some(last) = page.records.last().map(|record| record.sequence) else {
+            return Ok((history, all));
         };
         if last <= after {
             return Err(Error::Protocol("the log did not move forward".into()).into());
         }
         after = last;
-        all.extend(page);
+        all.extend(page.records);
     }
 }
 
-/// The latest `count` records, and the sequence to continue after.
+/// The latest `count` records, the sequence to continue after and the history
+/// they belong to.
 ///
 /// The device keeps sequence numbers, not counts, so the window is placed by
 /// the newest sequence the status reports and widened while it holds fewer
@@ -205,7 +230,7 @@ async fn read_after<T: ClientTransport>(
 async fn latest<T: ClientTransport>(
     device: &mut Device<T>,
     count: usize,
-) -> Result<(Vec<LogRecord>, u64), CliError> {
+) -> Result<(Vec<LogRecord>, u64, Option<u32>), CliError> {
     // The device writes records in batches: what was logged a moment ago may
     // still be waiting. A read commits it, and this one asks for nothing
     // (no record has a sequence above the maximum), so that the status below
@@ -213,22 +238,23 @@ async fn latest<T: ClientTransport>(
     read_page(device, u64::MAX, 1).await?;
     let schema = device.service_schema(SERVICE).await?;
     let status = device.service_status(SERVICE).await?;
+    let history = status_u64(&schema, &status, "history").and_then(|id| u32::try_from(id).ok());
     let Some(newest) = status_u64(&schema, &status, "newest_sequence") else {
-        return Ok((Vec::new(), 0));
+        return Ok((Vec::new(), 0, history));
     };
     if count == 0 {
-        return Ok((Vec::new(), newest));
+        return Ok((Vec::new(), newest, history));
     }
     let oldest = status_u64(&schema, &status, "oldest_sequence").unwrap_or(1);
     let mut want = count as u64;
     loop {
         let after = newest.saturating_sub(want);
-        let mut records = read_after(device, after).await?;
+        let (read_history, mut records) = read_after(device, after).await?;
         if records.len() >= count || after < oldest || after == 0 {
             let cursor = records.last().map_or(newest, |record| record.sequence);
             let skip = records.len().saturating_sub(count);
             records.drain(..skip);
-            return Ok((records, cursor));
+            return Ok((records, cursor, read_history.or(history)));
         }
         want = want.saturating_mul(2);
     }
@@ -262,7 +288,7 @@ async fn show<T: ClientTransport>(
     follow: bool,
     ctx: &mut Ctx,
 ) -> Result<(), CliError> {
-    let (records, mut cursor) = latest(device, lines).await?;
+    let (records, mut cursor, mut history) = latest(device, lines).await?;
     if follow {
         print(&records, ctx, true)?;
     } else {
@@ -283,7 +309,17 @@ async fn show<T: ClientTransport>(
             return Ok(());
         }
         tokio::time::sleep(ctx.follow_interval).await;
-        let new = read_after(device, cursor).await?;
+        let (now, mut new) = read_after(device, cursor).await?;
+        if history.is_some() && now.is_some() && now != history {
+            // Cleared or lost on the device: the cursor means nothing in the
+            // new history, so it is read from its start.
+            ctx.io
+                .note("The log history was cleared or reset on the device\n");
+            history = now;
+            new = read_after(device, 0).await?.1;
+        } else {
+            history = history.or(now);
+        }
         if let Some(last) = new.last() {
             cursor = last.sequence;
         }

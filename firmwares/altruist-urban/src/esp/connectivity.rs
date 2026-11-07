@@ -51,7 +51,11 @@ pub fn start(
     network: NetworkHandle<'static, Ip>,
     measurements: MeasurementHandle<'static, RawMutex>,
 ) {
-    spawner.spawn(connectivity_task(network, measurements).unwrap());
+    crate::tasks::spawn(
+        spawner,
+        "connectivity_task",
+        connectivity_task(network, measurements),
+    );
 }
 
 /// Runs the telemetry service while it is enabled.

@@ -52,8 +52,8 @@ pub fn start(
 ) -> Result<NetworkHandle<'static, Ip>, WifiError> {
     let (backend, runner, ip) = wireless.wifi(NET_RESOURCES.init(NetResources::new()))?;
     let ip: &'static Ip = IP.init(ip);
-    spawner.spawn(net_runner_task(runner).unwrap());
-    spawner.spawn(wifi_task(backend).unwrap());
+    crate::tasks::spawn(spawner, "net_runner_task", net_runner_task(runner));
+    crate::tasks::spawn(spawner, "wifi_task", wifi_task(backend));
     Ok(NetworkHandle::new(ip))
 }
 

@@ -7,7 +7,8 @@ configuration section and three [actions](actions.md), and `rohi logs` is a conv
 
 > **Status.** The behaviour below is covered by host tests, including an emulated flash with power-loss injection, and by
 > end-to-end tests of the `altruist-urban` host process. It has not been run on a device: see the
-> [support matrix](../../support/overview.md). The SD card backend is **not implemented**.
+> [support matrix](../../support/overview.md). The SD card backend is **not implemented**: internal flash is the only
+> storage, and issue #26 is implemented only in part.
 
 ```bash
 rohi logs                       # the latest 20 records, oldest first
@@ -28,8 +29,11 @@ A record is one line:
 ```
 
 the sequence number, milliseconds since boot, the wall-clock time in UTC (`-` while the device has no synchronized
-time), the level (`*` after it when the message was cut), the target and the message. Sequence numbers only grow, also across
-resets, so they tell a gap from a quiet device. `-o json` prints `{ "schema_version", "records": [..] }`; with `-f` it
+time), the level (`*` after it when the message was cut), the target and the message. Sequence numbers only grow within a
+*history*, also across resets, so they tell a gap from a quiet device. A history ends when it is cleared or lost to damage;
+the next one is identified by a new `history` number in `rohi status logging` and numbers its records from 1 again. A sequence is
+a cursor into one history only. `rohi logs -f` notices the change, says so on stderr and shows the new history from its start
+instead of waiting for sequences it has already passed. `-o json` prints `{ "schema_version", "records": [..] }`; with `-f` it
 prints one such document per line.
 
 ## What is kept
@@ -49,8 +53,14 @@ records not yet written, never the history. When the queue between the firmware 
 counted, and the application is never slowed down.
 
 `rohi status logging` shows the state: `capacity_bytes`, `used_bytes` and `free_bytes` of the active storage, the number of
-retained segments and records, `dropped_records` and the oldest and newest sequence. `free_bytes = 0` is normal for a full
-ring: the next write replaces the oldest file.
+retained segments and records, `dropped_records`, the oldest and newest sequence and the `history`. `free_bytes = 0` is normal
+for a full ring: the next write replaces the oldest file. At most 24 segments are retained, so with small `segment_bytes` the
+count, not `retention_bytes`, limits `capacity_bytes`.
+
+When the device starts, every sealed segment is checked against the checksum stored with it. A segment whose content does
+not match is **dropped whole** (the rest of the history stays) and the service reports `storage_corrupt`. A `read` that meets a
+damaged segment fails with the reason `segment_corrupt` and the service reports `read_failed` until a read succeeds; a read that
+only stops at its record limit is not an error.
 
 ## Download
 

@@ -17,6 +17,18 @@
 ///////////////////////////////////////////////////////////////////////////////
 #![no_std]
 #![no_main]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented,
+        reason = "firmware must not panic: handle the error, see AGENTS.md"
+    )
+)]
 
 //! I2S microphone example: prints average and maximum noise level every 5 s window.
 
@@ -29,7 +41,7 @@ esp_bootloader_esp_idf::esp_app_desc!();
 #[esp_hal::main]
 fn main() -> ! {
     run(|spawner, board| {
-        spawner.spawn(print_events_task().unwrap());
-        spawner.spawn(noise_task(board.microphone).unwrap());
+        altruist_urban::tasks::spawn(spawner, "print_events_task", print_events_task());
+        altruist_urban::tasks::spawn(spawner, "noise_task", noise_task(board.microphone));
     })
 }

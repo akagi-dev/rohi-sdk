@@ -136,6 +136,11 @@
 //! closed, when it times out and when the control link is lost
 //! ([`Action::link_lost`]); a service that has no free stream answers
 //! [`ActionError::Busy`]. An action returns records or a stream, never both.
+//!
+//! Who may use a stream is decided by the control plane, not by the service: the
+//! controller lets only the connection that invoked the action read or close the
+//! stream, and with the privilege of that action, so a service needs no session
+//! logic of its own (see `rohi-control`, "Stream ownership").
 
 use heapless::Vec;
 

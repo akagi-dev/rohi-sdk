@@ -214,6 +214,7 @@ fn radio() -> Radio {
 const PLAIN: LinkSecurity = LinkSecurity {
     encrypted: false,
     authenticated: false,
+    session: 0,
 };
 
 fn text<const N: usize>(value: &str) -> String<N> {
@@ -583,6 +584,7 @@ fn factory_reset_resets_every_section_and_needs_a_secure_link() {
     let encrypted = LinkSecurity {
         encrypted: true,
         authenticated: false,
+        session: 0,
     };
     call(
         &controller,
@@ -639,6 +641,7 @@ fn reboot_needs_the_hook_and_a_secure_link() {
     let encrypted = LinkSecurity {
         encrypted: true,
         authenticated: false,
+        session: 0,
     };
     assert!(matches!(
         call(&controller, &encrypted, request()),
@@ -863,10 +866,12 @@ fn the_policy_gates_writes_and_privileged_actions() {
     let encrypted = LinkSecurity {
         encrypted: true,
         authenticated: false,
+        session: 0,
     };
     let strong = LinkSecurity {
         encrypted: true,
         authenticated: true,
+        session: 0,
     };
 
     let write = || Call::PatchConfigSection(patch(1, &[mutation(3, string_value("a.io"))]));
@@ -1178,6 +1183,9 @@ impl Action for Files {
     const ACTIONS: &'static [ActionDescriptor] = &[
         ActionDescriptor::new(1, "export").stream(),
         ActionDescriptor::new(2, "list"),
+        ActionDescriptor::new(3, "export_private")
+            .stream()
+            .privileged(),
     ];
 
     async fn invoke(
@@ -1187,8 +1195,8 @@ impl Action for Files {
         out: &mut impl ActionOutput,
     ) -> Result<(), ActionError> {
         match action {
-            1 if self.open.get() => Err(ActionError::Busy),
-            1 => {
+            1 | 3 if self.open.get() => Err(ActionError::Busy),
+            1 | 3 => {
                 self.open.set(true);
                 let mut files = Vec::new();
                 files
@@ -1408,5 +1416,124 @@ fn the_action_listing_tells_which_actions_return_a_stream() {
         panic!("not a list");
     };
     let streams: std::vec::Vec<bool> = list.actions.iter().map(|a| a.returns_stream).collect();
-    assert_eq!(streams, [true, false]);
+    assert_eq!(streams, [true, false, true]);
+}
+
+const OTHER: LinkSecurity = LinkSecurity {
+    encrypted: false,
+    authenticated: false,
+    session: 2,
+};
+
+fn export(action: u32) -> Call {
+    Call::InvokeAction(pb::InvokeActionRequest {
+        service_id: Files::ID,
+        action_id: action,
+        args: Vec::new(),
+    })
+}
+
+fn close_stream() -> Call {
+    Call::CloseStream(pb::CloseStreamRequest {
+        service_id: Files::ID,
+        stream_id: 9,
+    })
+}
+
+#[test]
+fn a_stream_cannot_be_read_or_closed_by_another_session() {
+    let files = files();
+    let controller = files_controller(&files);
+    assert!(matches!(
+        call(&controller, &PLAIN, export(1)),
+        Reply::ActionStream(_)
+    ));
+    assert_eq!(
+        error_code(&call(&controller, &OTHER, read_stream(0))),
+        pb::ErrorCode::NotFound
+    );
+    assert_eq!(
+        error_code(&call(&controller, &OTHER, close_stream())),
+        pb::ErrorCode::NotFound
+    );
+    // The owner still has it.
+    assert!(matches!(
+        call(&controller, &PLAIN, read_stream(0)),
+        Reply::ReadStream(_)
+    ));
+    assert!(matches!(
+        call(&controller, &PLAIN, close_stream()),
+        Reply::CloseStream(_)
+    ));
+}
+
+#[test]
+fn a_stream_needs_the_privilege_of_the_action_that_created_it() {
+    let files = files();
+    let controller = Controller::new(
+        Device::new(INFO, uptime, (), (), (&files,)),
+        RequireEncryption,
+    );
+    let encrypted = LinkSecurity {
+        encrypted: true,
+        authenticated: false,
+        session: 1,
+    };
+    assert_eq!(
+        error_code(&call(&controller, &PLAIN, export(3))),
+        pb::ErrorCode::PermissionDenied
+    );
+    assert!(matches!(
+        call(&controller, &encrypted, export(3)),
+        Reply::ActionStream(_)
+    ));
+    assert!(matches!(
+        call(&controller, &encrypted, read_stream(0)),
+        Reply::ReadStream(_)
+    ));
+    // The same session on a link that lost its encryption is refused.
+    let downgraded = LinkSecurity {
+        encrypted: false,
+        ..encrypted
+    };
+    assert_eq!(
+        error_code(&call(&controller, &downgraded, read_stream(0))),
+        pb::ErrorCode::PermissionDenied
+    );
+    assert_eq!(
+        error_code(&call(&controller, &downgraded, close_stream())),
+        pb::ErrorCode::PermissionDenied
+    );
+    assert!(matches!(
+        call(&controller, &encrypted, close_stream()),
+        Reply::CloseStream(_)
+    ));
+}
+
+#[test]
+fn a_new_session_cannot_use_the_streams_of_a_lost_link() {
+    let files = files();
+    let controller = files_controller(&files);
+    assert!(matches!(
+        call(&controller, &PLAIN, export(1)),
+        Reply::ActionStream(_)
+    ));
+    controller.link_lost();
+    assert_eq!(
+        error_code(&call(&controller, &PLAIN, read_stream(0))),
+        pb::ErrorCode::NotFound
+    );
+    // The id is free again for the next client.
+    assert!(matches!(
+        call(&controller, &OTHER, export(1)),
+        Reply::ActionStream(_)
+    ));
+    assert!(matches!(
+        call(&controller, &OTHER, read_stream(0)),
+        Reply::ReadStream(_)
+    ));
+    assert_eq!(
+        error_code(&call(&controller, &PLAIN, read_stream(0))),
+        pb::ErrorCode::NotFound
+    );
 }

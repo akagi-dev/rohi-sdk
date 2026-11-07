@@ -233,7 +233,7 @@ fn parse(text: &[u8]) -> Vec<LogRecord> {
 fn read(logging: &TestLogging<'_>, after: u64, limit: u64) -> Vec<LogRecord> {
     let info = stream_of(invoke(logging, action::READ, &args(after, limit)));
     assert_eq!(info.files.len(), 1);
-    assert_eq!(info.files[0].name.as_str(), READ_FILE_NAME);
+    assert!(history_of_read_file(info.files[0].name.as_str()).is_some());
     let data = read_all(logging, &info, READ_FILE_ID);
     assert_eq!(data.len() as u64, info.files[0].size_bytes);
     block_on(logging.service().close_stream(info.id)).unwrap();
@@ -1108,4 +1108,219 @@ fn clear_also_drops_the_records_still_waiting_in_ram() {
     let records = read(&logging, 0, 10);
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].message.as_str(), "after");
+}
+
+struct Recording(Rc<Cell<u64>>);
+
+impl embedded_hal_async::delay::DelayNs for Recording {
+    async fn delay_ns(&mut self, ns: u32) {
+        self.0.set(u64::from(ns) / 1_000_000);
+        core::future::pending::<()>().await;
+    }
+}
+
+#[test]
+fn a_pinned_full_ring_stalls_the_task_instead_of_spinning() {
+    let rig = Rig::new();
+    let logging = rig.logging(LoggingConfig {
+        compression: Compression::None,
+        ..CONFIG
+    });
+    let mut next = 1;
+    for _ in 0..30 {
+        log_many(&logging, 6, next);
+        next += 6;
+        settle(&rig, &logging);
+    }
+    let info = stream_of(invoke(&logging, action::DOWNLOAD, &[]));
+    assert!(logging.pins() > 0);
+
+    let requested = Rc::new(Cell::new(0));
+    let mut task = core::pin::pin!(logging.run(Recording(requested.clone())));
+    assert!(embassy_futures::poll_once(task.as_mut()).is_pending());
+
+    // The ring is full of pinned segments: whatever the task wakes for, it
+    // must not retry more often than the stall allows.
+    let start = rig.clock.0.get();
+    let mut wakes = 0;
+    while rig.clock.0.get() - start < 10_000 {
+        log_many(&logging, 6, next);
+        next += 6;
+        rig.advance(requested.get().max(1));
+        logging.apply(CONFIG);
+        assert!(embassy_futures::poll_once(task.as_mut()).is_pending());
+        wakes += 1;
+        assert!(wakes < 40, "the task retries without waiting");
+    }
+
+    block_on(logging.service().close_stream(info.id)).unwrap();
+    assert_eq!(logging.pins(), 0);
+    // Without the pins the very next pass writes again.
+    logging.apply(CONFIG);
+    rig.advance(requested.get().max(1));
+    assert!(embassy_futures::poll_once(task.as_mut()).is_pending());
+}
+
+fn write_history(rig: &Rig, logging: &TestLogging<'_>, batches: u64) -> u64 {
+    let mut next = 1;
+    for _ in 0..batches {
+        log_many(logging, 6, next);
+        next += 6;
+        settle(rig, logging);
+    }
+    next - 1
+}
+
+#[test]
+fn a_damaged_segment_fails_the_read_that_needs_it_and_says_so() {
+    let rig = Rig::new();
+    let logging = rig.logging(CONFIG);
+    let newest = write_history(&rig, &logging, 60);
+    assert!(read(&logging, 0, 200).len() > 20);
+
+    // The oldest segment starts at sector 0: damage a byte of its first
+    // LZ4 block (frame header 7 bytes, then the block).
+    *rig.internal.0.borrow_mut().raw(16 + 20) ^= 0x10;
+
+    let failed = invoke(&logging, action::READ, &args(0, 200));
+    assert_eq!(failed.err(), Some(ActionError::Rejected(READ_CORRUPT)));
+    assert_eq!(issues(&logging), [issue::READ_FAILED]);
+    assert_eq!(summary(&logging).1, ServiceHealth::Degraded);
+
+    // Pagination is not an error: a small limit stops cleanly after the
+    // records it has.
+    let info = stream_of(invoke(&logging, action::READ, &args(newest - 3, 2)));
+    block_on(logging.service().close_stream(info.id)).unwrap();
+    assert!(issues(&logging).is_empty());
+}
+
+/// What a following client sees: the history the records come from and the
+/// records after its cursor.
+fn read_in_history(logging: &TestLogging<'_>, after: u64) -> (u32, Vec<LogRecord>) {
+    let info = stream_of(invoke(logging, action::READ, &args(after, 200)));
+    let history = history_of_read_file(info.files[0].name.as_str()).unwrap();
+    let data = read_all(logging, &info, READ_FILE_ID);
+    block_on(logging.service().close_stream(info.id)).unwrap();
+    (history, parse(&data))
+}
+
+#[test]
+fn a_reboot_that_keeps_the_history_keeps_its_identity() {
+    let rig = Rig::new();
+    let history = {
+        let logging = rig.logging(CONFIG);
+        log_many(&logging, 7, 1);
+        settle(&rig, &logging);
+        number(&logging, status_field::HISTORY).unwrap()
+    };
+    let logging = rig.logging(CONFIG);
+    step(&rig, &logging);
+    assert_eq!(number(&logging, status_field::HISTORY), Some(history));
+    log(&logging, "after");
+    settle(&rig, &logging);
+    let (seen, records) = read_in_history(&logging, 7);
+    assert_eq!(seen as u64, history);
+    assert_eq!(records.len(), 1);
+}
+
+#[test]
+fn a_cleared_history_is_not_mistaken_for_the_old_one_across_a_reboot() {
+    let rig = Rig::new();
+    let (old_history, cursor) = {
+        let logging = rig.logging(CONFIG);
+        log_many(&logging, 40, 1);
+        settle(&rig, &logging);
+        let (history, records) = read_in_history(&logging, 0);
+        assert_eq!(
+            history as u64,
+            number(&logging, status_field::HISTORY).unwrap()
+        );
+        (history, records.last().unwrap().sequence)
+    };
+
+    // A follow client holds `cursor` in `old_history`. The history is
+    // cleared, the device reboots before anything new is stored.
+    {
+        let logging = rig.logging(CONFIG);
+        step(&rig, &logging);
+        assert!(invoke(&logging, action::CLEAR, &[]).is_ok());
+        let (history, records) = read_in_history(&logging, 0);
+        assert!(records.is_empty());
+        assert_ne!(history, old_history);
+    }
+    let logging = rig.logging(CONFIG);
+    step(&rig, &logging);
+    assert_eq!(number(&logging, status_field::STORED_RECORDS), Some(0));
+    assert_ne!(
+        number(&logging, status_field::HISTORY),
+        Some(u64::from(old_history))
+    );
+
+    // New records restart at sequence 1: the client that reconnects sees a
+    // different history, whatever its cursor says.
+    log_many(&logging, 5, 500);
+    settle(&rig, &logging);
+    let (history, records) = read_in_history(&logging, cursor);
+    assert_ne!(history, old_history);
+    assert!(
+        records.is_empty(),
+        "the old cursor would hide the new records"
+    );
+    let (again, records) = read_in_history(&logging, 0);
+    assert_eq!(again, history);
+    assert_eq!(records.len(), 5);
+    assert_eq!(records[0].sequence, 1);
+
+    // The new history keeps its identity across further reboots.
+    drop(logging);
+    let logging = rig.logging(CONFIG);
+    step(&rig, &logging);
+    assert_eq!(
+        number(&logging, status_field::HISTORY),
+        Some(u64::from(history))
+    );
+}
+
+#[test]
+fn clearing_twice_gives_two_new_histories() {
+    let rig = Rig::new();
+    let logging = rig.logging(CONFIG);
+    log_many(&logging, 5, 1);
+    settle(&rig, &logging);
+    let first = number(&logging, status_field::HISTORY).unwrap();
+    assert!(invoke(&logging, action::CLEAR, &[]).is_ok());
+    let second = number(&logging, status_field::HISTORY).unwrap();
+    assert!(invoke(&logging, action::CLEAR, &[]).is_ok());
+    let third = number(&logging, status_field::HISTORY).unwrap();
+    assert!(first < second && second < third);
+}
+
+#[test]
+fn a_payload_damaged_while_the_device_was_off_is_dropped_and_reported() {
+    let rig = Rig::new();
+    let (old_history, old_records) = {
+        let logging = rig.logging(CONFIG);
+        write_history(&rig, &logging, 60);
+        let (history, records) = read_in_history(&logging, 0);
+        (history, records.len())
+    };
+    // Damage a payload byte in every sealed segment of the first sector run;
+    // the headers stay valid.
+    for sector in 0..6u32 {
+        *rig.internal.0.borrow_mut().raw(sector * 4096 + 100) ^= 0x04;
+    }
+    let logging = rig.logging(CONFIG);
+    step(&rig, &logging);
+    assert!(issues(&logging).contains(&issue::STORAGE_CORRUPT));
+    assert_eq!(summary(&logging).1, ServiceHealth::Degraded);
+    log(&logging, "still logging");
+    settle(&rig, &logging);
+    let (history, records) = read_in_history(&logging, 0);
+    assert!(records.len() < old_records);
+    assert!(records.last().unwrap().message.contains("still logging"));
+    // Nothing of the old history is left: it is a new one, so a client that
+    // follows it starts over.
+    if records.first().unwrap().sequence == 1 {
+        assert_ne!(history, old_history);
+    }
 }

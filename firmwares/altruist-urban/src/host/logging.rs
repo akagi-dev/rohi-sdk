@@ -130,5 +130,5 @@ async fn logging_task() {
 /// Starts the logging task on `flash`.
 pub fn start(spawner: Spawner, flash: FileLogFlash) {
     let _ = FLASH.set(flash);
-    spawner.spawn(logging_task().unwrap());
+    crate::tasks::spawn(spawner, "logging_task", logging_task());
 }

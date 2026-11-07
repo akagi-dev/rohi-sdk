@@ -16,6 +16,18 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 #![no_std]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented,
+        reason = "firmware must not panic: handle the error, see AGENTS.md"
+    )
+)]
 
 //! Shared setup of the hardware examples.
 //!
@@ -30,7 +42,7 @@ use esp_hal::i2c::master::I2c;
 use esp_hal::timer::timg::TimerGroup;
 use esp_hal::uart::Uart;
 use esp_rtos::embassy::Executor;
-use log::info;
+use log::{error, info};
 use rohi_sdk::esp::hal::I2sMicrophone;
 use rohi_sdk::esp::hal::board::altruist_urban::{AltruistUrban, Hardware};
 use rohi_sdk::hal::SensorEvent;
@@ -64,7 +76,16 @@ pub fn run(init: impl FnOnce(Spawner, Board)) -> ! {
     esp_rtos::start(TimerGroup::new(runtime.timg0).timer0, runtime.sw_interrupt);
     info!("Embassy execution engine ready");
 
-    let board = AltruistUrban::new(hardware).expect("board initialization failed");
+    let board = match AltruistUrban::new(hardware) {
+        Ok(board) => board,
+        Err(error) => {
+            // An example without its board has nothing to show: stop, do not panic.
+            error!("Board initialization failed: {:?}", error);
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+    };
     let board = Board {
         i2c: board.i2c,
         sds011_uart: board.sds011_uart,
