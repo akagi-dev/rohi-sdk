@@ -201,7 +201,7 @@ jobs:
 
   memory-report:
     name: Memcheck report
-    needs: memcheck
+    needs: memory-check
     if: always()
     runs-on: ubuntu-latest
     steps:
