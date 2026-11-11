@@ -192,7 +192,8 @@ jobs:
       - name: Analyze
         run: |
           base=()
-          if [[ -f memcheck-base-out/task-memory-${{ matrix.chip }}.json ]]; then
+          if [[ '${{ github.event_name }}' == 'pull_request' ]]; then
+            test -s memcheck-base-out/task-memory-${{ matrix.chip }}.json
             base=(--base memcheck-base-out/task-memory-${{ matrix.chip }}.json)
           fi
           scripts/memcheck.sh analyze ${{ matrix.chip }} memcheck-out "${base[@]}"
