@@ -103,7 +103,7 @@ measurement. Follow the structure of examples/src/bin/all-sensors.rs.
 **Check the claim**
 
 ```text
-Look at docs/support/matrix.md (or support-matrix/matrix.toml). Is the sensor I am
+Look at docs/support/matrix.md (or device-matrix.toml). Is the sensor I am
 using supported on the Altruist Urban ESP32-C6, and what is verified on hardware?
 Answer only from the matrix and tell me what is missing.
 ```

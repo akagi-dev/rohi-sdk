@@ -23,7 +23,7 @@
 ## 🔌 Supported hardware
 
 * Altruist Urban on **ESP32-C3** and **ESP32-C6** (the C6 pin map is not yet verified on hardware).
-* What is implemented, integrated, built and verified per board: the [support matrix](docs/support/overview.md) (machine-readable: [`support-matrix/matrix.toml`](support-matrix/matrix.toml)). Altruist Insight is not supported by ROHI.
+* What is implemented, integrated, built and verified per board: the [support matrix](docs/support/overview.md) (machine-readable: [`device-matrix.toml`](device-matrix.toml)). Altruist Insight is not supported by ROHI.
 
 
 ## 🧰 Main capabilities
@@ -63,5 +63,5 @@ More: [usage examples](examples/src/bin) and the **[ROHI SDK Book](https://rohi.
 | [`firmwares/altruist-urban`](firmwares/altruist-urban) `--features std` | the same application as a host process: host IP, TCP and BlueZ BLE control, optional simulated sensors (`cargo run -p altruist-urban --bin altruist-urban --features std,std-tcp,sensor-simulator`) |
 | [`examples/`](examples/src/bin) | one hardware example per sensor and a configuration self-test |
 | [`tools/rohi`](tools/rohi) | BLE and TCP client library and command line tool |
-| [`support-matrix/`](support-matrix) | machine-readable support matrix (validated by `tools/support-matrix`) |
+| [`device-matrix.toml`](device-matrix.toml) | machine-readable support matrix (validated by `tools/devices`) |
 | [`docs/`](docs) | the SDK book (mdBook) |

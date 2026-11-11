@@ -1,5 +1,5 @@
 [package]
-name = "rohi-support-matrix"
+name = "rohi-memcheck"
 version.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -7,19 +7,27 @@ edition.workspace = true
 homepage.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Validator and Markdown renderer of the ROHI hardware and capability support matrix"
+description = "Static task memory and stack budget analyzer for ROHI firmware ELF images"
 
 [badges]
 maintenance = { status = "actively-developed" }
 
 [lib]
-name = "rohi_support_matrix"
+name = "rohi_memcheck"
 path = "src/lib.rs"
 
 [[bin]]
-name = "rohi-support-matrix"
+name = "memcheck"
 path = "src/main.rs"
 
 [dependencies]
+clap.workspace = true
+object.workspace = true
+rustc-demangle.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
 toml.workspace = true
+
+[dev-dependencies]
+object = { workspace = true, features = ["write"] }

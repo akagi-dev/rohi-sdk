@@ -66,7 +66,7 @@ mdbook build docs          # the book builds
 mdbook test docs           # plain Rust snippets compile
 cargo doc --no-deps        # rustdoc of the host crates builds without warnings
 lychee --offline --include-fragments docs/book  # internal links and anchors resolve (CI)
-cargo test -p rohi-support-matrix      # support matrix schema, references and generated page
+cargo test -p rohi-devices      # support matrix schema, references and generated page
 ```
 
 CI runs these in the `docs` job (and the support matrix test in the `host` job). A broken internal link is a defect: fix the link or the page, do not exclude it.

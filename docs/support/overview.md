@@ -5,7 +5,7 @@ has been verified**. It is published in two forms generated from one source:
 
 | Form | Location | For |
 |------|----------|-----|
-| Machine-readable | [`support-matrix/matrix.toml`](https://github.com/akagi-dev/rohi-sdk/blob/master/support-matrix/matrix.toml) | tools and AI assistants |
+| Machine-readable | [`device-matrix.toml`](https://github.com/akagi-dev/rohi-sdk/blob/master/device-matrix.toml) | tools and AI assistants |
 | Human-readable | [Support matrix](matrix.md) | users and developers |
 
 > Hardware that exists is not the same as hardware ROHI supports, and compilation is not the same as hardware
@@ -74,9 +74,9 @@ or firmware. The SDK services (configuration, Wi-Fi, telemetry, BLE control) can
   matrix in the same pull request**.
 - A hardware result is added only together with a hardware report: add an `evidence` item of kind `hw-report` with
   the board revision, the firmware revision, the procedure and the result.
-- After editing `matrix.toml`, regenerate the page with `cargo run -p rohi-support-matrix -- render --write`.
+- After editing `device-matrix.toml`, regenerate the page with `cargo run -p rohi-devices -- render --write`.
 - Set `reviewed` whenever the data is reviewed against upstream.
-- `cargo test -p rohi-support-matrix` (part of `cargo test` in CI) checks the schema, that every referenced board,
+- `cargo test -p rohi-devices` (part of `cargo test` in CI) checks the schema, that every referenced board,
   firmware, capability and evidence exists, that repository paths exist, that every sensor driver in
   `crates/hal/src/sensors` has a capability, that the claims of an entry do not contradict each other and that the
   rendered page is current.

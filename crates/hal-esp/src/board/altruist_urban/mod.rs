@@ -55,7 +55,7 @@
 //! pinout; upstream publishes no schematic of this legacy variant. The ESP32-C6
 //! map comes from the Altruist Urban main board schematic (ESP32-C6-WROOM-1-N8,
 //! "GPIO Map" sheet). Neither map is recorded as verified on hardware (every
-//! board entry of `support-matrix/matrix.toml` has `hardware_verification =
+//! board entry of `device-matrix.toml` has `hardware_verification =
 //! "not-verified"`). The schematic
 //! names the SDS011 nets `PM_TX` (GPIO5) and `PM_RX` (GPIO4) without a
 //! viewpoint; they are taken from the ESP32-C6 side, so swap them if the sensor

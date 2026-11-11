@@ -1,8 +1,8 @@
-<!-- Generated from support-matrix/matrix.toml by `cargo run -p rohi-support-matrix -- render`. Do not edit. -->
+<!-- Generated from device-matrix.toml by `cargo run -p rohi-devices -- render`. Do not edit. -->
 
 # Support matrix
 
-Reviewed on 2026-11-03, schema version 1. The data is published as [`support-matrix/matrix.toml`](https://github.com/akagi-dev/rohi-sdk/blob/master/support-matrix/matrix.toml); how to read the statuses is explained in [Reading the matrix](overview.md).
+Reviewed on 2026-11-03, schema version 1. The data is published as [`device-matrix.toml`](https://github.com/akagi-dev/rohi-sdk/blob/master/device-matrix.toml); how to read the statuses is explained in [Reading the matrix](overview.md).
 
 ## Boards
 

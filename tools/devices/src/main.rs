@@ -15,10 +15,10 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-//! `rohi-support-matrix check` validates the matrix, `render` prints the Markdown page,
+//! `rohi-devices check` validates the matrix, `render` prints the Markdown page,
 //! `render --write` rewrites `docs/support/matrix.md`.
 
-use rohi_support_matrix::{Matrix, RENDERED_PATH, render, repo_root, validate};
+use rohi_devices::{Matrix, RENDERED_PATH, render, repo_root, validate};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -49,7 +49,7 @@ fn main() -> ExitCode {
             let page = std::fs::read_to_string(root.join(RENDERED_PATH)).unwrap_or_default();
             if page != render(&matrix) {
                 eprintln!(
-                    "error: {RENDERED_PATH} is stale, run `cargo run -p rohi-support-matrix -- render --write`"
+                    "error: {RENDERED_PATH} is stale, run `cargo run -p rohi-devices -- render --write`"
                 );
                 return ExitCode::FAILURE;
             }
@@ -62,7 +62,7 @@ fn main() -> ExitCode {
             }
         }
         _ => {
-            eprintln!("usage: rohi-support-matrix <check | render [--write]>");
+            eprintln!("usage: rohi-devices <check | render [--write]>");
             return ExitCode::from(2);
         }
     }

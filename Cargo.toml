@@ -149,6 +149,9 @@ rpassword = "7"
 terminal_size = "0.4"
 thiserror = "2"
 uuid = "1"
+object = { version = "0.37", default-features = false, features = ["read_core", "elf", "std"] }
+rustc-demangle = "0.1"
+pin-project-lite = "0.2"
 
 # Dev
 proptest = "1.7"

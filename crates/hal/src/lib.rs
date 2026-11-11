@@ -174,7 +174,7 @@
 //!   the store, SDS011 sampling and aggregation, BMx280 address probing,
 //!   freshness thresholds) and by doctests; the firmware that uses it builds
 //!   for ESP32-C3 and ESP32-C6 in CI. **No sensor is recorded as
-//!   hardware-verified** in the support matrix (`support-matrix/matrix.toml`);
+//!   hardware-verified** in the support matrix (`device-matrix.toml`);
 //!   timing constants such as the SDS011 duty cycle are starting points not yet
 //!   confirmed on a device.
 //!

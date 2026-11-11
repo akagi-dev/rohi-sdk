@@ -42,12 +42,11 @@ Task stack usage is not measured yet.
 ### Stack and the control plane
 
 All embassy tasks are polled on the one main stack, which on the ESP32-C3 build of `altruist-urban` is the linker `.stack`
-section: about 42 KB (`_stack_end` to `_stack_start` of the release ELF) and it sits directly above `.bss`, so an
+section: 22 024 B on the `firmware`-profile build at `ca17cb6` (121 848 B on ESP32-C6; an earlier revision of this page recorded about 42 KB, and the stack is what the linker leaves after the statics, so it shrinks when they grow) and it sits directly above `.bss`, so an
 overflow corrupts task state (observed as a `Load access fault` in the embassy timer queue with the ASCII of a service
 name in the registers). The control task builds and moves protobuf responses on that stack, so response sizes are
 bounded by the compact protocol layout and by explicit budgets, see [Control protocol types](#control-protocol-types).
-The static future of `control_task` is about 11.6 KB of `.bss` (11 856 B, release build, ESP32-C3, measured with
-`nm -S` on `altruist_urban::control::control_task::POOL`). **Stack depth under load is not measured yet**: it needs a
+The static future of `control_task` is 17 440 B of `.bss` (`firmware` profile, ESP32-C3, from the size of `altruist_urban::esp::control::control_task::POOL`; the earlier 11 856 B were a release build of an older revision). [Task memory and stack budget](#task-memory-and-stack-budget-memcheck) reports every task pool, the stack and the frames in CI. **Stack depth under load is not measured yet**: it needs a
 device, see [the plan to measure it](#measuring-the-control-task). The stack is what the linker leaves after `.bss`, so every
 static byte and every deep frame on the config or control path costs stack: a decoder that builds a large section from
 temporaries (the `wifi` section, about 200 B) needed ~900 B of frame and overflowed the stack on a `rohi config` request;
@@ -136,6 +135,126 @@ row and keep at least 25 % of the stack (or 4 KB, whichever is larger) free in t
 needs another measurement. The generated-type budgets in [Control protocol types](#control-protocol-types) stay in CI
 independently of this measurement.
 
+## Task memory and stack budget (`memcheck`)
+
+`scripts/memcheck.sh` builds the Altruist Urban firmware for a chip twice (the production image and an analysis image
+with `-Z emit-stack-sizes`, same compiler and flags otherwise) and runs `memcheck` (`tools/memcheck`) on them. CI does
+this for ESP32-C3 and ESP32-C6 (job `Memcheck`), publishes `task-memory-esp32c3.json`, `task-memory-esp32c6.json` and
+`task-memory-report.md`, and compares a pull request with its base branch built from identical inputs.
+
+```bash
+scripts/memcheck.sh images esp32c3 out && scripts/memcheck.sh analyze esp32c3 out   # one chip
+scripts/memcheck.sh report out                                                       # task-memory-report.md
+```
+
+What each number is, and what it is not:
+
+| Quantity | Source | Meaning |
+|----------|--------|---------|
+| Task pool bytes | size of the task's `POOL` static in the production ELF | RAM reserved for all instances of the task. A *static* value, exact. The number of instances is not in the symbol table and is reported as unknown |
+| Main stack | linker symbols `_stack_start` / `_stack_end` | the stack all Embassy tasks are polled on. Allocation, not use |
+| Frame | LLVM `.stack_sizes` of the analysis image | the stack of **one function**. It is not the stack depth of a task: call chains, inlining, dynamic dispatch, async suspension and interrupts are not analyzed. Functions without metadata (assembly, ROM and vendor blobs) have an unknown frame |
+| Peak use, headroom | hardware observation only | `not measured` until a device run is attached; never inferred from the above |
+| Native RTOS threads, interrupt contexts | not in the image | `not_detectable_statically` / `runtime_only`; a list of ELF symbols is not a list of run-time threads |
+
+The budgets (`firmwares/altruist-urban/memcheck-budgets.toml`) are per chip: `.data`, `.bss`, the sum of the task pools,
+a minimum for the main stack and a maximum single frame, plus the largest allowed growth against the base. A run fails
+when a budget is exceeded, when the main stack is below its minimum, when the task inventory or the `.stack_sizes`
+metadata is missing (an approved exception in the budget file is the only way around that), or when the base was built
+with different inputs. Growth that stays below the limits is listed but allowed. The main stack is what the linker leaves
+after the statics, so every static byte removed from `.bss` or `.data` is stack gained; a regression of the stack is a
+budget failure.
+
+**Baseline** (`master` at `ca17cb6`, ESP32-C3 `firmware` profile and ESP32-C6 `release` profile, Rust 1.99.1; all values
+from the ELF, nothing measured on a device):
+
+| | ESP32-C3 | ESP32-C6 |
+|---|---:|---:|
+| `.data` (with `.data.wifi`) | 29 792 | 33 084 |
+| `.bss` (includes the 131 072 B wireless heap and the task pools) | 204 824 | 208 928 |
+| Task pools, 15 tasks | 40 360 | 40 336 |
+| `control_task` pool | 17 440 | 17 440 |
+| `ble_task` pool | 7 064 | 7 040 |
+| `connectivity_task` pool | 3 624 | 3 624 |
+| `logging_task` pool | 2 304 | 2 304 |
+| Main stack (`.stack`, placed directly above `.bss`) | 22 024 | 121 848 |
+| Largest frame, `Controller` request handling | 30 112 | 29 104 |
+| Frame of `Logging` read path | 8 400 | 4 432 |
+| Frames with metadata | 1 520 of 3 827 (39.7 %) | 1 947 of 5 383 (36.1 %) |
+
+The largest frame on both chips, the generic `Controller` request path, is larger than the whole ESP32-C3 main stack.
+The analyzer reports this as a `frame-exceeds-stack` warning: a frame is not a peak, but a function with that frame
+cannot run on a 22 KB stack, and it is the first candidate for a device investigation and for issue #63.
+
+**Hardware observations.** To attach a measured stack peak, write a JSON file and pass it with `--hardware`
+(`scripts/memcheck.sh analyze <chip> <out> --hardware observations.json`):
+
+```json
+{"observations": [{
+  "chip": "esp32c3", "stack": "rtos/main", "scenario": "rohi status logging",
+  "firmware_sha": "<commit of the flashed image>", "peak_used_bytes": 18200,
+  "guard_state": "enabled", "notes": "board, revision, how the stack was painted"
+}]}
+```
+
+Omit `peak_used_bytes` for a scenario that was not measured (`not measured` is not `0`). The report computes
+`headroom = allocated - peak` and requires at least 25 % of the stack or 4 KiB, whichever is larger, unless the
+observation sets a justified `required_margin_bytes`. Embassy tasks share the main stack, so there is no per-task stack
+to measure; per-task attribution would need executor-aware instrumentation. The scenarios to record are the ones in
+[Measuring the control task](#measuring-the-control-task) plus `rohi status logging`, `rohi logs clear --yes`, a log
+flush with compression and BLE traffic. Without an observation the outcome is `NEEDS HARDWARE DATA`, never `PASS`.
+
+### Stack pressure of logging and the Control API (#63)
+
+Measured with `memcheck` on the same toolchain, profile and flags, against `master` at `ca17cb6` (ESP32-C3 `firmware`
+profile, ESP32-C6 `release` profile). Frames are the stack of one function: they show where a large frame went, not the
+depth of any call chain. "At most N B" means the function left the 50 largest frames of the report, so N is the smallest
+frame that remained in it (an upper bound, not a measurement). Nothing here was measured on a device.
+
+| Change | Function | ESP32-C3 before → after | ESP32-C6 before → after |
+|---|---|---:|---:|
+| Streams are removed in place and only their segment ids are kept (`Logging::release_streams`, `close_stream`) | `Logging::release_streams` | 8 400 → at most 1 728 | 4 432 → at most 1 808 |
+| | lock closure around `release_streams` | n/a | 6 304 → at most 1 808 |
+| | `ActionRegistry::close_stream` | 2 352 → at most 1 728 | 2 352 → at most 1 808 |
+| Every backend call is polled through `rohi_service::Isolated`; every request has its own function in `Controller` | `Controller::execute` poll | 30 112 → at most 1 728 | 29 104 → at most 1 808 |
+| | `control_task` poll (inlines the request path; approved growth in the budget file) | 7 072 → 8 608 | 6 128 → 9 248 |
+| | largest frame of the image | 30 112 → 12 240 (async main future, unchanged) | 29 104 → 9 248 (`control_task` poll) |
+| Static RAM | `.data`, `.bss`, task pools, main stack | 0, −8, −8, +8 B | −32, 0, −8, +32 B |
+
+What changed and why it works:
+
+- `release_streams` collected the released streams *by value* into a second `Vec<Open<READ>, 2>` (two stream payloads
+  of `READ` = 2 048 B plus bookkeeping). Streams are now removed in place with `retain_mut` and only the ids of the
+  segments they pinned (at most 2 × 24 `u32`) are kept, then unpinned outside the stream table. `close_stream` takes the
+  storage lock first and removes and unpins in one step, so a caller that gives up while waiting leaves the stream to
+  expire with its pins instead of leaking them (before, the stream was removed first and the pins were released after the
+  await). Regression tests: `clear_releases_one_and_two_open_streams`,
+  `two_downloads_release_their_shared_segments_independently`,
+  `an_expired_stream_is_released_while_the_other_keeps_its_pins`, `a_lost_link_releases_every_stream_at_once`,
+  `closing_streams_in_any_order_leaves_the_other_one_intact`, `closing_a_stream_twice_is_an_error_and_releases_nothing_more`,
+  `repeated_clear_and_logging_after_it_keeps_working`; each also checks the segments the *storage* still holds pinned.
+- The 30 KB frame was not the response types: it was the poll of every config section, status and action of the device
+  inlined into `Controller::execute`, each with its own copies of its bounded collections (`SectionValues`,
+  `ServiceStatus`, `Records`, a few KiB each), which LLVM does not overlap. `rohi_service::Isolated` polls a future
+  through a function that is never inlined, so only the call that runs has a frame. The registries of `rohi-service`
+  poll each section, status and action through it, and `Controller` does the same for each request. Wrapping only
+  `Controller` left a 19–22 KB frame in the status registry; wrapping the registries brought it below 1.8 KB.
+- A first attempt, writing every response into one caller-provided slot, made the frame *larger* and the task future 1.5 KB
+  larger (the slot lives across `await`s) and was dropped: the response types were not the cause.
+
+Not done, with the reason:
+
+| Item | Status |
+|---|---|
+| Status serialized without the `Collector` and the protobuf `Vec` at once; zero-result actions without a `RecordCollector` | not implemented: after the change above the frames of these paths are below the 1.8 KB reporting floor, and the `control_task` future (17 432 B) did not move; a smaller future needs the state of the largest await, which this analysis does not attribute |
+| `RingStorage::scan_open` (2 056 B chunk + 2 048 B text) | not implemented: the `recover` poll frame (6 608 B on C3) is not on the control path; shrinking it needs a streaming LZ4 decoder, which changes recovery logic and needs a flash-damage test matrix |
+| `Logging::collect()` / `SegmentDecoder` staging buffers | not implemented: a staging state machine needs a measured benefit, and the `collect` closure frame was 2 160 B on both chips, is at most 1 728 B on ESP32-C3 after this change (side effect of inlining) and unchanged on ESP32-C6 |
+| LZ4 `HASH_BITS` 10 → 9 → 8 | not benchmarked: needs representative firmware logs (compression ratio, flash writes, segment rotation), which the repository does not contain |
+
+Outstanding hardware verification: the control path (`rohi status`, `status logging`, `logs`, `logs download`,
+`logs clear --yes`) on ESP32-C3 and ESP32-C6, with a main-stack high-water mark attached as a hardware observation; the
+static result does not show that the exception seen on the device is fixed.
+
 ## Configuration store
 
 The store uses no heap; see [Resource limits](https://docs.rs/rohi-sdk/latest/rohi_sdk/memory/index.html) for its bounds. Its
@@ -151,8 +270,9 @@ minimum free wireless heap with an open connection when the first uplink compone
 ## How to measure
 
 ```bash
-cargo build-esp32c3 && size target/riscv32imc-unknown-none-elf/release/altruist-urban
-cargo build-esp32c6 && size target/riscv32imac-unknown-none-elf/release/altruist-urban
+cargo build-esp32c3 && size target/riscv32imc-unknown-none-elf/firmware/altruist-urban-firmware
+cargo build-esp32c6 && size target/riscv32imac-unknown-none-elf/release/altruist-urban-firmware
+scripts/memcheck.sh images esp32c3 out && scripts/memcheck.sh analyze esp32c3 out   # task pools, stack, frames
 ```
 
 The minimum free wireless heap comes from `rohi_net_esp::wireless_heap()` (the firmware logs it with its snapshot; the

@@ -1,0 +1,232 @@
+{
+  "schema_version": 1,
+  "chip": "esp32c3",
+  "build": {
+    "toolchain": "rustc 1.99.1",
+    "git_sha": "abc123",
+    "target": "riscv32-esp32c3",
+    "profile": "firmware",
+    "features": "esp32c3",
+    "flags": "-C force-frame-pointers",
+    "analysis_flags": "-C force-frame-pointers -Z emit-stack-sizes",
+    "elf_bytes": 6836,
+    "analysis_elf_bytes": null
+  },
+  "ram": {
+    "sections": [
+      {
+        "name": ".bss",
+        "address": 0,
+        "size": 40000
+      },
+      {
+        "name": ".data",
+        "address": 0,
+        "size": 1000
+      },
+      {
+        "name": ".stack",
+        "address": 0,
+        "size": 22024
+      }
+    ],
+    "data_bytes": 1000,
+    "bss_bytes": 40000,
+    "noinit_bytes": 0,
+    "static_bytes": 41000,
+    "largest_statics": [
+      {
+        "name": "app::control::control_task::POOL",
+        "section": ".bss",
+        "size": 17440
+      },
+      {
+        "name": "app::control::ble_task::POOL",
+        "section": ".bss",
+        "size": 7064
+      },
+      {
+        "name": "app::logging::logging_task::POOL",
+        "section": ".bss",
+        "size": 2304
+      },
+      {
+        "name": "app::reboot::reboot_task::POOL",
+        "section": ".bss",
+        "size": 72
+      }
+    ]
+  },
+  "tasks": {
+    "tasks": [
+      {
+        "name": "ble_task",
+        "symbol": "app::control::ble_task::POOL",
+        "reserved_bytes": 7064,
+        "section": ".bss",
+        "pool_slots": null,
+        "element_bytes": null,
+        "stack_owner": "rtos/main",
+        "confidence": "exact",
+        "evidence": "sized `POOL` static in .bss"
+      },
+      {
+        "name": "control_task",
+        "symbol": "app::control::control_task::POOL",
+        "reserved_bytes": 17440,
+        "section": ".bss",
+        "pool_slots": null,
+        "element_bytes": null,
+        "stack_owner": "rtos/main",
+        "confidence": "exact",
+        "evidence": "sized `POOL` static in .bss"
+      },
+      {
+        "name": "logging_task",
+        "symbol": "app::logging::logging_task::POOL",
+        "reserved_bytes": 2304,
+        "section": ".bss",
+        "pool_slots": null,
+        "element_bytes": null,
+        "stack_owner": "rtos/main",
+        "confidence": "exact",
+        "evidence": "sized `POOL` static in .bss"
+      },
+      {
+        "name": "reboot_task",
+        "symbol": "app::reboot::reboot_task::POOL",
+        "reserved_bytes": 72,
+        "section": ".bss",
+        "pool_slots": null,
+        "element_bytes": null,
+        "stack_owner": "rtos/main",
+        "confidence": "exact",
+        "evidence": "sized `POOL` static in .bss"
+      }
+    ],
+    "reserved_bytes": 26880,
+    "unknown": 0,
+    "reconciliation": {
+      "in_bss": 26880,
+      "in_data": 0,
+      "bss_other": 13120,
+      "data_other": 1000
+    }
+  },
+  "stacks": {
+    "main": {
+      "name": "rtos/main",
+      "source": "linker symbols `_stack_start` / `_stack_end`",
+      "start": 1070392320,
+      "end": 1070370296,
+      "allocated_bytes": 22024,
+      "section_bytes": 22024,
+      "below": ".bss",
+      "guard_evidence": [],
+      "confidence": "exact"
+    },
+    "other": [
+      {
+        "name": "native RTOS threads (radio, network, application)",
+        "status": "not_detectable_statically",
+        "note": "Threads are created at run time with stacks from the heap; the ELF symbols are not a complete list. Use a run-time inventory from hardware.",
+        "evidence": []
+      },
+      {
+        "name": "interrupt and executor contexts",
+        "status": "runtime_only",
+        "note": "Not distinguishable from the image; the Embassy tasks share the main stack.",
+        "evidence": []
+      }
+    ]
+  },
+  "frames": {
+    "metadata": "present",
+    "functions": 4,
+    "with_frame": 3,
+    "coverage_permille": 750,
+    "top": [
+      {
+        "symbol": "rohi_logging::service::collect",
+        "bytes": 2100
+      },
+      {
+        "symbol": "rohi_control::controller::handle",
+        "bytes": 1400
+      },
+      {
+        "symbol": "app::main",
+        "bytes": 48
+      }
+    ],
+    "without_frame": [
+      {
+        "symbol": "vendor_blob",
+        "bytes": 3000
+      }
+    ],
+    "focus": [
+      {
+        "name": "control_dispatch",
+        "functions": 1,
+        "top": [
+          {
+            "symbol": "rohi_control::controller::handle",
+            "bytes": 1400
+          }
+        ]
+      },
+      {
+        "name": "logging",
+        "functions": 1,
+        "top": [
+          {
+            "symbol": "rohi_logging::service::collect",
+            "bytes": 2100
+          }
+        ]
+      }
+    ]
+  },
+  "comparison": null,
+  "hardware": [],
+  "checks": [
+    {
+      "id": "max_data",
+      "description": "`.data` stays within its budget",
+      "limit": 2000,
+      "actual": 1000,
+      "status": "pass"
+    },
+    {
+      "id": "max_bss",
+      "description": "`.bss` (statics, task pools, wireless heap) stays within its budget",
+      "limit": 50000,
+      "actual": 40000,
+      "status": "pass"
+    },
+    {
+      "id": "max_task_ram",
+      "description": "the Embassy task pools stay within their budget",
+      "limit": 30000,
+      "actual": 26880,
+      "status": "pass"
+    },
+    {
+      "id": "max_frame",
+      "description": "the largest single function frame stays within its budget",
+      "limit": 4000,
+      "actual": 2100,
+      "status": "pass"
+    },
+    {
+      "id": "min_main_stack",
+      "description": "the main stack keeps its declared minimum",
+      "limit": 20000,
+      "actual": 22024,
+      "status": "pass"
+    }
+  ],
+  "diagnostics": [],
+  "outcome": "needs_hardware_data"
+}

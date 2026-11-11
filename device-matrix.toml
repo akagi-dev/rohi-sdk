@@ -1,5 +1,5 @@
 # ROHI hardware and capability support matrix. Schema and status definitions: docs/support/README.md.
-# The page docs/support/matrix.md is generated from this file (`cargo run -p rohi-support-matrix -- render --write`).
+# The page docs/support/matrix.md is generated from this file (`cargo run -p rohi-devices -- render --write`).
 # Missing evidence is `not-verified`, never success or failure. `hardware_verification = "verified"` requires a
 # `hw-report` evidence item.
 schema_version = 1

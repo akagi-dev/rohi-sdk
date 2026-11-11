@@ -231,6 +231,7 @@ use heapless::Vec;
 use rohi_config::{ConfigOverrides, ConfigSection, FieldError, HasOverrides, materialize};
 
 use crate::field::{ConfigField, EnumDescriptor};
+use crate::isolated::isolated;
 use crate::schema::{config_fields_valid, enums_valid, field_ids_match, name_ok};
 use crate::{MAX_CONFIG_FIELDS, MAX_REGISTRY_ENTRIES};
 use rohi_config::Value;
@@ -1029,7 +1030,7 @@ macro_rules! tuple_config_registry {
 
             async fn get(&self, section: u64) -> Result<SectionValues, ConfigError> {
                 $(if self.$index.id() == section {
-                    return self.$index.get().await;
+                    return isolated(self.$index.get()).await;
                 })+
                 Err(ConfigError::UnknownSection)
             }
@@ -1041,7 +1042,7 @@ macro_rules! tuple_config_registry {
                         dry_run: bool,
             ) -> Result<Patched, ConfigError> {
                 $(if self.$index.id() == section {
-                    return self.$index.patch(mutations, dry_run).await;
+                    return isolated(self.$index.patch(mutations, dry_run)).await;
                 })+
                 Err(ConfigError::UnknownSection)
             }
@@ -1052,7 +1053,7 @@ macro_rules! tuple_config_registry {
                         dry_run: bool,
             ) -> Result<Patched, ConfigError> {
                 $(if self.$index.id() == section {
-                    return self.$index.reset(dry_run).await;
+                    return isolated(self.$index.reset(dry_run)).await;
                 })+
                 Err(ConfigError::UnknownSection)
             }

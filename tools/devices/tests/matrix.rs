@@ -17,10 +17,10 @@
 ///////////////////////////////////////////////////////////////////////////////
 //! Validates the published matrix and exercises every rule of the validator on small broken variants.
 
-use rohi_support_matrix::{Matrix, RENDERED_PATH, render, repo_root, validate};
+use rohi_devices::{Matrix, RENDERED_PATH, render, repo_root, validate};
 
 fn published() -> Matrix {
-    Matrix::load(&repo_root()).expect("support-matrix/matrix.toml parses")
+    Matrix::load(&repo_root()).expect("device-matrix.toml parses")
 }
 
 fn errors_of(matrix: &Matrix) -> Vec<String> {
@@ -39,13 +39,13 @@ fn rendered_page_is_current() {
         .expect("docs/support/matrix.md exists");
     assert!(
         page == render(&published()),
-        "docs/support/matrix.md is stale: run `cargo run -p rohi-support-matrix -- render --write`"
+        "docs/support/matrix.md is stale: run `cargo run -p rohi-devices -- render --write`"
     );
 }
 
 #[test]
 fn unknown_fields_are_rejected() {
-    let text = std::fs::read_to_string(repo_root().join("support-matrix/matrix.toml")).unwrap();
+    let text = std::fs::read_to_string(repo_root().join("device-matrix.toml")).unwrap();
     let broken = text.replacen(
         "schema_version = 1",
         "schema_version = 1\nsupported = true",
@@ -56,7 +56,7 @@ fn unknown_fields_are_rejected() {
 
 #[test]
 fn unknown_status_is_rejected() {
-    let text = std::fs::read_to_string(repo_root().join("support-matrix/matrix.toml")).unwrap();
+    let text = std::fs::read_to_string(repo_root().join("device-matrix.toml")).unwrap();
     let broken = text.replacen(
         "hardware_verification = \"not-verified\"",
         "hardware_verification = \"works\"",
@@ -77,7 +77,7 @@ fn expect_error(mutate: impl FnOnce(&mut Matrix), needle: &str) {
 
 #[test]
 fn hardware_result_needs_a_report() {
-    use rohi_support_matrix::HardwareVerification;
+    use rohi_devices::HardwareVerification;
     expect_error(
         |m| m.entry[0].hardware_verification = HardwareVerification::Verified,
         "hw-report",
@@ -125,7 +125,7 @@ fn duplicated_ids_are_rejected() {
 
 #[test]
 fn integration_needs_a_rohi_firmware() {
-    use rohi_support_matrix::Integration;
+    use rohi_devices::Integration;
     let index = published()
         .entry
         .iter()
@@ -139,7 +139,7 @@ fn integration_needs_a_rohi_firmware() {
 
 #[test]
 fn support_claim_must_match_entries() {
-    use rohi_support_matrix::RohiSupport;
+    use rohi_devices::RohiSupport;
     expect_error(
         |m| {
             let h = m
