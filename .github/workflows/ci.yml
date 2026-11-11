@@ -12,7 +12,8 @@ env:
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
-  check-license:
+  license-checks:
+    name: License
     runs-on: ubuntu-latest
     outputs:
       status: ${{ job.status }}
@@ -23,8 +24,8 @@ jobs:
       - name: Check license header
         run: ./scripts/check-license.sh
 
-  host-checks:
-    name: Host Checks
+  static-checks:
+    name: Static
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -52,7 +53,7 @@ jobs:
         run: cargo ${{ matrix.action.command }} ${{ matrix.action.args }}
 
   native:
-    name: Native Altruist Urban
+    name: Native Firmware
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -91,7 +92,7 @@ jobs:
           fi
 
   esp32c3:
-    name: ESP32-C3
+    name: ESP32-C3 Firmware
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -118,7 +119,7 @@ jobs:
         run: cargo build-esp32c3
 
   esp32c6:
-    name: ESP32-C6
+    name: ESP32-C6 Firmware
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -145,7 +146,7 @@ jobs:
         run: cargo build-esp32c6
 
   memory-check:
-    name: Memcheck (${{ matrix.chip }})
+    name: Memory Analyze (${{ matrix.chip }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -200,7 +201,7 @@ jobs:
           if-no-files-found: error
 
   memory-report:
-    name: Memcheck report
+    name: Memory Reports
     needs: memory-check
     if: always()
     runs-on: ubuntu-latest
@@ -242,7 +243,7 @@ jobs:
         run: gh pr comment ${{ github.event.pull_request.number }} --body-file memcheck-out/task-memory-report.md --edit-last --create-if-none
 
   docs-check:
-    name: Check documentation 
+    name: Documentation 
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
