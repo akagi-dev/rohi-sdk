@@ -38,7 +38,7 @@ fn input_differences(current: &Report, base: &Report) -> Vec<String> {
     let (c, b) = (&current.build, &base.build);
     let mut out = Vec::new();
     let mut check = |name: &str, a: &Option<String>, b: &Option<String>| {
-        if a != b {
+        if a.is_none() || b.is_none() || a != b {
             out.push(format!(
                 "{name}: base `{}`, now `{}`",
                 b.as_deref().unwrap_or("unset"),
