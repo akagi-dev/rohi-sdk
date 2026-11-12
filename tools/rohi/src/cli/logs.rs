@@ -33,7 +33,9 @@ use serde::Serialize;
 use super::args::LogsAction;
 use super::diagnostic::CliError;
 use super::{Ctx, OutputFormat, dto};
-use crate::model::{ActionOutcome, FieldValue, ServiceSchema, ServiceStatus, Stream, Value};
+use crate::model::{
+    ActionOutcome, ErrorCode, FieldValue, ServiceSchema, ServiceStatus, Stream, Value,
+};
 use crate::{ClientTransport, Device, Error};
 
 const SERVICE: &str = "logging";
@@ -135,38 +137,47 @@ async fn read_page<T: ClientTransport>(
     after: u64,
     limit: u64,
 ) -> Result<Page, CliError> {
-    let schema = device.action_schema(SERVICE, "read").await?;
-    let mut args = Vec::new();
-    for (name, value) in [("after", after), ("limit", limit)] {
-        let field = schema
-            .args
-            .iter()
-            .find(|field| field.name == name)
-            .ok_or_else(|| Error::Protocol(format!("logging.read has no {name} argument")))?;
-        args.push(FieldValue {
-            field_id: field.id,
-            value: Value::U64(value),
+    for attempt in 0..2 {
+        let schema = device.action_schema(SERVICE, "read").await?;
+        let mut args = Vec::new();
+        for (name, value) in [("after", after), ("limit", limit)] {
+            let field = schema
+                .args
+                .iter()
+                .find(|field| field.name == name)
+                .ok_or_else(|| Error::Protocol(format!("logging.read has no {name} argument")))?;
+            args.push(FieldValue {
+                field_id: field.id,
+                value: Value::U64(value),
+            });
+        }
+        let stream = match device.invoke_outcome(SERVICE, "read", &args).await? {
+            ActionOutcome::Stream(stream) => stream,
+            ActionOutcome::Records(_) => {
+                return Err(Error::Protocol("logging.read returned records".into()).into());
+            }
+        };
+        let history = stream
+            .files
+            .first()
+            .and_then(|file| history_of_read_file(&file.name));
+        let data = read_all(device, &stream).await;
+        // Whatever happened, release the stream; its content is already here.
+        let _ = device.close_stream(&stream).await;
+        let data = match data {
+            Ok(data) => data,
+            // A concurrent clear can revoke the stream after `read` returned it.
+            Err(CliError::Device(Error::Device(ErrorCode::NotFound))) if attempt == 0 => continue,
+            Err(error) => return Err(error),
+        };
+        let text = String::from_utf8_lossy(&data).into_owned();
+        // A line that is not a record is skipped, never trusted.
+        return Ok(Page {
+            history,
+            records: text.lines().filter_map(parse_line).collect(),
         });
     }
-    let stream = match device.invoke_outcome(SERVICE, "read", &args).await? {
-        ActionOutcome::Stream(stream) => stream,
-        ActionOutcome::Records(_) => {
-            return Err(Error::Protocol("logging.read returned records".into()).into());
-        }
-    };
-    let history = stream
-        .files
-        .first()
-        .and_then(|file| history_of_read_file(&file.name));
-    let data = read_all(device, &stream).await;
-    // Whatever happened, release the stream; its content is already here.
-    let _ = device.close_stream(&stream).await;
-    let text = String::from_utf8_lossy(&data?).into_owned();
-    // A line that is not a record is skipped, never trusted.
-    Ok(Page {
-        history,
-        records: text.lines().filter_map(parse_line).collect(),
-    })
+    Err(Error::Device(ErrorCode::NotFound).into())
 }
 
 /// The first file of a stream, whole.
