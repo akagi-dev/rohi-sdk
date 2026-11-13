@@ -16,7 +16,7 @@ env:
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
-  license-checks:
+  license:
     name: License
     runs-on: ubuntu-latest
     outputs:
@@ -24,12 +24,11 @@ jobs:
     steps:
       - name: Checkout the source code
         uses: actions/checkout@v5
-
       - name: Check license header
         run: ./scripts/check-license.sh
 
-  static-checks:
-    name: Static
+  checks:
+    name: Checks
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -56,8 +55,8 @@ jobs:
       - name: Run command
         run: cargo ${{ matrix.action.command }} ${{ matrix.action.args }}
 
-  native:
-    name: Native Firmware
+  tests:
+    name: Tests 
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -95,9 +94,17 @@ jobs:
             echo "the std platform must not depend on ESP crates, async-io or blocking"; exit 1
           fi
 
-  esp32c3:
-    name: ESP32-C3 Firmware
+  firmware:
+    name: Firmware (${{ matrix.chip }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - chip: esp32c3
+            target: riscv32imc-unknown-none-elf
+          - chip: esp32c6
+            target: riscv32imac-unknown-none-elf
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -116,41 +123,14 @@ jobs:
       - name: Check
         run: cargo check-esp32c3
       - name: Check examples
-        run: cargo check -p rohi-examples --no-default-features --features esp32c3 --target riscv32imc-unknown-none-elf
+        run: cargo check -p rohi-examples --no-default-features --features ${{ matrix.chip }} --target ${{ matrix.target }} 
       - name: Clippy
-        run: cargo clippy -p altruist-urban -p rohi-examples -p rohi-hal-esp -p rohi-net-esp -p rohi-config-esp --no-default-features --features esp32c3 --target riscv32imc-unknown-none-elf -- -D warnings
+        run: cargo clippy -p altruist-urban -p rohi-examples -p rohi-hal-esp -p rohi-net-esp -p rohi-config-esp --no-default-features --features ${{ matrix.chip }} --target ${{ matrix.target }} -- -D warnings
       - name: Build
-        run: cargo build-esp32c3
-
-  esp32c6:
-    name: ESP32-C6 Firmware
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@v1
-        with:
-          target: riscv32imac-unknown-none-elf
-          toolchain: 1.99.1
-          components: rust-src, clippy
-      - name: Enable caching
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: esp32c6
-      - name: Check
-        run: cargo check-esp32c6
-      - name: Check examples
-        run: cargo check -p rohi-examples --no-default-features --features esp32c6 --target riscv32imac-unknown-none-elf
-      - name: Clippy
-        run: cargo clippy -p altruist-urban -p rohi-examples -p rohi-hal-esp -p rohi-net-esp -p rohi-config-esp --no-default-features --features esp32c6 --target riscv32imac-unknown-none-elf -- -D warnings
-      - name: Build
-        run: cargo build-esp32c6
+        run: cargo build-${{ matrix.chip }}
 
   memory-check:
-    name: Memory Analyze (${{ matrix.chip }})
+    name: Memory (${{ matrix.chip }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
