@@ -28,7 +28,9 @@ use super::diagnostic::CliError;
 use super::positional::Words;
 use super::{Ctx, dto, values};
 use crate::format::Syntax;
-use crate::model::{ActionInfo, ActionSchema, ErrorCode, FieldDescriptor, FieldValue, Value};
+use crate::model::{
+    ActionInfo, ActionOutcome, ActionSchema, ErrorCode, FieldDescriptor, FieldValue, Stream, Value,
+};
 use crate::{ClientTransport, Device, Error, format};
 use zeroize::Zeroize;
 
@@ -304,12 +306,59 @@ async fn invoke<T: ClientTransport>(
             value,
         });
     }
-    let records = device.invoke(service, action, &arguments.0).await?;
-    ctx.io.emit(
-        ctx.format,
-        &dto::Versioned::new(dto::records(&records, schema)),
-        || format::records(ctx.paint, &records, schema),
-    )
+    match device.invoke_outcome(service, action, &arguments.0).await? {
+        ActionOutcome::Records(records) => ctx.io.emit(
+            ctx.format,
+            &dto::Versioned::new(dto::records(&records, schema)),
+            || format::records(ctx.paint, &records, schema),
+        ),
+        ActionOutcome::Stream(stream) => show_stream(device, &stream, ctx).await,
+    }
+}
+
+/// Writes every file of a stream to stdout, closing the stream even when a read
+/// or write fails. File names and sizes are reported on stderr.
+async fn show_stream<T: ClientTransport>(
+    device: &mut Device<T>,
+    stream: &Stream,
+    ctx: &mut Ctx,
+) -> Result<(), CliError> {
+    let result = async {
+        for file in &stream.files {
+            ctx.io
+                .note(&format!("{:?}  {} bytes\n", file.name, file.size_bytes));
+            let mut offset = 0u64;
+            loop {
+                let chunk = device.read_stream(stream, file.id, offset).await?;
+                let next = offset
+                    .checked_add(chunk.data.len() as u64)
+                    .ok_or_else(|| Error::Protocol("a stream file is too large".into()))?;
+                if next > file.size_bytes {
+                    return Err(
+                        Error::Protocol("a stream file is larger than announced".into()).into(),
+                    );
+                }
+                ctx.io.write_bytes(&chunk.data)?;
+                offset = next;
+                if chunk.eof {
+                    if offset != file.size_bytes {
+                        return Err(Error::Protocol(
+                            "a stream file is smaller than announced".into(),
+                        )
+                        .into());
+                    }
+                    break;
+                }
+                if chunk.data.is_empty() {
+                    return Err(Error::Protocol("the device returned an empty chunk".into()).into());
+                }
+            }
+        }
+        Ok(())
+    }
+    .await;
+    let _ = device.close_stream(stream).await;
+    result
 }
 
 /// The arguments of an action. They can be secrets, so they are overwritten

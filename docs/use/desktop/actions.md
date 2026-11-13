@@ -18,6 +18,9 @@ rohi -o json action network scan
 the arguments are secrets. A refusal with a stable reason is reported as `the device rejected the action: <reason>` (for example
 `already_provisioned`).
 
+When an action returns a stream, its file bytes are written to stdout in the order reported by the device; file names and sizes
+are written to stderr. Stream output is raw bytes, not JSON.
+
 ## Without the word `action`
 
 Every action also runs as `rohi SERVICE ACTION [ARG]...`, with positional arguments. The positions are those of the
