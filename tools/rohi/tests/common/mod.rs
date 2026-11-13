@@ -40,11 +40,12 @@ use rohi_location::{LocationOverrides, LocationService, LocationShared};
 use rohi_net::{BleConnectionInfo, BleError, BleState, BleTransport};
 use rohi_net::{WifiConfig, WifiOverrides};
 use rohi_service::{
-    Action, ActionDescriptor, ActionError, ActionOutput, Config, EnumDescriptor, EnumVariant,
-    FIRST_SERVICE_ISSUE, FieldDescriptor, FieldError, Issue, IssueDescriptor, IssueSeverity,
-    Section, SectionStore, Service, ServiceHealth, ServiceState, ServiceSummary, Status,
-    StatusWriter, Statuses, StoreError, Unit, Value, ValueKind, WriteError,
+    Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, Config, EnumDescriptor,
+    EnumVariant, FIRST_SERVICE_ISSUE, FieldDescriptor, FieldError, Issue, IssueDescriptor,
+    IssueSeverity, Section, SectionStore, Service, ServiceHealth, ServiceState, ServiceSummary,
+    Status, StatusWriter, Statuses, StoreError, Unit, Value, ValueKind, WriteError,
 };
+use rohi_system::{SystemError, SystemPlatform, SystemService};
 use tokio::sync::mpsc;
 
 // ---------------------------------------------------------------------------
@@ -239,7 +240,7 @@ impl Status for Radio {
 
 impl Action for Radio {
     const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new(1, "scan")
+        ActionDescriptor::new(1, "scan", ActionAccess::Read)
             .results(&[
                 FieldDescriptor::new(1, "ssid", ValueKind::String),
                 FieldDescriptor::new(2, "rssi", ValueKind::I64).unit(Unit::Dbm),
@@ -249,13 +250,13 @@ impl Action for Radio {
                 1,
                 &[EnumVariant::new(0, "open"), EnumVariant::new(1, "wpa2")],
             )]),
-        ActionDescriptor::new(2, "reconnect").privileged(),
-        ActionDescriptor::new(3, "tune").args(&[FieldDescriptor::new(
+        ActionDescriptor::new(2, "reconnect", ActionAccess::Mutate),
+        ActionDescriptor::new(3, "tune", ActionAccess::Read).args(&[FieldDescriptor::new(
             1,
             "channel",
             ValueKind::U64,
         )]),
-        ActionDescriptor::new(4, "explode"),
+        ActionDescriptor::new(4, "explode", ActionAccess::Read),
     ];
 
     async fn invoke(
@@ -290,6 +291,106 @@ impl Action for Radio {
             4 => Err(ActionError::Rejected("not_today")),
             _ => Err(ActionError::UnknownAction),
         }
+    }
+}
+
+/// An action call as the device received it: the name and the arguments.
+pub type Call = (&'static str, Vec<(u32, Value)>);
+
+/// A service with actions of one, two and three arguments, for the positional
+/// syntax: its field ids are not sequential and not in the order of the
+/// arguments. (The device lists at most twelve actions in one response, and the
+/// fake device already has eight others.)
+#[derive(Default, Service)]
+pub struct Example {
+    /// Every call: the action and the arguments as the device received them.
+    pub calls: RefCell<Vec<Call>>,
+}
+
+impl Action for Example {
+    const ACTIONS: &'static [ActionDescriptor] = &[
+        ActionDescriptor::new(2, "one", ActionAccess::Read).args(&[FieldDescriptor::new(
+            5,
+            "count",
+            ValueKind::I64,
+        )]),
+        ActionDescriptor::new(3, "two", ActionAccess::Read).args(&[
+            FieldDescriptor::new(4, "label", ValueKind::String),
+            FieldDescriptor::new(1, "gain", ValueKind::F32),
+        ]),
+        ActionDescriptor::new(4, "configure", ActionAccess::Mutate)
+            .args(&[
+                FieldDescriptor::new(7, "endpoint", ValueKind::String),
+                FieldDescriptor::new(2, "enabled", ValueKind::Bool),
+                FieldDescriptor::new(9, "timeout_ms", ValueKind::U64),
+            ])
+            .results(&[FieldDescriptor::new(1, "endpoint", ValueKind::String)]),
+        ActionDescriptor::new(5, "pick", ActionAccess::Read)
+            .args(&[
+                FieldDescriptor::new(3, "speed", ValueKind::Enum).with_enum(1),
+                FieldDescriptor::new(8, "data", ValueKind::Bytes),
+            ])
+            .enums(&[EnumDescriptor::new(
+                1,
+                &[EnumVariant::new(0, "slow"), EnumVariant::new(1, "fast")],
+            )]),
+    ];
+
+    async fn invoke(
+        &self,
+        action: u32,
+        args: &[(u32, Value)],
+        out: &mut impl ActionOutput,
+    ) -> Result<(), ActionError> {
+        let name = Self::ACTIONS
+            .iter()
+            .find(|a| a.id == action)
+            .map_or("?", |a| a.name);
+        self.calls.borrow_mut().push((name, args.to_vec()));
+        if action == 4 {
+            let endpoint = args
+                .iter()
+                .find(|(id, _)| *id == 7)
+                .and_then(|(_, value)| value.as_str())
+                .unwrap_or_default();
+            out.text(1, endpoint).map_err(|_| ActionError::Internal)?;
+        }
+        Ok(())
+    }
+}
+
+/// What the fake device does for `system.reboot` and `system.factory_reset`:
+/// it counts reboots and drops every stored section and the identity.
+pub struct BenchPlatform {
+    pub reboots: Cell<u32>,
+    pub can_reboot: Cell<bool>,
+    pub resets: Cell<u32>,
+    wifi: Rc<RefCell<Option<WifiOverrides>>>,
+    telemetry: Rc<RefCell<Option<ConnectivityOverrides>>>,
+    gadget: Rc<RefCell<Option<GadgetOverrides>>>,
+    location: Rc<RefCell<Option<LocationOverrides>>>,
+    identity: MemIdentity,
+}
+
+impl SystemPlatform for BenchPlatform {
+    fn schedule_reboot(&self) -> Result<(), SystemError> {
+        if !self.can_reboot.get() {
+            return Err(SystemError::Unavailable);
+        }
+        self.reboots.set(self.reboots.get() + 1);
+        Ok(())
+    }
+
+    async fn factory_reset(&self) -> Result<rohi_service::FactoryReset, SystemError> {
+        self.resets.set(self.resets.get() + 1);
+        *self.wifi.borrow_mut() = None;
+        *self.telemetry.borrow_mut() = None;
+        *self.gadget.borrow_mut() = None;
+        *self.location.borrow_mut() = None;
+        *self.identity.0.borrow_mut() = None;
+        Ok(rohi_service::FactoryReset {
+            restart_required: true,
+        })
     }
 }
 
@@ -354,20 +455,39 @@ pub struct Bench {
     pub location: LocationStore,
     pub identity: MemIdentity,
     pub radio: Radio,
+    pub example: Example,
+    pub system: SystemService<BenchPlatform>,
 }
 
 impl Bench {
     pub fn new() -> Self {
+        let wifi = Mem::new(Rc::default(), false);
+        let telemetry = Mem::new(Rc::default(), false);
+        let gadget = Mem::new(Rc::default(), true);
+        let location = LocationStore {
+            mem: Mem::new(Rc::default(), false),
+            shared: Rc::default(),
+        };
+        let identity = MemIdentity::default();
+        let system = SystemService(BenchPlatform {
+            reboots: Cell::new(0),
+            can_reboot: Cell::new(true),
+            resets: Cell::new(0),
+            wifi: wifi.value.clone(),
+            telemetry: telemetry.value.clone(),
+            gadget: gadget.value.clone(),
+            location: location.mem.value.clone(),
+            identity: identity.clone(),
+        });
         let bench = Self {
-            wifi: Mem::new(Rc::default(), false),
-            telemetry: Mem::new(Rc::default(), false),
-            gadget: Mem::new(Rc::default(), true),
-            location: LocationStore {
-                mem: Mem::new(Rc::default(), false),
-                shared: Rc::default(),
-            },
-            identity: MemIdentity::default(),
+            wifi,
+            telemetry,
+            gadget,
+            location,
+            identity,
             radio: Radio::default(),
+            example: Example::default(),
+            system,
         };
         bench.radio.connected.set(true);
         bench
@@ -400,23 +520,15 @@ type StatusServices<'a> = (
     &'a LocationService<'a, NoopRawMutex>,
 );
 
-type ActionServices<'a> = (&'a Radio, &'a IdentityService<MemIdentity>);
+type ActionServices<'a> = (
+    &'a Radio,
+    &'a IdentityService<MemIdentity>,
+    &'a Example,
+    &'a SystemService<BenchPlatform>,
+);
 
 pub type Backend<'a> =
     BackendDevice<Sections, Statuses<NoopRawMutex, StatusServices<'a>>, ActionServices<'a>>;
-
-thread_local! {
-    static REBOOTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
-}
-
-fn reboot() {
-    REBOOTS.with(|count| count.set(count.get() + 1));
-}
-
-/// How many reboots the fake devices of this test thread were asked for.
-pub fn reboots() -> u32 {
-    REBOOTS.with(std::cell::Cell::get)
-}
 
 fn uptime() -> u64 {
     90_000
@@ -440,9 +552,8 @@ pub fn backend(bench: &Bench) -> Backend<'_> {
             Section::new(bench.location.clone()),
         ),
         Statuses::new((&bench.radio, identity, location)),
-        (&bench.radio, identity),
+        (&bench.radio, identity, &bench.example, &bench.system),
     )
-    .with_reboot(reboot)
 }
 
 // ---------------------------------------------------------------------------

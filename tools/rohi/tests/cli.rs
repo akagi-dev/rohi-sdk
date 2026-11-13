@@ -25,7 +25,7 @@ use std::cell::RefCell;
 use std::io::{self, Write};
 use std::rc::Rc;
 
-use clap::{CommandFactory, Parser};
+use clap::CommandFactory;
 use common::*;
 use rohi::cli::{Cli, CliError, Ctx, Io, PartialApply, execute};
 use rohi::{Device, Error};
@@ -107,7 +107,7 @@ impl Outcome {
 }
 
 fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
-    Cli::try_parse_from(std::iter::once("rohi").chain(args.iter().copied()))
+    Cli::parse_args(std::iter::once("rohi").chain(args.iter().copied()))
 }
 
 async fn run_with(bench: &Bench, args: &[&str], terminal: Terminal<'_>) -> Outcome {
@@ -166,7 +166,7 @@ fn help(args: &[&str]) -> String {
     let argv = std::iter::once("rohi")
         .chain(args.iter().copied())
         .chain(["--help"]);
-    match Cli::try_parse_from(argv) {
+    match Cli::parse_args(argv) {
         Err(error) => error.to_string(),
         Ok(cli) => rohi::cli::static_help(&cli.command)
             .unwrap_or_else(|| panic!("`{args:?} --help` is not a static page")),
@@ -213,12 +213,10 @@ fn help_texts_are_snapshots() {
         &["scan"],
         &["status"],
         &["config"],
-        &["config", "reset"],
+        &["config", "reset"][..],
         &["config", "export"],
         &["config", "diff"],
         &["config", "apply"],
-        &["factory-reset"],
-        &["reboot"],
         &["action"],
         &["logs"],
         &["logs", "download"],
@@ -266,7 +264,7 @@ fn every_example_in_the_help_parses() {
     assert!(found.len() > 25, "{found:#?}");
     for example in found {
         let argv: Vec<_> = example.split_whitespace().collect();
-        if let Err(error) = Cli::try_parse_from(argv) {
+        if let Err(error) = Cli::parse_args(argv) {
             panic!("`{example}` does not parse: {error}");
         }
     }
@@ -280,25 +278,21 @@ fn the_command_tree_has_no_module_specific_commands() {
         .get_subcommands()
         .map(|command| command.get_name().to_owned())
         .collect();
-    assert_eq!(
-        names,
-        [
-            "scan",
-            "status",
-            "config",
-            "factory-reset",
-            "reboot",
-            "action",
-            "logs"
-        ]
-    );
-    for gone in ["wifi", "connectivity", "backup", "sensors", "time", "info"] {
-        let error = parse(&[gone]).err().unwrap();
-        assert_eq!(
-            error.kind(),
-            clap::error::ErrorKind::InvalidSubcommand,
-            "{gone}"
+    assert_eq!(names, ["scan", "status", "config", "action", "logs"]);
+    // Any other word is a service of the device, resolved when connected.
+    for service in ["wifi", "connectivity", "backup", "sensors", "time", "info"] {
+        let cli = parse(&[service]).unwrap();
+        assert!(
+            matches!(&cli.command, rohi::cli::Command::External(words) if words == &[service]),
+            "{service}"
         );
+    }
+    for gone in ["reboot", "factory-reset"] {
+        // Removed commands: a service of that name, if the device has one.
+        assert!(matches!(
+            parse(&[gone]).unwrap().command,
+            rohi::cli::Command::External(_)
+        ));
     }
     assert!(parse(&["-o", "json", "status"]).is_ok());
     assert!(parse(&["-o", "yaml", "status"]).is_err());
@@ -307,8 +301,7 @@ fn the_command_tree_has_no_module_specific_commands() {
 #[test]
 fn usage_errors_have_exit_code_2() {
     for args in [
-        &["bogus"][..],
-        &["config", "reset"],
+        &["config", "reset"][..],
         &["config", "diff"],
         &["config", "wifi", "--bogus"],
         &["action", "wifi", "scan", "--bogus"],
@@ -1295,51 +1288,52 @@ fn a_partial_apply_names_what_was_and_was_not_applied() {
 // action
 // ---------------------------------------------------------------------------
 
+/// The rows of a printed table as words.
+fn table_rows(text: &str) -> Vec<Vec<&str>> {
+    text.lines()
+        .map(|line| line.split_whitespace().collect())
+        .collect()
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn actions_are_listed_described_and_run_from_the_schema() {
     let bench = Bench::new();
     let outcome = run(&bench, &["action"]).await;
     outcome.ok();
-    assert!(
-        outcome
-            .stdout
-            .starts_with("SERVICE   ACTION     PRIVILEGED\n"),
+    let rows = table_rows(&outcome.stdout);
+    assert_eq!(
+        rows[0],
+        ["SERVICE", "ACTION", "ACCESS"],
         "{}",
         outcome.stdout
     );
-    assert!(
-        outcome.stdout.contains("radio     reconnect  yes"),
-        "{}",
-        outcome.stdout
-    );
-    assert!(
-        outcome.stdout.contains("radio     scan       no"),
-        "{}",
-        outcome.stdout
-    );
-    assert!(
-        outcome.stdout.contains("identity  provision  yes"),
-        "{}",
-        outcome.stdout
-    );
+    for expected in [
+        ["radio", "reconnect", "mutate"],
+        ["radio", "scan", "read"],
+        ["identity", "provision", "provision"],
+        ["identity", "erase", "mutate"],
+        ["system", "reboot", "mutate"],
+        ["system", "factory_reset", "provision"],
+    ] {
+        assert!(
+            rows.contains(&expected.to_vec()),
+            "{expected:?}\n{}",
+            outcome.stdout
+        );
+    }
 
     // The actions of one service with their arguments.
     let outcome = run(&bench, &["action", "radio"]).await;
     outcome.ok();
+    let rows = table_rows(&outcome.stdout);
+    assert_eq!(rows[0], ["ACTION", "ARGS", "ACCESS"], "{}", outcome.stdout);
     assert!(
-        outcome
-            .stdout
-            .starts_with("ACTION     ARGS     PRIVILEGED\n"),
+        rows.contains(&vec!["tune", "channel", "read"]),
         "{}",
         outcome.stdout
     );
     assert!(
-        outcome.stdout.contains("tune       channel  no"),
-        "{}",
-        outcome.stdout
-    );
-    assert!(
-        outcome.stdout.contains("scan       -        no"),
+        rows.contains(&vec!["scan", "-", "read"]),
         "{}",
         outcome.stdout
     );
@@ -1371,7 +1365,7 @@ async fn actions_are_listed_described_and_run_from_the_schema() {
         outcome.stdout
     );
     assert!(
-        outcome.stdout.ends_with("Privileged: no\n"),
+        outcome.stdout.ends_with("Access: read\n"),
         "{}",
         outcome.stdout
     );
@@ -1566,7 +1560,7 @@ async fn a_malformed_secret_is_not_echoed() {
 }
 
 // ---------------------------------------------------------------------------
-// factory-reset
+// system: reboot and factory reset are ordinary actions
 // ---------------------------------------------------------------------------
 
 async fn configure_everything(bench: &Bench) {
@@ -1582,68 +1576,588 @@ async fn configure_everything(bench: &Bench) {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn factory_reset_removes_every_section() {
+async fn system_factory_reset_formats_the_configuration_and_does_not_reboot() {
+    for args in [
+        &["system", "factory_reset"][..],
+        &["action", "system", "factory_reset"],
+    ] {
+        let bench = Bench::new();
+        configure_everything(&bench).await;
+        *bench.identity.0.borrow_mut() =
+            Some(rohi_identity::Identity::from_secret(&[7; 32]).unwrap());
+
+        // No confirmation prompt, and the result is the generic record.
+        let outcome = run(&bench, args).await;
+        let rows = table_rows(&outcome.ok().stdout)
+            .into_iter()
+            .map(|row| row.join(" "))
+            .collect::<Vec<_>>();
+        assert_eq!(rows, ["RESTART_REQUIRED", "true"], "{args:?}");
+        assert!(bench.gadget.value.borrow().is_none());
+        assert!(bench.location.mem.value.borrow().is_none());
+        assert!(bench.identity.0.borrow().is_none());
+        assert_eq!(bench.system.0.resets.get(), 1);
+        // Factory reset never reboots by itself.
+        assert_eq!(bench.system.0.reboots.get(), 0);
+    }
+
     let bench = Bench::new();
-    configure_everything(&bench).await;
-
-    let outcome = run(&bench, &["factory-reset", "--yes"]).await;
-    outcome.ok();
-    assert!(
-        outcome.stdout.starts_with("Factory reset: "),
-        "{}",
-        outcome.stdout
-    );
-    assert!(outcome.stdout.contains("rebooting"), "{}", outcome.stdout);
-    assert_eq!(common::reboots(), 1);
-    assert!(bench.gadget.value.borrow().is_none());
-    assert!(bench.location.mem.value.borrow().is_none());
-
-    let json = run(&bench, &["-o", "json", "factory-reset", "--yes"])
+    let json = run(&bench, &["-o", "json", "system", "factory_reset"])
         .await
         .ok()
         .json();
-    assert_eq!(json["restart_required"], true);
-    assert_eq!(json["rebooting"], true);
-    assert_eq!(common::reboots(), 2);
+    assert_eq!(json["records"][0]["restart_required"], true);
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn factory_reset_asks_only_where_somebody_can_answer() {
+async fn system_reboot_is_its_own_action() {
+    for args in [&["system", "reboot"][..], &["action", "system", "reboot"]] {
+        let bench = Bench::new();
+        let outcome = run(&bench, args).await;
+        assert_eq!(outcome.ok().stdout, "Done\n", "{args:?}");
+        assert_eq!(bench.system.0.reboots.get(), 1);
+        assert_eq!(bench.system.0.resets.get(), 0);
+    }
+
     let bench = Bench::new();
-    configure_everything(&bench).await;
+    let json = run(&bench, &["-o", "json", "system", "reboot"])
+        .await
+        .ok()
+        .json();
+    assert_eq!(json["records"], json!([]));
 
-    let outcome = run(&bench, &["factory-reset"]).await;
-    assert!(matches!(outcome.error(), CliError::ConfirmationRequired));
-    assert!(bench.gadget.value.borrow().is_some());
-
-    let terminal = Terminal {
-        interactive: true,
-        input: &["n"],
-        ..Default::default()
-    };
-    let outcome = run_with(&bench, &["factory-reset"], terminal).await;
-    assert!(matches!(outcome.error(), CliError::Cancelled));
-    assert!(bench.gadget.value.borrow().is_some());
-
-    let terminal = Terminal {
-        interactive: true,
-        input: &["y"],
-        ..Default::default()
-    };
-    run_with(&bench, &["factory-reset"], terminal).await.ok();
-    assert!(bench.gadget.value.borrow().is_none());
-    assert!(bench.location.mem.value.borrow().is_none());
+    // A device that cannot schedule a reboot says so.
+    bench.system.0.can_reboot.set(false);
+    let outcome = run(&bench, &["system", "reboot"]).await;
+    assert!(matches!(
+        outcome.device_error(),
+        Error::Device(rohi::model::ErrorCode::Unavailable)
+    ));
+    assert_eq!(bench.system.0.reboots.get(), 1);
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn reboot_asks_the_device_to_reboot() {
+async fn the_dedicated_commands_are_gone() {
     let bench = Bench::new();
-    let outcome = run(&bench, &["reboot"]).await;
-    assert_eq!(outcome.ok().stdout, "The device is rebooting\n");
-    assert_eq!(common::reboots(), 1);
-    let json = run(&bench, &["-o", "json", "reboot"]).await.ok().json();
-    assert_eq!(json["rebooting"], true);
-    assert_eq!(common::reboots(), 2);
+    for gone in ["reboot", "factory-reset"] {
+        let outcome = run(&bench, &[gone]).await;
+        assert!(
+            outcome
+                .message()
+                .contains("neither a command nor a service of the device"),
+            "{}",
+            outcome.message()
+        );
+    }
+    assert_eq!(
+        bench.system.0.reboots.get() + bench.system.0.resets.get(),
+        0
+    );
+}
+
+// ---------------------------------------------------------------------------
+// positional actions: rohi SERVICE ACTION [ARG]...
+// ---------------------------------------------------------------------------
+
+fn calls(bench: &Bench) -> Vec<Call> {
+    bench.example.calls.borrow().clone()
+}
+
+fn int(value: i64) -> rohi_service::Value {
+    rohi_service::Value::I64(value)
+}
+
+#[test]
+fn built_in_commands_take_precedence_over_services() {
+    use rohi::cli::Command;
+    assert!(matches!(
+        parse(&["status"]).unwrap().command,
+        Command::Status { .. }
+    ));
+    assert!(matches!(
+        parse(&["config"]).unwrap().command,
+        Command::Config { .. }
+    ));
+    assert!(matches!(
+        parse(&["action", "wifi"]).unwrap().command,
+        Command::Action { .. }
+    ));
+    assert!(matches!(
+        parse(&["logs"]).unwrap().command,
+        Command::Logs { .. }
+    ));
+    assert!(matches!(
+        parse(&["scan"]).unwrap().command,
+        Command::Scan { .. }
+    ));
+    assert!(matches!(
+        parse(&["system", "reboot"]).unwrap().command,
+        Command::External(_)
+    ));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn positional_arguments_follow_the_schema_order_not_the_field_ids() {
+    use rohi_service::Value as V;
+    let bench = Bench::new();
+    // endpoint id 7, enabled id 2, timeout_ms id 9.
+    let outcome = run(
+        &bench,
+        &[
+            "example",
+            "configure",
+            "https://example.org",
+            "true",
+            "5000",
+        ],
+    )
+    .await;
+    let rows = table_rows(&outcome.ok().stdout)
+        .into_iter()
+        .map(|row| row.join(" "))
+        .collect::<Vec<_>>();
+    assert_eq!(rows, ["ENDPOINT", "https://example.org"]);
+    let [(name, args)] = &calls(&bench)[..] else {
+        panic!()
+    };
+    assert_eq!(*name, "configure");
+    let by_id = |id: u32| {
+        args.iter()
+            .find(|(field, _)| *field == id)
+            .map(|(_, v)| v.clone())
+    };
+    assert_eq!(
+        by_id(7),
+        Some(V::String(
+            heapless::String::try_from("https://example.org").unwrap()
+        ))
+    );
+    assert_eq!(by_id(2), Some(V::Bool(true)));
+    assert_eq!(by_id(9), Some(V::U64(5000)));
+    assert_eq!(args.len(), 3);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn actions_with_zero_one_two_and_three_arguments_run() {
+    use rohi_service::Value as V;
+    let bench = Bench::new();
+    run(&bench, &["system", "reboot"]).await.ok();
+    assert_eq!(bench.system.0.reboots.get(), 1);
+    run(&bench, &["example", "one", "42"]).await.ok();
+    run(&bench, &["example", "two", "hello", "1.5"]).await.ok();
+    run(&bench, &["example", "configure", "e", "false", "1"])
+        .await
+        .ok();
+    let names: Vec<_> = calls(&bench)
+        .iter()
+        .map(|(name, args)| (*name, args.len()))
+        .collect();
+    assert_eq!(names, [("one", 1), ("two", 2), ("configure", 3)]);
+    assert_eq!(calls(&bench)[0].1, [(5, int(42))]);
+    assert_eq!(
+        calls(&bench)[1].1,
+        [
+            (4, V::String(heapless::String::try_from("hello").unwrap())),
+            (1, V::F32(1.5))
+        ]
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn missing_and_extra_arguments_are_rejected_before_the_call() {
+    let bench = Bench::new();
+    let cases: &[(&[&str], &[&str])] = &[
+        (
+            &["example", "configure", "e", "true"],
+            &[
+                "needs 3 arguments",
+                "endpoint enabled timeout_ms",
+                "2 given",
+                "missing timeout_ms",
+            ],
+        ),
+        (&["example", "configure"], &["needs 3 arguments", "0 given"]),
+        (&["example", "one"], &["needs 1 argument (count)"]),
+        (
+            &["example", "one", "1", "2"],
+            &["takes 1 argument (count)", "2 given"],
+        ),
+        (
+            &["system", "reboot", "x"],
+            &["takes no arguments", "1 given"],
+        ),
+        (
+            &["identity", "provision"],
+            &["needs 1 argument (secret)", "secrets are read with `-`"],
+        ),
+        (
+            &["identity", "provision", "-", "-"],
+            &["takes 1 argument (secret)", "2 given"],
+        ),
+    ];
+    for (args, expected) in cases {
+        let outcome = run(&bench, args).await;
+        assert!(matches!(outcome.error(), CliError::Usage(_)), "{args:?}");
+        let message = outcome.message();
+        for expected in *expected {
+            assert!(
+                message.contains(expected),
+                "{args:?}: {expected}\n{message}"
+            );
+        }
+    }
+    assert!(calls(&bench).is_empty());
+    assert_eq!(bench.system.0.reboots.get(), 0);
+    assert!(bench.identity.0.borrow().is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn positional_values_are_typed_and_enums_are_checked_before_the_call() {
+    let bench = Bench::new();
+    for (args, expected) in [
+        (&["example", "one", "abc"][..], "count: expected an integer"),
+        (&["example", "two", "x", "fast"], "gain: expected a number"),
+        (
+            &["example", "configure", "e", "maybe", "1"],
+            "enabled: expected true or false",
+        ),
+        (
+            &["example", "configure", "e", "true", "-1"],
+            "timeout_ms: expected a non-negative integer",
+        ),
+        (
+            &["example", "pick", "slowest", "00"],
+            "speed: expected one of slow, fast",
+        ),
+        (
+            &["example", "pick", "fast", "abc"],
+            "data: expected hex bytes",
+        ),
+    ] {
+        let outcome = run(&bench, args).await;
+        assert!(matches!(outcome.error(), CliError::Usage(_)), "{args:?}");
+        assert!(
+            outcome.message().contains(expected),
+            "{args:?}\n{}",
+            outcome.message()
+        );
+    }
+    assert!(calls(&bench).is_empty());
+
+    run(&bench, &["example", "pick", "fast", "0aff"]).await.ok();
+    assert_eq!(
+        calls(&bench)[0].1,
+        [
+            (3, rohi_service::Value::Enum(1)),
+            (
+                8,
+                rohi_service::Value::Bytes(heapless::Vec::from_slice(&[0x0a, 0xff]).unwrap())
+            )
+        ]
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn option_like_values_need_dashes() {
+    let bench = Bench::new();
+    // A negative number is a value; so is anything after `--`.
+    run(&bench, &["example", "one", "-5"]).await.ok();
+    run(&bench, &["example", "one", "--", "-7"]).await.ok();
+    run(&bench, &["example", "configure", "--", "--odd", "on", "3"])
+        .await
+        .ok();
+    let all = calls(&bench);
+    assert_eq!(all[0].1, [(5, int(-5))]);
+    assert_eq!(all[1].1, [(5, int(-7))]);
+    assert_eq!(
+        all[2].1[0].1,
+        rohi_service::Value::String(heapless::String::try_from("--odd").unwrap())
+    );
+
+    let outcome = run(&bench, &["example", "configure", "--odd", "on", "3"]).await;
+    assert!(
+        outcome.message().contains("unknown option"),
+        "{}",
+        outcome.message()
+    );
+    assert!(
+        !outcome.message().contains("--odd"),
+        "{}",
+        outcome.message()
+    );
+    assert_eq!(calls(&bench).len(), 3);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn option_like_secrets_are_not_echoed_by_the_positional_parser() {
+    let bench = Bench::new();
+    let secret = "--hidden-secret";
+    let outcome = run(&bench, &["identity", "provision", secret]).await;
+    assert!(matches!(outcome.error(), CliError::Usage(_)));
+    assert!(
+        outcome.message().contains("unknown option"),
+        "{}",
+        outcome.message()
+    );
+    assert!(!outcome.message().contains(secret), "{}", outcome.message());
+    assert!(bench.identity.0.borrow().is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn unknown_services_and_actions_are_reported_with_what_exists() {
+    let bench = Bench::new();
+    let outcome = run(&bench, &["nosuch", "go"]).await;
+    let message = outcome.message();
+    assert!(
+        message.contains("`nosuch` is neither a command nor a service"),
+        "{message}"
+    );
+    assert!(
+        message.contains("example") && message.contains("system"),
+        "{message}"
+    );
+
+    let outcome = run(&bench, &["nosuch"]).await;
+    assert!(
+        outcome.message().contains("`nosuch`"),
+        "{}",
+        outcome.message()
+    );
+
+    let outcome = run(&bench, &["example", "nosuch"]).await;
+    let message = outcome.message();
+    assert!(
+        message.contains("example has no action `nosuch`"),
+        "{message}"
+    );
+    assert!(message.contains("one, two, configure, pick"), "{message}");
+
+    // A service without actions (status only) is not a target either.
+    let outcome = run(&bench, &["sensors", "scan"]).await;
+    assert!(matches!(outcome.error(), CliError::Usage(_)));
+    assert!(calls(&bench).is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn service_and_action_help_is_generated_from_the_discovered_schema() {
+    let bench = Bench::new();
+
+    for args in [&["system"][..], &["system", "--help"]] {
+        let outcome = run(&bench, args).await;
+        let rows = table_rows(&outcome.ok().stdout);
+        assert_eq!(rows[0], ["Usage:"], "{}", outcome.stdout);
+        assert!(
+            outcome.stdout.contains("rohi system ACTION [ARG]..."),
+            "{}",
+            outcome.stdout
+        );
+        assert!(
+            rows.contains(&vec!["ACTION", "ARGS", "ACCESS"]),
+            "{}",
+            outcome.stdout
+        );
+        assert!(
+            rows.contains(&vec!["reboot", "-", "mutate"]),
+            "{}",
+            outcome.stdout
+        );
+        assert!(
+            rows.contains(&vec!["factory_reset", "-", "provision"]),
+            "{}",
+            outcome.stdout
+        );
+    }
+
+    let outcome = run(&bench, &["system", "reboot", "--help"]).await;
+    assert!(
+        outcome
+            .ok()
+            .stdout
+            .starts_with("Usage:\n  rohi system reboot\n"),
+        "{}",
+        outcome.stdout
+    );
+    assert!(
+        outcome.stdout.ends_with("Access: mutate\n"),
+        "{}",
+        outcome.stdout
+    );
+    let outcome = run(&bench, &["system", "factory_reset", "-h"]).await;
+    assert!(
+        outcome.ok().stdout.contains("Results (one record each):"),
+        "{}",
+        outcome.stdout
+    );
+    assert!(
+        outcome.stdout.ends_with("Access: provision\n"),
+        "{}",
+        outcome.stdout
+    );
+    assert!(!outcome.stdout.contains("ecret"), "{}", outcome.stdout);
+
+    let outcome = run(&bench, &["example", "configure", "--help"]).await;
+    let help = outcome.ok().stdout.clone();
+    assert!(
+        help.starts_with("Usage:\n  rohi example configure <endpoint> <enabled> <timeout_ms>\n"),
+        "{help}"
+    );
+    let order: Vec<_> = ["endpoint", "enabled", "timeout_ms"]
+        .iter()
+        .map(|name| {
+            help.find(&format!("  {name} "))
+                .unwrap_or_else(|| panic!("{name}\n{help}"))
+        })
+        .collect();
+    assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{help}");
+    assert!(help.contains("in this order"), "{help}");
+
+    let outcome = run(&bench, &["example", "pick", "--help"]).await;
+    assert!(
+        outcome.ok().stdout.contains("speed  enum (slow|fast)"),
+        "{}",
+        outcome.stdout
+    );
+
+    let outcome = run(&bench, &["-o", "json", "example", "pick", "--help"]).await;
+    let json = outcome.ok().json();
+    assert_eq!(json["action"]["access"], "read");
+    assert_eq!(json["args"][0]["name"], "speed");
+
+    // Asking for help runs nothing.
+    assert!(calls(&bench).is_empty());
+    assert_eq!(bench.system.0.reboots.get(), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn named_and_positional_invocations_share_one_implementation() {
+    let bench = Bench::new();
+    let positional = run(&bench, &["example", "configure", "u", "true", "5"])
+        .await
+        .ok()
+        .stdout
+        .clone();
+    let named = run(
+        &bench,
+        &[
+            "action",
+            "example",
+            "configure",
+            "timeout_ms=5",
+            "endpoint=u",
+            "enabled=true",
+        ],
+    )
+    .await
+    .ok()
+    .stdout
+    .clone();
+    assert_eq!(positional, named);
+    let json_positional = run(
+        &bench,
+        &["-o", "json", "example", "configure", "u", "true", "5"],
+    )
+    .await
+    .ok()
+    .stdout
+    .clone();
+    let json_named = run(
+        &bench,
+        &[
+            "-o",
+            "json",
+            "action",
+            "example",
+            "configure",
+            "endpoint=u",
+            "enabled=true",
+            "timeout_ms=5",
+        ],
+    )
+    .await
+    .ok()
+    .stdout
+    .clone();
+    assert_eq!(json_positional, json_named);
+    let all = calls(&bench);
+    assert_eq!(all[0].1, all[2].1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn global_options_work_before_and_after_the_service() {
+    for args in [
+        &["-o", "json", "system", "factory_reset"][..],
+        &["system", "factory_reset", "-o", "json"],
+        &["system", "-o", "json", "factory_reset"],
+        &["system", "factory_reset", "--output=json"],
+    ] {
+        let bench = Bench::new();
+        let cli = parse(args).unwrap();
+        assert_eq!(cli.output, rohi::cli::OutputFormat::Json, "{args:?}");
+        let json = run(&bench, args).await.ok().json();
+        assert_eq!(json["records"][0]["restart_required"], true, "{args:?}");
+    }
+    let cli = parse(&["--device", "tcp://localhost:9000", "system", "reboot"]).unwrap();
+    assert_eq!(cli.device.as_deref(), Some("tcp://localhost:9000"));
+    let cli = parse(&[
+        "system",
+        "reboot",
+        "-D",
+        "tcp://localhost:9000",
+        "--timeout",
+        "3",
+    ])
+    .unwrap();
+    assert_eq!(
+        (cli.device.as_deref(), cli.timeout),
+        (Some("tcp://localhost:9000"), 3)
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn positional_secrets_are_read_hidden_and_never_taken_from_the_command_line() {
+    let bench = Bench::new();
+    let derived = rohi::derive_identity(DEV_PHRASE, 7).unwrap();
+    let secret = hex(derived.secret().expose_secret());
+
+    // A secret on the command line is refused, and is not echoed.
+    let outcome = run(&bench, &["identity", "provision", &secret]).await;
+    assert!(matches!(outcome.error(), CliError::Usage(_)));
+    let message = outcome.message();
+    assert!(
+        message.contains("takes secrets") && message.contains("use - to read it from stdin"),
+        "{message}"
+    );
+    assert!(!message.contains(&secret), "{message}");
+    assert!(bench.identity.0.borrow().is_none());
+
+    // A malformed secret is not echoed either.
+    let terminal = Terminal {
+        interactive: false,
+        input: &["zz-hidden-secret"],
+        ..Default::default()
+    };
+    let outcome = run_with(&bench, &["identity", "provision", "-"], terminal).await;
+    assert!(matches!(outcome.error(), CliError::Usage(_)));
+    assert!(
+        !outcome.message().contains("zz-hidden-secret"),
+        "{}",
+        outcome.message()
+    );
+    assert!(bench.identity.0.borrow().is_none());
+
+    // `-` reads the secret from stdin, as with `rohi action`.
+    let terminal = Terminal {
+        interactive: false,
+        input: &[&secret],
+        ..Default::default()
+    };
+    let outcome = run_with(&bench, &["identity", "provision", "-"], terminal).await;
+    outcome.ok();
+    assert!(!outcome.stdout.contains(&secret) && !outcome.stderr.contains(&secret));
+    assert_eq!(
+        bench.identity.0.borrow().as_ref().unwrap().public_key(),
+        derived.public_key()
+    );
 }
 
 // ---------------------------------------------------------------------------

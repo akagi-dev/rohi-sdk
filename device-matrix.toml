@@ -140,6 +140,13 @@ name = "Persistent logging"
 provides = "the `log` facade persisted to a bounded, rotated, LZ4-compressed ring in internal flash, read, followed, downloaded and cleared with `rohi logs`"
 source = "crates/logging"
 
+[[capability]]
+id = "system"
+kind = "service"
+name = "System actions"
+provides = "reboot and factory reset as the generic actions `system.reboot` and `system.factory_reset`, run with `rohi system reboot` and `rohi system factory_reset`"
+source = "crates/system"
+
 # --- Use cases ------------------------------------------------------------------------------------------------
 
 [[use_case]]
@@ -425,6 +432,36 @@ id = "test-std-logging"
 kind = "test"
 title = "altruist-urban host process: logging service, file-backed log flash, restart"
 reference = "firmwares/altruist-urban/tests/std_logging.rs"
+
+[[evidence]]
+id = "src-system"
+kind = "source"
+title = "rohi-system"
+reference = "crates/system"
+
+[[evidence]]
+id = "src-fw-system"
+kind = "source"
+title = "altruist-urban system service adapter (deferred reboot, storage-aware factory reset)"
+reference = "firmwares/altruist-urban/src/control.rs"
+
+[[evidence]]
+id = "test-system"
+kind = "test"
+title = "rohi-system service tests"
+reference = "crates/system/src/tests.rs"
+
+[[evidence]]
+id = "test-std-system"
+kind = "test"
+title = "altruist-urban host process: system.reboot and system.factory_reset"
+reference = "firmwares/altruist-urban/tests/std_system.rs"
+
+[[evidence]]
+id = "test-rohi-cli"
+kind = "test"
+title = "rohi positional actions and the system actions against the in-memory device"
+reference = "tools/rohi/tests/cli.rs"
 
 [[evidence]]
 id = "test-rohi-logs"
@@ -1104,4 +1141,54 @@ evidence = [
   "doc-hwtest",
   "src-memcheck",
   "doc-resource-budget",
+]
+
+[[entry]]
+hardware = "altruist-urban-esp32c3"
+firmware = "rohi-altruist-urban"
+capability = "system"
+board_part = "not-applicable"
+implementation = "implemented"
+integration = "integrated"
+host_tests = "passing"
+simulation = "none"
+target_build = "ci-built"
+hardware_verification = "not-verified"
+limitations = [
+  "The chip reset after the grace period and the formatting of the configuration partition by `system.factory_reset` are not run on a device; the host process stands in for them in the tests.",
+  "No BLE pairing or encryption yet: both actions are open to any client in range until a link policy is configured.",
+]
+evidence = [
+  "src-system",
+  "src-fw-system",
+  "test-system",
+  "test-std-system",
+  "test-rohi-cli",
+  "ci-workflow",
+  "doc-hwtest",
+]
+
+[[entry]]
+hardware = "altruist-urban-esp32c6"
+firmware = "rohi-altruist-urban"
+capability = "system"
+board_part = "not-applicable"
+implementation = "implemented"
+integration = "integrated"
+host_tests = "passing"
+simulation = "none"
+target_build = "ci-built"
+hardware_verification = "not-verified"
+limitations = [
+  "The chip reset after the grace period and the formatting of the configuration partition by `system.factory_reset` are not run on a device; the host process stands in for them in the tests.",
+  "No BLE pairing or encryption yet: both actions are open to any client in range until a link policy is configured.",
+]
+evidence = [
+  "src-system",
+  "src-fw-system",
+  "test-system",
+  "test-std-system",
+  "test-rohi-cli",
+  "ci-workflow",
+  "doc-hwtest",
 ]

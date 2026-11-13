@@ -423,6 +423,15 @@ pub fn config_values(paint: Paint, values: &ConfigValues, schema: &ConfigSchema)
     pairs(paint, &rows)
 }
 
+/// How the arguments of an action are written on the command line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Syntax {
+    /// `rohi action SERVICE ACTION NAME=VALUE...`, in any order.
+    Named,
+    /// `rohi SERVICE ACTION VALUE...`, in the order the device lists them.
+    Positional,
+}
+
 fn arguments_of(args: &[FieldDescriptor]) -> String {
     if args.is_empty() {
         "-".to_owned()
@@ -435,6 +444,7 @@ fn arguments_of(args: &[FieldDescriptor]) -> String {
 }
 
 /// The actions of the device, grouped by nothing: one row per action.
+/// `ACCESS` is what a link must be allowed to do to run it.
 pub fn actions(paint: Paint, actions: &[ActionInfo]) -> String {
     if actions.is_empty() {
         return "The device offers no actions\n".to_owned();
@@ -445,35 +455,58 @@ pub fn actions(paint: Paint, actions: &[ActionInfo]) -> String {
             vec![
                 action.service.clone(),
                 action.name.clone(),
-                yes_no(action.privileged).to_owned(),
+                action.access.to_string(),
             ]
         })
         .collect();
-    table(paint, &["SERVICE", "ACTION", "PRIVILEGED"], &rows, &[])
+    table(paint, &["SERVICE", "ACTION", "ACCESS"], &rows, &[])
 }
 
-/// The actions of one service with their arguments.
-pub fn service_actions(paint: Paint, schemas: &[ActionSchema]) -> String {
+/// The actions of one service with their arguments, in the order they are
+/// given when written positionally.
+pub fn service_actions(
+    paint: Paint,
+    service: &str,
+    schemas: &[ActionSchema],
+    syntax: Syntax,
+) -> String {
     let rows: Vec<Vec<String>> = schemas
         .iter()
         .map(|schema| {
             vec![
                 schema.action.name.clone(),
                 arguments_of(&schema.args),
-                yes_no(schema.action.privileged).to_owned(),
+                schema.action.access.to_string(),
             ]
         })
         .collect();
-    table(paint, &["ACTION", "ARGS", "PRIVILEGED"], &rows, &[])
+    let table = table(paint, &["ACTION", "ARGS", "ACCESS"], &rows, &[]);
+    match syntax {
+        Syntax::Named => table,
+        Syntax::Positional => format!(
+            "{}\n  rohi {service} ACTION [ARG]...\n  rohi {service} ACTION --help\n\n{table}",
+            paint.strong("Usage:")
+        ),
+    }
 }
 
-/// The help of `rohi action <service> <action>`, generated from the schema
-/// of the device.
-pub fn action_help(paint: Paint, schema: &ActionSchema) -> String {
+/// The help of one action, generated from the schema of the device: the usage
+/// of `rohi action <service> <action>` or of `rohi <service> <action>`.
+pub fn action_help(paint: Paint, schema: &ActionSchema, syntax: Syntax) -> String {
     let action = &schema.action;
-    let mut usage = format!("  rohi action {} {}", action.service, action.name);
+    let mut usage = match syntax {
+        Syntax::Named => format!("  rohi action {} {}", action.service, action.name),
+        Syntax::Positional => format!("  rohi {} {}", action.service, action.name),
+    };
     for arg in &schema.args {
-        let _ = write!(usage, " {}=VALUE", arg.name);
+        match syntax {
+            Syntax::Named => {
+                let _ = write!(usage, " {}=VALUE", arg.name);
+            }
+            Syntax::Positional => {
+                let _ = write!(usage, " <{}>", arg.name);
+            }
+        }
     }
     let mut out = format!("{}\n{usage}\n", paint.strong("Usage:"));
     if !schema.args.is_empty() {
@@ -490,11 +523,17 @@ pub fn action_help(paint: Paint, schema: &ActionSchema) -> String {
             .collect();
         out.push_str(&format!(
             "\n{}\n{}",
-            paint.strong("Arguments (all required):"),
+            paint.strong(match syntax {
+                Syntax::Named => "Arguments (all required):",
+                Syntax::Positional => "Arguments (all required, in this order):",
+            }),
             help_fields(paint, &rows)
         ));
         if action.secret_args {
-            out.push_str("\nSecrets are never put on the command line: give ARG=- to read the value\nfrom stdin or a prompt.\n");
+            out.push_str(match syntax {
+                Syntax::Named => "\nSecrets are never put on the command line: give ARG=- to read the value\nfrom stdin or a prompt.\n",
+                Syntax::Positional => "\nSecrets are never put on the command line: give - to read the value\nfrom stdin or a prompt.\n",
+            });
         }
     }
     if !schema.results.is_empty() {
@@ -511,8 +550,8 @@ pub fn action_help(paint: Paint, schema: &ActionSchema) -> String {
     }
     out.push_str(&format!(
         "\n{} {}\n",
-        paint.strong("Privileged:"),
-        yes_no(action.privileged)
+        paint.strong("Access:"),
+        action.access
     ));
     out
 }

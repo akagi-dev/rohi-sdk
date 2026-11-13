@@ -42,8 +42,8 @@
 //! There is deliberately no generic "erase every section" operation on
 //! [`ConfigHandle`]: ordinary configuration maintenance (`remove` of one
 //! section) must never touch unrelated or future protected sections such as an
-//! identity. The full factory reset is an explicit, privileged operation of its
-//! own: [`StorageMaintenance::factory_reset`] formats the whole region.
+//! identity. The full factory reset is an explicit operation of its
+//! own, reached through the `system.factory_reset` action: [`StorageMaintenance::factory_reset`] formats the whole region.
 //!
 //! The published value is always `C::default() + firmware overrides + stored
 //! user overrides` (see [`crate::bindings`], [`materialize`]), also for a section
@@ -428,6 +428,16 @@ impl<R> StorageConfig<R> {
         Self { sections, storage }
     }
 }
+
+// Both parts are shared references or handles, so a copy is another view of
+// the same storage; the derive would demand `R: Copy`.
+impl<R> Clone for StorageConfig<R> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<R> Copy for StorageConfig<R> {}
 
 impl<R: ConfigRegistry> ConfigRegistry for StorageConfig<R> {
     fn section_count(&self) -> usize {

@@ -24,7 +24,7 @@
 //! dynamically (`ListActions`, `GetActionSchema`, `InvokeAction`).
 //!
 //! ```
-//! use rohi_service::{ActionDescriptor, FieldDescriptor, Unit, ValueKind};
+//! use rohi_service::{ActionAccess, ActionDescriptor, FieldDescriptor, Unit, ValueKind};
 //!
 //! const SCAN_RESULT: &[FieldDescriptor] = &[
 //!     FieldDescriptor::new(1, "ssid", ValueKind::String),
@@ -32,11 +32,11 @@
 //! ];
 //!
 //! const ACTIONS: &[ActionDescriptor] = &[
-//!     ActionDescriptor::new(1, "scan").results(SCAN_RESULT),
-//!     ActionDescriptor::new(2, "reconnect").privileged(),
+//!     ActionDescriptor::new(1, "scan", ActionAccess::Read).results(SCAN_RESULT),
+//!     ActionDescriptor::new(2, "reconnect", ActionAccess::Mutate),
 //! ];
 //!
-//! assert!(ACTIONS[1].privileged);
+//! assert_eq!(ACTIONS[1].access, ActionAccess::Mutate);
 //! ```
 //!
 //! A service implements [`Action`] next to its [`Service`] identity. The
@@ -46,8 +46,8 @@
 //! ```
 //! use embassy_futures::block_on;
 //! use rohi_service::{
-//!     Action, ActionDescriptor, ActionError, ActionOutput, ActionRegistry, FieldDescriptor,
-//!     Service, Unit, Value, ValueKind,
+//!     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, ActionRegistry,
+//!     FieldDescriptor, Service, Unit, Value, ValueKind,
 //! };
 //!
 //! #[derive(Service)]
@@ -60,8 +60,8 @@
 //!
 //! impl Action for WifiService {
 //!     const ACTIONS: &'static [ActionDescriptor] = &[
-//!         ActionDescriptor::new(1, "scan").results(SCAN_RESULT),
-//!         ActionDescriptor::new(2, "reconnect").privileged(),
+//!         ActionDescriptor::new(1, "scan", ActionAccess::Read).results(SCAN_RESULT),
+//!         ActionDescriptor::new(2, "reconnect", ActionAccess::Mutate),
 //!     ];
 //!
 //!     async fn invoke(
@@ -106,13 +106,14 @@
 //! [`ActionOutput::next_record`]; the first field written without it starts
 //! the first record.
 //!
-//! [`privileged`](ActionDescriptor::privileged) requires the mutating
-//! privilege of the link policy, enforced by the control plane
-//! ([`rohi-control`](../../rohi_control/index.html)), not by this crate;
-//! [`secret`](ActionDescriptor::secret) marks arguments that are secrets
-//! (identity provisioning): it implies `privileged`, maps to the `Provision`
-//! privilege of the control plane, and the control plane wipes the secret
-//! arguments after the call.
+//! Every action declares the [`ActionAccess`] a call needs: the link policy of
+//! the control plane ([`rohi-control`](../../rohi_control/index.html)) decides
+//! whether a link has it, this crate only carries the declaration.
+//! [`secret`](ActionDescriptor::secret) is a separate property: it marks
+//! arguments that are secrets (identity provisioning), which are never logged
+//! and are wiped by the control plane after the call. It does not change the
+//! access level, and an action with [`ActionAccess::Provision`] does not
+//! necessarily take secrets.
 //!
 //! An action fails with an [`ActionError`]: `InvalidArgument`, `Busy`,
 //! `Unavailable`, `Internal` or `Rejected("code")`, a refusal with a stable
@@ -161,6 +162,22 @@ pub const MAX_STREAM_FILES: usize = 24;
 /// Maximum number of bytes of one stream chunk.
 pub const MAX_STREAM_CHUNK: usize = 512;
 
+/// What a link must be allowed to do to invoke an action.
+///
+/// The control plane maps it to the privilege its link policy checks; a
+/// service declares it and never enforces it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActionAccess {
+    /// Reads device state or runs an operation that changes nothing.
+    Read,
+    /// Changes the runtime or the stored configuration.
+    Mutate,
+    /// Changes what identifies or provisions the device: the identity or the
+    /// whole configuration storage. A link policy may demand more than for
+    /// [`Mutate`](Self::Mutate).
+    Provision,
+}
+
 /// Static description of an action.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ActionDescriptor {
@@ -175,8 +192,8 @@ pub struct ActionDescriptor {
     pub results: &'static [FieldDescriptor],
     /// The enums the argument and result fields refer to.
     pub enums: &'static [EnumDescriptor],
-    /// Whether the link policy must grant write privilege.
-    pub privileged: bool,
+    /// What the link must be allowed to do to invoke the action.
+    pub access: ActionAccess,
     /// Whether the arguments contain secrets: they are never logged and are
     /// overwritten after the call.
     pub secret_args: bool,
@@ -186,15 +203,15 @@ pub struct ActionDescriptor {
 }
 
 impl ActionDescriptor {
-    /// An unprivileged action without arguments or results.
-    pub const fn new(id: u32, name: &'static str) -> Self {
+    /// An action that needs `access`, without arguments or results.
+    pub const fn new(id: u32, name: &'static str, access: ActionAccess) -> Self {
         Self {
             id,
             name,
             args: &[],
             results: &[],
             enums: &[],
-            privileged: false,
+            access,
             secret_args: false,
             stream: false,
         }
@@ -218,12 +235,6 @@ impl ActionDescriptor {
         self
     }
 
-    /// Requires write privilege.
-    pub const fn privileged(mut self) -> Self {
-        self.privileged = true;
-        self
-    }
-
     /// Declares that the action returns a stream (see
     /// [`ActionOutput::stream`]) instead of records; its
     /// [`results`](Self::results) stay empty.
@@ -232,10 +243,10 @@ impl ActionDescriptor {
         self
     }
 
-    /// Marks the arguments as secret; implies [`privileged`](Self::privileged).
+    /// Marks the arguments as secret: they are never logged and are wiped
+    /// after the call. The [`access`](Self::access) is declared separately.
     pub const fn secret(mut self) -> Self {
         self.secret_args = true;
-        self.privileged = true;
         self
     }
 }

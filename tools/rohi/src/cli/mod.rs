@@ -36,9 +36,8 @@ mod args;
 mod config;
 mod diagnostic;
 mod dto;
-mod factory_reset;
 mod logs;
-mod reboot;
+mod positional;
 mod status;
 mod target;
 mod terminal;
@@ -47,8 +46,6 @@ mod values;
 use std::future::Future;
 use std::process::ExitCode;
 use std::time::Duration;
-
-use clap::Parser;
 
 pub use args::{Cli, ColorChoice, Command, ConfigAction, LogsAction, OutputFormat};
 pub use diagnostic::{CliError, Diagnostic, PartialApply};
@@ -140,8 +137,6 @@ pub async fn execute<T: ClientTransport>(
             };
             config::run(device, action, request, ctx).await
         }
-        Command::FactoryReset { yes } => factory_reset::run(device, yes, ctx).await,
-        Command::Reboot => reboot::run(device, ctx).await,
         Command::Action {
             service,
             action,
@@ -155,6 +150,10 @@ pub async fn execute<T: ClientTransport>(
                 help,
             };
             action::run(device, request, ctx).await
+        }
+        Command::External(words) => {
+            let words = positional::words(&words)?;
+            action::run_positional(device, words, ctx).await
         }
         Command::Logs {
             action,
@@ -269,7 +268,10 @@ pub async fn run(cli: Cli, ctx: &mut Ctx) -> Result<(), CliError> {
 
 /// Runs the command line and returns the process exit code.
 pub async fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let cli = match Cli::parse_args(std::env::args_os()) {
+        Ok(cli) => cli,
+        Err(error) => error.exit(),
+    };
     let mut ctx = Ctx::new(Io::stdio(), cli.output);
     ctx.color(cli.color);
     match run(cli, &mut ctx).await {

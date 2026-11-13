@@ -147,17 +147,13 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
                 }
             }
             Call::PatchConfigSection(_) | Call::ResetConfigSection(_) => Privilege::Mutate,
-            Call::FactoryReset(_) => Privilege::Provision,
-            Call::Reboot(_) => Privilege::Mutate,
             Call::InvokeAction(invoke) => {
                 match self
                     .backend
                     .actions()
                     .action(invoke.service_id, invoke.action_id)
                 {
-                    Ok(action) if action.secret_args => Privilege::Provision,
-                    Ok(action) if action.privileged => Privilege::Mutate,
-                    Ok(_) => Privilege::Read,
+                    Ok(action) => Privilege::of(action.access),
                     Err(e) => return (id, self.action_failure(e, invoke.service_id)),
                 }
             }
@@ -226,8 +222,6 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             }
             Call::PatchConfigSection(request) => isolated(self.patch(request)).await,
             Call::ResetConfigSection(request) => isolated(self.reset_config_section(request)).await,
-            Call::FactoryReset(_) => isolated(self.factory_reset()).await,
-            Call::Reboot(_) => self.reboot(),
             Call::GetServicesStatus(_) => isolated(self.get_services_status()).await,
             Call::GetServiceSchema(request) => self.get_service_schema(request.service_id),
             Call::GetServiceStatus(request) => {
@@ -325,23 +319,6 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
                 restart_required: done.restart_required,
             }),
             Err(e) => config_error(e),
-        }
-    }
-
-    async fn factory_reset(&self) -> Reply {
-        match self.backend.config().factory_reset().await {
-            Ok(done) => Reply::FactoryReset(pb::FactoryResetResponse {
-                restart_required: done.restart_required,
-            }),
-            Err(e) => config_error(e),
-        }
-    }
-
-    fn reboot(&self) -> Reply {
-        if self.backend.reboot() {
-            Reply::Reboot(pb::RebootResponse {})
-        } else {
-            error(pb::ErrorCode::NotSupported)
         }
     }
 

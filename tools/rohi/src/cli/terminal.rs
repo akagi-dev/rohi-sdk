@@ -154,6 +154,12 @@ impl Io {
         Ok(())
     }
 
+    pub(crate) fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), CliError> {
+        self.stdout.write_all(bytes)?;
+        self.stdout.flush()?;
+        Ok(())
+    }
+
     /// Writes the command result: `value` as JSON, or the text of `human`.
     pub fn emit<T: Serialize>(
         &mut self,

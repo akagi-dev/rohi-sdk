@@ -59,14 +59,6 @@ pub trait ControlBackend {
     /// The action registry.
     fn actions(&self) -> &Self::Actions;
 
-    /// Schedules a reboot of the device and returns `true`, or returns `false`
-    /// when the device cannot reboot. It must not reboot before it returns: the
-    /// response to the request still has to be sent, so the firmware defers the
-    /// reset.
-    fn reboot(&self) -> bool {
-        false
-    }
-
     /// Health of the whole device, decided by the firmware from the compact
     /// status of its services. The default is
     /// [`default_device_health`]; override it for redundancy rules the
@@ -83,7 +75,6 @@ pub struct Device<C, S, A> {
     config: C,
     statuses: S,
     actions: A,
-    reboot: Option<fn()>,
 }
 
 impl<C: ConfigRegistry, S: StatusRegistry, A: ActionRegistry> Device<C, S, A> {
@@ -125,15 +116,7 @@ impl<C: ConfigRegistry, S: StatusRegistry, A: ActionRegistry> Device<C, S, A> {
             config,
             statuses,
             actions,
-            reboot: None,
         }
-    }
-
-    /// Makes the device rebootable: `reboot` schedules the reset, see
-    /// [`ControlBackend::reboot`].
-    pub const fn with_reboot(mut self, reboot: fn()) -> Self {
-        self.reboot = Some(reboot);
-        self
     }
 }
 
@@ -160,10 +143,6 @@ impl<C: ConfigRegistry, S: StatusRegistry, A: ActionRegistry> ControlBackend for
 
     fn actions(&self) -> &A {
         &self.actions
-    }
-
-    fn reboot(&self) -> bool {
-        self.reboot.map(|reboot| reboot()).is_some()
     }
 }
 

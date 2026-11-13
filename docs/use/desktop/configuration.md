@@ -40,13 +40,16 @@ An optional field without a value shows as `<unset>` when it follows a default t
 set it to no value explicitly. After a change `rohi` reads the section
 again and prints what the device reports, so the output is always the effective result.
 
-Format the whole configuration storage of the device with the dedicated `rohi factory-reset` command (not a `config`
-subcommand): every section, the device identity and anything else stored in the partition is erased, including section
-versions, and a damaged storage is repaired. The device is unprovisioned afterwards; the command then asks it to reboot (`rohi reboot`).
+Format the whole configuration storage of the device with the `system factory_reset` action (not a `config`
+subcommand, and with no confirmation prompt): every section, the device identity and anything else stored in the
+partition is erased, including section versions, and a damaged storage is repaired. The runtime returns to the
+defaults and the device is unprovisioned afterwards. Persistent logs and unrelated storage are not touched. The action
+does not reboot the device; its result `restart_required` tells whether a restart is needed, and `system reboot` does
+it.
 
 ```sh
-rohi factory-reset            # asks for confirmation
-rohi factory-reset --yes
+rohi system factory_reset
+rohi system reboot
 ```
 
 ```text

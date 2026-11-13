@@ -1020,14 +1020,14 @@ struct Scanner;
 
 impl Action for Scanner {
     const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new(1, "scan")
+        ActionDescriptor::new(1, "scan", ActionAccess::Read)
             .args(&[FieldDescriptor::new(1, "limit", ValueKind::U64)])
             .results(&[
                 FieldDescriptor::new(1, "name", ValueKind::String),
                 FieldDescriptor::new(2, "rssi", ValueKind::I64).unit(Unit::Dbm),
             ]),
-        ActionDescriptor::new(2, "reset"),
-        ActionDescriptor::new(3, "provision")
+        ActionDescriptor::new(2, "reset", ActionAccess::Read),
+        ActionDescriptor::new(3, "provision", ActionAccess::Provision)
             .args(&[FieldDescriptor::new(1, "secret", ValueKind::Bytes)])
             .secret(),
     ];
@@ -1119,8 +1119,8 @@ fn action_metadata_is_exposed() {
     let actions = registry.service_actions(0);
     assert_eq!(registry.service_identity(0).unwrap().name, "scanner");
     assert_eq!(actions.len(), 3);
-    assert!(!actions[0].privileged);
-    assert!(actions[2].privileged && actions[2].secret_args);
+    assert_eq!(actions[0].access, ActionAccess::Read);
+    assert!(actions[2].access == ActionAccess::Provision && actions[2].secret_args);
     assert!(registry.service_actions(1).is_empty());
 }
 
@@ -1306,24 +1306,34 @@ mod schema_invariants {
             FieldDescriptor::new(1, "m", ValueKind::U64),
         ];
         assert!(actions_valid(&[
-            ActionDescriptor::new(1, "scan").args(ARGS),
-            ActionDescriptor::new(2, "stop"),
+            ActionDescriptor::new(1, "scan", ActionAccess::Read).args(ARGS),
+            ActionDescriptor::new(2, "stop", ActionAccess::Read),
         ]));
         assert!(!actions_valid(&[
-            ActionDescriptor::new(1, "scan"),
-            ActionDescriptor::new(1, "stop"),
+            ActionDescriptor::new(1, "scan", ActionAccess::Read),
+            ActionDescriptor::new(1, "stop", ActionAccess::Read),
         ]));
         assert!(!actions_valid(&[
-            ActionDescriptor::new(1, "scan"),
-            ActionDescriptor::new(2, "scan"),
+            ActionDescriptor::new(1, "scan", ActionAccess::Read),
+            ActionDescriptor::new(2, "scan", ActionAccess::Read),
         ]));
-        assert!(!actions_valid(&[ActionDescriptor::new(1, "")]));
-        assert!(!actions_valid(&[
-            ActionDescriptor::new(1, "scan").args(DUPLICATE_ARGS)
-        ]));
-        assert!(!actions_valid(&[
-            ActionDescriptor::new(1, "scan").results(DUPLICATE_ARGS)
-        ]));
+        assert!(!actions_valid(&[ActionDescriptor::new(
+            1,
+            "",
+            ActionAccess::Read
+        )]));
+        assert!(!actions_valid(&[ActionDescriptor::new(
+            1,
+            "scan",
+            ActionAccess::Read
+        )
+        .args(DUPLICATE_ARGS)]));
+        assert!(!actions_valid(&[ActionDescriptor::new(
+            1,
+            "scan",
+            ActionAccess::Read
+        )
+        .results(DUPLICATE_ARGS)]));
     }
 }
 

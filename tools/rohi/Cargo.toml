@@ -64,6 +64,7 @@ terminal_size = { workspace = true, optional = true }
 [dev-dependencies]
 rohi-control.workspace = true
 rohi-service.workspace = true
+rohi-system.workspace = true
 rohi-connectivity.workspace = true
 rohi-location.workspace = true
 rohi-time.workspace = true

@@ -37,6 +37,74 @@ fn protocol_version_is_one() {
 }
 
 #[test]
+fn stream_envelope_fields_match_the_wire_schema() {
+    let read = Request {
+        protocol_version: PROTOCOL_VERSION,
+        request_id: 7,
+        request: Some(Request_::Request::ReadStream(ReadStreamRequest::default())),
+    };
+    let close = Request {
+        request: Some(Request_::Request::CloseStream(CloseStreamRequest::default())),
+        ..read.clone()
+    };
+    let mut buf = [0u8; 16];
+    let len = encode(&read, &mut buf).unwrap();
+    assert_eq!(&buf[..len], &[0x08, 0x01, 0x10, 0x07, 0xba, 0x01, 0x00]);
+    let len = encode(&close, &mut buf).unwrap();
+    assert_eq!(&buf[..len], &[0x08, 0x01, 0x10, 0x07, 0xc2, 0x01, 0x00]);
+
+    let read = Response {
+        protocol_version: PROTOCOL_VERSION,
+        request_id: 7,
+        response: Some(Response_::Response::ReadStream(
+            ReadStreamResponse::default(),
+        )),
+    };
+    let close = Response {
+        response: Some(Response_::Response::CloseStream(
+            CloseStreamResponse::default(),
+        )),
+        ..read.clone()
+    };
+    let action_stream = Response {
+        response: Some(Response_::Response::ActionStream(StreamInfo::default())),
+        ..read.clone()
+    };
+    let len = encode(&read, &mut buf).unwrap();
+    assert_eq!(&buf[..len], &[0x08, 0x01, 0x10, 0x07, 0xba, 0x01, 0x00]);
+    let len = encode(&close, &mut buf).unwrap();
+    assert_eq!(&buf[..len], &[0x08, 0x01, 0x10, 0x07, 0xc2, 0x01, 0x00]);
+    let len = encode(&action_stream, &mut buf).unwrap();
+    assert_eq!(&buf[..len], &[0x08, 0x01, 0x10, 0x07, 0xca, 0x01, 0x00]);
+}
+
+#[test]
+fn action_access_round_trips() {
+    for access in [
+        ActionAccess::Read,
+        ActionAccess::Mutate,
+        ActionAccess::Provision,
+    ] {
+        let info = ActionInfo {
+            access,
+            ..Default::default()
+        };
+        let mut buf = [0u8; 16];
+        let len = encode(&info, &mut buf).unwrap();
+        let decoded: ActionInfo = decode(&buf[..len]).unwrap();
+        assert!(decoded.access == access);
+    }
+    // The field is number 4 and the values are 1..=3.
+    let info = ActionInfo {
+        access: ActionAccess::Mutate,
+        ..Default::default()
+    };
+    let mut buf = [0u8; 16];
+    let len = encode(&info, &mut buf).unwrap();
+    assert_eq!(&buf[..len], &[0x20, 0x02]);
+}
+
+#[test]
 fn get_info_request_golden_bytes() {
     let request = Request {
         protocol_version: PROTOCOL_VERSION,
@@ -435,7 +503,7 @@ fn every_action_listed_fits_the_response_limit() {
                 service_id: u32::MAX,
                 id: u32::MAX,
                 name: text(&"a".repeat(limits::MAX_NAME_LEN)),
-                privileged: true,
+                access: ActionAccess::Provision,
                 secret_args: true,
                 returns_stream: true,
                 service: text(&"s".repeat(limits::MAX_NAME_LEN)),
@@ -468,7 +536,7 @@ fn a_full_action_schema_fits_the_response_limit() {
         service_id: u32::MAX,
         id: u32::MAX,
         name: text(&"a".repeat(limits::MAX_NAME_LEN)),
-        privileged: true,
+        access: ActionAccess::Provision,
         secret_args: true,
         returns_stream: true,
         service: text(&"s".repeat(limits::MAX_NAME_LEN)),

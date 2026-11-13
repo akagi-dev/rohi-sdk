@@ -44,6 +44,7 @@
 //! | `identity` | `identity` | `rohi-identity` | `service` |
 //! | `location` | `location` | `rohi-location` | `service` |
 //! | `logging` | `logging` | `rohi-logging` | `time` |
+//! | `system` | `system` | `rohi-system`: the `system` service (reboot, factory reset) | `service` |
 //! | `control` | `control` | `rohi-control` | `service` |
 //! | `ble` | `ble` | `rohi-control-ble` | `control`, `net` |
 //! | `tcp` | `tcp` | `rohi-control-tcp` | `control` |
@@ -110,6 +111,7 @@
 //! | Control | Generic local control protocol over BLE or TCP, `rohi` desktop client | [`rohi-control`](../rohi_control/index.html), [`rohi-control-ble`](../rohi_control_ble/index.html), [`rohi-control-tcp`](../rohi_control_tcp/index.html), [`rohi`](../rohi/index.html) |
 //! | Time | Synchronized wall-clock time and its NTP source | [`rohi-time`](../rohi_time/index.html), [`rohi-time-ntp`](../rohi_time_ntp/index.html) |
 //! | Location | Where the device is (user-configured; no GNSS runtime exists yet), sent in telemetry | [`rohi-location`](../rohi_location/index.html) |
+//! | System | Reboot and factory reset as generic Actions of the `system` service | [`rohi-system`](../rohi_system/index.html) |
 //! | Identity | Provisioned Ed25519 device identity and signer | [`rohi-identity`](../rohi_identity/index.html) |
 //! | Telemetry | Measurement snapshots as signed `connectivity-protocol` frames | [`rohi-connectivity`](../rohi_connectivity/index.html) |
 //! | Firmware | Altruist Urban, a complete product built from the above | `firmwares/altruist-urban`, [Boards](https://docs.rs/rohi-hal-esp) |
@@ -185,6 +187,7 @@
 //! | [`rohi-time`](../rohi_time/index.html) | Synchronized wall-clock time: `TimeService`, `TimeSource`, validation, background `Synchronizer` | portable | `TimeService`, `TimeSource`, `TimeSample`, `UnixTime`, `TimeStatus`, `Synchronizer` | `rohi-hal` (monotonic `Clock`, `Backoff`), `rohi-service`, Embassy sync | Network or clock hardware, any concrete source |
 //! | [`rohi-time-ntp`](../rohi_time_ntp/index.html) | NTP/SNTP `TimeSource` over the IP data plane | portable | `NtpTimeSource`, `NtpConfig`, `NtpServersConfig` (the `time` config section) | `rohi-time`, `rohi-net`, `rohi-hal`, `rohi-config`, `rohi-service`, `sntpc` | The global concept of time, the UDP stack |
 //! | [`rohi-location`](../rohi_location/index.html) | The location of the device (user-configured; no GNSS runtime exists yet): `LocationConfig` section, `LocationShared`, `LocationService` | portable | `Location`, `LocationConfig`, `LocationShared`, `LocationSource`, `LocationService` | `rohi-config`, `rohi-service`, Embassy sync | GNSS hardware, telemetry |
+//! | [`rohi-system`](../rohi_system/index.html) | The `system` service: `reboot` and `factory_reset` Actions over a `SystemPlatform` the firmware implements | portable | `SystemService`, `SystemPlatform`, `SystemError` | `rohi-service` | Chip reset, flash formatting |
 //! | [`rohi-logging`](../rohi_logging/index.html) | Persistent logging: the `log` sink, segment format, flash ring storage over any `Medium`, `LoggingConfig` and the `logging` service | portable | `LogSink`, `LogRecord`, `LogLevel`, `LogClock`, `Logging`, `LoggingService`, `LoggingConfig`, `LogStorage`, `RingStorage` | `rohi-config`, `rohi-service`, `rohi-time`, `rohi-hal`, Embassy sync, `log` | The flash driver, an SD backend |
 //! | [`rohi-connectivity-proto`](../rohi_connectivity_proto/index.html) | Bounded bindings of `airalab/connectivity-protocol` (vendored, pinned revision) | portable | `core_v1`, `crypto_v1`, `device_v1`, `sensor_v1`, `limits` | `micropb` | Signing, mapping, transports |
 //! | [`rohi-connectivity`](../rohi_connectivity/index.html) | Telemetry: snapshot (+ location) to signed envelope frame, bounded outbox, retry, HTTP transport, `ConnectivityConfig` section, `connectivity` service | portable | `UrbanEncoder`, `EnvelopeBuilder`, `EnvelopeFrame`, `EnvelopeTransport`, `HttpTransport`, `ConnectivityService`, `UtcClock`, `NonceSource`, `FrameSigner` | `rohi-connectivity-proto`, `rohi-hal`, `rohi-identity`, `rohi-location`, `rohi-net`, `rohi-time`, `rohi-config`, `rohi-service` | Private keys, Wi-Fi lifecycle, sensors, backend logic |
@@ -216,7 +219,7 @@
 //! rohi-config ──► rohi-config-derive          (#[derive(ConfigSection)])
 //! rohi-service ──► rohi-config, rohi-config-derive, rohi-service-derive
 //!                                             (generic model: Value, Config, Status, Action, registries)
-//! rohi-hal, rohi-net, rohi-identity, rohi-location, rohi-time, rohi-connectivity ──► rohi-service
+//! rohi-hal, rohi-net, rohi-identity, rohi-location, rohi-system, rohi-time, rohi-connectivity ──► rohi-service
 //!                                             (each implements the traits for its own types)
 //! rohi-net, rohi-identity, rohi-location ──► rohi-config
 //!                                             (each owns its config sections and their overrides)
@@ -306,6 +309,9 @@ pub use rohi_service as service;
 #[cfg(feature = "sim")]
 #[cfg_attr(docsrs, doc(cfg(feature = "sim")))]
 pub use rohi_sim as sim;
+#[cfg(feature = "system")]
+#[cfg_attr(docsrs, doc(cfg(feature = "system")))]
+pub use rohi_system as system;
 #[cfg(feature = "time")]
 #[cfg_attr(docsrs, doc(cfg(feature = "time")))]
 pub use rohi_time as time;

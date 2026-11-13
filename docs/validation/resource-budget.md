@@ -105,8 +105,8 @@ Scenarios, each with the device in the stated state (all services active, i.e. t
 5. `rohi config <section>` and `rohi config <section> FIELD=VALUE` of every section
 6. Wi-Fi scan and `wifi reconnect` action invocation
 7. identity `provision` and `erase` action invocation
-8. `rohi factory-reset`
-9. a reboot request
+8. `rohi system factory_reset`
+9. `rohi system reboot`
 
 Record per target:
 

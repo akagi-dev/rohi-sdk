@@ -3972,6 +3972,7 @@ dependencies = [
  "rohi-logging",
  "rohi-net",
  "rohi-service",
+ "rohi-system",
  "rohi-time",
  "rohi-time-ntp",
  "rpassword",
@@ -4292,6 +4293,7 @@ dependencies = [
  "rohi-net-std",
  "rohi-service",
  "rohi-sim",
+ "rohi-system",
  "rohi-time",
  "rohi-time-ntp",
 ]
@@ -4345,6 +4347,14 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml 1.2.1+spec-1.1.0",
+]
+
+[[package]]
+name = "rohi-system"
+version = "0.7.0"
+dependencies = [
+ "embassy-futures",
+ "rohi-service",
 ]
 
 [[package]]

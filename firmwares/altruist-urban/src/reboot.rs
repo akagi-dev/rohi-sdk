@@ -18,7 +18,7 @@
 
 //! Deferred device reboot.
 //!
-//! The control `Reboot` request must still deliver its response, so
+//! The `system.reboot` Action must still deliver its response, so
 //! [`request`] only signals; the platform task waits for [`due`] and then
 //! resets (the chip on the ESP, a process restart on `std`).
 

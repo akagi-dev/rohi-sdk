@@ -125,6 +125,16 @@ open_enum! {
 }
 
 open_enum! {
+    /// What a link must be allowed to do to invoke an action; independent of
+    /// whether its arguments are secrets.
+    ActionAccess: pb::ActionAccess {
+        Read = Read => "read",
+        Mutate = Mutate => "mutate",
+        Provision = Provision => "provision",
+    }
+}
+
+open_enum! {
     /// Type of a value.
     ValueKind: pb::ValueKind {
         Bool = Bool => "bool",
@@ -462,8 +472,8 @@ pub struct ActionInfo {
     pub id: u32,
     /// Action name.
     pub name: String,
-    /// Whether the link must satisfy the write policy.
-    pub privileged: bool,
+    /// What the link must be allowed to do to invoke the action.
+    pub access: ActionAccess,
     /// Whether the arguments are secrets; they must be read with `NAME=-`.
     pub secret_args: bool,
 }

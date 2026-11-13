@@ -25,7 +25,8 @@
 //!                          config sections: wifi, network, ble, connectivity, location, time, logging
 //!                          status: wifi, network, ble, connectivity, location, time,
 //!                                  sensors, identity, logging
-//!                          actions: wifi, identity, logging (read, download, clear)
+//!                          actions: wifi, identity, logging (read, download, clear),
+//!                                   system (reboot, factory_reset)
 //! ```
 //!
 //! The registries only talk to runtime handles; they never own a store, a flash
@@ -49,7 +50,11 @@ use rohi_sdk::hal::SensorsService;
 use rohi_sdk::identity::{Identity, IdentityService, IdentityStore, IdentityStoreError, PublicKey};
 use rohi_sdk::location::LocationService;
 use rohi_sdk::net::{BleProbe, BleService, IpBackend, NetworkHandle, NetworkService, WifiService};
-use rohi_sdk::service::{Action, ActionRegistry, Startup, Status, StatusSet, Statuses};
+use rohi_sdk::service::{
+    Action, ActionRegistry, ConfigError as RegistryError, ConfigRegistry, FactoryReset, Startup,
+    Status, StatusSet, Statuses,
+};
+use rohi_sdk::system::{SystemError, SystemPlatform, SystemService};
 use static_cell::StaticCell;
 
 use crate::config::{
@@ -100,6 +105,36 @@ type UrbanConnectivity = Startup<ConnectivityStatusService<'static, RawMutex>>;
 type UrbanLocation = LocationService<'static, RawMutex>;
 type UrbanSensors = SensorsService<'static, RawMutex>;
 type UrbanIdentity = IdentityService<StoredIdentity>;
+type UrbanSystem = SystemService<UrbanSystemPlatform>;
+
+/// What the `system` service needs from the Altruist Urban: the deferred reboot
+/// of the platform and the storage-aware factory reset of the configuration.
+///
+/// The factory reset is that of [`UrbanConfig`]: it formats the whole
+/// configuration region, so the identity, the overrides and the sections this
+/// firmware does not know go away, while the log partition and the rest of the
+/// flash stay. It never reboots; `system.reboot` does.
+pub struct UrbanSystemPlatform {
+    config: UrbanConfig,
+    reboot: fn(),
+}
+
+impl SystemPlatform for UrbanSystemPlatform {
+    fn schedule_reboot(&self) -> Result<(), SystemError> {
+        (self.reboot)();
+        Ok(())
+    }
+
+    async fn factory_reset(&self) -> Result<FactoryReset, SystemError> {
+        self.config
+            .factory_reset()
+            .await
+            .map_err(|error| match error {
+                RegistryError::Unavailable => SystemError::Unavailable,
+                _ => SystemError::Internal,
+            })
+    }
+}
 
 /// The instances of the services of the device.
 ///
@@ -114,6 +149,7 @@ pub struct UrbanServices<I: 'static, B, L> {
     sensors: UrbanSensors,
     identity: UrbanIdentity,
     logging: L,
+    system: UrbanSystem,
 }
 
 /// The services that report status. The `time` service is the time runtime
@@ -133,8 +169,13 @@ pub type UrbanStatusServices<I, B, L> = (
 /// The status registry of the device.
 pub type UrbanStatuses<I, B, L> = Statuses<RawMutex, UrbanStatusServices<I, B, L>>;
 
-/// The services that offer actions.
-pub type UrbanActions<I, L> = (&'static UrbanWifi<I>, &'static UrbanIdentity, &'static L);
+/// The services that offer actions. `system` has no status.
+pub type UrbanActions<I, L> = (
+    &'static UrbanWifi<I>,
+    &'static UrbanIdentity,
+    &'static L,
+    &'static UrbanSystem,
+);
 
 /// The control backend of the Altruist Urban over the IP backend `I` and the
 /// BLE probe `B` of the platform.
@@ -164,7 +205,8 @@ pub struct Platform<I: 'static, B: 'static, L: 'static> {
     pub ble: B,
     /// The `logging` service of the platform: its runtime owns the log storage.
     pub logging: L,
-    /// Schedules the reset of the device, see [`crate::reboot`].
+    /// Schedules the reset of the device for `system.reboot`, see
+    /// [`crate::reboot`].
     pub reboot: fn(),
 }
 
@@ -196,6 +238,7 @@ where
     } = platform;
     let network_failed = network.is_none();
     let sections: &'static ConfigSections = SECTIONS.init(config_sections(config));
+    let storage_config = StorageConfig::new(sections, maintenance());
     let services: &'static UrbanServices<I, B, L> = services.init(UrbanServices {
         wifi: Startup::new(
             WifiService::new(net::handle(), Delay, net::Probe::new(network, heap)),
@@ -218,11 +261,15 @@ where
         sensors: SensorsService(store::handle()),
         identity: IdentityService(StoredIdentity(identity)),
         logging,
+        system: SystemService(UrbanSystemPlatform {
+            config: storage_config,
+            reboot: reboot_fn,
+        }),
     });
     Device::new(
         info,
         uptime_ms,
-        StorageConfig::new(sections, maintenance()),
+        storage_config,
         Statuses::new((
             &services.wifi,
             &services.network,
@@ -234,9 +281,13 @@ where
             &services.identity,
             &services.logging,
         )),
-        (&services.wifi, &services.identity, &services.logging),
+        (
+            &services.wifi,
+            &services.identity,
+            &services.logging,
+            &services.system,
+        ),
     )
-    .with_reboot(reboot_fn)
 }
 
 /// GATT layout of the ROHI Control Service, the same on every platform.

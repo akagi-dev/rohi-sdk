@@ -41,6 +41,7 @@ rohi-control-ble = { path = "crates/control-ble" }
 rohi-control-tcp = { path = "crates/control-tcp" }
 rohi-identity = { path = "crates/identity" }
 rohi-location = { path = "crates/location" }
+rohi-system = { path = "crates/system" }
 rohi-logging = { path = "crates/logging" }
 
 # ESP. Versions are pinned here; the chip (esp32c3 / esp32c6) is selected by

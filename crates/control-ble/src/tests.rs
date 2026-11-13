@@ -33,8 +33,9 @@ use rohi_control_proto::limits::{MAX_REQUEST_LEN, MAX_RESPONSE_LEN};
 use rohi_control_proto::{PROTOCOL_VERSION, decode, encode};
 use rohi_net::{BleConnectionInfo, BleError, BleState, BleTransport, MAX_BLE_PAYLOAD};
 use rohi_service::{
-    Action, ActionDescriptor, ActionError, ActionOutput, FieldDescriptor, Service, ServiceHealth,
-    ServiceState, ServiceSummary, Status, StatusWriter, Statuses, Value, ValueKind, WriteError,
+    Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, FieldDescriptor, Service,
+    ServiceHealth, ServiceState, ServiceSummary, Status, StatusWriter, Statuses, Value, ValueKind,
+    WriteError,
 };
 
 use crate::ControlBle;
@@ -424,10 +425,10 @@ impl Status for Radio<'_> {
 
 impl Action for Radio<'_> {
     const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new(1, "scan"),
-        ActionDescriptor::new(2, "reconnect"),
-        ActionDescriptor::new(3, "disconnect").privileged(),
-        ActionDescriptor::new(4, "store").args(&[FieldDescriptor::new(
+        ActionDescriptor::new(1, "scan", ActionAccess::Read),
+        ActionDescriptor::new(2, "reconnect", ActionAccess::Read),
+        ActionDescriptor::new(3, "disconnect", ActionAccess::Mutate),
+        ActionDescriptor::new(4, "store", ActionAccess::Read).args(&[FieldDescriptor::new(
             1,
             "data",
             ValueKind::Bytes,

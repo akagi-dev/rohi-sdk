@@ -30,8 +30,8 @@ use std::time::Duration;
 use clap::Parser;
 use common::link;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use rohi::Device;
 use rohi::cli::{Cli, CliError, Ctx, Io, execute};
-use rohi::{Device, Error};
 use rohi_control::{Controller, Device as BackendDevice, DeviceInfo, OpenPolicy};
 use rohi_control_ble::ControlBle;
 use rohi_logging::segment::SegmentDecoder;
@@ -144,7 +144,7 @@ struct Buf(Rc<RefCell<Vec<u8>>>);
 
 impl Buf {
     fn text(&self) -> String {
-        String::from_utf8(self.0.borrow().clone()).unwrap()
+        String::from_utf8_lossy(&self.0.borrow()).into_owned()
     }
 }
 
@@ -803,17 +803,21 @@ async fn the_actions_are_ordinary_actions_of_the_logging_service() {
     }
     assert!(text.contains("\"logging\""));
 
-    // `rohi action` cannot show a stream and says so instead of guessing.
+    // Both action syntaxes write streams and release them after reading.
     let read = run(&bench, &["action", "logging", "read", "after=0", "limit=2"]).await;
-    match read.result {
-        Err(CliError::Device(Error::Protocol(ref message))) => {
-            assert!(message.contains("stream"), "{message}");
-        }
-        ref other => panic!("{other:?}"),
-    }
-    // And it did not leave the stream open: the logs command still works twice.
+    read.ok();
+    assert_eq!(read.lines().len(), 2);
+    let positional = run(&bench, &["logging", "read", "0", "2"]).await;
+    positional.ok();
+    assert_eq!(positional.lines().len(), 2);
+
+    let download = run(&bench, &["logging", "download"]).await;
+    download.ok();
+    assert!(!download.stdout.is_empty());
+    // Repeated reads and downloads fit within the device's open-stream limit.
     run(&bench, &["logs"]).await.ok();
     run(&bench, &["logs"]).await.ok();
+    run(&bench, &["logging", "download"]).await.ok();
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -111,7 +111,13 @@ async fn info_and_discovery() {
                 "radio.tune",
                 "radio.explode",
                 "identity.provision",
-                "identity.erase"
+                "identity.erase",
+                "example.one",
+                "example.two",
+                "example.configure",
+                "example.pick",
+                "system.reboot",
+                "system.factory_reset"
             ]
         );
     })
@@ -379,16 +385,17 @@ async fn actions_take_arguments_and_return_records() {
     let bench = Bench::new();
     with_device(20, &bench, |mut device| async move {
         let schema = device.action_schema("radio", "scan").await.unwrap();
-        assert!(!schema.action.privileged);
+        assert_eq!(schema.action.access, ActionAccess::Read);
         assert_eq!(schema.results.len(), 3);
         assert_eq!(schema.results[2].variants, ["open", "wpa2"]);
-        assert!(
+        assert_eq!(
             device
                 .action_schema("radio", "reconnect")
                 .await
                 .unwrap()
                 .action
-                .privileged
+                .access,
+            ActionAccess::Mutate
         );
 
         let records = device.invoke("radio", "scan", &[]).await.unwrap();
@@ -549,7 +556,8 @@ async fn identity_is_an_ordinary_service_with_actions() {
         assert_eq!(status.issues[0].code, "not_provisioned");
 
         let schema = device.action_schema("identity", "provision").await.unwrap();
-        assert!(schema.action.privileged);
+        assert_eq!(schema.action.access, ActionAccess::Provision);
+        assert!(schema.action.secret_args);
         let records = device
             .invoke(
                 "identity",

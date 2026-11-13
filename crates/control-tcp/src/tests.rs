@@ -333,8 +333,8 @@ fn the_response_buffer_covers_the_largest_response() {
 use core::cell::Cell;
 
 use rohi_service::{
-    Action, ActionDescriptor, ActionError, ActionOutput, Service, StreamChunk, StreamFile,
-    StreamInfo, Value,
+    Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, Service, StreamChunk,
+    StreamFile, StreamInfo, Value,
 };
 
 #[derive(Service)]
@@ -344,7 +344,8 @@ struct Probe {
 }
 
 impl Action for Probe {
-    const ACTIONS: &'static [ActionDescriptor] = &[ActionDescriptor::new(1, "export").stream()];
+    const ACTIONS: &'static [ActionDescriptor] =
+        &[ActionDescriptor::new(1, "export", ActionAccess::Read).stream()];
 
     async fn invoke(
         &self,

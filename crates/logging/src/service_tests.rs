@@ -26,8 +26,8 @@ use std::vec::Vec;
 use embassy_futures::block_on;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use rohi_service::{
-    Action, ActionError, ActionRegistry, ActionResult, MAX_STREAM_CHUNK, Service, ServiceHealth,
-    ServiceState, Status, StatusRegistry, StatusWriter, Statuses, Value, WriteError,
+    Action, ActionAccess, ActionError, ActionRegistry, ActionResult, MAX_STREAM_CHUNK, Service,
+    ServiceHealth, ServiceState, Status, StatusRegistry, StatusWriter, Statuses, Value, WriteError,
 };
 use rohi_time::UnixTime;
 
@@ -289,14 +289,14 @@ fn the_service_is_a_normal_service_with_a_valid_schema() {
     let names: Vec<_> =
         <LoggingService<'_, NoopRawMutex, &Clock, Test, 64, 4096> as Action>::ACTIONS
             .iter()
-            .map(|action| (action.name, action.privileged, action.stream))
+            .map(|action| (action.name, action.access, action.stream))
             .collect();
     assert_eq!(
         names,
         [
-            ("read", false, true),
-            ("download", false, true),
-            ("clear", true, false)
+            ("read", ActionAccess::Read, true),
+            ("download", ActionAccess::Read, true),
+            ("clear", ActionAccess::Mutate, false)
         ]
     );
 }
@@ -1012,18 +1012,18 @@ fn damaged_storage_does_not_stop_the_log_and_is_reported() {
 }
 
 #[test]
-fn clear_is_privileged_and_read_is_not() {
+fn clear_mutates_and_read_does_not() {
     let actions = <LoggingService<'_, NoopRawMutex, &Clock, Test, 64, 4096> as Action>::ACTIONS;
-    let privileged = |id| {
+    let access = |id| {
         actions
             .iter()
             .find(|action| action.id == id)
             .unwrap()
-            .privileged
+            .access
     };
-    assert!(privileged(action::CLEAR));
-    assert!(!privileged(action::READ));
-    assert!(!privileged(action::DOWNLOAD));
+    assert_eq!(access(action::CLEAR), ActionAccess::Mutate);
+    assert_eq!(access(action::READ), ActionAccess::Read);
+    assert_eq!(access(action::DOWNLOAD), ActionAccess::Read);
 }
 
 #[test]

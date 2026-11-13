@@ -156,12 +156,14 @@ Status never changes anything. Operations are **actions**, listed and described 
 
 ```console
 $ rohi action
-SERVICE   ACTION      PRIVILEGED
-network   scan        no
-network   reconnect   yes
-network   disconnect  yes
-identity  provision   yes
-identity  erase       yes
+SERVICE   ACTION         ACCESS
+network   scan           read
+network   reconnect      mutate
+network   disconnect     mutate
+identity  provision      provision
+identity  erase          mutate
+system    reboot         mutate
+system    factory_reset  provision
 
 $ rohi action network                  # the actions of one service, with their arguments
 $ rohi action network scan --help      # arguments and results, from the device schema
@@ -171,7 +173,7 @@ office  -50 dBm  6        wpa2
 guest   -70 dBm  11       open
 ```
 
-Privileged actions need a link that satisfies the device's authorization policy. Arguments are `NAME=VALUE` pairs; use
+Every action needs an access level (`read`, `mutate` or `provision`) that the link must satisfy under the device's authorization policy. Arguments are `NAME=VALUE` pairs; use
 `NAME=-` to read a value from stdin so it stays out of the shell history. Secret arguments, like the one of identity
 provisioning, are always read from stdin or a hidden prompt: `rohi action identity provision secret=-`.
 

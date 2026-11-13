@@ -101,7 +101,7 @@ every state and show me the expected `rohi status [battery]` output.
 
 ```text
 Add an action `calibrate` to the `[sensors]` service that takes the argument
-`reference_ppm` (u64) and is privileged. Follow docs/guides/add-control-operation.md,
+`reference_ppm` (u64) and needs mutate access. Follow docs/guides/add-control-operation.md,
 check cancellation safety, and add a host test of the action including the
 refusal case with a stable reason code.
 ```

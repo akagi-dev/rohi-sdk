@@ -41,3 +41,27 @@ fn derives_resolve_through_the_umbrella() {
     assert_eq!(Settings::VERSION, 1);
     assert_eq!(DemoService::NAME, "demo");
 }
+
+#[cfg(feature = "system")]
+#[test]
+fn the_system_service_is_reexported() {
+    use rohi_sdk::service::Action;
+    use rohi_sdk::system::{SystemPlatform, SystemService};
+
+    fn actions<P: SystemPlatform>() -> usize {
+        <SystemService<P> as Action>::ACTIONS.len()
+    }
+    struct Unsupported;
+    impl SystemPlatform for Unsupported {
+        fn schedule_reboot(&self) -> Result<(), rohi_sdk::system::SystemError> {
+            Err(rohi_sdk::system::SystemError::Unavailable)
+        }
+
+        async fn factory_reset(
+            &self,
+        ) -> Result<rohi_sdk::service::FactoryReset, rohi_sdk::system::SystemError> {
+            Err(rohi_sdk::system::SystemError::Unavailable)
+        }
+    }
+    assert_eq!(actions::<Unsupported>(), 2);
+}
