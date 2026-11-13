@@ -280,7 +280,7 @@ pub(crate) fn action_info(info: &pb::ActionInfo) -> ActionInfo {
         service: info.service.as_str().to_owned(),
         id: info.id,
         name: info.name.as_str().to_owned(),
-        privileged: info.privileged,
+        access: ActionAccess::from_proto(info.access),
         secret_args: info.secret_args,
     }
 }

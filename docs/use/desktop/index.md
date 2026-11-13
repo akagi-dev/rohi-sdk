@@ -64,9 +64,8 @@ What the columns mean and how status differs from configuration is explained in
 | `status [SERVICE] [--watch]` | device summary or one service |
 | `config [SECTION] [FIELD=VALUE...]`, `config reset SECTION` | list, show and change configuration sections |
 | `config export`, `diff`, `apply` | configuration files (your overrides) |
-| `factory-reset [--yes]` | format the configuration storage, identity included |
-| `reboot` | reboot the device |
 | `action [SERVICE] [ACTION] [ARG=VALUE...]` | list and run the actions of the services |
+| `SERVICE [ACTION] [ARG...]` | the same actions with positional arguments, for example `system reboot` and `system factory_reset` |
 | `logs [-n N] [-f]`, `logs download [-d DIR]`, `logs clear` | read, follow, save and clear the persistent device log |
 
 Each command has its own page: [Discovery & connection](discovery.md), [Configuration](configuration.md), [Status & diagnostics](status.md), [Actions](actions.md), [Device log](logs.md) and [Automation](automation.md).
@@ -87,4 +86,9 @@ Each command has its own page: [Discovery & connection](discovery.md), [Configur
 | `rohi config unset <section> <field>` | `rohi config <section> FIELD=null` (removes the override) |
 | `rohi action list`, `describe`, `run` | `rohi action`, `rohi action <service> <action> --help`, `rohi action <service> <action>` |
 | `rohi backup export` / `import` | `rohi config export` / `apply` |
+| `rohi reboot` | `rohi system reboot` |
+| `rohi factory-reset [--yes]` | `rohi system factory_reset`: no confirmation prompt, and no automatic reboot (run `rohi system reboot` when `restart_required` says so) |
+
+The two last rows are a breaking change of Control Protocol version 1 (which stays `1`): the dedicated reboot and
+factory reset requests were removed from the protocol, so a `rohi` and a firmware built before it do not work together.
 

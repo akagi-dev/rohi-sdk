@@ -18,9 +18,10 @@ An action is a capability of a service, so adding one is a change inside the ser
 
 1. **Describe it** in the service's action table: a stable numeric id that is never reused, a name, typed arguments (all
    required) and the fields of the records it returns.
-2. **Decide the privilege.** An action that changes anything is privileged (the link policy must grant write access);
-   one with a secret argument needs the strongest privilege and the argument is wiped after the call. A read-only
-   action such as a scan needs neither.
+2. **Declare the access.** Every action states what the link must be allowed to do: `ActionAccess::Read` for a scan,
+   `Mutate` for an action that changes the runtime or the configuration, `Provision` for one that changes what
+   identifies the device (the identity, the whole configuration storage). A secret argument is a separate property
+   (`.secret()`): it only makes the argument wiped after the call and never logged, and it does not change the access.
 3. **Implement it** in the service's `invoke`. The arguments are already checked against the description. Refuse with a
    stable, machine readable reason that a client may react to.
 4. **Mutation rule.** If the action commits durable state that a runtime must react to, the commit and the publication

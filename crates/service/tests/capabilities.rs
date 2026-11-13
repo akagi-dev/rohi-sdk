@@ -24,9 +24,10 @@ use core::cell::Cell;
 use embassy_futures::block_on;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use rohi_service::{
-    Action, ActionDescriptor, ActionError, ActionOutput, ActionRegistry, FieldDescriptor,
-    ISSUE_STARTUP_FAILED, Service, ServiceHealth, ServiceState, ServiceSummary, Startup, Status,
-    StatusError, StatusRegistry, StatusWriter, Statuses, Value, ValueKind, WriteError,
+    Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, ActionRegistry,
+    FieldDescriptor, ISSUE_STARTUP_FAILED, Service, ServiceHealth, ServiceState, ServiceSummary,
+    Startup, Status, StatusError, StatusRegistry, StatusWriter, Statuses, Value, ValueKind,
+    WriteError,
 };
 
 /// Status only.
@@ -54,7 +55,8 @@ impl Status for SensorsService {
 struct RebootService;
 
 impl Action for RebootService {
-    const ACTIONS: &'static [ActionDescriptor] = &[ActionDescriptor::new(1, "now").privileged()];
+    const ACTIONS: &'static [ActionDescriptor] =
+        &[ActionDescriptor::new(1, "now", ActionAccess::Mutate)];
 
     async fn invoke(
         &self,
@@ -91,8 +93,14 @@ impl Status for WirelessService {
 }
 
 impl Action for WirelessService {
-    const ACTIONS: &'static [ActionDescriptor] = &[ActionDescriptor::new(1, "scan")
-        .results(&[FieldDescriptor::new(1, "ssid", ValueKind::String)])];
+    const ACTIONS: &'static [ActionDescriptor] =
+        &[
+            ActionDescriptor::new(1, "scan", ActionAccess::Read).results(&[FieldDescriptor::new(
+                1,
+                "ssid",
+                ValueKind::String,
+            )]),
+        ];
 
     async fn invoke(
         &self,
@@ -171,7 +179,10 @@ fn actions_are_discovered_per_service() {
         actions.action(SensorsService::ID, 1),
         Err(ActionError::UnknownService)
     );
-    assert!(actions.action(RebootService::ID, 1).unwrap().privileged);
+    assert_eq!(
+        actions.action(RebootService::ID, 1).unwrap().access,
+        ActionAccess::Mutate
+    );
 }
 
 #[test]

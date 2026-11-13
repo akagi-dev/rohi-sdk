@@ -37,6 +37,44 @@ fn protocol_version_is_one() {
 }
 
 #[test]
+fn the_removed_dedicated_requests_have_no_variant() {
+    // The former FactoryReset (23) and Reboot (24) envelope fields: an empty
+    // message in each decodes as an unknown request.
+    // Tags 186 and 194 as varints, then an empty message.
+    for (field, tag) in [(23, [0xba, 0x01]), (24, [0xc2, 0x01])] {
+        let bytes = [0x08, 0x01, 0x10, 0x07, tag[0], tag[1], 0x00];
+        let decoded: Request = decode(&bytes).unwrap();
+        assert!(decoded.request.is_none(), "field {field}");
+    }
+}
+
+#[test]
+fn action_access_round_trips() {
+    for access in [
+        ActionAccess::Read,
+        ActionAccess::Mutate,
+        ActionAccess::Provision,
+    ] {
+        let info = ActionInfo {
+            access,
+            ..Default::default()
+        };
+        let mut buf = [0u8; 16];
+        let len = encode(&info, &mut buf).unwrap();
+        let decoded: ActionInfo = decode(&buf[..len]).unwrap();
+        assert!(decoded.access == access);
+    }
+    // The field is number 8 and the values are 1..=3.
+    let info = ActionInfo {
+        access: ActionAccess::Mutate,
+        ..Default::default()
+    };
+    let mut buf = [0u8; 16];
+    let len = encode(&info, &mut buf).unwrap();
+    assert_eq!(&buf[..len], &[0x40, 0x02]);
+}
+
+#[test]
 fn get_info_request_golden_bytes() {
     let request = Request {
         protocol_version: PROTOCOL_VERSION,
@@ -435,7 +473,7 @@ fn every_action_listed_fits_the_response_limit() {
                 service_id: u32::MAX,
                 id: u32::MAX,
                 name: text(&"a".repeat(limits::MAX_NAME_LEN)),
-                privileged: true,
+                access: ActionAccess::Provision,
                 secret_args: true,
                 returns_stream: true,
                 service: text(&"s".repeat(limits::MAX_NAME_LEN)),
@@ -468,7 +506,7 @@ fn a_full_action_schema_fits_the_response_limit() {
         service_id: u32::MAX,
         id: u32::MAX,
         name: text(&"a".repeat(limits::MAX_NAME_LEN)),
-        privileged: true,
+        access: ActionAccess::Provision,
         secret_args: true,
         returns_stream: true,
         service: text(&"s".repeat(limits::MAX_NAME_LEN)),

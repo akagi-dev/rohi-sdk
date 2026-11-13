@@ -1,8 +1,8 @@
 List and run the actions of the services.
 
 Actions are explicit operations a service offers, for example scanning
-for networks or reconnecting. The device describes the arguments and
-the results of every action.
+for networks, reconnecting or rebooting. The device describes the
+arguments and the results of every action.
 
   rohi action                            list all actions
   rohi action SERVICE                    list the actions of a service
@@ -14,6 +14,17 @@ read a value from stdin, or to be asked for it on a terminal, so that
 it stays out of the shell history; actions with secret arguments accept
 nothing else. Bytes are given as hex. The results are printed as a
 table, one row per record.
+
+The same actions run without the word `action` and with positional
+arguments, in the order the device describes them:
+
+  rohi SERVICE                           list the actions of a service
+  rohi SERVICE ACTION ARG...             run an action
+  rohi SERVICE ACTION --help             describe an action
+
+A service whose name is also a command of rohi (for example `status`)
+is reached with `rohi action`. Put `--` before a value that starts
+with `-`.
 
 Usage: rohi action [OPTIONS] [SERVICE] [ACTION] [ARG=VALUE]...
 
@@ -75,5 +86,11 @@ Examples:
   rohi action wifi reconnect
   rohi action wifi reconnect --help
   rohi action identity provision secret=-
+  rohi action system reboot
   rohi -o json action wifi scan
+  rohi wifi scan
+  rohi system reboot
+  rohi system factory_reset
+  rohi identity provision -
+  rohi system reboot --help
 

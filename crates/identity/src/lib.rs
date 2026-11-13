@@ -190,7 +190,7 @@
 //! master seed, the number and the derivation path are never sent, stored or
 //! logged, and a malformed secret is not echoed in the error. After
 //! provisioning, compare the public key reported by `status identity` with
-//! `DerivedIdentity::public_key()`. `rohi factory-reset` formats the
+//! `DerivedIdentity::public_key()`. `rohi system factory_reset` formats the
 //! configuration storage and so erases the identity too.
 //!
 //! ## Security status

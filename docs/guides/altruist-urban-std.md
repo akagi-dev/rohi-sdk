@@ -109,7 +109,8 @@ echo 'a long password' | rohi --device tcp://127.0.0.1:9300 config wifi ssid=ROH
 rohi --device tcp://127.0.0.1:9300 status wifi
 ```
 
-`rohi reboot` restarts the process in place and keeps its ports; `rohi factory-reset` formats its flash. TCP is an
+`rohi system reboot` restarts the process in place and keeps its ports; `rohi system factory_reset` formats its flash
+and does not restart (run `rohi system reboot` afterwards if a restart is required). TCP is an
 independent transport of the same protobuf messages, with its own framing and no BLE concepts (no fragmentation, no
 connection state faked from BLE). Each message is a record:
 

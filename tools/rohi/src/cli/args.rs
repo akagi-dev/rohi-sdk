@@ -20,7 +20,9 @@
 //! stale.
 //!
 //! The command tree knows no device module: `config`, `status` and `action`
-//! take section, service and action names that the device lists.
+//! take section, service and action names that the device lists, and so does
+//! the positional form `rohi SERVICE ACTION [ARG]...`: a first word that is not
+//! one of the commands below is the name of a service of the device.
 
 use std::path::PathBuf;
 
@@ -77,7 +79,9 @@ pub enum ColorChoice {
         manages their configuration and runs their actions. Sections, services\n\
         and actions are discovered from the device, so new firmware modules\n\
         need no update of this tool.",
-    after_help = "Run `rohi <COMMAND> --help` for more information about a command.",
+    after_help = "Run `rohi <COMMAND> --help` for more information about a command.\n\
+        Any other word is a service of the device: `rohi SERVICE ACTION [ARG]...` runs one\n\
+        of its actions and `rohi SERVICE` lists them, see `rohi action --help`.",
     arg_required_else_help = true
 )]
 pub struct Cli {
@@ -252,38 +256,11 @@ Examples:
         #[arg(short = 'h', long = "help")]
         help: bool,
     },
-    /// Format the configuration storage of the device.
-    ///
-    /// Wipes the whole configuration partition of the device: every section,
-    /// the device identity (the device becomes unprovisioned) and anything
-    /// else stored there, including the section versions and the damaged
-    /// storage of a corrupted device, which is repaired this way. The runtime
-    /// returns to the defaults. A confirmation prompt is shown unless --yes is
-    /// passed.
-    ///
-    /// To restore the defaults of a single section use `rohi config reset`.
-    #[command(after_help = "\
-Examples:
-  rohi factory-reset
-  rohi factory-reset --yes")]
-    FactoryReset {
-        /// Skip the confirmation prompt.
-        #[arg(long, short)]
-        yes: bool,
-    },
-    /// Reboot the device.
-    ///
-    /// The device answers first and reboots shortly after, so the connection
-    /// is lost. Devices that cannot reboot report it as not supported.
-    #[command(after_help = "\
-Examples:
-  rohi reboot")]
-    Reboot,
     /// List and run the actions of the services.
     ///
     /// Actions are explicit operations a service offers, for example scanning
-    /// for networks or reconnecting. The device describes the arguments and
-    /// the results of every action.
+    /// for networks, reconnecting or rebooting. The device describes the
+    /// arguments and the results of every action.
     ///
     ///   rohi action                            list all actions
     ///   rohi action SERVICE                    list the actions of a service
@@ -295,6 +272,17 @@ Examples:
     /// it stays out of the shell history; actions with secret arguments accept
     /// nothing else. Bytes are given as hex. The results are printed as a
     /// table, one row per record.
+    ///
+    /// The same actions run without the word `action` and with positional
+    /// arguments, in the order the device describes them:
+    ///
+    ///   rohi SERVICE                           list the actions of a service
+    ///   rohi SERVICE ACTION ARG...             run an action
+    ///   rohi SERVICE ACTION --help             describe an action
+    ///
+    /// A service whose name is also a command of rohi (for example `status`)
+    /// is reached with `rohi action`. Put `--` before a value that starts
+    /// with `-`.
     #[command(
         verbatim_doc_comment,
         disable_help_flag = true,
@@ -306,7 +294,13 @@ Examples:
   rohi action wifi reconnect
   rohi action wifi reconnect --help
   rohi action identity provision secret=-
-  rohi -o json action wifi scan"
+  rohi action system reboot
+  rohi -o json action wifi scan
+  rohi wifi scan
+  rohi system reboot
+  rohi system factory_reset
+  rohi identity provision -
+  rohi system reboot --help"
     )]
     Action {
         /// The service whose actions to list or run.
@@ -360,6 +354,29 @@ Examples:
         #[arg(short, long)]
         follow: bool,
     },
+    /// `rohi SERVICE [ACTION [ARG]...]`: a service of the device, see
+    /// `rohi action --help`. The words are as the user typed them.
+    #[command(external_subcommand)]
+    External(Vec<String>),
+}
+
+impl Cli {
+    /// Parses a command line.
+    ///
+    /// Global options may follow the name of a service (`rohi wifi scan -o
+    /// json`) as they may follow a command; they are moved in front of it
+    /// first, up to a `--`.
+    pub fn parse_args<I, T>(args: I) -> Result<Self, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<std::ffi::OsString>,
+    {
+        let args = super::positional::lift_globals(
+            &<Self as clap::CommandFactory>::command(),
+            args.into_iter().map(Into::into).collect(),
+        );
+        <Self as Parser>::try_parse_from(args)
+    }
 }
 
 /// The fixed commands of `rohi config`; any other name is a section.

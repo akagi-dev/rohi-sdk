@@ -38,6 +38,7 @@ rohi-sdk = { workspace = true, features = [
   "identity",
   "location",
   "logging",
+  "system",
   "control",
   "ble",
   "connectivity",
@@ -141,3 +142,7 @@ required-features = ["std", "std-tcp"]
 [[test]]
 name = "std_ble"
 required-features = ["std", "std-tcp", "std-ble"]
+
+[[test]]
+name = "std_system"
+required-features = ["std", "std-tcp"]

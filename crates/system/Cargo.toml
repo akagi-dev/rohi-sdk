@@ -1,0 +1,19 @@
+[package]
+name = "rohi-system"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Robonomics Open Hardware system service: reboot and factory reset as generic Actions over a platform adapter"
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[dependencies]
+rohi-service.workspace = true
+
+[dev-dependencies]
+embassy-futures.workspace = true

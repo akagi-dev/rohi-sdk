@@ -22,9 +22,9 @@ use heapless::{String, Vec};
 use rohi_control_proto::control as pb;
 use rohi_control_proto::limits;
 use rohi_service::{
-    ActionDescriptor, ConfigEntry, ConfigField, DeviceHealth, EntryState, EnumDescriptor,
-    FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, Mutation, MutationOp, SectionInfo,
-    ServiceHealth, ServiceState, ServiceStatusSummary, Unit, Value, ValueKind,
+    ActionAccess, ActionDescriptor, ConfigEntry, ConfigField, DeviceHealth, EntryState,
+    EnumDescriptor, FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, Mutation, MutationOp,
+    SectionInfo, ServiceHealth, ServiceState, ServiceStatusSummary, Unit, Value, ValueKind,
 };
 use zeroize::Zeroize;
 
@@ -382,8 +382,12 @@ pub(crate) fn action_info(
         service: text(service),
         id: action.id,
         name: text(action.name),
-        privileged: action.privileged,
         secret_args: action.secret_args,
         returns_stream: action.stream,
+        access: match action.access {
+            ActionAccess::Read => pb::ActionAccess::Read,
+            ActionAccess::Mutate => pb::ActionAccess::Mutate,
+            ActionAccess::Provision => pb::ActionAccess::Provision,
+        },
     }
 }

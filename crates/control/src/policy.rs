@@ -15,17 +15,32 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
+
+use rohi_service::ActionAccess;
+
 /// What an operation needs from the link.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Privilege {
     /// Reads device state without changing it.
     Read,
-    /// Changes configuration or runs a privileged action.
+    /// Changes configuration or runs an action that needs
+    /// [`ActionAccess::Mutate`].
     Mutate,
-    /// Runs an action whose arguments are secrets (for example installing a
-    /// device identity). A link policy may demand more than for
-    /// [`Mutate`](Self::Mutate).
+    /// Runs an action that needs [`ActionAccess::Provision`] (for example
+    /// installing a device identity or formatting the configuration storage).
+    /// A link policy may demand more than for [`Mutate`](Self::Mutate).
     Provision,
+}
+
+impl Privilege {
+    /// The privilege the policy checks for an action that declares `access`.
+    pub const fn of(access: ActionAccess) -> Self {
+        match access {
+            ActionAccess::Read => Self::Read,
+            ActionAccess::Mutate => Self::Mutate,
+            ActionAccess::Provision => Self::Provision,
+        }
+    }
 }
 
 /// Security properties of the link a request arrived on, as reported by the

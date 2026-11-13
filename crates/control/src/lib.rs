@@ -65,17 +65,17 @@
 //! let Some(Reply::GetInfo(info)) = reply.response else { panic!() };
 //! assert_eq!(info.firmware.as_str(), "demo-0.1.0");
 //!
-//! // A reboot is a mutation: it needs an encrypted link, and this device
-//! // has no reboot hook anyway.
-//! let reboot = || Call::Reboot(pb::RebootRequest {});
-//! let denied = ask(reboot(), &LinkSecurity::default());
+//! // A reset of a config section is a mutation: it needs an encrypted link,
+//! // and this device has no such section anyway.
+//! let reset = || Call::ResetConfigSection(pb::ResetConfigSectionRequest::default());
+//! let denied = ask(reset(), &LinkSecurity::default());
 //! let Some(Reply::Error(error)) = denied.response else { panic!() };
 //! assert_eq!(error.code, pb::ErrorCode::PermissionDenied);
 //!
 //! let encrypted = LinkSecurity { encrypted: true, authenticated: false, session: 0 };
-//! let unsupported = ask(reboot(), &encrypted);
-//! let Some(Reply::Error(error)) = unsupported.response else { panic!() };
-//! assert_eq!(error.code, pb::ErrorCode::NotSupported);
+//! let unknown = ask(reset(), &encrypted);
+//! let Some(Reply::Error(error)) = unknown.response else { panic!() };
+//! assert_eq!(error.code, pb::ErrorCode::NotFound);
 //! ```
 //!
 //! # Core Concepts
@@ -83,7 +83,7 @@
 //! | Item | Role |
 //! |------|------|
 //! | [`Controller`] | decodes, authorizes, executes and encodes one request at a time |
-//! | [`ControlBackend`] | what the firmware provides: [`DeviceInfo`], uptime, the config, status and action registries, reboot, device health |
+//! | [`ControlBackend`] | what the firmware provides: [`DeviceInfo`], uptime, the config, status and action registries, device health |
 //! | [`Device`] | a [`ControlBackend`] built from its parts (the usual way to make one) |
 //! | [`AuthorizationPolicy`] | maps a [`Privilege`] and the [`LinkSecurity`] of the transport to allow/deny |
 //!
@@ -94,12 +94,10 @@
 //! | `GetInfo` | [`ControlBackend::device_info`] | [`Read`](Privilege::Read) |
 //! | `ListConfigSections`, `GetConfigSchema`, `GetConfigSection` | [`ConfigRegistry`](rohi_service::ConfigRegistry) | `Read` |
 //! | `PatchConfigSection`, `ResetConfigSection` | `ConfigRegistry` | [`Mutate`](Privilege::Mutate) |
-//! | `FactoryReset` | [`ConfigRegistry::factory_reset`](rohi_service::ConfigRegistry::factory_reset) | [`Provision`](Privilege::Provision) |
 //! | `GetServicesStatus`, `GetServiceSchema`, `GetServiceStatus` | [`StatusRegistry`](rohi_service::StatusRegistry) | `Read` |
 //! | `ListActions`, `GetActionSchema` | [`ActionRegistry`](rohi_service::ActionRegistry) | `Read` |
-//! | `InvokeAction` | `ActionRegistry` | `Provision` if the action has secret arguments, `Mutate` if it is privileged, else `Read` |
+//! | `InvokeAction` | `ActionRegistry` | the [`ActionAccess`](rohi_service::ActionAccess) the action declares: `Read`, `Mutate` or `Provision`; secret arguments are a separate property (they are only wiped) |
 //! | `ReadStream`, `CloseStream` | `ActionRegistry` | that of the action that created the stream |
-//! | `Reboot` | [`ControlBackend::reboot`] | `Mutate` |
 //!
 //! The three built-in policies are [`OpenPolicy`] (everything),
 //! [`RequireEncryption`] (reads are open, anything else needs an encrypted
@@ -131,7 +129,7 @@
 //! | `protocol_version` other than [`PROTOCOL_VERSION`](rohi_control_proto::PROTOCOL_VERSION), or no request set | `NotSupported` |
 //! | policy denies the privilege | `PermissionDenied` |
 //! | unknown section id / service id / action id | `NotFound` |
-//! | service or action exists but has no such capability (status of an action-only service, action of a status-only one), reboot without hook | `NotSupported` |
+//! | service or action exists but has no such capability (status of an action-only service, action of a status-only one) | `NotSupported` |
 //! | invalid mutation (unknown or read-only field, wrong kind or range, failed validation, unparsable or too many mutations) | `InvalidArgument` (the detail of the [`FieldError`](rohi_service::FieldError) is not sent) |
 //! | invalid action arguments | `InvalidArgument` |
 //! | storage or service temporarily unavailable, busy | `Unavailable`, `Busy` |

@@ -22,14 +22,12 @@ need no update of this tool.
 Usage: rohi [OPTIONS] <COMMAND>
 
 Commands:
-  scan           Discover nearby ROHI devices
-  status         Show the runtime status of the device and its services
-  config         Read and change the persistent configuration.
-  factory-reset  Format the configuration storage of the device
-  reboot         Reboot the device
-  action         List and run the actions of the services.
-  logs           Show, follow, download or clear the device log
-  help           Print this message or the help of the given subcommand(s)
+  scan    Discover nearby ROHI devices
+  status  Show the runtime status of the device and its services
+  config  Read and change the persistent configuration.
+  action  List and run the actions of the services.
+  logs    Show, follow, download or clear the device log
+  help    Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help
@@ -76,3 +74,5 @@ Connection:
           [default: 10]
 
 Run `rohi <COMMAND> --help` for more information about a command.
+Any other word is a service of the device: `rohi SERVICE ACTION [ARG]...` runs one
+of its actions and `rohi SERVICE` lists them, see `rohi action --help`.

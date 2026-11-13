@@ -26,8 +26,8 @@
 //! use embassy_futures::block_on;
 //! use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 //! use rohi_service::{
-//!     Action, ActionDescriptor, ActionError, ActionOutput, ActionRegistry, FieldDescriptor,
-//!     Service, ServiceHealth, ServiceState, ServiceSummary, Status, StatusError,
+//!     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, ActionRegistry,
+//!     FieldDescriptor, Service, ServiceHealth, ServiceState, ServiceSummary, Status, StatusError,
 //!     StatusRegistry, StatusWriter, Statuses, Value, ValueKind, WriteError,
 //! };
 //!
@@ -49,7 +49,7 @@
 //! }
 //!
 //! impl Action for WifiService {
-//!     const ACTIONS: &'static [ActionDescriptor] = &[ActionDescriptor::new(1, "reconnect")];
+//!     const ACTIONS: &'static [ActionDescriptor] = &[ActionDescriptor::new(1, "reconnect", ActionAccess::Read)];
 //!
 //!     async fn invoke(
 //!         &self,

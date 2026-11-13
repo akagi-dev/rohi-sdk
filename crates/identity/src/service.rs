@@ -24,9 +24,9 @@
 
 use heapless::Vec;
 use rohi_service::{
-    Action, ActionDescriptor, ActionError, ActionOutput, FIRST_SERVICE_ISSUE, FieldDescriptor,
-    Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES, Service, ServiceHealth, ServiceState,
-    ServiceSummary, Status, StatusWriter, Value, ValueKind, WriteError,
+    Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, FIRST_SERVICE_ISSUE,
+    FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES, Service, ServiceHealth,
+    ServiceState, ServiceSummary, Status, StatusWriter, Value, ValueKind, WriteError,
 };
 
 use crate::{Identity, PublicKey, SECRET_LEN};
@@ -116,9 +116,10 @@ pub mod action_field {
 /// | `InvokeAction identity.erase` | mutate | removes the identity section; no-op when absent |
 ///
 /// The privileges are those of
-/// [`rohi-control`](../rohi_control/index.html): a secret argument needs
-/// [`Privilege::Provision`](../rohi_control/enum.Privilege.html#variant.Provision),
-/// a privileged action [`Privilege::Mutate`](../rohi_control/enum.Privilege.html#variant.Mutate).
+/// [`rohi-control`](../rohi_control/index.html), derived from the access each action
+/// declares: `provision` declares
+/// [`ActionAccess::Provision`](rohi_service::ActionAccess::Provision) (and a secret argument),
+/// `erase` declares [`ActionAccess::Mutate`](rohi_service::ActionAccess::Mutate).
 /// See the security status in the [crate documentation](crate#security-status).
 ///
 /// # Behaviour
@@ -241,7 +242,7 @@ impl<S: IdentityStore> Status for IdentityService<S> {
 
 impl<S: IdentityStore> Action for IdentityService<S> {
     const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new(action::PROVISION, "provision")
+        ActionDescriptor::new(action::PROVISION, "provision", ActionAccess::Provision)
             .args(&[FieldDescriptor::new(
                 action_field::SECRET,
                 "secret",
@@ -253,7 +254,7 @@ impl<S: IdentityStore> Action for IdentityService<S> {
                 ValueKind::Bytes,
             )])
             .secret(),
-        ActionDescriptor::new(action::ERASE, "erase").privileged(),
+        ActionDescriptor::new(action::ERASE, "erase", ActionAccess::Mutate),
     ];
 
     async fn invoke(
@@ -388,8 +389,8 @@ mod tests {
         assert_eq!(status.fields.len(), 1);
 
         let actions = (&service,).service_actions(0);
-        assert!(actions[0].secret_args && actions[0].privileged);
-        assert!(actions[1].privileged && !actions[1].secret_args);
+        assert!(actions[0].secret_args && actions[0].access == ActionAccess::Provision);
+        assert!(actions[1].access == ActionAccess::Mutate && !actions[1].secret_args);
     }
 
     #[test]

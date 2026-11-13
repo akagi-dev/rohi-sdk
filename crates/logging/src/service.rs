@@ -29,10 +29,10 @@ use embassy_sync::signal::Signal;
 use embedded_hal_async::delay::DelayNs;
 use heapless::Vec;
 use rohi_service::{
-    Action, ActionDescriptor, ActionError, ActionOutput, EnumDescriptor, FIRST_SERVICE_ISSUE,
-    FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES, MAX_STREAM_CHUNK, Service,
-    ServiceHealth, ServiceState, ServiceSummary, Status, StatusWriter, StreamChunk, StreamFile,
-    StreamInfo, Unit, Value, ValueKind, WriteError,
+    Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, EnumDescriptor,
+    FIRST_SERVICE_ISSUE, FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES,
+    MAX_STREAM_CHUNK, Service, ServiceHealth, ServiceState, ServiceSummary, Status, StatusWriter,
+    StreamChunk, StreamFile, StreamInfo, Unit, Value, ValueKind, WriteError,
 };
 
 use crate::segment::text::write_line;
@@ -828,14 +828,14 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize> A
     for LoggingService<'_, M, C, B, N, READ>
 {
     const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new(action::READ, "read")
+        ActionDescriptor::new(action::READ, "read", ActionAccess::Read)
             .args(&[
                 FieldDescriptor::new(read_arg::AFTER, "after", ValueKind::U64),
                 FieldDescriptor::new(read_arg::LIMIT, "limit", ValueKind::U64),
             ])
             .stream(),
-        ActionDescriptor::new(action::DOWNLOAD, "download").stream(),
-        ActionDescriptor::new(action::CLEAR, "clear").privileged(),
+        ActionDescriptor::new(action::DOWNLOAD, "download", ActionAccess::Read).stream(),
+        ActionDescriptor::new(action::CLEAR, "clear", ActionAccess::Mutate),
     ];
 
     async fn invoke(

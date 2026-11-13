@@ -26,10 +26,10 @@ use rohi_control_proto::control::{
 };
 use rohi_control_proto::{PROTOCOL_VERSION, decode, encode, limits};
 use rohi_service::{
-    Action, ActionDescriptor, ActionError, ActionOutput, Config, EnumDescriptor, EnumVariant,
-    FIRST_SERVICE_ISSUE, FieldDescriptor, FieldError, Issue, IssueDescriptor, IssueSeverity,
-    Section, SectionStore, Service, ServiceHealth, ServiceState, ServiceSummary, Status,
-    StatusWriter, Statuses, StoreError, Unit, Value, ValueKind, WriteError,
+    Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, Config, EnumDescriptor,
+    EnumVariant, FIRST_SERVICE_ISSUE, FieldDescriptor, FieldError, Issue, IssueDescriptor,
+    IssueSeverity, Section, SectionStore, Service, ServiceHealth, ServiceState, ServiceSummary,
+    Status, StatusWriter, Statuses, StoreError, Unit, Value, ValueKind, WriteError,
 };
 
 use crate::*;
@@ -144,13 +144,13 @@ impl Status for Radio {
 
 impl Action for Radio {
     const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new(1, "scan").results(&[FieldDescriptor::new(
+        ActionDescriptor::new(1, "scan", ActionAccess::Read).results(&[FieldDescriptor::new(
             1,
             "ssid",
             ValueKind::String,
         )]),
-        ActionDescriptor::new(2, "reconnect").privileged(),
-        ActionDescriptor::new(3, "provision")
+        ActionDescriptor::new(2, "reconnect", ActionAccess::Mutate),
+        ActionDescriptor::new(3, "provision", ActionAccess::Provision)
             .args(&[FieldDescriptor::new(1, "secret", ValueKind::Bytes)])
             .secret(),
     ];
@@ -578,76 +578,127 @@ fn patch_dry_runs_clear_and_reset() {
     assert!(section.overridden.is_empty());
 }
 
-#[test]
-fn factory_reset_resets_every_section_and_needs_a_secure_link() {
-    controller!(controller, RequireEncryption);
-    let encrypted = LinkSecurity {
-        encrypted: true,
-        authenticated: false,
-        session: 0,
-    };
-    call(
-        &controller,
-        &encrypted,
-        Call::PatchConfigSection(patch(1, &[mutation(3, string_value("a.io"))])),
-    );
-    assert_eq!(
-        error_code(&call(
-            &controller,
-            &PLAIN,
-            Call::FactoryReset(pb::FactoryResetRequest {})
-        )),
-        pb::ErrorCode::PermissionDenied
-    );
-    assert!(matches!(
-        call(
-            &controller,
-            &encrypted,
-            Call::FactoryReset(pb::FactoryResetRequest {})
-        ),
-        Reply::FactoryReset(_)
-    ));
-    let Reply::GetConfigSection(section) = call(
-        &controller,
-        &PLAIN,
-        Call::GetConfigSection(pb::GetConfigSectionRequest { section_id: 1 }),
-    ) else {
-        panic!()
-    };
-    assert!(section.overridden.is_empty());
+#[derive(Service)]
+struct Maintenance {
+    calls: Cell<u32>,
+}
+
+impl Action for Maintenance {
+    const ACTIONS: &'static [ActionDescriptor] = &[
+        ActionDescriptor::new(1, "restart", ActionAccess::Mutate),
+        ActionDescriptor::new(2, "wipe", ActionAccess::Provision),
+    ];
+
+    async fn invoke(
+        &self,
+        action: u32,
+        _args: &[(u32, Value)],
+        _out: &mut impl ActionOutput,
+    ) -> Result<(), ActionError> {
+        self.calls.set(self.calls.get() + 1);
+        match action {
+            1 | 2 => Ok(()),
+            _ => Err(ActionError::UnknownAction),
+        }
+    }
+}
+
+// Allows reads and mutations, never provisioning.
+struct OnlyReadsAndMutations;
+
+impl AuthorizationPolicy for OnlyReadsAndMutations {
+    fn allows(&self, privilege: Privilege, _link: &LinkSecurity) -> bool {
+        privilege != Privilege::Provision
+    }
+}
+
+// Allows only provisioning.
+struct OnlyProvisioning;
+
+impl AuthorizationPolicy for OnlyProvisioning {
+    fn allows(&self, privilege: Privilege, _link: &LinkSecurity) -> bool {
+        privilege != Privilege::Mutate
+    }
 }
 
 #[test]
-fn reboot_needs_the_hook_and_a_secure_link() {
-    std::thread_local!(static REBOOTS: Cell<u32> = const { Cell::new(0) });
-    fn reboot() {
-        REBOOTS.with(|count| count.set(count.get() + 1));
-    }
-    let request = || Call::Reboot(pb::RebootRequest {});
+fn the_declared_access_decides_the_privilege_not_the_secret_flag() {
+    let invoke = |action_id| {
+        Call::InvokeAction(pb::InvokeActionRequest {
+            service_id: Maintenance::ID,
+            action_id,
+            args: Vec::new(),
+        })
+    };
+    let maintenance = Maintenance {
+        calls: Cell::new(0),
+    };
+    let device = || Device::new(INFO, uptime, (), (), (&maintenance,));
 
-    let controller = Controller::new(Device::new(INFO, uptime, (), (), ()), OpenPolicy);
+    // The access is on the wire.
+    let controller = Controller::new(device(), OpenPolicy);
+    let Reply::ListActions(list) = call(
+        &controller,
+        &PLAIN,
+        Call::ListActions(pb::ListActionsRequest::default()),
+    ) else {
+        panic!()
+    };
+    let access: std::vec::Vec<_> = list
+        .actions
+        .iter()
+        .map(|a| (a.name.as_str(), a.access))
+        .collect();
     assert_eq!(
-        error_code(&call(&controller, &PLAIN, request())),
-        pb::ErrorCode::NotSupported
+        access,
+        [
+            ("restart", pb::ActionAccess::Mutate),
+            ("wipe", pb::ActionAccess::Provision)
+        ]
     );
+    assert!(list.actions.iter().all(|action| !action.secret_args));
 
-    let device = Device::new(INFO, uptime, (), (), ()).with_reboot(reboot);
-    let controller = Controller::new(device, RequireEncryption);
+    // A policy that distinguishes the two levels.
+    let controller = Controller::new(device(), OnlyReadsAndMutations);
+    assert!(matches!(
+        call(&controller, &PLAIN, invoke(1)),
+        Reply::InvokeAction(_)
+    ));
     assert_eq!(
-        error_code(&call(&controller, &PLAIN, request())),
+        error_code(&call(&controller, &PLAIN, invoke(2))),
         pb::ErrorCode::PermissionDenied
     );
-    assert_eq!(REBOOTS.with(Cell::get), 0);
-    let encrypted = LinkSecurity {
-        encrypted: true,
-        authenticated: false,
-        session: 0,
-    };
+    assert_eq!(maintenance.calls.get(), 1);
+
+    let controller = Controller::new(device(), OnlyProvisioning);
+    assert_eq!(
+        error_code(&call(&controller, &PLAIN, invoke(1))),
+        pb::ErrorCode::PermissionDenied
+    );
     assert!(matches!(
-        call(&controller, &encrypted, request()),
-        Reply::Reboot(_)
+        call(&controller, &PLAIN, invoke(2)),
+        Reply::InvokeAction(_)
     ));
-    assert_eq!(REBOOTS.with(Cell::get), 1);
+    assert_eq!(maintenance.calls.get(), 2);
+}
+
+#[test]
+fn the_protocol_version_stays_one_and_the_removed_requests_are_unsupported() {
+    assert_eq!(PROTOCOL_VERSION, 1);
+    controller!(controller, OpenPolicy);
+    // The former FactoryReset (23) and Reboot (24) requests decode as a request
+    // without a variant: there is no translation to actions.
+    // Tags 186 and 194 as varints, then an empty message.
+    for (field, tag) in [(23, [0xba, 0x01]), (24, [0xc2, 0x01])] {
+        let wire = [0x08, 0x01, 0x10, 0x07, tag[0], tag[1], 0x00];
+        let mut out = [0u8; limits::MAX_RESPONSE_LEN];
+        let n = block_on(controller.handle(&PLAIN, &wire, &mut out));
+        let response: pb::Response = decode(&out[..n]).unwrap();
+        let Some(Reply::Error(error)) = response.response else {
+            panic!()
+        };
+        assert_eq!(error.code, pb::ErrorCode::NotSupported, "field {field}");
+    }
 }
 
 #[test]
@@ -768,14 +819,14 @@ fn actions_are_discovered_described_and_invoked() {
     let names: std::vec::Vec<_> = list
         .actions
         .iter()
-        .map(|a| (a.service_id, a.id, a.name.as_str(), a.privileged))
+        .map(|a| (a.service_id, a.id, a.name.as_str(), a.access))
         .collect();
     assert_eq!(
         names,
         [
-            (RADIO, 1, "scan", false),
-            (RADIO, 2, "reconnect", true),
-            (RADIO, 3, "provision", true)
+            (RADIO, 1, "scan", pb::ActionAccess::Read),
+            (RADIO, 2, "reconnect", pb::ActionAccess::Mutate),
+            (RADIO, 3, "provision", pb::ActionAccess::Provision)
         ]
     );
 
@@ -975,12 +1026,12 @@ impl Status for Many {
 
 impl Action for Many {
     const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new(1, "a"),
-        ActionDescriptor::new(2, "b"),
-        ActionDescriptor::new(3, "c"),
-        ActionDescriptor::new(4, "d"),
-        ActionDescriptor::new(5, "e"),
-        ActionDescriptor::new(6, "f"),
+        ActionDescriptor::new(1, "a", ActionAccess::Read),
+        ActionDescriptor::new(2, "b", ActionAccess::Read),
+        ActionDescriptor::new(3, "c", ActionAccess::Read),
+        ActionDescriptor::new(4, "d", ActionAccess::Read),
+        ActionDescriptor::new(5, "e", ActionAccess::Read),
+        ActionDescriptor::new(6, "f", ActionAccess::Read),
     ];
 
     async fn invoke(
@@ -1047,12 +1098,12 @@ struct Many2;
 
 impl Action for Many2 {
     const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new(1, "a"),
-        ActionDescriptor::new(2, "b"),
-        ActionDescriptor::new(3, "c"),
-        ActionDescriptor::new(4, "d"),
-        ActionDescriptor::new(5, "e"),
-        ActionDescriptor::new(6, "f"),
+        ActionDescriptor::new(1, "a", ActionAccess::Read),
+        ActionDescriptor::new(2, "b", ActionAccess::Read),
+        ActionDescriptor::new(3, "c", ActionAccess::Read),
+        ActionDescriptor::new(4, "d", ActionAccess::Read),
+        ActionDescriptor::new(5, "e", ActionAccess::Read),
+        ActionDescriptor::new(6, "f", ActionAccess::Read),
     ];
 
     async fn invoke(
@@ -1181,11 +1232,9 @@ const FILE_BYTES: &[u8] = b"0123456789abcdef";
 
 impl Action for Files {
     const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new(1, "export").stream(),
-        ActionDescriptor::new(2, "list"),
-        ActionDescriptor::new(3, "export_private")
-            .stream()
-            .privileged(),
+        ActionDescriptor::new(1, "export", ActionAccess::Read).stream(),
+        ActionDescriptor::new(2, "list", ActionAccess::Read),
+        ActionDescriptor::new(3, "export_private", ActionAccess::Mutate).stream(),
     ];
 
     async fn invoke(

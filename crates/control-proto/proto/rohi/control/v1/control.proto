@@ -50,8 +50,6 @@ message Request {
     ListActionsRequest list_actions = 20;
     GetActionSchemaRequest get_action_schema = 21;
     InvokeActionRequest invoke_action = 22;
-    FactoryResetRequest factory_reset = 23;
-    RebootRequest reboot = 24;
     ReadStreamRequest read_stream = 25;
     CloseStreamRequest close_stream = 26;
   }
@@ -77,8 +75,6 @@ message Response {
     ListActionsResponse list_actions = 20;
     GetActionSchemaResponse get_action_schema = 21;
     InvokeActionResponse invoke_action = 22;
-    FactoryResetResponse factory_reset = 23;
-    RebootResponse reboot = 24;
     ReadStreamResponse read_stream = 25;
     CloseStreamResponse close_stream = 26;
     // The answer of `InvokeAction` when the result does not fit one message:
@@ -368,23 +364,6 @@ message ResetConfigSectionResponse {
   bool restart_required = 1;
 }
 
-// Formats the configuration storage: every section is removed, including
-// sections this firmware does not know and the device identity, and the
-// runtime state derived from configuration returns to the defaults. Damaged
-// storage is repaired this way.
-message FactoryResetRequest {}
-
-message FactoryResetResponse {
-  bool restart_required = 1;
-}
-
-// Reboots the device. The device answers first and reboots shortly after, so
-// the response is delivered; the link is lost afterwards. Not every device
-// can reboot: those answer `ERROR_CODE_NOT_SUPPORTED`.
-message RebootRequest {}
-
-message RebootResponse {}
-
 // ---------------------------------------------------------------------------
 // Service status
 // ---------------------------------------------------------------------------
@@ -513,13 +492,24 @@ message GetServiceStatusResponse {
 // runtime is an action. An action takes typed arguments and returns zero or
 // more records of typed fields.
 
+// What a link must be allowed to do to invoke an action. Independent of
+// `ActionInfo.secret_args`.
+enum ActionAccess {
+  ACTION_ACCESS_UNSPECIFIED = 0;
+  // Reads state or changes nothing.
+  ACTION_ACCESS_READ = 1;
+  // Changes the runtime or the stored configuration.
+  ACTION_ACCESS_MUTATE = 2;
+  // Changes what identifies or provisions the device (identity, the whole
+  // configuration storage).
+  ACTION_ACCESS_PROVISION = 3;
+}
+
 message ActionInfo {
   uint32 service_id = 1;
   // Stable numeric id, unique within the service.
   uint32 id = 2;
   string name = 3;
-  // Needs a link that satisfies the write privilege of the policy.
-  bool privileged = 4;
   // The arguments are secrets: clients must not echo or log them and should
   // read them without showing them.
   bool secret_args = 5;
@@ -529,6 +519,9 @@ message ActionInfo {
   // The action answers with a stream (`action_stream`) instead of records;
   // it has no result fields.
   bool returns_stream = 7;
+  // What the link must be allowed to do to invoke the action; never
+  // `ACTION_ACCESS_UNSPECIFIED` from a device.
+  ActionAccess access = 8;
 }
 
 message ListActionsRequest {}

@@ -25,7 +25,7 @@ use embassy_sync::blocking_mutex::raw::RawMutex;
 use embedded_hal_async::delay::DelayNs;
 use heapless::{String, Vec};
 use rohi_service::{
-    Action, ActionDescriptor, ActionError, ActionOutput, EnumDescriptor, EnumVariant,
+    Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, EnumDescriptor, EnumVariant,
     FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_FIELD_VALUE_LEN, MAX_ISSUES,
     Service, ServiceHealth, ServiceState, ServiceSummary, Status, StatusWriter, Unit, Value,
     ValueKind, WriteError,
@@ -272,7 +272,7 @@ const fn bytes(descriptor: FieldDescriptor) -> FieldDescriptor {
 /// | config section `wifi` | `ssid` (text, 1 to 32 bytes) and `password` (write-only secret, 8 to 64 bytes, optional: no override means an open network) | `rohi config wifi ssid=office password=-` |
 /// | service `wifi` | state, `ssid`, `rssi` (dBm), `channel`, `mac`, `reconnects`, `link_uptime` (ms), `heap_size`, `heap_free`, `heap_min_free` (bytes; the heap fields only when the [`WifiProbe`] reports them) | `rohi status wifi` |
 /// | action `scan` | one record per network, strongest first: `ssid`, `rssi`, `channel`, `security` | `rohi action wifi scan` |
-/// | actions `reconnect`, `disconnect` (privileged) | drop the link and connect again / stay idle | `rohi action wifi reconnect` |
+/// | actions `reconnect`, `disconnect` (mutate access) | drop the link and connect again / stay idle | `rohi action wifi reconnect` |
 ///
 /// The service maps [`WifiState`] to lifecycle and health: `NotConfigured` is
 /// `disabled` (not an error), `Idle` is `stopped`, `Scanning` and `Connecting`
@@ -416,7 +416,7 @@ impl<M: RawMutex, D: DelayNs + Clone, P: WifiProbe> Status for WifiService<'_, M
 
 impl<M: RawMutex, D: DelayNs + Clone, P: WifiProbe> Action for WifiService<'_, M, D, P> {
     const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new(action::SCAN, "scan")
+        ActionDescriptor::new(action::SCAN, "scan", ActionAccess::Read)
             .results(&[
                 FieldDescriptor::new(scan_field::SSID, "ssid", ValueKind::String),
                 FieldDescriptor::new(scan_field::RSSI, "rssi", ValueKind::I64).unit(Unit::Dbm),
@@ -425,8 +425,8 @@ impl<M: RawMutex, D: DelayNs + Clone, P: WifiProbe> Action for WifiService<'_, M
                     .with_enum(SECURITY_ENUM),
             ])
             .enums(ENUMS),
-        ActionDescriptor::new(action::RECONNECT, "reconnect").privileged(),
-        ActionDescriptor::new(action::DISCONNECT, "disconnect").privileged(),
+        ActionDescriptor::new(action::RECONNECT, "reconnect", ActionAccess::Mutate),
+        ActionDescriptor::new(action::DISCONNECT, "disconnect", ActionAccess::Mutate),
     ];
 
     async fn invoke(
@@ -609,14 +609,14 @@ mod tests {
         let actions = <Service<'static, ()> as Action>::ACTIONS;
         let flags: std::vec::Vec<_> = actions
             .iter()
-            .map(|action| (action.name, action.privileged, action.secret_args))
+            .map(|action| (action.name, action.access, action.secret_args))
             .collect();
         assert_eq!(
             flags,
             [
-                ("scan", false, false),
-                ("reconnect", true, false),
-                ("disconnect", true, false)
+                ("scan", ActionAccess::Read, false),
+                ("reconnect", ActionAccess::Mutate, false),
+                ("disconnect", ActionAccess::Mutate, false)
             ]
         );
         assert_eq!(actions[0].results.len(), 4);

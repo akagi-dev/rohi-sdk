@@ -42,7 +42,7 @@ and falls back to the previous generation.
 **Not validated on hardware.** The log ring is host-tested on an emulated NOR flash (4-byte write words, a word programmed at
 most twice, power-loss injected at every write). Checklist for a device:
 
-1. `rohi logs` shows boot records; reboot (`rohi reboot`) and confirm the earlier records are still there and the sequence continues.
+1. `rohi logs` shows boot records; reboot (`rohi system reboot`) and confirm the earlier records are still there and the sequence continues.
 2. Pull power while `rohi config logging level=debug` is active and the device logs heavily; after power-up `rohi logs`
    shows a contiguous history, `rohi status logging` has no `storage_corrupt` issue or only the one for the cut segment.
 3. `rohi logs download -d DIR` while Wi-Fi is connected: all files decode with `lz4 -d`, and record the time it takes over BLE.
