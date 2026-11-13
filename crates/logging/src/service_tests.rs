@@ -1324,3 +1324,197 @@ fn a_payload_damaged_while_the_device_was_off_is_dropped_and_reported() {
         assert_ne!(history, old_history);
     }
 }
+
+// Stream lifecycle: every way a stream ends releases its segment pins exactly
+// once and leaves the other streams alone.
+
+fn many_segments(rig: &Rig, logging: &TestLogging<'_>) -> u64 {
+    let mut next = 1;
+    for _ in 0..30 {
+        log_many(logging, 6, next);
+        next += 6;
+        settle(rig, logging);
+    }
+    next
+}
+
+fn is_gone(logging: &TestLogging<'_>, stream: u32) -> bool {
+    let mut buf = [0u8; 8];
+    block_on(logging.service().read_stream(stream, 1, 0, &mut buf))
+        == Err(ActionError::UnknownStream)
+}
+
+#[test]
+fn clear_without_open_streams_pins_and_releases_nothing() {
+    let rig = Rig::new();
+    let logging = rig.logging(CONFIG);
+    many_segments(&rig, &logging);
+    assert_eq!((logging.open_streams(), logging.pinned_segments()), (0, 0));
+    assert!(invoke(&logging, action::CLEAR, &[]).is_ok());
+    assert_eq!((logging.open_streams(), logging.pinned_segments()), (0, 0));
+}
+
+#[test]
+fn clear_releases_one_and_two_open_streams() {
+    for downloads in [false, true] {
+        let rig = Rig::new();
+        let logging = rig.logging(CONFIG);
+        many_segments(&rig, &logging);
+
+        let mut streams = Vec::new();
+        if downloads {
+            streams.push(stream_of(invoke(&logging, action::DOWNLOAD, &[])).id);
+            assert!(logging.pinned_segments() > 0);
+        }
+        streams.push(stream_of(invoke(&logging, action::READ, &args(0, 5))).id);
+        if !downloads {
+            streams.push(stream_of(invoke(&logging, action::READ, &args(0, 9))).id);
+        }
+        assert_eq!(logging.open_streams(), 2);
+
+        assert!(invoke(&logging, action::CLEAR, &[]).is_ok());
+        assert_eq!((logging.open_streams(), logging.pins()), (0, 0));
+        assert_eq!(logging.pinned_segments(), 0);
+        assert!(streams.iter().all(|stream| is_gone(&logging, *stream)));
+        // The table is free again.
+        let again = stream_of(invoke(&logging, action::DOWNLOAD, &[]));
+        block_on(logging.service().close_stream(again.id)).unwrap();
+    }
+}
+
+#[test]
+fn two_downloads_release_their_shared_segments_independently() {
+    let rig = Rig::new();
+    let logging = rig.logging(CONFIG);
+    many_segments(&rig, &logging);
+
+    let first = stream_of(invoke(&logging, action::DOWNLOAD, &[]));
+    let second = stream_of(invoke(&logging, action::DOWNLOAD, &[]));
+    let (a, b) = (first.files.len(), second.files.len());
+    assert_eq!(logging.pins(), a + b);
+    let pinned = logging.pinned_segments();
+    assert!(pinned >= a.max(b));
+
+    // The segments both streams hold stay pinned while one of them is open.
+    block_on(logging.service().close_stream(first.id)).unwrap();
+    assert_eq!(logging.pins(), b);
+    assert_eq!(logging.pinned_segments(), b);
+    assert!(is_gone(&logging, first.id));
+    let kept = read_all(&logging, &second, 1);
+    assert_eq!(kept.len() as u64, second.files[0].size_bytes);
+
+    block_on(logging.service().close_stream(second.id)).unwrap();
+    assert_eq!((logging.pins(), logging.pinned_segments()), (0, 0));
+}
+
+#[test]
+fn an_expired_stream_is_released_while_the_other_keeps_its_pins() {
+    let rig = Rig::new();
+    let logging = rig.logging(CONFIG);
+    many_segments(&rig, &logging);
+
+    let old = stream_of(invoke(&logging, action::DOWNLOAD, &[]));
+    rig.advance(STREAM_TIMEOUT_MS * 6 / 10);
+    let young = stream_of(invoke(&logging, action::DOWNLOAD, &[]));
+    rig.advance(STREAM_TIMEOUT_MS * 5 / 10);
+    block_on(logging.step());
+
+    assert_eq!(logging.open_streams(), 1);
+    assert!(is_gone(&logging, old.id));
+    assert_eq!(logging.pins(), young.files.len());
+    assert_eq!(logging.pinned_segments(), young.files.len());
+    assert!(!read_all(&logging, &young, 1).is_empty());
+
+    rig.advance(STREAM_TIMEOUT_MS + 1);
+    block_on(logging.step());
+    assert_eq!((logging.open_streams(), logging.pinned_segments()), (0, 0));
+}
+
+#[test]
+fn a_lost_link_releases_every_stream_at_once() {
+    let rig = Rig::new();
+    let logging = rig.logging(CONFIG);
+    many_segments(&rig, &logging);
+    let download = stream_of(invoke(&logging, action::DOWNLOAD, &[]));
+    let read = stream_of(invoke(&logging, action::READ, &args(0, 5)));
+    assert_eq!(logging.open_streams(), 2);
+
+    logging.service().link_lost();
+    block_on(logging.step());
+    assert_eq!((logging.open_streams(), logging.pins()), (0, 0));
+    assert_eq!(logging.pinned_segments(), 0);
+    assert!(is_gone(&logging, download.id) && is_gone(&logging, read.id));
+}
+
+#[test]
+fn closing_streams_in_any_order_leaves_the_other_one_intact() {
+    for close_records_first in [true, false] {
+        let rig = Rig::new();
+        let logging = rig.logging(CONFIG);
+        many_segments(&rig, &logging);
+        let records = stream_of(invoke(&logging, action::READ, &args(0, 5)));
+        let files = stream_of(invoke(&logging, action::DOWNLOAD, &[]));
+        let pinned = logging.pinned_segments();
+        assert_eq!(pinned, files.files.len());
+        let expected = read_all(&logging, &records, 1);
+        let service = logging.service();
+
+        if close_records_first {
+            block_on(service.close_stream(records.id)).unwrap();
+            assert_eq!(logging.pinned_segments(), pinned);
+            assert!(!read_all(&logging, &files, 1).is_empty());
+            block_on(service.close_stream(files.id)).unwrap();
+        } else {
+            block_on(service.close_stream(files.id)).unwrap();
+            assert_eq!(logging.pinned_segments(), 0);
+            assert_eq!(read_all(&logging, &records, 1), expected);
+            block_on(service.close_stream(records.id)).unwrap();
+        }
+        assert_eq!((logging.open_streams(), logging.pinned_segments()), (0, 0));
+    }
+}
+
+#[test]
+fn closing_a_stream_twice_is_an_error_and_releases_nothing_more() {
+    let rig = Rig::new();
+    let logging = rig.logging(CONFIG);
+    many_segments(&rig, &logging);
+    let first = stream_of(invoke(&logging, action::DOWNLOAD, &[]));
+    let second = stream_of(invoke(&logging, action::DOWNLOAD, &[]));
+    let service = logging.service();
+
+    block_on(service.close_stream(first.id)).unwrap();
+    let held = logging.pinned_segments();
+    assert_eq!(
+        block_on(service.close_stream(first.id)),
+        Err(ActionError::UnknownStream)
+    );
+    assert_eq!(logging.pinned_segments(), held);
+    assert_eq!(logging.pins(), second.files.len());
+}
+
+#[test]
+fn repeated_clear_and_logging_after_it_keeps_working() {
+    let rig = Rig::new();
+    let logging = rig.logging(CONFIG);
+    for round in 0..3 {
+        many_segments(&rig, &logging);
+        let download = stream_of(invoke(&logging, action::DOWNLOAD, &[]));
+        let records = stream_of(invoke(&logging, action::READ, &args(0, 3)));
+        assert!(
+            invoke(&logging, action::CLEAR, &[]).is_ok(),
+            "round {round}"
+        );
+        assert!(
+            invoke(&logging, action::CLEAR, &[]).is_ok(),
+            "round {round}"
+        );
+        assert_eq!((logging.open_streams(), logging.pinned_segments()), (0, 0));
+        assert!(is_gone(&logging, download.id) && is_gone(&logging, records.id));
+        assert!(read_in_history(&logging, 0).1.is_empty());
+
+        log_many(&logging, 3, 1);
+        settle(&rig, &logging);
+        assert_eq!(read(&logging, 0, 50).len(), 3);
+    }
+}

@@ -267,7 +267,7 @@
 //!   checks persistence over repeated resets and the fallback to the
 //!   previous generation after the newest slot was corrupted on purpose, but
 //!   no run is recorded: the persistent configuration store is
-//!   **not hardware-verified** in `support-matrix/matrix.toml` and
+//!   **not hardware-verified** in `device-matrix.toml` and
 //!   `docs/validation/hardware-testing.md`.
 
 #[cfg(test)]

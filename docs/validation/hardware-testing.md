@@ -78,6 +78,10 @@ The stack high-water mark of the control path (`rohi status` with Wi-Fi and iden
 config and action requests, factory reset) is **not yet measured**. The procedure, the scenarios and the table for the
 results are in [Resource budget](resource-budget.md#measuring-the-control-task).
 
+Static evidence (task pools, main-stack allocation, function frames) comes from `scripts/memcheck.sh` and is not a
+measurement of stack use. A measured peak is attached to its report as a hardware observation, see
+[Task memory and stack budget](resource-budget.md#task-memory-and-stack-budget-memcheck).
+
 ## Sensor stability test
 
 Run `altruist-urban` without networking for at least 24 h (preferably 72 h) with all sensors attached and record the

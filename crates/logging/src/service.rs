@@ -191,6 +191,32 @@ struct State<const READ: usize> {
     release_all: bool,
 }
 
+// The segments the released streams pinned: at most `MAX_SEGMENTS` for each of
+// `MAX_STREAMS` streams, so it never overflows.
+type Pins = Vec<SegmentId, { MAX_STREAMS * MAX_SEGMENTS }>;
+
+impl<const READ: usize> State<READ> {
+    // Removes the streams `selected` accepts, in place, and returns what they
+    // pinned. Nothing else of a stream is moved or copied: a stream holds up to
+    // `READ` bytes of records.
+    fn release(&mut self, mut selected: impl FnMut(&Open<READ>) -> bool) -> Pins {
+        let mut pins = Pins::new();
+        self.streams.retain_mut(|stream| {
+            if !selected(stream) {
+                return true;
+            }
+            if let Content::Files(files) = &stream.content {
+                for (id, _) in files {
+                    // Cannot be full, see `Pins`.
+                    let _ = pins.push(*id);
+                }
+            }
+            false
+        });
+        pins
+    }
+}
+
 pub(crate) struct Inner<B: Backends> {
     backends: B,
     storage: Option<B::Storage>,
@@ -408,29 +434,26 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
 
     fn release_streams(&self, inner: &mut Inner<B>, all: bool) {
         let now = self.now();
-        let released = self.with(|state| {
+        let pins = self.with(|state| {
             let all = all || core::mem::take(&mut state.release_all);
-            let mut released = Vec::<Open<READ>, MAX_STREAMS>::new();
-            let mut index = 0;
-            while index < state.streams.len() {
-                if all || state.streams[index].deadline_ms <= now {
-                    let _ = released.push(state.streams.swap_remove(index));
-                } else {
-                    index += 1;
-                }
-            }
-            released
+            state.release(|stream| all || stream.deadline_ms <= now)
         });
-        for stream in released {
-            if let (Content::Files(files), Some(storage)) = (stream.content, inner.storage.as_mut())
-            {
-                for (id, _) in files {
-                    storage.unpin(id);
-                }
-                // The segments the stall waited for may be free now.
-                inner.stalled_until_ms = 0;
-            }
+        Self::unpin(inner, &pins);
+    }
+
+    // Gives the storage back the segments of released streams.
+    fn unpin(inner: &mut Inner<B>, pins: &[SegmentId]) {
+        let Some(storage) = inner.storage.as_mut() else {
+            return;
+        };
+        if pins.is_empty() {
+            return;
         }
+        for id in pins {
+            storage.unpin(*id);
+        }
+        // The segments the stall waited for may be free now.
+        inner.stalled_until_ms = 0;
     }
 
     // Takes the queued records into the batch, in order, while the storage can
@@ -1126,20 +1149,25 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
     }
 
     async fn close_stream(&self, stream: u32) -> Result<(), ActionError> {
-        let entry = self.with(|state| {
-            let index = state.streams.iter().position(|entry| entry.id == stream)?;
-            Some(state.streams.swap_remove(index))
+        let pinning = self.with(|state| {
+            state
+                .streams
+                .iter()
+                .find(|entry| entry.id == stream)
+                .map(|entry| matches!(entry.content, Content::Files(_)))
         });
-        let Some(entry) = entry else {
-            return Err(ActionError::UnknownStream);
-        };
-        if let Content::Files(files) = entry.content {
-            let mut inner = self.inner.lock().await;
-            if let Some(storage) = inner.storage.as_mut() {
-                for (id, _) in files {
-                    storage.unpin(id);
-                }
-                inner.stalled_until_ms = 0;
+        match pinning {
+            None => return Err(ActionError::UnknownStream),
+            Some(false) => {
+                self.with(|state| state.release(|entry| entry.id == stream));
+            }
+            Some(true) => {
+                // The storage first, then the stream is removed and its segments
+                // are unpinned without waiting in between: a caller that gives up
+                // while waiting leaves the stream to expire, with its pins.
+                let mut inner = self.inner.lock().await;
+                let pins = self.with(|state| state.release(|entry| entry.id == stream));
+                Self::unpin(&mut inner, &pins);
             }
         }
         self.wake.signal(());
@@ -1167,6 +1195,25 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
                     Content::Records(_) => 0,
                 })
                 .sum()
+        })
+    }
+
+    pub(crate) fn open_streams(&self) -> usize {
+        self.with(|state| state.streams.len())
+    }
+
+    /// How many segments the storage keeps pinned.
+    pub(crate) fn pinned_segments(&self) -> usize {
+        embassy_futures::block_on(async {
+            let mut inner = self.inner.lock().await;
+            match inner.storage.as_mut() {
+                Some(storage) => storage
+                    .segments()
+                    .await
+                    .map(|segments| segments.iter().filter(|segment| segment.pinned).count())
+                    .unwrap_or(0),
+                None => 0,
+            }
         })
     }
 }

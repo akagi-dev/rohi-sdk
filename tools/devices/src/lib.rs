@@ -17,7 +17,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 //! Validator and Markdown renderer of the ROHI support matrix.
 //!
-//! The matrix (`support-matrix/matrix.toml`) describes what ROHI supports **per board, firmware and capability**
+//! The matrix (`device-matrix.toml`) describes what ROHI supports **per board, firmware and capability**
 //! and keeps the evidence levels apart: a capability can be implemented in an SDK crate, integrated in a firmware,
 //! built for a target, covered by host tests and verified on hardware independently of each other. Missing evidence
 //! is reported as `not-verified`, never as success or failure.
@@ -38,7 +38,7 @@ pub use validate::validate;
 use std::path::{Path, PathBuf};
 
 /// Location of the matrix relative to the repository root.
-pub const MATRIX_PATH: &str = "support-matrix/matrix.toml";
+pub const MATRIX_PATH: &str = "device-matrix.toml";
 /// Location of the generated page relative to the repository root.
 pub const RENDERED_PATH: &str = "docs/support/matrix.md";
 

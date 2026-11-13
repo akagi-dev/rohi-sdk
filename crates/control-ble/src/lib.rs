@@ -208,7 +208,7 @@
 //!   with a scripted mock transport (`cargo test -p rohi-control-ble`) and the
 //!   examples on this page. The firmware integration builds in CI, but BLE on
 //!   real hardware is *not verified*: the support matrix
-//!   (`support-matrix/matrix.toml`, capability `ble-control`) records
+//!   (`device-matrix.toml`, capability `ble-control`) records
 //!   hardware verification as `not-verified`, and no pairing or encryption is
 //!   implemented yet, so the default [`OpenPolicy`](rohi_control::OpenPolicy)
 //!   offers no protection on the link. Advertising, coexistence with Wi-Fi,

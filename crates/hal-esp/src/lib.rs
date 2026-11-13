@@ -146,7 +146,7 @@
 //!   recovers from on the next read.
 //! * **Pin maps and hardware verification.** The ESP32-C3 map is checked
 //!   against the Altruist Urban pinout; the ESP32-C6 map is taken from the
-//!   upstream schematic. In the support matrix (`support-matrix/matrix.toml`,
+//!   upstream schematic. In the support matrix (`device-matrix.toml`,
 //!   reviewed 2026-11-02) **no board and capability is recorded as verified on
 //!   hardware**; both chips are covered by CI target builds and clippy, and the
 //!   drivers by host tests in `rohi-hal`. See

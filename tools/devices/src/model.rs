@@ -15,7 +15,7 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-//! Data model of the support matrix, one type per table of `matrix.toml`.
+//! Data model of the support matrix, one type per table of `device-matrix.toml`.
 
 use serde::Deserialize;
 

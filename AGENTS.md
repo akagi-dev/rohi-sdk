@@ -14,6 +14,7 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --all -- --check
 cargo check-esp32c3 && cargo check-esp32c6   # firmware, one chip per invocation
 mdbook build docs && mdbook test docs        # the book
+scripts/memcheck.sh images esp32c3 out && scripts/memcheck.sh analyze esp32c3 out   # task pools, main stack, frames; CI: job Memcheck
 cargo run -p altruist-urban --bin altruist-urban --features std,std-tcp,sensor-simulator   # Altruist Urban on std, see docs/guides/altruist-urban-std.md
 ```
 
@@ -28,7 +29,7 @@ See [Targets and features](crates/sdk/src/portability.rs) (rustdoc of `rohi-sdk`
   [Rustdoc authoring guide](docs/contributing/rustdoc-for-agents.md).** It defines the crate page structure, the
   doctest policy, the agent workflow and the validation commands. Do not invent behaviour, examples or hardware results.
 - Where each kind of documentation lives: [Documentation style and policy](docs/contributing/docs-style.md).
-- Hardware support and verification evidence: [support matrix](support-matrix/matrix.toml); update it with any change to a
+- Hardware support and verification evidence: [support matrix](device-matrix.toml); update it with any change to a
   board, sensor driver, firmware wiring or hardware result.
 
 ## Exception safety (no panics in firmware)

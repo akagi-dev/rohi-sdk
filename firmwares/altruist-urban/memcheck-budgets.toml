@@ -1,0 +1,45 @@
+# Budgets of `memcheck` (see scripts/memcheck.sh and docs/validation/resource-budget.md).
+#
+# Limits are absolute and per chip. They start at the sizes measured on `master` at ca17cb6 (before #63), rounded up
+# slightly, so that they stop growth without being a target. Lower a limit when a change shrinks the number; raising
+# one is a deliberate decision that needs a reason in the pull request.
+#
+# `max_frame` is a single function frame, not a stack depth. At the baseline the `Controller` request path had a frame of
+# about 30 KB, larger than the whole ESP32-C3 main stack (22 024 B); #63 split it (every backend call is polled through
+# `rohi_service::Isolated`) and the limits below are the sizes measured after that. The largest frames now are the
+# `control_task` poll and the async main future.
+
+[regression]
+# Allowed growth against the base branch, for identical build inputs.
+max_section_growth = 4096
+max_task_growth = 1024
+max_frame_growth = 512
+
+# The `control_task` poll gained the response slots of the request path it now polls through `Isolated`, while the
+# frames it replaced (`Controller::execute`, 30 KB) shrank by far more.
+[[regression.approved_frame_growth]]
+symbol = "__control_task_task"
+max_growth = 3200
+reason = "the Controller request path was split; its 30 KB frame became 1.7 KB or less"
+
+[chips.esp32c3]
+max_data = 30000
+max_bss = 206000
+max_task_ram = 41000
+min_main_stack = 21500
+max_frame = 12500
+
+[chips.esp32c3.focus]
+control_dispatch = ["rohi_control::controller", "rohi_service::registry"]
+logging = ["rohi_logging::service", "rohi_logging::storage", "rohi_logging::segment"]
+
+[chips.esp32c6]
+max_data = 33500
+max_bss = 210000
+max_task_ram = 41000
+min_main_stack = 120000
+max_frame = 9500
+
+[chips.esp32c6.focus]
+control_dispatch = ["rohi_control::controller", "rohi_service::registry"]
+logging = ["rohi_logging::service", "rohi_logging::storage", "rohi_logging::segment"]

@@ -215,6 +215,7 @@ extern crate self as rohi_service;
 pub mod action;
 pub mod config;
 mod field;
+mod isolated;
 pub mod registry;
 mod schema;
 pub mod service;
@@ -231,6 +232,7 @@ pub use config::{
     SectionSchema, SectionStore, SectionValues, StoreError,
 };
 pub use field::{Bounds, ConfigField, EnumDescriptor, EnumVariant, FieldDescriptor, Unit};
+pub use isolated::{Isolated, isolated};
 pub use registry::{ActionRegistry, ServiceIdentity, StatusRegistry, StatusSet, Statuses, Tracker};
 pub use rohi_config::{FieldError, MAX_VALUE_LEN, Value, ValueKind};
 pub use rohi_config_derive::Config;

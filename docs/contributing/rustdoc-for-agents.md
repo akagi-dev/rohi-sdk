@@ -193,7 +193,7 @@ Always document, where relevant:
 - **Compatibility:** section ids and versions, field numbers, hash algorithms (these are ABI).
 - **Platform:** which chip features and targets compile, what is an empty crate without a feature.
 - **Experimental or planned:** use the words "implemented", "planned", "not verified"; never describe a plan as a feature.
-- **Hardware results:** never write one. The only sources are `support-matrix/matrix.toml` and the validation pages.
+- **Hardware results:** never write one. The only sources are `device-matrix.toml` and the validation pages.
   Distinguish **host-tested** (unit tests/doctests), **target-built** (CI builds the ESP target) and
   **hardware-verified** (recorded evidence).
 

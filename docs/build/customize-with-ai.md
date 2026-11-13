@@ -14,7 +14,7 @@ Open the `rohi-sdk` repository (or a repository that depends on it) in the assis
 
 | Source | What it answers |
 |--------|-----------------|
-| [Support matrix](../support/overview.md) (`support-matrix/matrix.toml`) | what ROHI supports per board, firmware and capability, and what is verified |
+| [Support matrix](../support/overview.md) (`device-matrix.toml`) | what ROHI supports per board, firmware and capability, and what is verified |
 | [Create & customize](create-and-customize.md) guides (`docs/guides/`) | the step-by-step procedure for each kind of change |
 | [Core concepts](core-concepts.md) | what Config, Status and Action are |
 | [`firmwares/altruist-urban`](https://github.com/akagi-dev/rohi-sdk/tree/master/firmwares/altruist-urban) | the reference composition to copy from |
@@ -28,7 +28,7 @@ A short standing instruction in your assistant's project instructions file helps
 This is a Rust no_std firmware workspace for ESP32-C3 and ESP32-C6 built on the ROHI SDK.
 - Before changing anything read the matching guide in docs/guides/ and copy the structure of
   firmwares/altruist-urban; do not invent APIs, read the crate source.
-- Hardware facts (boards, pins, sensors) come only from support-matrix/matrix.toml and
+- Hardware facts (boards, pins, sensors) come only from device-matrix.toml and
   crates/hal-esp/src/board/altruist_urban/mod.rs. If a fact is missing, say so; never guess pin numbers.
 - Never claim that something works on hardware. Report what you ran: cargo test,
   cargo check-esp32c3, cargo check-esp32c6.
@@ -64,7 +64,7 @@ Replace the names in brackets. Each prompt follows the guide linked next to it.
 
 ```text
 Add support for the [SCD41] sensor to the altruist-urban firmware.
-Follow docs/guides/add-sensor.md. First check support-matrix/matrix.toml and tell me
+Follow docs/guides/add-sensor.md. First check device-matrix.toml and tell me
 whether the Altruist Urban has this part and what is already implemented. Reuse the
 existing driver in crates/hal if there is one. Show me the plan and the files you will
 change before editing. Afterwards run cargo test and cargo check-esp32c3 and

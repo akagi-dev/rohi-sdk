@@ -28,12 +28,12 @@ pub fn render(m: &Matrix) -> String {
     let mut out = String::new();
     let _ = writeln!(
         out,
-        "<!-- Generated from support-matrix/matrix.toml by `cargo run -p rohi-support-matrix -- render`. Do not edit. -->\n"
+        "<!-- Generated from device-matrix.toml by `cargo run -p rohi-devices -- render`. Do not edit. -->\n"
     );
     let _ = writeln!(out, "# Support matrix\n");
     let _ = writeln!(
         out,
-        "Reviewed on {}, schema version {}. The data is published as [`support-matrix/matrix.toml`]({BLOB}support-matrix/matrix.toml); \
+        "Reviewed on {}, schema version {}. The data is published as [`device-matrix.toml`]({BLOB}device-matrix.toml); \
          how to read the statuses is explained in [Reading the matrix](overview.md).\n",
         m.reviewed, m.schema_version
     );

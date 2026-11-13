@@ -31,6 +31,7 @@ use rohi_service::{
 
 use crate::mapping;
 use crate::{AuthorizationPolicy, ControlBackend, LinkSecurity, Privilege};
+use rohi_service::isolated;
 
 /// The most streams the controller tracks at once, over all services.
 pub const MAX_OPEN_STREAMS: usize = 16;
@@ -211,216 +212,268 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
         }
     }
 
+    // Every request is built by a method of its own. The response types keep
+    // their bounded fields inline (a few KiB each), so a method that inlined
+    // them all would reserve their sum on the stack; as separate functions they
+    // cost the largest one.
     async fn execute(&self, link: &LinkSecurity, privilege: Privilege, call: Call) -> Reply {
-        let backend = &self.backend;
         match call {
-            Call::GetInfo(_) => {
-                let info = backend.device_info();
-                Reply::GetInfo(pb::GetInfoResponse {
-                    firmware: mapping::text(info.firmware),
-                    board: mapping::text(info.board),
-                })
-            }
-            Call::ListConfigSections(_) => {
-                let config = backend.config();
-                let mut sections = Vec::new();
-                for index in 0..config.section_count() {
-                    if let Some(info) = config.section_info(index)
-                        && sections.push(mapping::section_info(&info)).is_err()
-                    {
-                        break;
-                    }
-                }
-                Reply::ListConfigSections(pb::ListConfigSectionsResponse { sections })
-            }
-            Call::GetConfigSchema(request) => match backend.config().schema(request.section_id) {
-                None => error(pb::ErrorCode::NotFound),
-                Some(schema) => {
-                    let mut fields = Vec::new();
-                    for field in schema.fields {
-                        if fields.push(mapping::config_field(field)).is_err() {
-                            break;
-                        }
-                    }
-                    let mut response = pb::GetConfigSchemaResponse {
-                        fields,
-                        enums: mapping::enums(schema.enums),
-                        ..Default::default()
-                    };
-                    response.set_section(mapping::section_info(&schema.section));
-                    Reply::GetConfigSchema(response)
-                }
-            },
+            Call::GetInfo(_) => self.get_info(),
+            Call::ListConfigSections(_) => self.list_config_sections(),
+            Call::GetConfigSchema(request) => self.get_config_schema(request.section_id),
             Call::GetConfigSection(request) => {
-                match backend.config().get(request.section_id).await {
-                    Err(e) => config_error(e),
-                    Ok(values) => {
-                        let mut entries = Vec::new();
-                        for entry in &values.entries {
-                            if entries.push(mapping::config_entry(entry)).is_err() {
-                                break;
-                            }
-                        }
-                        let mut overridden = Vec::new();
-                        for id in &values.overridden {
-                            if overridden.push(*id).is_err() {
-                                break;
-                            }
-                        }
-                        Reply::GetConfigSection(pb::GetConfigSectionResponse {
-                            section_id: values.section.id,
-                            version: values.section.version,
-                            effective: entries,
-                            overridden,
-                        })
-                    }
-                }
+                isolated(self.get_config_section(request.section_id)).await
             }
-            Call::PatchConfigSection(request) => self.patch(request).await,
-            Call::ResetConfigSection(request) => {
-                match backend
-                    .config()
-                    .reset(request.section_id, request.dry_run)
-                    .await
-                {
-                    Ok(done) => Reply::ResetConfigSection(pb::ResetConfigSectionResponse {
-                        restart_required: done.restart_required,
-                    }),
-                    Err(e) => config_error(e),
-                }
+            Call::PatchConfigSection(request) => isolated(self.patch(request)).await,
+            Call::ResetConfigSection(request) => isolated(self.reset_config_section(request)).await,
+            Call::FactoryReset(_) => isolated(self.factory_reset()).await,
+            Call::Reboot(_) => self.reboot(),
+            Call::GetServicesStatus(_) => isolated(self.get_services_status()).await,
+            Call::GetServiceSchema(request) => self.get_service_schema(request.service_id),
+            Call::GetServiceStatus(request) => {
+                isolated(self.get_service_status(request.service_id)).await
             }
-            Call::FactoryReset(_) => match backend.config().factory_reset().await {
-                Ok(done) => Reply::FactoryReset(pb::FactoryResetResponse {
-                    restart_required: done.restart_required,
-                }),
-                Err(e) => config_error(e),
-            },
-            Call::Reboot(_) if backend.reboot() => Reply::Reboot(pb::RebootResponse {}),
-            Call::Reboot(_) => error(pb::ErrorCode::NotSupported),
-            Call::GetServicesStatus(_) => {
-                let services = backend.statuses();
-                let now = backend.uptime_ms();
-                let mut summaries: Vec<
-                    ServiceStatusSummary,
-                    { rohi_service::MAX_REGISTRY_ENTRIES },
-                > = Vec::new();
-                for index in 0..services.service_count() {
-                    if let Some(summary) = services.summary(index, now).await
-                        && summaries.push(summary).is_err()
-                    {
+            Call::ListActions(_) => self.list_actions(),
+            Call::GetActionSchema(request) => {
+                self.get_action_schema(request.service_id, request.action_id)
+            }
+            Call::InvokeAction(request) => isolated(self.invoke(link, privilege, request)).await,
+            Call::ReadStream(request) => isolated(self.read_stream(request)).await,
+            Call::CloseStream(request) => isolated(self.close_stream(request)).await,
+        }
+    }
+
+    #[inline(never)]
+    fn get_info(&self) -> Reply {
+        let info = self.backend.device_info();
+        Reply::GetInfo(pb::GetInfoResponse {
+            firmware: mapping::text(info.firmware),
+            board: mapping::text(info.board),
+        })
+    }
+
+    #[inline(never)]
+    fn list_config_sections(&self) -> Reply {
+        let config = self.backend.config();
+        let mut sections = Vec::new();
+        for index in 0..config.section_count() {
+            if let Some(info) = config.section_info(index)
+                && sections.push(mapping::section_info(&info)).is_err()
+            {
+                break;
+            }
+        }
+        Reply::ListConfigSections(pb::ListConfigSectionsResponse { sections })
+    }
+
+    #[inline(never)]
+    fn get_config_schema(&self, section_id: u64) -> Reply {
+        match self.backend.config().schema(section_id) {
+            None => error(pb::ErrorCode::NotFound),
+            Some(schema) => {
+                let mut fields = Vec::new();
+                for field in schema.fields {
+                    if fields.push(mapping::config_field(field)).is_err() {
                         break;
                     }
                 }
-                let mut wire = Vec::new();
-                for summary in &summaries {
-                    if wire.push(mapping::summary(summary)).is_err() {
+                let mut response = pb::GetConfigSchemaResponse {
+                    fields,
+                    enums: mapping::enums(schema.enums),
+                    ..Default::default()
+                };
+                response.set_section(mapping::section_info(&schema.section));
+                Reply::GetConfigSchema(response)
+            }
+        }
+    }
+
+    async fn get_config_section(&self, section_id: u64) -> Reply {
+        match self.backend.config().get(section_id).await {
+            Err(e) => config_error(e),
+            Ok(values) => {
+                let mut entries = Vec::new();
+                for entry in &values.entries {
+                    if entries.push(mapping::config_entry(entry)).is_err() {
                         break;
                     }
                 }
-                Reply::GetServicesStatus(pb::GetServicesStatusResponse {
-                    uptime_ms: now,
-                    health: mapping::device_health(backend.device_health(&summaries)),
-                    services: wire,
+                let mut overridden = Vec::new();
+                for id in &values.overridden {
+                    if overridden.push(*id).is_err() {
+                        break;
+                    }
+                }
+                Reply::GetConfigSection(pb::GetConfigSectionResponse {
+                    section_id: values.section.id,
+                    version: values.section.version,
+                    effective: entries,
+                    overridden,
                 })
             }
-            Call::GetServiceSchema(request) => {
-                match backend.statuses().schema(request.service_id) {
-                    None => self.missing_status(request.service_id),
-                    Some(schema) => Reply::GetServiceSchema(pb::GetServiceSchemaResponse {
-                        service_id: schema.info.id,
-                        name: mapping::text(schema.info.name),
-                        version: schema.info.version,
-                        fields: mapping::fields(schema.fields),
-                        enums: mapping::enums(schema.enums),
-                        issues: mapping::issue_descriptors(schema.issues),
-                    }),
-                }
+        }
+    }
+
+    async fn reset_config_section(&self, request: pb::ResetConfigSectionRequest) -> Reply {
+        match self
+            .backend
+            .config()
+            .reset(request.section_id, request.dry_run)
+            .await
+        {
+            Ok(done) => Reply::ResetConfigSection(pb::ResetConfigSectionResponse {
+                restart_required: done.restart_required,
+            }),
+            Err(e) => config_error(e),
+        }
+    }
+
+    async fn factory_reset(&self) -> Reply {
+        match self.backend.config().factory_reset().await {
+            Ok(done) => Reply::FactoryReset(pb::FactoryResetResponse {
+                restart_required: done.restart_required,
+            }),
+            Err(e) => config_error(e),
+        }
+    }
+
+    fn reboot(&self) -> Reply {
+        if self.backend.reboot() {
+            Reply::Reboot(pb::RebootResponse {})
+        } else {
+            error(pb::ErrorCode::NotSupported)
+        }
+    }
+
+    async fn get_services_status(&self) -> Reply {
+        let services = self.backend.statuses();
+        let now = self.backend.uptime_ms();
+        let mut summaries: Vec<ServiceStatusSummary, { rohi_service::MAX_REGISTRY_ENTRIES }> =
+            Vec::new();
+        for index in 0..services.service_count() {
+            if let Some(summary) = services.summary(index, now).await
+                && summaries.push(summary).is_err()
+            {
+                break;
             }
-            Call::GetServiceStatus(request) => {
-                match backend
-                    .statuses()
-                    .status(request.service_id, backend.uptime_ms())
-                    .await
+        }
+        self.services_status_reply(now, &summaries)
+    }
+
+    #[inline(never)]
+    fn services_status_reply(&self, now: u64, summaries: &[ServiceStatusSummary]) -> Reply {
+        let mut wire = Vec::new();
+        for summary in summaries {
+            if wire.push(mapping::summary(summary)).is_err() {
+                break;
+            }
+        }
+        Reply::GetServicesStatus(pb::GetServicesStatusResponse {
+            uptime_ms: now,
+            health: mapping::device_health(self.backend.device_health(summaries)),
+            services: wire,
+        })
+    }
+
+    #[inline(never)]
+    fn get_service_schema(&self, service_id: u32) -> Reply {
+        match self.backend.statuses().schema(service_id) {
+            None => self.missing_status(service_id),
+            Some(schema) => Reply::GetServiceSchema(pb::GetServiceSchemaResponse {
+                service_id: schema.info.id,
+                name: mapping::text(schema.info.name),
+                version: schema.info.version,
+                fields: mapping::fields(schema.fields),
+                enums: mapping::enums(schema.enums),
+                issues: mapping::issue_descriptors(schema.issues),
+            }),
+        }
+    }
+
+    async fn get_service_status(&self, service_id: u32) -> Reply {
+        match self
+            .backend
+            .statuses()
+            .status(service_id, self.backend.uptime_ms())
+            .await
+        {
+            Err(StatusError::UnknownService) => self.missing_status(service_id),
+            Ok(status) => {
+                let mut fields = Vec::new();
+                for (id, value) in &status.fields {
+                    if fields.push(mapping::field_value(*id, value)).is_err() {
+                        break;
+                    }
+                }
+                let mut issues = Vec::new();
+                for issue in &status.issues {
+                    if issues.push(mapping::issue(issue)).is_err() {
+                        break;
+                    }
+                }
+                Reply::GetServiceStatus(pb::GetServiceStatusResponse {
+                    service_id: status.summary.id,
+                    revision: status.summary.revision,
+                    fields,
+                    issues,
+                })
+            }
+        }
+    }
+
+    #[inline(never)]
+    fn list_actions(&self) -> Reply {
+        let services = self.backend.actions();
+        let mut actions = Vec::new();
+        'services: for index in 0..services.service_count() {
+            let Some(info) = services.service_identity(index) else {
+                continue;
+            };
+            for action in services.service_actions(index) {
+                if actions
+                    .push(mapping::action_info(info.id, info.name, action))
+                    .is_err()
                 {
-                    Err(StatusError::UnknownService) => self.missing_status(request.service_id),
-                    Ok(status) => {
-                        let mut fields = Vec::new();
-                        for (id, value) in &status.fields {
-                            if fields.push(mapping::field_value(*id, value)).is_err() {
-                                break;
-                            }
-                        }
-                        let mut issues = Vec::new();
-                        for issue in &status.issues {
-                            if issues.push(mapping::issue(issue)).is_err() {
-                                break;
-                            }
-                        }
-                        Reply::GetServiceStatus(pb::GetServiceStatusResponse {
-                            service_id: status.summary.id,
-                            revision: status.summary.revision,
-                            fields,
-                            issues,
-                        })
-                    }
+                    break 'services;
                 }
             }
-            Call::ListActions(_) => {
-                let services = backend.actions();
-                let mut actions = Vec::new();
-                'services: for index in 0..services.service_count() {
-                    let Some(info) = services.service_identity(index) else {
-                        continue;
-                    };
-                    for action in services.service_actions(index) {
-                        if actions
-                            .push(mapping::action_info(info.id, info.name, action))
-                            .is_err()
-                        {
-                            break 'services;
-                        }
-                    }
-                }
-                Reply::ListActions(pb::ListActionsResponse { actions })
+        }
+        Reply::ListActions(pb::ListActionsResponse { actions })
+    }
+
+    #[inline(never)]
+    fn get_action_schema(&self, service_id: u32, action_id: u32) -> Reply {
+        match self.backend.actions().action(service_id, action_id) {
+            Err(e) => self.action_failure(e, service_id),
+            Ok(action) => {
+                let mut out = pb::GetActionSchemaResponse {
+                    args: mapping::fields(action.args),
+                    results: mapping::fields(action.results),
+                    enums: mapping::enums(action.enums),
+                    ..Default::default()
+                };
+                out.set_action(mapping::action_info(
+                    service_id,
+                    self.action_service_name(service_id),
+                    action,
+                ));
+                Reply::GetActionSchema(out)
             }
-            Call::GetActionSchema(request) => {
-                match backend
-                    .actions()
-                    .action(request.service_id, request.action_id)
-                {
-                    Err(e) => self.action_failure(e, request.service_id),
-                    Ok(action) => {
-                        let mut out = pb::GetActionSchemaResponse {
-                            args: mapping::fields(action.args),
-                            results: mapping::fields(action.results),
-                            enums: mapping::enums(action.enums),
-                            ..Default::default()
-                        };
-                        out.set_action(mapping::action_info(
-                            request.service_id,
-                            self.action_service_name(request.service_id),
-                            action,
-                        ));
-                        Reply::GetActionSchema(out)
-                    }
-                }
-            }
-            Call::InvokeAction(request) => self.invoke(link, privilege, request).await,
-            Call::ReadStream(request) => self.read_stream(request).await,
-            Call::CloseStream(request) => {
-                let result = self
-                    .backend
-                    .actions()
-                    .close_stream(request.service_id, request.stream_id)
-                    .await;
-                if matches!(result, Ok(()) | Err(ActionError::UnknownStream)) {
-                    self.forget_stream(request.service_id, request.stream_id);
-                }
-                match result {
-                    Ok(()) => Reply::CloseStream(pb::CloseStreamResponse {}),
-                    Err(e) => self.action_failure(e, request.service_id),
-                }
-            }
+        }
+    }
+
+    async fn close_stream(&self, request: pb::CloseStreamRequest) -> Reply {
+        let result = self
+            .backend
+            .actions()
+            .close_stream(request.service_id, request.stream_id)
+            .await;
+        if matches!(result, Ok(()) | Err(ActionError::UnknownStream)) {
+            self.forget_stream(request.service_id, request.stream_id);
+        }
+        match result {
+            Ok(()) => Reply::CloseStream(pb::CloseStreamResponse {}),
+            Err(e) => self.action_failure(e, request.service_id),
         }
     }
 

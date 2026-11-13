@@ -184,6 +184,7 @@ use heapless::Vec;
 use crate::action::{
     Action, ActionDescriptor, ActionError, ActionResult, RecordCollector, StreamChunk, check_args,
 };
+use crate::isolated::isolated;
 use crate::schema::{actions_valid, enums_valid, fields_valid, issues_valid};
 use crate::service::{Service, distinct_ids, service_name_is_valid};
 use crate::status::{
@@ -622,7 +623,7 @@ macro_rules! tuple_registries {
                 now_ms: u64,
             ) -> Option<ServiceStatusSummary> {
                 match index {
-                    $($index => Some(summary_of(self.$index, &tracks.$index, now_ms).await),)+
+                    $($index => Some(isolated(summary_of(self.$index, &tracks.$index, now_ms)).await),)+
                     _ => None,
                 }
             }
@@ -634,7 +635,7 @@ macro_rules! tuple_registries {
                 now_ms: u64,
             ) -> Result<ServiceStatus, StatusError> {
                 $(if $name::ID == service {
-                    return Ok(status_of(self.$index, &tracks.$index, now_ms).await);
+                    return Ok(isolated(status_of(self.$index, &tracks.$index, now_ms)).await);
                 })+
                 Err(StatusError::UnknownService)
             }
@@ -683,7 +684,7 @@ macro_rules! tuple_registries {
                 args: &[(u32, Value)],
             ) -> Result<ActionResult, ActionError> {
                 $(if $name::ID == service {
-                    return invoke_of(self.$index, action, args).await;
+                    return isolated(invoke_of(self.$index, action, args)).await;
                 })+
                 Err(ActionError::UnknownService)
             }
@@ -697,14 +698,14 @@ macro_rules! tuple_registries {
                 buf: &mut [u8],
             ) -> Result<StreamChunk, ActionError> {
                 $(if $name::ID == service {
-                    return self.$index.read_stream(stream, file, offset, buf).await;
+                    return isolated(self.$index.read_stream(stream, file, offset, buf)).await;
                 })+
                 Err(ActionError::UnknownService)
             }
 
             async fn close_stream(&self, service: u32, stream: u32) -> Result<(), ActionError> {
                 $(if $name::ID == service {
-                    return self.$index.close_stream(stream).await;
+                    return isolated(self.$index.close_stream(stream)).await;
                 })+
                 Err(ActionError::UnknownService)
             }

@@ -2,29 +2,33 @@ name: CI
 
 on:
   push:
-    paths-ignore:
-      - "**/README.md"
+    branches:
+    - 'master'
   pull_request:
   workflow_dispatch:
+
+permissions:
+  pull-requests: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
-  check-license:
+  license:
+    name: License
     runs-on: ubuntu-latest
     outputs:
       status: ${{ job.status }}
     steps:
       - name: Checkout the source code
         uses: actions/checkout@v5
-
       - name: Check license header
         run: ./scripts/check-license.sh
 
-  host:
-    name: Host
+  checks:
+    name: Checks
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -51,8 +55,8 @@ jobs:
       - name: Run command
         run: cargo ${{ matrix.action.command }} ${{ matrix.action.args }}
 
-  std:
-    name: Altruist Urban on std
+  tests:
+    name: Tests 
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -90,9 +94,15 @@ jobs:
             echo "the std platform must not depend on ESP crates, async-io or blocking"; exit 1
           fi
 
-  esp32c3:
-    name: ESP32-C3
+  firmware:
+    name: Firmware (${{ matrix.chip }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - chip: esp32c3
+            target: riscv32imc-unknown-none-elf
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -111,41 +121,121 @@ jobs:
       - name: Check
         run: cargo check-esp32c3
       - name: Check examples
-        run: cargo check -p rohi-examples --no-default-features --features esp32c3 --target riscv32imc-unknown-none-elf
+        run: cargo check -p rohi-examples --no-default-features --features ${{ matrix.chip }} --target ${{ matrix.target }} 
       - name: Clippy
-        run: cargo clippy -p altruist-urban -p rohi-examples -p rohi-hal-esp -p rohi-net-esp -p rohi-config-esp --no-default-features --features esp32c3 --target riscv32imc-unknown-none-elf -- -D warnings
+        run: cargo clippy -p altruist-urban -p rohi-examples -p rohi-hal-esp -p rohi-net-esp -p rohi-config-esp --no-default-features --features ${{ matrix.chip }} --target ${{ matrix.target }} -- -D warnings
       - name: Build
-        run: cargo build-esp32c3
+        run: cargo build-${{ matrix.chip }}
 
-  esp32c6:
-    name: ESP32-C6
+  memory-check:
+    name: Memory (${{ matrix.chip }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - chip: esp32c3
+            target: riscv32imc-unknown-none-elf
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@v1
         with:
-          target: riscv32imac-unknown-none-elf
+          target: ${{ matrix.target }}
           toolchain: 1.99.1
-          components: rust-src, clippy
+          components: rust-src
       - name: Enable caching
         uses: Swatinem/rust-cache@v2
         with:
-          key: esp32c6
-      - name: Check
-        run: cargo check-esp32c6
-      - name: Check examples
-        run: cargo check -p rohi-examples --no-default-features --features esp32c6 --target riscv32imac-unknown-none-elf
-      - name: Clippy
-        run: cargo clippy -p altruist-urban -p rohi-examples -p rohi-hal-esp -p rohi-net-esp -p rohi-config-esp --no-default-features --features esp32c6 --target riscv32imac-unknown-none-elf -- -D warnings
-      - name: Build
-        run: cargo build-esp32c6
+          key: memcheck-${{ matrix.chip }}
+      - name: Build the production and the analysis image
+        run: scripts/memcheck.sh images ${{ matrix.chip }} memcheck-out
+      - name: Build the base images (same toolchain and flags)
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git worktree add ../memcheck-base "$BASE_SHA"
+          (cd ../memcheck-base && "$GITHUB_WORKSPACE/scripts/memcheck.sh" images ${{ matrix.chip }} "$GITHUB_WORKSPACE/memcheck-base-out")
+          # The base report is produced by this commit's analyzer and budgets, so that both runs are comparable.
+          MEMCHECK_GIT_SHA="$BASE_SHA" scripts/memcheck.sh analyze ${{ matrix.chip }} memcheck-base-out || true
+      - name: Analyze
+        run: |
+          base=()
+          if [[ '${{ github.event_name }}' == 'pull_request' ]]; then
+            test -s memcheck-base-out/task-memory-${{ matrix.chip }}.json
+            base=(--base memcheck-base-out/task-memory-${{ matrix.chip }}.json)
+          fi
+          scripts/memcheck.sh analyze ${{ matrix.chip }} memcheck-out "${base[@]}"
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task-memory-${{ matrix.chip }}
+          path: memcheck-out/task-memory-${{ matrix.chip }}.json
+          if-no-files-found: error
 
-  docs:
-    name: Docs
+  memory-report:
+    name: Memory Reports
+    needs: memory-check
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.99.1
+      - name: Enable caching
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: memcheck-report
+      - name: Download the chip reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: task-memory-*
+          path: memcheck-out
+          merge-multiple: true
+      - name: Render the report
+        run: |
+          status=0
+          scripts/memcheck.sh report memcheck-out || status=$?
+          cat memcheck-out/task-memory-report.md >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task-memory-report
+          path: |
+            memcheck-out/task-memory-report.md
+            memcheck-out/task-memory-summary.md
+          if-no-files-found: error
+      - name: Comment on the pull request
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            cat memcheck-out/task-memory-summary.md
+            echo
+            echo "[Complete report](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}): the job summary and the \`task-memory-report\` artifact."
+          } > memcheck-out/task-memory-comment.md
+          gh pr comment ${{ github.event.pull_request.number }} --body-file memcheck-out/task-memory-comment.md --edit-last --create-if-none
+
+  docs-check:
+    name: Documentation 
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
