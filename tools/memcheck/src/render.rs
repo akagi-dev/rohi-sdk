@@ -17,7 +17,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 //! Markdown rendering of one or more reports.
 
-use crate::analyze::{KEPT_FRAMES, RENDERED_FRAMES};
+use crate::analyze::RENDERED_FRAMES;
 use crate::model::{CheckStatus, Comparison, Confidence, Outcome, Report, Severity};
 use std::fmt::Write;
 
@@ -284,16 +284,10 @@ fn section(out: &mut String, report: &Report) {
         {
             out.push_str("\nLargest frame reduction against the base:\n\n| change | now | function |\n|---:|---:|---|\n");
             for d in c.frame_improvements.iter().take(10) {
-                let (change, now) = match d.current {
-                    Some(now) => (signed(d.delta), format!("{now} B")),
-                    None => {
-                        let floor = d.base.map_or(0, |b| b.saturating_add_signed(d.delta));
-                        (
-                            format!("at least {} B smaller", -d.delta),
-                            format!("left the top {KEPT_FRAMES} (at most {floor} B)"),
-                        )
-                    }
-                };
+                let change = signed(d.delta);
+                let now = d
+                    .current
+                    .map_or_else(|| "unknown".to_string(), |n| format!("{n} B"));
                 let _ = writeln!(out, "| {change} | {now} | `{}` |", cell(&d.name));
             }
         }
@@ -334,5 +328,158 @@ fn section(out: &mut String, report: &Report) {
         out.push_str(
             "\nThe static evidence is within the budgets. The stack peak is not measured: attach hardware observations (see `docs/validation/resource-budget.md`).\n",
         );
+    }
+}
+
+/// Longest list in the summary; the rest is only in the full report.
+const SUMMARY_ROWS: usize = 8;
+
+/// A bound check at or above this share of its limit is reported as close to it.
+const NEAR_LIMIT_PERCENT: u64 = 90;
+
+fn with_delta(value: u64, delta: Option<i64>) -> String {
+    match delta {
+        Some(d) if d != 0 => format!("{value} B ({})", signed(d)),
+        _ => format!("{value} B"),
+    }
+}
+
+fn total_delta(comparison: Option<&Comparison>, name: &str) -> Option<i64> {
+    comparison?
+        .totals
+        .iter()
+        .find(|d| d.name == name)
+        .map(|d| d.delta)
+}
+
+/// Renders only what needs attention: the numbers of each chip in one row, then failed or close-to-limit
+/// budgets, warnings, new, removed or grown tasks, sections and frames. [`render`] has everything.
+pub fn render_summary(reports: &[Report]) -> String {
+    let mut out = String::from("# Task Memory & Stack Budget\n\n");
+    out.push_str("| chip | outcome | `.bss` | `.data` | task pools | main stack | largest frame |\n|---|---|---:|---:|---:|---:|---:|\n");
+    for report in reports {
+        let comparison = report.comparison.as_ref();
+        let _ = writeln!(
+            out,
+            "| {} | {} | {} | {} | {} | {} | {} |",
+            chip_label(&report.chip),
+            report.outcome.label(),
+            with_delta(report.ram.bss_bytes, total_delta(comparison, ".bss")),
+            with_delta(report.ram.data_bytes, total_delta(comparison, ".data")),
+            with_delta(
+                report.tasks.reserved_bytes,
+                total_delta(comparison, "task pools")
+            ),
+            report
+                .stacks
+                .main
+                .as_ref()
+                .map_or("unknown".to_string(), |m| format!(
+                    "{} B",
+                    m.allocated_bytes
+                )),
+            match (report.frames.metadata.as_str(), report.frames.top.first()) {
+                ("present", Some(f)) => format!("{} B", f.bytes),
+                _ => "unknown".to_string(),
+            },
+        );
+    }
+    for report in reports {
+        summary_section(&mut out, report);
+    }
+    out.push_str(
+        "\nA frame is the stack of one function, not the stack depth of a task. \
+         `NEEDS HARDWARE DATA` means the static evidence is within the budgets and no stack peak is measured.\n",
+    );
+    out
+}
+
+fn summary_section(out: &mut String, report: &Report) {
+    let mut lines: Vec<String> = Vec::new();
+
+    for d in &report.diagnostics {
+        let label = match d.severity {
+            Severity::Error => "error",
+            Severity::Warning => "warning",
+            Severity::Info => continue,
+        };
+        lines.push(format!("**{label}** `{}`: {}", d.code, d.message));
+    }
+
+    let mut checks = Vec::new();
+    for c in &report.checks {
+        let near = c.id != "min_main_stack"
+            && c.status == CheckStatus::Pass
+            && c.limit > 0
+            && c.actual.is_some_and(|a| {
+                a.saturating_mul(100) >= c.limit.saturating_mul(NEAR_LIMIT_PERCENT)
+            });
+        let text = match c.status {
+            CheckStatus::Fail => "**FAIL**",
+            CheckStatus::Unknown => "unknown",
+            CheckStatus::Pass if near => "close to the limit",
+            CheckStatus::Pass => continue,
+        };
+        checks.push(format!(
+            "budget `{}`: {} (limit {} B, actual {})",
+            cell(&c.id),
+            text,
+            c.limit,
+            bytes(c.actual)
+        ));
+    }
+    lines.extend(checks);
+
+    if let Some(c) = &report.comparison {
+        for name in &c.tasks_added {
+            lines.push(format!("new task: `{name}`"));
+        }
+        for name in &c.tasks_removed {
+            lines.push(format!("removed task: `{name}`"));
+        }
+        let mut changed: Vec<_> = c.task_deltas.iter().collect();
+        changed.sort_by_key(|d| std::cmp::Reverse(d.delta.unsigned_abs()));
+        for d in changed.iter().take(SUMMARY_ROWS) {
+            lines.push(format!(
+                "task `{}`: {} → {} ({})",
+                cell(&d.name),
+                bytes(d.base),
+                bytes(d.current),
+                signed(d.delta)
+            ));
+        }
+        for d in c.sections.iter().filter(|d| d.delta != 0) {
+            lines.push(format!("section `{}`: {}", d.name, signed(d.delta)));
+        }
+        for d in c.frame_regressions.iter().take(SUMMARY_ROWS) {
+            lines.push(format!(
+                "frame growth `{}`: {} B → {} B ({})",
+                cell(&d.name),
+                d.base.unwrap_or(0),
+                d.current.unwrap_or(0),
+                signed(d.delta)
+            ));
+        }
+        if c.frame_regressions.len() > SUMMARY_ROWS {
+            lines.push(format!(
+                "… and {} more frame regressions in the full report",
+                c.frame_regressions.len() - SUMMARY_ROWS
+            ));
+        }
+        if changed.len() > SUMMARY_ROWS {
+            lines.push(format!(
+                "… and {} more changed tasks in the full report",
+                changed.len() - SUMMARY_ROWS
+            ));
+        }
+    }
+
+    let _ = write!(out, "\n### {}\n\n", chip_label(&report.chip));
+    if lines.is_empty() {
+        out.push_str("No anomalies.\n");
+        return;
+    }
+    for line in &lines {
+        let _ = writeln!(out, "- {line}");
     }
 }

@@ -23,7 +23,7 @@ use rohi_memcheck::budget::BudgetFile;
 use rohi_memcheck::hardware::ObservationFile;
 use rohi_memcheck::image::Image;
 use rohi_memcheck::model::{BuildInfo, Outcome, Report};
-use rohi_memcheck::render::render;
+use rohi_memcheck::render::{render, render_summary};
 use std::error::Error;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -106,9 +106,12 @@ struct ReportArgs {
     /// JSON reports.
     #[arg(required = true)]
     reports: Vec<PathBuf>,
-    /// Where to write the Markdown.
+    /// Where to write the complete Markdown report.
     #[arg(long)]
     out: PathBuf,
+    /// Where to write the short Markdown that lists only what needs attention.
+    #[arg(long)]
+    summary_out: Option<PathBuf>,
     /// Treat the absence of hardware data as a failure.
     #[arg(long)]
     require_hardware: bool,
@@ -195,6 +198,9 @@ fn run_report(args: ReportArgs) -> Result<ExitCode, Box<dyn Error>> {
         reports.push(report);
     }
     std::fs::write(&args.out, render(&reports))?;
+    if let Some(path) = &args.summary_out {
+        std::fs::write(path, render_summary(&reports))?;
+    }
     Ok(verdict(
         reports.iter().map(|r| r.outcome),
         args.require_hardware,

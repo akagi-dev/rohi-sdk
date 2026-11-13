@@ -241,14 +241,22 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: task-memory-report
-          path: memcheck-out/task-memory-report.md
+          path: |
+            memcheck-out/task-memory-report.md
+            memcheck-out/task-memory-summary.md
           if-no-files-found: error
       - name: Comment on the pull request
         if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh pr comment ${{ github.event.pull_request.number }} --body-file memcheck-out/task-memory-report.md --edit-last --create-if-none
+        run: |
+          {
+            cat memcheck-out/task-memory-summary.md
+            echo
+            echo "[Complete report](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}): the job summary and the \`task-memory-report\` artifact."
+          } > memcheck-out/task-memory-comment.md
+          gh pr comment ${{ github.event.pull_request.number }} --body-file memcheck-out/task-memory-comment.md --edit-last --create-if-none
 
   docs-check:
     name: Documentation 

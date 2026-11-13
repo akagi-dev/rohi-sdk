@@ -159,6 +159,20 @@
         "bytes": 48
       }
     ],
+    "all": [
+      {
+        "symbol": "rohi_logging::service::collect",
+        "bytes": 2100
+      },
+      {
+        "symbol": "rohi_control::controller::handle",
+        "bytes": 1400
+      },
+      {
+        "symbol": "app::main",
+        "bytes": 48
+      }
+    ],
     "without_frame": [
       {
         "symbol": "vendor_blob",

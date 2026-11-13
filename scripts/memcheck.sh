@@ -3,7 +3,7 @@
 #
 #   scripts/memcheck.sh images  <esp32c3|esp32c6> <out-dir>        build the production and the analysis ELF
 #   scripts/memcheck.sh analyze <esp32c3|esp32c6> <out-dir> [memcheck analyze options, e.g. --base base.json]
-#   scripts/memcheck.sh report  <out-dir> [memcheck report options]  render task-memory-report.md
+#   scripts/memcheck.sh report  <out-dir> [memcheck report options]  render task-memory-report.md (complete) and task-memory-summary.md (anomalies only)
 #
 # The analysis ELF is the production build plus `-Z emit-stack-sizes` (RUSTC_BOOTSTRAP=1 enables it on the pinned
 # stable toolchain, so both images use the same compiler); its `.stack_sizes` section feeds the frame report. The
@@ -23,7 +23,8 @@ memcheck() {
 
 if [[ $cmd == report ]]; then
     out="${1:?out-dir}"; shift
-    memcheck report "$out"/task-memory-esp32c*.json --out "$out/task-memory-report.md" "$@"
+    memcheck report "$out"/task-memory-esp32c*.json --out "$out/task-memory-report.md" \
+        --summary-out "$out/task-memory-summary.md" "$@"
     exit
 fi
 

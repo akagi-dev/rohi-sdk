@@ -21,7 +21,7 @@ use common::{Fixture, Function, budget, run, run_with, run_with_limits};
 use rohi_memcheck::budget::{ApprovedGrowth, BudgetFile};
 use rohi_memcheck::hardware::Observation;
 use rohi_memcheck::model::{CheckStatus, Confidence, Outcome, Report, Severity};
-use rohi_memcheck::render::render;
+use rohi_memcheck::render::{render, render_summary};
 
 fn check<'a>(report: &'a Report, id: &str) -> &'a rohi_memcheck::model::Check {
     report
@@ -353,7 +353,7 @@ fn a_small_stack_uses_the_four_kib_floor() {
 }
 
 #[test]
-fn an_observation_of_another_build_is_flagged() {
+fn an_observation_of_another_build_is_ignored() {
     let mut obs = observation(Some(1000));
     obs.firmware_sha = Some("other".to_string());
     let report = run(&Fixture::firmware(), None, &[obs]);
@@ -363,6 +363,51 @@ fn an_observation_of_another_build_is_flagged() {
             .iter()
             .any(|d| d.code == "hardware-sha-mismatch")
     );
+    assert!(report.hardware.is_empty());
+    assert_eq!(report.outcome, Outcome::NeedsHardwareData);
+}
+
+fn many_functions(count: usize, grown: Option<(usize, u64)>) -> Fixture {
+    let mut fixture = Fixture::firmware();
+    for i in 0..count {
+        let frame = match grown {
+            Some((index, bytes)) if index == i => bytes,
+            _ => 100 + i as u64,
+        };
+        fixture.functions.push(Function {
+            path: Box::leak(format!("app::filler::f{i:03}").into_boxed_str()),
+            code: 10,
+            frame: Some(frame),
+        });
+    }
+    fixture
+}
+
+#[test]
+fn growth_of_a_frame_outside_the_displayed_ranking_is_found() {
+    let base = run(&many_functions(80, None), None, &[]);
+    // f000 has the smallest frame of all and is far outside the kept top list.
+    let report = run(&many_functions(80, Some((0, 1900))), Some(&base), &[]);
+    let comparison = report.comparison.as_ref().expect("compared");
+    let found = comparison
+        .frame_regressions
+        .iter()
+        .find(|d| d.name.ends_with("f000"))
+        .expect("regression of f000");
+    assert_eq!((found.base, found.current), (Some(100), Some(1900)));
+    assert_eq!(
+        check(&report, "growth:frame:app::filler::f000").status,
+        CheckStatus::Fail
+    );
+}
+
+#[test]
+fn a_function_missing_from_the_current_report_is_not_called_a_reduction() {
+    let base = run(&many_functions(5, None), None, &[]);
+    let report = run(&many_functions(4, None), Some(&base), &[]);
+    let comparison = report.comparison.as_ref().expect("compared");
+    assert!(comparison.frame_improvements.is_empty());
+    assert!(comparison.frame_regressions.is_empty());
 }
 
 #[test]
@@ -450,4 +495,24 @@ reason = "execute was inlined into it; its own frame shrank by far more"
     .expect("parses");
     assert_eq!(file.regression.approved_frame_growth[0].max_growth, 2048);
     assert!(BudgetFile::parse("[[regression.approved_frame_growth]]\nsymbol = \"x\"\n").is_err());
+}
+
+#[test]
+fn the_summary_lists_only_anomalies() {
+    let quiet = run(&Fixture::firmware(), None, &[]);
+    let summary = render_summary(std::slice::from_ref(&quiet));
+    assert!(summary.contains("No anomalies."), "{summary}");
+    assert!(!summary.contains("Largest statics"));
+    assert!(summary.len() < render(std::slice::from_ref(&quiet)).len() / 2);
+
+    let base = run(&Fixture::firmware(), None, &[]);
+    let mut fixture = Fixture::firmware();
+    fixture.tasks[0].2 += 600;
+    fixture.bss += 600;
+    fixture.functions[1].frame = Some(2100 + 300);
+    let report = run(&fixture, Some(&base), &[]);
+    let summary = render_summary(std::slice::from_ref(&report));
+    golden("report-esp32c3-summary.md", &summary);
+    assert!(summary.contains("**FAIL**"));
+    assert!(summary.contains("frame growth `rohi_logging::service::collect`"));
 }

@@ -128,48 +128,43 @@ pub fn compare(current: &Report, base: &Report) -> Comparison {
         })
         .collect();
 
+    // Reports written before `all` existed only have the displayed ranking.
     let frames = |r: &Report| -> BTreeMap<String, u64> {
-        r.frames
-            .top
-            .iter()
-            .map(|f| (f.symbol.clone(), f.bytes))
-            .collect()
+        let list = if r.frames.all.is_empty() {
+            &r.frames.top
+        } else {
+            &r.frames.all
+        };
+        let mut map = BTreeMap::new();
+        for f in list {
+            let bytes = map.entry(f.symbol.clone()).or_insert(0);
+            *bytes = f.bytes.max(*bytes);
+        }
+        map
     };
     let (now, then) = (frames(current), frames(base));
-    let mut frame_regressions: Vec<Delta> = now
-        .iter()
-        .filter_map(|(symbol, bytes)| {
-            let before = then.get(symbol)?;
-            (bytes > before).then(|| delta(symbol.clone(), Some(*before), Some(*bytes)))
-        })
-        .collect();
-    frame_regressions.sort_by(|a, b| b.delta.cmp(&a.delta).then_with(|| a.name.cmp(&b.name)));
-    let mut frame_improvements: Vec<Delta> = now
-        .iter()
-        .filter_map(|(symbol, bytes)| {
-            let before = then.get(symbol)?;
-            (bytes < before).then(|| delta(symbol.clone(), Some(*before), Some(*bytes)))
-        })
-        .collect();
-    // A frame that fell out of the kept list is at most as large as the smallest kept one.
-    let floor = if current.frames.top.len() >= crate::analyze::KEPT_FRAMES {
-        current.frames.top.last().map_or(0, |f| f.bytes)
-    } else {
-        0
+    // A function absent on either side has an unknown frame there (removed, renamed or without metadata): no change is claimed.
+    let changes = |grew: bool| -> Vec<Delta> {
+        let mut out: Vec<Delta> = now
+            .iter()
+            .filter_map(|(symbol, bytes)| {
+                let before = then.get(symbol)?;
+                (if grew { bytes > before } else { bytes < before })
+                    .then(|| delta(symbol.clone(), Some(*before), Some(*bytes)))
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            let order = if grew {
+                b.delta.cmp(&a.delta)
+            } else {
+                a.delta.cmp(&b.delta)
+            };
+            order.then_with(|| a.name.cmp(&b.name))
+        });
+        out
     };
-    if current.frames.metadata == "present" && base.frames.metadata == "present" {
-        for (symbol, before) in &then {
-            if !now.contains_key(symbol) && *before > floor {
-                frame_improvements.push(Delta {
-                    name: symbol.clone(),
-                    base: Some(*before),
-                    current: None,
-                    delta: signed(floor) - signed(*before),
-                });
-            }
-        }
-    }
-    frame_improvements.sort_by(|a, b| a.delta.cmp(&b.delta).then_with(|| a.name.cmp(&b.name)));
+    let frame_regressions = changes(true);
+    let frame_improvements = changes(false);
 
     Comparison {
         base_git_sha: base.build.git_sha.clone(),

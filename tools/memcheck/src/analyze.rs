@@ -498,6 +498,7 @@ fn frames_report(inputs: &Inputs<'_>, diagnostics: &mut Vec<Diagnostic>) -> Fram
             with_frame: 0,
             coverage_permille: None,
             top: Vec::new(),
+            all: Vec::new(),
             without_frame: Vec::new(),
             focus: Vec::new(),
         };
@@ -557,6 +558,7 @@ fn frames_report(inputs: &Inputs<'_>, diagnostics: &mut Vec<Diagnostic>) -> Fram
     let with_frame = frames.len() as u64;
     let coverage_permille =
         (total > 0).then(|| u32::try_from(with_frame * 1000 / total).unwrap_or(1000));
+    let all = frames.clone();
     frames.truncate(KEPT_FRAMES);
     uncovered.truncate(KEPT_UNCOVERED);
     FramesReport {
@@ -565,6 +567,7 @@ fn frames_report(inputs: &Inputs<'_>, diagnostics: &mut Vec<Diagnostic>) -> Fram
         with_frame,
         coverage_permille,
         top: frames,
+        all,
         without_frame: uncovered,
         focus,
     }
@@ -579,7 +582,20 @@ fn hardware_results(
 ) -> Vec<HardwareResult> {
     observations
         .iter()
-        .map(|o| {
+        .filter_map(|o| {
+            // A measurement of another firmware says nothing about this image.
+            if let (Some(sha), Some(built)) = (&o.firmware_sha, &build.git_sha)
+                && sha != built
+            {
+                diagnostics.push(warning(
+                    "hardware-sha-mismatch",
+                    format!(
+                        "the observation `{}` is for firmware {sha}, the analyzed image is {built}; it is ignored",
+                        o.scenario
+                    ),
+                ));
+                return None;
+            }
             let allocated = (o.stack == MAIN_STACK)
                 .then_some(main.map(|m| m.allocated_bytes))
                 .flatten();
@@ -597,17 +613,6 @@ fn hardware_results(
                 (Some(h), Some(m)) => Some(h >= i64::try_from(m).unwrap_or(i64::MAX)),
                 _ => None,
             };
-            if let (Some(sha), Some(built)) = (&o.firmware_sha, &build.git_sha)
-                && sha != built
-            {
-                diagnostics.push(warning(
-                    "hardware-sha-mismatch",
-                    format!(
-                        "the observation `{}` is for firmware {sha}, the analyzed image is {built}",
-                        o.scenario
-                    ),
-                ));
-            }
             if margin_ok == Some(false) {
                 checks.push(Check {
                     id: format!("hardware_margin:{}", o.scenario),
@@ -620,7 +625,7 @@ fn hardware_results(
                     status: CheckStatus::Fail,
                 });
             }
-            HardwareResult {
+            Some(HardwareResult {
                 stack: o.stack.clone(),
                 scenario: o.scenario.clone(),
                 firmware_sha: o.firmware_sha.clone(),
@@ -633,7 +638,7 @@ fn hardware_results(
                     .clone()
                     .unwrap_or_else(|| "not_measured".to_string()),
                 notes: o.notes.clone(),
-            }
+            })
         })
         .collect()
 }

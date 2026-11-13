@@ -235,6 +235,9 @@ pub struct FramesReport {
     pub coverage_permille: Option<u32>,
     /// Largest frames first.
     pub top: Vec<Frame>,
+    /// Every function with a frame, largest first. The comparison with the base uses it; `top` is for display.
+    #[serde(default)]
+    pub all: Vec<Frame>,
     /// Largest functions without a stack-size entry (code size, not frame).
     pub without_frame: Vec<CodeSize>,
     /// Frames of the configured focus areas.

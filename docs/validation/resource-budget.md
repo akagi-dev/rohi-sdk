@@ -140,11 +140,15 @@ independently of this measurement.
 `scripts/memcheck.sh` builds the Altruist Urban firmware for a chip twice (the production image and an analysis image
 with `-Z emit-stack-sizes`, same compiler and flags otherwise) and runs `memcheck` (`tools/memcheck`) on them. CI does
 this for ESP32-C3 and ESP32-C6 (job `Memcheck`), publishes `task-memory-esp32c3.json`, `task-memory-esp32c6.json` and
-`task-memory-report.md`, and compares a pull request with its base branch built from identical inputs.
+`task-memory-report.md` (complete) and `task-memory-summary.md` (only what needs attention), and compares a pull request
+with its base branch built from identical inputs. The pull request comment is the summary: one row of numbers per chip, then
+failed or close-to-limit (90 %) budgets, errors and warnings, new, removed and grown tasks, changed sections and frame
+growth, each list cut after eight entries. The complete report is the job summary of the run and the `task-memory-report`
+artifact; the comment links to it.
 
 ```bash
 scripts/memcheck.sh images esp32c3 out && scripts/memcheck.sh analyze esp32c3 out   # one chip
-scripts/memcheck.sh report out                                                       # task-memory-report.md
+scripts/memcheck.sh report out                                      # task-memory-report.md and task-memory-summary.md
 ```
 
 What each number is, and what it is not:
@@ -202,7 +206,7 @@ Omit `peak_used_bytes` for a scenario that was not measured (`not measured` is n
 observation sets a justified `required_margin_bytes`. Embassy tasks share the main stack, so there is no per-task stack
 to measure; per-task attribution would need executor-aware instrumentation. The scenarios to record are the ones in
 [Measuring the control task](#measuring-the-control-task) plus `rohi status logging`, `rohi logs clear --yes`, a log
-flush with compression and BLE traffic. Without an observation the outcome is `NEEDS HARDWARE DATA`, never `PASS`.
+flush with compression and BLE traffic. Without an observation the outcome is `NEEDS HARDWARE DATA`, never `PASS`. An observation whose `firmware_sha` differs from the analyzed image (`--git-sha`) is ignored with a `hardware-sha-mismatch` warning, so it cannot turn the outcome into `PASS`.
 
 ### Stack pressure of logging and the Control API (#63)
 
