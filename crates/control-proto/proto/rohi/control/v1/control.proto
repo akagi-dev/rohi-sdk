@@ -50,8 +50,8 @@ message Request {
     ListActionsRequest list_actions = 20;
     GetActionSchemaRequest get_action_schema = 21;
     InvokeActionRequest invoke_action = 22;
-    ReadStreamRequest read_stream = 25;
-    CloseStreamRequest close_stream = 26;
+    ReadStreamRequest read_stream = 23;
+    CloseStreamRequest close_stream = 24;
   }
 }
 
@@ -75,11 +75,11 @@ message Response {
     ListActionsResponse list_actions = 20;
     GetActionSchemaResponse get_action_schema = 21;
     InvokeActionResponse invoke_action = 22;
-    ReadStreamResponse read_stream = 25;
-    CloseStreamResponse close_stream = 26;
+    ReadStreamResponse read_stream = 23;
+    CloseStreamResponse close_stream = 24;
     // The answer of `InvokeAction` when the result does not fit one message:
     // instead of `invoke_action`, never both.
-    StreamInfo action_stream = 27;
+    StreamInfo action_stream = 25;
   }
 }
 
@@ -521,7 +521,7 @@ message ActionInfo {
   bool returns_stream = 7;
   // What the link must be allowed to do to invoke the action; never
   // `ACTION_ACCESS_UNSPECIFIED` from a device.
-  ActionAccess access = 8;
+  ActionAccess access = 4;
 }
 
 message ListActionsRequest {}

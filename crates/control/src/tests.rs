@@ -683,25 +683,6 @@ fn the_declared_access_decides_the_privilege_not_the_secret_flag() {
 }
 
 #[test]
-fn the_protocol_version_stays_one_and_the_removed_requests_are_unsupported() {
-    assert_eq!(PROTOCOL_VERSION, 1);
-    controller!(controller, OpenPolicy);
-    // The former FactoryReset (23) and Reboot (24) requests decode as a request
-    // without a variant: there is no translation to actions.
-    // Tags 186 and 194 as varints, then an empty message.
-    for (field, tag) in [(23, [0xba, 0x01]), (24, [0xc2, 0x01])] {
-        let wire = [0x08, 0x01, 0x10, 0x07, tag[0], tag[1], 0x00];
-        let mut out = [0u8; limits::MAX_RESPONSE_LEN];
-        let n = block_on(controller.handle(&PLAIN, &wire, &mut out));
-        let response: pb::Response = decode(&out[..n]).unwrap();
-        let Some(Reply::Error(error)) = response.response else {
-            panic!()
-        };
-        assert_eq!(error.code, pb::ErrorCode::NotSupported, "field {field}");
-    }
-}
-
-#[test]
 fn a_value_without_content_is_invalid() {
     controller!(controller, OpenPolicy);
     let empty = pb::ConfigMutation {

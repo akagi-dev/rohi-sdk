@@ -109,7 +109,7 @@
 //! | config | `ListConfigSections` (11), `GetConfigSchema` (12), `GetConfigSection` (13), `PatchConfigSection` (14), `ResetConfigSection` (15) |
 //! | status | `GetServicesStatus` (17), `GetServiceSchema` (18), `GetServiceStatus` (19) |
 //! | actions | `ListActions` (20), `GetActionSchema` (21), `InvokeAction` (22) |
-//! | stream | `ReadStream` (25), `CloseStream` (26); the files of a stream come as `action_stream` (27), the answer of `InvokeAction` |
+//! | stream | `ReadStream` (23), `CloseStream` (24); the files of a stream come as `action_stream` (25), the answer of `InvokeAction` |
 //!
 //! **Schemas drive clients.** The protocol knows no device module. A device
 //! publishes descriptors (`FieldDescriptor`, `ConfigFieldDescriptor`,
@@ -179,12 +179,12 @@
 //!   `protocol_version` differs from the one in the request answers
 //!   `NotSupported`; this version is `1`.
 //! * **Breaking changes inside version 1.** The dedicated `FactoryReset` and
-//!   `Reboot` requests (field numbers 23 and 24 of the `Request` and
-//!   `Response` envelopes) were removed: both
-//!   operations are actions of the `system` service. `ActionInfo.privileged`
-//!   (4) was replaced by `ActionInfo.access` (8). The version stays `1`; there
-//!   is no negotiation or fallback, and clients built against the previous
-//!   schema are unsupported.
+//!   `Reboot` requests were removed: both operations are actions of the
+//!   `system` service. Their former field numbers 23 and 24 are reused by
+//!   `ReadStream` and `CloseStream`; `action_stream` uses field 25.
+//!   `ActionInfo.access` reuses the former `privileged` field number (4). The
+//!   version stays `1`; there is no negotiation or fallback, and clients built
+//!   against the previous schema are unsupported.
 //! * **Not verified here.** The encoding is plain protobuf 3; this crate
 //!   tests golden bytes of representative messages, not interoperability with
 //!   other protobuf implementations.
