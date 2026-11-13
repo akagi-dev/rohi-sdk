@@ -1876,11 +1876,31 @@ async fn option_like_values_need_dashes() {
 
     let outcome = run(&bench, &["example", "configure", "--odd", "on", "3"]).await;
     assert!(
-        outcome.message().contains("unknown option `--odd`"),
+        outcome.message().contains("unknown option"),
+        "{}",
+        outcome.message()
+    );
+    assert!(
+        !outcome.message().contains("--odd"),
         "{}",
         outcome.message()
     );
     assert_eq!(calls(&bench).len(), 3);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn option_like_secrets_are_not_echoed_by_the_positional_parser() {
+    let bench = Bench::new();
+    let secret = "--hidden-secret";
+    let outcome = run(&bench, &["identity", "provision", secret]).await;
+    assert!(matches!(outcome.error(), CliError::Usage(_)));
+    assert!(
+        outcome.message().contains("unknown option"),
+        "{}",
+        outcome.message()
+    );
+    assert!(!outcome.message().contains(secret), "{}", outcome.message());
+    assert!(bench.identity.0.borrow().is_none());
 }
 
 #[tokio::test(flavor = "current_thread")]

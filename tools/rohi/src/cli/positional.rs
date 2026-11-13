@@ -57,9 +57,9 @@ pub fn words(tail: &[String]) -> Result<Words, CliError> {
         } else if options && (word == "-h" || word == "--help") {
             words.help = true;
         } else if options && is_option(word) {
-            return Err(CliError::Usage(format!(
-                "unknown option `{word}`; put `--` before a value that starts with `-`"
-            )));
+            return Err(CliError::Usage(
+                "unknown option; put `--` before a value that starts with `-`".into(),
+            ));
         } else if words.action.is_none() && options {
             words.action = Some(word.clone());
         } else {
@@ -231,7 +231,11 @@ mod tests {
         let words = words_of("example set -5 -.5 -").unwrap();
         assert_eq!(words.args, ["-5", "-.5", "-"]);
         let error = words_of("example set --odd").unwrap_err().to_string();
-        assert!(error.contains("`--odd`") && error.contains("--"), "{error}");
+        assert!(
+            error.contains("unknown option") && error.contains("--"),
+            "{error}"
+        );
+        assert!(!error.contains("--odd"), "{error}");
         assert!(words_of("example -x").is_err());
     }
 
