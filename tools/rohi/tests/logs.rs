@@ -31,7 +31,7 @@ use clap::Parser;
 use common::link;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use rohi::cli::{Cli, CliError, Ctx, Io, execute};
-use rohi::{Device, Error};
+use rohi::Device;
 use rohi_control::{Controller, Device as BackendDevice, DeviceInfo, OpenPolicy};
 use rohi_control_ble::ControlBle;
 use rohi_logging::segment::SegmentDecoder;
