@@ -8,15 +8,13 @@
 
 # Use a Device
 
-- [Supported devices](support/overview.md)
-  - [Support matrix](support/matrix.md)
 - [Getting started](use/getting-started.md)
 - [Desktop application](use/desktop/index.md)
   - [Discovery & connection](use/desktop/discovery.md)
   - [Configuration](use/desktop/configuration.md)
   - [Status & diagnostics](use/desktop/status.md)
   - [Actions](use/desktop/actions.md)
-  - [Device log](use/desktop/logs.md)
+  - [Logging](use/desktop/logs.md)
   - [Automation](use/desktop/automation.md)
 - [Mobile application](use/mobile.md)
 
@@ -46,6 +44,8 @@
 
 # Verify & Share
 
+- [Supported devices](support/overview.md)
+  - [Support matrix](support/matrix.md)
 - [Compatibility](verify/compatibility.md)
 - [Validation](verify/validation.md)
   - [Host testing](validation/host-testing.md)
