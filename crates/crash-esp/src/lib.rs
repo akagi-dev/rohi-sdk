@@ -43,7 +43,7 @@
 //! (`Logging::persist` of `rohi-logging`).
 //!
 //! The handler is **not** installed by merely linking this crate: the
-//! firmware binary defines the `#[panic_handler]` and calls [`on_panic`], so
+//! firmware binary defines the `#[panic_handler]` and calls `on_panic`, so
 //! there is exactly one handler whatever else is linked (the binary replaces
 //! `esp-backtrace`'s `panic-handler` feature, which the workspace no longer
 //! enables).
