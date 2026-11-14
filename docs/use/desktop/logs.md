@@ -43,9 +43,9 @@ prints one such document per line.
 | Field | Meaning |
 |-------|---------|
 | `level` | `off`, `error`, `warn`, `info` or `debug`. The default is `warn` in a release build and `info` in a development build. Only the persistent log is affected, not the serial console |
-| `storage` | `internal` (flash; a file on the host). `sd` is selectable but this firmware has no card: the service then reports `storage_unavailable` and does **not** fall back to flash |
-| `compression` | `lz4` or `none`, for **new** segments only; old segments keep their form |
-| `retention_bytes`, `segment_bytes` | the budget of the history and the size at which a file is closed; the oldest files are dropped when the budget is used |
+| `storage` | an enum: `internal` (0, flash; a file on the host) or `sd` (1). `sd` is selectable but this firmware has no card: the service then reports `storage_unavailable` and does **not** fall back to flash |
+| `compression` | an enum: `none` (0) or `lz4` (1), for **new** segments only; old segments keep their form |
+| `retention_bytes`, `segment_bytes` | the budget of the history and the size at which a file is closed; the oldest files are dropped when the budget is used. The chip sets the defaults, and a value you set stays in force: on the ESP32-C3 the `rohi-log` partition is 256 KiB, so the default is 256 KiB in 16 KiB segments (the partition is not the journal: two 4 KiB sectors hold the format header, so 15 full segments, 240 KiB, are retained); on the ESP32-C6 and the host it is 1 MiB in 64 KiB segments, below the limit of 24 segments. A value you set is kept as it is, and one that is only valid next to the former 8 KiB segment (a budget below 128 KiB) makes the section invalid until you also set `segment_bytes` or remove it |
 | `flush_interval` | the longest a record waits in RAM before it is written |
 
 Records are written in small batches and files are compressed one batch at a time, so a power loss costs at most the
@@ -78,7 +78,19 @@ until the download ends, so records logged meanwhile are not part of it. `rohi` 
 ## Clear
 
 `rohi logs clear` removes the history of the active storage after you confirm (`--yes` skips the question, a script
-must pass it). It does not touch the configuration, the identity or another storage.
+must pass it). It does not touch the configuration, the identity or another storage. It **destroys all retained log history**
+and physically erases the whole log region of the flash, one sector at a time, not only the headers of the files, so it takes
+longer than the other actions (the time on a device is not measured yet). The `history` number grows, the log starts again
+empty and keeps working; a reset in the middle of a clear leaves either the old history or an empty one, never a part of it.
+A clear is refused as busy while a download holds files.
+
+## First start and upgrades
+
+The log region carries a *format header* in its last two sectors. A region without a valid one (a new device, a partition table that
+moved the region over other data, an interrupted format) is erased once, sector by sector, and then the header is written; a region with a valid
+header is never erased by a start, whatever else happens to be damaged in it. Only the `rohi-log` partition is formatted. The region
+moved to the end of the flash (the last 256 KiB on the ESP32-C3, the last 1 MiB, grown from 256 KiB, on the ESP32-C6): the old history is **not** migrated and the first start of the new firmware formats the new region
+(see the [firmware README](https://github.com/akagi-dev/rohi-sdk/blob/master/firmwares/altruist-urban/README.md)). Records logged while it runs wait in a bounded queue.
 
 ## Secrets
 

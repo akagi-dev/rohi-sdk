@@ -83,8 +83,19 @@ impl<I2C: I2c, D: DelayNs> I2c for TimeoutI2c<I2C, D> {
         )
         .await
         {
-            Ok(result) => result.map_err(TimeoutError::Bus),
-            Err(_) => Err(TimeoutError::TimedOut),
+            Ok(result) => result.map_err(|e| {
+                log::debug!(target: "sensor", "I2C transaction failed (addr={:#04x} err={:?})", address, e);
+                TimeoutError::Bus(e)
+            }),
+            Err(_) => {
+                log::debug!(
+                    target: "sensor",
+                    "I2C transaction timed out (addr={:#04x} timeout_ms={})",
+                    address,
+                    self.timeout_ms
+                );
+                Err(TimeoutError::TimedOut)
+            }
         }
     }
 }

@@ -62,26 +62,40 @@ async fn provisioned(device: &mut Device<TcpLink>) -> bool {
     )
 }
 
-/// The text of the retained log records, read through the stream plane.
+/// Every retained record: one `logging.read` returns about one `READ_BYTES` of
+/// text, so it asks again after the last sequence.
 async fn log_text(device: &mut Device<TcpLink>) -> String {
     let arg = |field_id, value| FieldValue {
         field_id,
         value: Value::U64(value),
     };
-    let outcome = device
-        .invoke_outcome(
-            "logging",
-            "read",
-            &[arg(read_arg::AFTER, 0), arg(read_arg::LIMIT, 500)],
-        )
-        .await
-        .unwrap();
-    let ActionOutcome::Stream(stream) = outcome else {
-        panic!("logging.read returned records");
-    };
-    let data = read_file(device, &stream).await;
-    device.close_stream(&stream).await.unwrap();
-    String::from_utf8(data).unwrap()
+    let mut text = String::new();
+    let mut after = 0;
+    loop {
+        let outcome = device
+            .invoke_outcome(
+                "logging",
+                "read",
+                &[arg(read_arg::AFTER, after), arg(read_arg::LIMIT, 500)],
+            )
+            .await
+            .unwrap();
+        let ActionOutcome::Stream(stream) = outcome else {
+            panic!("logging.read returned records");
+        };
+        let data = read_file(device, &stream).await;
+        device.close_stream(&stream).await.unwrap();
+        let page = String::from_utf8(data).unwrap();
+        let Some(last) = page
+            .lines()
+            .filter_map(|line| line.split(' ').next()?.parse::<u64>().ok())
+            .next_back()
+        else {
+            return text;
+        };
+        after = last;
+        text.push_str(&page);
+    }
 }
 
 async fn read_file(device: &mut Device<TcpLink>, stream: &Stream) -> Vec<u8> {
@@ -106,13 +120,14 @@ fn stored_sections(storage: &std::path::Path) -> usize {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn system_is_an_action_only_service_with_explicit_access() {
+async fn system_has_explicit_access_and_a_status_without_crash_data_on_the_host() {
     let sim = Sim::start(&Launch::new());
     let mut device = sim.device().await;
 
-    // No status: the service is not in the list of services.
+    // The status exists for the reset and crash report of a device with
+    // retained memory; the host has none, so it has no fields.
     let services = device.services().await.unwrap();
-    assert!(services.iter().all(|service| service.name != "system"));
+    assert!(services.iter().any(|service| service.name == "system"));
 
     let actions = device.actions().await.unwrap();
     let system: Vec<_> = actions

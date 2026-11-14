@@ -42,11 +42,11 @@ use core::cell::Cell;
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_time::Delay;
-use log::{LevelFilter, Log, Metadata, Record};
+use log::{LevelFilter, Log, Metadata, Record, warn};
 use rohi_sdk::esp::config::FlashRegion;
 use rohi_sdk::esp::config::esp::PartitionError;
 use rohi_sdk::logging::storage::{FlashLogStorage, FlashMedium, RingStorage, SECTOR_SIZE};
-use rohi_sdk::logging::{Backends, LogStorageKind, Logging, LoggingConfig};
+use rohi_sdk::logging::{Backends, LogRecord, LogStorageKind, Logging, LoggingConfig};
 
 use super::flash::Flash;
 use crate::logging::{self as shared, INITIAL};
@@ -66,18 +66,47 @@ impl Backends for FlashBackends {
     type Storage = FlashLogStorage<Flash>;
 
     async fn open(&mut self, kind: LogStorageKind) -> Option<Self::Storage> {
+        // Called by the log task with the log lock held.
+        #[cfg(feature = "crash-inject")]
+        super::inject::at("logging");
         match kind {
             LogStorageKind::Internal => {
                 let (flash, region) = PARTITION.lock(Cell::get)?;
-                let region = region.ok()?;
+                let region = match region {
+                    Ok(region) => region,
+                    Err(error) => {
+                        warn_unusable("no usable rohi-log partition", &error);
+                        return None;
+                    }
+                };
                 let sectors = region.length / SECTOR_SIZE;
-                let medium = FlashMedium::new(flash, region.offset as u32, sectors as u32).ok()?;
-                Some(RingStorage::new(medium))
+                match FlashMedium::new(flash, region.offset as u32, sectors as u32) {
+                    Ok(medium) => Some(RingStorage::new(medium)),
+                    Err(error) => {
+                        warn_unusable("rohi-log is not a valid region", &error);
+                        None
+                    }
+                }
             }
             // No SD card on this board.
             LogStorageKind::Sd => None,
         }
     }
+
+    fn boot_record(&mut self, index: usize) -> Option<LogRecord> {
+        super::crash::boot_record(index)
+    }
+
+    fn boot_records_written(&mut self) {
+        super::crash::boot_records_written();
+    }
+}
+
+// Out of line, so that the report does not enlarge the future of the task.
+#[cold]
+#[inline(never)]
+fn warn_unusable(what: &str, error: &dyn core::fmt::Debug) {
+    warn!("Log storage: {what}: {error:?}");
 }
 
 /// The logging runtime of the firmware.

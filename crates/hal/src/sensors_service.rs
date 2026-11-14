@@ -30,7 +30,7 @@ use rohi_service::{
 };
 
 use crate::measurements::{Measurement, MeasurementsSnapshot};
-use crate::runtime::MeasurementHandle;
+use crate::runtime::{MeasurementHandle, MeasurementServiceError};
 use crate::sensor::{SensorKind, SensorState};
 use crate::units::{
     Aqi, Celsius, Decibels, MicrogramsPerCubicMeter, Pascal, Ppb, Ppm, PulseCount, RadiationLevel,
@@ -203,6 +203,12 @@ fn summary(snapshot: &MeasurementsSnapshot) -> ServiceSummary {
     ServiceSummary::new(ServiceState::Running, health, ready)
 }
 
+#[cold]
+#[inline(never)]
+fn warn_unavailable(what: &str, error: MeasurementServiceError) {
+    log::warn!(target: "sensor", "Snapshot unavailable for {} (err={:?})", what, error);
+}
+
 /// The measurement runtime as the `sensors` service of the status plane.
 ///
 /// Wraps a [`MeasurementHandle`]: every request takes a fresh snapshot from the
@@ -237,13 +243,20 @@ impl<M: RawMutex> Status for SensorsService<'_, M> {
         match self.0.snapshot().await {
             Ok(snapshot) => summary(&snapshot),
             // The measurement owner did not answer.
-            Err(_) => ServiceSummary::new(ServiceState::Running, ServiceHealth::Unknown, false),
+            Err(e) => {
+                warn_unavailable("summary", e);
+                ServiceSummary::new(ServiceState::Running, ServiceHealth::Unknown, false)
+            }
         }
     }
 
     async fn issues(&self, out: &mut Vec<Issue, MAX_ISSUES>) {
-        let Ok(snapshot) = self.0.snapshot().await else {
-            return;
+        let snapshot = match self.0.snapshot().await {
+            Ok(snapshot) => snapshot,
+            Err(e) => {
+                warn_unavailable("issues", e);
+                return;
+            }
         };
         for status in snapshot.sensor_statuses.iter() {
             let failed = status.state == SensorState::Error;
@@ -268,7 +281,10 @@ impl<M: RawMutex> Status for SensorsService<'_, M> {
     async fn status(&self, out: &mut impl StatusWriter) -> Result<(), WriteError> {
         match self.0.snapshot().await {
             Ok(snapshot) => write(out, &snapshot),
-            Err(_) => Ok(()),
+            Err(e) => {
+                warn_unavailable("status", e);
+                Ok(())
+            }
         }
     }
 }

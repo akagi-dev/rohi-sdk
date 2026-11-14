@@ -216,12 +216,37 @@ impl NtpServersConfig {
 /// A server name as text.
 impl TextValue for ServerName {
     fn from_text(text: &str) -> Option<Self> {
-        Self::new(text)
+        let name = Self::new(text);
+        if name.is_none() {
+            log_invalid_name(text);
+        }
+        name
     }
 
     fn as_text(&self) -> Option<&str> {
         Some(self.as_str())
     }
+}
+
+#[cold]
+#[inline(never)]
+fn log_invalid_name(text: &str) {
+    log::warn!(
+        target: "ntp",
+        "Rejected invalid server name (len_b={})",
+        text.len()
+    );
+}
+
+#[cold]
+#[inline(never)]
+fn log_invalid_section(first_server_set: bool, names_valid: bool) {
+    log::warn!(
+        target: "ntp",
+        "Servers section rejected (first_server_set={} names_valid={})",
+        first_server_set,
+        names_valid
+    );
 }
 
 /// The first server is required and every name must be valid.
@@ -238,6 +263,7 @@ fn validate_section(config: &NtpServersConfig) -> Result<(), FieldError> {
     if config.server1.is_some() && names_valid {
         Ok(())
     } else {
+        log_invalid_section(config.server1.is_some(), names_valid);
         Err(FieldError::Invalid)
     }
 }

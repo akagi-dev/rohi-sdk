@@ -37,6 +37,12 @@ use rohi_hal::sensors::noise::AudioSource;
 /// two awaits.
 const SAMPLES_PER_READ: usize = 64;
 
+#[cold]
+#[inline(never)]
+fn warn_dma(what: &str, error: impl core::fmt::Debug) {
+    log::warn!(target: "audio", "{} (err={:?})", what, error);
+}
+
 /// I2S microphone error.
 ///
 /// Mapped to `SensorErrorCode::Bus` by the noise driver (as
@@ -95,8 +101,12 @@ impl I2sMicrophone {
                 return Err(Error::Stopped);
             };
             match rx.read(buffer) {
-                Ok(transfer) => self.state = State::Running(transfer),
-                Err((_, rx, buffer)) => {
+                Ok(transfer) => {
+                    log::debug!(target: "audio", "DMA stream started");
+                    self.state = State::Running(transfer);
+                }
+                Err((e, rx, buffer)) => {
+                    warn_dma("DMA stream failed to start", e);
                     self.state = State::Idle(rx, buffer);
                     return Err(Error::Stopped);
                 }
@@ -110,6 +120,7 @@ impl I2sMicrophone {
 
     fn stop(&mut self) {
         if let State::Running(transfer) = core::mem::replace(&mut self.state, State::Failed) {
+            log::debug!(target: "audio", "DMA stream stopped");
             let (rx, buffer) = transfer.stop();
             self.state = State::Idle(rx, buffer);
         }
@@ -131,6 +142,7 @@ impl AudioSource for I2sMicrophone {
             let mut available = transfer.available_bytes() & !3;
             if available == 0 {
                 if let Err(e) = transfer.wait_for_available_async().await {
+                    warn_dma("DMA wait failed, stopping the stream", e);
                     self.stop();
                     return Err(Error::Dma(e));
                 }

@@ -80,6 +80,7 @@ pub fn device(
             ble,
             logging: logging::runtime().service(),
             reboot: reboot::request,
+            boot_report: super::crash::boot_report,
         },
         config,
         identity,

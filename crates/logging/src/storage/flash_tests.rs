@@ -72,10 +72,13 @@ impl ErrorType for Emu {
 }
 
 impl ReadNorFlash for Emu {
-    const READ_SIZE: usize = 1;
+    const READ_SIZE: usize = 4;
 
     fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), Fault> {
         let at = offset as usize;
+        if !at.is_multiple_of(4) || !bytes.len().is_multiple_of(4) {
+            return Err(Fault::Misaligned);
+        }
         bytes.copy_from_slice(
             self.data
                 .get(at..at + bytes.len())
@@ -152,7 +155,8 @@ struct Nor;
 
 impl Harness for Nor {
     type Storage = Storage;
-    const CAPACITY: u32 = SECTORS * 4096;
+    // The last two sectors hold the format header.
+    const CAPACITY: u32 = (SECTORS - 2) * 4096;
 
     fn create() -> Storage {
         open(Emu::new())
@@ -213,7 +217,8 @@ fn writes_of_any_alignment_end_up_as_written() {
 fn a_power_loss_at_any_flash_write_loses_at_most_the_open_batch() {
     for codec in [Compression::Lz4, Compression::None] {
         for budget in (0..300).chain((300..70_000).step_by(311)) {
-            let mut flash = Emu::new();
+            // The medium is formatted before the power fails.
+            let mut flash = open(Emu::new()).into_medium().into_inner();
             flash.budget = Some(budget);
             let mut storage = open(flash);
             let mut writer = Writer::new(1, codec, LIMITS);
@@ -235,6 +240,48 @@ fn a_power_loss_at_any_flash_write_loses_at_most_the_open_batch() {
             writer.push_many(&mut storage, 100).unwrap();
             writer.flush(&mut storage).unwrap();
             assert_contiguous(&all_records(&mut storage));
+        }
+    }
+}
+
+#[test]
+fn format_and_clear_stay_inside_the_region() {
+    let region = BASE as usize..BASE as usize + SECTORS as usize * 4096;
+    let mut flash = Emu::new();
+    // The neighbours hold data of their own, also where the flash is not erased.
+    for (at, byte) in flash.data.iter_mut().enumerate() {
+        if !region.contains(&at) {
+            *byte = 0x5A;
+        }
+    }
+    // The region holds old, foreign bytes.
+    flash.data[region.clone()].fill(0x00);
+    let outside = flash.data.clone();
+
+    let mut storage = open(flash);
+    let mut writer = Writer::new(1, Compression::Lz4, LIMITS);
+    writer.push_many(&mut storage, 600).unwrap();
+    writer.flush(&mut storage).unwrap();
+    block_on(storage.clear()).unwrap();
+    writer.push_many(&mut storage, 100).unwrap();
+    writer.flush(&mut storage).unwrap();
+
+    let flash = storage.into_medium().into_inner();
+    assert_eq!(flash.data[..region.start], outside[..region.start]);
+    assert_eq!(flash.data[region.end..], outside[region.end..]);
+}
+
+#[test]
+fn reads_of_any_alignment_return_what_was_written() {
+    let mut medium = FlashMedium::new(Emu::new(), BASE, SECTORS).unwrap();
+    medium.erase(0, 1).unwrap();
+    let data: std::vec::Vec<u8> = (0..4096usize).map(|n| n as u8 | 0x80).collect();
+    medium.write(0, &data).unwrap();
+    for at in 0..9usize {
+        for len in (0..40usize).chain([4095 - at, 4096 - at]) {
+            let mut back = std::vec![0u8; len];
+            medium.read(at as u32, &mut back).unwrap();
+            assert_eq!(back, data[at..at + len], "read of {len} at {at}");
         }
     }
 }

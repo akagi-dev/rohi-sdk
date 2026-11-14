@@ -228,10 +228,10 @@ impl<I2C: I2c, D: DelayNs> Scd4x<I2C, D> {
 
     async fn command(&mut self, cmd: u16) -> Result<(), Error<I2C::Error>> {
         if let Err(e) = self.i2c.write(ADDRESS, &cmd.to_be_bytes()).await {
-            log::debug!("[scd4x] command {:#06x} failed: {:?}", cmd, e);
+            log::debug!(target: "sensor.scd4x", "Command failed (cmd={:#06x} err={:?})", cmd, e);
             return Err(e.into());
         }
-        log::trace!("[scd4x] command {:#06x} sent", cmd);
+        log::trace!(target: "sensor.scd4x", "Command sent (cmd={:#06x})", cmd);
         Ok(())
     }
 
@@ -247,19 +247,20 @@ impl<I2C: I2c, D: DelayNs> Scd4x<I2C, D> {
         let buf = &mut buf[..N * 3];
         if let Err(e) = self.i2c.read(ADDRESS, buf).await {
             log::debug!(
-                "[scd4x] read of {} word(s) after command {:#06x} failed: {:?}",
-                N,
+                target: "sensor.scd4x",
+                "Read failed (cmd={:#06x} words={} err={:?})",
                 cmd,
+                N,
                 e
             );
             return Err(e.into());
         }
-        log::trace!("[scd4x] command {:#06x} response: {:02x?}", cmd, buf);
+        log::trace!(target: "sensor.scd4x", "Response received (cmd={:#06x} bytes={:02x?})", cmd, buf);
         decode_words(buf).map_err(|e| {
             log::debug!(
-                "[scd4x] command {:#06x} response {:02x?} rejected: {:?}",
+                target: "sensor.scd4x",
+                "Response rejected (cmd={:#06x} err={:?})",
                 cmd,
-                buf,
                 e
             );
             Error::Crc
@@ -269,6 +270,7 @@ impl<I2C: I2c, D: DelayNs> Scd4x<I2C, D> {
     /// Stop any running measurement, identify the sensor and start periodic
     /// measurement.
     pub async fn initialize(&mut self) -> Result<Variant, Error<I2C::Error>> {
+        log::debug!(target: "sensor.scd4x", "Initializing");
         // Stopping also acts as the presence probe; it is ignored by an idle sensor.
         self.command(CMD_STOP_PERIODIC).await?;
         self.delay.delay_ms(STOP_PERIODIC_DELAY_MS).await;
@@ -276,7 +278,7 @@ impl<I2C: I2c, D: DelayNs> Scd4x<I2C, D> {
         self.delay.delay_ms(REINIT_DELAY_MS).await;
 
         let serial: [u16; 3] = self.read_words(CMD_SERIAL_NUMBER, SERIAL_DELAY_MS).await?;
-        log::debug!("[scd4x] serial number: {:04x?}", serial);
+        log::debug!(target: "sensor.scd4x", "Serial number read (serial={:04x?})", serial);
         let [variant_word]: [u16; 1] = self
             .read_words(CMD_SENSOR_VARIANT, COMMAND_DELAY_MS)
             .await?;
@@ -284,34 +286,39 @@ impl<I2C: I2c, D: DelayNs> Scd4x<I2C, D> {
             0x0 => Variant::Scd40,
             0x1 => Variant::Scd41,
             _ => {
-                log::debug!("[scd4x] unsupported variant word {:#06x}", variant_word);
+                log::debug!(target: "sensor.scd4x", "Unsupported variant (word={:#06x})", variant_word);
                 return Err(Error::UnsupportedVariant(variant_word));
             }
         };
         log::debug!(
-            "[scd4x] detected {:?} (word {:#06x})",
+            target: "sensor.scd4x",
+            "Sensor detected (variant={:?} word={:#06x})",
             variant,
             variant_word
         );
 
         self.command(CMD_START_PERIODIC).await?;
         self.variant = Some(variant);
+        log::debug!(target: "sensor.scd4x", "Periodic measurement started");
         Ok(variant)
     }
 
     /// Whether a new measurement can be read.
     pub async fn data_ready(&mut self) -> Result<bool, Error<I2C::Error>> {
         let [status]: [u16; 1] = self.read_words(CMD_DATA_READY, COMMAND_DELAY_MS).await?;
-        Ok(status & 0x07FF != 0)
+        let ready = status & 0x07FF != 0;
+        log::trace!(target: "sensor.scd4x", "Data-ready flag read (ready={} status={:#06x})", ready, status);
+        Ok(ready)
     }
 
     /// Wait for the data-ready flag, then read and decode the measurement.
     pub async fn measure(&mut self) -> Result<Reading, Error<I2C::Error>> {
+        log::trace!(target: "sensor.scd4x", "Waiting for a measurement");
         let mut polls = 0;
         while !self.data_ready().await? {
             polls += 1;
             if polls >= MAX_READY_POLLS {
-                log::debug!("[scd4x] no data ready after {} polls", polls);
+                log::debug!(target: "sensor.scd4x", "No data ready in time (polls={})", polls);
                 return Err(Error::Timeout);
             }
             self.delay.delay_ms(POLL_INTERVAL_MS).await;
@@ -322,14 +329,16 @@ impl<I2C: I2c, D: DelayNs> Scd4x<I2C, D> {
         let reading = Reading::from_words(words);
         // A zero CO2 value is reported when no valid measurement exists yet.
         if reading.co2 == 0 || reading.co2 > MAX_VALID_CO2_PPM {
-            log::debug!(
-                "[scd4x] invalid reading {:?} from words {:?}",
-                reading,
-                words
-            );
+            log::debug!(target: "sensor.scd4x", "Invalid reading (co2_ppm={})", reading.co2);
             return Err(Error::InvalidData);
         }
-        log::debug!("[scd4x] reading: {:?}", reading);
+        log::debug!(
+            target: "sensor.scd4x",
+            "Reading decoded (co2_ppm={} temp_c={} rh_pct={})",
+            reading.co2,
+            reading.temperature,
+            reading.humidity
+        );
         Ok(reading)
     }
 }

@@ -31,7 +31,7 @@ use rohi_service::{
 };
 use rohi_time::UnixTime;
 
-use crate::storage::{MAX_SEGMENTS, Medium, RamMedium, RingStorage};
+use crate::storage::{LogStorage, MAX_SEGMENTS, Medium, RamMedium, RingStorage};
 use crate::*;
 
 const SECTORS: usize = 16;
@@ -43,7 +43,10 @@ impl Shared {
     fn new() -> Self {
         let mut medium = RamMedium::new();
         medium.erase(0, SECTORS as u32).unwrap();
-        Self(Rc::new(RefCell::new(medium)))
+        let shared = Self(Rc::new(RefCell::new(medium)));
+        // A formatted medium, as a device has after its first start.
+        block_on(RingStorage::new(shared.clone()).recover()).unwrap();
+        shared
     }
 }
 
@@ -84,6 +87,10 @@ struct Test {
     sd: Shared,
     sd_present: Rc<Cell<bool>>,
     opened: Rc<RefCell<Vec<LogStorageKind>>>,
+    // What the platform brings from the previous run, and how often it was told
+    // that the storage has it.
+    boot: Rc<RefCell<Vec<LogRecord>>>,
+    boot_written: Rc<Cell<u32>>,
 }
 
 impl Backends for Test {
@@ -96,6 +103,15 @@ impl Backends for Test {
             LogStorageKind::Sd if self.sd_present.get() => Some(RingStorage::new(self.sd.clone())),
             LogStorageKind::Sd => None,
         }
+    }
+
+    fn boot_record(&mut self, index: usize) -> Option<LogRecord> {
+        self.boot.borrow().get(index).cloned()
+    }
+
+    fn boot_records_written(&mut self) {
+        self.boot_written.set(self.boot_written.get() + 1);
+        self.boot.borrow_mut().clear();
     }
 }
 
@@ -116,6 +132,8 @@ struct Rig {
     sd: Shared,
     sd_present: Rc<Cell<bool>>,
     opened: Rc<RefCell<Vec<LogStorageKind>>>,
+    boot: Rc<RefCell<Vec<LogRecord>>>,
+    boot_written: Rc<Cell<u32>>,
 }
 
 impl Rig {
@@ -126,6 +144,8 @@ impl Rig {
             sd: Shared::new(),
             sd_present: Rc::new(Cell::new(false)),
             opened: Rc::default(),
+            boot: Rc::default(),
+            boot_written: Rc::default(),
         }
     }
 
@@ -137,6 +157,8 @@ impl Rig {
                 sd: self.sd.clone(),
                 sd_present: self.sd_present.clone(),
                 opened: self.opened.clone(),
+                boot: self.boot.clone(),
+                boot_written: self.boot_written.clone(),
             },
             config,
         )
@@ -1517,4 +1539,274 @@ fn repeated_clear_and_logging_after_it_keeps_working() {
         settle(&rig, &logging);
         assert_eq!(read(&logging, 0, 50).len(), 3);
     }
+}
+
+#[test]
+fn a_medium_that_was_never_formatted_is_formatted_once_and_keeps_the_boot_records() {
+    let rig = Rig::new();
+    // What a partition holds the first time: old bytes, no format header.
+    {
+        let mut medium = rig.internal.clone();
+        for sector in 0..SECTORS as u32 {
+            medium.erase(sector, 1).unwrap();
+            medium.write(sector * 4096, &[0x42; 64]).unwrap();
+        }
+    }
+    {
+        let logging = rig.logging(CONFIG);
+        // Queued before the backend is open, as the boot records are.
+        log_many(&logging, 5, 1);
+        settle(&rig, &logging);
+        assert_eq!(number(&logging, status_field::STORED_RECORDS), Some(5));
+        assert_eq!(number(&logging, status_field::HISTORY), Some(1));
+    }
+    let erases = rig.internal.0.borrow().erase_counts().to_vec();
+
+    let logging = rig.logging(CONFIG);
+    step(&rig, &logging);
+    assert_eq!(number(&logging, status_field::STORED_RECORDS), Some(5));
+    assert_eq!(rig.internal.0.borrow().erase_counts().to_vec(), erases);
+}
+
+fn record(ms: u64, message: &str) -> LogRecord {
+    LogRecord::new(
+        LogLevel::Error,
+        "panic",
+        format_args!("{message}"),
+        ms,
+        None,
+    )
+}
+
+fn crashed(rig: &Rig, lines: &[&str]) {
+    rig.boot
+        .borrow_mut()
+        .extend(lines.iter().map(|line| record(777, line)));
+}
+
+/// The newest records, whatever the size of the history.
+fn tail(logging: &TestLogging<'_>) -> Vec<LogRecord> {
+    let newest = number(logging, status_field::NEWEST_SEQUENCE).unwrap_or(0);
+    read(logging, newest.saturating_sub(40), 100)
+}
+
+fn texts(records: &[LogRecord]) -> Vec<&str> {
+    records
+        .iter()
+        .map(|record| record.message.as_str())
+        .collect()
+}
+
+#[test]
+fn the_records_of_the_previous_run_are_written_first_and_once() {
+    let rig = Rig::new();
+    crashed(
+        &rig,
+        &["panic: boom", "at crates/hal/src/lib.rs:42:7", "crash #1"],
+    );
+    let logging = rig.logging(CONFIG);
+    // Queued before the storage is open, as the boot records are.
+    log_many(&logging, 3, 1);
+    settle(&rig, &logging);
+
+    let records = read(&logging, 0, 50);
+    assert_eq!(
+        texts(&records)[..3],
+        ["panic: boom", "at crates/hal/src/lib.rs:42:7", "crash #1"]
+    );
+    assert!(texts(&records)[3].starts_with("logging:") || texts(&records)[3].contains("record"));
+    // They keep what the platform stamped, and are ordered like any records.
+    assert_eq!(records[0].monotonic_ms, 777);
+    assert_eq!(records[0].target.as_str(), "panic");
+    assert_eq!(records[0].level, LogLevel::Error);
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| record.sequence)
+            .collect::<Vec<_>>(),
+        (1..=records.len() as u64).collect::<Vec<_>>()
+    );
+    assert_eq!(rig.boot_written.get(), 1);
+    assert!(rig.boot.borrow().is_empty());
+
+    // Not offered again.
+    for _ in 0..3 {
+        step(&rig, &logging);
+    }
+    assert_eq!(rig.boot_written.get(), 1);
+    let again = read(&logging, 0, 200);
+    assert_eq!(
+        again
+            .iter()
+            .filter(|record| record.message.as_str() == "crash #1")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn without_records_the_platform_is_not_told_anything() {
+    let rig = Rig::new();
+    let logging = rig.logging(CONFIG);
+    log_many(&logging, 3, 1);
+    settle(&rig, &logging);
+    assert_eq!(rig.boot_written.get(), 0);
+    assert_eq!(read(&logging, 0, 50).first().unwrap().sequence, 1);
+}
+
+#[test]
+fn the_records_of_the_previous_run_do_not_depend_on_the_level() {
+    let rig = Rig::new();
+    crashed(&rig, &["panic: kept"]);
+    let logging = rig.logging(LoggingConfig {
+        level: LogLevel::Off,
+        ..CONFIG
+    });
+    assert!(!log(&logging, "filtered"));
+    step(&rig, &logging);
+    assert_eq!(texts(&read(&logging, 0, 50)), ["panic: kept"]);
+    assert_eq!(rig.boot_written.get(), 1);
+}
+
+#[test]
+fn the_records_of_the_previous_run_survive_a_restart() {
+    let rig = Rig::new();
+    crashed(&rig, &["panic: one", "crash #1"]);
+    {
+        let logging = rig.logging(CONFIG);
+        step(&rig, &logging);
+        assert_eq!(rig.boot_written.get(), 1);
+    }
+    let logging = rig.logging(CONFIG);
+    step(&rig, &logging);
+    assert_eq!(texts(&read(&logging, 0, 50)), ["panic: one", "crash #1"]);
+}
+
+#[test]
+fn nothing_is_released_while_there_is_no_storage() {
+    let rig = Rig::new();
+    crashed(&rig, &["panic: x"]);
+    let logging = rig.logging(LoggingConfig {
+        storage: LogStorageKind::Sd,
+        ..CONFIG
+    });
+    step(&rig, &logging);
+    step(&rig, &logging);
+    assert_eq!(rig.boot_written.get(), 0);
+    assert_eq!(rig.boot.borrow().len(), 1);
+
+    // The card appears: the records are written then, once.
+    rig.sd_present.set(true);
+    for _ in 0..4 {
+        rig.advance(11_000);
+        block_on(logging.step());
+    }
+    assert_eq!(rig.boot_written.get(), 1);
+    assert_eq!(texts(&read(&logging, 0, 50)), ["panic: x"]);
+}
+
+#[test]
+fn a_failing_medium_keeps_the_records_for_the_next_try_and_writes_them_once() {
+    let rig = Rig::new();
+    crashed(&rig, &["panic: x", "crash #1"]);
+    // The medium reads but cannot write: the storage opens, the write fails.
+    rig.internal.0.borrow_mut().fail_after(0);
+    let logging = rig.logging(CONFIG);
+    step(&rig, &logging);
+    step(&rig, &logging);
+    assert_eq!(rig.boot_written.get(), 0, "told that the storage has them");
+    assert_eq!(rig.boot.borrow().len(), 2);
+    assert!(issues(&logging).contains(&issue::WRITE_FAILED));
+
+    rig.internal.0.borrow_mut().restore_power();
+    for _ in 0..4 {
+        rig.advance(11_000);
+        block_on(logging.step());
+    }
+    assert_eq!(rig.boot_written.get(), 1);
+    let seen = tail(&logging);
+    assert_eq!(
+        texts(&seen)
+            .iter()
+            .filter(|text| **text == "panic: x")
+            .count(),
+        1
+    );
+    assert_eq!(
+        texts(&seen)
+            .iter()
+            .filter(|text| **text == "crash #1")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn more_records_than_one_batch_holds_are_refused_whole() {
+    let rig = Rig::new();
+    rig.boot.borrow_mut().extend(
+        (0..1_000).map(|n| record(1, &std::format!("line {n} with padding to make it long"))),
+    );
+    let logging = rig.logging(CONFIG);
+    log_many(&logging, 1, 1);
+    settle(&rig, &logging);
+    // Nothing of them is written, none is released, and the sequence is not consumed.
+    assert_eq!(rig.boot_written.get(), 0);
+    let records = read(&logging, 0, 50);
+    assert_eq!(records.first().unwrap().sequence, 1);
+    assert!(
+        texts(&records)
+            .iter()
+            .all(|text| !text.starts_with("line "))
+    );
+}
+
+#[test]
+fn a_download_that_pins_the_ring_defers_the_records_without_writing_them() {
+    let rig = Rig::new();
+    let config = LoggingConfig {
+        compression: Compression::None,
+        ..CONFIG
+    };
+    {
+        let logging = rig.logging(config);
+        let mut next = 1;
+        for _ in 0..30 {
+            log_many(&logging, 6, next);
+            next += 6;
+            settle(&rig, &logging);
+        }
+    }
+    // The next run: a full ring, a panic to report, and a download that pins the ring
+    // before the task gets to write.
+    crashed(&rig, &["panic: pinned"]);
+    let logging = rig.logging(config);
+    let info = stream_of(invoke(&logging, action::DOWNLOAD, &[]));
+    assert!(logging.pins() > 0);
+    for _ in 0..4 {
+        rig.advance(1_500);
+        block_on(logging.step());
+    }
+    assert_eq!(rig.boot_written.get(), 0);
+    assert_eq!(rig.boot.borrow().len(), 1);
+    assert!(
+        texts(&tail(&logging))
+            .iter()
+            .all(|text| *text != "panic: pinned"),
+        "written into a pinned ring"
+    );
+
+    block_on(logging.service().close_stream(info.id)).unwrap();
+    for _ in 0..4 {
+        rig.advance(5_000);
+        block_on(logging.step());
+    }
+    assert_eq!(rig.boot_written.get(), 1);
+    assert_eq!(
+        texts(&tail(&logging))
+            .iter()
+            .filter(|text| **text == "panic: pinned")
+            .count(),
+        1
+    );
 }

@@ -123,7 +123,7 @@
 //! at most [`MAX_RECORD_FIELDS`] fields; a result string or bytes value is at
 //! most [`MAX_FIELD_VALUE_LEN`](crate::MAX_FIELD_VALUE_LEN) bytes, an argument
 //! at most [`MAX_VALUE_LEN`](crate::MAX_VALUE_LEN). An action has at most one
-//! enum ([`MAX_ENUMS`](crate::MAX_ENUMS)).
+//! enum ([`MAX_SERVICE_ENUMS`](crate::MAX_SERVICE_ENUMS)).
 //!
 //! # Streams
 //!
@@ -148,7 +148,7 @@ use heapless::Vec;
 use crate::MAX_NAME_LEN;
 use crate::field::{EnumDescriptor, FieldDescriptor, enum_allows};
 use crate::service::Service;
-use crate::status::{StatusWriter, WriteError};
+use crate::status::{StatusWriter, WriteError, log_rejected_field};
 use rohi_config::Value;
 
 /// Maximum number of arguments of an action.
@@ -432,6 +432,13 @@ impl RecordCollector {
 
 impl StatusWriter for RecordCollector {
     fn put(&mut self, id: u32, value: Value) -> Result<(), WriteError> {
+        self.store(id, value)
+            .inspect_err(|error| log_rejected_field("action", id, *error))
+    }
+}
+
+impl RecordCollector {
+    fn store(&mut self, id: u32, value: Value) -> Result<(), WriteError> {
         let field = self
             .results
             .iter()
@@ -455,6 +462,7 @@ impl ActionOutput for RecordCollector {
 
     fn stream(&mut self, info: StreamInfo) -> Result<(), WriteError> {
         if !self.streams || !self.records.is_empty() || self.stream.is_some() {
+            log::debug!(target: "service", "Action stream result rejected");
             return Err(WriteError::WrongKind);
         }
         self.stream = Some(info);
@@ -469,14 +477,17 @@ pub(crate) fn check_args(
     args: &[(u32, Value)],
 ) -> Result<(), ActionError> {
     if args.len() != action.args.len() {
+        log_bad_args(action.name, "argument count", args.len() as u32);
         return Err(ActionError::InvalidArgument);
     }
     for field in action.args {
         let mut matching = args.iter().filter(|(id, _)| *id == field.id);
         let (Some((_, value)), None) = (matching.next(), matching.next()) else {
+            log_bad_args(action.name, "missing or repeated argument", field.id);
             return Err(ActionError::InvalidArgument);
         };
         if value.kind() != field.kind || !enum_ok(action.enums, field, value) {
+            log_bad_args(action.name, "wrong kind or enum variant", field.id);
             return Err(ActionError::InvalidArgument);
         }
     }
@@ -490,4 +501,17 @@ pub(crate) fn enum_ok(enums: &[EnumDescriptor], field: &FieldDescriptor, value: 
         Value::Enum(variant) => enum_allows(enums, field.enum_id, *variant),
         _ => true,
     }
+}
+
+/// Argument values are never logged: an action may take secrets.
+#[cold]
+#[inline(never)]
+fn log_bad_args(action: &'static str, reason: &'static str, detail: u32) {
+    log::debug!(
+        target: "service",
+        "Action arguments rejected: {} (action={} id={})",
+        reason,
+        action,
+        detail
+    );
 }

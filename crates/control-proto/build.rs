@@ -60,8 +60,13 @@ const LIMITS: &[(&str, usize, &str)] = &[
     ),
     (
         "MAX_ENUMS",
+        3,
+        "Maximum number of enums in one config schema response.",
+    ),
+    (
+        "MAX_SERVICE_ENUMS",
         1,
-        "Maximum number of enums in one schema response.",
+        "Maximum number of enums in one service or action schema response.",
     ),
     (
         "MAX_ENUM_VARIANTS",
@@ -272,7 +277,7 @@ fn main() {
         ),
         (
             ".rohi.control.v1.GetServiceSchemaResponse.enums",
-            "MAX_ENUMS",
+            "MAX_SERVICE_ENUMS",
         ),
         (
             ".rohi.control.v1.GetServiceSchemaResponse.issues",
@@ -303,7 +308,7 @@ fn main() {
         ),
         (
             ".rohi.control.v1.GetActionSchemaResponse.enums",
-            "MAX_ENUMS",
+            "MAX_SERVICE_ENUMS",
         ),
         (
             ".rohi.control.v1.InvokeActionRequest.args",

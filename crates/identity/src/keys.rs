@@ -92,9 +92,15 @@ impl PublicKey {
     /// assert_eq!(key.verify(b"tampered", &signature), Err(IdentityError::InvalidSignature));
     /// ```
     pub fn verify(&self, message: &[u8], signature: &Signature) -> Result<(), IdentityError> {
-        let key = VerificationKey::try_from(self.0).map_err(|_| IdentityError::InvalidPublicKey)?;
+        let key = VerificationKey::try_from(self.0).map_err(|_| {
+            log::warn!(target: "identity", "Invalid public key (key={})", self);
+            IdentityError::InvalidPublicKey
+        })?;
         key.verify(&ed25519_zebra::Signature::from_bytes(&signature.0), message)
-            .map_err(|_| IdentityError::InvalidSignature)
+            .map_err(|_| {
+                log::warn!(target: "identity", "Signature verification failed (key={})", self);
+                IdentityError::InvalidSignature
+            })
     }
 }
 

@@ -147,8 +147,8 @@ so the A/B slots and the commit-last recovery behave as on the device. Use `--ep
 `--storage /tmp/device-a.flash` to keep several devices apart. A storage file can be used by one process at a time.
 
 The persistent [device log](../use/desktop/logs.md) is a second image file next to it (`device.flash` is paired with
-`device.log.flash`), with the geometry of the `rohi-log` partition, so `rohi logs` works against the process and the
-history survives a restart. There is no SD card on the host: `logging.storage = sd` reports `storage_unavailable`.
+`device.log.flash`), a 1 MiB image with the geometry of the `rohi-log` partition (256 sectors of 4 KiB), so `rohi logs` works against the process and the
+history survives a restart. A new file is formatted on its first start and kept on the next ones. A log image of the former 256 KiB layout is not migrated: the process refuses it at startup and names the file, delete it to start a new log. There is no SD card on the host: `logging.storage = sd` reports `storage_unavailable`.
 
 ## Scenarios
 

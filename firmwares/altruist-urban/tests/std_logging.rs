@@ -62,17 +62,31 @@ async fn read_file(device: &mut Device<TcpLink>, stream: &Stream, file: u32) -> 
     }
 }
 
-/// The text `logging.read` returns for every retained record.
+/// The text `logging.read` returns for every retained record: one call returns
+/// about one `READ_BYTES` of text, so it asks again after the last sequence.
 async fn records(device: &mut Device<TcpLink>) -> String {
-    let stream = stream_of(
-        device,
-        "read",
-        &[arg(read_arg::AFTER, 0), arg(read_arg::LIMIT, 200)],
-    )
-    .await;
-    let data = read_file(device, &stream, stream.files[0].id).await;
-    device.close_stream(&stream).await.unwrap();
-    String::from_utf8(data).unwrap()
+    let mut text = String::new();
+    let mut after = 0;
+    loop {
+        let stream = stream_of(
+            device,
+            "read",
+            &[arg(read_arg::AFTER, after), arg(read_arg::LIMIT, 200)],
+        )
+        .await;
+        let data = read_file(device, &stream, stream.files[0].id).await;
+        device.close_stream(&stream).await.unwrap();
+        let page = String::from_utf8(data).unwrap();
+        let Some(last) = page
+            .lines()
+            .filter_map(|line| line.split(' ').next()?.parse::<u64>().ok())
+            .next_back()
+        else {
+            return text;
+        };
+        after = last;
+        text.push_str(&page);
+    }
 }
 
 async fn status_number(device: &mut Device<TcpLink>, field: u32) -> Option<u64> {
@@ -204,7 +218,7 @@ async fn the_sd_card_is_unavailable_on_the_host_and_never_replaced_by_the_file()
     let sim = Sim::start(&Launch::new());
     let mut device = sim.device().await;
     device
-        .config_patch("logging", &[set(2, text("sd"))], false)
+        .config_patch("logging", &[set(2, Value::Enum("sd".to_owned()))], false)
         .await
         .unwrap();
     let issues = eventually("storage_unavailable", WAIT, async || {
@@ -222,4 +236,73 @@ async fn the_sd_card_is_unavailable_on_the_host_and_never_replaced_by_the_file()
     );
     drop(device);
     sim.stop();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_cleared_log_stays_cleared_across_a_restart_and_keeps_working() {
+    let dir = TempDir::new().unwrap();
+    let storage = dir.path().join("device.flash");
+    let log_file = dir.path().join("device.log.flash");
+
+    let sim = Sim::start(&Launch::new().storage(&storage));
+    let mut device = sim.device().await;
+    eventually("the boot record", WAIT, async || {
+        records(&mut device)
+            .await
+            .contains("Starting")
+            .then_some(())
+    })
+    .await;
+    let history = status_number(&mut device, status_field::HISTORY)
+        .await
+        .unwrap();
+    device.invoke("logging", "clear", &[]).await.unwrap();
+    assert_eq!(
+        status_number(&mut device, status_field::HISTORY).await,
+        Some(history + 1)
+    );
+    drop(device);
+    assert!(sim.stop().success());
+    assert_eq!(
+        std::fs::metadata(&log_file).unwrap().len(),
+        1 << 20,
+        "the file is the 1 MiB region"
+    );
+
+    let sim = Sim::start(&Launch::new().storage(&storage));
+    let mut device = sim.device().await;
+    let text = eventually("the records of the new boot", WAIT, async || {
+        let text = records(&mut device).await;
+        text.contains("Starting").then_some(text)
+    })
+    .await;
+    assert_eq!(text.matches("Starting").count(), 1, "{text}");
+    assert_eq!(
+        status_number(&mut device, status_field::HISTORY).await,
+        Some(history + 1),
+        "the generation survives the restart, no format"
+    );
+    drop(device);
+    sim.stop();
+}
+
+#[test]
+fn a_log_image_of_the_former_256_kib_layout_is_a_startup_error() {
+    let dir = TempDir::new().unwrap();
+    let storage = dir.path().join("device.flash");
+    let log_file = dir.path().join("device.log.flash");
+    std::fs::write(&log_file, vec![0xFF; 256 * 1024]).unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_altruist-urban"))
+        .arg("--storage")
+        .arg(&storage)
+        .args(["--control-port", "0", "--manage-port", "0"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(74));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("256 KiB") && stderr.contains("delete"),
+        "{stderr}"
+    );
+    assert_eq!(std::fs::metadata(&log_file).unwrap().len(), 256 * 1024);
 }

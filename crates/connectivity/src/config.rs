@@ -239,12 +239,27 @@ impl EndpointUri {
 
 impl TextValue for EndpointUri {
     fn from_text(text: &str) -> Option<Self> {
-        Self::new(text)
+        let uri = Self::new(text);
+        if uri.is_none() {
+            log_invalid_endpoint(text.len());
+        }
+        uri
     }
 
     fn as_text(&self) -> Option<&str> {
         Some(self.as_str())
     }
+}
+
+// Only the length: a rejected value may carry credentials.
+#[cold]
+#[inline(never)]
+fn log_invalid_endpoint(len: usize) {
+    log::warn!(
+        target: "connectivity",
+        "Endpoint rejected, expected http://host[:port] (len_b={})",
+        len
+    );
 }
 
 impl fmt::Debug for EndpointUri {

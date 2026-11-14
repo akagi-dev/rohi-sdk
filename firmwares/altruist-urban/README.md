@@ -34,7 +34,26 @@ The chip is selected by exactly one of the features `esp32c3` / `esp32c6`; witho
 `cargo build-esp32c6` are shortcuts for checking and building.
 
 The runner flashes the per-chip partition table (`partitions-esp32c3.csv` or `partitions-esp32c6.csv`), which reserves the `rohi-cfg` region used by the
-[configuration store](https://docs.rs/rohi-config) and the 256 KiB `rohi-log` region of the persistent log (`rohi-logging`). Run the command from the repository root.
+[configuration store](https://docs.rs/rohi-config) and the `rohi-log` region of the persistent log (`rohi-logging`): the **last partition of the flash**, after the
+`factory` application: 256 KiB at `0x3C0000` on the 4 MB ESP32-C3, 1 MiB at `0x700000` on the 8 MB ESP32-C6. Run the command from the repository root.
+
+The `factory` partition starts at `0x20000` (`0x3A0000` bytes on the ESP32-C3, `0x6E0000` on the ESP32-C6); the
+release image is about 1.2 MB on the ESP32-C3, and `scripts/image-fits.sh <chip>` checks that the built image fits.
+The app area ends on a 64 KiB boundary (`0x3C0000` on the ESP32-C3), so that two equal,
+64 KiB aligned OTA slots can be carved out of it later (#29, the two-slot OTA itself is not implemented).
+
+The 256 KiB of the ESP32-C3 are the partition, not the journal: two 4 KiB sectors hold the format header, and with the 16 KiB segments that are the
+chip default (retention 256 KiB) the log retains 15 full segments, 240 KiB. The ESP32-C6 keeps 1 MiB with 64 KiB segments. The defaults of the chip
+are set by the firmware (`altruist_urban::logging`), a user override of `retention_bytes` or `segment_bytes` stays in force.
+
+### Upgrading a device that has persistent logging
+
+Flash with the runner, so that the new partition table is written together with the firmware: it moves `rohi-log` to the end of the flash and resizes it from 256 KiB to
+1 MiB on the ESP32-C6 and to 256 KiB on the ESP32-C3 (it moves by 16 KiB from the former 240 KiB layout, so the region is formatted again). Nothing is migrated: the old log history is lost. The first start finds no format header in the new region and **formats** it, that is, it
+erases its sectors (64 on the ESP32-C3, 256 on the ESP32-C6) one at a time (the duration is not measured on hardware yet; other tasks keep running between two erases, and boot records wait in the
+bounded queue, so a long format can drop some; the console says `No valid format header, the region was formatted` (target `logging`)). Only the `rohi-log` region is erased, never the partition table, the application, `rohi-cfg`, NVS or PHY, and later starts find the header and keep the
+history. `rohi logs clear` physically erases the whole region the same way. The hardware time of both is not measured yet, see
+[Hardware testing](../../docs/validation/hardware-testing.md#persistent-logging).
 
 ## Sensors
 

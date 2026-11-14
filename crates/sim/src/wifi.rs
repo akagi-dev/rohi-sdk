@@ -36,7 +36,7 @@ use core::net::Ipv4Addr;
 
 use embassy_futures::select::{Either, select};
 use embassy_time::{Instant, Timer};
-use log::{info, warn};
+use log::{debug, info, trace, warn};
 use rohi_net::{
     AddressMode, LinkConfig, NetworkInfo, ScanCollector, WifiBackend, WifiError, WifiNetwork,
     WifiScanResults, WifiSecurity, WifiSsid,
@@ -115,13 +115,16 @@ impl WifiBackend for SimWifi {
                 });
             }
         }
-        Ok(found.finish())
+        let results = found.finish();
+        debug!(target: "sim.wifi", "Scan done (network_up={})", state.wifi.network_up);
+        Ok(results)
     }
 
     async fn connect(&mut self, config: &LinkConfig) -> Result<NetworkInfo, WifiError> {
         let ssid = config.wifi.ssid.as_ref().ok_or(WifiError::NotConfigured)?;
         let name = ssid_text(ssid);
         let delay = self.world.lock().wifi.connect_delay_ms;
+        debug!(target: "sim.wifi", "Connecting to access point (ssid={name} delay_ms={delay})");
         if delay > 0 {
             Timer::after_millis(u64::from(delay)).await;
         }
@@ -138,12 +141,13 @@ impl WifiBackend for SimWifi {
             match ap {
                 Some(ap) => (ap, state.wifi.fault),
                 None => {
-                    warn!("Wi-Fi: network `{name}` not found");
+                    warn!(target: "sim.wifi", "Access point not found (ssid={name})");
                     return Err(WifiError::NetworkNotFound);
                 }
             }
         };
         if fault == Some(WifiFault::Association) {
+            warn!(target: "sim.wifi", "Association failed: injected fault (ssid={name})");
             return Err(WifiError::AssociationFailed);
         }
         let password = config.wifi.password.as_ref().map(|p| p.expose_secret());
@@ -154,10 +158,14 @@ impl WifiBackend for SimWifi {
             (_, _, None) => false,
         };
         if fault == Some(WifiFault::Authentication) || !accepted {
-            warn!("Wi-Fi: authentication to `{name}` failed");
+            warn!(
+                target: "sim.wifi",
+                "Authentication failed (ssid={name} fault={fault:?} accepted={accepted})"
+            );
             return Err(WifiError::AuthenticationFailed);
         }
         if fault == Some(WifiFault::Dhcp) {
+            warn!(target: "sim.wifi", "DHCP failed: injected fault (ssid={name})");
             return Err(WifiError::DhcpFailed);
         }
         let (ipv4, gateway, dns) = addressing(config);
@@ -175,7 +183,7 @@ impl WifiBackend for SimWifi {
             state.wifi.drop_requested = false;
             state.wifi.link_up = true;
         }
-        info!("Wi-Fi: connected to `{name}` as {ipv4}");
+        info!(target: "sim.wifi", "Connected to access point (ssid={name} ip={ipv4})");
         self.connected = Some(Connection {
             ssid: name,
             info: info.clone(),
@@ -185,8 +193,11 @@ impl WifiBackend for SimWifi {
 
     async fn disconnect(&mut self) -> Result<(), WifiError> {
         self.world.lock().wifi.link_up = false;
-        if let Some(connection) = self.connected.take() {
-            info!("Wi-Fi: disconnected from `{}`", connection.ssid);
+        match self.connected.take() {
+            Some(connection) => {
+                info!(target: "sim.wifi", "Disconnected from access point (ssid={})", connection.ssid)
+            }
+            None => trace!(target: "sim.wifi", "Disconnect without a connection"),
         }
         Ok(())
     }
@@ -208,7 +219,7 @@ impl WifiBackend for SimWifi {
                     state.wifi.drop_requested = false;
                     state.wifi.link_up = false;
                     drop(state);
-                    warn!("Wi-Fi: link to `{ssid}` lost");
+                    warn!(target: "sim.wifi", "Link lost (ssid={ssid})");
                     self.connected = None;
                     return WifiError::Disconnected;
                 }
@@ -230,7 +241,7 @@ impl WifiBackend for SimWifi {
                                     Instant::now().as_millis() + u64::from(down_ms);
                                 state.wifi.link_up = false;
                             }
-                            warn!("Wi-Fi: link to `{ssid}` flapped");
+                            warn!(target: "sim.wifi", "Link flapped (ssid={ssid})");
                             self.connected = None;
                             return WifiError::Disconnected;
                         }

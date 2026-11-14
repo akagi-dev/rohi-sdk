@@ -24,6 +24,7 @@ use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embedded_hal_async::delay::DelayNs;
 use heapless::{String, Vec};
+use log::debug;
 use rohi_service::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, EnumDescriptor, EnumVariant,
     FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_FIELD_VALUE_LEN, MAX_ISSUES,
@@ -442,8 +443,12 @@ impl<M: RawMutex, D: DelayNs + Clone, P: WifiProbe> Action for WifiService<'_, M
                 let timeout = delay.delay_ms(self.scan_timeout_ms());
                 let results = match select(scan, timeout).await {
                     Either::First(results) => results.map_err(action_error)?,
-                    Either::Second(()) => return Err(ActionError::Unavailable),
+                    Either::Second(()) => {
+                        report::scan_timed_out(self.scan_timeout_ms());
+                        return Err(ActionError::Unavailable);
+                    }
                 };
+                debug!(target: "wifi", "Scan action returns results (count={})", results.len());
                 for network in results.iter() {
                     let Some(ssid) = network.ssid.as_str() else {
                         continue;
@@ -459,6 +464,7 @@ impl<M: RawMutex, D: DelayNs + Clone, P: WifiProbe> Action for WifiService<'_, M
                             out.variant(scan_field::SECURITY, security_value(network.security))
                         });
                     if written.is_err() {
+                        report::scan_output_failed();
                         return Err(ActionError::Internal);
                     }
                 }
@@ -466,8 +472,34 @@ impl<M: RawMutex, D: DelayNs + Clone, P: WifiProbe> Action for WifiService<'_, M
             }
             action::RECONNECT => self.handle.reconnect().map_err(action_error),
             action::DISCONNECT => self.handle.disconnect().map_err(action_error),
-            _ => Err(ActionError::UnknownAction),
+            _ => {
+                report::unknown_action(action);
+                Err(ActionError::UnknownAction)
+            }
         }
+    }
+}
+
+// Out of line, so that the reports do not enlarge the frame of the action.
+mod report {
+    use log::warn;
+
+    #[cold]
+    #[inline(never)]
+    pub(super) fn scan_timed_out(timeout_ms: u32) {
+        warn!(target: "wifi", "Scan action timed out (timeout_ms={})", timeout_ms);
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub(super) fn scan_output_failed() {
+        warn!(target: "wifi", "Scan result could not be written");
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub(super) fn unknown_action(action: u32) {
+        warn!(target: "wifi", "Unknown action requested (id={})", action);
     }
 }
 

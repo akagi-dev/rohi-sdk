@@ -150,8 +150,9 @@
 //! [`FIRST_SERVICE_ISSUE`](crate::FIRST_SERVICE_ISSUE), or the SDK startup
 //! code), enum ids are non-zero and unique, and variant values and names are
 //! unique within their enum. An enum field must refer to an enum of its
-//! table, no other field may. A section, service or action has at most one
-//! enum ([`MAX_ENUMS`](crate::MAX_ENUMS)), a constraint of the compact
+//! table, no other field may. A config section has at most three
+//! enums ([`MAX_ENUMS`](crate::MAX_ENUMS)), a service or action at most one
+//! ([`MAX_SERVICE_ENUMS`]), constraints of the compact
 //! protocol, with at most [`MAX_ENUM_VARIANTS`](crate::MAX_ENUM_VARIANTS)
 //! variants. Tables are also bounded by the limits of the crate, see the
 //! [crate documentation](crate#limits).
@@ -189,9 +190,9 @@ use crate::schema::{actions_valid, enums_valid, fields_valid, issues_valid};
 use crate::service::{Service, distinct_ids, service_name_is_valid};
 use crate::status::{
     Collector, Issue, ServiceInfo, ServiceSchema, ServiceStatus, ServiceStatusSummary, Status,
-    StatusError, TrackCell, track_observation,
+    StatusError, TrackCell, WriteError, track_observation,
 };
-use crate::{MAX_FIELDS, MAX_ISSUES};
+use crate::{MAX_FIELDS, MAX_ISSUES, MAX_SERVICE_ENUMS};
 use rohi_config::Value;
 
 /// Id and name of a service, as listed by an [`ActionRegistry`].
@@ -216,7 +217,7 @@ impl ServiceIdentity {
 const fn status_schema_valid<S: Status>() -> bool {
     service_name_is_valid(S::NAME)
         && S::STATUS_SCHEMA.len() <= MAX_FIELDS
-        && enums_valid(S::ENUMS)
+        && enums_valid(S::ENUMS, MAX_SERVICE_ENUMS)
         && fields_valid(S::STATUS_SCHEMA, S::ENUMS)
         && issues_valid(S::ISSUES)
 }
@@ -267,7 +268,7 @@ async fn observe<S: Status, M: RawMutex>(
     let summary = service.summary().await;
     let mut issues = Vec::new();
     service.issues(&mut issues).await;
-    let track = track_observation(&tracker.0, &summary, &mut issues, now_ms);
+    let track = track_observation(S::NAME, &tracker.0, &summary, &mut issues, now_ms);
     (
         ServiceStatusSummary {
             id: S::ID,
@@ -304,7 +305,9 @@ async fn status_of<S: Status, M: RawMutex>(
         fields: Vec::new(),
     };
     // A field the service fails to write is absent; the rest is still useful.
-    let _ = service.status(&mut collector).await;
+    if let Err(error) = service.status(&mut collector).await {
+        log_status_failed(S::NAME, error);
+    }
     ServiceStatus {
         summary,
         fields: collector.fields,
@@ -320,15 +323,63 @@ async fn invoke_of<S: Action>(
     let descriptor = S::ACTIONS
         .iter()
         .find(|descriptor| descriptor.id == action)
-        .ok_or(ActionError::UnknownAction)?;
-    check_args(descriptor, args)?;
+        .ok_or(ActionError::UnknownAction)
+        .inspect_err(|error| log_action_failed(S::NAME, action, *error))?;
+    log::debug!(
+        target: "service",
+        "Invoking action (service={} action={})",
+        S::NAME,
+        descriptor.name
+    );
+    check_args(descriptor, args).inspect_err(|error| log_action_failed(S::NAME, action, *error))?;
     let mut out = RecordCollector::new(descriptor);
-    service.invoke(action, args, &mut out).await?;
+    service
+        .invoke(action, args, &mut out)
+        .await
+        .inspect_err(|error| log_action_failed(S::NAME, action, *error))?;
     match out.stream {
-        Some(_) if !out.records.is_empty() => Err(ActionError::Internal),
+        Some(_) if !out.records.is_empty() => {
+            let error = ActionError::Internal;
+            log_action_failed(S::NAME, action, error);
+            Err(error)
+        }
         Some(stream) => Ok(ActionResult::Stream(stream)),
         None => Ok(ActionResult::Records(out.records)),
     }
+}
+
+#[cold]
+#[inline(never)]
+fn log_status_failed(service: &'static str, error: WriteError) {
+    log::warn!(
+        target: "service",
+        "Status fields incomplete: {:?} (service={})",
+        error,
+        service
+    );
+}
+
+#[cold]
+#[inline(never)]
+fn log_action_failed(service: &'static str, action: u32, error: ActionError) {
+    log::warn!(
+        target: "service",
+        "Action failed: {:?} (service={} id={:#010x})",
+        error,
+        service,
+        action
+    );
+}
+
+#[cold]
+#[inline(never)]
+fn log_unknown_service(operation: &'static str, service: u32) {
+    log::warn!(
+        target: "service",
+        "Unknown service in {} (id={:#010x})",
+        operation,
+        service
+    );
 }
 
 /// A tuple of services that all implement [`Status`], with the tracks the
@@ -637,6 +688,7 @@ macro_rules! tuple_registries {
                 $(if $name::ID == service {
                     return Ok(isolated(status_of(self.$index, &tracks.$index, now_ms)).await);
                 })+
+                log_unknown_service("status", service);
                 Err(StatusError::UnknownService)
             }
         }
@@ -674,6 +726,7 @@ macro_rules! tuple_registries {
                         .find(|descriptor| descriptor.id == action)
                         .ok_or(ActionError::UnknownAction);
                 })+
+                log_unknown_service("action", service);
                 Err(ActionError::UnknownService)
             }
 
@@ -686,6 +739,7 @@ macro_rules! tuple_registries {
                 $(if $name::ID == service {
                     return isolated(invoke_of(self.$index, action, args)).await;
                 })+
+                log_unknown_service("invoke", service);
                 Err(ActionError::UnknownService)
             }
 
@@ -700,6 +754,7 @@ macro_rules! tuple_registries {
                 $(if $name::ID == service {
                     return isolated(self.$index.read_stream(stream, file, offset, buf)).await;
                 })+
+                log_unknown_service("read_stream", service);
                 Err(ActionError::UnknownService)
             }
 
@@ -707,10 +762,12 @@ macro_rules! tuple_registries {
                 $(if $name::ID == service {
                     return isolated(self.$index.close_stream(stream)).await;
                 })+
+                log_unknown_service("close_stream", service);
                 Err(ActionError::UnknownService)
             }
 
             fn link_lost(&self) {
+                log::info!(target: "service", "Link lost, notifying services (count={})", $count);
                 $(self.$index.link_lost();)+
             }
         }

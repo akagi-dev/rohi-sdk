@@ -38,7 +38,7 @@ path = "./src/bin/all-sensors.rs"
 altruist-urban = { path = "../firmwares/altruist-urban" }
 rohi-sdk = { workspace = true, features = ["config", "hal", "esp"] }
 minicbor = { workspace = true }
-esp-backtrace = { workspace = true }
+esp-backtrace = { workspace = true, features = ["panic-handler"] }
 esp-hal = { workspace = true }
 esp-println = { workspace = true }
 esp-rtos = { workspace = true }

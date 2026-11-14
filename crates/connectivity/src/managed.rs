@@ -59,7 +59,16 @@ use crate::transport::TransportError;
 /// ids and the persisted overrides of the `connectivity` section are declared
 /// once, on [`ConnectivityConfig`].
 pub(crate) fn validate_section(config: &ConnectivityConfig) -> Result<(), FieldError> {
-    ConnectivityConfig::validate(config).map_err(|_| FieldError::Invalid)
+    ConnectivityConfig::validate(config).map_err(|error| {
+        log_invalid_section(error);
+        FieldError::Invalid
+    })
+}
+
+#[cold]
+#[inline(never)]
+fn log_invalid_section(error: crate::ConfigError) {
+    log::warn!(target: "connectivity", "Config section rejected (err={:?})", error);
 }
 
 /// Issue codes of the `connectivity` service.

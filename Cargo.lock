@@ -64,7 +64,6 @@ dependencies = [
  "embassy-sync 0.8.0",
  "embassy-time",
  "env_logger",
- "esp-backtrace",
  "esp-bootloader-esp-idf",
  "esp-hal",
  "esp-println",
@@ -800,9 +799,9 @@ dependencies = [
 
 [[package]]
 name = "bumpalo"
-version = "3.20.3"
+version = "3.20.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
+checksum = "87a0cf66fd1eb2fb7b822cb78370d82303750809bc6ba855f3f58e517d3238db"
 
 [[package]]
 name = "byte-slice-cast"
@@ -830,9 +829,9 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "cc"
-version = "1.11.1"
+version = "1.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ff2a8126fff0f8c839080d619675a585e61720bb12d2baceae45769fd66f155"
+checksum = "33ef9e3e8154a45c7a95cff4c1299702106ad94062d7bb85fdc5d3a5afd91d45"
 dependencies = [
  "find-msvc-tools",
  "shlex",
@@ -1896,9 +1895,9 @@ checksum = "00d174d5400e5e8fd687ad1049e2f578285fa914201b1af7e8b112a4546bd826"
 
 [[package]]
 name = "errno"
-version = "0.3.14"
+version = "0.3.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
+checksum = "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776"
 dependencies = [
  "libc",
  "windows-sys",
@@ -2896,9 +2895,9 @@ checksum = "3bd1574e617a9a6c1f8f8181bd7e841e1f20e4277607ef28945765188d6284d4"
 
 [[package]]
 name = "jam-codec"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb948eace373d99de60501a02fb17125d30ac632570de20dccc74370cdd611b9"
+checksum = "28bea45000fdcf0e396813dc40f62e25c4db84d7d83954f0a712f93844217055"
 dependencies = [
  "arrayvec",
  "bitvec",
@@ -2912,9 +2911,9 @@ dependencies = [
 
 [[package]]
 name = "jam-codec-derive"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "319af585c4c8a6b5552a52b7787a1ab3e4d59df7614190b1f85b9b842488789d"
+checksum = "44571936196507bf05764da4d51ded95e203f9ff126e3869365018e8e5a9ffe6"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -2924,9 +2923,9 @@ dependencies = [
 
 [[package]]
 name = "jiff"
-version = "0.2.42"
+version = "0.2.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fefca06093eeaed707a905795e68206da0edca4edef23d2a3997a3ddbee462aa"
+checksum = "26699905cc795a23e3949585cc7ba3ee8ade090872a27e4316304a777297894a"
 dependencies = [
  "jiff-core",
  "jiff-static",
@@ -2940,18 +2939,18 @@ dependencies = [
 
 [[package]]
 name = "jiff-core"
-version = "0.1.4"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77a24020db0ee88d1c681d677681bd31f9f4ea189a455425223d52ce4f1508aa"
+checksum = "ffe6854081f5ac0a3046a9b223729ccd7a20b1e0e8277e44dc0660eedf67dfe2"
 dependencies = [
  "log",
 ]
 
 [[package]]
 name = "jiff-static"
-version = "0.2.42"
+version = "0.2.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41d3213549742662eea1a18e6c5af9be5dfbabeb7611ab71356a54928ec398f0"
+checksum = "4b4ff49b2887190c760b86207b55cdcaabbdecaf7a0660d68aa2ed6f652abf0a"
 dependencies = [
  "jiff-core",
  "proc-macro2",
@@ -3193,9 +3192,9 @@ dependencies = [
 
 [[package]]
 name = "lz4_flex"
-version = "0.14.0"
+version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ecbdfe44b1bd960b68170b417450a628c43f7cf56bb3c5317e61cb230ee7f226"
+checksum = "0f5af6ecc17202a60aebe8502b4e8160bd745820e5a8417c8e5d048af838aec5"
 dependencies = [
  "twox-hash 2.1.5",
 ]
@@ -3289,9 +3288,9 @@ dependencies = [
 
 [[package]]
 name = "mio"
-version = "1.2.4"
+version = "1.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1788edb87fdc09c7e26304471e2f5be8cdefb1b6930d6e3985fc02ff53bf86ee"
+checksum = "20521a903f02b0a573cd6840e9d0a5a0cc043d361fe924092cd70f8556cc9c4a"
 dependencies = [
  "libc",
  "wasi",
@@ -3991,6 +3990,7 @@ name = "rohi-config"
 version = "0.7.0"
 dependencies = [
  "heapless 0.9.3",
+ "log",
  "minicbor",
  "proptest",
  "rohi-config-derive",
@@ -4021,6 +4021,7 @@ dependencies = [
  "embedded-storage",
  "esp-bootloader-esp-idf",
  "esp-storage",
+ "log",
  "minicbor",
  "rohi-config",
 ]
@@ -4065,6 +4066,7 @@ dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",
  "heapless 0.9.3",
+ "log",
  "minicbor",
  "rohi-config",
  "rohi-control-proto",
@@ -4107,6 +4109,20 @@ dependencies = [
  "rohi-control",
  "rohi-control-proto",
  "rohi-service",
+]
+
+[[package]]
+name = "rohi-crash"
+version = "0.7.0"
+
+[[package]]
+name = "rohi-crash-esp"
+version = "0.7.0"
+dependencies = [
+ "esp-backtrace",
+ "esp-hal",
+ "esp-println",
+ "rohi-crash",
 ]
 
 [[package]]
@@ -4157,6 +4173,7 @@ name = "rohi-hal-esp"
 version = "0.7.0"
 dependencies = [
  "esp-hal",
+ "log",
  "rohi-hal",
 ]
 
@@ -4168,6 +4185,7 @@ dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",
  "heapless 0.9.3",
+ "log",
  "minicbor",
  "rohi-config",
  "rohi-service",
@@ -4181,6 +4199,7 @@ dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",
  "heapless 0.9.3",
+ "log",
  "minicbor",
  "rohi-config",
  "rohi-service",
@@ -4283,6 +4302,8 @@ dependencies = [
  "rohi-control",
  "rohi-control-ble",
  "rohi-control-tcp",
+ "rohi-crash",
+ "rohi-crash-esp",
  "rohi-hal",
  "rohi-hal-esp",
  "rohi-identity",
@@ -4305,6 +4326,7 @@ dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",
  "heapless 0.9.3",
+ "log",
  "minicbor",
  "pin-project-lite",
  "rohi-config",
@@ -4354,6 +4376,10 @@ name = "rohi-system"
 version = "0.7.0"
 dependencies = [
  "embassy-futures",
+ "embassy-sync 0.8.0",
+ "heapless 0.9.3",
+ "log",
+ "rohi-crash",
  "rohi-service",
 ]
 

@@ -43,12 +43,14 @@ rohi-identity = { path = "crates/identity" }
 rohi-location = { path = "crates/location" }
 rohi-system = { path = "crates/system" }
 rohi-logging = { path = "crates/logging" }
+rohi-crash = { path = "crates/crash" }
+rohi-crash-esp = { path = "crates/crash-esp" }
 
 # ESP. Versions are pinned here; the chip (esp32c3 / esp32c6) is selected by
 # the firmware features, never globally.
 esp-hal = { version = "1.2.2", features = ["unstable"] }
 esp-println = { version = "0.18.0", features = ["log-04"] }
-esp-backtrace = { version = "0.20.0", features = ["panic-handler", "println"] }
+esp-backtrace = { version = "0.20.0", features = ["println"] }
 esp-bootloader-esp-idf = "0.6.0"
 esp-rtos = { version = "0.4.0", features = [
   "embassy",

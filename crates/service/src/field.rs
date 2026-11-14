@@ -78,9 +78,10 @@ impl EnumVariant {
 /// [`crate::ActionDescriptor::enums`]) as
 /// `EnumDescriptor::new(id, &[EnumVariant::new(value, "name"), ..])`, and
 /// fields that are no enums carry nothing. A checked value must be one of the
-/// variants. A section, service or action has at most one enum
-/// ([`MAX_ENUMS`](crate::MAX_ENUMS)), a constraint of the compact control
-/// protocol.
+/// variants. A config section has at most three enums
+/// ([`MAX_ENUMS`](crate::MAX_ENUMS)), a service or action at most one
+/// ([`MAX_SERVICE_ENUMS`](crate::MAX_SERVICE_ENUMS)), constraints of the compact
+/// control protocol.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EnumDescriptor {
     /// Non-zero, unique within the section, service or action.

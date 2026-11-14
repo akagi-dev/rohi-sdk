@@ -202,6 +202,7 @@ extern crate std;
 
 mod backend;
 mod controller;
+mod diag;
 mod mapping;
 mod policy;
 

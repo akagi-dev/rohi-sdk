@@ -35,11 +35,32 @@
 //! in place, so the only damage a power loss can do is to the segment that was
 //! being written, and recovery cuts it at its last complete block.
 //!
-//! Every start record carries the *generation* of the history, a number that
-//! grows whenever the history is cleared or lost (see
-//! [`StorageStats::generation`]). Clearing leaves a one-sector *marker*, a
-//! start record without payload, so the generation survives a reboot while no
-//! segment exists.
+//! The last two sectors of the medium are not part of the ring: they are the
+//! two slots of the *format header*, which says that the medium was formatted
+//! for this journal and holds the current *generation* of the history, a
+//! number that grows whenever the history is cleared or lost (see
+//! [`StorageStats::generation`]). Every start record carries the generation it
+//! was written in.
+//!
+//! ```text
+//! sectors:  0 ........................ N-3 | N-2       N-1
+//!           segments of the ring            header A   header B
+//! ```
+//!
+//! * A medium without a valid header (new, a partition that was moved, foreign
+//!   content, a format that was interrupted) is **formatted** by
+//!   [`recover`](LogStorage::recover): the header slots go first, then every
+//!   sector of the ring is erased one at a time, and the header is programmed
+//!   last. A reset at any point leaves no header, so the next start formats
+//!   again; a healthy history is never formatted.
+//! * [`clear`](LogStorage::clear) first programs a header with the next
+//!   generation into the other slot, which removes the history at once:
+//!   segments of an older generation are stale and are erased, never read,
+//!   when a recovery finds them. Only then are the sectors erased, one at a
+//!   time, so a reset during the erase finishes at the next start.
+//! * Between two sector erases the operation yields to the executor: a flash
+//!   erase stalls the CPU for tens of milliseconds, and the whole region takes
+//!   a few seconds.
 //!
 //! The end mark of an LZ4 payload is never stored: it is appended when the
 //! file is read, so a torn segment and a sealed one read the same way.
@@ -63,8 +84,13 @@ const START_LEN: u32 = 20;
 const HEADER_SLOT: u32 = 48;
 const START_MAGIC: [u8; 4] = *b"RLS1";
 const START_VERSION: u8 = 2;
-// The codec byte of a marker.
-const MARKER: u8 = 0xFF;
+// The two format header slots at the end of the medium.
+const HEADER_SECTORS: u32 = 2;
+const FORMAT_LEN: usize = 20;
+const FORMAT_MAGIC: [u8; 4] = *b"RLH1";
+const FORMAT_VERSION: u8 = 1;
+// Segments need at least two sectors of the ring to rotate.
+const MIN_RING_SECTORS: u32 = 2;
 
 #[derive(Clone, Copy, Debug)]
 struct Segment {
@@ -86,9 +112,135 @@ struct Segment {
 struct Start {
     id: u32,
     sectors: u32,
-    // None for a marker.
-    codec: Option<Compression>,
+    codec: Compression,
     generation: u32,
+}
+
+// The reports are kept out of line: they run once in a while, and inlined into
+// an async fn they would only grow its frame. This layer runs inside the
+// logging task, never inside `LogSink::push`, so it may log; it does not log
+// per appended chunk, which would feed itself.
+#[cold]
+#[inline(never)]
+fn note_header(slot: u32, generation: u32) {
+    log::debug!("Format header found (slot={slot} generation={generation})");
+}
+
+#[cold]
+#[inline(never)]
+fn note_format(ring_sectors: u32) {
+    log::debug!("No valid format header, erasing the ring (sectors={ring_sectors})");
+}
+
+#[cold]
+#[inline(never)]
+fn note_formatted(generation: u32) {
+    log::debug!("Ring formatted (generation={generation})");
+}
+
+#[cold]
+#[inline(never)]
+fn note_generation(old: u32, new: u32) {
+    log::debug!("Ring generation changed (old={old} new={new})");
+}
+
+#[cold]
+#[inline(never)]
+fn warn_history_reset(from: u32, to: u32) {
+    log::warn!("History lost or reset (generation_from={from} generation_to={to})");
+}
+
+#[cold]
+#[inline(never)]
+fn note_stale(sector: u32, generation: u32, current: u32) {
+    log::debug!("Stale segment erased (sector={sector} generation={generation} current={current})");
+}
+
+#[cold]
+#[inline(never)]
+fn warn_checksum(id: u32, sector: u32) {
+    log::warn!("Sealed segment dropped: checksum mismatch (id={id} sector={sector})");
+}
+
+#[cold]
+#[inline(never)]
+fn note_empty(id: u32, sector: u32) {
+    log::debug!("Empty segment dropped (id={id} sector={sector})");
+}
+
+#[cold]
+#[inline(never)]
+fn note_scanned(id: u32, records: u32, stored: u32) {
+    log::debug!(
+        "Unsealed segment cut at its last record (id={id} records={records} stored_b={stored})"
+    );
+}
+
+#[cold]
+#[inline(never)]
+fn warn_excess(id: u32, sector: u32) {
+    log::warn!("Too many segments, oldest dropped (id={id} sector={sector})");
+}
+
+#[cold]
+#[inline(never)]
+fn note_recovered(segments: u32, dropped: u32, corrupted: u32, newest: Option<u64>) {
+    log::debug!(
+        "Ring recovered (segments={segments} dropped={dropped} corrupted={corrupted} newest={newest:?})"
+    );
+}
+
+#[cold]
+#[inline(never)]
+fn warn_limits(sectors: u32, budget: u32, total: u32) {
+    log::warn!(
+        "Segment does not fit the ring budget (sectors={sectors} budget={budget} total={total})"
+    );
+}
+
+#[cold]
+#[inline(never)]
+fn note_begun(id: u32, sector: u32, sectors: u32, codec: Compression) {
+    log::debug!("Segment begun (id={id} sector={sector} sectors={sectors} codec={codec:?})");
+}
+
+#[cold]
+#[inline(never)]
+fn note_sealed(id: u32, records: u32, stored: u32) {
+    log::debug!("Segment sealed (id={id} records={records} stored_b={stored})");
+}
+
+#[cold]
+#[inline(never)]
+fn note_dropped(id: u32, sector: u32, records: u32) {
+    log::debug!("Segment dropped (id={id} sector={sector} records={records})");
+}
+
+#[cold]
+#[inline(never)]
+fn note_clear(generation: u32) {
+    log::debug!("Ring cleared (generation={generation})");
+}
+
+#[cold]
+#[inline(never)]
+fn trace_erase(sector: u32) {
+    log::trace!("Erasing sector (sector={sector})");
+}
+
+// Pends once, so that the executor can run other tasks between two erases.
+async fn yield_now() {
+    let mut yielded = false;
+    core::future::poll_fn(|cx| {
+        if yielded {
+            core::task::Poll::Ready(())
+        } else {
+            yielded = true;
+            cx.waker().wake_by_ref();
+            core::task::Poll::Pending
+        }
+    })
+    .await;
 }
 
 impl Segment {
@@ -119,6 +271,8 @@ pub struct RingStorage<M: Medium> {
     // Sectors of the segments the limits ask for, 0 until one began.
     segment_sectors: u32,
     generation: u32,
+    // The format header slot that holds `generation`.
+    header_slot: u32,
 }
 
 type Failure<M> = StorageError<<M as Medium>::Error>;
@@ -127,7 +281,7 @@ impl<M: Medium> RingStorage<M> {
     /// A storage over `medium`; call [`recover`](LogStorage::recover) before
     /// use to find what the medium holds.
     pub fn new(medium: M) -> Self {
-        let budget_sectors = medium.sectors();
+        let budget_sectors = medium.sectors().saturating_sub(HEADER_SECTORS);
         Self {
             medium,
             segments: Vec::new(),
@@ -136,7 +290,13 @@ impl<M: Medium> RingStorage<M> {
             budget_sectors,
             segment_sectors: 0,
             generation: 1,
+            header_slot: 0,
         }
+    }
+
+    // Sectors of the ring: all but the format header.
+    fn ring_sectors(&self) -> u32 {
+        self.medium.sectors().saturating_sub(HEADER_SECTORS)
     }
 
     /// The medium, for tests and for the platform that owns it.
@@ -183,6 +343,7 @@ impl<M: Medium> RingStorage<M> {
                 at += piece.len() as u32;
             }
             if dirty {
+                trace_erase(sector);
                 self.medium.erase(sector, 1).map_err(Self::medium_error)?;
             }
         }
@@ -196,6 +357,7 @@ impl<M: Medium> RingStorage<M> {
             .erase(segment.first_sector, 1)
             .map_err(Self::medium_error)?;
         self.segments.remove(index);
+        note_dropped(segment.id, segment.first_sector, segment.records);
         Ok(())
     }
 
@@ -241,10 +403,83 @@ impl<M: Medium> RingStorage<M> {
             .map_err(Self::medium_error)
     }
 
-    // Keeps the generation of an empty history where a reboot finds it.
-    fn write_marker(&mut self) -> Result<(), Failure<M>> {
-        self.erase_if_dirty(0, 1)?;
-        self.write_start_record(0, 1, MARKER, 0, self.generation)
+    fn header_sector(&self, slot: u32) -> u32 {
+        self.ring_sectors() + slot
+    }
+
+    // The generation a header slot holds, if it holds a valid header of this
+    // medium.
+    fn read_header(&mut self, slot: u32) -> Result<Option<u32>, Failure<M>> {
+        let mut bytes = [0u8; FORMAT_LEN];
+        let at = self.header_sector(slot) * SECTOR;
+        self.read_into(at, &mut bytes)?;
+        let word = |at: usize| {
+            u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+        };
+        if bytes[..4] != FORMAT_MAGIC
+            || bytes[4] != FORMAT_VERSION
+            || word(8) != self.medium.sectors()
+            || Crc32::of(&bytes[..16]) != word(16)
+        {
+            return Ok(None);
+        }
+        Ok(Some(word(12)))
+    }
+
+    // Erases a header slot and programs a header into it.
+    fn write_header(&mut self, slot: u32, generation: u32) -> Result<(), Failure<M>> {
+        let sector = self.header_sector(slot);
+        self.medium.erase(sector, 1).map_err(Self::medium_error)?;
+        let mut bytes = [0u8; FORMAT_LEN];
+        bytes[..4].copy_from_slice(&FORMAT_MAGIC);
+        bytes[4] = FORMAT_VERSION;
+        bytes[8..12].copy_from_slice(&self.medium.sectors().to_le_bytes());
+        bytes[12..16].copy_from_slice(&generation.to_le_bytes());
+        let crc = Crc32::of(&bytes[..16]);
+        bytes[16..].copy_from_slice(&crc.to_le_bytes());
+        self.medium
+            .write(sector * SECTOR, &bytes)
+            .map_err(Self::medium_error)
+    }
+
+    // Makes `generation` the generation of the history. The new header goes
+    // into the slot that is not in use and only then is the old one erased,
+    // so there is always a valid header.
+    fn commit_generation(&mut self, generation: u32) -> Result<(), Failure<M>> {
+        let (old, new) = (self.header_slot, 1 - self.header_slot);
+        self.write_header(new, generation)?;
+        self.header_slot = new;
+        note_generation(self.generation, generation);
+        self.generation = generation;
+        let sector = self.header_sector(old);
+        self.medium.erase(sector, 1).map_err(Self::medium_error)
+    }
+
+    // Erases every sector of the ring, one at a time.
+    async fn erase_ring(&mut self) -> Result<(), Failure<M>> {
+        for sector in 0..self.ring_sectors() {
+            self.medium.erase(sector, 1).map_err(Self::medium_error)?;
+            yield_now().await;
+        }
+        Ok(())
+    }
+
+    // Formats the medium. No header is valid while it runs and the header is
+    // programmed last, so an interrupted format is formatted again.
+    async fn format(&mut self) -> Result<(), Failure<M>> {
+        self.segments.clear();
+        self.open = false;
+        note_format(self.ring_sectors());
+        for slot in 0..HEADER_SECTORS {
+            let sector = self.header_sector(slot);
+            self.medium.erase(sector, 1).map_err(Self::medium_error)?;
+        }
+        self.erase_ring().await?;
+        self.generation = self.generation.max(1);
+        self.write_header(0, self.generation)?;
+        self.header_slot = 0;
+        note_formatted(self.generation);
+        Ok(())
     }
 
     // The start record at the beginning of `sector`, if it holds a valid one.
@@ -261,13 +496,12 @@ impl<M: Medium> RingStorage<M> {
             return Ok(None);
         }
         let codec = match start[5] {
-            0 => Some(Compression::None),
-            1 => Some(Compression::Lz4),
-            MARKER => None,
+            0 => Compression::None,
+            1 => Compression::Lz4,
             _ => return Ok(None),
         };
         let sectors = u32::from(u16::from_le_bytes([start[6], start[7]]));
-        if sectors == 0 || sector + sectors > self.medium.sectors() {
+        if sectors == 0 || sector + sectors > self.ring_sectors() {
             return Ok(None);
         }
         Ok(Some(Start {
@@ -423,11 +657,38 @@ impl<M: Medium> LogStorage for RingStorage<M> {
             .collect();
         self.segments.clear();
         self.open = false;
-        let total = self.medium.sectors();
+        let total = self.ring_sectors();
+        if total < MIN_RING_SECTORS {
+            return Err(StorageError::InvalidLimits);
+        }
+        // The newest header wins; without one the medium is not ours (yet).
+        let mut formatted = false;
+        let mut header = None;
+        for slot in 0..HEADER_SECTORS {
+            if let Some(generation) = self.read_header(slot)?
+                && header.is_none_or(|(_, newest)| generation > newest)
+            {
+                header = Some((slot, generation));
+            }
+        }
+        match header {
+            Some((slot, generation)) => {
+                self.header_slot = slot;
+                self.generation = generation;
+                note_header(slot, generation);
+                // The slot of a clear that was cut short, or an old header.
+                let other = self.header_sector(1 - slot);
+                self.erase_if_dirty(other, 1)?;
+            }
+            None => {
+                self.format().await?;
+                formatted = true;
+            }
+        }
+        let header_generation = self.generation;
         let mut found = Vec::<Segment, { MAX_SEGMENTS + 8 }>::new();
         let mut dropped = 0u32;
         let mut corrupted = 0u32;
-        let mut marker_generation = 0u32;
         let mut lost_generation = 0u32;
         let mut sector = 0;
         while sector < total {
@@ -435,12 +696,14 @@ impl<M: Medium> LogStorage for RingStorage<M> {
                 sector += 1;
                 continue;
             };
-            let Some(codec) = start.codec else {
-                marker_generation = marker_generation.max(start.generation);
-                sector += 1;
+            if start.generation < header_generation {
+                // What a clear left behind: it belongs to a history that is gone.
+                note_stale(sector, start.generation, header_generation);
+                self.medium.erase(sector, 1).map_err(Self::medium_error)?;
+                sector += start.sectors;
                 continue;
-            };
-            let (id, sectors) = (start.id, start.sectors);
+            }
+            let (id, sectors, codec) = (start.id, start.sectors, start.codec);
             let mut segment = Segment {
                 id,
                 first_sector: sector,
@@ -477,12 +740,17 @@ impl<M: Medium> LogStorage for RingStorage<M> {
                         segment.crc = Crc32::new();
                     } else {
                         corrupted += 1;
+                        warn_checksum(id, segment.first_sector);
                     }
                 }
-                _ => self.scan_open(&mut segment)?,
+                _ => {
+                    self.scan_open(&mut segment)?;
+                    note_scanned(id, segment.records, segment.stored);
+                }
             }
             sector += sectors;
             if segment.records == 0 {
+                note_empty(id, segment.first_sector);
                 self.medium
                     .erase(segment.first_sector, 1)
                     .map_err(Self::medium_error)?;
@@ -495,6 +763,7 @@ impl<M: Medium> LogStorage for RingStorage<M> {
         found.sort_unstable_by_key(|segment| segment.id);
         while found.len() > MAX_SEGMENTS {
             let oldest = found.remove(0);
+            warn_excess(oldest.id, oldest.first_sector);
             self.medium
                 .erase(oldest.first_sector, 1)
                 .map_err(Self::medium_error)?;
@@ -511,28 +780,29 @@ impl<M: Medium> LogStorage for RingStorage<M> {
             .segments
             .last()
             .map_or(1, |newest| newest.id.wrapping_add(1));
-        match self.segments.last() {
-            Some(newest) => self.generation = newest.generation,
-            None => {
-                // History that was lost is a new one; a marker already says so
-                // for a history that was cleared.
-                let lost = if lost_generation > 0 {
-                    lost_generation.wrapping_add(1)
-                } else {
-                    0
-                };
-                self.generation = marker_generation.max(lost).max(1);
-                // Generation 1 is what a medium without a marker means.
-                if marker_generation.max(1) != self.generation {
-                    self.write_marker()?;
-                }
-            }
+        let wanted = match self.segments.last() {
+            Some(newest) => newest.generation,
+            // History that was lost is a new one.
+            None if lost_generation > 0 => lost_generation.wrapping_add(1),
+            None => 0,
         }
+        .max(header_generation);
+        if wanted != header_generation {
+            warn_history_reset(header_generation, wanted);
+            self.commit_generation(wanted)?;
+        }
+        note_recovered(
+            self.segments.len() as u32,
+            dropped,
+            corrupted,
+            self.segments.last().map(|newest| newest.last_sequence),
+        );
         Ok(Recovery {
             newest_sequence: self.segments.last().map(|newest| newest.last_sequence),
             segments: self.segments.len() as u32,
             dropped,
             corrupted,
+            formatted,
         })
     }
 
@@ -544,10 +814,11 @@ impl<M: Medium> LogStorage for RingStorage<M> {
         if self.open {
             self.seal().await?;
         }
-        let total = self.medium.sectors();
+        let total = self.ring_sectors();
         let sectors = limits.segment_bytes.div_ceil(SECTOR).max(1);
         let budget = (limits.retention_bytes / SECTOR).min(total);
         if sectors > budget || sectors > u32::from(u16::MAX) {
+            warn_limits(sectors, budget, total);
             return Err(StorageError::InvalidLimits);
         }
         self.budget_sectors = budget;
@@ -605,6 +876,7 @@ impl<M: Medium> LogStorage for RingStorage<M> {
             .push(segment)
             .map_err(|_| StorageError::InvalidLimits)?;
         self.open = true;
+        note_begun(id, head, sectors, codec);
         Ok(id)
     }
 
@@ -665,7 +937,9 @@ impl<M: Medium> LogStorage for RingStorage<M> {
         };
         self.medium
             .write(segment.header_offset(), &header.encode())
-            .map_err(Self::medium_error)
+            .map_err(Self::medium_error)?;
+        note_sealed(segment.id, segment.records, segment.stored);
+        Ok(())
     }
 
     async fn segments(&mut self) -> Result<Vec<SegmentInfo, MAX_SEGMENTS>, Failure<M>> {
@@ -728,17 +1002,22 @@ impl<M: Medium> LogStorage for RingStorage<M> {
             return Err(StorageError::Busy);
         }
         self.open = false;
-        while !self.segments.is_empty() {
-            self.drop_segment(0)?;
-        }
-        // What was cleared is a history of its own: cursors into it must not
+        // What is cleared is a history of its own: cursors into it must not
         // be mistaken for cursors into the next one, not even after a reboot.
-        self.generation = self.generation.wrapping_add(1).max(1);
-        self.write_marker()
+        // The new header removes the history at once; the erase that follows
+        // is finished by the next recovery if it is cut short.
+        let next = self.generation.wrapping_add(1).max(1);
+        note_clear(next);
+        let committed = self.commit_generation(next);
+        if self.generation == next {
+            self.segments.clear();
+        }
+        committed?;
+        self.erase_ring().await
     }
 
     async fn stats(&mut self) -> Result<StorageStats, Failure<M>> {
-        let total = self.medium.sectors();
+        let total = self.ring_sectors();
         let used = self.used_sectors();
         let mut capacity = self.budget_sectors.min(total);
         // At most MAX_SEGMENTS segments are retained: with small segments the

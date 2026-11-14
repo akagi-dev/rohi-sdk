@@ -110,6 +110,7 @@ pub fn controller(
             ble,
             logging: logging::runtime().service(),
             reboot: reboot::request,
+            boot_report: || None,
         },
         config::handle(),
         identity::start(config::handle()),

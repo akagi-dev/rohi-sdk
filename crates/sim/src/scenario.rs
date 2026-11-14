@@ -59,6 +59,7 @@
 use std::fmt;
 use std::path::Path;
 
+use log::{debug, info, trace, warn};
 use rohi_net::WifiSecurity;
 use serde::Deserialize;
 
@@ -110,6 +111,11 @@ impl std::error::Error for ScenarioError {}
 
 fn error(message: impl Into<String>) -> ScenarioError {
     ScenarioError(message.into())
+}
+
+/// The first line of a possibly multiline parser message, for a single log record.
+fn first_line(text: &str) -> &str {
+    text.lines().next().unwrap_or("")
 }
 
 impl Default for Scenario {
@@ -313,6 +319,7 @@ fn event(index: usize, section: EventSection) -> Result<TimedCommand, ScenarioEr
     };
     let command =
         Command::parse(&line).map_err(|e: ParseError| error(format!("events[{index}]: {e}")))?;
+    trace!(target: "sim.scenario", "Event parsed (index={index} at_ms={at_ms} cmd={command:?})");
     Ok(TimedCommand { at_ms, command })
 }
 
@@ -323,9 +330,28 @@ impl Scenario {
     ///
     /// An unreadable file, a syntax error or an unknown name.
     pub fn load(path: &Path) -> Result<Self, ScenarioError> {
-        let text = std::fs::read_to_string(path)
-            .map_err(|e| error(format!("cannot read {}: {e}", path.display())))?;
-        Self::parse(&text).map_err(|e| error(format!("{}: {e}", path.display())))
+        debug!(target: "sim.scenario", "Loading the scenario file (path={})", path.display());
+        let text = std::fs::read_to_string(path).map_err(|e| {
+            warn!(target: "sim.scenario", "Cannot read the scenario file: {e} (path={})", path.display());
+            error(format!("cannot read {}: {e}", path.display()))
+        })?;
+        let scenario = Self::parse(&text).map_err(|e| {
+            warn!(
+                target: "sim.scenario",
+                "Scenario file is invalid: {} (path={})",
+                first_line(&e.to_string()),
+                path.display()
+            );
+            error(format!("{}: {e}", path.display()))
+        })?;
+        info!(
+            target: "sim.scenario",
+            "Scenario loaded (events={} access_points={} path={})",
+            scenario.events.len(),
+            scenario.wifi.aps.len(),
+            path.display()
+        );
+        Ok(scenario)
     }
 
     /// Parses scenario text.
@@ -335,7 +361,15 @@ impl Scenario {
     /// A syntax error or an unknown name.
     pub fn parse(text: &str) -> Result<Self, ScenarioError> {
         let file: File = toml::from_str(text).map_err(|e| error(e.to_string()))?;
-        Self::from_file(file)
+        let scenario = Self::from_file(file)?;
+        debug!(
+            target: "sim.scenario",
+            "Scenario parsed (device={:?} interval_ms={} events={})",
+            scenario.device_name,
+            scenario.sensors.interval_ms,
+            scenario.events.len()
+        );
+        Ok(scenario)
     }
 
     fn from_file(file: File) -> Result<Self, ScenarioError> {

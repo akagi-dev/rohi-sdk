@@ -41,6 +41,7 @@ const _: () = {
     assert!(rohi_service::MAX_ISSUES <= limits::MAX_ISSUES);
     assert!(rohi_service::MAX_ISSUE_DESCRIPTORS <= limits::MAX_ISSUE_DESCRIPTORS);
     assert!(rohi_service::MAX_ENUMS <= limits::MAX_ENUMS);
+    assert!(rohi_service::MAX_SERVICE_ENUMS <= limits::MAX_SERVICE_ENUMS);
     assert!(rohi_service::MAX_ENUM_VARIANTS <= limits::MAX_ENUM_VARIANTS);
     assert!(rohi_service::MAX_VARIANT_NAME_LEN <= limits::MAX_VARIANT_NAME_LEN);
     assert!(rohi_service::MAX_ACTION_ARGS <= limits::MAX_ACTION_ARGS);
