@@ -1064,7 +1064,7 @@ fn full_schemas_status_and_action_lists_fit_one_response() {
     let Reply::ListActions(list) = call(
         &controller,
         &PLAIN,
-        Call::ListActions(pb::ListActionsRequest {}),
+        Call::ListActions(pb::ListActionsRequest::default()),
     ) else {
         panic!()
     };
@@ -1072,6 +1072,27 @@ fn full_schemas_status_and_action_lists_fit_one_response() {
     assert_eq!(list.actions[0].service_id, Many::ID);
     assert_eq!(list.actions[11].service_id, Many2::ID);
     assert_eq!(list.actions[11].name.as_str(), "f");
+    assert_eq!(list.total, 12);
+
+    let Reply::ListActions(page) = call(
+        &controller,
+        &PLAIN,
+        Call::ListActions(pb::ListActionsRequest { offset: 10 }),
+    ) else {
+        panic!()
+    };
+    assert_eq!(page.actions.len(), 2);
+    assert_eq!(page.actions[0].name.as_str(), "e");
+    assert_eq!(page.total, 12);
+
+    let Reply::ListActions(end) = call(
+        &controller,
+        &PLAIN,
+        Call::ListActions(pb::ListActionsRequest { offset: 12 }),
+    ) else {
+        panic!()
+    };
+    assert!(end.actions.is_empty());
 }
 
 #[derive(Service)]
@@ -1441,7 +1462,7 @@ fn the_action_listing_tells_which_actions_return_a_stream() {
     let Reply::ListActions(list) = call(
         &controller,
         &PLAIN,
-        Call::ListActions(pb::ListActionsRequest {}),
+        Call::ListActions(pb::ListActionsRequest::default()),
     ) else {
         panic!("not a list");
     };
@@ -1565,5 +1586,32 @@ fn a_new_session_cannot_use_the_streams_of_a_lost_link() {
     assert_eq!(
         error_code(&call(&controller, &PLAIN, read_stream(0))),
         pb::ErrorCode::NotFound
+    );
+}
+
+#[test]
+fn a_bitset_argument_refers_to_its_catalog_through_the_selection_table() {
+    let fields = [
+        FieldDescriptor::new(1, "owner", ValueKind::Address),
+        FieldDescriptor::new(2, "public", ValueKind::Bytes).with_selection(32, 7, 9),
+        FieldDescriptor::new(3, "private", ValueKind::Bytes).with_selection(32, 7, 9),
+    ];
+    let wire: Vec<pb::FieldDescriptor, 3> = mapping::fields(&fields);
+    assert_eq!(wire[0].kind, pb::ValueKind::Address);
+    assert_eq!(
+        [wire[0].enum_id, wire[1].enum_id, wire[2].enum_id],
+        [0, 1, 2]
+    );
+    let table: Vec<pb::SelectionDescriptor, { limits::MAX_SELECTIONS }> =
+        mapping::selections(&fields);
+    assert_eq!(table.len(), 2);
+    assert_eq!(table[1].id, 2);
+    assert_eq!(
+        (
+            table[1].size_bytes,
+            table[1].catalog_service_id,
+            table[1].catalog_action_id
+        ),
+        (32, 7, 9)
     );
 }

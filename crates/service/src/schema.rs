@@ -28,9 +28,10 @@ use crate::action::{ActionDescriptor, MAX_ACTION_ARGS, MAX_RECORD_FIELDS};
 use crate::field::{ConfigField, EnumDescriptor, FieldDescriptor};
 use crate::status::{FIRST_SERVICE_ISSUE, ISSUE_STARTUP_FAILED, IssueDescriptor};
 use crate::{
-    MAX_ENUM_VARIANTS, MAX_ENUMS, MAX_ISSUE_DESCRIPTORS, MAX_NAME_LEN, MAX_VARIANT_NAME_LEN,
+    MAX_ENUM_VARIANTS, MAX_ENUMS, MAX_ISSUE_DESCRIPTORS, MAX_NAME_LEN, MAX_SELECTIONS,
+    MAX_VARIANT_NAME_LEN,
 };
-use rohi_config::ValueKind;
+use rohi_config::{MAX_VALUE_LEN, ValueKind};
 
 const fn same(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
@@ -58,8 +59,20 @@ pub(crate) const fn name_ok(name: &str) -> bool {
     name_fits(name, MAX_NAME_LEN)
 }
 
-const fn field_ok(field: &FieldDescriptor, enums: &[EnumDescriptor]) -> bool {
+const fn field_ok(
+    field: &FieldDescriptor,
+    enums: &[EnumDescriptor],
+    selection_allowed: bool,
+) -> bool {
     if !name_ok(field.name) {
+        return false;
+    }
+    if let Some(selection) = field.selection
+        && (!selection_allowed
+            || !matches!(field.kind, ValueKind::Bytes)
+            || selection.size_bytes == 0
+            || selection.size_bytes as usize > MAX_VALUE_LEN)
+    {
         return false;
     }
     if !matches!(field.kind, ValueKind::Enum) {
@@ -82,9 +95,31 @@ const fn distinct(a: &FieldDescriptor, b: &FieldDescriptor) -> bool {
 /// Whether the fields are valid: names fit, ids and names are unique, every
 /// enum field refers to an enum of `enums` and no other field does.
 pub(crate) const fn fields_valid(fields: &[FieldDescriptor], enums: &[EnumDescriptor]) -> bool {
+    all_valid(fields, enums, false)
+}
+
+/// [`fields_valid`] for the arguments of an action, which may be bitsets over
+/// a catalog: at most [`MAX_SELECTIONS`] of them.
+const fn args_valid(fields: &[FieldDescriptor], enums: &[EnumDescriptor]) -> bool {
+    let mut selections = 0;
     let mut index = 0;
     while index < fields.len() {
-        if !field_ok(&fields[index], enums) {
+        if fields[index].selection.is_some() {
+            selections += 1;
+        }
+        index += 1;
+    }
+    selections <= MAX_SELECTIONS && all_valid(fields, enums, true)
+}
+
+const fn all_valid(
+    fields: &[FieldDescriptor],
+    enums: &[EnumDescriptor],
+    selection_allowed: bool,
+) -> bool {
+    let mut index = 0;
+    while index < fields.len() {
+        if !field_ok(&fields[index], enums, selection_allowed) {
             return false;
         }
         let mut other = 0;
@@ -103,7 +138,7 @@ pub(crate) const fn fields_valid(fields: &[FieldDescriptor], enums: &[EnumDescri
 pub(crate) const fn config_fields_valid(fields: &[ConfigField], enums: &[EnumDescriptor]) -> bool {
     let mut index = 0;
     while index < fields.len() {
-        if !field_ok(&fields[index].field, enums) {
+        if !field_ok(&fields[index].field, enums, false) {
             return false;
         }
         let mut other = 0;
@@ -238,7 +273,7 @@ pub(crate) const fn actions_valid(actions: &[ActionDescriptor]) -> bool {
             || action.args.len() > MAX_ACTION_ARGS
             || action.results.len() > MAX_RECORD_FIELDS
             || !enums_valid(action.enums)
-            || !fields_valid(action.args, action.enums)
+            || !args_valid(action.args, action.enums)
             || !fields_valid(action.results, action.enums)
         {
             return false;

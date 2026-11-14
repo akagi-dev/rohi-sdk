@@ -207,6 +207,7 @@
 //! | section, service, action, field or issue name ([`MAX_NAME_LEN`]) | 24 bytes |
 //! | enum variant name ([`MAX_VARIANT_NAME_LEN`]) | 16 bytes |
 //! | enums per section, service or action ([`MAX_ENUMS`]) | 1 |
+//! | bitset arguments per action ([`MAX_SELECTIONS`]) | 2 |
 //! | variants per enum ([`MAX_ENUM_VARIANTS`]) | 9 |
 //! | sections or services in a registry ([`MAX_REGISTRY_ENTRIES`]) | 12 |
 
@@ -231,10 +232,12 @@ pub use config::{
     FactoryReset, Mutation, MutationOp, Patched, RestartRequired, Section, SectionInfo,
     SectionSchema, SectionStore, SectionValues, StoreError,
 };
-pub use field::{Bounds, ConfigField, EnumDescriptor, EnumVariant, FieldDescriptor, Unit};
+pub use field::{
+    Bounds, ConfigField, EnumDescriptor, EnumVariant, FieldDescriptor, SelectionDescriptor, Unit,
+};
 pub use isolated::{Isolated, isolated};
 pub use registry::{ActionRegistry, ServiceIdentity, StatusRegistry, StatusSet, Statuses, Tracker};
-pub use rohi_config::{FieldError, MAX_VALUE_LEN, Value, ValueKind};
+pub use rohi_config::{ADDRESS_LEN, FieldError, MAX_VALUE_LEN, Value, ValueKind};
 pub use rohi_config_derive::Config;
 pub use rohi_service_derive::Service;
 pub use service::{Service, assert_service_name, distinct_ids, service_id, service_name_is_valid};
@@ -257,6 +260,8 @@ pub const MAX_VARIANT_NAME_LEN: usize = 16;
 /// of the compact control protocol, which describes enum variants once per
 /// schema: a schema that needs more enums does not fit it.
 pub const MAX_ENUMS: usize = 1;
+/// Maximum number of bitset (selection) arguments of an action.
+pub const MAX_SELECTIONS: usize = 2;
 /// Maximum number of variants of an enum.
 pub const MAX_ENUM_VARIANTS: usize = 9;
 /// Maximum number of status fields of a service.

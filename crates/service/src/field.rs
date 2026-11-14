@@ -125,6 +125,24 @@ pub(crate) fn enum_allows(enums: &[EnumDescriptor], id: u32, value: u32) -> bool
         .is_some_and(|descriptor| descriptor.contains(value))
 }
 
+/// A fixed-size bitset field over a catalog.
+///
+/// Bit `i` is `byte[i / 8]` bit `i % 8`, least significant first. All zero
+/// bytes select nothing and all `0xFF` bytes select every current catalog
+/// entry (a dynamic "all", not a snapshot). The entries and their stable bit
+/// indices are listed by a read-only paged action whose records carry
+/// `bit_index` (field 1, [`ValueKind::U64`]) and `name` (field 2,
+/// [`ValueKind::String`]); a generic client turns names into the bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelectionDescriptor {
+    /// Size of the bitset, in bytes.
+    pub size_bytes: u32,
+    /// Service that owns the catalog action.
+    pub catalog_service_id: u32,
+    /// Id of the catalog action.
+    pub catalog_action_id: u32,
+}
+
 /// Static description of one field of a config section, a service or an
 /// action, declared once as a `const`:
 ///
@@ -153,6 +171,9 @@ pub struct FieldDescriptor {
     pub unit: Unit,
     /// The [`EnumDescriptor`] of an [`ValueKind::Enum`] field; 0 otherwise.
     pub enum_id: u32,
+    /// The catalog of a bitset [`ValueKind::Bytes`] field, see
+    /// [`SelectionDescriptor`].
+    pub selection: Option<SelectionDescriptor>,
 }
 
 impl FieldDescriptor {
@@ -164,6 +185,7 @@ impl FieldDescriptor {
             kind,
             unit: Unit::None,
             enum_id: 0,
+            selection: None,
         }
     }
 
@@ -176,6 +198,35 @@ impl FieldDescriptor {
     /// Sets the enum of an [`ValueKind::Enum`] field.
     pub const fn with_enum(mut self, enum_id: u32) -> Self {
         self.enum_id = enum_id;
+        self
+    }
+
+    /// Whether `value` has the kind of the field and, for a bitset, exactly
+    /// its size.
+    pub fn admits(&self, value: &Value) -> bool {
+        if !self.kind.admits(value) {
+            return false;
+        }
+        match (self.selection, value) {
+            (Some(selection), Value::Bytes(bytes)) => bytes.len() == selection.size_bytes as usize,
+            _ => true,
+        }
+    }
+
+    /// Declares the field a bitset of `size_bytes` bytes over the entries of
+    /// the catalog action `catalog_action_id` of the service
+    /// `catalog_service_id`.
+    pub const fn with_selection(
+        mut self,
+        size_bytes: u32,
+        catalog_service_id: u32,
+        catalog_action_id: u32,
+    ) -> Self {
+        self.selection = Some(SelectionDescriptor {
+            size_bytes,
+            catalog_service_id,
+            catalog_action_id,
+        });
         self
     }
 }
@@ -295,7 +346,7 @@ impl ConfigField {
     /// `enums` and the bounds. Cross-field and domain rules belong to the
     /// typed section.
     pub fn check(&self, value: &Value, enums: &[EnumDescriptor]) -> Result<(), FieldError> {
-        if value.kind() != self.field.kind {
+        if !self.field.admits(value) {
             return Err(FieldError::WrongKind);
         }
         if let Value::Enum(variant) = value

@@ -178,6 +178,7 @@ fn kind(kind: ValueKind) -> pb::ValueKind {
         ValueKind::String => pb::ValueKind::String,
         ValueKind::Bytes => pb::ValueKind::Bytes,
         ValueKind::Enum => pb::ValueKind::Enum,
+        ValueKind::Address => pb::ValueKind::Address,
     }
 }
 
@@ -212,11 +213,38 @@ pub(crate) fn field(field: &FieldDescriptor) -> pb::FieldDescriptor {
     }
 }
 
-/// The wire form of `fields`, at most `N` of them.
+/// The wire form of `fields`, at most `N` of them. A bitset field refers to
+/// the entry of [`selections`] of the same slice: the ids are 1, 2, ... in
+/// the order of the bitset fields.
 pub(crate) fn fields<const N: usize>(fields: &[FieldDescriptor]) -> Vec<pb::FieldDescriptor, N> {
     let mut out = Vec::new();
+    let mut selection_id = 0;
     for descriptor in fields {
-        if out.push(field(descriptor)).is_err() {
+        let mut wire = field(descriptor);
+        if descriptor.selection.is_some() {
+            selection_id += 1;
+            wire.enum_id = selection_id;
+        }
+        if out.push(wire).is_err() {
+            break;
+        }
+    }
+    out
+}
+
+/// The wire form of the bitsets of `fields`, at most `N` of them.
+pub(crate) fn selections<const N: usize>(
+    fields: &[FieldDescriptor],
+) -> Vec<pb::SelectionDescriptor, N> {
+    let mut out = Vec::new();
+    for selection in fields.iter().filter_map(|field| field.selection) {
+        let wire = pb::SelectionDescriptor {
+            id: out.len() as u8 + 1,
+            size_bytes: selection.size_bytes,
+            catalog_service_id: selection.catalog_service_id,
+            catalog_action_id: selection.catalog_action_id,
+        };
+        if out.push(wire).is_err() {
             break;
         }
     }

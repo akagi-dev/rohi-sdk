@@ -340,6 +340,22 @@ fn full_field(id: u32) -> FieldDescriptor {
     }
 }
 
+fn full_selections() -> Vec<SelectionDescriptor, { limits::MAX_SELECTIONS }> {
+    let mut selections = Vec::new();
+    for _ in 0..limits::MAX_SELECTIONS {
+        selections
+            .push(SelectionDescriptor {
+                id: u8::MAX,
+                size_bytes: u32::MAX,
+                catalog_service_id: u32::MAX,
+                catalog_action_id: u32::MAX,
+            })
+            .ok()
+            .unwrap();
+    }
+    selections
+}
+
 fn full_enum() -> EnumDescriptor {
     let mut variants = Vec::new();
     for value in 0..limits::MAX_ENUM_VARIANTS {
@@ -512,7 +528,10 @@ fn every_action_listed_fits_the_response_limit() {
             .unwrap();
     }
     round_trip(response(Response_::Response::ListActions(
-        ListActionsResponse { actions },
+        ListActionsResponse {
+            actions,
+            total: u32::MAX,
+        },
     )));
 }
 
@@ -530,6 +549,7 @@ fn a_full_action_schema_fits_the_response_limit() {
         args,
         results,
         enums: full_enums(),
+        selections: full_selections(),
         ..Default::default()
     };
     schema.set_action(ActionInfo {

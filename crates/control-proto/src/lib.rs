@@ -108,7 +108,7 @@
 //! | info | `GetInfo` (10) |
 //! | config | `ListConfigSections` (11), `GetConfigSchema` (12), `GetConfigSection` (13), `PatchConfigSection` (14), `ResetConfigSection` (15) |
 //! | status | `GetServicesStatus` (17), `GetServiceSchema` (18), `GetServiceStatus` (19) |
-//! | actions | `ListActions` (20), `GetActionSchema` (21), `InvokeAction` (22) |
+//! | actions | `ListActions` (20, paged by `offset`: a page holds at most `MAX_ACTIONS` and `total` is the count of the device), `GetActionSchema` (21), `InvokeAction` (22) |
 //! | stream | `ReadStream` (23), `CloseStream` (24); the files of a stream come as `action_stream` (25), the answer of `InvokeAction` |
 //!
 //! **Schemas drive clients.** The protocol knows no device module. A device
@@ -118,7 +118,11 @@
 //! address sections (64-bit ids), services and actions (32-bit ids) by
 //! number, and runtime enum values and issues are numbers whose names live in
 //! the schema. Values are one of bool, `sint64`, `uint64`, `float` (single
-//! precision), string, bytes or an enum variant number.
+//! precision), string, bytes or an enum variant number. Two kinds refine bytes
+//! without changing the value: an *address* (`VALUE_KIND_ADDRESS`) is a raw
+//! 32-byte public key, and a *bitset* is a bytes argument whose descriptor
+//! refers (by `enum_id`) to a `SelectionDescriptor` of the action schema: the
+//! read-only paged catalog action that lists its bit indices and names.
 //!
 //! **Secrets.** A config field flagged `secret` is write-only: a read reports
 //! it as `redacted`. The `Debug` implementations of [`control::ConfigMutation`]
@@ -202,6 +206,7 @@
 //! | [`limits::MAX_REASON_LEN`] | 32 | `Error.reason` |
 //! | [`limits::MAX_VARIANT_NAME_LEN`] | 16 | enum variant name |
 //! | [`limits::MAX_ENUMS`], [`limits::MAX_ENUM_VARIANTS`] | 1, 9 | enums per schema, variants per enum |
+//! | [`limits::MAX_SELECTIONS`] | 2 | bitset arguments per action schema |
 //! | [`limits::MAX_SCHEMA_FIELDS`], [`limits::MAX_STATUS_FIELDS`] | 20, 20 | service schema and status fields |
 //! | [`limits::MAX_CONFIG_FIELDS`], [`limits::MAX_MUTATIONS`] | 16, 8 | config fields per section, mutations per patch |
 //! | [`limits::MAX_CONFIG_SECTIONS`], [`limits::MAX_SERVICES`], [`limits::MAX_ACTIONS`] | 12, 12, 12 | registry entries listed |
