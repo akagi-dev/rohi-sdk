@@ -123,7 +123,7 @@
 //! at most [`MAX_RECORD_FIELDS`] fields; a result string or bytes value is at
 //! most [`MAX_FIELD_VALUE_LEN`](crate::MAX_FIELD_VALUE_LEN) bytes, an argument
 //! at most [`MAX_VALUE_LEN`](crate::MAX_VALUE_LEN). An action has at most one
-//! enum ([`MAX_ENUMS`](crate::MAX_ENUMS)).
+//! enum ([`MAX_SERVICE_ENUMS`](crate::MAX_SERVICE_ENUMS)).
 //!
 //! # Streams
 //!

@@ -19,7 +19,7 @@
 //! The `logging` config section.
 
 use minicbor::{CborLen, Decode, Encode};
-use rohi_config::{Text, TextValue, Variant, VariantValue};
+use rohi_config::{Variant, VariantValue};
 use rohi_service::{Config, EnumDescriptor, EnumVariant, FieldError};
 
 use crate::LogLevel;
@@ -50,9 +50,12 @@ pub const DEVELOPMENT_LEVEL: LogLevel = LogLevel::Info;
 
 /// Id of the enum of the `level` field.
 pub const LEVEL_ENUM: u32 = 1;
+/// Id of the enum of the `storage` field.
+pub const STORAGE_ENUM: u32 = 2;
+/// Id of the enum of the `compression` field.
+pub const COMPRESSION_ENUM: u32 = 3;
 
-/// The enum of the `level` config field.
-pub const LEVELS: &[EnumDescriptor] = &[EnumDescriptor::new(
+const LEVEL_VARIANTS: EnumDescriptor = EnumDescriptor::new(
     LEVEL_ENUM,
     &[
         EnumVariant::new(0, "off"),
@@ -61,7 +64,25 @@ pub const LEVELS: &[EnumDescriptor] = &[EnumDescriptor::new(
         EnumVariant::new(3, "info"),
         EnumVariant::new(4, "debug"),
     ],
-)];
+);
+
+const STORAGE_VARIANTS: EnumDescriptor = EnumDescriptor::new(
+    STORAGE_ENUM,
+    &[EnumVariant::new(0, "internal"), EnumVariant::new(1, "sd")],
+);
+
+const COMPRESSION_VARIANTS: EnumDescriptor = EnumDescriptor::new(
+    COMPRESSION_ENUM,
+    &[EnumVariant::new(0, "none"), EnumVariant::new(1, "lz4")],
+);
+
+/// The enum of the `level` field, which the `logging` service status shares.
+pub const LEVELS: &[EnumDescriptor] = &[LEVEL_VARIANTS];
+
+/// The enums of the `logging` config section: `level`, `storage` and
+/// `compression`.
+pub const CONFIG_ENUMS: &[EnumDescriptor] =
+    &[LEVEL_VARIANTS, STORAGE_VARIANTS, COMPRESSION_VARIANTS];
 
 impl VariantValue for LogLevel {
     fn variant(&self) -> u32 {
@@ -96,17 +117,20 @@ impl LogStorageKind {
     }
 }
 
-impl TextValue for LogStorageKind {
-    fn from_text(text: &str) -> Option<Self> {
-        match text {
-            "internal" => Some(Self::Internal),
-            "sd" => Some(Self::Sd),
-            _ => None,
+impl VariantValue for LogStorageKind {
+    fn variant(&self) -> u32 {
+        match self {
+            Self::Internal => 0,
+            Self::Sd => 1,
         }
     }
 
-    fn as_text(&self) -> Option<&str> {
-        Some(self.name())
+    fn from_variant(variant: u32) -> Option<Self> {
+        match variant {
+            0 => Some(Self::Internal),
+            1 => Some(Self::Sd),
+            _ => None,
+        }
     }
 }
 
@@ -133,17 +157,20 @@ impl Compression {
     }
 }
 
-impl TextValue for Compression {
-    fn from_text(text: &str) -> Option<Self> {
-        match text {
-            "none" => Some(Self::None),
-            "lz4" => Some(Self::Lz4),
-            _ => None,
+impl VariantValue for Compression {
+    fn variant(&self) -> u32 {
+        match self {
+            Self::None => 0,
+            Self::Lz4 => 1,
         }
     }
 
-    fn as_text(&self) -> Option<&str> {
-        Some(self.name())
+    fn from_variant(variant: u32) -> Option<Self> {
+        match variant {
+            0 => Some(Self::None),
+            1 => Some(Self::Lz4),
+            _ => None,
+        }
     }
 }
 
@@ -151,16 +178,16 @@ impl TextValue for Compression {
 ///
 /// | Field | Id | Type | Meaning |
 /// |-------|----|------|---------|
-/// | `level` | 1 | enum `off`/`error`/`warn`/`info`/`debug` | what the persistent log keeps |
-/// | `storage` | 2 | text `internal`/`sd` | the backend that holds the history |
-/// | `compression` | 3 | text `none`/`lz4` | codec of **new** segments |
+/// | `level` | 1 | enum 1: `off`/`error`/`warn`/`info`/`debug` | what the persistent log keeps |
+/// | `storage` | 2 | enum 2: `internal`=0/`sd`=1 | the backend that holds the history |
+/// | `compression` | 3 | enum 3: `none`=0/`lz4`=1 | codec of **new** segments |
 /// | `retention_bytes` | 4 | bytes | budget of the active backend |
 /// | `segment_bytes` | 5 | bytes | rotation granularity |
 /// | `flush_interval` | 6 | ms | longest a record waits in RAM |
 ///
-/// `storage` and `compression` are text, not enums, because a section can
-/// describe one enum ([`MAX_ENUMS`](rohi_service::MAX_ENUMS)) and `level` is
-/// the one with the most use for discovery.
+/// All three are enums of the schema ([`MAX_ENUMS`](rohi_service::MAX_ENUMS)), so
+/// a client discovers their names and values. Persisted overrides store the
+/// variant number as before (a CBOR unsigned integer).
 ///
 /// # Validation
 ///
@@ -198,17 +225,17 @@ impl TextValue for Compression {
     overrides = LoggingOverrides,
     version = 1,
     validate = validate_section,
-    enums = LEVELS
+    enums = CONFIG_ENUMS
 )]
 pub struct LoggingConfig {
     /// What the persistent log keeps.
     #[config(id = 1, with = Variant, enum_id = LEVEL_ENUM)]
     pub level: LogLevel,
     /// The backend that holds the history.
-    #[config(id = 2, with = Text)]
+    #[config(id = 2, with = Variant, enum_id = STORAGE_ENUM)]
     pub storage: LogStorageKind,
     /// Codec of newly created segments.
-    #[config(id = 3, with = Text)]
+    #[config(id = 3, with = Variant, enum_id = COMPRESSION_ENUM)]
     pub compression: Compression,
     /// Budget of the active backend, in bytes.
     #[config(

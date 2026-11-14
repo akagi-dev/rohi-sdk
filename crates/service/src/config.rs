@@ -233,7 +233,7 @@ use rohi_config::{ConfigOverrides, ConfigSection, FieldError, HasOverrides, mate
 use crate::field::{ConfigField, EnumDescriptor};
 use crate::isolated::isolated;
 use crate::schema::{config_fields_valid, enums_valid, field_ids_match, name_ok};
-use crate::{MAX_CONFIG_FIELDS, MAX_REGISTRY_ENTRIES};
+use crate::{MAX_CONFIG_FIELDS, MAX_ENUMS, MAX_REGISTRY_ENTRIES};
 use rohi_config::Value;
 
 /// The typed configuration of one managed section.
@@ -675,7 +675,7 @@ impl<C: Config, S: SectionStore<C>, M: RawMutex> Section<C, S, M> {
                 C::FIELDS.len() <= MAX_CONFIG_FIELDS,
                 "too many config fields"
             );
-            assert!(enums_valid(C::ENUMS), "invalid section enums");
+            assert!(enums_valid(C::ENUMS, MAX_ENUMS), "invalid section enums");
             assert!(
                 config_fields_valid(C::FIELDS, C::ENUMS),
                 "invalid config fields: ids and names must be unique and fit"

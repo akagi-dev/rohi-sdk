@@ -574,3 +574,28 @@ fn a_medium_that_is_too_small_is_refused() {
         Err(StorageError::InvalidLimits)
     );
 }
+
+#[test]
+fn the_esp32c3_partition_retains_fourteen_whole_segments() {
+    // 60 sectors (240 KiB): two format header sectors and a ring of 58, cut
+    // into 16 KiB segments of four sectors.
+    let mut medium = std::boxed::Box::new(RamMedium::<60>::new());
+    medium.erase(0, 60).unwrap();
+    let mut storage = RingStorage::new(*medium);
+    block_on(storage.recover()).unwrap();
+    let limits = Limits {
+        segment_bytes: 16 * 1024,
+        retention_bytes: 240 * 1024,
+    };
+    let mut writer = Writer::new(1, Compression::None, limits);
+    let mut most_sealed = 0;
+    for _ in 0..400 {
+        writer.push_many(&mut storage, 100).unwrap();
+        let stats = block_on(storage.stats()).unwrap();
+        assert!(stats.used_bytes <= 58 * 4096, "{stats:?}");
+        assert_eq!(stats.capacity_bytes, 58 * 4096, "{stats:?}");
+        most_sealed = most_sealed.max(stats.segments);
+    }
+    assert!(most_sealed >= 14, "{most_sealed}");
+    assert_contiguous(&all_records(&mut storage));
+}

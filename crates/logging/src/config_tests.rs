@@ -16,7 +16,7 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-use rohi_config::{ConfigOverrides, ConfigSection, Override, SectionId};
+use rohi_config::{ConfigOverrides, ConfigSection, Override, SectionId, VariantValue};
 use rohi_service::{Config, FieldError, MAX_CONFIG_FIELDS, Unit, Value};
 
 use crate::*;
@@ -28,10 +28,6 @@ const RETENTION: u32 = 4;
 const SEGMENT: u32 = 5;
 const FLUSH: u32 = 6;
 
-fn text(value: &str) -> Value {
-    Value::text(value).unwrap()
-}
-
 #[test]
 fn the_defaults_are_valid_and_conservative() {
     let config = LoggingConfig::default();
@@ -39,8 +35,8 @@ fn the_defaults_are_valid_and_conservative() {
     assert_eq!(Config::validate(&config), Ok(()));
     let read = |id| config.read_field(id).unwrap();
     assert_eq!(read(LEVEL), Some(Value::Enum(2)));
-    assert_eq!(read(STORAGE), Some(text("internal")));
-    assert_eq!(read(COMPRESSION), Some(text("lz4")));
+    assert_eq!(read(STORAGE), Some(Value::Enum(0)));
+    assert_eq!(read(COMPRESSION), Some(Value::Enum(1)));
     assert_eq!(read(RETENTION), Some(Value::U64(1024 * 1024)));
     assert_eq!(read(SEGMENT), Some(Value::U64(64 * 1024)));
     assert_eq!(read(FLUSH), Some(Value::U64(10_000)));
@@ -71,8 +67,8 @@ fn the_profile_selects_the_persistent_level() {
 fn every_field_is_set_by_its_id_and_the_kind_is_checked() {
     let mut config = LoggingConfig::default();
     config.set_field(LEVEL, Value::Enum(4)).unwrap();
-    config.set_field(STORAGE, text("sd")).unwrap();
-    config.set_field(COMPRESSION, text("none")).unwrap();
+    config.set_field(STORAGE, Value::Enum(1)).unwrap();
+    config.set_field(COMPRESSION, Value::Enum(0)).unwrap();
     config.set_field(RETENTION, Value::U64(256 * 1024)).unwrap();
     config.set_field(SEGMENT, Value::U64(16 * 1024)).unwrap();
     config.set_field(FLUSH, Value::U64(2_000)).unwrap();
@@ -94,16 +90,22 @@ fn every_field_is_set_by_its_id_and_the_kind_is_checked() {
         Err(FieldError::OutOfRange)
     );
     assert_eq!(
-        config.set_field(LEVEL, text("debug")),
+        config.set_field(LEVEL, Value::text("debug").unwrap()),
         Err(FieldError::WrongKind)
     );
+    for id in [STORAGE, COMPRESSION] {
+        assert_eq!(
+            config.set_field(id, Value::text("lz4").unwrap()),
+            Err(FieldError::WrongKind)
+        );
+    }
     assert_eq!(
-        config.set_field(STORAGE, text("tape")),
-        Err(FieldError::Invalid)
+        config.set_field(STORAGE, Value::Enum(2)),
+        Err(FieldError::OutOfRange)
     );
     assert_eq!(
-        config.set_field(COMPRESSION, text("zip")),
-        Err(FieldError::Invalid)
+        config.set_field(COMPRESSION, Value::Enum(2)),
+        Err(FieldError::OutOfRange)
     );
     assert_eq!(
         config.set_field(RETENTION, Value::Bool(true)),
@@ -288,4 +290,70 @@ fn the_persisted_section_is_pinned() {
     );
     let decoded: LoggingOverrides = rohi_config::decode_exact(&buffer[..used]).unwrap();
     assert_eq!(decoded, overrides);
+}
+
+#[test]
+fn the_three_enums_are_discoverable_and_match_the_types() {
+    assert_eq!(CONFIG_ENUMS.len(), 3);
+    assert_eq!(CONFIG_ENUMS.len(), LoggingConfig::ENUMS.len());
+    let ids: std::vec::Vec<_> = CONFIG_ENUMS.iter().map(|e| e.id).collect();
+    assert_eq!(ids, [LEVEL_ENUM, STORAGE_ENUM, COMPRESSION_ENUM]);
+    assert_eq!([LEVEL_ENUM, STORAGE_ENUM, COMPRESSION_ENUM], [1, 2, 3]);
+
+    let enum_of = |field: u32| {
+        LoggingConfig::FIELDS
+            .iter()
+            .find(|f| f.field.id == field)
+            .unwrap()
+            .field
+            .enum_id
+    };
+    assert_eq!(enum_of(LEVEL), LEVEL_ENUM);
+    assert_eq!(enum_of(STORAGE), STORAGE_ENUM);
+    assert_eq!(enum_of(COMPRESSION), COMPRESSION_ENUM);
+
+    let names = |id: u32| -> std::vec::Vec<(u32, &str)> {
+        CONFIG_ENUMS
+            .iter()
+            .find(|e| e.id == id)
+            .unwrap()
+            .variants
+            .iter()
+            .map(|v| (v.value, v.name))
+            .collect()
+    };
+    assert_eq!(names(STORAGE_ENUM), [(0, "internal"), (1, "sd")]);
+    assert_eq!(names(COMPRESSION_ENUM), [(0, "none"), (1, "lz4")]);
+    for (value, name) in names(STORAGE_ENUM) {
+        let kind = LogStorageKind::from_variant(value).unwrap();
+        assert_eq!((kind.variant(), kind.name()), (value, name));
+    }
+    for (value, name) in names(COMPRESSION_ENUM) {
+        let codec = Compression::from_variant(value).unwrap();
+        assert_eq!((codec.variant(), codec.name()), (value, name));
+    }
+    assert_eq!(LogStorageKind::from_variant(2), None);
+    assert_eq!(Compression::from_variant(2), None);
+}
+
+#[test]
+fn overrides_persisted_before_the_enums_still_decode() {
+    // Written when `storage` and `compression` were text fields: the stored
+    // form was always the CBOR index of the Rust enum, which is unchanged.
+    let stored = [
+        0xa5, 0x01, 0x04, 0x02, 0x01, 0x03, 0x00, 0x04, 0x1a, 0x00, 0x01, 0x00, 0x00, 0x06, 0x19,
+        0x13, 0x88,
+    ];
+    let decoded: LoggingOverrides = rohi_config::decode_exact(&stored).unwrap();
+    assert_eq!(decoded.storage, Override::Value(LogStorageKind::Sd));
+    assert_eq!(decoded.compression, Override::Value(Compression::None));
+
+    let effective = rohi_config::materialize::<LoggingConfig>(&Default::default(), &decoded);
+    assert_eq!(effective.read_field(STORAGE), Ok(Some(Value::Enum(1))));
+    assert_eq!(effective.read_field(COMPRESSION), Ok(Some(Value::Enum(0))));
+
+    // Re-encoding what was just decoded gives the same bytes.
+    let mut buffer = [0u8; 64];
+    let used = rohi_config::encode_to_slice(&decoded, &mut buffer).unwrap();
+    assert_eq!(&buffer[..used], stored);
 }

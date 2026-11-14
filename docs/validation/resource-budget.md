@@ -294,13 +294,15 @@ Release build of `altruist-urban`, measured with `nm -S` on the ELF (`cargo buil
 The limits are in `firmwares/altruist-urban/src/logging.rs` (`QUEUE_DEPTH` 24 records, `READ_BYTES` 2 048 B per
 open `read` stream, at most two streams) and in `rohi_logging` (batch of 2 KiB of text, one compressed block of at most 2 056 B).
 
-**Flash.** The `rohi-log` partition is the last 1 MiB of the 4 MB / 8 MB flash (`0x300000` / `0x700000`), 256 sectors of
-4 KiB: 254 for the ring and the last two for the format header. The `factory` partition starts at `0x20000` and is `0x2E0000`
-B (ESP32-C3) / `0x6E0000` B (ESP32-C6). `scripts/image-fits.sh <chip>` (CI job Firmware) runs `espflash save-image`, which
-refuses an image that does not fit: the ESP32-C3 `firmware`-profile image is 1 263 504 B of 3 014 656 B (41.9 %), the ESP32-C6
-`release` image 1 721 184 B of 7 208 960 B (23.9 %).
+**Flash.** The `rohi-log` partition is the last partition of the flash. ESP32-C3 (4 MB): 240 KiB (`0x3C000`) at `0x3C4000`,
+60 sectors of 4 KiB, 58 for the ring and the last two for the format header; with 16 KiB segments it retains 14 full segments (224 KiB).
+ESP32-C6 (8 MB): 1 MiB at `0x700000`, 256 sectors, 254 for the ring. The `factory` partition starts at `0x20000` and is `0x3A0000`
+B (ESP32-C3) / `0x6E0000` B (ESP32-C6). On the ESP32-C3 the 16 KiB at `0x3C0000..0x3C4000` stay unused so that the app area keeps
+a 64 KiB aligned end for future A/B OTA slots (#29). `scripts/image-fits.sh <chip>` (CI job Firmware) runs `espflash save-image`, which
+refuses an image that does not fit: the ESP32-C3 `firmware`-profile image is 1 263 200 B of 3 801 088 B (33.2 %), the ESP32-C6
+`release` image 1 722 080 B of 7 208 960 B (23.9 %).
 
-**RAM does not scale with the flash.** The default retention is 1 MiB in 64 KiB segments (16 segments, the cap is 24), and
+**RAM does not scale with the flash.** The default retention is 240 KiB in 16 KiB segments on the ESP32-C3 and 1 MiB in 64 KiB segments on the ESP32-C6 (at most 24 segments are kept), and
 nothing is allocated per sector or per segment byte: a format or a clear erases one 4 KiB sector at a time and yields
 between two erases (no flash lock is held across the region), the recovery reads through 20 B to 128 B buffers, a sealed
 segment is checked with a streaming CRC-32 and the metadata is at most 24 segments. Static analysis of this change against
@@ -321,6 +323,6 @@ trial build. The new `Recovery::formatted` flag and the format loop add no buffe
 
 **Not measured:** the share of `.text` the logging code adds, stack depth of the logging task while it compresses (the
 LZ4 compressor keeps a 2 KiB table and the writer a 2 KiB chunk on the stack), the CPU time of a flush, how long a
-flash sector erase stalls Wi-Fi, BLE and the microphone DMA ring, how long the first format of the 256 sectors takes, how long
+flash sector erase stalls Wi-Fi, BLE and the microphone DMA ring, how long the first format of the 60 (ESP32-C3) or 256 (ESP32-C6) sectors takes, how long
 `rohi logs clear` takes (it has to stay below the 40 s action timeout of the client) and how long recovery spends on the checksums
 of up to 1 MiB of sealed segments at boot (the CRC-32 is computed bit by bit). These need a device.

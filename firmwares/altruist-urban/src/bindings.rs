@@ -52,7 +52,7 @@ use rohi_sdk::service::{Config, SectionStore, StoreError};
 
 use crate::config::{ConfigHandle, ServiceError};
 use crate::tasks::RawMutex;
-use crate::{connectivity, identity, location, time};
+use crate::{connectivity, identity, location, logging, time};
 
 /// The cheap handles runtime publication needs. Hardware and storage stay
 /// single-owner elsewhere.
@@ -271,7 +271,7 @@ impl Binding for LoggingBinding {
     type Config = LoggingConfig;
 
     fn firmware_overrides() -> rohi_sdk::logging::LoggingOverrides {
-        LoggingConfig::firmware_overrides(cfg!(debug_assertions))
+        logging::firmware_overrides(cfg!(debug_assertions))
     }
 
     fn publish(runtime: &ConfigRuntime, effective: &LoggingConfig) {

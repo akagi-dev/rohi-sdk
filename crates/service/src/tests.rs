@@ -1255,27 +1255,52 @@ mod schema_invariants {
 
     #[test]
     fn enums_have_unique_ids_values_and_names_that_fit() {
-        assert!(enums_valid(&[EnumDescriptor::new(1, MODE)]));
-        assert!(!enums_valid(&[EnumDescriptor::new(0, MODE)]));
-        assert!(!enums_valid(&[
-            EnumDescriptor::new(1, MODE),
-            EnumDescriptor::new(1, MODE)
-        ]));
+        assert!(enums_valid(&[EnumDescriptor::new(1, MODE)], MAX_ENUMS));
+        assert!(!enums_valid(&[EnumDescriptor::new(0, MODE)], MAX_ENUMS));
+        assert!(!enums_valid(
+            &[EnumDescriptor::new(1, MODE), EnumDescriptor::new(1, MODE)],
+            MAX_ENUMS
+        ));
         const SAME_VALUE: &[EnumVariant] =
             &[EnumVariant::new(1, "fast"), EnumVariant::new(1, "slow")];
-        assert!(!enums_valid(&[EnumDescriptor::new(1, SAME_VALUE)]));
+        assert!(!enums_valid(
+            &[EnumDescriptor::new(1, SAME_VALUE)],
+            MAX_ENUMS
+        ));
         const SAME_NAME: &[EnumVariant] =
             &[EnumVariant::new(1, "fast"), EnumVariant::new(2, "fast")];
-        assert!(!enums_valid(&[EnumDescriptor::new(1, SAME_NAME)]));
+        assert!(!enums_valid(
+            &[EnumDescriptor::new(1, SAME_NAME)],
+            MAX_ENUMS
+        ));
         const EMPTY_NAME: &[EnumVariant] = &[EnumVariant::new(1, "")];
-        assert!(!enums_valid(&[EnumDescriptor::new(1, EMPTY_NAME)]));
+        assert!(!enums_valid(
+            &[EnumDescriptor::new(1, EMPTY_NAME)],
+            MAX_ENUMS
+        ));
         const LONG_NAME: &[EnumVariant] = &[EnumVariant::new(1, "abcdefghijklmnopq")];
-        assert!(!enums_valid(&[EnumDescriptor::new(1, LONG_NAME)]));
-        // One enum per schema is a hard limit of the compact protocol.
-        assert!(!enums_valid(&[
-            EnumDescriptor::new(1, MODE),
-            EnumDescriptor::new(2, MODE)
-        ]));
+        assert!(!enums_valid(
+            &[EnumDescriptor::new(1, LONG_NAME)],
+            MAX_ENUMS
+        ));
+        // Three enums per schema is a hard limit of the compact protocol.
+        assert!(enums_valid(
+            &[
+                EnumDescriptor::new(1, MODE),
+                EnumDescriptor::new(2, MODE),
+                EnumDescriptor::new(3, MODE)
+            ],
+            MAX_ENUMS
+        ));
+        assert!(!enums_valid(
+            &[
+                EnumDescriptor::new(1, MODE),
+                EnumDescriptor::new(2, MODE),
+                EnumDescriptor::new(3, MODE),
+                EnumDescriptor::new(4, MODE)
+            ],
+            MAX_ENUMS
+        ));
     }
 
     #[test]

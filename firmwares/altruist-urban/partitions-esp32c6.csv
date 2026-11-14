@@ -3,7 +3,7 @@
 # Its size must match `rohi_config_esp::layout::REGION_SIZE`.
 # `rohi-log` is the persistent log: the last 1 MiB of the flash, 256 sectors of
 # 4 KiB (a ring and two format header sectors). Its size must match
-# `rohi_config_esp::layout::LOG_REGION_SIZE`.
+# `rohi_config_esp::layout::LOG_REGION_SIZE_ESP32C6`.
 # Name,     Type, SubType,   Offset,   Size
 nvs,        data, nvs,       0x9000,   0x6000
 phy_init,   data, phy,       0xf000,   0x1000

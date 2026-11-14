@@ -150,8 +150,9 @@
 //! [`FIRST_SERVICE_ISSUE`](crate::FIRST_SERVICE_ISSUE), or the SDK startup
 //! code), enum ids are non-zero and unique, and variant values and names are
 //! unique within their enum. An enum field must refer to an enum of its
-//! table, no other field may. A section, service or action has at most one
-//! enum ([`MAX_ENUMS`](crate::MAX_ENUMS)), a constraint of the compact
+//! table, no other field may. A config section has at most three
+//! enums ([`MAX_ENUMS`](crate::MAX_ENUMS)), a service or action at most one
+//! ([`MAX_SERVICE_ENUMS`]), constraints of the compact
 //! protocol, with at most [`MAX_ENUM_VARIANTS`](crate::MAX_ENUM_VARIANTS)
 //! variants. Tables are also bounded by the limits of the crate, see the
 //! [crate documentation](crate#limits).
@@ -191,7 +192,7 @@ use crate::status::{
     Collector, Issue, ServiceInfo, ServiceSchema, ServiceStatus, ServiceStatusSummary, Status,
     StatusError, TrackCell, track_observation,
 };
-use crate::{MAX_FIELDS, MAX_ISSUES};
+use crate::{MAX_FIELDS, MAX_ISSUES, MAX_SERVICE_ENUMS};
 use rohi_config::Value;
 
 /// Id and name of a service, as listed by an [`ActionRegistry`].
@@ -216,7 +217,7 @@ impl ServiceIdentity {
 const fn status_schema_valid<S: Status>() -> bool {
     service_name_is_valid(S::NAME)
         && S::STATUS_SCHEMA.len() <= MAX_FIELDS
-        && enums_valid(S::ENUMS)
+        && enums_valid(S::ENUMS, MAX_SERVICE_ENUMS)
         && fields_valid(S::STATUS_SCHEMA, S::ENUMS)
         && issues_valid(S::ISSUES)
 }

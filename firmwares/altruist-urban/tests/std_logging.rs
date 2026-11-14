@@ -204,7 +204,7 @@ async fn the_sd_card_is_unavailable_on_the_host_and_never_replaced_by_the_file()
     let sim = Sim::start(&Launch::new());
     let mut device = sim.device().await;
     device
-        .config_patch("logging", &[set(2, text("sd"))], false)
+        .config_patch("logging", &[set(2, Value::Enum("sd".to_owned()))], false)
         .await
         .unwrap();
     let issues = eventually("storage_unavailable", WAIT, async || {

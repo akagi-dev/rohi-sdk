@@ -201,7 +201,7 @@
 //! | [`limits::MAX_FIELD_VALUE_LEN`] | 32 | string/bytes of status values and action results |
 //! | [`limits::MAX_REASON_LEN`] | 32 | `Error.reason` |
 //! | [`limits::MAX_VARIANT_NAME_LEN`] | 16 | enum variant name |
-//! | [`limits::MAX_ENUMS`], [`limits::MAX_ENUM_VARIANTS`] | 1, 9 | enums per schema, variants per enum |
+//! | [`limits::MAX_ENUMS`], [`limits::MAX_SERVICE_ENUMS`], [`limits::MAX_ENUM_VARIANTS`] | 3, 1, 9 | enums per config schema, enums per service or action schema, variants per enum |
 //! | [`limits::MAX_SCHEMA_FIELDS`], [`limits::MAX_STATUS_FIELDS`] | 20, 20 | service schema and status fields |
 //! | [`limits::MAX_CONFIG_FIELDS`], [`limits::MAX_MUTATIONS`] | 16, 8 | config fields per section, mutations per patch |
 //! | [`limits::MAX_CONFIG_SECTIONS`], [`limits::MAX_SERVICES`], [`limits::MAX_ACTIONS`] | 12, 12, 12 | registry entries listed |
