@@ -89,7 +89,7 @@ async fn log_text(device: &mut Device<TcpLink>) -> String {
         let Some(last) = page
             .lines()
             .filter_map(|line| line.split(' ').next()?.parse::<u64>().ok())
-            .last()
+            .next_back()
         else {
             return text;
         };
