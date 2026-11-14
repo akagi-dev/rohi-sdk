@@ -1,0 +1,30 @@
+[package]
+name = "rohi-crash-esp"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Robonomics Open Hardware crash records: ESP32-C3 and ESP32-C6 panic handler, reset-retained slot and watchdog fallback"
+
+[package.metadata.docs.rs]
+targets = ["riscv32imc-unknown-none-elf"]
+features = ["esp32c3"]
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[dependencies]
+rohi-crash.workspace = true
+esp-hal = { workspace = true, optional = true }
+esp-backtrace = { workspace = true, optional = true }
+esp-println = { workspace = true, optional = true }
+
+[features]
+default = []
+# Exactly one chip feature must be enabled by the final firmware build.
+esp32c3 = ["_esp", "esp-hal/esp32c3", "esp-backtrace/esp32c3", "esp-println/esp32c3"]
+esp32c6 = ["_esp", "esp-hal/esp32c6", "esp-backtrace/esp32c6", "esp-println/esp32c6"]
+_esp = ["dep:esp-hal", "dep:esp-backtrace", "dep:esp-println"]

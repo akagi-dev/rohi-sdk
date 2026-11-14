@@ -19,9 +19,14 @@
 use core::cell::Cell;
 
 use embassy_futures::block_on;
-use rohi_service::{ActionRegistry, Service, Value};
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use rohi_crash::{Crash, Policy, Report, Reset, Slot};
+use rohi_service::{
+    ActionRegistry, Service, ServiceHealth, ServiceState, Status, StatusRegistry, Statuses, Value,
+};
 
 use super::*;
+extern crate std;
 
 #[derive(Default)]
 struct Fake {
@@ -30,6 +35,7 @@ struct Fake {
     reboot: Cell<Option<SystemError>>,
     reset: Cell<Option<SystemError>>,
     restart_required: Cell<bool>,
+    report: Cell<Option<Report>>,
 }
 
 impl SystemPlatform for Fake {
@@ -53,6 +59,10 @@ impl SystemPlatform for Fake {
                 })
             }
         }
+    }
+
+    fn boot_report(&self) -> Option<Report> {
+        self.report.get()
     }
 }
 
@@ -185,4 +195,143 @@ fn the_service_id_is_part_of_the_wire_abi() {
         hash = hash.wrapping_mul(0x0100_0193);
     }
     assert_eq!(ID, hash);
+}
+
+fn status_of(
+    report: Option<Report>,
+) -> (
+    rohi_service::ServiceStatus,
+    std::collections::BTreeMap<u32, Value>,
+) {
+    let system = SystemService(Fake::default());
+    system.0.report.set(report);
+    let statuses = Statuses::<NoopRawMutex, _>::new((&system,));
+    let status = block_on(statuses.status(ID, 1_000)).unwrap();
+    let fields = status.fields.iter().cloned().collect();
+    (status, fields)
+}
+
+fn crashed(uptime_ms: u64, times: usize, message: &str) -> Report {
+    let slot = Slot::new();
+    for _ in 0..times {
+        let mut crash = Crash::new(uptime_ms);
+        crash.set_message(format_args!("{message}"));
+        crash.set_location("crates/hal/src/sensors/bmx280.rs", 212, 9);
+        slot.capture(&mut crash, &Policy::DEFAULT);
+    }
+    slot.report(slot.boot(Reset::Software))
+}
+
+fn codes(status: &rohi_service::ServiceStatus) -> std::vec::Vec<u32> {
+    status.issues.iter().map(|issue| issue.code).collect()
+}
+
+#[test]
+fn the_status_schema_is_valid_and_the_service_is_not_essential() {
+    const { assert!(<(&SystemService<Fake>,) as rohi_service::StatusSet<NoopRawMutex>>::SCHEMAS_VALID) };
+    const { assert!(!<SystemService<Fake> as Status>::ESSENTIAL) };
+}
+
+#[test]
+fn a_platform_without_a_boot_report_has_an_empty_status() {
+    let (status, fields) = status_of(None);
+    assert_eq!(status.summary.state, ServiceState::Running);
+    assert_eq!(status.summary.health, ServiceHealth::Ok);
+    assert!(status.summary.ready);
+    assert!(fields.is_empty());
+    assert!(status.issues.is_empty());
+}
+
+#[test]
+fn a_normal_start_reports_its_reason_and_no_crashes() {
+    let (status, fields) = status_of(Some(Report {
+        reset: Reset::PowerOn,
+        last: None,
+    }));
+    assert_eq!(status.summary.health, ServiceHealth::Ok);
+    assert_eq!(
+        fields[&status_field::RESET_REASON],
+        Value::text("power_on").unwrap()
+    );
+    assert_eq!(fields[&status_field::CRASHES], Value::U64(0));
+    assert_eq!(fields.len(), 2);
+    assert!(status.issues.is_empty());
+}
+
+#[test]
+fn a_panic_is_reported_with_its_record_and_that_the_log_does_not_have_it_yet() {
+    let (status, fields) = status_of(Some(crashed(
+        90_000,
+        1,
+        "index out of bounds: the len is 3 but the index is 7",
+    )));
+    assert_eq!(status.summary.health, ServiceHealth::Ok);
+    assert_eq!(
+        fields[&status_field::RESET_REASON],
+        Value::text("panic").unwrap()
+    );
+    assert_eq!(fields[&status_field::CRASHES], Value::U64(1));
+    assert_eq!(fields[&status_field::CRASH_STREAK], Value::U64(1));
+    assert_eq!(fields[&status_field::LAST_CRASH_UPTIME], Value::U64(90_000));
+    assert_eq!(fields[&status_field::LAST_CRASH_LOGGED], Value::Bool(false));
+    assert_eq!(
+        fields[&status_field::LAST_CRASH_AT],
+        Value::text("es/hal/src/sensors/bmx280.rs:212").unwrap()
+    );
+    assert_eq!(codes(&status), [issue::CRASHED, issue::CRASH_NOT_LOGGED]);
+}
+
+#[test]
+fn a_status_text_is_cut_to_the_field_limit_at_a_character_boundary() {
+    let (_, fields) = status_of(Some(crashed(1_000, 1, &"é".repeat(60))));
+    let Value::String(text) = &fields[&status_field::LAST_CRASH] else {
+        panic!("not text");
+    };
+    assert!(text.len() <= 32);
+    assert!(text.chars().all(|ch| ch == 'é'));
+    let Value::String(at) = &fields[&status_field::LAST_CRASH_AT] else {
+        panic!("not text");
+    };
+    assert!(at.len() <= 32 && at.ends_with(":212"));
+}
+
+#[test]
+fn a_logged_panic_is_no_longer_pending() {
+    let slot = Slot::new();
+    let mut crash = Crash::new(10);
+    crash.set_message(format_args!("boom"));
+    slot.capture(&mut crash, &Policy::DEFAULT);
+    let reset = slot.boot(Reset::Software);
+    slot.acknowledge(crash.serial());
+    let (status, fields) = status_of(Some(slot.report(reset)));
+    assert_eq!(fields[&status_field::LAST_CRASH_LOGGED], Value::Bool(true));
+    assert_eq!(codes(&status), [issue::CRASHED]);
+}
+
+#[test]
+fn a_crash_loop_degrades_the_service_and_is_an_error_issue() {
+    let (status, fields) = status_of(Some(crashed(500, 3, "again")));
+    assert_eq!(status.summary.health, ServiceHealth::Degraded);
+    assert_eq!(fields[&status_field::CRASH_STREAK], Value::U64(3));
+    assert_eq!(codes(&status), [issue::CRASH_LOOP, issue::CRASH_NOT_LOGGED]);
+}
+
+#[test]
+fn watchdog_and_brownout_resets_without_a_record_are_unexpected() {
+    for reset in [Reset::Watchdog, Reset::Brownout] {
+        let (status, fields) = status_of(Some(Report { reset, last: None }));
+        assert_eq!(codes(&status), [issue::UNEXPECTED_RESET], "{reset:?}");
+        assert_eq!(
+            fields[&status_field::RESET_REASON],
+            Value::text(reset.name()).unwrap()
+        );
+    }
+    for reset in [Reset::Software, Reset::DeepSleep, Reset::Other] {
+        assert!(
+            status_of(Some(Report { reset, last: None }))
+                .0
+                .issues
+                .is_empty()
+        );
+    }
 }

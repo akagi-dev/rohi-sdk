@@ -17,19 +17,22 @@
 ///////////////////////////////////////////////////////////////////////////////
 #![no_std]
 
-//! The `system` service: reboot and factory reset as ordinary Actions.
+//! The `system` service: reboot and factory reset as ordinary Actions, and why the device started.
 //!
 //! # Overview
 //!
-//! `rohi-system` provides [`SystemService`], an **Action-only** service named
-//! `system` that every ROHI firmware can register in its
-//! [`ActionRegistry`](rohi_service::ActionRegistry). It has no config section
-//! and no status. What the device really does (when and how it resets, which
-//! storage it formats) belongs to the platform and is injected through
+//! `rohi-system` provides [`SystemService`], a service named `system` that every
+//! ROHI firmware can register in its
+//! [`ActionRegistry`](rohi_service::ActionRegistry) and, to report why the
+//! device started and what its last panic was, in its
+//! [`Statuses`](rohi_service::Statuses). It has no config section. What the
+//! device really does (when and how it resets, which storage it formats, what
+//! it remembers of a crash) belongs to the platform and is injected through
 //! [`SystemPlatform`]; the service itself knows no chip, flash or product.
 //!
 //! The crate is `no_std`, does not allocate and has no Cargo features. It
-//! depends on [`rohi_service`] only.
+//! depends on [`rohi_service`] and on [`rohi_crash`], whose [`Report`]
+//! is the data of the status.
 //!
 //! # Quick Example
 //!
@@ -80,8 +83,9 @@
 //! | Concept | Meaning |
 //! |---------|---------|
 //! | [`SystemService`] | the `system` service over a [`SystemPlatform`] |
-//! | [`SystemPlatform`] | what the platform provides: deferred reboot and the storage-aware factory reset |
+//! | [`SystemPlatform`] | what the platform provides: deferred reboot, the storage-aware factory reset and, optionally, the boot [`Report`] |
 //! | [`SystemError`] | why the platform could not do it |
+//! | status | why the device started (`reset_reason`: `power_on`, `software`, `panic`, `watchdog`, `brownout`, ...) and the last panic, see [`status_field`] and [`issue`] |
 //!
 //! | Action | Id | Arguments | Results | Access |
 //! |--------|----|-----------|---------|--------|
@@ -102,22 +106,27 @@
 //!                                                       │
 //!                                  SystemPlatform  (firmware, per platform)
 //!                                   ├─ schedule_reboot: signal, reset after a grace period
-//!                                   └─ factory_reset:   format the configuration storage
+//!                                   ├─ factory_reset:   format the configuration storage
+//!                                   └─ boot_report:     reset reason and last panic (rohi-crash)
+//!
+//! rohi status system  ──►  StatusRegistry (.., &SystemService<P>)  ──►  boot_report
 //! ```
 //!
 //! A firmware implements [`SystemPlatform`] once per platform and passes
-//! `&SystemService<P>` in the tuple of its action registry; it needs no status
-//! registration. Altruist Urban does this in `altruist-urban`, so another
-//! firmware reuses the service and writes only the adapter.
+//! `&SystemService<P>` in the tuple of its action registry and, to report the
+//! start and the last crash, in the tuple of its status registry. Altruist
+//! Urban does this in `altruist-urban`, so another firmware reuses the service
+//! and writes only the adapter.
 //!
 //! # API Navigation
 //!
 //! | Item | Use it to |
 //! |------|-----------|
-//! | [`SystemService`] | register the `system` Actions |
-//! | [`SystemPlatform`] | implement reboot and factory reset on a platform |
+//! | [`SystemService`] | register the `system` Actions and status |
+//! | [`SystemPlatform`] | implement reboot, factory reset and the boot report on a platform |
 //! | [`SystemError`] | report that the platform cannot do the operation |
 //! | [`action`], [`result_field`] | the stable ids of the Actions and of the result field |
+//! | [`status_field`], [`issue`] | the stable ids of the status fields and of the issue codes |
 //!
 //! # Guarantees and Limitations
 //!
@@ -131,22 +140,36 @@
 //!   restart. What the reset removes is defined by the platform's
 //!   [`SystemPlatform::factory_reset`]; persistent logs and unrelated storage
 //!   are not part of the contract of this crate.
+//! - **Status is optional and diagnostic.** Without a
+//!   [`boot_report`](SystemPlatform::boot_report) the status has no fields and
+//!   the service is `running / ok / ready`. With one, the service is
+//!   `degraded` while the last start was one of a crash loop; the issues are
+//!   `crashed`, `crash_loop`, `crash_not_logged` and `unexpected_reset`. The
+//!   service is not [`ESSENTIAL`](rohi_service::Status::ESSENTIAL). A text field is at
+//!   most 32 bytes: `last_crash` is the **start** of the panic message and
+//!   `last_crash_at` the end of the file and the line; the whole record is in
+//!   the persistent log.
 //! - **Errors.** A platform failure is the Action error
 //!   [`Unavailable`](rohi_service::ActionError::Unavailable) or
 //!   [`Internal`](rohi_service::ActionError::Internal), see [`SystemError`].
-//! - **Wire ABI.** The service id derives from the name `system`; Action ids
-//!   and the result field id are part of the wire contract and are only added,
-//!   never reused.
+//! - **Wire ABI.** The service id derives from the name `system`; Action ids,
+//!   the result field id, the status field ids and the issue codes are part of
+//!   the wire contract and are only added, never reused.
 //! - **Cancellation.** The service adds no state: cancelling the Action
 //!   future cancels what [`SystemPlatform::factory_reset`] does, so the
 //!   platform documents its own cancellation behaviour.
 //! - **Not verified here.** Chip reset and flash formatting are done by the
 //!   platform adapters; this crate is tested on the host with fake platforms.
 
+use rohi_crash::Report;
 use rohi_service::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, FactoryReset,
     FieldDescriptor, Service, Value, ValueKind,
 };
+
+mod boot;
+
+pub use boot::{issue, status_field};
 
 /// Ids of the Actions of the `system` service.
 pub mod action {
@@ -215,13 +238,22 @@ pub trait SystemPlatform {
     /// [`SystemError::Unavailable`] when there is no storage to format,
     /// [`SystemError::Internal`] for any other failure.
     async fn factory_reset(&self) -> Result<FactoryReset, SystemError>;
+
+    /// Why the device started and what its last panic was, for the `system`
+    /// status; `None` (the default) when the platform keeps no such record.
+    ///
+    /// Called on every status request, so it must be cheap and must not block.
+    fn boot_report(&self) -> Option<Report> {
+        None
+    }
 }
 
 /// The `system` service: Actions `reboot` and `factory_reset` over the
 /// [`SystemPlatform`] `P`.
 ///
-/// It has no Config and no Status capability: register `&SystemService<P>`
-/// in the action registry only.
+/// It has no Config capability. Register `&SystemService<P>` in the action
+/// registry, and in the status registry to report the start and the last
+/// crash (see [`SystemPlatform::boot_report`]).
 #[derive(Service)]
 pub struct SystemService<P>(pub P);
 

@@ -46,7 +46,7 @@ use log::{LevelFilter, Log, Metadata, Record, warn};
 use rohi_sdk::esp::config::FlashRegion;
 use rohi_sdk::esp::config::esp::PartitionError;
 use rohi_sdk::logging::storage::{FlashLogStorage, FlashMedium, RingStorage, SECTOR_SIZE};
-use rohi_sdk::logging::{Backends, LogStorageKind, Logging, LoggingConfig};
+use rohi_sdk::logging::{Backends, LogRecord, LogStorageKind, Logging, LoggingConfig};
 
 use super::flash::Flash;
 use crate::logging::{self as shared, INITIAL};
@@ -66,6 +66,9 @@ impl Backends for FlashBackends {
     type Storage = FlashLogStorage<Flash>;
 
     async fn open(&mut self, kind: LogStorageKind) -> Option<Self::Storage> {
+        // Called by the log task with the log lock held.
+        #[cfg(feature = "crash-inject")]
+        super::inject::at("logging");
         match kind {
             LogStorageKind::Internal => {
                 let (flash, region) = PARTITION.lock(Cell::get)?;
@@ -88,6 +91,14 @@ impl Backends for FlashBackends {
             // No SD card on this board.
             LogStorageKind::Sd => None,
         }
+    }
+
+    fn boot_record(&mut self, index: usize) -> Option<LogRecord> {
+        super::crash::boot_record(index)
+    }
+
+    fn boot_records_written(&mut self) {
+        super::crash::boot_records_written();
     }
 }
 

@@ -294,15 +294,14 @@ Release build of `altruist-urban`, measured with `nm -S` on the ELF (`cargo buil
 The limits are in `firmwares/altruist-urban/src/logging.rs` (`QUEUE_DEPTH` 24 records, `READ_BYTES` 2 048 B per
 open `read` stream, at most two streams) and in `rohi_logging` (batch of 2 KiB of text, one compressed block of at most 2 056 B).
 
-**Flash.** The `rohi-log` partition is the last partition of the flash. ESP32-C3 (4 MB): 240 KiB (`0x3C000`) at `0x3C4000`,
-60 sectors of 4 KiB, 58 for the ring and the last two for the format header; with 16 KiB segments it retains 14 full segments (224 KiB).
+**Flash.** The `rohi-log` partition is the last partition of the flash. ESP32-C3 (4 MB): 256 KiB (`0x40000`) at `0x3C0000`,
+64 sectors of 4 KiB, 62 for the ring and the last two for the format header; with 16 KiB segments it retains 15 full segments (240 KiB).
 ESP32-C6 (8 MB): 1 MiB at `0x700000`, 256 sectors, 254 for the ring. The `factory` partition starts at `0x20000` and is `0x3A0000`
-B (ESP32-C3) / `0x6E0000` B (ESP32-C6). On the ESP32-C3 the 16 KiB at `0x3C0000..0x3C4000` stay unused so that the app area keeps
-a 64 KiB aligned end for future A/B OTA slots (#29). `scripts/image-fits.sh <chip>` (CI job Firmware) runs `espflash save-image`, which
+B (ESP32-C3) / `0x6E0000` B (ESP32-C6). On both chips the app area ends on a 64 KiB boundary (`0x3C0000` on the ESP32-C3), for future A/B OTA slots (#29). `scripts/image-fits.sh <chip>` (CI job Firmware) runs `espflash save-image`, which
 refuses an image that does not fit: the ESP32-C3 `firmware`-profile image is 1 263 200 B of 3 801 088 B (33.2 %), the ESP32-C6
 `release` image 1 722 080 B of 7 208 960 B (23.9 %).
 
-**RAM does not scale with the flash.** The default retention is 240 KiB in 16 KiB segments on the ESP32-C3 and 1 MiB in 64 KiB segments on the ESP32-C6 (at most 24 segments are kept), and
+**RAM does not scale with the flash.** The default retention is 256 KiB in 16 KiB segments on the ESP32-C3 and 1 MiB in 64 KiB segments on the ESP32-C6 (at most 24 segments are kept), and
 nothing is allocated per sector or per segment byte: a format or a clear erases one 4 KiB sector at a time and yields
 between two erases (no flash lock is held across the region), the recovery reads through 20 B to 128 B buffers, a sealed
 segment is checked with a streaming CRC-32 and the metadata is at most 24 segments. Static analysis of this change against

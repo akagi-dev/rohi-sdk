@@ -81,11 +81,11 @@ pub type Runtime<K> = Logging<RawMutex, &'static Time, K, QUEUE_DEPTH, READ_BYTE
 /// platform.
 pub type Service<K> = LoggingService<'static, RawMutex, &'static Time, K, QUEUE_DEPTH, READ_BYTES>;
 
-/// Retention budget of the chip: the whole `rohi-log` partition, 240 KiB, on the
+/// Retention budget of the chip: the whole `rohi-log` partition, 256 KiB, on the
 /// 4 MB ESP32-C3. The ring keeps two of its 4 KiB sectors for the format
-/// header, so with [`SEGMENT_BYTES`] it retains 14 full segments (224 KiB).
+/// header, so with [`SEGMENT_BYTES`] it retains 15 full segments (240 KiB).
 #[cfg(feature = "esp32c3")]
-pub const RETENTION_BYTES: u32 = 240 * 1024;
+pub const RETENTION_BYTES: u32 = 256 * 1024;
 
 /// Segment size of the chip: 16 KiB, four erase sectors, on the ESP32-C3.
 #[cfg(feature = "esp32c3")]
@@ -163,9 +163,9 @@ mod tests {
 
     #[test]
     fn both_chip_policies_are_valid_for_their_partition() {
-        // ESP32-C3: 240 KiB partition, 16 KiB segments; ESP32-C6 and the host:
+        // ESP32-C3: 256 KiB partition, 16 KiB segments; ESP32-C6 and the host:
         // 1 MiB, 64 KiB segments. Checked on every build, whatever the chip.
-        for (retention_bytes, segment_bytes) in [(240 * 1024, 16 * 1024), (1024 * 1024, 64 * 1024)]
+        for (retention_bytes, segment_bytes) in [(256 * 1024, 16 * 1024), (1024 * 1024, 64 * 1024)]
         {
             let config = LoggingConfig {
                 retention_bytes,

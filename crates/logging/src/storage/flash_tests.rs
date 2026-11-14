@@ -72,10 +72,13 @@ impl ErrorType for Emu {
 }
 
 impl ReadNorFlash for Emu {
-    const READ_SIZE: usize = 1;
+    const READ_SIZE: usize = 4;
 
     fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), Fault> {
         let at = offset as usize;
+        if !at.is_multiple_of(4) || !bytes.len().is_multiple_of(4) {
+            return Err(Fault::Misaligned);
+        }
         bytes.copy_from_slice(
             self.data
                 .get(at..at + bytes.len())
@@ -266,4 +269,19 @@ fn format_and_clear_stay_inside_the_region() {
     let flash = storage.into_medium().into_inner();
     assert_eq!(flash.data[..region.start], outside[..region.start]);
     assert_eq!(flash.data[region.end..], outside[region.end..]);
+}
+
+#[test]
+fn reads_of_any_alignment_return_what_was_written() {
+    let mut medium = FlashMedium::new(Emu::new(), BASE, SECTORS).unwrap();
+    medium.erase(0, 1).unwrap();
+    let data: std::vec::Vec<u8> = (0..4096usize).map(|n| n as u8 | 0x80).collect();
+    medium.write(0, &data).unwrap();
+    for at in 0..9usize {
+        for len in (0..40usize).chain([4095 - at, 4096 - at]) {
+            let mut back = std::vec![0u8; len];
+            medium.read(at as u32, &mut back).unwrap();
+            assert_eq!(back, data[at..at + len], "read of {len} at {at}");
+        }
+    }
 }

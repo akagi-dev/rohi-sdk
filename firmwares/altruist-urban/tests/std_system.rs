@@ -120,13 +120,14 @@ fn stored_sections(storage: &std::path::Path) -> usize {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn system_is_an_action_only_service_with_explicit_access() {
+async fn system_has_explicit_access_and_a_status_without_crash_data_on_the_host() {
     let sim = Sim::start(&Launch::new());
     let mut device = sim.device().await;
 
-    // No status: the service is not in the list of services.
+    // The status exists for the reset and crash report of a device with
+    // retained memory; the host has none, so it has no fields.
     let services = device.services().await.unwrap();
-    assert!(services.iter().all(|service| service.name != "system"));
+    assert!(services.iter().any(|service| service.name == "system"));
 
     let actions = device.actions().await.unwrap();
     let system: Vec<_> = actions

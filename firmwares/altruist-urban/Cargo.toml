@@ -61,7 +61,6 @@ critical-section = { workspace = true, optional = true }
 # ESP platform, only with a chip feature.
 esp-hal = { workspace = true, optional = true }
 esp-println = { workspace = true, optional = true }
-esp-backtrace = { workspace = true, optional = true }
 esp-bootloader-esp-idf = { workspace = true, optional = true }
 esp-rtos = { workspace = true, optional = true }
 embassy-embedded-hal = { workspace = true, optional = true }
@@ -90,12 +89,14 @@ std-tcp = ["std"]
 std-ble = ["std", "rohi-sdk/host-ble"]
 # Simulated BMx280, SCD4x, SDS011 and noise sensors and scenarios.
 sensor-simulator = ["std", "rohi-sdk/sim-sensors"]
+# Deliberate panics for the hardware checklist of the crash records, chosen with
+# `ROHI_CRASH_AT` at build time. Never in a production image.
+crash-inject = ["esp"]
 esp = [
   "rohi-sdk/esp",
   "rohi-sdk/heap-stats",
   "dep:esp-hal",
   "dep:esp-println",
-  "dep:esp-backtrace",
   "dep:esp-bootloader-esp-idf",
   "dep:esp-rtos",
   "dep:embassy-embedded-hal",
@@ -104,7 +105,6 @@ esp32c3 = [
   "esp",
   "esp-hal/esp32c3",
   "esp-println/esp32c3",
-  "esp-backtrace/esp32c3",
   "esp-bootloader-esp-idf/esp32c3",
   "esp-rtos/esp32c3",
   "rohi-sdk/esp32c3",
@@ -113,7 +113,6 @@ esp32c6 = [
   "esp",
   "esp-hal/esp32c6",
   "esp-println/esp32c6",
-  "esp-backtrace/esp32c6",
   "esp-bootloader-esp-idf/esp32c6",
   "esp-rtos/esp32c6",
   "rohi-sdk/esp32c6",

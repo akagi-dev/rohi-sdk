@@ -66,5 +66,11 @@ pub fn init(peripheral: FLASH<'static>) -> (Flash, Partitions) {
         Err(error) => error!("Log partition unavailable: {:?}", error),
     }
     let cell = SHARED.init(Flash::cell(driver));
+    #[cfg(feature = "crash-inject")]
+    cell.lock(|flash| {
+        // The lock and the driver are held, as in the middle of a write.
+        let _driver = flash.borrow_mut();
+        super::inject::at("flash");
+    });
     (Flash::new(cell), partitions)
 }
