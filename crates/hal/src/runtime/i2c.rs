@@ -27,7 +27,7 @@ use embedded_hal::i2c::{Error as I2cError, ErrorKind, ErrorType, Operation};
 use embedded_hal_async::delay::DelayNs;
 use embedded_hal_async::i2c::I2c;
 
-use super::backoff::with_timeout;
+use rohi_time::with_timeout;
 
 /// Error of [`TimeoutI2c`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

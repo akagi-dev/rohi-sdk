@@ -21,6 +21,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
 
+use micropb_gen::config::IntSize;
 use micropb_gen::{Config, Generator};
 
 const PROTO: &str = "proto/rohi/control/v1/control.proto";
@@ -55,13 +56,18 @@ const LIMITS: &[(&str, usize, &str)] = &[
     ),
     (
         "MAX_FIELD_VALUE_LEN",
-        32,
+        64,
         "Maximum length of a string or bytes status value or action result, in bytes.",
     ),
     (
         "MAX_ENUMS",
         1,
         "Maximum number of enums in one schema response.",
+    ),
+    (
+        "MAX_SELECTIONS",
+        2,
+        "Maximum number of bitset selections in one action schema response.",
     ),
     (
         "MAX_ENUM_VARIANTS",
@@ -168,6 +174,7 @@ const REPEATED: &[&str] = &[
     ".rohi.control.v1.GetActionSchemaResponse.args",
     ".rohi.control.v1.GetActionSchemaResponse.results",
     ".rohi.control.v1.GetActionSchemaResponse.enums",
+    ".rohi.control.v1.GetActionSchemaResponse.selections",
     ".rohi.control.v1.InvokeActionRequest.args",
     ".rohi.control.v1.ActionRecord.fields",
     ".rohi.control.v1.InvokeActionResponse.records",
@@ -306,6 +313,10 @@ fn main() {
             "MAX_ENUMS",
         ),
         (
+            ".rohi.control.v1.GetActionSchemaResponse.selections",
+            "MAX_SELECTIONS",
+        ),
+        (
             ".rohi.control.v1.InvokeActionRequest.args",
             "MAX_ACTION_ARGS",
         ),
@@ -331,6 +342,12 @@ fn main() {
         };
         generator.configure(path, config);
     }
+
+    // Table ids are small: at most MAX_SELECTIONS.
+    generator.configure(
+        ".rohi.control.v1.SelectionDescriptor.id",
+        Config::new().int_size(IntSize::S8),
+    );
 
     generator.configure(
         ".rohi.control.v1.ConfigMutation",

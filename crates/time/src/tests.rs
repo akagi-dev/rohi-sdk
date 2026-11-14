@@ -18,9 +18,9 @@
 
 use core::time::Duration;
 
+use crate::MonotonicTimestamp;
 use embassy_futures::block_on;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use rohi_hal::MonotonicTimestamp;
 
 use crate::testutil::{ClockDelay, FakeSource, ManualClock};
 use crate::{

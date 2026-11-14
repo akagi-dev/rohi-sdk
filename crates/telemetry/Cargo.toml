@@ -1,0 +1,36 @@
+[package]
+name = "rohi-telemetry"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Robonomics Open Hardware telemetry: multi-source observations, measurement catalog, packet profiles and public/private sections"
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[dependencies]
+rohi-time.workspace = true
+rohi-config.workspace = true
+rohi-service = { workspace = true, optional = true }
+heapless.workspace = true
+embassy-sync.workspace = true
+minicbor.workspace = true
+embedded-hal-async.workspace = true
+rohi-sensors = { workspace = true, optional = true }
+rohi-location = { workspace = true, optional = true }
+
+[features]
+default = []
+# The managed `telemetry` service: profile Actions, catalog and status.
+service = ["dep:rohi-service"]
+# `adapters::SensorsTelemetrySource` over `rohi_sensors::runtime::MeasurementHandle`.
+sensors = ["dep:rohi-sensors"]
+# `LocationSource` adapter over `rohi_location::LocationSource`.
+location = ["dep:rohi-location"]
+
+[dev-dependencies]
+embassy-futures.workspace = true

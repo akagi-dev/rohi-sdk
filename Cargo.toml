@@ -22,6 +22,8 @@ resolver = "2"
 rohi-sdk = { path = "crates/sdk" }
 rohi-hal = { path = "crates/hal" }
 rohi-time = { path = "crates/time" }
+rohi-sensors = { path = "crates/sensors" }
+rohi-telemetry = { path = "crates/telemetry" }
 rohi-time-ntp = { path = "crates/time-ntp" }
 rohi-hal-esp = { path = "crates/hal-esp" }
 rohi-config = { path = "crates/config" }
@@ -34,7 +36,7 @@ rohi-sim = { path = "crates/sim" }
 rohi-service = { path = "crates/service" }
 rohi-service-derive = { path = "crates/service-derive" }
 rohi-control-proto = { path = "crates/control-proto" }
-rohi-connectivity-proto = { path = "crates/connectivity-proto" }
+rohi-telemetry-robonomics = { path = "crates/telemetry-robonomics" }
 rohi-connectivity = { path = "crates/connectivity" }
 rohi-control = { path = "crates/control" }
 rohi-control-ble = { path = "crates/control-ble" }
@@ -115,6 +117,10 @@ micropb-gen = "0.6.0"
 
 # Cryptography
 ed25519-zebra = { version = "4.0.3", default-features = false }
+curve25519-dalek = { version = "4.1.3", default-features = false, features = ["zeroize"] }
+sha2 = { version = "0.10.9", default-features = false }
+hkdf = { version = "0.12.4", default-features = false }
+chacha20poly1305 = { version = "0.10.1", default-features = false }
 zeroize = { version = "1.8", default-features = false }
 
 # Host-only: master SURI loading and hard derivation for identity provisioning

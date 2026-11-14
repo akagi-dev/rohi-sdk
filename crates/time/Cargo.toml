@@ -13,12 +13,15 @@ description = "Robonomics Open Hardware time service: synchronized wall-clock ti
 maintenance = { status = "actively-developed" }
 
 [dependencies]
-rohi-hal.workspace = true
 rohi-service.workspace = true
 heapless.workspace = true
 embassy-sync.workspace = true
+embassy-futures.workspace = true
+embassy-time = { workspace = true, optional = true }
 embedded-hal-async.workspace = true
 log.workspace = true
 
-[dev-dependencies]
-embassy-futures.workspace = true
+[features]
+default = []
+# `EmbassyClock`, the monotonic clock over `embassy-time`.
+embassy-time = ["dep:embassy-time"]

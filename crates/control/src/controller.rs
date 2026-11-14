@@ -227,7 +227,7 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             Call::GetServiceStatus(request) => {
                 isolated(self.get_service_status(request.service_id)).await
             }
-            Call::ListActions(_) => self.list_actions(),
+            Call::ListActions(request) => self.list_actions(request.offset),
             Call::GetActionSchema(request) => {
                 self.get_action_schema(request.service_id, request.action_id)
             }
@@ -399,23 +399,25 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
     }
 
     #[inline(never)]
-    fn list_actions(&self) -> Reply {
+    fn list_actions(&self, offset: u32) -> Reply {
         let services = self.backend.actions();
         let mut actions = Vec::new();
-        'services: for index in 0..services.service_count() {
+        let mut ordinal = 0u32;
+        for index in 0..services.service_count() {
             let Some(info) = services.service_identity(index) else {
                 continue;
             };
             for action in services.service_actions(index) {
-                if actions
-                    .push(mapping::action_info(info.id, info.name, action))
-                    .is_err()
-                {
-                    break 'services;
+                if ordinal >= offset && !actions.is_full() {
+                    let _ = actions.push(mapping::action_info(info.id, info.name, action));
                 }
+                ordinal += 1;
             }
         }
-        Reply::ListActions(pb::ListActionsResponse { actions })
+        Reply::ListActions(pb::ListActionsResponse {
+            actions,
+            total: ordinal,
+        })
     }
 
     #[inline(never)]
@@ -427,6 +429,7 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
                     args: mapping::fields(action.args),
                     results: mapping::fields(action.results),
                     enums: mapping::enums(action.enums),
+                    selections: mapping::selections(action.args),
                     ..Default::default()
                 };
                 out.set_action(mapping::action_info(

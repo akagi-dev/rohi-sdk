@@ -37,14 +37,15 @@
 
 use core::fmt::Debug;
 
-use crate::{
-    Celsius, MeasurementUpdate, Ppm, RelativeHumidity, Scd4xUpdate, SensorErrorCode, SensorKind,
-};
 use embedded_hal::i2c::ErrorKind;
 use embedded_hal_async::delay::DelayNs;
 use embedded_hal_async::i2c::I2c;
+use rohi_sensors::{
+    Celsius, MeasurementUpdate, Ppm, RelativeHumidity, Scd4xUpdate, SensorErrorCode, SensorKind,
+};
 
-use crate::runtime::{Clock, DriverError, SensorDriver};
+use crate::runtime::{DriverError, SensorDriver};
+use rohi_time::Clock;
 
 /// Fixed I2C address.
 pub const ADDRESS: u8 = 0x62;
@@ -364,8 +365,8 @@ impl<I2C: I2c, D: DelayNs> SensorDriver for Scd4x<I2C, D> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::MonotonicTimestamp;
     use crate::testutil::{FixedClock, MockI2c, NoDelay, block_on};
+    use rohi_time::MonotonicTimestamp;
 
     fn word(w: u16) -> [u8; 3] {
         let b = w.to_be_bytes();

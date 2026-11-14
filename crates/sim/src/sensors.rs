@@ -36,12 +36,13 @@
 use core::marker::PhantomData;
 
 use embassy_time::{Instant, Timer};
-use rohi_hal::runtime::{Clock, DriverError, RunnerConfig, SensorDriver};
-use rohi_hal::{
-    Bmx280Update, Celsius, Decibels, MeasurementUpdate, MicrogramsPerCubicMeter,
-    MonotonicTimestamp, NoiseUpdate, Pascal, Ppm, RelativeHumidity, Scd4xUpdate, Sds011Update,
-    SensorErrorCode, SensorKind,
+use rohi_hal::runtime::{DriverError, RunnerConfig, SensorDriver};
+use rohi_sensors::{
+    Bmx280Update, Celsius, Decibels, MeasurementUpdate, MicrogramsPerCubicMeter, NoiseUpdate,
+    Pascal, Ppm, RelativeHumidity, Scd4xUpdate, Sds011Update, SensorErrorCode, SensorKind,
 };
+use rohi_time::Clock;
+use rohi_time::MonotonicTimestamp;
 
 use crate::command::{Sensor, SensorFault};
 use crate::world::{Values, world};

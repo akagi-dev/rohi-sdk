@@ -21,8 +21,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use embassy_futures::block_on;
 use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex};
 use log::Log;
-use rohi_hal::MonotonicTimestamp;
-use rohi_hal::runtime::Clock;
+use rohi_time::Clock;
+use rohi_time::MonotonicTimestamp;
 use rohi_time::{TimeConfig, TimeSample, TimeService, TimeSourceKind, UnixTime};
 
 use crate::*;

@@ -18,6 +18,11 @@ features = [
   "config",
   "service",
   "hal",
+  "sensors",
+  "telemetry",
+  "telemetry-sensors",
+  "telemetry-location",
+  "telemetry-robonomics",
   "time",
   "net",
   "ntp",
@@ -38,6 +43,9 @@ rustdoc-args = ["--cfg", "docsrs"]
 rohi-config = { workspace = true, optional = true }
 rohi-service = { workspace = true, optional = true }
 rohi-hal = { workspace = true, optional = true }
+rohi-sensors = { workspace = true, optional = true }
+rohi-telemetry = { workspace = true, optional = true }
+rohi-telemetry-robonomics = { workspace = true, optional = true }
 rohi-time = { workspace = true, optional = true }
 rohi-time-ntp = { workspace = true, optional = true }
 rohi-net = { workspace = true, optional = true }
@@ -62,10 +70,12 @@ default = []
 # Portable areas, each re-exported as a module of the same name.
 config = ["dep:rohi-config"]
 service = ["config", "dep:rohi-service"]
-# Typed measurements, sensor drivers and the sensor runtime (`hal::sensors`).
-hal = ["service", "dep:rohi-hal"]
-sensors = ["hal"]
-time = ["hal", "dep:rohi-time"]
+# Monotonic time, `time::Clock` and the time service.
+time = ["service", "dep:rohi-time"]
+# Typed measurements, sensor state, the store and the `sensors` service.
+sensors = ["time", "service", "dep:rohi-sensors", "rohi-sensors/service"]
+# Physical sensor drivers and their runner (`hal::sensors`).
+hal = ["sensors", "dep:rohi-hal"]
 net = ["service", "dep:rohi-net"]
 ntp = ["time", "net", "dep:rohi-time-ntp"]
 identity = ["service", "dep:rohi-identity"]
@@ -75,9 +85,16 @@ system = ["service", "dep:rohi-system"]
 control = ["service", "dep:rohi-control"]
 ble = ["control", "net", "dep:rohi-control-ble"]
 tcp = ["control", "dep:rohi-control-tcp"]
-# `hal::runtime::EmbassyClock`, the monotonic clock over `embassy-time`.
-embassy-time = ["hal", "rohi-hal/embassy-time"]
-connectivity = ["hal", "identity", "location", "net", "time", "dep:rohi-connectivity"]
+# `time::EmbassyClock`, the monotonic clock over `embassy-time`.
+embassy-time = ["time", "rohi-time/embassy-time"]
+# Source-independent telemetry: observations, catalog, packet profiles, the `telemetry` service.
+telemetry = ["time", "service", "dep:rohi-telemetry", "rohi-telemetry/service"]
+# `telemetry::adapters`: sources over `sensors` and `location`.
+telemetry-sensors = ["telemetry", "sensors", "rohi-telemetry/sensors"]
+telemetry-location = ["telemetry", "location", "rohi-telemetry/location"]
+# The Robonomics Connectivity Protocol packet format.
+telemetry-robonomics = ["telemetry", "identity", "dep:rohi-telemetry-robonomics"]
+connectivity = ["sensors", "identity", "location", "net", "time", "dep:rohi-connectivity"]
 
 # Host (`std`) backends, module `host`: DNS, TCP and UDP over the sockets of the
 # operating system and the TCP listener of the control transport.

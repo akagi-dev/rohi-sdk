@@ -24,7 +24,7 @@
 
 use core::time::Duration;
 
-use rohi_hal::MonotonicTimestamp;
+use crate::MonotonicTimestamp;
 
 use crate::{SyncFailure, TimeSourceKind, UnixTime};
 

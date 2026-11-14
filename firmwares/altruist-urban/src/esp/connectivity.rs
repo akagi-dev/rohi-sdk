@@ -22,8 +22,8 @@
 use embassy_executor::Spawner;
 use esp_hal::rng::Rng;
 use rohi_sdk::connectivity::{NONCE_LEN, NonceError, NonceSource};
-use rohi_sdk::hal::runtime::MeasurementHandle;
 use rohi_sdk::net::NetworkHandle;
+use rohi_sdk::sensors::runtime::MeasurementHandle;
 
 use super::resources::Ip;
 use crate::connectivity;

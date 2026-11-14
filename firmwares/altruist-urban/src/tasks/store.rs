@@ -20,8 +20,9 @@
 use embassy_futures::select::{Either3, select3};
 use embassy_time::{Duration, Ticker};
 use log::info;
-use rohi_sdk::hal::runtime::{Clock, MeasurementHandle, MeasurementService};
-use rohi_sdk::hal::{MeasurementStore, MeasurementsSnapshot};
+use rohi_sdk::sensors::runtime::{MeasurementHandle, MeasurementService};
+use rohi_sdk::sensors::{MeasurementStore, MeasurementsSnapshot};
+use rohi_sdk::time::Clock;
 
 use super::{EVENTS, RawMutex};
 
@@ -39,7 +40,7 @@ const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(30);
 fn log_snapshot(snapshot: &MeasurementsSnapshot) {
     info!("--- snapshot at {} ms ---", snapshot.generated_at.millis);
     for status in snapshot.sensor_statuses.iter() {
-        if status.state == rohi_sdk::hal::SensorState::NotDetected {
+        if status.state == rohi_sdk::sensors::SensorState::NotDetected {
             continue;
         }
         info!(

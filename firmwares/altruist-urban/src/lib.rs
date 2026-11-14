@@ -69,6 +69,7 @@ pub mod logging;
 pub mod net;
 pub mod reboot;
 pub mod tasks;
+pub mod telemetry;
 pub mod time;
 
 #[cfg(feature = "esp")]

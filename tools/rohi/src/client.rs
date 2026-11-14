@@ -374,14 +374,80 @@ impl<T: ClientTransport> Device<T> {
 
     /// The actions of all services.
     pub async fn actions(&mut self) -> Result<Vec<ActionInfo>> {
-        let call = Call::ListActions(pb::ListActionsRequest {});
-        match self.call(call).await? {
-            Reply::ListActions(list) => {
-                let actions: Vec<_> = list.actions.iter().map(convert::action_info).collect();
-                self.actions = Some(actions.clone());
-                Ok(actions)
+        let mut actions: Vec<ActionInfo> = Vec::new();
+        loop {
+            let call = Call::ListActions(pb::ListActionsRequest {
+                offset: actions.len() as u32,
+            });
+            match self.call(call).await? {
+                Reply::ListActions(list) => {
+                    actions.extend(list.actions.iter().map(convert::action_info));
+                    if list.actions.is_empty() || actions.len() >= list.total as usize {
+                        break;
+                    }
+                }
+                other => return Err(unexpected(&other)),
             }
-            other => Err(unexpected(&other)),
+        }
+        self.actions = Some(actions.clone());
+        Ok(actions)
+    }
+
+    /// The entries of the catalog a bitset field selects from, in pages of the
+    /// catalog action: `bit_index` (field 1) and `name` (field 2).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Protocol`] when the catalog is not a read-only action with
+    /// one offset argument and such records.
+    pub async fn catalog(&mut self, selection: &Selection) -> Result<Vec<CatalogEntry>> {
+        if self.actions.is_none() {
+            self.actions().await?;
+        }
+        let info = self
+            .actions
+            .iter()
+            .flatten()
+            .find(|info| {
+                info.service_id == selection.catalog_service_id
+                    && info.id == selection.catalog_action_id
+            })
+            .cloned()
+            .ok_or_else(not_found)?;
+        let schema = self.action_schema(&info.service, &info.name).await?;
+        let [offset] = schema.args.as_slice() else {
+            return Err(Error::Protocol(format!(
+                "the catalog {} {} must take one offset",
+                info.service, info.name
+            )));
+        };
+        let offset_id = offset.id;
+        let mut entries = Vec::new();
+        loop {
+            let args = [FieldValue {
+                field_id: offset_id,
+                value: Value::U64(entries.len() as u64),
+            }];
+            let records = self.invoke(&info.service, &info.name, &args).await?;
+            if records.is_empty() {
+                return Ok(entries);
+            }
+            for record in records {
+                let bit = record.iter().find_map(|f| match (f.field_id, &f.value) {
+                    (1, Value::U64(bit)) => Some(*bit),
+                    _ => None,
+                });
+                let name = record.iter().find_map(|f| match (f.field_id, &f.value) {
+                    (2, Value::String(name)) => Some(name.clone()),
+                    _ => None,
+                });
+                let (Some(bit), Some(name)) = (bit, name) else {
+                    return Err(Error::Protocol(
+                        "a catalog record without bit_index and name".into(),
+                    ));
+                };
+                entries.push(CatalogEntry { bit, name });
+            }
         }
     }
 
@@ -431,7 +497,9 @@ impl<T: ClientTransport> Device<T> {
                     args: response
                         .args
                         .iter()
-                        .map(|field| convert::field(field, &response.enums))
+                        .map(|field| {
+                            convert::action_field(field, &response.enums, &response.selections)
+                        })
                         .collect(),
                     results: response
                         .results

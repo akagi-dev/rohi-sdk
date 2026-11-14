@@ -23,7 +23,7 @@ queues 4 × ~250 B each, TrouBLE host resources, and the task futures. The appli
 the radio drivers use the wireless heap.
 
 
-## Sensor runtime (`rohi-hal`)
+## Sensor runtime (`rohi-sensors`, `rohi-hal`)
 
 `cargo build-esp32c3`, ESP32-C3 (before Wi-Fi/BLE/TLS):
 

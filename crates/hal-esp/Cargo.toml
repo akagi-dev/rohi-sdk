@@ -18,10 +18,11 @@ maintenance = { status = "actively-developed" }
 
 [dependencies]
 rohi-hal.workspace = true
+rohi-time.workspace = true
 esp-hal = { workspace = true, optional = true }
 
 [features]
 default = []
 # Exactly one chip feature must be enabled by the final firmware build.
-esp32c3 = ["dep:esp-hal", "rohi-hal/embassy-time", "esp-hal/esp32c3"]
-esp32c6 = ["dep:esp-hal", "rohi-hal/embassy-time", "esp-hal/esp32c6"]
+esp32c3 = ["dep:esp-hal", "rohi-time/embassy-time", "esp-hal/esp32c3"]
+esp32c6 = ["dep:esp-hal", "rohi-time/embassy-time", "esp-hal/esp32c6"]

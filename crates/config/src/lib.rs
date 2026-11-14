@@ -209,7 +209,7 @@ pub use overrides::{HasOverrides, Override, RedactedOverride, materialize};
 pub use section::ConfigSection;
 pub use storage::ConfigStorage;
 pub use store::{ConfigOpenState, ConfigStore, OpenFailure, SectionInfo};
-pub use value::{FieldError, MAX_VALUE_LEN, Value, ValueKind};
+pub use value::{ADDRESS_LEN, FieldError, MAX_VALUE_LEN, Value, ValueKind};
 
 /// Derive macro generating the [`ConfigSection`] implementation of a private
 /// persisted section. The managed config derive, `Config`, is in

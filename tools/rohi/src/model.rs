@@ -144,6 +144,7 @@ open_enum! {
         String = String => "string",
         Bytes = Bytes => "bytes",
         Enum = Enum => "enum",
+        Address = Address => "address",
     }
 }
 
@@ -235,6 +236,30 @@ pub struct FieldDescriptor {
     /// The number of each of `variants` on the wire.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub(crate) variant_values: Vec<u32>,
+    /// The catalog of a bitset field.
+    pub selection: Option<Selection>,
+}
+
+/// A bitset field over the entries of a catalog action: bit `i` is
+/// `byte[i / 8]` bit `i % 8`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub struct Selection {
+    /// Size of the bitset, in bytes.
+    pub size_bytes: u32,
+    /// Id of the service that lists the entries.
+    pub catalog_service_id: u32,
+    /// Id of the action that lists the entries.
+    pub catalog_action_id: u32,
+}
+
+/// One entry of a catalog: the bit it owns and its name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CatalogEntry {
+    /// Bit index in the bitset.
+    pub bit: u64,
+    /// Canonical name.
+    pub name: String,
 }
 
 /// A field value together with the id of its field.

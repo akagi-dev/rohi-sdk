@@ -150,6 +150,8 @@ enum ValueKind {
   VALUE_KIND_BYTES = 6;
   // A variant of the enum `FieldDescriptor.enum_id` refers to.
   VALUE_KIND_ENUM = 7;
+  // A raw 32-byte public key, carried as `bytes_value`.
+  VALUE_KIND_ADDRESS = 8;
 }
 
 enum Unit {
@@ -180,8 +182,22 @@ message FieldDescriptor {
   ValueKind kind = 3;
   Unit unit = 4;
   // Id of the `EnumDescriptor` of the same response for `VALUE_KIND_ENUM`
-  // fields; 0 for all other fields.
+  // fields, or of the `SelectionDescriptor` of the same response for a
+  // `VALUE_KIND_BYTES` field that is a bitset over a catalog; 0 for all
+  // other fields.
   uint32 enum_id = 5;
+}
+
+// A fixed-size bitset field: bit `i` is `byte[i / 8]` bit `i % 8`, least
+// significant first. All zeros selects nothing and all ones selects every
+// current entry; the entries and their bit indices are listed by the read-only
+// action `catalog_action_id` of the service `catalog_service_id`, whose
+// records carry `bit_index` (field 1) and `name` (field 2).
+message SelectionDescriptor {
+  uint32 id = 1;
+  uint32 size_bytes = 2;
+  uint32 catalog_service_id = 3;
+  uint32 catalog_action_id = 4;
 }
 
 message EnumVariant {
@@ -524,10 +540,19 @@ message ActionInfo {
   ActionAccess access = 4;
 }
 
-message ListActionsRequest {}
+message ListActionsRequest {
+  // Ordinal of the first action to list, in the stable order of the device:
+  // services as registered, actions as declared.
+  uint32 offset = 1;
+}
 
+// One page of the actions of a device. A page holds at most `MAX_ACTIONS`;
+// a client asks again with `offset` advanced by the count it received until
+// it has `total` actions.
 message ListActionsResponse {
   repeated ActionInfo actions = 1;
+  // Number of actions of the device.
+  uint32 total = 2;
 }
 
 message GetActionSchemaRequest {
@@ -542,6 +567,7 @@ message GetActionSchemaResponse {
   // Fields of every returned record.
   repeated FieldDescriptor results = 3;
   repeated EnumDescriptor enums = 4;
+  repeated SelectionDescriptor selections = 5;
 }
 
 message InvokeActionRequest {

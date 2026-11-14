@@ -25,9 +25,12 @@ rohi-service.workspace = true
 heapless.workspace = true
 minicbor.workspace = true
 ed25519-zebra.workspace = true
+curve25519-dalek.workspace = true
+sha2.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
 embassy-futures.workspace = true
+x25519-dalek = { version = "2.0.1", default-features = false, features = ["static_secrets"] }
 embassy-sync.workspace = true
 minicbor = { workspace = true, features = ["std"] }

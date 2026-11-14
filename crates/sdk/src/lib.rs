@@ -37,8 +37,12 @@
 //! |---------|--------|-------|--------------|
 //! | `config` | `config` | `rohi-config` | |
 //! | `service` | `service` | `rohi-service` | `config` |
-//! | `hal` (alias `sensors`) | `hal` | `rohi-hal`: typed measurements, sensor drivers (`hal::sensors`), sensor runtime | `service` |
-//! | `time` | `time` | `rohi-time` | `hal` |
+//! | `sensors` | `sensors` | `rohi-sensors`: typed measurements, sensor state, store, event bus, the `sensors` service | `time`, `service` |
+//! | `hal` | `hal` | `rohi-hal`: physical sensor drivers (`hal::sensors`) and their runner | `sensors` |
+//! | `telemetry` | `telemetry` | `rohi-telemetry`: observations from any source, measurement catalog, packet profiles, public/private sections, the `telemetry` service | `time`, `service` |
+//! | `telemetry-sensors`, `telemetry-location` | `telemetry::adapters` | sources over `rohi-sensors` and `rohi-location` | `telemetry`, `sensors` / `location` |
+//! | `telemetry-robonomics` | `telemetry_robonomics` | `rohi-telemetry-robonomics`: the Robonomics Connectivity Protocol packet format | `telemetry`, `identity` |
+//! | `time` | `time` | `rohi-time`: monotonic `Clock`, `Backoff`, the time service | `service` |
 //! | `net` | `net` | `rohi-net` | `service` |
 //! | `ntp` | `ntp` | `rohi-time-ntp` | `time`, `net` |
 //! | `identity` | `identity` | `rohi-identity` | `service` |
@@ -52,8 +56,8 @@
 //! | `host-ble` | `host::ble` | BlueZ BLE peripheral of `rohi-net-std` (Linux) | `host`, `ble` |
 //! | `sim` | `sim` | `rohi-sim`: simulated world for `std` applications | `host`, `hal`, `config` |
 //! | `sim-sensors` | `sim::sensors` | simulated sensor drivers of `rohi-sim` | `sim` |
-//! | `connectivity` | `connectivity` | `rohi-connectivity` | `hal`, `identity`, `location`, `net`, `time` |
-//! | `embassy-time` | `hal::runtime::EmbassyClock` | the `embassy-time` clock of `rohi-hal` | `hal` |
+//! | `connectivity` | `connectivity` | `rohi-connectivity` | `sensors`, `identity`, `location`, `net`, `time` |
+//! | `embassy-time` | `time::EmbassyClock` | the `embassy-time` clock of `rohi-time` | `time` |
 //! | `esp` | `esp::{hal, config, net}` | `rohi-hal-esp`, `rohi-config-esp`, `rohi-net-esp` | `hal`, `config`, `net` |
 //! | `esp32c3`, `esp32c6` | | chip selection of the `esp` crates | `esp` |
 //! | `heap-stats` | | wireless heap statistics of `rohi-net-esp` | `esp` |
@@ -71,7 +75,7 @@
 //! ```text
 //! use rohi_sdk::hal::sensors::bmx280;
 //! use rohi_sdk::service::Service;
-//! use rohi_sdk::esp::hal::EmbassyClock;
+//! use rohi_sdk::time::EmbassyClock;
 //! ```
 //!
 //! The derive macros of `rohi-config` and `rohi-service` find the runtime
@@ -104,7 +108,7 @@
 //!
 //! | Area | What you get | Crates |
 //! |------|--------------|--------|
-//! | Sensors | Typed measurements, drivers (BMx280, SCD4x, SDS011, noise), runtime, `MeasurementStore` | [`rohi-hal`](../rohi_hal/index.html), [`rohi-hal-esp`](../rohi_hal_esp/index.html) |
+//! | Sensors | Typed measurements, sensor state, `MeasurementStore`, event bus, the `sensors` service; drivers (BMx280, SCD4x, SDS011, noise) and their runner | [`rohi-sensors`](../rohi_sensors/index.html), [`rohi-hal`](../rohi_hal/index.html), [`rohi-hal-esp`](../rohi_hal_esp/index.html) |
 //! | Configuration | CBOR, A/B-slot, power-fail-safe store of independent typed sections; users persist only their overrides of the firmware defaults | [`rohi-config`](../rohi_config/index.html), [`rohi-config-esp`](../rohi_config_esp/index.html) |
 //! | Networking | Wi-Fi control plane, DNS/TCP/UDP data plane, BLE transport, ESP backend | [`rohi-net`](../rohi_net/index.html), [`rohi-net-esp`](../rohi_net_esp/index.html) |
 //! | Services | Config sections, live status (state, health, issues) and actions of every module, discovered by name | [`rohi-service`](../rohi_service/index.html) |
@@ -175,7 +179,8 @@
 //!
 //! | Crate | Purpose | Kind | Major public abstractions | Depends on | Does **not** own |
 //! |-------|---------|------|---------------------------|------------|------------------|
-//! | [`rohi-hal`](../rohi_hal/index.html) | Typed units and measurements, sensor drivers, sensor runtime, `MeasurementStore` | portable | `MeasurementStore`, `MeasurementsSnapshot`, `SensorDriver`, `Runner`, `EventBus`, `MeasurementHandle`, `SensorsService` | `embedded-hal(-async)`, `embedded-io-async`, Embassy sync and futures, `rohi-service` | MCU peripherals, board pins, networking, serialization |
+//! | [`rohi-sensors`](../rohi_sensors/index.html) | Typed units and measurements, sensor state and events, `MeasurementStore`, event bus, snapshot service, the `sensors` status service | portable | `MeasurementStore`, `MeasurementsSnapshot`, `EventBus`, `Reporter`, `MeasurementHandle`, `SensorsService` | `rohi-time`, `rohi-service` (feature `service`), Embassy sync | Sensor drivers, MCU peripherals, networking, serialization, publication policy |
+//! | [`rohi-hal`](../rohi_hal/index.html) | Physical sensor drivers, the driver runner and bounded hardware I/O | portable | `SensorDriver`, `Runner`, `TimeoutI2c`, `sensors::{bmx280, scd4x, sds011, noise}` | `rohi-sensors`, `rohi-time`, `embedded-hal(-async)`, `embedded-io-async` | MCU peripherals, board pins, networking, serialization, the measurement model |
 //! | [`rohi-hal-esp`](../rohi_hal_esp/index.html) | ESP32 backend of the HAL: boards, I²C/UART/I²S setup, clock | ESP | `board::altruist_urban::{Hardware, AltruistUrban}`, `I2sMicrophone`, `EmbassyClock` | `rohi-hal`, `esp-hal`, `embassy-time` | Sensor logic, application tasks |
 //! | [`rohi-config`](../rohi_config/index.html) | Transactional CBOR configuration store | portable | `ConfigSection`, `ConfigStore`, `ConfigStorage`, `MemoryStorage`, `Override`, `ConfigOverrides`, `HasOverrides`, `materialize` | `rohi-config-derive`, `minicbor`, `heapless`, `zeroize` | Any concrete section, flash access |
 //! | [`rohi-config-derive`](../rohi_config_derive/index.html) | `#[derive(ConfigSection)]` and `#[derive(Config)]` | portable (proc-macro) | derive macros | `syn`, `quote` | Runtime behaviour |
@@ -184,13 +189,13 @@
 //! | [`rohi-config-esp`](../rohi_config_esp/index.html) | Flash backend of the store | ESP | `EspConfigStorage`, `FlashRegion`, `layout` | `rohi-config`, `embedded-storage`, `esp-storage` | CBOR, sections, any feature's configuration |
 //! | [`rohi-identity`](../rohi_identity/index.html) | Device identity: Ed25519 `Identity` config section, `Secret`, `Signer`, `IdentitySigner` | portable | `Identity`, `Secret`, `Signer`, `IdentitySigner`, `PublicKey`, `Signature` | `rohi-config`, `rohi-service`, `ed25519-zebra` | Provisioning transport, key derivation (done on the host by `rohi`), protocol semantics of signed messages |
 //! | [`rohi-net`](../rohi_net/index.html) | Wi-Fi control plane, IP data plane (DNS, TCP, UDP), BLE transport traits, the `WifiConfig`, `NetworkConfig` and `BleSettings` sections and the `wifi`, `network` and `ble` services | portable | `WifiManager`, `WifiHandle`, `WifiBackend`, `NetworkHandle`, `IpBackend`, `UdpSocket`, `NetError`, `BleTransport` | `rohi-config`, `rohi-service`, Embassy sync and futures, `embedded-nal-async`, `embedded-io-async` | Radio drivers, the IP stack, control protocol |
-//! | [`rohi-time`](../rohi_time/index.html) | Synchronized wall-clock time: `TimeService`, `TimeSource`, validation, background `Synchronizer` | portable | `TimeService`, `TimeSource`, `TimeSample`, `UnixTime`, `TimeStatus`, `Synchronizer` | `rohi-hal` (monotonic `Clock`, `Backoff`), `rohi-service`, Embassy sync | Network or clock hardware, any concrete source |
-//! | [`rohi-time-ntp`](../rohi_time_ntp/index.html) | NTP/SNTP `TimeSource` over the IP data plane | portable | `NtpTimeSource`, `NtpConfig`, `NtpServersConfig` (the `time` config section) | `rohi-time`, `rohi-net`, `rohi-hal`, `rohi-config`, `rohi-service`, `sntpc` | The global concept of time, the UDP stack |
+//! | [`rohi-time`](../rohi_time/index.html) | Synchronized wall-clock time: `TimeService`, `TimeSource`, validation, background `Synchronizer` | portable | `TimeService`, `TimeSource`, `TimeSample`, `UnixTime`, `TimeStatus`, `Synchronizer` | `rohi-service`, Embassy sync | Network or clock hardware, any concrete source |
+//! | [`rohi-time-ntp`](../rohi_time_ntp/index.html) | NTP/SNTP `TimeSource` over the IP data plane | portable | `NtpTimeSource`, `NtpConfig`, `NtpServersConfig` (the `time` config section) | `rohi-time`, `rohi-net`, `rohi-config`, `rohi-service`, `sntpc` | The global concept of time, the UDP stack |
 //! | [`rohi-location`](../rohi_location/index.html) | The location of the device (user-configured; no GNSS runtime exists yet): `LocationConfig` section, `LocationShared`, `LocationService` | portable | `Location`, `LocationConfig`, `LocationShared`, `LocationSource`, `LocationService` | `rohi-config`, `rohi-service`, Embassy sync | GNSS hardware, telemetry |
 //! | [`rohi-system`](../rohi_system/index.html) | The `system` service: `reboot` and `factory_reset` Actions over a `SystemPlatform` the firmware implements | portable | `SystemService`, `SystemPlatform`, `SystemError` | `rohi-service` | Chip reset, flash formatting |
-//! | [`rohi-logging`](../rohi_logging/index.html) | Persistent logging: the `log` sink, segment format, flash ring storage over any `Medium`, `LoggingConfig` and the `logging` service | portable | `LogSink`, `LogRecord`, `LogLevel`, `LogClock`, `Logging`, `LoggingService`, `LoggingConfig`, `LogStorage`, `RingStorage` | `rohi-config`, `rohi-service`, `rohi-time`, `rohi-hal`, Embassy sync, `log` | The flash driver, an SD backend |
-//! | [`rohi-connectivity-proto`](../rohi_connectivity_proto/index.html) | Bounded bindings of `airalab/connectivity-protocol` (vendored, pinned revision) | portable | `core_v1`, `crypto_v1`, `device_v1`, `sensor_v1`, `limits` | `micropb` | Signing, mapping, transports |
-//! | [`rohi-connectivity`](../rohi_connectivity/index.html) | Telemetry: snapshot (+ location) to signed envelope frame, bounded outbox, retry, HTTP transport, `ConnectivityConfig` section, `connectivity` service | portable | `UrbanEncoder`, `EnvelopeBuilder`, `EnvelopeFrame`, `EnvelopeTransport`, `HttpTransport`, `ConnectivityService`, `UtcClock`, `NonceSource`, `FrameSigner` | `rohi-connectivity-proto`, `rohi-hal`, `rohi-identity`, `rohi-location`, `rohi-net`, `rohi-time`, `rohi-config`, `rohi-service` | Private keys, Wi-Fi lifecycle, sensors, backend logic |
+//! | [`rohi-logging`](../rohi_logging/index.html) | Persistent logging: the `log` sink, segment format, flash ring storage over any `Medium`, `LoggingConfig` and the `logging` service | portable | `LogSink`, `LogRecord`, `LogLevel`, `LogClock`, `Logging`, `LoggingService`, `LoggingConfig`, `LogStorage`, `RingStorage` | `rohi-config`, `rohi-service`, `rohi-time`, Embassy sync, `log` | The flash driver, an SD backend |
+//! | [`rohi-telemetry-robonomics`](../rohi_telemetry_robonomics::wire/index.html) | Bounded bindings of `airalab/connectivity-protocol` (vendored, pinned revision) | portable | `core_v1`, `crypto_v1`, `device_v1`, `sensor_v1`, `limits` | `micropb` | Signing, mapping, transports |
+//! | [`rohi-connectivity`](../rohi_connectivity/index.html) | Telemetry: snapshot (+ location) to signed envelope frame, bounded outbox, retry, HTTP transport, `ConnectivityConfig` section, `connectivity` service | portable | `UrbanEncoder`, `EnvelopeBuilder`, `EnvelopeFrame`, `EnvelopeTransport`, `HttpTransport`, `ConnectivityService`, `UtcClock`, `NonceSource`, `FrameSigner` | `rohi-telemetry-robonomics`, `rohi-sensors`, `rohi-identity`, `rohi-location`, `rohi-net`, `rohi-time`, `rohi-config`, `rohi-service` | Private keys, Wi-Fi lifecycle, sensors, backend logic |
 //! | [`rohi-net-esp`](../rohi_net_esp/index.html) | ESP backend of `rohi-net` | ESP | `EspWireless`, `EspWifi`, `EspIp`, `EspBle`, `NetResources`, `BleResources`, `wireless_heap!` | `rohi-net`, `esp-radio`, `embassy-net`, TrouBLE | Product resource sizes, control protocol |
 //! | [`rohi-control-proto`](../rohi_control_proto/index.html) | Bounded protobuf schema of the control protocol | portable | generated messages, `PROTOCOL_VERSION`, `limits` | `micropb` | Transport, behaviour |
 //! | [`rohi-control`](../rohi_control/index.html) | Transport-agnostic control dispatcher and authorization; serves the registries of `rohi-service` | portable | `Controller`, `ControlBackend`, `Device`, `AuthorizationPolicy` | `rohi-control-proto`, `rohi-service` | BLE, stores, the radio, any knowledge of a module (Wi-Fi, sensors, ...) |
@@ -198,7 +203,7 @@
 //! | `altruist-urban` (`firmwares/altruist-urban`) | Product composition: the portable application (always) and one platform: ESP (`esp` module, chip features) or host (`host` module, feature `std`, binary `altruist-urban`), resource budget | product | `config`, `net`, `control`, `time`, `connectivity`, `identity`, `location`, `tasks`; with a chip feature `esp::{config, net, control, resources, sensors, ...}`; with `std` `host::{app, args, control, process}` | `rohi-sdk` (the portable and ESP crates above) | Reusable library code |
 //! | [`rohi-control-tcp`](../rohi_control_tcp/index.html) | Control protocol over TCP: 4-byte length-prefixed Protobuf records, the serving loop and the `Acceptor` seam (independent of BLE framing) | portable | `ControlTcp`, `Acceptor`, `frame` | `rohi-control`, `rohi-control-proto`, `embedded-io-async` | Sockets, security |
 //! | [`rohi-net-std`](../rohi_net_std/index.html) | `std` backend of `rohi-net`: host DNS, TCP and UDP, the TCP acceptor of the control transport, the BlueZ BLE peripheral (feature `ble`, Linux) | host (`std`) | `NativeIp`, `TcpAcceptor`, `runtime`, `ble::BluezBle` | `rohi-net`, `rohi-control-tcp`, `tokio`, `bluer` (feature `ble`) | Wi-Fi, simulation, application logic |
-//! | `rohi-sim` (`crates/sim`) | Simulated world of a `std` application: sensors, Wi-Fi, IP faults, NOR flash in a file for the configuration and the log, scenarios, the management interface | host (`std`) | `World`, `Scenario`, `Command`, `FileFlash`, `FileLogFlash`, `SimWifi`, `SimIp`, `management` | `rohi-hal`, `rohi-net`, `rohi-config`, `rohi-net-std`, Embassy | The device control protocol, application logic |
+//! | `rohi-sim` (`crates/sim`) | Simulated world of a `std` application: sensors, Wi-Fi, IP faults, NOR flash in a file for the configuration and the log, scenarios, the management interface | host (`std`) | `World`, `Scenario`, `Command`, `FileFlash`, `FileLogFlash`, `SimWifi`, `SimIp`, `management` | `rohi-hal`, `rohi-sensors`, `rohi-net`, `rohi-config`, `rohi-net-std`, Embassy | The device control protocol, application logic |
 //! | `rohi-examples` (`examples/`) | One hardware example per sensor and a config self-test | product | binaries | `altruist-urban`, `rohi-sdk` | |
 //! | [`rohi`](../rohi/index.html) (`tools/rohi`) | Desktop client library and CLI over BLE and TCP | desktop (`std`) | `Device`, `Session`, `BleLink`, `TcpLink` | `rohi-control-ble` (`frame`), `rohi-control-tcp` (`frame`), `rohi-control-proto`, `rohi-net` (BLE payload size), `rohi-identity`, `btleplug` | Anything that runs on the device |
 //! | [`rohi-sdk`](crate) | Umbrella crate: feature-gated re-exports of the crates above and this documentation | portable | feature-gated modules (`service`, `hal`, `net`, `esp`, ...) | the crates above, each optional | |
@@ -212,22 +217,24 @@
 //! ```text
 //! altruist-urban, examples ──► rohi-sdk (features) ──► rohi-*-esp ──► rohi-* (portable) ──► embedded-* / embassy-sync
 //!                                                       └─► never esp-*
-//! rohi-hal-esp ──► rohi-hal            rohi-config-esp ──► rohi-config
+//! rohi-hal-esp ──► rohi-hal, rohi-time rohi-config-esp ──► rohi-config
 //! rohi-net-esp ──► rohi-net
 //!
 //! rohi-sdk ──► every crate below, each behind a feature; nothing depends on rohi-sdk
 //! rohi-config ──► rohi-config-derive          (#[derive(ConfigSection)])
 //! rohi-service ──► rohi-config, rohi-config-derive, rohi-service-derive
 //!                                             (generic model: Value, Config, Status, Action, registries)
-//! rohi-hal, rohi-net, rohi-identity, rohi-location, rohi-system, rohi-time, rohi-connectivity ──► rohi-service
+//! rohi-sensors (feature `service`), rohi-net, rohi-identity, rohi-location, rohi-system, rohi-time,
+//! rohi-connectivity ──► rohi-service
 //!                                             (each implements the traits for its own types)
 //! rohi-net, rohi-identity, rohi-location ──► rohi-config
 //!                                             (each owns its config sections and their overrides)
-//! rohi-time ──► rohi-hal                      (monotonic Clock, Backoff)
-//! rohi-time-ntp ──► rohi-time, rohi-net, rohi-hal, rohi-config, rohi-service
+//! rohi-sensors ──► rohi-time                  (monotonic timestamps; never rohi-hal)
+//! rohi-hal ──► rohi-sensors, rohi-time        (drivers emit rohi-sensors updates; the runner is the only HAL-specific part)
+//! rohi-time-ntp ──► rohi-time, rohi-net, rohi-config, rohi-service
 //!                                             (a source: DNS + UDP samples, owns the `time` section;
 //!                                              rohi-time never depends on it)
-//! rohi-connectivity ──► rohi-connectivity-proto, rohi-hal, rohi-identity, rohi-location,
+//! rohi-connectivity ──► rohi-telemetry-robonomics, rohi-sensors, rohi-identity, rohi-location,
 //!                       rohi-net, rohi-time, rohi-config, rohi-service
 //!                                             (snapshots, location, signing, NetworkHandle, UtcClock)
 //!
@@ -296,6 +303,15 @@ pub use rohi_identity as identity;
 #[cfg(feature = "location")]
 #[cfg_attr(docsrs, doc(cfg(feature = "location")))]
 pub use rohi_location as location;
+#[cfg(feature = "sensors")]
+#[cfg_attr(docsrs, doc(cfg(feature = "sensors")))]
+pub use rohi_sensors as sensors;
+#[cfg(feature = "telemetry")]
+#[cfg_attr(docsrs, doc(cfg(feature = "telemetry")))]
+pub use rohi_telemetry as telemetry;
+#[cfg(feature = "telemetry-robonomics")]
+#[cfg_attr(docsrs, doc(cfg(feature = "telemetry-robonomics")))]
+pub use rohi_telemetry_robonomics as telemetry_robonomics;
 
 #[cfg(feature = "logging")]
 #[cfg_attr(docsrs, doc(cfg(feature = "logging")))]

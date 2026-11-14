@@ -36,7 +36,7 @@
 //! # Quick Example
 //!
 //! A service on a clock, one source delivering a sample, and the reading
-//! side. On a device the clock is `rohi_hal_esp::EmbassyClock` and the source
+//! side. On a device the clock is `rohi_time::EmbassyClock` and the source
 //! is `rohi_time_ntp::NtpTimeSource`; here both are tiny host stand-ins.
 //!
 //! ```
@@ -45,8 +45,8 @@
 //!
 //! use embassy_futures::block_on;
 //! use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-//! use rohi_hal::MonotonicTimestamp;
-//! use rohi_hal::runtime::Clock;
+//! use rohi_time::MonotonicTimestamp;
+//! use rohi_time::Clock;
 //! use rohi_time::{
 //!     SyncFailure, TimeConfig, TimeSample, TimeService, TimeSource, TimeSourceKind,
 //!     TimeSyncState, UnixTime, sync_once,
@@ -127,7 +127,7 @@
 //!
 //! | | Monotonic time | Wall-clock time |
 //! |---|----------------|-----------------|
-//! | Type | [`rohi_hal::MonotonicTimestamp`] (milliseconds since boot, supplied by a [`rohi_hal::runtime::Clock`]) | [`UnixTime`] (Unix milliseconds, UTC) |
+//! | Type | [`MonotonicTimestamp`] (milliseconds since boot, supplied by a [`Clock`]) | [`UnixTime`] (Unix milliseconds, UTC) |
 //! | Available | always, from boot | only after a valid sample; otherwise `None` |
 //! | Can jump | never | **yes**, forward or backward, when a sample corrects it |
 //! | Use for | deadlines, timeouts, intervals, retries, scheduling, elapsed time, ordering events in a boot | absolute timestamps only |
@@ -154,7 +154,7 @@
 //!
 //! | Where | What |
 //! |-------|------|
-//! | Altruist Urban firmware (`firmwares/altruist-urban`, module `time`) | Owns one `static` [`TimeService`] on `rohi_hal::runtime::EmbassyClock` with a critical-section mutex; the floor is the firmware build time (`BUILD_TIMESTAMP`, set by `build.rs`). The platform's NTP task runs `time::run`, a [`Synchronizer`] over an `NtpTimeSource` and restarts it when the `time` config section changes. Components read the time through the firmware's `time::service()`. |
+//! | Altruist Urban firmware (`firmwares/altruist-urban`, module `time`) | Owns one `static` [`TimeService`] on `rohi_time::EmbassyClock` with a critical-section mutex; the floor is the firmware build time (`BUILD_TIMESTAMP`, set by `build.rs`). The platform's NTP task runs `time::run`, a [`Synchronizer`] over an `NtpTimeSource` and restarts it when the `time` config section changes. Components read the time through the firmware's `time::service()`. |
 //! | [`rohi-time-ntp`](../rohi_time_ntp/index.html) | The NTP [`TimeSource`] and the persistent `time` section (the servers). |
 //! | `rohi-connectivity` | Needs UTC to create telemetry frames; see [`rohi-connectivity`](../rohi_connectivity/index.html). |
 //! | Control plane | [`TimeService`] is the read-only `time` status service ([`rohi_service`]). |
@@ -216,6 +216,9 @@
 #[cfg(test)]
 extern crate std;
 
+pub mod backoff;
+pub mod clock;
+pub mod monotonic;
 pub mod service;
 pub mod source;
 pub mod status;
@@ -227,6 +230,11 @@ mod tests;
 #[cfg(test)]
 mod testutil;
 
+pub use backoff::{Backoff, TimedOut, with_timeout};
+pub use clock::Clock;
+#[cfg(feature = "embassy-time")]
+pub use clock::EmbassyClock;
+pub use monotonic::MonotonicTimestamp;
 pub use service::{
     DEFAULT_HORIZON, DEFAULT_MAX_UNCERTAINTY, DEFAULT_STALE_AFTER, TimeConfig, TimeService, issue,
     source_value, status_field,

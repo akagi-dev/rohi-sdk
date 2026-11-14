@@ -1466,3 +1466,61 @@ fn a_patch_never_reads_a_secret_either() {
     block_on(section.patch(&[clear(2)], false)).unwrap();
     assert!(store.0.borrow().is_none());
 }
+
+mod bitset_selections {
+    use super::*;
+    use crate::action::check_args;
+    use crate::schema::{actions_valid, fields_valid};
+
+    const SELECTION: FieldDescriptor =
+        FieldDescriptor::new(2, "selection", ValueKind::Bytes).with_selection(32, 7, 9);
+    const OWNER: FieldDescriptor = FieldDescriptor::new(1, "owner", ValueKind::Address);
+
+    #[test]
+    fn an_action_checks_the_size_of_a_bitset_and_of_an_address() {
+        let action =
+            ActionDescriptor::new(1, "share", ActionAccess::Mutate).args(&[OWNER, SELECTION]);
+        let args = |owner: usize, selection: usize| {
+            [
+                (1, Value::bytes(&[1; 64][..owner]).unwrap()),
+                (2, Value::bytes(&[2; 64][..selection]).unwrap()),
+            ]
+        };
+        assert!(check_args(&action, &args(32, 32)).is_ok());
+        assert!(check_args(&action, &args(31, 32)).is_err());
+        assert!(check_args(&action, &args(32, 33)).is_err());
+        assert!(check_args(&action, &args(32, 0)).is_err());
+    }
+
+    const TOO_MANY: &[FieldDescriptor] = &[
+        SELECTION,
+        FieldDescriptor::new(3, "b", ValueKind::Bytes).with_selection(32, 7, 9),
+        FieldDescriptor::new(4, "c", ValueKind::Bytes).with_selection(32, 7, 9),
+    ];
+    const NOT_BYTES: &[FieldDescriptor] =
+        &[FieldDescriptor::new(2, "s", ValueKind::U64).with_selection(32, 7, 9)];
+    const EMPTY: &[FieldDescriptor] =
+        &[FieldDescriptor::new(2, "s", ValueKind::Bytes).with_selection(0, 7, 9)];
+    const HUGE: &[FieldDescriptor] =
+        &[FieldDescriptor::new(2, "s", ValueKind::Bytes).with_selection(65, 7, 9)];
+
+    fn args_of(args: &'static [FieldDescriptor]) -> bool {
+        actions_valid(&[ActionDescriptor::new(1, "share", ActionAccess::Mutate).args(args)])
+    }
+
+    #[test]
+    fn a_bitset_is_a_bytes_argument_of_an_action_only() {
+        assert!(args_of(&[SELECTION]));
+        assert!(!args_of(TOO_MANY));
+        assert!(!args_of(NOT_BYTES));
+        assert!(!args_of(EMPTY));
+        assert!(!args_of(HUGE));
+        assert!(!actions_valid(&[ActionDescriptor::new(
+            1,
+            "share",
+            ActionAccess::Read
+        )
+        .results(&[SELECTION])]));
+        assert!(!fields_valid(&[SELECTION], &[]));
+    }
+}
