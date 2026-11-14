@@ -4372,6 +4372,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "rohi-telemetry"
+version = "0.7.0"
+dependencies = [
+ "embassy-futures",
+ "embassy-sync 0.8.0",
+ "embedded-hal-async",
+ "heapless 0.9.3",
+ "minicbor",
+ "rohi-config",
+ "rohi-location",
+ "rohi-sensors",
+ "rohi-time",
+]
+
+[[package]]
 name = "rohi-time"
 version = "0.7.0"
 dependencies = [

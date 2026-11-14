@@ -23,6 +23,7 @@ rohi-sdk = { path = "crates/sdk" }
 rohi-hal = { path = "crates/hal" }
 rohi-time = { path = "crates/time" }
 rohi-sensors = { path = "crates/sensors" }
+rohi-telemetry = { path = "crates/telemetry" }
 rohi-time-ntp = { path = "crates/time-ntp" }
 rohi-hal-esp = { path = "crates/hal-esp" }
 rohi-config = { path = "crates/config" }
