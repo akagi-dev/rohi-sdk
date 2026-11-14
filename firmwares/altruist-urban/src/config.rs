@@ -96,6 +96,7 @@ use crate::bindings::{
     LoggingBinding, NetworkBinding, PrivateBinding, TimeBinding, WifiBinding,
 };
 use crate::tasks::RawMutex;
+use crate::telemetry::TelemetryBinding;
 
 /// A failure of the storage backend, as text: the backend error type does not
 /// leak into the runtime API.
@@ -859,5 +860,5 @@ fn effective<C: HasOverrides + Default>(
 
 crate::firmware_configs! {
     managed WifiBinding, NetworkBinding, BleBinding, ConnectivityBinding, LocationBinding, TimeBinding, LoggingBinding;
-    private IdentityBinding
+    private IdentityBinding, TelemetryBinding
 }

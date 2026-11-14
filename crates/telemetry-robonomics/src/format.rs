@@ -353,3 +353,20 @@ impl<K: DeviceKey, E: Entropy, U: UtcClock, C: Clock> RobonomicsFormat<'_, K, E,
         Ok(bytes)
     }
 }
+
+/// What the format can encode, without a device identity: the capabilities
+/// the `telemetry` service validates profiles against.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RobonomicsCapabilities;
+
+impl rohi_telemetry::FormatCapabilities for RobonomicsCapabilities {
+    fn supported(&self, format: PacketFormatId) -> Selection {
+        match format {
+            PacketFormatId::Robonomics => encoder::supported(),
+        }
+    }
+
+    fn accepts_recipient(&self, format: PacketFormatId, recipient: &RecipientAddress) -> bool {
+        format == PacketFormatId::Robonomics && recipient_key(recipient).is_some()
+    }
+}

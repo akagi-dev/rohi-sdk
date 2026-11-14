@@ -64,7 +64,7 @@ use crate::config::{
 use crate::identity::IdentityHandle;
 use crate::tasks::RawMutex;
 use crate::tasks::store;
-use crate::{connectivity, location, net, time};
+use crate::{connectivity, location, net, telemetry, time};
 
 /// The identity section behind the configuration owner task.
 pub struct StoredIdentity(IdentityHandle);
@@ -106,6 +106,7 @@ type UrbanLocation = LocationService<'static, RawMutex>;
 type UrbanSensors = SensorsService<'static, RawMutex>;
 type UrbanIdentity = IdentityService<StoredIdentity>;
 type UrbanSystem = SystemService<UrbanSystemPlatform>;
+type UrbanTelemetry = telemetry::UrbanTelemetry;
 
 /// What the `system` service needs from the Altruist Urban: the deferred reboot
 /// of the platform and the storage-aware factory reset of the configuration.
@@ -148,6 +149,7 @@ pub struct UrbanServices<I: 'static, B, L> {
     location: UrbanLocation,
     sensors: UrbanSensors,
     identity: UrbanIdentity,
+    telemetry: UrbanTelemetry,
     logging: L,
     system: UrbanSystem,
 }
@@ -163,6 +165,7 @@ pub type UrbanStatusServices<I, B, L> = (
     &'static time::Time,
     &'static UrbanSensors,
     &'static UrbanIdentity,
+    &'static UrbanTelemetry,
     &'static L,
 );
 
@@ -173,6 +176,7 @@ pub type UrbanStatuses<I, B, L> = Statuses<RawMutex, UrbanStatusServices<I, B, L
 pub type UrbanActions<I, L> = (
     &'static UrbanWifi<I>,
     &'static UrbanIdentity,
+    &'static UrbanTelemetry,
     &'static L,
     &'static UrbanSystem,
 );
@@ -260,6 +264,7 @@ where
         location: LocationService(location::shared()),
         sensors: SensorsService(store::handle()),
         identity: IdentityService(StoredIdentity(identity)),
+        telemetry: telemetry::service(config),
         logging,
         system: SystemService(UrbanSystemPlatform {
             config: storage_config,
@@ -279,11 +284,13 @@ where
             time::service(),
             &services.sensors,
             &services.identity,
+            &services.telemetry,
             &services.logging,
         )),
         (
             &services.wifi,
             &services.identity,
+            &services.telemetry,
             &services.logging,
             &services.system,
         ),

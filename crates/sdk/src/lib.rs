@@ -297,12 +297,6 @@ pub use rohi_control_tcp as tcp;
 #[cfg(feature = "hal")]
 #[cfg_attr(docsrs, doc(cfg(feature = "hal")))]
 pub use rohi_hal as hal;
-#[cfg(feature = "telemetry")]
-#[cfg_attr(docsrs, doc(cfg(feature = "telemetry")))]
-pub use rohi_telemetry as telemetry;
-#[cfg(feature = "telemetry-robonomics")]
-#[cfg_attr(docsrs, doc(cfg(feature = "telemetry-robonomics")))]
-pub use rohi_telemetry_robonomics as telemetry_robonomics;
 #[cfg(feature = "identity")]
 #[cfg_attr(docsrs, doc(cfg(feature = "identity")))]
 pub use rohi_identity as identity;
@@ -312,6 +306,12 @@ pub use rohi_location as location;
 #[cfg(feature = "sensors")]
 #[cfg_attr(docsrs, doc(cfg(feature = "sensors")))]
 pub use rohi_sensors as sensors;
+#[cfg(feature = "telemetry")]
+#[cfg_attr(docsrs, doc(cfg(feature = "telemetry")))]
+pub use rohi_telemetry as telemetry;
+#[cfg(feature = "telemetry-robonomics")]
+#[cfg_attr(docsrs, doc(cfg(feature = "telemetry-robonomics")))]
+pub use rohi_telemetry_robonomics as telemetry_robonomics;
 
 #[cfg(feature = "logging")]
 #[cfg_attr(docsrs, doc(cfg(feature = "logging")))]

@@ -34,4 +34,7 @@ pub mod encoder;
 pub mod format;
 pub mod wire;
 
-pub use format::{ClockError, DeviceKey, Entropy, EntropyError, RobonomicsFormat, UtcClock};
+pub use format::{
+    ClockError, DeviceKey, Entropy, EntropyError, RobonomicsCapabilities, RobonomicsFormat,
+    UtcClock,
+};

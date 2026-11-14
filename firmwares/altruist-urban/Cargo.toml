@@ -43,6 +43,7 @@ rohi-sdk = { workspace = true, features = [
   "control",
   "ble",
   "connectivity",
+  "telemetry-robonomics",
   "embassy-time",
 ] }
 embassy-executor = { workspace = true }
@@ -146,4 +147,8 @@ required-features = ["std", "std-tcp", "std-ble"]
 
 [[test]]
 name = "std_system"
+required-features = ["std", "std-tcp"]
+
+[[test]]
+name = "std_telemetry"
 required-features = ["std", "std-tcp"]
