@@ -42,7 +42,7 @@ and falls back to the previous generation.
 **Not validated on hardware.** The log ring is host-tested on an emulated NOR flash (4-byte write words, a word programmed at
 most twice, power-loss injected at every write) and on a RAM medium with power loss injected at every write and every
 sector erase of a format and of a clear. The log lives in the last partition of the flash (`rohi-log`: 256 KiB at `0x3C0000` on ESP32-C3,
-1 MiB at `0x700000` on ESP32-C6), see the [firmware README](../../firmwares/altruist-urban/README.md). Checklist for a device
+1 MiB at `0x700000` on ESP32-C6), see the [firmware README](https://github.com/akagi-dev/rohi-sdk/blob/master/firmwares/altruist-urban/README.md). Checklist for a device
 (record the results here; the issue is #67):
 
 0. **Flash and first boot (ESP32-C3):** `cargo flash-esp32c3` from a device that ran the 256 KiB layout, so that the partition table and the
