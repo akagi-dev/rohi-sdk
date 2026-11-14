@@ -14,7 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
-
+///////////////////////////////////////////////////////////////////////////////
 //! Log records of the controller.
 //!
 //! The dispatch futures inline every temporary, so each record is emitted by a
