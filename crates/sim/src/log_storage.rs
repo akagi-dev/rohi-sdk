@@ -114,11 +114,11 @@ impl FileLogFlash {
         if length == 0 {
             file.write_all(&image)
                 .map_err(|e| fail("cannot initialize", &e))?;
-            info!("Log storage: created {}", path.display());
+            info!(target: "sim.storage", "Log flash image created (path={})", path.display());
         } else if length == REGION_SIZE as u64 {
             file.read_exact(&mut image)
                 .map_err(|e| fail("cannot read", &e))?;
-            info!("Log storage: opened {}", path.display());
+            info!(target: "sim.storage", "Log flash image opened (path={})", path.display());
         } else if length == LEGACY_REGION_SIZE as u64 {
             return Err(fail(
                 "a log flash image of the former 256 KiB layout",
@@ -158,7 +158,7 @@ impl FileLogFlash {
         if let Some(file) = &self.lock().file
             && let Err(e) = file.sync_all()
         {
-            warn!("Log storage: cannot sync: {e}");
+            warn!(target: "sim.storage", "Cannot sync the log flash image (err={e})");
         }
     }
 

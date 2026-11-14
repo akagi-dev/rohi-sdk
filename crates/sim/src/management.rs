@@ -135,13 +135,16 @@ pub async fn execute(
 ) -> Result<String, String> {
     match command {
         Command::Set(..) | Command::Fail(..) | Command::Recover(_) if !hooks.sensors => {
+            warn!(target: "sim.management", "Command refused: sensor simulation is not enabled (cmd={command:?})");
             Err("sensor simulation is not enabled in this build".into())
         }
         Command::Storage(fault) => {
             storage.inject(*fault)?;
+            info!(target: "sim.management", "Storage fault injected (fault={fault:?})");
             Ok(String::new())
         }
         Command::Status => {
+            debug!(target: "sim.management", "Status requested");
             let mut text = world().summary();
             text.push_str(&match storage.path() {
                 Some(path) => format!("storage {}\n", path.display()),
@@ -151,15 +154,19 @@ pub async fn execute(
         }
         Command::Measurements => match (hooks.snapshot)().await {
             Some(snapshot) => Ok(snapshot_text(&snapshot)),
-            None => Err("the measurement store did not answer".into()),
+            None => {
+                warn!(target: "sim.management", "Measurement store did not answer");
+                Err("the measurement store did not answer".into())
+            }
         },
         Command::Shutdown => {
+            info!(target: "sim.management", "Shutdown requested");
             (hooks.shutdown)();
             Ok(String::new())
         }
         other => {
             world().apply(other);
-            info!("simulation: {other:?}");
+            info!(target: "sim.world", "Command applied (cmd={other:?})");
             Ok(String::new())
         }
     }
@@ -174,6 +181,7 @@ async fn serve(mut stream: TcpStream, storage: FileFlash, hooks: Hooks) {
                 Ok(Some(line)) => line,
                 Ok(None) => break,
                 Err(()) => {
+                    warn!(target: "sim.management", "Command line too long, closing the connection (limit_b={MAX_LINE})");
                     let _ = within(stream.write_all(b"error: command too long\n")).await;
                     return;
                 }
@@ -184,18 +192,32 @@ async fn serve(mut stream: TcpStream, storage: FileFlash, hooks: Hooks) {
                 continue;
             }
             let reply = match Command::parse(line) {
-                Ok(command) => match execute(&command, &storage, &hooks).await {
-                    Ok(text) => format!("{text}ok\n"),
-                    Err(reason) => format!("error: {reason}\n"),
-                },
-                Err(error) => format!("error: {error}\n"),
+                Ok(command) => {
+                    debug!(target: "sim.management", "Command received (cmd={command:?})");
+                    match execute(&command, &storage, &hooks).await {
+                        Ok(text) => format!("{text}ok\n"),
+                        Err(reason) => {
+                            warn!(target: "sim.management", "Command failed: {reason} (cmd={command:?})");
+                            format!("error: {reason}\n")
+                        }
+                    }
+                }
+                Err(error) => {
+                    warn!(target: "sim.management", "Command rejected: {error}");
+                    format!("error: {error}\n")
+                }
             };
-            if within(stream.write_all(reply.as_bytes())).await.is_err() {
+            if let Err(e) = within(stream.write_all(reply.as_bytes())).await {
+                debug!(target: "sim.management", "Sending a reply failed (err={e})");
                 return;
             }
         }
         match within(stream.read(&mut chunk)).await {
-            Ok(0) | Err(_) => return,
+            Ok(0) => return,
+            Err(e) => {
+                debug!(target: "sim.management", "Reading a command failed (err={e})");
+                return;
+            }
             Ok(read) => pending.extend_from_slice(&chunk[..read]),
         }
     }
@@ -217,7 +239,7 @@ const SESSIONS: usize = 4;
 #[embassy_executor::task(pool_size = 4)]
 async fn session_task(stream: TcpStream, storage: FileFlash, hooks: Hooks) {
     serve(stream, storage, hooks).await;
-    debug!("management: client disconnected");
+    debug!(target: "sim.management", "Client disconnected");
 }
 
 #[embassy_executor::task]
@@ -225,14 +247,16 @@ async fn listen_task(listener: TcpListener, storage: FileFlash, hooks: Hooks, sp
     loop {
         match within(listener.accept()).await {
             Ok((stream, peer)) => {
-                debug!("management: client {peer} connected");
+                debug!(target: "sim.management", "Client connected (peer={peer})");
                 match session_task(stream, storage.clone(), hooks) {
                     Ok(task) => spawner.spawn(task),
-                    Err(_) => warn!("management: more than {SESSIONS} clients, {peer} refused"),
+                    Err(_) => {
+                        warn!(target: "sim.management", "Client refused: too many clients (limit={SESSIONS} peer={peer})")
+                    }
                 }
             }
             Err(e) => {
-                warn!("management: accept failed: {e}");
+                warn!(target: "sim.management", "Accept failed (err={e})");
                 Timer::after_millis(100).await;
             }
         }
@@ -254,6 +278,7 @@ pub fn start(
 ) -> std::io::Result<SocketAddr> {
     let address = listener.local_addr()?;
     listener.set_nonblocking(true)?;
+    info!(target: "sim.management", "Listening for commands (addr={address})");
     let listener = {
         let _entered = handle().enter();
         TcpListener::from_std(listener)?
@@ -308,10 +333,12 @@ async fn timeline_task(
 ) {
     for event in events {
         Timer::at(Instant::from_millis(event.at_ms)).await;
+        debug!(target: "sim.scenario", "Timeline event fired (at_ms={} cmd={:?})", event.at_ms, event.command);
         if let Err(reason) = execute(&event.command, &storage, &hooks).await {
-            warn!("scenario: {:?} failed: {reason}", event.command);
+            warn!(target: "sim.scenario", "Timeline command failed: {reason} (cmd={:?})", event.command);
         }
     }
+    info!(target: "sim.scenario", "Timeline finished");
 }
 
 /// Starts the timeline of the scenario, if it has events.
@@ -325,5 +352,6 @@ pub fn start_timeline(
         return;
     }
     events.sort_by_key(|event| event.at_ms);
+    info!(target: "sim.scenario", "Timeline started (events={})", events.len());
     spawner.spawn(timeline_task(events, storage, hooks).unwrap());
 }

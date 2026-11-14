@@ -33,6 +33,7 @@ use core::net::{IpAddr, SocketAddr};
 
 use embassy_time::Timer;
 use embedded_nal_async::AddrType;
+use log::{debug, trace};
 use rohi_net::{IpBackend, IpUsage, NetError, UdpSocket};
 
 use crate::command::IpFault;
@@ -75,11 +76,18 @@ impl<C> SimConnection<C> {
     fn check(&self) -> Result<(), NetError> {
         let state = self.world.lock();
         if !state.wifi.link_up {
+            trace!(target: "sim.ip", "Connection reset: the Wi-Fi link is down");
             return Err(NetError::ConnectionReset);
         }
         match state.ip.fault {
-            Some(IpFault::Offline) => Err(NetError::NetworkUnavailable),
-            Some(IpFault::Reset) => Err(NetError::ConnectionReset),
+            Some(IpFault::Offline) => {
+                trace!(target: "sim.ip", "Connection refused: injected offline fault");
+                Err(NetError::NetworkUnavailable)
+            }
+            Some(IpFault::Reset) => {
+                trace!(target: "sim.ip", "Connection reset: injected reset fault");
+                Err(NetError::ConnectionReset)
+            }
             _ => Ok(()),
         }
     }
@@ -119,6 +127,7 @@ impl<U> SimUdp<U> {
     fn check(&self) -> Result<(), NetError> {
         let state = self.world.lock();
         if !state.wifi.link_up || state.ip.fault == Some(IpFault::Offline) {
+            trace!(target: "sim.ip", "UDP unavailable (link_up={})", state.wifi.link_up);
             return Err(NetError::NetworkUnavailable);
         }
         Ok(())
@@ -160,10 +169,13 @@ impl<I: IpBackend> IpBackend for SimIp<I> {
 
     async fn resolve(&self, host: &str, addr_type: AddrType) -> Result<IpAddr, NetError> {
         self.latency().await;
-        if matches!(self.fault(), Some(IpFault::Dns | IpFault::Offline)) {
+        if let Some(fault @ (IpFault::Dns | IpFault::Offline)) = self.fault() {
+            debug!(target: "sim.ip", "Name resolution failed: injected fault (fault={fault:?} host={host})");
             return Err(NetError::DnsFailed);
         }
-        self.inner.resolve(host, addr_type).await
+        self.inner.resolve(host, addr_type).await.inspect_err(|e| {
+            debug!(target: "sim.ip", "Name resolution failed (err={e:?} host={host})");
+        })
     }
 
     async fn connect(&self, remote: SocketAddr) -> Result<Self::Connection<'_>, NetError> {
@@ -171,18 +183,29 @@ impl<I: IpBackend> IpBackend for SimIp<I> {
         {
             let mut state = self.world.lock();
             if !state.wifi.link_up {
+                debug!(target: "sim.ip", "Connect failed: the Wi-Fi link is down (remote={remote})");
                 return Err(NetError::NetworkUnavailable);
             }
-            if matches!(state.ip.fault, Some(IpFault::Connect | IpFault::Offline)) {
+            if let Some(fault @ (IpFault::Connect | IpFault::Offline)) = state.ip.fault {
+                debug!(target: "sim.ip", "Connect failed: injected fault (fault={fault:?} remote={remote})");
                 return Err(NetError::ConnectFailed);
             }
             if state.ip.drop_next > 0 {
                 state.ip.drop_next -= 1;
+                debug!(
+                    target: "sim.ip",
+                    "Connect dropped (remaining={} remote={remote})",
+                    state.ip.drop_next
+                );
                 return Err(NetError::ConnectFailed);
             }
         }
+        let inner = self.inner.connect(remote).await.inspect_err(|e| {
+            debug!(target: "sim.ip", "Connect failed (err={e:?} remote={remote})");
+        })?;
+        trace!(target: "sim.ip", "Connected (remote={remote})");
         Ok(SimConnection {
-            inner: self.inner.connect(remote).await?,
+            inner,
             world: self.world,
         })
     }

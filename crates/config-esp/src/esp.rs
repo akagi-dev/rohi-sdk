@@ -44,6 +44,30 @@ pub use esp_storage;
 
 const DATA_PARTITION_TYPE: u8 = 1;
 
+// Run once per boot, out of line to keep the frames of the callers small.
+#[cold]
+#[inline(never)]
+fn warn_partition(label: &str, error: PartitionError) {
+    log::warn!(target: "config.flash", "Partition not usable (label={label} err={error:?})");
+}
+
+#[cold]
+#[inline(never)]
+fn warn_table(error: &dyn core::fmt::Debug) {
+    log::warn!(target: "config.flash", "Cannot read the partition table (err={error:?})");
+}
+
+#[cold]
+#[inline(never)]
+fn info_partition(label: &str, region: FlashRegion) {
+    log::info!(
+        target: "config.flash",
+        "Partition found (label={label} offset={:#x} size_b={})",
+        region.offset,
+        region.length,
+    );
+}
+
 /// Failure to locate the configuration partition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PartitionError {
@@ -66,18 +90,21 @@ fn find_labelled(
     label: &str,
     min_sectors: usize,
 ) -> Result<FlashRegion, PartitionError> {
-    let entry = table
-        .iter()
-        .find(|entry| {
-            // The sub-type is deliberately not parsed: only the label and the
-            // data type identify a ROHI partition.
-            entry.raw_type() == DATA_PARTITION_TYPE && entry.label_as_str() == label
-        })
-        .ok_or(PartitionError::NotFound)?;
+    let found = table.iter().find(|entry| {
+        // The sub-type is deliberately not parsed: only the label and the
+        // data type identify a ROHI partition.
+        entry.raw_type() == DATA_PARTITION_TYPE && entry.label_as_str() == label
+    });
+    let Some(entry) = found else {
+        warn_partition(label, PartitionError::NotFound);
+        return Err(PartitionError::NotFound);
+    };
     let region = FlashRegion::new(entry.offset() as usize, entry.len() as usize);
     if region.length < min_sectors * SECTOR_SIZE {
+        warn_partition(label, PartitionError::TooSmall);
         return Err(PartitionError::TooSmall);
     }
+    info_partition(label, region);
     Ok(region)
 }
 
@@ -93,8 +120,10 @@ fn find_labelled(
 /// the format header).
 pub fn log_partition_region(flash: &mut FlashStorage<'_>) -> Result<FlashRegion, PartitionError> {
     let mut buffer = [0u8; PARTITION_TABLE_MAX_LEN];
-    let table =
-        read_partition_table(flash, &mut buffer).map_err(|_| PartitionError::PartitionTable)?;
+    let table = read_partition_table(flash, &mut buffer).map_err(|error| {
+        warn_table(&error);
+        PartitionError::PartitionTable
+    })?;
     find_labelled(&table, LOG_PARTITION_LABEL, 4)
 }
 
@@ -108,8 +137,10 @@ pub fn log_partition_region(flash: &mut FlashStorage<'_>) -> Result<FlashRegion,
 /// sectors.
 pub fn partition_region(flash: &mut FlashStorage<'_>) -> Result<FlashRegion, PartitionError> {
     let mut buffer = [0u8; PARTITION_TABLE_MAX_LEN];
-    let table =
-        read_partition_table(flash, &mut buffer).map_err(|_| PartitionError::PartitionTable)?;
+    let table = read_partition_table(flash, &mut buffer).map_err(|error| {
+        warn_table(&error);
+        PartitionError::PartitionTable
+    })?;
     find_region(&table)
 }
 
@@ -129,5 +160,8 @@ pub fn config_storage(
     mut flash: FlashStorage<'static>,
 ) -> Result<EspConfigStorage<FlashStorage<'static>>, PartitionError> {
     let region = partition_region(&mut flash)?;
-    EspConfigStorage::new(flash, region).map_err(PartitionError::Region)
+    EspConfigStorage::new(flash, region).map_err(|error| {
+        warn_partition(PARTITION_LABEL, PartitionError::Region(error));
+        PartitionError::Region(error)
+    })
 }

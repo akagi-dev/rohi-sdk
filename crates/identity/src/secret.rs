@@ -89,6 +89,12 @@ impl<'b, C, const N: usize> Decode<'b, C> for Secret<[u8; N]> {
         let bytes = d.bytes()?;
         let mut value = [0u8; N];
         if bytes.len() != N {
+            log::warn!(
+                target: "identity",
+                "Stored secret rejected: wrong length (size_b={} expected_b={})",
+                bytes.len(),
+                N
+            );
             return Err(decode::Error::message("unexpected secret length").at(position));
         }
         value.copy_from_slice(bytes);

@@ -491,6 +491,12 @@ where
     /// Cancellation: safe at any point; queued frames are lost, which is the
     /// contract of the in-memory outbox.
     pub async fn run(&mut self) -> ! {
+        log::info!(
+            target: "connectivity",
+            "Service started (node_id={} interval_ms={})",
+            self.config.node_id,
+            self.config.interval_ms
+        );
         let mut next_produce = self.clock.now().millis;
         loop {
             let now = self.clock.now().millis;
@@ -509,6 +515,7 @@ where
                 wake = wake.min(self.retry_at);
             }
             let wait = wake.saturating_sub(now).clamp(1, u64::from(u32::MAX));
+            log::trace!(target: "connectivity", "Next wake scheduled (delay_ms={})", wait);
             self.delay.delay_ms(wait as u32).await;
         }
     }
@@ -522,16 +529,19 @@ where
         let d = &mut self.diagnostics;
         if self.outbox.is_full() {
             bump!(d.skipped_outbox_full);
+            log_skip("outbox full");
             return;
         }
         if let Err(SignError::NotProvisioned) = self.signer.sensor_id() {
             bump!(d.skipped_no_identity);
-            self.state = ConnectivityState::WaitingForIdentity;
+            log_skip("identity not provisioned");
+            set_state(&mut self.state, ConnectivityState::WaitingForIdentity);
             return;
         }
         if self.utc.now_unix_ms().is_err() {
             bump!(d.skipped_no_utc);
-            self.state = ConnectivityState::WaitingForUtc;
+            log_skip("UTC time not synchronized");
+            set_state(&mut self.state, ConnectivityState::WaitingForUtc);
             return;
         }
         let snapshot = match with_timeout(
@@ -544,6 +554,7 @@ where
             Ok(Some(snapshot)) => snapshot,
             _ => {
                 bump!(d.skipped_no_snapshot);
+                log_failure("no measurement snapshot", d.skipped_no_snapshot);
                 return;
             }
         };
@@ -560,7 +571,8 @@ where
             .and_then(|utc| utc.checked_sub(age))
         else {
             bump!(d.skipped_no_utc);
-            self.state = ConnectivityState::WaitingForUtc;
+            log_skip("UTC time before snapshot age");
+            set_state(&mut self.state, ConnectivityState::WaitingForUtc);
             return;
         };
 
@@ -574,10 +586,12 @@ where
             Ok(message) => message,
             Err(EncodeError::NothingToSend) => {
                 bump!(d.skipped_no_measurements);
+                log_skip("no valid measurement");
                 return;
             }
             Err(EncodeError::TooLarge) => {
                 bump!(d.build_failures);
+                log_failure("message too large", d.build_failures);
                 return;
             }
         };
@@ -596,6 +610,12 @@ where
                 // pushes.
                 if self.outbox.push(frame).is_ok() {
                     bump!(d.frames_created);
+                    log::debug!(
+                        target: "connectivity",
+                        "Frame queued (count={} location={})",
+                        self.outbox.len(),
+                        stats.location_included
+                    );
                     if !stats.location_included {
                         bump!(d.frames_without_location);
                     }
@@ -603,16 +623,23 @@ where
                         self.state,
                         ConnectivityState::WaitingForIdentity | ConnectivityState::WaitingForUtc
                     ) {
-                        self.state = ConnectivityState::Idle;
+                        set_state(&mut self.state, ConnectivityState::Idle);
                     }
                 }
             }
             Err(BuildError::NotProvisioned) => {
                 bump!(d.skipped_no_identity);
-                self.state = ConnectivityState::WaitingForIdentity;
+                log_skip("identity not provisioned");
+                set_state(&mut self.state, ConnectivityState::WaitingForIdentity);
             }
-            Err(BuildError::Nonce) => bump!(d.skipped_no_entropy),
-            Err(BuildError::Signing | BuildError::TooLarge) => bump!(d.build_failures),
+            Err(BuildError::Nonce) => {
+                bump!(d.skipped_no_entropy);
+                log_failure("no entropy for the nonce", d.skipped_no_entropy);
+            }
+            Err(error @ (BuildError::Signing | BuildError::TooLarge)) => {
+                bump!(d.build_failures);
+                log_build_error(error, d.build_failures);
+            }
         }
     }
 
@@ -622,6 +649,12 @@ where
         let Some(frame) = self.outbox.front() else {
             return;
         };
+        log::debug!(
+            target: "connectivity",
+            "Sending frame (size_b={} count={})",
+            frame.len(),
+            self.outbox.len()
+        );
         let result = self.transport.send(frame).await;
         let now = self.clock.now().millis;
         let d = &mut self.diagnostics;
@@ -630,24 +663,37 @@ where
                 self.outbox.pop();
                 self.backoff.reset();
                 bump!(d.frames_delivered);
-                self.state = ConnectivityState::Idle;
+                log::debug!(
+                    target: "connectivity",
+                    "Frame delivered (count={})",
+                    self.outbox.len()
+                );
+                set_state(&mut self.state, ConnectivityState::Idle);
             }
             Err(error) => match error.disposition() {
                 Disposition::Retry => {
                     bump!(d.send_retries);
-                    self.retry_at = now.saturating_add(u64::from(self.backoff.next_delay_ms()));
-                    self.state = ConnectivityState::Backoff(error);
+                    let delay_ms = u64::from(self.backoff.next_delay_ms());
+                    self.retry_at = now.saturating_add(delay_ms);
+                    log_send_failed(error, Disposition::Retry, delay_ms);
+                    set_state(&mut self.state, ConnectivityState::Backoff(error));
                 }
                 Disposition::Permanent => {
                     self.outbox.pop();
                     bump!(d.frames_rejected);
-                    self.state = ConnectivityState::Idle;
+                    log_send_failed(error, Disposition::Permanent, 0);
+                    set_state(&mut self.state, ConnectivityState::Idle);
                 }
                 Disposition::Unauthorized => {
                     self.outbox.pop();
                     bump!(d.frames_rejected);
                     self.retry_at = now.saturating_add(u64::from(self.config.retry_max_ms));
-                    self.state = ConnectivityState::Unauthorized(error);
+                    log_send_failed(
+                        error,
+                        Disposition::Unauthorized,
+                        u64::from(self.config.retry_max_ms),
+                    );
+                    set_state(&mut self.state, ConnectivityState::Unauthorized(error));
                 }
             },
         }
@@ -685,5 +731,104 @@ where
             diagnostics: self.diagnostics,
             outbox_len: self.outbox.len(),
         });
+    }
+}
+
+// The helpers below keep logging temporaries out of the frames of the async
+// `produce` and `deliver`.
+
+fn set_state(state: &mut ConnectivityState, to: ConnectivityState) {
+    if *state != to {
+        log_transition(*state, to);
+    }
+    *state = to;
+}
+
+#[cold]
+#[inline(never)]
+fn log_transition(from: ConnectivityState, to: ConnectivityState) {
+    use ConnectivityState as S;
+    match (from, to) {
+        (S::Backoff(_), S::Backoff(_)) => {
+            log::debug!(
+                target: "connectivity",
+                "State changed (from={:?} to={:?})",
+                from,
+                to
+            );
+        }
+        (_, S::Backoff(error)) => {
+            log::warn!(target: "connectivity", "Delivery failing (err={:?})", error);
+        }
+        (_, S::Unauthorized(error)) => {
+            log::warn!(target: "connectivity", "Delivery unauthorized (err={:?})", error);
+        }
+        (S::Starting | S::Backoff(_) | S::Unauthorized(_), S::Idle)
+        | (_, S::WaitingForIdentity | S::WaitingForUtc) => {
+            log::info!(
+                target: "connectivity",
+                "State changed (from={:?} to={:?})",
+                from,
+                to
+            );
+        }
+        _ => log::debug!(
+            target: "connectivity",
+            "State changed (from={:?} to={:?})",
+            from,
+            to
+        ),
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn log_skip(reason: &'static str) {
+    log::debug!(target: "connectivity", "Frame skipped: {}", reason);
+}
+
+/// Warns on the 1st, 2nd, 4th, ... occurrence and stays at debug level in
+/// between, so a persistent fault does not fill the flash log.
+#[cold]
+#[inline(never)]
+fn log_failure(reason: &'static str, count: u32) {
+    if count.is_power_of_two() {
+        log::warn!(target: "connectivity", "Frame skipped: {} (count={})", reason, count);
+    } else {
+        log::debug!(target: "connectivity", "Frame skipped: {} (count={})", reason, count);
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn log_build_error(error: BuildError, count: u32) {
+    if count.is_power_of_two() {
+        log::warn!(target: "connectivity", "Frame build failed (err={:?} count={})", error, count);
+    } else {
+        log::debug!(target: "connectivity", "Frame build failed (err={:?} count={})", error, count);
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn log_send_failed(error: TransportError, disposition: Disposition, delay_ms: u64) {
+    match disposition {
+        Disposition::Retry => {
+            log::debug!(
+                target: "connectivity",
+                "Send failed (err={:?} delay_ms={})",
+                error,
+                delay_ms
+            );
+        }
+        Disposition::Permanent => {
+            log::warn!(target: "connectivity", "Frame dropped, rejected (err={:?})", error);
+        }
+        Disposition::Unauthorized => log::warn!(
+            target: "connectivity",
+            "Frame dropped, unauthorized (err={:?} delay_ms={})",
+            error,
+            delay_ms
+        ),
     }
 }

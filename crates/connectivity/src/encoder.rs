@@ -186,6 +186,13 @@ impl UrbanEncoder {
             }
         }
         if builder.stats.emitted == 0 {
+            log::debug!(
+                target: "connectivity",
+                "Nothing to encode (not_valid={} unsupported={} out_of_range={})",
+                builder.stats.omitted_not_valid,
+                builder.stats.omitted_unsupported,
+                builder.stats.omitted_out_of_range
+            );
             return Err(EncodeError::NothingToSend);
         }
 
@@ -197,6 +204,15 @@ impl UrbanEncoder {
         message.payload = Some(Message_::Payload::Urban(Urban {
             public: builder.sensors,
         }));
+        log::debug!(
+            target: "connectivity",
+            "Measurements encoded (count={} not_valid={} unsupported={} out_of_range={} location={})",
+            builder.stats.emitted,
+            builder.stats.omitted_not_valid,
+            builder.stats.omitted_unsupported,
+            builder.stats.omitted_out_of_range,
+            builder.stats.location_included
+        );
         Ok((message, builder.stats))
     }
 
@@ -282,8 +298,14 @@ impl UrbanEncoder {
         bytes
             .resize_default(MAX_MESSAGE_LEN)
             .map_err(|_| EncodeError::TooLarge)?;
-        let len = encode(&message, &mut bytes)
-            .map_err(|WireError::BufferTooSmall| EncodeError::TooLarge)?;
+        let len = encode(&message, &mut bytes).map_err(|WireError::BufferTooSmall| {
+            log::warn!(
+                target: "connectivity",
+                "Encoded message does not fit (capacity_b={})",
+                MAX_MESSAGE_LEN
+            );
+            EncodeError::TooLarge
+        })?;
         bytes.truncate(len);
         Ok(EncodedMessage { bytes, stats })
     }

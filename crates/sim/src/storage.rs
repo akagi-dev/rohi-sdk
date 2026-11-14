@@ -42,7 +42,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use log::{error, info, warn};
+use log::{debug, error, info, trace, warn};
 use rohi_config::{COMMIT_WORD_SIZE, ConfigStorage, ConfigStore, MemoryError, MemoryStorage};
 
 use crate::command::StorageFault;
@@ -152,11 +152,11 @@ impl FileFlash {
         if length == 0 {
             file.write_all(memory.as_bytes())
                 .map_err(|e| fail("cannot initialize", &e))?;
-            info!("Storage: created {}", path.display());
+            info!(target: "sim.storage", "Flash image created (path={})", path.display());
         } else if length == REGION_SIZE as u64 {
             file.read_exact(memory.as_bytes_mut())
                 .map_err(|e| fail("cannot read", &e))?;
-            info!("Storage: opened {}", path.display());
+            info!(target: "sim.storage", "Flash image opened (path={})", path.display());
         } else {
             return Err(fail(
                 "not a flash image",
@@ -200,7 +200,7 @@ impl FileFlash {
         if let Some(file) = &inner.file
             && let Err(e) = file.sync_all()
         {
-            warn!("Storage: cannot sync: {e}");
+            warn!(target: "sim.storage", "Cannot sync the flash image (err={e})");
         }
     }
 
@@ -219,12 +219,12 @@ impl FileFlash {
         match fault {
             StorageFault::PowerLossProgram { bytes } => {
                 inner.memory.fail_write_after(bytes);
-                warn!("Storage: power loss armed after {bytes} programmed byte(s)");
+                warn!(target: "sim.storage", "Power loss armed after programming (size_b={bytes})");
                 Ok(())
             }
             StorageFault::PowerLossErase { bytes } => {
                 inner.memory.fail_erase_after(bytes);
-                warn!("Storage: power loss armed after {bytes} erased byte(s)");
+                warn!(target: "sim.storage", "Power loss armed after erasing (size_b={bytes})");
                 Ok(())
             }
             StorageFault::CorruptCrc => inner.corrupt(|slot| slot * SLOT_SIZE + 16, 0x01),
@@ -246,13 +246,17 @@ impl Inner {
 
     /// Flips `mask` in the byte `at(slot)` of the active slot.
     fn corrupt(&mut self, at: impl Fn(usize) -> usize, mask: u8) -> Result<(), String> {
-        let slot = self
-            .active_slot()
-            .ok_or("the storage holds no valid committed configuration")?;
+        let slot = self.active_slot().ok_or_else(|| {
+            warn!(target: "sim.storage", "Corruption refused: no committed configuration");
+            "the storage holds no valid committed configuration"
+        })?;
         let offset = at(slot);
         self.memory.as_bytes_mut()[offset] ^= mask;
         self.persist(offset, 1).map_err(|e| format!("{e:?}"))?;
-        warn!("Storage: corrupted byte {offset:#x} of slot {slot}; takes effect at the next start");
+        warn!(
+            target: "sim.storage",
+            "Flash byte corrupted, takes effect at the next start (offset={offset:#x} slot={slot})"
+        );
         Ok(())
     }
 
@@ -267,7 +271,10 @@ impl Inner {
         let bytes = &self.memory.as_bytes()[offset..end];
         file.seek(SeekFrom::Start(offset as u64))
             .and_then(|_| file.write_all(bytes))
-            .map_err(|e| StorageError::File(e.kind()))
+            .map_err(|e| {
+                error!(target: "sim.storage", "Cannot write to the flash image file: {e} (offset={offset:#x} size_b={len})");
+                StorageError::File(e.kind())
+            })
     }
 
     fn after(
@@ -280,7 +287,7 @@ impl Inner {
         self.persist(offset, len)?;
         match result {
             Err(MemoryError::Injected) => {
-                error!("Storage: simulated power loss during a flash access");
+                error!(target: "sim.storage", "Simulated power loss during a flash access");
                 self.dead = true;
                 if self.power_loss == PowerLoss::Exit {
                     if let Some(file) = &self.file {
@@ -290,7 +297,11 @@ impl Inner {
                 }
                 Err(StorageError::PowerLost)
             }
-            other => other.map_err(StorageError::Flash),
+            Ok(()) => Ok(()),
+            Err(e) => {
+                warn!(target: "sim.storage", "Flash access rejected (err={e:?} offset={offset:#x} size_b={len})");
+                Err(StorageError::Flash(e))
+            }
         }
     }
 }
@@ -315,8 +326,10 @@ impl ConfigStorage for FileFlash {
     fn write(&mut self, offset: usize, data: &[u8]) -> Result<(), StorageError> {
         let mut inner = self.lock();
         if inner.dead {
+            debug!(target: "sim.storage", "Write refused: the power is lost (offset={offset:#x})");
             return Err(StorageError::PowerLost);
         }
+        trace!(target: "sim.storage", "Flash write (offset={offset:#x} size_b={})", data.len());
         let result = inner.memory.write(offset, data);
         inner.after(offset, data.len(), result)
     }
@@ -324,8 +337,10 @@ impl ConfigStorage for FileFlash {
     fn erase(&mut self, offset: usize, len: usize) -> Result<(), StorageError> {
         let mut inner = self.lock();
         if inner.dead {
+            debug!(target: "sim.storage", "Erase refused: the power is lost (offset={offset:#x})");
             return Err(StorageError::PowerLost);
         }
+        trace!(target: "sim.storage", "Flash erase (offset={offset:#x} size_b={len})");
         let result = inner.memory.erase(offset, len);
         inner.after(offset, len, result)
     }

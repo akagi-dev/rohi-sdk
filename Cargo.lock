@@ -3991,6 +3991,7 @@ name = "rohi-config"
 version = "0.7.0"
 dependencies = [
  "heapless 0.9.3",
+ "log",
  "minicbor",
  "proptest",
  "rohi-config-derive",
@@ -4021,6 +4022,7 @@ dependencies = [
  "embedded-storage",
  "esp-bootloader-esp-idf",
  "esp-storage",
+ "log",
  "minicbor",
  "rohi-config",
 ]
@@ -4065,6 +4067,7 @@ dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",
  "heapless 0.9.3",
+ "log",
  "minicbor",
  "rohi-config",
  "rohi-control-proto",
@@ -4157,6 +4160,7 @@ name = "rohi-hal-esp"
 version = "0.7.0"
 dependencies = [
  "esp-hal",
+ "log",
  "rohi-hal",
 ]
 
@@ -4168,6 +4172,7 @@ dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",
  "heapless 0.9.3",
+ "log",
  "minicbor",
  "rohi-config",
  "rohi-service",
@@ -4181,6 +4186,7 @@ dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",
  "heapless 0.9.3",
+ "log",
  "minicbor",
  "rohi-config",
  "rohi-service",
@@ -4305,6 +4311,7 @@ dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",
  "heapless 0.9.3",
+ "log",
  "minicbor",
  "pin-project-lite",
  "rohi-config",

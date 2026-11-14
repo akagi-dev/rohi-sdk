@@ -54,6 +54,7 @@ pub fn handle() -> &'static Handle {
             .build()
             .expect("cannot start the I/O reactor");
         let handle = runtime.handle().clone();
+        log::info!(target: "runtime", "I/O reactor started");
         std::thread::Builder::new()
             .name("rohi-io".into())
             .spawn(move || runtime.block_on(core::future::pending::<()>()))
@@ -83,5 +84,8 @@ where
     T: Send + 'static,
     F: FnOnce() -> T + Send + 'static,
 {
-    handle().spawn_blocking(call).await
+    handle()
+        .spawn_blocking(call)
+        .await
+        .inspect_err(|error| log::warn!(target: "runtime", "Blocking call failed (err={error})"))
 }

@@ -281,19 +281,23 @@ impl<S: AudioSource, D: DelayNs> Noise<S, D> {
     async fn read_chunk(&mut self, chunk: &mut [i32]) -> Result<usize, Error<S::Error>> {
         match with_timeout(&mut self.delay, READ_TIMEOUT_MS, self.source.read(chunk)).await {
             Err(_) => {
-                log::debug!("[noise] audio read timed out after {} ms", READ_TIMEOUT_MS);
+                log::debug!(
+                    target: "sensor.noise",
+                    "Audio read timed out (timeout_ms={})",
+                    READ_TIMEOUT_MS
+                );
                 Err(Error::NoData)
             }
             Ok(Err(e)) => {
-                log::debug!("[noise] audio source failed: {:?}", e);
+                log::debug!(target: "sensor.noise", "Audio source failed (err={:?})", e);
                 Err(Error::Source(e))
             }
             Ok(Ok(0)) => {
-                log::debug!("[noise] audio source returned no samples");
+                log::debug!(target: "sensor.noise", "Audio source returned no samples");
                 Err(Error::NoData)
             }
             Ok(Ok(n)) => {
-                log::trace!("[noise] read {} sample(s)", n);
+                log::trace!(target: "sensor.noise", "Samples read (count={})", n);
                 Ok(n)
             }
         }
@@ -301,11 +305,17 @@ impl<S: AudioSource, D: DelayNs> Noise<S, D> {
 
     /// Acquire samples until one measurement window is complete.
     pub async fn measure_window(&mut self) -> Result<NoiseLevels, Error<S::Error>> {
+        log::trace!(target: "sensor.noise", "Measurement window started");
         let mut chunk = [0i32; CHUNK_SAMPLES];
         loop {
             let n = self.read_chunk(&mut chunk).await?;
             if let Some(levels) = self.meter.process(&chunk[..n]) {
-                log::debug!("[noise] window result: {:?}", levels);
+                log::debug!(
+                    target: "sensor.noise",
+                    "Window measured (avg_db={} max_db={})",
+                    levels.average,
+                    levels.maximum
+                );
                 return Ok(levels);
             }
         }
@@ -320,8 +330,10 @@ impl<S: AudioSource, D: DelayNs> SensorDriver for Noise<S, D> {
     async fn init(&mut self) -> Result<(), Self::Error> {
         // Presence check: the microphone must deliver samples.
         let mut chunk = [0i32; CHUNK_SAMPLES];
+        log::debug!(target: "sensor.noise", "Waiting for audio samples");
         self.read_chunk(&mut chunk).await?;
         self.meter = LevelMeter::new(self.meter.config);
+        log::debug!(target: "sensor.noise", "Audio source is delivering samples");
         Ok(())
     }
 

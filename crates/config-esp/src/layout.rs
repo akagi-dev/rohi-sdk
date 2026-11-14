@@ -33,7 +33,7 @@
 //! `partitions-esp32c6.csv` (8 MB flash) are mirrored by the constants of this
 //! module; a host test of this module keeps both in sync. The tables differ in
 //! the size of the `factory` partition and of `rohi-log`, which is always the
-//! last partition of the flash: 240 KiB on ESP32-C3, 1 MiB on ESP32-C6.
+//! last partition of the flash: 256 KiB on ESP32-C3, 1 MiB on ESP32-C6.
 //!
 //! # Flash layout (Altruist Urban, ESP32-C3 4 MB / ESP32-C6 8 MB)
 //!
@@ -49,14 +49,12 @@
 //! ESP32-C3 (4 MB), the end of the flash:
 //!
 //! ```text
-//! 0x3C0000  (reserved)  16 KiB, keeps 0x3C4000.. and the factory end 64 KiB aligned
-//! 0x3C4000  rohi-log   240 KiB (0x3C000), up to 0x400000
-//!             58 ring sectors, then 2 format header sectors
+//! 0x3C0000  rohi-log   256 KiB (0x40000), up to 0x400000
+//!             62 ring sectors, then 2 format header sectors
 //! ```
 //!
-//! The 16 KiB gap between `factory` and `rohi-log` is deliberate: the app
-//! area ends on a 64 KiB boundary, so that two equal OTA slots can be carved
-//! out of it later (#29). It is not used today.
+//! The app area ends on a 64 KiB boundary on both chips, so that two equal OTA
+//! slots can be carved out of it later (#29).
 //!
 //! ESP32-C6 (8 MB), the end of the flash:
 //!
@@ -88,11 +86,11 @@ pub const REGION_SIZE: usize = 2 * SLOT_SIZE;
 /// Label of the data partition that holds the persistent log.
 pub const LOG_PARTITION_LABEL: &str = "rohi-log";
 
-/// Size of the `rohi-log` partition of the ESP32-C3 in bytes: 240 KiB, 60
+/// Size of the `rohi-log` partition of the ESP32-C3 in bytes: 256 KiB, 64
 /// sectors. This is the partition, not the journal: the log is a ring of
 /// segments of whole sectors and two format header sectors (`rohi-logging`), so
-/// with 16 KiB segments it retains 14 full segments (224 KiB).
-pub const LOG_REGION_SIZE_ESP32C3: usize = 60 * SECTOR_SIZE;
+/// with 16 KiB segments it retains 15 full segments (240 KiB).
+pub const LOG_REGION_SIZE_ESP32C3: usize = 64 * SECTOR_SIZE;
 
 /// Size of the `rohi-log` partition of the ESP32-C6 in bytes: 1 MiB, 256
 /// sectors.
@@ -103,10 +101,6 @@ pub const APP_REGION_SIZE_ESP32C3: usize = 0x3A_0000;
 
 /// Size of the `factory` partition of the ESP32-C6 in bytes.
 pub const APP_REGION_SIZE_ESP32C6: usize = 0x6E_0000;
-
-/// Gap between `factory` and `rohi-log` of the ESP32-C3 in bytes: 16 KiB, so
-/// that the app area stays 64 KiB aligned for future A/B OTA slots (#29).
-pub const OTA_ALIGNMENT_GAP_ESP32C3: usize = 0x4000;
 
 #[cfg(test)]
 mod tests {
@@ -131,7 +125,7 @@ mod tests {
                 flash_size: 4 << 20,
                 app_size: APP_REGION_SIZE_ESP32C3,
                 log_size: LOG_REGION_SIZE_ESP32C3,
-                gap: OTA_ALIGNMENT_GAP_ESP32C3,
+                gap: 0,
             },
             Chip {
                 csv: include_str!("../../../firmwares/altruist-urban/partitions-esp32c6.csv"),
@@ -219,21 +213,21 @@ mod tests {
     #[test]
     fn the_log_regions_are_whole_sectors() {
         assert_eq!(LOG_REGION_SIZE_ESP32C3 % SECTOR_SIZE, 0);
-        assert_eq!(LOG_REGION_SIZE_ESP32C3, 240 * 1024);
-        assert_eq!(LOG_REGION_SIZE_ESP32C3, 0x3C000);
-        assert_eq!(LOG_REGION_SIZE_ESP32C3 / SECTOR_SIZE, 60);
+        assert_eq!(LOG_REGION_SIZE_ESP32C3, 256 * 1024);
+        assert_eq!(LOG_REGION_SIZE_ESP32C3, 0x40000);
+        assert_eq!(LOG_REGION_SIZE_ESP32C3 / SECTOR_SIZE, 64);
         assert_eq!(LOG_REGION_SIZE_ESP32C6 % SECTOR_SIZE, 0);
         assert_eq!(LOG_REGION_SIZE_ESP32C6, 1 << 20);
         assert_eq!(LOG_REGION_SIZE_ESP32C6 / SECTOR_SIZE, 256);
     }
 
     #[test]
-    fn the_esp32c3_journal_holds_fourteen_whole_segments() {
+    fn the_esp32c3_journal_holds_fifteen_whole_segments() {
         // Two sectors are the format header slots of the ring; the rest is
         // cut into 16 KiB segments of four sectors.
         let ring = LOG_REGION_SIZE_ESP32C3 - 2 * SECTOR_SIZE;
-        assert_eq!(ring / (4 * SECTOR_SIZE), 14);
-        assert_eq!(14 * 4 * SECTOR_SIZE, 224 * 1024);
+        assert_eq!(ring / (4 * SECTOR_SIZE), 15);
+        assert_eq!(15 * 4 * SECTOR_SIZE, 240 * 1024);
     }
 
     #[test]

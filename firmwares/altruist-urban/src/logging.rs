@@ -54,7 +54,13 @@ use crate::time::Time;
 ///   stall while a flash sector is erased (tens of milliseconds).
 /// - Exhausted: the new record is dropped and counted in the `dropped_records`
 ///   status field of the `logging` service; the caller never waits.
+/// - Host: 128, a process has the memory and a debug build persists `debug`
+///   records, so its boot burst is several times that of a chip.
 /// - Measured: not measured.
+#[cfg(feature = "std")]
+pub const QUEUE_DEPTH: usize = 128;
+
+#[cfg(not(feature = "std"))]
 pub const QUEUE_DEPTH: usize = 24;
 
 /// Bytes of text one `logging.read` returns.

@@ -90,7 +90,7 @@ use core::time::Duration;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use heapless::Vec;
-use log::{info, warn};
+use log::{debug, info, trace, warn};
 use rohi_hal::MonotonicTimestamp;
 use rohi_hal::runtime::Clock;
 use rohi_service::{
@@ -106,6 +106,9 @@ use crate::{
 /// Default age after which the synchronization is reported as
 /// [`TimeSyncState::Stale`]: six hours, several missed hourly resyncs.
 pub const DEFAULT_STALE_AFTER: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// A clock step of at least this many milliseconds is logged as a warning.
+const SIGNIFICANT_STEP_MS: i128 = 1_000;
 
 /// Default largest accepted [`TimeSample::uncertainty`]: five seconds.
 pub const DEFAULT_MAX_UNCERTAINTY: Duration = Duration::from_secs(5);
@@ -350,9 +353,10 @@ impl<C: Clock, M: RawMutex> TimeService<C, M> {
     pub fn submit(&self, source: TimeSourceKind, sample: TimeSample) -> Result<(), SyncFailure> {
         if !self.is_plausible(&sample) {
             warn!(
-                "time: rejected implausible sample from {:?}: {} ms",
+                target: "time",
+                "Rejected implausible time sample (source={:?} uncertainty_ms={:?})",
                 source,
-                sample.unix_time.as_millis()
+                sample.uncertainty.map(|u| u.as_millis())
             );
             self.record_failure(SyncFailure::Implausible);
             return Err(SyncFailure::Implausible);
@@ -377,12 +381,24 @@ impl<C: Clock, M: RawMutex> TimeService<C, M> {
         // Log outside the critical section: the log sink stamps entries with
         // `now()`, which borrows the same cell.
         match step {
-            Some(step) => info!(
-                "time: synchronized from {:?}, stepped by {} ms",
-                source, step
+            None => info!(target: "time", "Clock synchronized (source={:?})", source),
+            Some(delta_ms) if delta_ms.abs() >= SIGNIFICANT_STEP_MS => warn!(
+                target: "time",
+                "Clock adjusted significantly (source={:?} delta_ms={})",
+                source, delta_ms
             ),
-            None => info!("time: synchronized from {:?}", source),
+            Some(delta_ms) => debug!(
+                target: "time",
+                "Clock resynchronized (source={:?} delta_ms={})",
+                source, delta_ms
+            ),
         }
+        debug!(
+            target: "time",
+            "Time anchor set (source={:?} uncertainty_ms={:?})",
+            source,
+            sample.uncertainty.map(|u| u.as_millis())
+        );
         Ok(())
     }
 
@@ -390,18 +406,30 @@ impl<C: Clock, M: RawMutex> TimeService<C, M> {
     /// (saturating) and `failure` becomes the last failure. The anchor is
     /// untouched.
     pub fn record_failure(&self, failure: SyncFailure) {
-        self.inner.lock(|inner| {
+        let failures = self.inner.lock(|inner| {
             let mut inner = inner.borrow_mut();
             inner.consecutive_failures = inner.consecutive_failures.saturating_add(1);
             inner.last_failure = Some(failure);
+            inner.consecutive_failures
         });
+        // Outside the critical section, see `submit`.
+        debug!(
+            target: "time",
+            "Synchronization failure recorded (reason={:?} count={})",
+            failure, failures
+        );
     }
 
     /// Records that sampling was not even attempted because the source is not
     /// available (for example no network). Not counted as a failed attempt.
     pub fn record_unavailable(&self, failure: SyncFailure) {
-        self.inner
-            .lock(|inner| inner.borrow_mut().last_failure = Some(failure));
+        let previous = self
+            .inner
+            .lock(|inner| inner.borrow_mut().last_failure.replace(failure));
+        // Polled every few seconds while the network is down: log the change only.
+        if previous != Some(failure) {
+            trace!(target: "time", "Time source unavailable (reason={:?})", failure);
+        }
     }
 
     fn is_plausible(&self, sample: &TimeSample) -> bool {

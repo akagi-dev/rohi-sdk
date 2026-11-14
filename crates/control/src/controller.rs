@@ -29,8 +29,8 @@ use rohi_service::{
     MAX_MUTATIONS, Mutation, ServiceStatusSummary, StatusError, StatusRegistry, Value,
 };
 
-use crate::mapping;
 use crate::{AuthorizationPolicy, ControlBackend, LinkSecurity, Privilege};
+use crate::{diag, mapping};
 use rohi_service::isolated;
 
 /// The most streams the controller tracks at once, over all services.
@@ -80,7 +80,13 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
     /// the previous client left open and the controller forgets who owned
     /// them.
     pub fn link_lost(&self) {
-        self.streams.lock(|streams| streams.borrow_mut().clear());
+        let released = self.streams.lock(|streams| {
+            let mut streams = streams.borrow_mut();
+            let count = streams.len();
+            streams.clear();
+            count
+        });
+        diag::link_lost(released);
         self.backend.actions().link_lost();
     }
 
@@ -102,6 +108,7 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
     /// bytes of `request` stay with the caller.
     pub async fn handle(&self, link: &LinkSecurity, request: &[u8], response: &mut [u8]) -> usize {
         let (request_id, reply) = self.dispatch(link, request).await;
+        diag::reply(request_id, &reply);
         let message = pb::Response {
             protocol_version: PROTOCOL_VERSION,
             request_id,
@@ -115,35 +122,55 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             request_id,
             response: Some(error(pb::ErrorCode::Internal)),
         };
-        encode(&fallback, response).unwrap_or(0)
+        let len = encode(&fallback, response).unwrap_or(0);
+        if len == 0 {
+            diag::response_lost(request_id);
+        } else {
+            diag::response_fallback(request_id);
+        }
+        len
     }
 
     async fn dispatch(&self, link: &LinkSecurity, bytes: &[u8]) -> (u32, Reply) {
         if bytes.len() > limits::MAX_REQUEST_LEN {
+            diag::request_too_long(bytes.len());
             return (0, error(pb::ErrorCode::InvalidArgument));
         }
-        let Ok(request) = decode::<pb::Request>(bytes) else {
-            return (0, error(pb::ErrorCode::InvalidArgument));
+        let request = match decode::<pb::Request>(bytes) {
+            Ok(request) => request,
+            Err(e) => {
+                diag::decode_failed(bytes.len(), e);
+                return (0, error(pb::ErrorCode::InvalidArgument));
+            }
         };
         let id = request.request_id;
         if request.protocol_version != PROTOCOL_VERSION {
+            diag::unsupported_version(id, request.protocol_version);
             return (id, error(pb::ErrorCode::NotSupported));
         }
         let Some(call) = request.request else {
+            diag::empty_request(id);
             return (id, error(pb::ErrorCode::NotSupported));
         };
+        diag::request(id, &call);
 
         let privilege = match &call {
             Call::ReadStream(request) => {
                 match self.owned_privilege(link, request.service_id, request.stream_id) {
                     Some(privilege) => privilege,
-                    None => return (id, action_error(ActionError::UnknownStream)),
+                    None => {
+                        diag::unknown_stream(id, &call, link);
+                        return (id, action_error(ActionError::UnknownStream));
+                    }
                 }
             }
             Call::CloseStream(request) => {
                 match self.owned_privilege(link, request.service_id, request.stream_id) {
                     Some(privilege) => privilege,
-                    None => return (id, action_error(ActionError::UnknownStream)),
+                    None => {
+                        diag::unknown_stream(id, &call, link);
+                        return (id, action_error(ActionError::UnknownStream));
+                    }
                 }
             }
             Call::PatchConfigSection(_) | Call::ResetConfigSection(_) => Privilege::Mutate,
@@ -160,6 +187,7 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             _ => Privilege::Read,
         };
         if !self.policy.allows(privilege, link) {
+            diag::denied(id, &call, privilege, link);
             return (id, error(pb::ErrorCode::PermissionDenied));
         }
         (id, self.execute(link, privilege, call).await)
@@ -200,11 +228,12 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             evicted
         });
         if let Some(old) = evicted {
-            let _ = self
+            let result = self
                 .backend
                 .actions()
                 .close_stream(old.service, old.stream)
                 .await;
+            diag::stream_evicted(old.service, old.stream, result);
         }
     }
 
@@ -263,7 +292,10 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
     #[inline(never)]
     fn get_config_schema(&self, section_id: u64) -> Reply {
         match self.backend.config().schema(section_id) {
-            None => error(pb::ErrorCode::NotFound),
+            None => {
+                diag::config_failed("get_config_schema", section_id, ConfigError::UnknownSection);
+                error(pb::ErrorCode::NotFound)
+            }
             Some(schema) => {
                 let mut fields = Vec::new();
                 for field in schema.fields {
@@ -284,7 +316,7 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
 
     async fn get_config_section(&self, section_id: u64) -> Reply {
         match self.backend.config().get(section_id).await {
-            Err(e) => config_error(e),
+            Err(e) => config_error("get_config_section", section_id, e),
             Ok(values) => {
                 let mut entries = Vec::new();
                 for entry in &values.entries {
@@ -315,10 +347,18 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             .reset(request.section_id, request.dry_run)
             .await
         {
-            Ok(done) => Reply::ResetConfigSection(pb::ResetConfigSectionResponse {
-                restart_required: done.restart_required,
-            }),
-            Err(e) => config_error(e),
+            Ok(done) => {
+                diag::config_applied(
+                    "reset_config_section",
+                    request.section_id,
+                    request.dry_run,
+                    done.restart_required,
+                );
+                Reply::ResetConfigSection(pb::ResetConfigSectionResponse {
+                    restart_required: done.restart_required,
+                })
+            }
+            Err(e) => config_error("reset_config_section", request.section_id, e),
         }
     }
 
@@ -374,7 +414,10 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             .status(service_id, self.backend.uptime_ms())
             .await
         {
-            Err(StatusError::UnknownService) => self.missing_status(service_id),
+            Err(StatusError::UnknownService) => {
+                diag::status_failed(service_id);
+                self.missing_status(service_id)
+            }
             Ok(status) => {
                 let mut fields = Vec::new();
                 for (id, value) in &status.fields {
@@ -445,6 +488,7 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             .actions()
             .close_stream(request.service_id, request.stream_id)
             .await;
+        diag::stream_closed(request.service_id, request.stream_id, result);
         if matches!(result, Ok(()) | Err(ActionError::UnknownStream)) {
             self.forget_stream(request.service_id, request.stream_id);
         }
@@ -476,6 +520,7 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
     /// Maps an action failure; an action request for a service that only
     /// reports status is "not supported", not "not found".
     fn action_failure(&self, e: ActionError, service: u32) -> Reply {
+        diag::action_failed("action", service, e);
         if e == ActionError::UnknownService && self.backend.statuses().contains(service) {
             error(pb::ErrorCode::NotSupported)
         } else {
@@ -499,6 +544,11 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
                 .patch(request.section_id, &mutations, request.dry_run)
                 .await
         } else {
+            diag::invalid_values(
+                "patch_config_section",
+                request.section_id,
+                request.mutations.len(),
+            );
             Err(ConfigError::Field(rohi_service::FieldError::Invalid))
         };
         for mutation in &mut mutations {
@@ -510,10 +560,18 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             mapping::wipe_mutation(mutation);
         }
         match result {
-            Ok(done) => Reply::PatchConfigSection(pb::PatchConfigSectionResponse {
-                restart_required: done.restart_required,
-            }),
-            Err(e) => config_error(e),
+            Ok(done) => {
+                diag::config_applied(
+                    "patch_config_section",
+                    request.section_id,
+                    request.dry_run,
+                    done.restart_required,
+                );
+                Reply::PatchConfigSection(pb::PatchConfigSectionResponse {
+                    restart_required: done.restart_required,
+                })
+            }
+            Err(e) => config_error("patch_config_section", request.section_id, e),
         }
     }
 
@@ -532,19 +590,33 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             .await
         {
             Ok(chunk) if chunk.len <= buf.len() => match Vec::from_slice(&buf[..chunk.len]) {
-                Ok(data) => Reply::ReadStream(pb::ReadStreamResponse {
-                    stream_id: request.stream_id,
-                    file_id: request.file_id,
-                    offset: request.offset,
-                    data,
-                    eof: chunk.eof,
-                }),
+                Ok(data) => {
+                    diag::stream_read(
+                        request.service_id,
+                        request.stream_id,
+                        request.file_id,
+                        request.offset,
+                        chunk.len,
+                        chunk.eof,
+                    );
+                    Reply::ReadStream(pb::ReadStreamResponse {
+                        stream_id: request.stream_id,
+                        file_id: request.file_id,
+                        offset: request.offset,
+                        data,
+                        eof: chunk.eof,
+                    })
+                }
                 Err(_) => error(pb::ErrorCode::Internal),
             },
-            Ok(_) => error(pb::ErrorCode::Internal),
+            Ok(chunk) => {
+                diag::stream_read_oversized(request.service_id, request.stream_id, chunk.len);
+                error(pb::ErrorCode::Internal)
+            }
             Err(e) => {
                 if e == ActionError::UnknownStream {
                     // Closed or timed out in the service.
+                    diag::stream_gone(request.service_id, request.stream_id);
                     self.forget_stream(request.service_id, request.stream_id);
                 }
                 self.action_failure(e, request.service_id)
@@ -567,11 +639,17 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             }
         }
         let result = if valid {
+            diag::invoking(request.service_id, request.action_id, args.len());
             self.backend
                 .actions()
                 .invoke(request.service_id, request.action_id, &args)
                 .await
         } else {
+            diag::invalid_values(
+                "invoke_action",
+                request.action_id.into(),
+                request.args.len(),
+            );
             Err(ActionError::InvalidArgument)
         };
         for (_, value) in &mut args {
@@ -583,6 +661,13 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
         match result {
             Err(e) => self.action_failure(e, request.service_id),
             Ok(ActionResult::Stream(stream)) => {
+                diag::invoked(request.service_id, request.action_id, privilege, "stream");
+                diag::stream_opened(
+                    request.service_id,
+                    stream.id,
+                    link.session,
+                    stream.files.len(),
+                );
                 self.own_stream(OwnedStream {
                     service: request.service_id,
                     stream: stream.id,
@@ -608,6 +693,7 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
                 })
             }
             Ok(ActionResult::Records(records)) => {
+                diag::invoked(request.service_id, request.action_id, privilege, "records");
                 let mut out = Vec::new();
                 for record in &records {
                     let mut fields = Vec::new();
@@ -633,7 +719,8 @@ fn error(code: pb::ErrorCode) -> Reply {
     })
 }
 
-fn config_error(e: ConfigError) -> Reply {
+fn config_error(op: &'static str, section: u64, e: ConfigError) -> Reply {
+    diag::config_failed(op, section, e);
     error(match e {
         ConfigError::UnknownSection => pb::ErrorCode::NotFound,
         ConfigError::Field(_) => pb::ErrorCode::InvalidArgument,

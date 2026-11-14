@@ -24,6 +24,70 @@ use crate::{EspStorageError, FlashRegion};
 /// Bounce buffer for reads that do not satisfy the flash read granularity.
 const BOUNCE: usize = 64;
 
+// The reports are kept out of line: they run once in a while, and inlined into
+// the flash accessors they would only grow their frames. The flash driver's
+// own error is not part of `EspStorageError`, so it is logged here.
+#[cold]
+#[inline(never)]
+fn warn_driver(op: &str, offset: usize, len: usize, error: &dyn core::fmt::Debug) {
+    log::warn!(
+        target: "config.flash",
+        "Flash {op} failed (offset={offset:#x} size_b={len} err={error:?})"
+    );
+}
+
+#[cold]
+#[inline(never)]
+fn warn_rejected(op: &str, offset: usize, len: usize, error: EspStorageError) {
+    log::warn!(
+        target: "config.flash",
+        "Flash {op} rejected: {error} (offset={offset:#x} size_b={len})"
+    );
+}
+
+#[cold]
+#[inline(never)]
+fn warn_region(region: FlashRegion, capacity: usize, erase_size: usize) {
+    log::warn!(
+        target: "config.flash",
+        "Invalid flash region (offset={:#x} size_b={:#x} capacity_b={capacity:#x} erase_b={erase_size})",
+        region.offset,
+        region.length,
+    );
+}
+
+#[cold]
+#[inline(never)]
+fn debug_region(region: FlashRegion) {
+    log::debug!(
+        target: "config.flash",
+        "Storage on flash region (offset={:#x} size_b={:#x})",
+        region.offset,
+        region.length,
+    );
+}
+
+#[cold]
+#[inline(never)]
+fn trace_read(offset: usize, len: usize, bounced: bool) {
+    log::trace!(
+        target: "config.flash",
+        "Flash read (offset={offset:#x} size_b={len} bounced={bounced})"
+    );
+}
+
+#[cold]
+#[inline(never)]
+fn debug_write(offset: usize, len: usize) {
+    log::debug!(target: "config.flash", "Flash write (offset={offset:#x} size_b={len})");
+}
+
+#[cold]
+#[inline(never)]
+fn debug_erase(offset: usize, len: usize) {
+    log::debug!(target: "config.flash", "Flash erase (offset={offset:#x} size_b={len})");
+}
+
 /// [`ConfigStorage`] over a [`FlashRegion`] of an `embedded-storage` NOR flash.
 ///
 /// The flash must be a [`MultiwriteNorFlash`]: the marker of flash that can
@@ -145,8 +209,10 @@ impl<F: NorFlash> EspConfigStorage<F> {
             || end > flash.capacity()
             || u32::try_from(end).is_err()
         {
+            warn_region(region, flash.capacity(), F::ERASE_SIZE);
             return Err(EspStorageError::InvalidRegion);
         }
+        debug_region(region);
         Ok(Self { flash, region })
     }
 
@@ -183,15 +249,19 @@ impl<F: MultiwriteNorFlash> ConfigStorage for EspConfigStorage<F> {
     /// [`EspStorageError::OutOfBounds`] outside the region and
     /// [`EspStorageError::ReadFailed`] if the flash driver fails.
     fn read(&mut self, offset: usize, output: &mut [u8]) -> Result<(), Self::Error> {
-        let absolute = self.flash_offset(offset, output.len())?;
+        let len = output.len();
+        let absolute = self.flash_offset(offset, len).inspect_err(|&error| {
+            warn_rejected("read", offset, len, error);
+        })?;
         let granularity = F::READ_SIZE;
-        if (absolute as usize).is_multiple_of(granularity)
-            && output.len().is_multiple_of(granularity)
-        {
-            return self
-                .flash
-                .read(absolute, output)
-                .map_err(|_| EspStorageError::ReadFailed);
+        let aligned =
+            (absolute as usize).is_multiple_of(granularity) && len.is_multiple_of(granularity);
+        trace_read(offset, len, !aligned);
+        if aligned {
+            return self.flash.read(absolute, output).map_err(|error| {
+                warn_driver("read", offset, len, &error);
+                EspStorageError::ReadFailed
+            });
         }
 
         // Read the covering aligned range through a bounce buffer.
@@ -203,7 +273,10 @@ impl<F: MultiwriteNorFlash> ConfigStorage for EspConfigStorage<F> {
             let chunk = BOUNCE.min((end - position).next_multiple_of(granularity));
             self.flash
                 .read(position as u32, &mut bounce[..chunk])
-                .map_err(|_| EspStorageError::ReadFailed)?;
+                .map_err(|error| {
+                    warn_driver("read", offset, len, &error);
+                    EspStorageError::ReadFailed
+                })?;
             let from = (absolute as usize).saturating_sub(position).min(chunk);
             let take = (chunk - from).min(output.len() - done);
             output[done..done + take].copy_from_slice(&bounce[from..from + take]);
@@ -220,13 +293,19 @@ impl<F: MultiwriteNorFlash> ConfigStorage for EspConfigStorage<F> {
     /// multiple of `WRITE_SIZE`, [`EspStorageError::WriteFailed`] if the
     /// flash driver fails.
     fn write(&mut self, offset: usize, data: &[u8]) -> Result<(), Self::Error> {
-        let absolute = self.flash_offset(offset, data.len())?;
-        if !offset.is_multiple_of(F::WRITE_SIZE) || !data.len().is_multiple_of(F::WRITE_SIZE) {
+        let len = data.len();
+        let absolute = self.flash_offset(offset, len).inspect_err(|&error| {
+            warn_rejected("write", offset, len, error);
+        })?;
+        if !offset.is_multiple_of(F::WRITE_SIZE) || !len.is_multiple_of(F::WRITE_SIZE) {
+            warn_rejected("write", offset, len, EspStorageError::InvalidAlignment);
             return Err(EspStorageError::InvalidAlignment);
         }
-        self.flash
-            .write(absolute, data)
-            .map_err(|_| EspStorageError::WriteFailed)
+        debug_write(offset, len);
+        self.flash.write(absolute, data).map_err(|error| {
+            warn_driver("write", offset, len, &error);
+            EspStorageError::WriteFailed
+        })
     }
 
     /// # Errors
@@ -236,17 +315,25 @@ impl<F: MultiwriteNorFlash> ConfigStorage for EspConfigStorage<F> {
     /// multiple of `ERASE_SIZE`, [`EspStorageError::EraseFailed`] if the
     /// flash driver fails.
     fn erase(&mut self, offset: usize, len: usize) -> Result<(), Self::Error> {
-        let absolute = self.flash_offset(offset, len)?;
+        let absolute = self.flash_offset(offset, len).inspect_err(|&error| {
+            warn_rejected("erase", offset, len, error);
+        })?;
         if !offset.is_multiple_of(F::ERASE_SIZE) || !len.is_multiple_of(F::ERASE_SIZE) {
+            warn_rejected("erase", offset, len, EspStorageError::InvalidAlignment);
             return Err(EspStorageError::InvalidAlignment);
         }
         let end = u32::try_from(len)
             .ok()
             .and_then(|len| absolute.checked_add(len))
-            .ok_or(EspStorageError::OutOfBounds)?;
-        self.flash
-            .erase(absolute, end)
-            .map_err(|_| EspStorageError::EraseFailed)
+            .ok_or_else(|| {
+                warn_rejected("erase", offset, len, EspStorageError::OutOfBounds);
+                EspStorageError::OutOfBounds
+            })?;
+        debug_erase(offset, len);
+        self.flash.erase(absolute, end).map_err(|error| {
+            warn_driver("erase", offset, len, &error);
+            EspStorageError::EraseFailed
+        })
     }
 }
 

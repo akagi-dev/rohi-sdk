@@ -348,28 +348,30 @@ impl<I2C: I2c, D: DelayNs> Bmx280<I2C, D> {
     async fn read(&mut self, reg: u8, buf: &mut [u8]) -> Result<(), Error<I2C::Error>> {
         if let Err(e) = self.i2c.write_read(self.address, &[reg], buf).await {
             log::debug!(
-                "[bmx280] read of {} byte(s) from register {:#04x} failed: {:?}",
-                buf.len(),
+                target: "sensor.bmx280",
+                "Register read failed (reg={:#04x} len={} err={:?})",
                 reg,
+                buf.len(),
                 e
             );
             return Err(e.into());
         }
-        log::trace!("[bmx280] register {:#04x} read: {:02x?}", reg, buf);
+        log::trace!(target: "sensor.bmx280", "Register read (reg={:#04x} bytes={:02x?})", reg, buf);
         Ok(())
     }
 
     async fn write(&mut self, reg: u8, value: u8) -> Result<(), Error<I2C::Error>> {
         if let Err(e) = self.i2c.write(self.address, &[reg, value]).await {
             log::debug!(
-                "[bmx280] write of {:#04x} to register {:#04x} failed: {:?}",
-                value,
+                target: "sensor.bmx280",
+                "Register write failed (reg={:#04x} value={:#04x} err={:?})",
                 reg,
+                value,
                 e
             );
             return Err(e.into());
         }
-        log::trace!("[bmx280] register {:#04x} written: {:#04x}", reg, value);
+        log::trace!(target: "sensor.bmx280", "Register written (reg={:#04x} value={:#04x})", reg, value);
         Ok(())
     }
 
@@ -378,14 +380,23 @@ impl<I2C: I2c, D: DelayNs> Bmx280<I2C, D> {
         let mut id = [0u8];
         self.read(REG_ID, &mut id).await?;
         log::debug!(
-            "[bmx280] chip id {:#04x} at address {:#04x}",
+            target: "sensor.bmx280",
+            "Chip ID read (id={:#04x} addr={:#04x})",
             id[0],
             self.address
         );
         match id[0] {
             0x56..=0x58 => Ok(Chip::Bmp280),
             0x60 => Ok(Chip::Bme280),
-            other => Err(Error::UnsupportedChip(other)),
+            other => {
+                log::debug!(
+                    target: "sensor.bmx280",
+                    "Unsupported chip ID (id={:#04x} addr={:#04x})",
+                    other,
+                    self.address
+                );
+                Err(Error::UnsupportedChip(other))
+            }
         }
     }
 
@@ -399,17 +410,45 @@ impl<I2C: I2c, D: DelayNs> Bmx280<I2C, D> {
         for &address in self.candidates {
             self.address = address;
             match self.probe().await {
-                Ok(chip) => return Ok(chip),
-                Err(e) => failure = more_specific(failure, e),
+                Ok(chip) => {
+                    log::debug!(
+                        target: "sensor.bmx280",
+                        "Chip detected (chip={:?} addr={:#04x})",
+                        chip,
+                        address
+                    );
+                    return Ok(chip);
+                }
+                Err(e) => {
+                    log::debug!(
+                        target: "sensor.bmx280",
+                        "Nothing usable at address (addr={:#04x} err={:?})",
+                        address,
+                        e
+                    );
+                    failure = more_specific(failure, e);
+                }
             }
         }
         self.address = self.candidates[0];
+        log::debug!(
+            target: "sensor.bmx280",
+            "Chip not found (candidates={} err={:?})",
+            self.candidates.len(),
+            failure
+        );
         Err(failure)
     }
 
     /// Detect, reset and read calibration.
     pub async fn initialize(&mut self) -> Result<Chip, Error<I2C::Error>> {
         let chip = self.detect().await?;
+        log::debug!(
+            target: "sensor.bmx280",
+            "Resetting chip (chip={:?} addr={:#04x})",
+            chip,
+            self.address
+        );
         self.write(REG_RESET, RESET_COMMAND).await?;
         self.delay.delay_ms(5).await;
         self.wait_while(STATUS_IM_UPDATE).await?;
@@ -425,14 +464,20 @@ impl<I2C: I2c, D: DelayNs> Bmx280<I2C, D> {
             calibration = calibration.with_humidity(h1[0], &rest);
         }
         if !calibration.is_plausible() {
-            log::debug!("[bmx280] implausible calibration: {:?}", calibration);
+            log::debug!(target: "sensor.bmx280", "Implausible calibration data (chip={:?})", chip);
             return Err(Error::Calibration);
         }
-        log::debug!("[bmx280] {:?} calibration: {:?}", chip, calibration);
+        log::debug!(target: "sensor.bmx280", "Calibration data read (chip={:?})", chip);
 
         self.write(REG_CONFIG, 0).await?;
         self.calibration = calibration;
         self.chip = Some(chip);
+        log::debug!(
+            target: "sensor.bmx280",
+            "Chip initialized (chip={:?} addr={:#04x})",
+            chip,
+            self.address
+        );
         Ok(chip)
     }
 
@@ -446,7 +491,8 @@ impl<I2C: I2c, D: DelayNs> Bmx280<I2C, D> {
             self.delay.delay_ms(POLL_STEP_MS).await;
         }
         log::debug!(
-            "[bmx280] status mask {:#04x} still set after {} polls",
+            target: "sensor.bmx280",
+            "Status mask still set (mask={:#04x} polls={})",
             mask,
             POLL_STEPS
         );
@@ -455,7 +501,10 @@ impl<I2C: I2c, D: DelayNs> Bmx280<I2C, D> {
 
     /// Perform one forced-mode conversion and compensate it.
     pub async fn measure(&mut self) -> Result<Reading, Error<I2C::Error>> {
-        let chip = self.chip.ok_or(Error::Calibration)?;
+        let Some(chip) = self.chip else {
+            log::debug!(target: "sensor.bmx280", "Measurement requested before initialization");
+            return Err(Error::Calibration);
+        };
         if chip == Chip::Bme280 {
             self.write(REG_CTRL_HUM, OSRS_HUMIDITY).await?;
         }
@@ -468,17 +517,24 @@ impl<I2C: I2c, D: DelayNs> Bmx280<I2C, D> {
         let len = if chip == Chip::Bme280 { 8 } else { 6 };
         self.read(REG_DATA, &mut data[..len]).await?;
         let raw = RawSample::parse(&data[..len], chip == Chip::Bme280);
-        log::trace!("[bmx280] raw sample: {:?}", raw);
+        log::trace!(target: "sensor.bmx280", "Raw sample read (raw={:?})", raw);
         let result = self.compensate(&raw);
         match &result {
-            Ok(reading) => log::debug!("[bmx280] reading: {:?}", reading),
-            Err(e) => log::debug!("[bmx280] compensating {:?} failed: {:?}", raw, e),
+            Ok(reading) => log::debug!(
+                target: "sensor.bmx280",
+                "Reading compensated (temp_c={} pressure_pa={} rh_pct={:?})",
+                reading.temperature,
+                reading.pressure,
+                reading.humidity
+            ),
+            Err(e) => log::debug!(target: "sensor.bmx280", "Compensation failed (err={:?})", e),
         }
         result
     }
 
     fn compensate(&self, raw: &RawSample) -> Result<Reading, Error<I2C::Error>> {
         if raw.adc_t == ADC_SKIPPED || raw.adc_p == ADC_SKIPPED {
+            log::debug!(target: "sensor.bmx280", "Temperature or pressure conversion skipped");
             return Err(Error::InvalidData);
         }
         let (t_fine, centi) = self.calibration.compensate_temperature(raw.adc_t);
@@ -486,14 +542,26 @@ impl<I2C: I2c, D: DelayNs> Bmx280<I2C, D> {
         let pressure = self
             .calibration
             .compensate_pressure(raw.adc_p, t_fine)
-            .ok_or(Error::InvalidData)?;
+            .ok_or_else(|| {
+                log::debug!(target: "sensor.bmx280", "Pressure compensation failed");
+                Error::InvalidData
+            })?;
         // Operating range from the datasheet: -40..85 °C, 300..1100 hPa.
         if !(-40.0..=85.0).contains(&temperature) || !(30_000.0..=110_000.0).contains(&pressure) {
+            log::debug!(
+                target: "sensor.bmx280",
+                "Reading out of range (temp_c={} pressure_pa={})",
+                temperature,
+                pressure
+            );
             return Err(Error::InvalidData);
         }
         let humidity = match raw.adc_h {
             // 0x8000 means the humidity conversion was skipped.
-            Some(0x8000) => return Err(Error::InvalidData),
+            Some(0x8000) => {
+                log::debug!(target: "sensor.bmx280", "Humidity conversion skipped");
+                return Err(Error::InvalidData);
+            }
             Some(adc_h) => Some(self.calibration.compensate_humidity(adc_h, t_fine)),
             None => None,
         };

@@ -93,9 +93,10 @@ impl IdentitySigner {
     /// ));
     /// ```
     pub fn provisioned(identity: Option<&Identity>) -> Result<Self, IdentityError> {
-        identity
-            .map(Identity::signer)
-            .ok_or(IdentityError::NotProvisioned)
+        identity.map(Identity::signer).ok_or_else(|| {
+            log::debug!(target: "identity", "No signer: identity not provisioned");
+            IdentityError::NotProvisioned
+        })
     }
 }
 
@@ -108,6 +109,7 @@ impl Signer for IdentitySigner {
     }
 
     fn sign(&self, message: &[u8]) -> Result<Signature, IdentityError> {
+        log::trace!(target: "identity", "Signing message (size_b={})", message.len());
         Ok(Signature::from_bytes(self.key.sign(message).to_bytes()))
     }
 }

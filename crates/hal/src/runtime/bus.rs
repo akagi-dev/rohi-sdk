@@ -111,13 +111,23 @@ impl<M: RawMutex, const N: usize> EventBus<M, N> {
                 Ok(()) => return,
                 Err(TrySendError::Full(rejected)) => {
                     event = rejected;
-                    if self.channel.try_receive().is_ok() {
-                        self.dropped.lock(|c| c.set(c.get().saturating_add(1)));
+                    if let Ok(oldest) = self.channel.try_receive() {
+                        let total = self.count_drop();
+                        warn_dropped(&oldest, total);
                     }
                 }
             }
         }
-        self.dropped.lock(|c| c.set(c.get().saturating_add(1)));
+        let total = self.count_drop();
+        warn_dropped(&event, total);
+    }
+
+    fn count_drop(&self) -> u32 {
+        self.dropped.lock(|c| {
+            let total = c.get().saturating_add(1);
+            c.set(total);
+            total
+        })
     }
 
     /// Wait for the next event.
@@ -136,6 +146,23 @@ impl<M: RawMutex, const N: usize> EventBus<M, N> {
     pub fn dropped(&self) -> u32 {
         self.dropped.lock(|c| c.get())
     }
+}
+
+#[cold]
+#[inline(never)]
+fn warn_dropped(event: &SensorEvent, total: u32) {
+    let (kind, sensor) = match event {
+        SensorEvent::Measurements(update) => ("measurement", update.sensor()),
+        SensorEvent::StateChanged { sensor, .. } => ("state change", *sensor),
+        SensorEvent::Error { sensor, .. } => ("error", *sensor),
+    };
+    log::warn!(
+        target: "sensor",
+        "Event queue full, {} event dropped (sensor={} total={})",
+        kind,
+        sensor.tag(),
+        total
+    );
 }
 
 impl<M: RawMutex, const N: usize> Default for EventBus<M, N> {

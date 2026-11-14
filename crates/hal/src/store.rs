@@ -115,6 +115,12 @@ impl MeasurementStore {
 
     /// Override the freshness policy of a sensor.
     pub fn set_freshness_policy(&mut self, sensor: SensorKind, policy: FreshnessPolicy) {
+        log::debug!(
+            target: "sensor",
+            "Freshness policy set (sensor={} stale_after_ms={})",
+            sensor.tag(),
+            policy.stale_after_ms
+        );
         self.policies[sensor.index()] = policy;
     }
 
@@ -171,6 +177,7 @@ impl MeasurementStore {
     }
 
     fn apply_update(&mut self, update: MeasurementUpdate) {
+        let was = self.statuses.get_mut(update.sensor()).state;
         let at = update.timestamp();
         let m = &mut self.measurements;
         match update {
@@ -220,10 +227,33 @@ impl MeasurementStore {
         status.state = SensorState::Ready;
         status.last_success_at = Some(at);
         status.last_error = None;
+        if was == SensorState::Ready {
+            log::trace!(
+                target: "sensor",
+                "Measurement applied (sensor={} at_ms={})",
+                update.sensor().tag(),
+                at.millis
+            );
+        } else {
+            log::debug!(
+                target: "sensor",
+                "Sensor ready (sensor={} was={:?})",
+                update.sensor().tag(),
+                was
+            );
+        }
     }
 
     fn change_state(&mut self, sensor: SensorKind, state: SensorState) {
-        self.statuses.get_mut(sensor).state = state;
+        let status = self.statuses.get_mut(sensor);
+        log::trace!(
+            target: "sensor",
+            "Sensor state changed (sensor={} from={:?} to={:?})",
+            sensor.tag(),
+            status.state,
+            state
+        );
+        status.state = state;
         match state {
             SensorState::NotDetected => self.measurements.clear(sensor),
             SensorState::Initializing => {
@@ -247,6 +277,13 @@ impl MeasurementStore {
         status.state = SensorState::Error;
         status.error_count = status.error_count.saturating_add(1);
         status.last_error = Some(error);
+        log::debug!(
+            target: "sensor",
+            "Sensor error recorded (sensor={} err={:?} count={})",
+            sensor.tag(),
+            error,
+            status.error_count
+        );
         self.set_all(sensor, |_| Some(MeasurementState::Error));
     }
 

@@ -62,17 +62,31 @@ async fn read_file(device: &mut Device<TcpLink>, stream: &Stream, file: u32) -> 
     }
 }
 
-/// The text `logging.read` returns for every retained record.
+/// The text `logging.read` returns for every retained record: one call returns
+/// about one `READ_BYTES` of text, so it asks again after the last sequence.
 async fn records(device: &mut Device<TcpLink>) -> String {
-    let stream = stream_of(
-        device,
-        "read",
-        &[arg(read_arg::AFTER, 0), arg(read_arg::LIMIT, 200)],
-    )
-    .await;
-    let data = read_file(device, &stream, stream.files[0].id).await;
-    device.close_stream(&stream).await.unwrap();
-    String::from_utf8(data).unwrap()
+    let mut text = String::new();
+    let mut after = 0;
+    loop {
+        let stream = stream_of(
+            device,
+            "read",
+            &[arg(read_arg::AFTER, after), arg(read_arg::LIMIT, 200)],
+        )
+        .await;
+        let data = read_file(device, &stream, stream.files[0].id).await;
+        device.close_stream(&stream).await.unwrap();
+        let page = String::from_utf8(data).unwrap();
+        let Some(last) = page
+            .lines()
+            .filter_map(|line| line.split(' ').next()?.parse::<u64>().ok())
+            .last()
+        else {
+            return text;
+        };
+        after = last;
+        text.push_str(&page);
+    }
 }
 
 async fn status_number(device: &mut Device<TcpLink>, field: u32) -> Option<u64> {

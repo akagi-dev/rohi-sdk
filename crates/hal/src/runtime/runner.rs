@@ -343,9 +343,20 @@ where
             self.reporter.set_state(SensorState::Initializing);
         }
         self.probes = self.probes.saturating_add(1);
+        log::trace!(
+            target: "sensor",
+            "Init attempt started (sensor={} attempt={})",
+            D::KIND.tag(),
+            self.probes
+        );
 
         match self.driver.init().await {
             Ok(()) => {
+                if self.detected {
+                    log::info!(target: "sensor", "Sensor re-initialized (sensor={})", D::KIND.tag());
+                } else {
+                    log::debug!(target: "sensor", "Sensor detected (sensor={})", D::KIND.tag());
+                }
                 self.initial_delay_pending = !self.detected;
                 self.detected = true;
                 self.phase = Phase::Running;
@@ -357,15 +368,26 @@ where
                 });
             }
             Err(e) if e.is_absent() && !self.detected => {
-                log::debug!("[{:?}] not detected", D::KIND);
+                log::debug!(
+                    target: "sensor",
+                    "Sensor not detected, probing again (sensor={} delay_ms={})",
+                    D::KIND.tag(),
+                    self.config.reprobe_interval_ms
+                );
                 self.reporter.set_state(SensorState::NotDetected);
                 self.delay.delay_ms(self.config.reprobe_interval_ms).await;
             }
             Err(e) => {
-                log::warn!("[{:?}] init failed: {:?}", D::KIND, e);
+                let wait = self.backoff.next_delay_ms();
+                log::warn!(
+                    target: "sensor",
+                    "Sensor init failed (sensor={} err={:?} delay_ms={})",
+                    D::KIND.tag(),
+                    e,
+                    wait
+                );
                 self.reporter.error(e.code());
                 self.reporter.set_state(SensorState::Error);
-                let wait = self.backoff.next_delay_ms();
                 self.delay.delay_ms(wait).await;
             }
         }
@@ -377,6 +399,12 @@ where
         if self.initial_delay_pending {
             let initial_delay = self.driver.initial_delay_ms();
             if initial_delay > 0 {
+                log::debug!(
+                    target: "sensor",
+                    "Initial delay started (sensor={} delay_ms={})",
+                    D::KIND.tag(),
+                    initial_delay
+                );
                 self.delay.delay_ms(initial_delay).await;
             }
             self.initial_delay_pending = false;
@@ -384,17 +412,34 @@ where
 
         match self.driver.sample(self.reporter.clock()).await {
             Ok(Some(update)) => {
+                if self.failures > 0 {
+                    log::debug!(
+                        target: "sensor",
+                        "Sensor recovered (sensor={} failures={})",
+                        D::KIND.tag(),
+                        self.failures
+                    );
+                }
                 self.failures = 0;
                 self.backoff.reset();
                 self.reporter.measurement(update);
                 self.delay.delay_ms(self.driver.poll_interval_ms()).await;
             }
             Ok(None) => {
+                log::trace!(target: "sensor", "No data yet (sensor={})", D::KIND.tag());
                 self.delay.delay_ms(self.driver.poll_interval_ms()).await;
             }
             Err(e) => {
-                log::warn!("[{:?}] sample failed: {:?}", D::KIND, e);
                 self.failures = self.failures.saturating_add(1);
+                let wait = self.backoff.next_delay_ms();
+                log::warn!(
+                    target: "sensor",
+                    "Sample failed (sensor={} err={:?} failures={} delay_ms={})",
+                    D::KIND.tag(),
+                    e,
+                    self.failures,
+                    wait
+                );
                 self.reporter.error(e.code());
                 self.reporter
                     .set_state(if self.failures >= self.config.error_after {
@@ -403,9 +448,14 @@ where
                         SensorState::Degraded
                     });
                 if self.failures >= self.config.reinit_after {
+                    log::debug!(
+                        target: "sensor",
+                        "Sensor re-initializing (sensor={} failures={})",
+                        D::KIND.tag(),
+                        self.failures
+                    );
                     self.phase = Phase::Detect;
                 }
-                let wait = self.backoff.next_delay_ms();
                 self.delay.delay_ms(wait).await;
             }
         }

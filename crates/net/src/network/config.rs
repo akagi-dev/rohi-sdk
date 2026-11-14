@@ -21,6 +21,7 @@ use core::fmt;
 use core::net::Ipv4Addr;
 
 use heapless::String;
+use log::debug;
 use minicbor::{CborLen, Decode, Encode};
 use rohi_config::{Text, Variant};
 use rohi_service::Config;
@@ -269,7 +270,28 @@ impl NetworkConfig {
         if valid {
             Ok(())
         } else {
+            self.log_invalid();
             Err(WifiError::InvalidConfig)
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn log_invalid(&self) {
+        if self.address_mode == AddressMode::Static && !self.static_is_complete() {
+            debug!(target: "network", "Invalid config: static mode needs ip, prefix and gateway");
+        }
+        if let Some(len) = self.prefix_len
+            && !(1..=30).contains(&len)
+        {
+            debug!(target: "network", "Invalid config: prefix length out of range (prefix_len={})", len);
+        }
+        if !within(self.dhcp_timeout_ms, DHCP_TIMEOUT_RANGE_MS) {
+            debug!(
+                target: "network",
+                "Invalid config: DHCP timeout out of range (timeout_ms={} range_ms={:?})",
+                self.dhcp_timeout_ms, DHCP_TIMEOUT_RANGE_MS
+            );
         }
     }
 

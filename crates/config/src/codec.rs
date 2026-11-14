@@ -28,10 +28,17 @@ use crate::{DecodeFailure, EncodeError, SectionError};
 /// [`SectionError::TrailingBytes`], never reported as a decode failure.
 pub fn decode_exact<T: for<'b> Decode<'b, ()>>(payload: &[u8]) -> Result<T, SectionError> {
     let mut decoder = Decoder::new(payload);
-    let value = T::decode(&mut decoder, &mut ()).map_err(DecodeFailure::from)?;
+    let value = T::decode(&mut decoder, &mut ()).map_err(|error| {
+        let failure = DecodeFailure::from(error);
+        log::debug!(target: "config", "Decode failed: {}", failure);
+        failure
+    })?;
     match payload.len() - decoder.position() {
         0 => Ok(value),
-        extra => Err(SectionError::TrailingBytes { extra }),
+        extra => {
+            log::debug!(target: "config", "Decode left trailing bytes (count={})", extra);
+            Err(SectionError::TrailingBytes { extra })
+        }
     }
 }
 
@@ -41,8 +48,14 @@ pub fn encode_to_slice<T: Encode<()>>(value: &T, buffer: &mut [u8]) -> Result<us
     let mut remaining: &mut [u8] = buffer;
     match minicbor::encode(value, &mut remaining) {
         Ok(()) => Ok(capacity - remaining.len()),
-        Err(error) if error.is_write() => Err(EncodeError::BufferTooSmall),
-        Err(_) => Err(EncodeError::Failed),
+        Err(error) if error.is_write() => {
+            log::debug!(target: "config", "Encode buffer too small (size_b={})", capacity);
+            Err(EncodeError::BufferTooSmall)
+        }
+        Err(_) => {
+            log::debug!(target: "config", "Encode failed");
+            Err(EncodeError::Failed)
+        }
     }
 }
 

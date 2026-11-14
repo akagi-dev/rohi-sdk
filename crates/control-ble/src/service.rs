@@ -15,7 +15,7 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-use log::{debug, warn};
+use log::{debug, info, trace, warn};
 use rohi_control::{AuthorizationPolicy, ControlBackend, Controller, LinkSecurity};
 use rohi_control_proto::control::{self as pb, Response_::Response as Reply};
 use rohi_control_proto::limits::{MAX_REQUEST_LEN, MAX_RESPONSE_LEN};
@@ -47,6 +47,7 @@ pub struct ControlBle<'c, T, S, P> {
     request: Reassembler<MAX_REQUEST_LEN>,
     response: [u8; MAX_RESPONSE_LEN],
     chunk: [u8; MAX_BLE_PAYLOAD],
+    announced_epoch: Option<u32>,
 }
 
 impl<'c, T, S, P> ControlBle<'c, T, S, P>
@@ -63,6 +64,7 @@ where
             request: Reassembler::new(),
             response: [0; MAX_RESPONSE_LEN],
             chunk: [0; MAX_BLE_PAYLOAD],
+            announced_epoch: None,
         }
     }
 
@@ -95,13 +97,14 @@ where
         let len = match received {
             Ok(len) => len,
             Err(BleError::Disconnected) => {
-                debug!("control: central disconnected");
+                info!(target: "control.ble", "Central disconnected");
+                self.announced_epoch = None;
                 self.controller.link_lost();
                 self.request.reset();
                 return;
             }
             Err(error) => {
-                warn!("control: BLE receive failed: {}", error);
+                warn!(target: "control.ble", "Receive failed (err={})", error);
                 self.request.reset();
                 return;
             }
@@ -121,10 +124,26 @@ where
                 ..LinkSecurity::default()
             });
 
+        if self.announced_epoch != Some(epoch) {
+            self.announced_epoch = Some(epoch);
+            info!(
+                target: "control.ble",
+                "Central connected (epoch={} encrypted={} authenticated={})",
+                epoch, link.encrypted, link.authenticated
+            );
+        }
+        trace!(target: "control.ble", "Frame received (size_b={})", len);
+
         let outcome = match self.request.push(&self.chunk[..len]) {
             Ok(None) => return,
             Ok(Some(message)) => {
                 let id = message.id;
+                debug!(
+                    target: "control.ble",
+                    "Request reassembled (id={} size_b={})",
+                    id,
+                    message.bytes.len()
+                );
                 let written = self
                     .controller
                     .handle(&link, message.bytes, &mut self.response)
@@ -142,7 +161,7 @@ where
                 }
             }
             Err(error) => {
-                warn!("control: rejected frame: {}", error);
+                warn!(target: "control.ble", "Frame rejected (err={})", error);
                 let id = self.request.last_id();
                 self.send_error(id, epoch).await;
             }
@@ -158,8 +177,11 @@ where
                 ..Default::default()
             })),
         };
-        if let Ok(written) = encode(&response, &mut self.response) {
-            self.send_response(id, written, epoch).await;
+        match encode(&response, &mut self.response) {
+            Ok(written) => self.send_response(id, written, epoch).await,
+            Err(error) => {
+                warn!(target: "control.ble", "Cannot encode the error response (err={:?})", error)
+            }
         }
     }
 
@@ -167,7 +189,11 @@ where
     async fn send_response(&mut self, id: u8, written: usize, epoch: u32) {
         if self.transport.connection_info().is_none() || self.transport.connection_epoch() != epoch
         {
-            debug!("control: link changed, response dropped");
+            debug!(
+                target: "control.ble",
+                "Link changed, response dropped (id={} size_b={})",
+                id, written
+            );
             self.request.reset();
             return;
         }
@@ -175,16 +201,28 @@ where
         let mut fragments = match Fragmenter::new(id, &self.response[..written], max) {
             Ok(fragments) => fragments,
             Err(error) => {
-                warn!("control: cannot frame the response: {}", error);
+                warn!(
+                    target: "control.ble",
+                    "Cannot frame the response (id={} size_b={} err={})",
+                    id, written, error
+                );
                 return;
             }
         };
+        debug!(
+            target: "control.ble",
+            "Sending response (id={} size_b={} frames={})",
+            id,
+            written,
+            fragments.count()
+        );
         while let Some(len) = fragments.next_frame(&mut self.chunk) {
             if let Err(error) = self.transport.send(&self.chunk[..len]).await {
-                warn!("control: BLE send failed: {}", error);
+                warn!(target: "control.ble", "Send failed (err={})", error);
                 self.request.reset();
                 return;
             }
+            trace!(target: "control.ble", "Frame sent (size_b={})", len);
         }
     }
 }
