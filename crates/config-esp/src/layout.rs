@@ -32,19 +32,20 @@
 //! `firmwares/altruist-urban/partitions-esp32c3.csv` (4 MB flash) and
 //! `partitions-esp32c6.csv` (8 MB flash) are mirrored by the constants of this
 //! module; a host test of this module keeps both in sync. The tables differ
-//! only in the size of the `factory` partition (`0x3A0000` on ESP32-C3,
-//! `0x7A0000` on ESP32-C6).
+//! only in the size of the `factory` partition (`0x2E0000` on ESP32-C3,
+//! `0x6E0000` on ESP32-C6): `rohi-log` is always the last 1 MiB of the flash.
 //!
 //! # Flash layout (Altruist Urban, ESP32-C3 4 MB / ESP32-C6 8 MB)
 //!
 //! ```text
-//! 0x09000  nvs        24 KiB
-//! 0x0f000  phy_init    4 KiB
-//! 0x10000  rohi-cfg   16 KiB   <- configuration region
-//!            ├─ slot A  8 KiB (2 sectors)
-//!            └─ slot B  8 KiB (2 sectors)
-//! 0x20000  rohi-log   256 KiB  <- persistent log ring (64 sectors)
-//! 0x60000  factory    app (0x3A0000 bytes on ESP32-C3, 0x7A0000 on ESP32-C6)
+//! 0x009000  nvs        24 KiB
+//! 0x00f000  phy_init    4 KiB
+//! 0x010000  rohi-cfg   16 KiB   <- configuration region
+//!             ├─ slot A  8 KiB (2 sectors)
+//!             └─ slot B  8 KiB (2 sectors)
+//! 0x020000  factory    app: 0x2E0000 bytes on ESP32-C3, 0x6E0000 on ESP32-C6
+//! 0x300000  rohi-log   1 MiB, up to the end of the flash (ESP32-C6: from 0x700000)
+//!             254 ring sectors, then 2 format header sectors
 //! ```
 //!
 //! `cargo run` passes the table of the selected target to `espflash` (see
@@ -70,10 +71,11 @@ pub const REGION_SIZE: usize = 2 * SLOT_SIZE;
 /// Label of the data partition that holds the persistent log.
 pub const LOG_PARTITION_LABEL: &str = "rohi-log";
 
-/// Size of the `rohi-log` partition in bytes: 256 KiB, 64 sectors. The log is a
-/// ring of segments of whole sectors (`rohi-logging`), so any multiple of
-/// [`SECTOR_SIZE`] works; this is the shipped size.
-pub const LOG_REGION_SIZE: usize = 64 * SECTOR_SIZE;
+/// Size of the `rohi-log` partition in bytes: 1 MiB, 256 sectors. The log is a
+/// ring of segments of whole sectors and two format header sectors
+/// (`rohi-logging`), so any multiple of [`SECTOR_SIZE`] above a handful of
+/// sectors works; this is the shipped size.
+pub const LOG_REGION_SIZE: usize = 256 * SECTOR_SIZE;
 
 #[cfg(test)]
 mod tests {
@@ -92,11 +94,17 @@ mod tests {
 
     #[test]
     fn partition_tables_match_the_layout() {
-        for csv in [
-            include_str!("../../../firmwares/altruist-urban/partitions-esp32c3.csv"),
-            include_str!("../../../firmwares/altruist-urban/partitions-esp32c6.csv"),
+        for (csv, flash_size) in [
+            (
+                include_str!("../../../firmwares/altruist-urban/partitions-esp32c3.csv"),
+                4 << 20,
+            ),
+            (
+                include_str!("../../../firmwares/altruist-urban/partitions-esp32c6.csv"),
+                8 << 20,
+            ),
         ] {
-            assert_partition_matches_layout(csv);
+            assert_partition_matches_layout(csv, flash_size);
         }
     }
 
@@ -118,11 +126,11 @@ mod tests {
         assert_eq!(parse_number(row[4]), size);
     }
 
-    fn assert_partition_matches_layout(csv: &str) {
+    fn assert_partition_matches_layout(csv: &str, flash_size: usize) {
         assert_data_partition(csv, PARTITION_LABEL, REGION_SIZE);
         assert_data_partition(csv, LOG_PARTITION_LABEL, LOG_REGION_SIZE);
 
-        // Partitions do not overlap and the app ends at the end of the flash.
+        // Partitions do not overlap and `rohi-log` ends at the end of the flash.
         let mut spans: std::vec::Vec<(usize, usize)> = rows(csv)
             .iter()
             .map(|row| (parse_number(row[3]), parse_number(row[4])))
@@ -132,20 +140,31 @@ mod tests {
             assert!(pair[0].0 + pair[0].1 <= pair[1].0, "{pair:?} overlap");
         }
         let end = spans.last().map(|(offset, size)| offset + size).unwrap();
-        assert!(end == 4 << 20 || end == 8 << 20, "{end:#x}");
+        assert_eq!(end, flash_size, "{end:#x}");
+
+        let table = rows(csv);
+        let offset_and_size = |label: &str| {
+            let row = table.iter().find(|row| row[0] == label).unwrap();
+            (parse_number(row[3]), parse_number(row[4]))
+        };
+        // `factory` stays where it was before the log existed, the log is the
+        // last megabyte of the flash and the app fills what is between.
+        let (app, app_size) = offset_and_size("factory");
+        let (log, log_size) = offset_and_size(LOG_PARTITION_LABEL);
+        assert_eq!(app, 0x20000);
+        assert_eq!(log, flash_size - LOG_REGION_SIZE);
+        assert_eq!(log_size, LOG_REGION_SIZE);
+        assert_eq!(app + app_size, log);
         // The app partition is aligned to 64 KiB, as the bootloader needs.
-        let app = rows(csv)
-            .iter()
-            .find(|row| row[1] == "app")
-            .map(|row| parse_number(row[3]))
-            .unwrap();
         assert_eq!(app % 0x10000, 0);
+        assert_eq!(table.iter().filter(|row| row[1] == "app").count(), 1);
     }
 
     #[test]
-    fn the_log_region_is_whole_sectors() {
+    fn the_log_region_is_one_mebibyte_of_whole_sectors() {
         assert_eq!(LOG_REGION_SIZE % SECTOR_SIZE, 0);
-        assert_eq!(LOG_REGION_SIZE, 256 * 1024);
+        assert_eq!(LOG_REGION_SIZE, 1 << 20);
+        assert_eq!(LOG_REGION_SIZE / SECTOR_SIZE, 256);
     }
 
     #[test]

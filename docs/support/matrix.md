@@ -84,7 +84,7 @@ Limitations of BLE control plane:
 
 - One heap measurement exists (Wi-Fi and BLE running, chip not recorded); advertising, coexistence, MTU and 24 h stability are not measured.
 - No BLE pairing or encryption yet.
-- Static analysis only (`scripts/memcheck.sh`, CI job Memcheck): 121 848 B main stack; the frames of the control request path (`rohi status`, `config`, `action`) are below 1.8 KB since #63, but the stack peak is not measured on a device and the exception reported for `rohi status logging` and `rohi logs clear --yes` is not shown to be fixed.
+- Static analysis only (`scripts/memcheck.sh`, CI job Memcheck): 121 816 B main stack; the frames of the control request path (`rohi status`, `config`, `action`) are below 1.8 KB since #63, but the stack peak is not measured on a device and the exception reported for `rohi status logging` and `rohi logs clear --yes` is not shown to be fixed.
 
 Limitations of Persistent configuration store:
 
@@ -99,7 +99,7 @@ Limitations of Persistent logging:
 - Only the internal-flash backend exists; the SD backend is not implemented (issue #26 is implemented only in part) and `storage = sd` reports `storage_unavailable`.
 - Flash erase and programming stall the whole CPU for tens of milliseconds per sector; the effect on Wi-Fi, BLE and the microphone DMA ring is not measured.
 - Persistence across reset, power-loss recovery (including payload checksum validation and the history generation), flash rotation, coexistence with the configuration partition and the transfer speed of `rohi logs download` over BLE are covered by host emulation only; no hardware run is recorded.
-- Static analysis only (`scripts/memcheck.sh`, CI job Memcheck): 121 848 B main stack; the frames of the logging read, download and clear paths are below 1.8 KB since #63, but the stack peak is not measured on a device and the exception reported for `rohi status logging` and `rohi logs clear --yes` is not shown to be fixed.
+- Static analysis only (`scripts/memcheck.sh`, CI job Memcheck): 121 816 B main stack; the frames of the logging read, download and clear paths are below 1.8 KB since #63, but the stack peak is not measured on a device and the exception reported for `rohi status logging` and `rohi logs clear --yes` is not shown to be fixed.
 
 Limitations of System actions:
 
@@ -182,7 +182,7 @@ Limitations of BLE control plane:
 
 - One heap measurement exists (Wi-Fi and BLE running, chip not recorded); advertising, coexistence, MTU and 24 h stability are not measured.
 - No BLE pairing or encryption yet.
-- Static analysis only (`scripts/memcheck.sh`, CI job Memcheck): 22 024 B main stack; the frames of the control request path (`rohi status`, `config`, `action`) are below 1.8 KB since #63, but the stack peak is not measured on a device and the exception reported for `rohi status logging` and `rohi logs clear --yes` is not shown to be fixed.
+- Static analysis only (`scripts/memcheck.sh`, CI job Memcheck): 21 976 B main stack; the frames of the control request path (`rohi status`, `config`, `action`) are below 1.8 KB since #63, but the stack peak is not measured on a device and the exception reported for `rohi status logging` and `rohi logs clear --yes` is not shown to be fixed.
 
 Limitations of Persistent configuration store:
 
@@ -197,7 +197,7 @@ Limitations of Persistent logging:
 - Only the internal-flash backend exists; the SD backend is not implemented (issue #26 is implemented only in part) and `storage = sd` reports `storage_unavailable`.
 - Flash erase and programming stall the whole CPU for tens of milliseconds per sector; the effect on Wi-Fi, BLE and the microphone DMA ring is not measured.
 - Persistence across reset, power-loss recovery (including payload checksum validation and the history generation), flash rotation, coexistence with the configuration partition and the transfer speed of `rohi logs download` over BLE are covered by host emulation only; no hardware run is recorded.
-- Static analysis only (`scripts/memcheck.sh`, CI job Memcheck): 22 024 B main stack; the frames of the logging read, download and clear paths are below 1.8 KB since #63, but the stack peak is not measured on a device and the exception reported for `rohi status logging` and `rohi logs clear --yes` is not shown to be fixed.
+- Static analysis only (`scripts/memcheck.sh`, CI job Memcheck): 21 976 B main stack; the frames of the logging read, download and clear paths are below 1.8 KB since #63, but the stack peak is not measured on a device and the exception reported for `rohi status logging` and `rohi logs clear --yes` is not shown to be fixed.
 
 Limitations of System actions:
 

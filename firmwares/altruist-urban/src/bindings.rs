@@ -275,8 +275,20 @@ impl Binding for LoggingBinding {
     }
 
     fn publish(runtime: &ConfigRuntime, effective: &LoggingConfig) {
+        if effective.validate().is_err() {
+            warn_inconsistent();
+        }
         (runtime.logging)(*effective);
     }
+}
+
+// Out of line, so that the report does not enlarge the frame of the publication.
+#[cold]
+#[inline(never)]
+fn warn_inconsistent() {
+    warn!(
+        "logging: the stored overrides do not fit together (for example a retention below two segments), logging keeps the defaults of the build"
+    );
 }
 
 /// The device identity: the signer of the telemetry frames and the control

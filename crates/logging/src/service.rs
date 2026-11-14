@@ -147,6 +147,20 @@ pub fn history_of_read_file(name: &str) -> Option<u32> {
 
 const MAX_STREAMS: usize = 2;
 const RETRY_MS: u64 = 10_000;
+
+// The reports are kept out of line: they run once in a while, and inlined into
+// the task they would only grow its frame.
+#[cold]
+#[inline(never)]
+fn warn_storage(what: &str, error: &dyn core::fmt::Display) {
+    log::warn!("Log storage: cannot {what}: {error}");
+}
+
+#[cold]
+#[inline(never)]
+fn notice_formatted() {
+    log::info!("Log storage: no valid format header, the region was formatted");
+}
 const PINNED_RETRY_MS: u64 = 1_000;
 const SWEEP_MS: u64 = 10_000;
 const FLUSH_BYTES: usize = 1_536;
@@ -383,6 +397,9 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
         };
         match storage.recover().await {
             Ok(recovery) => {
+                if recovery.formatted {
+                    notice_formatted();
+                }
                 if let Some(newest) = recovery.newest_sequence {
                     inner.next_sequence = inner.next_sequence.max(newest + 1);
                 }
@@ -396,7 +413,8 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
                     state.corrupt_since = (recovery.dropped > 0).then_some(now);
                 });
             }
-            Err(_) => {
+            Err(error) => {
+                warn_storage("open", &error);
                 inner.retry_at_ms = now + RETRY_MS;
                 self.with(|state| {
                     state.started = true;
@@ -427,7 +445,10 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
                     }
                 });
             }
-            Err(_) => inner.retry_at_ms = now + RETRY_MS,
+            Err(error) => {
+                warn_storage("recover", &error);
+                inner.retry_at_ms = now + RETRY_MS;
+            }
         }
         self.refresh(inner).await;
     }
@@ -1071,10 +1092,20 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
         let Some(storage) = inner.storage.as_mut() else {
             return Err(ActionError::Unavailable);
         };
-        storage.clear().await.map_err(|error| match error {
-            StorageError::Busy => ActionError::Busy,
-            _ => ActionError::Internal,
-        })?;
+        if let Err(error) = storage.clear().await {
+            warn_storage("clear", &error);
+            if error != StorageError::Busy {
+                // What the erase left is finished by a recovery.
+                inner.faulted = true;
+                inner.retry_at_ms = now + RETRY_MS;
+            }
+            // The history may be gone already, the status must say what is left.
+            self.refresh(&mut inner).await;
+            return Err(match error {
+                StorageError::Busy => ActionError::Busy,
+                _ => ActionError::Internal,
+            });
+        }
         self.with(|state| {
             state.corrupt_since = None;
             state.read_failed_since = None;

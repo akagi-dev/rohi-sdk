@@ -34,7 +34,20 @@ The chip is selected by exactly one of the features `esp32c3` / `esp32c6`; witho
 `cargo build-esp32c6` are shortcuts for checking and building.
 
 The runner flashes the per-chip partition table (`partitions-esp32c3.csv` or `partitions-esp32c6.csv`), which reserves the `rohi-cfg` region used by the
-[configuration store](https://docs.rs/rohi-config) and the 256 KiB `rohi-log` region of the persistent log (`rohi-logging`). Run the command from the repository root.
+[configuration store](https://docs.rs/rohi-config) and the `rohi-log` region of the persistent log (`rohi-logging`): the **last 1 MiB of the flash**, after the
+`factory` application (`0x300000` on the 4 MB ESP32-C3, `0x700000` on the 8 MB ESP32-C6). Run the command from the repository root.
+
+The `factory` partition starts at `0x20000` and ends where `rohi-log` begins (`0x2E0000` bytes on the ESP32-C3, `0x6E0000` on the ESP32-C6); the
+release image is about 1.2 MB on the ESP32-C3, and `scripts/image-fits.sh <chip>` checks that the built image fits.
+
+### Upgrading a device that has persistent logging
+
+Flash with the runner, so that the new partition table is written together with the firmware: it moves `rohi-log` and grows it from 256 KiB to
+1 MiB. Nothing is migrated: the old log history is lost. The first start finds no format header in the new region and **formats** it, that is, it
+erases its 256 sectors one at a time (the duration is not measured on hardware yet; other tasks keep running between two erases, and boot records wait in the
+bounded queue, so a long format can drop some; the console says `Log storage: no valid format header, the region was formatted`). Only the `rohi-log` region is erased, never the partition table, the application, `rohi-cfg`, NVS or PHY, and later starts find the header and keep the
+history. `rohi logs clear` physically erases the whole region the same way. The hardware time of both is not measured yet, see
+[Hardware testing](../../docs/validation/hardware-testing.md#persistent-logging).
 
 ## Sensors
 

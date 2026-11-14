@@ -31,7 +31,7 @@ use rohi_service::{
 };
 use rohi_time::UnixTime;
 
-use crate::storage::{MAX_SEGMENTS, Medium, RamMedium, RingStorage};
+use crate::storage::{LogStorage, MAX_SEGMENTS, Medium, RamMedium, RingStorage};
 use crate::*;
 
 const SECTORS: usize = 16;
@@ -43,7 +43,10 @@ impl Shared {
     fn new() -> Self {
         let mut medium = RamMedium::new();
         medium.erase(0, SECTORS as u32).unwrap();
-        Self(Rc::new(RefCell::new(medium)))
+        let shared = Self(Rc::new(RefCell::new(medium)));
+        // A formatted medium, as a device has after its first start.
+        block_on(RingStorage::new(shared.clone()).recover()).unwrap();
+        shared
     }
 }
 
@@ -1517,4 +1520,31 @@ fn repeated_clear_and_logging_after_it_keeps_working() {
         settle(&rig, &logging);
         assert_eq!(read(&logging, 0, 50).len(), 3);
     }
+}
+
+#[test]
+fn a_medium_that_was_never_formatted_is_formatted_once_and_keeps_the_boot_records() {
+    let rig = Rig::new();
+    // What a partition holds the first time: old bytes, no format header.
+    {
+        let mut medium = rig.internal.clone();
+        for sector in 0..SECTORS as u32 {
+            medium.erase(sector, 1).unwrap();
+            medium.write(sector * 4096, &[0x42; 64]).unwrap();
+        }
+    }
+    {
+        let logging = rig.logging(CONFIG);
+        // Queued before the backend is open, as the boot records are.
+        log_many(&logging, 5, 1);
+        settle(&rig, &logging);
+        assert_eq!(number(&logging, status_field::STORED_RECORDS), Some(5));
+        assert_eq!(number(&logging, status_field::HISTORY), Some(1));
+    }
+    let erases = rig.internal.0.borrow().erase_counts().to_vec();
+
+    let logging = rig.logging(CONFIG);
+    step(&rig, &logging);
+    assert_eq!(number(&logging, status_field::STORED_RECORDS), Some(5));
+    assert_eq!(rig.internal.0.borrow().erase_counts().to_vec(), erases);
 }

@@ -41,8 +41,8 @@ fn the_defaults_are_valid_and_conservative() {
     assert_eq!(read(LEVEL), Some(Value::Enum(2)));
     assert_eq!(read(STORAGE), Some(text("internal")));
     assert_eq!(read(COMPRESSION), Some(text("lz4")));
-    assert_eq!(read(RETENTION), Some(Value::U64(128 * 1024)));
-    assert_eq!(read(SEGMENT), Some(Value::U64(8 * 1024)));
+    assert_eq!(read(RETENTION), Some(Value::U64(1024 * 1024)));
+    assert_eq!(read(SEGMENT), Some(Value::U64(64 * 1024)));
     assert_eq!(read(FLUSH), Some(Value::U64(10_000)));
 }
 
@@ -190,20 +190,44 @@ fn invalid_combinations_are_rejected_as_a_whole() {
 #[test]
 fn a_rejected_patch_leaves_the_stored_overrides_alone() {
     let stored = LoggingOverrides {
-        retention_bytes: Override::Value(64 * 1024),
+        retention_bytes: Override::Value(256 * 1024),
         ..Default::default()
     };
     // The patch is applied to a copy of the overrides; the copy is invalid.
     let mut candidate = stored.clone();
     let mut effective = rohi_config::materialize::<LoggingConfig>(&Default::default(), &stored);
-    effective.set_field(SEGMENT, Value::U64(64 * 1024)).unwrap();
-    assert!(candidate.capture(&effective, SEGMENT));
+    effective
+        .set_field(RETENTION, Value::U64(64 * 1024))
+        .unwrap();
+    assert!(candidate.capture(&effective, RETENTION));
     let applied = rohi_config::materialize::<LoggingConfig>(&Default::default(), &candidate);
     assert_eq!(Config::validate(&applied), Err(FieldError::Invalid));
 
     let still = rohi_config::materialize::<LoggingConfig>(&Default::default(), &stored);
     assert_eq!(Config::validate(&still), Ok(()));
+    assert_eq!(still.retention_bytes, 256 * 1024);
     assert_eq!(still.segment_bytes, DEFAULT_SEGMENT_BYTES);
+}
+
+#[test]
+fn an_override_of_the_former_defaults_stays_authoritative() {
+    // A budget that suited the 8 KiB default segment is too small for the
+    // 64 KiB one: the section is invalid until the segment size is set too.
+    let old = LoggingOverrides {
+        retention_bytes: Override::Value(64 * 1024),
+        ..Default::default()
+    };
+    let effective = rohi_config::materialize::<LoggingConfig>(&Default::default(), &old);
+    assert_eq!(effective.retention_bytes, 64 * 1024);
+    assert_eq!(Config::validate(&effective), Err(FieldError::Invalid));
+
+    let both = LoggingOverrides {
+        segment_bytes: Override::Value(8 * 1024),
+        ..old
+    };
+    let effective = rohi_config::materialize::<LoggingConfig>(&Default::default(), &both);
+    assert_eq!(Config::validate(&effective), Ok(()));
+    assert_eq!(effective.retention_bytes, 64 * 1024);
 }
 
 #[test]

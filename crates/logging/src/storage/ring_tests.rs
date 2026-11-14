@@ -27,7 +27,8 @@ struct Ram;
 
 impl contract::Harness for Ram {
     type Storage = RingStorage<RamMedium<SECTORS>>;
-    const CAPACITY: u32 = (SECTORS * 4096) as u32;
+    // The last two sectors hold the format header.
+    const CAPACITY: u32 = ((SECTORS - 2) * 4096) as u32;
 
     fn create() -> Self::Storage {
         let mut storage = RingStorage::new(RamMedium::new());
@@ -218,7 +219,8 @@ fn flash_wear_is_spread_over_the_whole_region() {
     for _ in 0..60 {
         writer.push_many(&mut storage, 100).unwrap();
     }
-    let counts = *storage.medium().erase_counts();
+    // The ring, not the format header; every sector was erased once by the format.
+    let counts = storage.medium().erase_counts()[..SECTORS - 2].to_vec();
     let (min, max) = (counts.iter().min().unwrap(), counts.iter().max().unwrap());
     assert!(*min > 0, "{counts:?}");
     assert!(max - min <= 2, "{counts:?}");
@@ -390,4 +392,185 @@ fn a_history_lost_to_damage_gets_a_new_generation() {
     assert_eq!(generation(&mut storage), 2);
     let mut storage = restart(storage);
     assert_eq!(generation(&mut storage), 2);
+}
+
+const RING: usize = SECTORS - 2;
+
+fn write_history(storage: &mut RingStorage<RamMedium<SECTORS>>, records: u64) {
+    let mut writer = Writer::new(1, Compression::Lz4, LIMITS);
+    writer.push_many(storage, records).unwrap();
+    writer.flush(storage).unwrap();
+}
+
+// A medium that holds a healthy history but no format header: what a
+// partition that was moved over old data looks like.
+fn medium_with_old_history() -> RamMedium<SECTORS> {
+    let mut storage = fresh();
+    write_history(&mut storage, 600);
+    assert!(block_on(storage.segments()).unwrap().len() > 1);
+    let mut medium = storage.into_medium();
+    for slot in RING..SECTORS {
+        medium.erase(slot as u32, 1).unwrap();
+    }
+    medium
+}
+
+fn assert_empty_and_usable(mut storage: RingStorage<RamMedium<SECTORS>>) {
+    assert!(all_records(&mut storage).is_empty());
+    assert!(block_on(storage.segments()).unwrap().is_empty());
+    write_history(&mut storage, 50);
+    assert_contiguous(&all_records(&mut storage));
+    let mut storage = restart(storage);
+    assert_eq!(all_records(&mut storage).len(), 50);
+}
+
+#[test]
+fn a_new_medium_is_formatted_once_and_a_healthy_history_is_kept() {
+    let mut storage = fresh();
+    let counts = storage.medium().erase_counts()[..RING].to_vec();
+    assert!(counts.iter().all(|count| *count == 1), "{counts:?}");
+    write_history(&mut storage, 100);
+    let records = all_records(&mut storage);
+    let erased = *storage.medium().erase_counts();
+
+    for _ in 0..3 {
+        storage = restart(storage);
+        assert_eq!(*storage.medium().erase_counts(), erased, "reformatted");
+        assert_eq!(all_records(&mut storage), records);
+        assert_eq!(generation(&mut storage), 1);
+    }
+}
+
+#[test]
+fn a_medium_without_a_header_is_formatted_whatever_it_holds() {
+    let storage = RingStorage::new(medium_with_old_history());
+    let mut storage = storage;
+    let recovery = block_on(storage.recover()).unwrap();
+    assert_eq!((recovery.segments, recovery.newest_sequence), (0, None));
+    assert_empty_and_usable(storage);
+}
+
+#[test]
+fn a_format_cut_anywhere_is_repeated_and_old_records_never_return() {
+    // Two header slots and the ring are erased, then the header is written.
+    let erases = RING + 3;
+    for erase_budget in 0..=erases {
+        for write_budget in [None, Some(0), Some(5), Some(19)] {
+            let mut medium = medium_with_old_history();
+            medium.fail_erase_after(erase_budget);
+            if let Some(bytes) = write_budget {
+                medium.fail_after(bytes);
+            }
+            let mut storage = RingStorage::new(medium);
+            let cut = erase_budget < erases || write_budget.is_some();
+            assert_eq!(
+                block_on(storage.recover()).is_err(),
+                cut,
+                "{erase_budget} {write_budget:?}"
+            );
+            // The next start finishes the format, and again after that.
+            let storage = restart(storage);
+            let storage = restart(storage);
+            assert_empty_and_usable(storage);
+        }
+    }
+}
+
+#[test]
+fn a_format_yields_between_sector_erases() {
+    let mut storage = RingStorage::new(RamMedium::<SECTORS>::new());
+    let mut recover = core::pin::pin!(storage.recover());
+    let mut yields = 0;
+    while embassy_futures::poll_once(recover.as_mut()).is_pending() {
+        yields += 1;
+    }
+    assert_eq!(yields, RING);
+}
+
+#[test]
+fn clear_erases_every_sector_and_starts_a_new_generation() {
+    let mut storage = fresh();
+    write_history(&mut storage, 600);
+    let before = storage.medium().erase_counts()[..RING].to_vec();
+    block_on(storage.clear()).unwrap();
+    let after = storage.medium().erase_counts()[..RING].to_vec();
+    for (before, after) in before.iter().zip(&after) {
+        assert_eq!(*after, before + 1, "{before:?} {after:?}");
+    }
+    for offset in 0..RING as u32 * 4096 {
+        assert_eq!(*storage.medium().raw(offset), 0xFF, "offset {offset}");
+    }
+    assert_eq!(generation(&mut storage), 2);
+    let storage = restart(storage);
+    let mut storage = {
+        let mut storage = storage;
+        assert_eq!(generation(&mut storage), 2);
+        storage
+    };
+    write_history(&mut storage, 50);
+    let mut storage = restart(storage);
+    assert_eq!(all_records(&mut storage).len(), 50);
+    assert_eq!(generation(&mut storage), 2);
+}
+
+#[test]
+fn a_clear_cut_anywhere_keeps_the_history_or_removes_all_of_it() {
+    // New header slot, old header slot, every sector of the ring.
+    let erases = RING + 2;
+    for erase_budget in 0..=erases {
+        for write_budget in [None, Some(0), Some(10), Some(19)] {
+            let mut storage = fresh();
+            write_history(&mut storage, 600);
+            let before = all_records(&mut storage);
+            storage.medium().fail_erase_after(erase_budget);
+            if let Some(bytes) = write_budget {
+                storage.medium().fail_after(bytes);
+            }
+            let result = block_on(storage.clear());
+            let cut = erase_budget < erases || write_budget.is_some();
+            assert_eq!(result.is_err(), cut, "{erase_budget} {write_budget:?}");
+
+            let mut storage = restart(storage);
+            let records = all_records(&mut storage);
+            let generation_now = generation(&mut storage);
+            if records.is_empty() {
+                assert_eq!(generation_now, 2, "{erase_budget} {write_budget:?}");
+            } else {
+                // Cut before the new generation was committed: nothing changed.
+                assert_eq!(records, before, "{erase_budget} {write_budget:?}");
+                assert_eq!(generation_now, 1);
+                assert!(result.is_err());
+            }
+            // Stale segments are neither read nor brought back by a restart.
+            let mut storage = restart(storage);
+            assert_eq!(all_records(&mut storage), records);
+            assert_eq!(generation(&mut storage), generation_now);
+            if records.is_empty() {
+                assert_empty_and_usable(storage);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_pinned_download_blocks_a_clear_and_keeps_the_medium_intact() {
+    let mut storage = fresh();
+    write_history(&mut storage, 600);
+    let first = block_on(storage.segments()).unwrap()[0].id;
+    block_on(storage.pin(first)).unwrap();
+    let erased = *storage.medium().erase_counts();
+    assert_eq!(block_on(storage.clear()), Err(StorageError::Busy));
+    assert_eq!(*storage.medium().erase_counts(), erased);
+    assert_eq!(generation(&mut storage), 1);
+    storage.unpin(first);
+    block_on(storage.clear()).unwrap();
+}
+
+#[test]
+fn a_medium_that_is_too_small_is_refused() {
+    let mut storage = RingStorage::new(RamMedium::<3>::new());
+    assert_eq!(
+        block_on(storage.recover()),
+        Err(StorageError::InvalidLimits)
+    );
 }

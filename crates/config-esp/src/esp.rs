@@ -89,7 +89,8 @@ fn find_labelled(
 /// [`PartitionError::PartitionTable`] if the table cannot be read,
 /// [`PartitionError::NotFound`] if there is no data partition labelled
 /// `rohi-log`, [`PartitionError::TooSmall`] if it is smaller than four erase
-/// sectors (two segments of one sector).
+/// sectors (two ring sectors for two one-sector segments and the two sectors of
+/// the format header).
 pub fn log_partition_region(flash: &mut FlashStorage<'_>) -> Result<FlashRegion, PartitionError> {
     let mut buffer = [0u8; PARTITION_TABLE_MAX_LEN];
     let table =

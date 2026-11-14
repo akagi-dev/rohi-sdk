@@ -34,10 +34,12 @@ pub const RETENTION_BYTES_RANGE: (u32, u32) = (8 * 1024, 64 * 1024 * 1024);
 /// Smallest and largest `flush_interval`, in milliseconds.
 pub const FLUSH_INTERVAL_RANGE_MS: (u32, u32) = (1_000, 600_000);
 
-/// Default retention budget: 128 KiB.
-pub const DEFAULT_RETENTION_BYTES: u32 = 128 * 1024;
-/// Default segment size: 8 KiB.
-pub const DEFAULT_SEGMENT_BYTES: u32 = 8 * 1024;
+/// Default retention budget: 1 MiB, the `rohi-log` partition of the Altruist
+/// Urban. The storage keeps what the medium has beyond its own header sectors.
+pub const DEFAULT_RETENTION_BYTES: u32 = 1024 * 1024;
+/// Default segment size: 64 KiB, so 16 segments fit in the default retention
+/// and stay below [`MAX_SEGMENTS`](crate::storage::MAX_SEGMENTS).
+pub const DEFAULT_SEGMENT_BYTES: u32 = 64 * 1024;
 /// Default flush interval: 10 s.
 pub const DEFAULT_FLUSH_INTERVAL_MS: u32 = 10_000;
 
@@ -167,6 +169,18 @@ impl TextValue for Compression {
 /// [`SEGMENT_GRANULE`] and `retention_bytes` holds at least two segments, so
 /// rotation always has a sealed segment to evict.
 ///
+/// # Defaults and stored overrides
+///
+/// The defaults suit the 1 MiB `rohi-log` partition: 1 MiB of retention in
+/// 64 KiB segments. They apply to every field a user never set; a stored
+/// override stays authoritative and is never rewritten. An override that was
+/// valid next to the former 8 KiB default segment can be invalid next to the
+/// new one (for example `retention_bytes` below 128 KiB): the section is then
+/// refused as a whole, the firmware warns at boot and keeps the defaults of the
+/// build until the user sets `segment_bytes` or removes the override. The
+/// storage never retains more than its medium holds, whatever `retention_bytes`
+/// says.
+///
 /// ```
 /// use rohi_logging::{Compression, LogLevel, LoggingConfig};
 ///
@@ -224,8 +238,8 @@ pub struct LoggingConfig {
 }
 
 impl LoggingConfig {
-    /// The defaults: [`PRODUCTION_LEVEL`], internal flash, LZ4, 128 KiB in
-    /// 8 KiB segments, flushed every 10 s.
+    /// The defaults: [`PRODUCTION_LEVEL`], internal flash, LZ4, 1 MiB in
+    /// 64 KiB segments, flushed every 10 s.
     pub const DEFAULT: Self = Self {
         level: PRODUCTION_LEVEL,
         storage: LogStorageKind::Internal,

@@ -223,3 +223,72 @@ async fn the_sd_card_is_unavailable_on_the_host_and_never_replaced_by_the_file()
     drop(device);
     sim.stop();
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_cleared_log_stays_cleared_across_a_restart_and_keeps_working() {
+    let dir = TempDir::new().unwrap();
+    let storage = dir.path().join("device.flash");
+    let log_file = dir.path().join("device.log.flash");
+
+    let sim = Sim::start(&Launch::new().storage(&storage));
+    let mut device = sim.device().await;
+    eventually("the boot record", WAIT, async || {
+        records(&mut device)
+            .await
+            .contains("Starting")
+            .then_some(())
+    })
+    .await;
+    let history = status_number(&mut device, status_field::HISTORY)
+        .await
+        .unwrap();
+    device.invoke("logging", "clear", &[]).await.unwrap();
+    assert_eq!(
+        status_number(&mut device, status_field::HISTORY).await,
+        Some(history + 1)
+    );
+    drop(device);
+    assert!(sim.stop().success());
+    assert_eq!(
+        std::fs::metadata(&log_file).unwrap().len(),
+        1 << 20,
+        "the file is the 1 MiB region"
+    );
+
+    let sim = Sim::start(&Launch::new().storage(&storage));
+    let mut device = sim.device().await;
+    let text = eventually("the records of the new boot", WAIT, async || {
+        let text = records(&mut device).await;
+        text.contains("Starting").then_some(text)
+    })
+    .await;
+    assert_eq!(text.matches("Starting").count(), 1, "{text}");
+    assert_eq!(
+        status_number(&mut device, status_field::HISTORY).await,
+        Some(history + 1),
+        "the generation survives the restart, no format"
+    );
+    drop(device);
+    sim.stop();
+}
+
+#[test]
+fn a_log_image_of_the_former_256_kib_layout_is_a_startup_error() {
+    let dir = TempDir::new().unwrap();
+    let storage = dir.path().join("device.flash");
+    let log_file = dir.path().join("device.log.flash");
+    std::fs::write(&log_file, vec![0xFF; 256 * 1024]).unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_altruist-urban"))
+        .arg("--storage")
+        .arg(&storage)
+        .args(["--control-port", "0", "--manage-port", "0"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(74));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("256 KiB") && stderr.contains("delete"),
+        "{stderr}"
+    );
+    assert_eq!(std::fs::metadata(&log_file).unwrap().len(), 256 * 1024);
+}

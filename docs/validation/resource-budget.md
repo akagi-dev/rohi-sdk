@@ -288,13 +288,39 @@ Release build of `altruist-urban`, measured with `nm -S` on the ELF (`cargo buil
 
 | Item | ESP32-C3 | ESP32-C6 |
 |------|---------:|---------:|
-| `altruist_urban::esp::logging::LOGGING` (queue, batch, streams, status; initialized data in RAM) | 12 512 B | 12 512 B |
+| `altruist_urban::esp::logging::LOGGING` (queue, batch, streams, status; initialized data in RAM) | 12 728 B | 12 728 B |
 | `altruist_urban::esp::logging::logging_task` future (`.bss`) | 2 304 B | 2 304 B |
 
 The limits are in `firmwares/altruist-urban/src/logging.rs` (`QUEUE_DEPTH` 24 records, `READ_BYTES` 2 048 B per
-open `read` stream, at most two streams) and in `rohi_logging` (batch of 2 KiB of text, one compressed block of at most 2 056 B). Flash:
-the `rohi-log` partition is 256 KiB of the 4 MB / 8 MB flash (the `factory` partition shrank by that amount).
+open `read` stream, at most two streams) and in `rohi_logging` (batch of 2 KiB of text, one compressed block of at most 2 056 B).
+
+**Flash.** The `rohi-log` partition is the last 1 MiB of the 4 MB / 8 MB flash (`0x300000` / `0x700000`), 256 sectors of
+4 KiB: 254 for the ring and the last two for the format header. The `factory` partition starts at `0x20000` and is `0x2E0000`
+B (ESP32-C3) / `0x6E0000` B (ESP32-C6). `scripts/image-fits.sh <chip>` (CI job Firmware) runs `espflash save-image`, which
+refuses an image that does not fit: the ESP32-C3 `firmware`-profile image is 1 263 504 B of 3 014 656 B (41.9 %), the ESP32-C6
+`release` image 1 721 184 B of 7 208 960 B (23.9 %).
+
+**RAM does not scale with the flash.** The default retention is 1 MiB in 64 KiB segments (16 segments, the cap is 24), and
+nothing is allocated per sector or per segment byte: a format or a clear erases one 4 KiB sector at a time and yields
+between two erases (no flash lock is held across the region), the recovery reads through 20 B to 128 B buffers, a sealed
+segment is checked with a streaming CRC-32 and the metadata is at most 24 segments. Static analysis of this change against
+`master` at `72caa63` (`scripts/memcheck.sh`, same toolchain and flags, nothing measured on a device):
+
+| | ESP32-C3 | ESP32-C6 |
+|---|---:|---:|
+| `.data` | +16 B (29 840 B) | +24 B (33 108 B) |
+| `.bss` | 0 (204 824 B) | +8 B (208 936 B) |
+| Task pools (`logging_task` 2 304 B) | unchanged (40 352 B) | unchanged (40 328 B) |
+| Main stack | −16 B (21 976 B) | −32 B (121 816 B) |
+| Largest frame | unchanged (12 240 B) | unchanged (9 232 B) |
+| Logging frames (`Logging::step`, `invoke_of<LoggingService>`, `observe`) | +16 B each | +16 B to +32 B |
+
+The growth of `LOGGING` (+8 B) is the index of the active format header slot that the ring keeps. The log lines for a failed open, recover or clear
+are out of line (`#[cold]`): inlined into the config publication they enlarged the `EspWifi::new` frame by 832 B in a
+trial build. The new `Recovery::formatted` flag and the format loop add no buffer.
 
 **Not measured:** the share of `.text` the logging code adds, stack depth of the logging task while it compresses (the
-LZ4 compressor keeps a 2 KiB table and the writer a 2 KiB chunk on the stack), the CPU time of a flush, and how long a
-flash sector erase stalls Wi-Fi, BLE and the microphone DMA ring. These need a device.
+LZ4 compressor keeps a 2 KiB table and the writer a 2 KiB chunk on the stack), the CPU time of a flush, how long a
+flash sector erase stalls Wi-Fi, BLE and the microphone DMA ring, how long the first format of the 256 sectors takes, how long
+`rohi logs clear` takes (it has to stay below the 40 s action timeout of the client) and how long recovery spends on the checksums
+of up to 1 MiB of sealed segments at boot (the CRC-32 is computed bit by bit). These need a device.

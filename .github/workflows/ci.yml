@@ -126,6 +126,12 @@ jobs:
         run: cargo clippy -p altruist-urban -p rohi-examples -p rohi-hal-esp -p rohi-net-esp -p rohi-config-esp --no-default-features --features ${{ matrix.chip }} --target ${{ matrix.target }} -- -D warnings
       - name: Build
         run: cargo build-${{ matrix.chip }}
+      - name: Install espflash
+        uses: taiki-e/install-action@v2
+        with:
+          tool: espflash
+      - name: The image fits the factory partition
+        run: scripts/image-fits.sh ${{ matrix.chip }}
 
   memory-check:
     name: Memory (${{ matrix.chip }})
