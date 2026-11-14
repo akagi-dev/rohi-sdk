@@ -71,11 +71,11 @@ use rohi_connectivity_proto::sensor_v1::{
     SDS011_, Temperature,
 };
 use rohi_connectivity_proto::{EncodeError as WireError, encode};
-use rohi_hal::{
+use rohi_location::Location;
+use rohi_sensors::{
     Bmx280Measurements, Measurement, MeasurementState, MeasurementsSnapshot, NoiseMeasurements,
     Sds011Measurements,
 };
-use rohi_location::Location;
 
 /// Counters of one encoding.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -213,7 +213,8 @@ impl UrbanEncoder {
     ///
     /// ```
     /// use rohi_connectivity::{EncodeError, UrbanEncoder};
-    /// use rohi_hal::{MeasurementStore, MonotonicTimestamp};
+    /// use rohi_sensors::MeasurementStore;
+    /// use rohi_time::MonotonicTimestamp;
     ///
     /// let empty = MeasurementStore::new().snapshot(MonotonicTimestamp::from_millis(1_000));
     /// assert_eq!(
@@ -241,10 +242,11 @@ impl UrbanEncoder {
     /// use rohi_connectivity::UrbanEncoder;
     /// use rohi_connectivity_proto::core_v1::Message;
     /// use rohi_connectivity_proto::decode;
-    /// use rohi_hal::{
-    ///     Bmx280Update, Celsius, MeasurementStore, MeasurementUpdate, MonotonicTimestamp, Pascal,
+    /// use rohi_sensors::{
+    ///     Bmx280Update, Celsius, MeasurementStore, MeasurementUpdate, Pascal,
     ///     RelativeHumidity, SensorEvent,
     /// };
+    /// use rohi_time::MonotonicTimestamp;
     /// use rohi_location::{Location, LocationSourceKind};
     ///
     /// let at = |ms| MonotonicTimestamp::from_millis(ms);

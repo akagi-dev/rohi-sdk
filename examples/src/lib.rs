@@ -45,7 +45,7 @@ use esp_rtos::embassy::Executor;
 use log::{error, info};
 use rohi_sdk::esp::hal::I2sMicrophone;
 use rohi_sdk::esp::hal::board::altruist_urban::{AltruistUrban, Hardware};
-use rohi_sdk::hal::SensorEvent;
+use rohi_sdk::sensors::SensorEvent;
 use static_cell::StaticCell;
 
 static EXECUTOR: StaticCell<Executor> = StaticCell::new();

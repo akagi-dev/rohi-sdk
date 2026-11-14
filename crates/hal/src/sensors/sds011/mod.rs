@@ -91,22 +91,23 @@
 //! warm-up of the cycle is the only wait before it. The longest time between
 //! two measurements of a healthy sensor is [`Config::max_cadence_ms`] (150 s with the defaults), which the
 //! default freshness policy outlasts, see
-//! [`measurements`](crate::measurements).
+//! [`measurements`](rohi_sensors::measurements).
 
 pub mod aggregate;
 pub mod protocol;
 
 use core::fmt::{self, Debug, Display};
 
-use crate::{
-    MeasurementUpdate, MicrogramsPerCubicMeter, Sds011Update, SensorErrorCode, SensorKind,
-};
 use embedded_hal_async::delay::DelayNs;
 use embedded_io_async::{ErrorKind, ErrorType, Read, ReadExactError, Write};
+use rohi_sensors::{
+    MeasurementUpdate, MicrogramsPerCubicMeter, Sds011Update, SensorErrorCode, SensorKind,
+};
 
 use self::aggregate::{MAX_SAMPLES, Samples};
 use self::protocol::{Command, Frame, HEAD, REPLY_LEN, Reply};
-use crate::runtime::{Clock, DriverError, SensorDriver, with_timeout};
+use crate::runtime::{DriverError, SensorDriver};
+use rohi_time::{Clock, with_timeout};
 
 /// Bound of a single UART read.
 pub const READ_TIMEOUT_MS: u32 = 5_000;

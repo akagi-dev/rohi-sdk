@@ -42,10 +42,10 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::Delay;
 use log::{info, warn};
-use rohi_sdk::hal::runtime::EmbassyClock;
 use rohi_sdk::net::{IpBackend, NetworkHandle};
 use rohi_sdk::ntp::{NtpConfig, NtpServersConfig, NtpTimeSource};
 use rohi_sdk::service::Config;
+use rohi_sdk::time::EmbassyClock;
 use rohi_sdk::time::{SyncSchedule, Synchronizer, TimeConfig, TimeService, UnixTime};
 
 use crate::bindings::{Binding, TimeBinding};

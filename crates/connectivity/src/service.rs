@@ -81,11 +81,12 @@
 //!     EnvelopeTransport, NONCE_LEN, NonceError, NonceSource, ServiceConfig, SnapshotSource,
 //!     TransportAck, TransportError, UtcClock,
 //! };
-//! use rohi_hal::runtime::Clock;
-//! use rohi_hal::{
+//! use rohi_time::Clock;
+//! use rohi_sensors::{
 //!     Bmx280Update, Celsius, MeasurementStore, MeasurementUpdate, MeasurementsSnapshot,
-//!     MonotonicTimestamp, Pascal, RelativeHumidity, SensorEvent,
+//! Pascal, RelativeHumidity, SensorEvent,
 //! };
+//! use rohi_time::MonotonicTimestamp;
 //! use rohi_identity::Identity;
 //! use rohi_location::NoLocation;
 //!
@@ -189,8 +190,9 @@ use core::cell::Cell;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embedded_hal_async::delay::DelayNs;
-use rohi_hal::MeasurementsSnapshot;
-use rohi_hal::runtime::{Backoff, Clock, MeasurementHandle, with_timeout};
+use rohi_sensors::MeasurementsSnapshot;
+use rohi_sensors::runtime::MeasurementHandle;
+use rohi_time::{Backoff, Clock, with_timeout};
 
 use crate::clock::{NonceSource, UtcClock};
 use crate::encoder::{EncodeError, UrbanEncoder};

@@ -41,8 +41,9 @@
 //! [`MeasurementState::Error`] while the last valid value is preserved.
 //!
 //! ```
-//! use rohi_hal::{
-//!     Celsius, MeasurementState, MeasurementStore, MeasurementUpdate, MonotonicTimestamp,
+//! use rohi_time::MonotonicTimestamp;
+//! use rohi_sensors::{
+//!     Celsius, MeasurementState, MeasurementStore, MeasurementUpdate,
 //!     Pascal, SensorErrorCode, SensorEvent, SensorKind, Bmx280Update,
 //! };
 //!
@@ -80,11 +81,11 @@
 //! ```
 
 use crate::sensor::{SensorKind, SensorStatuses};
-use crate::time::MonotonicTimestamp;
 use crate::units::{
     Aqi, Celsius, Decibels, MicrogramsPerCubicMeter, Pascal, Ppb, Ppm, PulseCount, RadiationLevel,
     RelativeHumidity,
 };
+use rohi_time::MonotonicTimestamp;
 
 /// State of a single measurement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -106,7 +107,8 @@ pub enum MeasurementState {
 /// A measurement of a single quantity.
 ///
 /// ```
-/// use rohi_hal::{Celsius, Measurement, MeasurementState, MonotonicTimestamp};
+/// use rohi_sensors::{Celsius, Measurement, MeasurementState};
+/// use rohi_time::MonotonicTimestamp;
 ///
 /// let never_measured = Measurement::<Celsius>::unavailable();
 /// assert_eq!(never_measured.state, MeasurementState::Unavailable);
@@ -216,7 +218,7 @@ impl FreshnessPolicy {
     /// [`crate::MeasurementStore::set_freshness_policy`].
     ///
     /// ```
-    /// use rohi_hal::{FreshnessPolicy, SensorKind};
+    /// use rohi_sensors::{FreshnessPolicy, SensorKind};
     ///
     /// assert_eq!(FreshnessPolicy::default_for(SensorKind::Bmx280).stale_after_ms, 60_000);
     /// assert_eq!(FreshnessPolicy::new(5_000).stale_after_ms, 5_000);

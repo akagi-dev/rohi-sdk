@@ -49,14 +49,15 @@
 
 use core::fmt::Debug;
 
-use crate::{
-    Bmx280Update, Celsius, MeasurementUpdate, Pascal, RelativeHumidity, SensorErrorCode, SensorKind,
-};
 use embedded_hal::i2c::ErrorKind;
 use embedded_hal_async::delay::DelayNs;
 use embedded_hal_async::i2c::I2c;
+use rohi_sensors::{
+    Bmx280Update, Celsius, MeasurementUpdate, Pascal, RelativeHumidity, SensorErrorCode, SensorKind,
+};
 
-use crate::runtime::{Clock, DriverError, SensorDriver};
+use crate::runtime::{DriverError, SensorDriver};
+use rohi_time::Clock;
 
 /// Default I2C address (SDO low).
 pub const ADDRESS_PRIMARY: u8 = 0x76;
@@ -542,8 +543,8 @@ impl<I2C: I2c, D: DelayNs> SensorDriver for Bmx280<I2C, D> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::MonotonicTimestamp;
     use crate::testutil::{FixedClock, MockI2c, NoDelay, block_on};
+    use rohi_time::MonotonicTimestamp;
 
     // Example calibration and raw values from the Bosch BMP280 datasheet.
     const CALIB: [u8; 24] = {

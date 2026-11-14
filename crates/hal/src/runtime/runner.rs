@@ -65,7 +65,7 @@
 //! derives `Ready` from it, so no observer can see `Ready` with an old value.
 //! After a successful init the state is `WarmingUp` ([`SensorDriver::WARMS_UP`])
 //! or still `Initializing`, until the first measurement arrives. The event
-//! kinds are described in [`bus`](super::bus).
+//! kinds are described in `rohi_sensors::runtime::bus`.
 //!
 //! # Cancellation
 //!
@@ -77,13 +77,11 @@
 
 use core::fmt::Debug;
 
-use crate::{MeasurementUpdate, SensorErrorCode, SensorKind, SensorState};
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embedded_hal_async::delay::DelayNs;
-
-use super::backoff::Backoff;
-use super::clock::Clock;
-use super::reporter::Reporter;
+use rohi_sensors::runtime::Reporter;
+use rohi_sensors::{MeasurementUpdate, SensorErrorCode, SensorKind, SensorState};
+use rohi_time::{Backoff, Clock};
 
 /// Error of a sensor driver, mapped into the domain model.
 ///
@@ -194,13 +192,13 @@ enum Phase {
 /// use embassy_futures::block_on;
 /// use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 /// use embedded_hal_async::delay::DelayNs;
-/// use rohi_hal::runtime::{
-///     Clock, DriverError, EventBus, Reporter, Runner, RunnerConfig, SensorDriver,
+/// use rohi_hal::runtime::{DriverError, Runner, RunnerConfig, SensorDriver};
+/// use rohi_sensors::runtime::{EventBus, Reporter};
+/// use rohi_sensors::{
+///     Ags3871Update, MeasurementStore, MeasurementUpdate, Ppm, SensorErrorCode, SensorKind,
+///     SensorState,
 /// };
-/// use rohi_hal::{
-///     Ags3871Update, MeasurementStore, MeasurementUpdate, MonotonicTimestamp, Ppm,
-///     SensorErrorCode, SensorKind, SensorState,
-/// };
+/// use rohi_time::{Clock, MonotonicTimestamp};
 ///
 /// struct BootClock;
 /// impl Clock for BootClock {
@@ -415,10 +413,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::bus::EventBus;
     use crate::testutil::{FixedClock, NoDelay, RecordingDelay, block_on};
-    use crate::{Bmx280Update, Celsius, MonotonicTimestamp, Pascal, SensorEvent};
     use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+    use rohi_sensors::runtime::EventBus;
+    use rohi_sensors::{Bmx280Update, Celsius, Pascal, SensorEvent};
+    use rohi_time::MonotonicTimestamp;
 
     // Different from every backoff step, so waits are attributable.
     const POLL_INTERVAL_MS: u32 = 90_000;

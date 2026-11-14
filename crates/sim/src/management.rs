@@ -48,8 +48,8 @@ use std::net::TcpListener as StdListener;
 use embassy_executor::Spawner;
 use embassy_time::{Instant, Timer};
 use log::{debug, info, warn};
-use rohi_hal::{Measurement, MeasurementsSnapshot};
 use rohi_net_std::runtime::{handle, within};
+use rohi_sensors::{Measurement, MeasurementsSnapshot};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpListener, TcpStream};
 

@@ -28,7 +28,7 @@
 //! (for example [`airalab/robins`](https://github.com/airalab/robins)). It
 //! owns the whole uplink path and nothing else:
 //!
-//! * mapping a [`rohi_hal::MeasurementsSnapshot`] to a `core.v1.Message`
+//! * mapping a [`rohi_sensors::MeasurementsSnapshot`] to a `core.v1.Message`
 //!   ([`UrbanEncoder`]);
 //! * signing it with the device identity ([`EnvelopeBuilder`], [`FrameSigner`])
 //!   into an immutable [`EnvelopeFrame`];
@@ -70,11 +70,12 @@
 //! use rohi_connectivity_proto::core_v1::Message;
 //! use rohi_connectivity_proto::crypto_v1::SignedEnvelope;
 //! use rohi_connectivity_proto::{decode, limits, signing_preimage};
-//! use rohi_hal::runtime::Clock;
-//! use rohi_hal::{
+//! use rohi_time::Clock;
+//! use rohi_sensors::{
 //!     Bmx280Update, Celsius, MeasurementStore, MeasurementUpdate, MeasurementsSnapshot,
-//!     MonotonicTimestamp, Pascal, RelativeHumidity, SensorEvent,
+//! Pascal, RelativeHumidity, SensorEvent,
 //! };
+//! use rohi_time::MonotonicTimestamp;
 //! use rohi_identity::{Identity, PublicKey, Signature};
 //! use rohi_location::NoLocation;
 //!
@@ -216,7 +217,7 @@
 //!
 //! | Neighbour | How this crate uses it |
 //! |-----------|------------------------|
-//! | `rohi-hal` | [`SnapshotSource`] is implemented for `rohi_hal::runtime::MeasurementHandle`; the service reads the monotonic [`Clock`](rohi_hal::runtime::Clock) and uses [`Backoff`](rohi_hal::runtime::Backoff). |
+//! | `rohi-hal` | [`SnapshotSource`] is implemented for `rohi_sensors::runtime::MeasurementHandle`; the service reads the monotonic [`Clock`](rohi_time::Clock) and uses [`Backoff`](rohi_time::Backoff). |
 //! | [`rohi_identity`] | Every [`Signer`](rohi_identity::Signer) is a [`FrameSigner`]. The firmware's runtime signer follows the identity, which can be provisioned or erased while the device runs. |
 //! | [`rohi_time`] | [`TimeService`](rohi_time::TimeService) implements [`UtcClock`]; it is the UTC source of the firmware. |
 //! | [`rohi_location`] | A [`LocationSource`](rohi_location::LocationSource) adds the `GPS` entry, see [`encoder`]. |

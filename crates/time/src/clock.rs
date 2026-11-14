@@ -30,7 +30,7 @@ pub trait Clock {
 /// A [`Clock`] returning [`Instant::now`](embassy_time::Instant::now) in
 /// milliseconds as a [`MonotonicTimestamp`]. It is monotonic, not wall-clock
 /// time, and needs the `embassy-time` driver of the platform to be running.
-/// Cheap to copy; give one to every [`Reporter`](crate::runtime::Reporter) and
+/// Cheap to copy; give one to every `rohi_sensors::runtime::Reporter` and
 /// to the store task.
 ///
 /// ```text

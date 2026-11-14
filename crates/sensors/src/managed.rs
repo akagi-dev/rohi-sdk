@@ -207,7 +207,7 @@ fn summary(snapshot: &MeasurementsSnapshot) -> ServiceSummary {
 ///
 /// Wraps a [`MeasurementHandle`]: every request takes a fresh snapshot from the
 /// store owner task. The status fields (`<sensor>.<measurement>`, canonical
-/// units, at most 20) are listed in [`crate::sensors`].
+/// units, at most 20) are listed in the [crate documentation](crate#the-sensors-service).
 ///
 /// * **State.** `disabled` when no sensor is detected (not an error);
 ///   `starting` while every present sensor is initializing or warming up;
@@ -276,9 +276,8 @@ impl<M: RawMutex> Status for SensorsService<'_, M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        Bmx280Update, MeasurementStore, MeasurementUpdate, MonotonicTimestamp, SensorEvent,
-    };
+    use crate::{Bmx280Update, MeasurementStore, MeasurementUpdate, SensorEvent};
+    use rohi_time::MonotonicTimestamp;
 
     #[derive(Default)]
     struct Collect(std::vec::Vec<(u32, rohi_service::Value)>);

@@ -21,8 +21,8 @@
 
 use embassy_executor::Spawner;
 use log::info;
-use rohi_sdk::esp::hal::EmbassyClock;
 use rohi_sdk::esp::net::wireless_heap;
+use rohi_sdk::time::EmbassyClock;
 
 use crate::tasks::store;
 

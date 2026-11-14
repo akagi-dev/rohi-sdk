@@ -20,7 +20,7 @@
 //! # UTC
 //!
 //! `Meta.timestamp` is **UTC**, from a [`UtcClock`]; monotonic time
-//! (`embassy_time::Instant`, [`rohi_hal::MonotonicTimestamp`]) is never used as
+//! (`embassy_time::Instant`, [`rohi_time::MonotonicTimestamp`]) is never used as
 //! UTC. The timestamp is the UTC time of the measurement set: UTC now minus
 //! the age of the snapshot (`monotonic now − snapshot.generated_at`).
 //! [`TimeService`] implements [`UtcClock`]; while it is not synchronized (or
@@ -37,7 +37,7 @@
 use core::fmt;
 
 use embassy_sync::blocking_mutex::raw::RawMutex;
-use rohi_hal::runtime::Clock;
+use rohi_time::Clock;
 use rohi_time::TimeService;
 
 /// Size of the nonce of a telemetry envelope, in bytes.
@@ -58,7 +58,7 @@ impl core::error::Error for ClockError {}
 /// Source of Unix UTC time.
 ///
 /// Telemetry timestamps are UTC milliseconds. Monotonic time (boot time,
-/// `embassy_time::Instant`, [`rohi_hal::MonotonicTimestamp`]) is never UTC and
+/// `embassy_time::Instant`, [`rohi_time::MonotonicTimestamp`]) is never UTC and
 /// must not be returned here: a clock that is not synchronized reports
 /// [`ClockError`].
 ///

@@ -1,0 +1,27 @@
+[package]
+name = "rohi-sensors"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Robonomics Open Hardware sensors: hardware-independent measurements, sensor state, events, store and the managed sensors service"
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[dependencies]
+rohi-time.workspace = true
+heapless.workspace = true
+embassy-sync.workspace = true
+rohi-service = { workspace = true, optional = true }
+
+[features]
+default = []
+# The read-only `sensors` status service (`SensorsService`) of `rohi-service`.
+service = ["dep:rohi-service"]
+
+[dev-dependencies]
+embassy-futures.workspace = true

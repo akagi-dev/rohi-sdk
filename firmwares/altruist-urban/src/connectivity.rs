@@ -45,8 +45,9 @@ use rohi_sdk::connectivity::{
     ConnectivityConfig, ConnectivityOverrides, ConnectivityService, ConnectivityShared,
     ConnectivityStatus, EndpointUri, HttpTransport, NonceSource, ServiceConfig,
 };
-use rohi_sdk::hal::runtime::{EmbassyClock, MeasurementHandle};
 use rohi_sdk::net::{IpBackend, NetworkHandle};
+use rohi_sdk::sensors::runtime::MeasurementHandle;
+use rohi_sdk::time::EmbassyClock;
 
 use crate::identity::StaticSigner;
 use crate::tasks::RawMutex;

@@ -18,7 +18,7 @@
 //! Retry backoff and bounded waits.
 //!
 //! [`Backoff`] produces the recovery delays of the runner (1 s, 2 s, 4 s ...
-//! capped at 30 s by default, see [`RunnerConfig`](super::RunnerConfig));
+//! capped at 30 s by default, see the sensor runner of `rohi-hal`);
 //! [`with_timeout`] bounds any future in time, which the bounded I2C and UART
 //! reads of the drivers are built on.
 
@@ -28,7 +28,7 @@ use embedded_hal_async::delay::DelayNs;
 /// Exponential backoff: `initial`, `2 * initial`, ... capped at `max`.
 ///
 /// ```
-/// use rohi_hal::runtime::Backoff;
+/// use rohi_time::Backoff;
 ///
 /// let mut backoff = Backoff::new(1_000, 30_000);
 /// assert_eq!(backoff.next_delay_ms(), 1_000);
@@ -95,7 +95,13 @@ pub async fn with_timeout<D: DelayNs, F: core::future::Future>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::{NoDelay, block_on};
+    use embassy_futures::block_on;
+
+    struct NoDelay;
+
+    impl DelayNs for NoDelay {
+        async fn delay_ns(&mut self, _ns: u32) {}
+    }
 
     #[test]
     fn backoff_grows_and_caps_then_resets() {

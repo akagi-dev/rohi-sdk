@@ -46,8 +46,8 @@ use embedded_hal_async::delay::DelayNs;
 use embedded_io_async::{Read, Write};
 use embedded_nal_async::AddrType;
 use heapless::String;
-use rohi_hal::runtime::with_timeout;
 use rohi_net::{IpBackend, NetError, NetworkHandle};
+use rohi_time::with_timeout;
 
 use crate::config::Endpoint;
 use crate::envelope::EnvelopeFrame;

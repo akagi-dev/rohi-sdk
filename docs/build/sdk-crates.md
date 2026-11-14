@@ -12,7 +12,8 @@ Released crates are also published on docs.rs, for example [`rohi-sdk`](https://
 
 | Crate | What it is |
 |-------|-----------|
-| `rohi-hal`, `rohi-hal-esp` | typed measurements, sensor drivers and runtime; ESP boards |
+| `rohi-sensors` | typed measurements, sensor state, the store, the event bus and the `sensors` service |
+| `rohi-hal`, `rohi-hal-esp` | physical sensor drivers and their runner; ESP boards |
 | `rohi-config`, `rohi-config-derive`, `rohi-config-esp` | transactional configuration store, derive macros and flash backend |
 | `rohi-service`, `rohi-service-derive` | the config, status and action model and registries |
 | `rohi-net`, `rohi-net-esp`, `rohi-net-std` | Wi-Fi and IP networking, BLE transport traits, ESP backend, host (`std`) backend |

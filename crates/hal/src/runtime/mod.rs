@@ -15,73 +15,46 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-//! Hardware-independent sensor runtime: event queue, reporter, lifecycle
-//! runner, backoff and bounded waits.
+//! Sensor driver runtime: the lifecycle [`Runner`] and bounded hardware I/O.
 //!
 //! Every sensor runs in its own task around a [`Runner`], which maps the
 //! results of a [`SensorDriver`] into the sensor lifecycle and publishes
-//! [`SensorEvent`](crate::SensorEvent)s through a [`Reporter`] into one
-//! [`EventBus`]. A single store task consumes the bus and owns the
-//! [`MeasurementStore`](crate::MeasurementStore); other tasks get snapshots from
-//! it through a [`MeasurementHandle`]. Lightweight I²C sensors share one bus;
-//! wrapped in [`TimeoutI2c`] every transaction is bounded in time (the Altruist
-//! Urban firmware uses 200 ms), so a stuck device cannot block the bus forever.
+//! [`SensorEvent`](rohi_sensors::SensorEvent)s through a
+//! [`Reporter`](rohi_sensors::runtime::Reporter) into one
+//! [`EventBus`](rohi_sensors::runtime::EventBus). The event bus, the store and
+//! the snapshot service belong to [`rohi-sensors`](../../rohi_sensors/index.html).
+//! Lightweight I²C sensors share one bus; wrapped in [`TimeoutI2c`] every
+//! transaction is bounded in time (the Altruist Urban firmware uses 200 ms), so
+//! a stuck device cannot block the bus forever.
 //!
 //! ```text
 //! sensor task N: Runner { SensorDriver, Reporter } --SensorEvent--> EventBus
 //!                                                                    |
-//! store task:  loop { select(EventBus::receive, MeasurementService::accept) }
-//!                |-- event   -> MeasurementStore::apply(event)
-//!                `-- request -> request.respond(store.snapshot(now))
-//!
-//! any other task: MeasurementHandle::snapshot().await
+//!                                                  store task (rohi-sensors)
 //! ```
 //!
-//! `firmwares/altruist-urban/src/tasks/` and `src/esp/sensors.rs` are the maintained wiring of these
-//! pieces; the doctest of [`Runner`] shows the pieces on a host.
-//!
-//! The capacities are fixed at compile time: [`EVENT_QUEUE_CAPACITY`] events
-//! in the bus (the oldest is dropped when full, see [`bus`]) and one request
-//! and one response slot in the snapshot service.
+//! `firmwares/altruist-urban/src/tasks/` and `src/esp/sensors.rs` are the
+//! maintained wiring of these pieces; the doctest of [`Runner`] shows the
+//! pieces on a host.
 //!
 //! | Module | Role |
 //! |--------|------|
 //! | [`runner`] | [`Runner`]: lifecycle states, timing semantics (initial delay, poll interval, recovery backoff, warm-up), recovery |
-//! | [`reporter`] | [`Reporter`]: publishes the events of one sensor |
-//! | [`bus`] | [`EventBus`]: bounded queue, overflow policy, the three event kinds |
-//! | [`service`] | [`MeasurementHandle`]: on-demand snapshots from the store owner task |
-//! | [`states`] | [`SensorStates`]: read-only view of every sensor state |
-//! | [`backoff`] | [`Backoff`] and [`with_timeout`] |
 //! | [`i2c`] | [`TimeoutI2c`] |
-//! | [`clock`] | [`Clock`]: source of monotonic timestamps |
+//!
+//! The monotonic [`Clock`](rohi_time::Clock), [`Backoff`](rohi_time::Backoff)
+//! and [`with_timeout`](rohi_time::with_timeout) are provided by
+//! [`rohi-time`](../../rohi_time/index.html).
 //!
 //! # Cancellation
 //!
 //! The sensor runner is meant to run to completion. [`Runner::step`] may be
 //! dropped (for example at shutdown), but a sensor transaction in flight is
 //! then cut short and the next step repeats the interrupted attempt; the
-//! warm-up wait is not lost when a step is dropped. [`EventBus::receive`] and
-//! the owner side [`MeasurementService::accept`] are cancel-safe;
-//! [`MeasurementHandle::snapshot`] can be dropped at any point.
+//! warm-up wait is not lost when a step is dropped.
 
-pub mod backoff;
-pub mod bus;
-pub mod clock;
 pub mod i2c;
-pub mod reporter;
 pub mod runner;
-pub mod service;
-pub mod states;
 
-pub use backoff::{Backoff, TimedOut, with_timeout};
-pub use bus::{EVENT_QUEUE_CAPACITY, EventBus};
-pub use clock::Clock;
-#[cfg(feature = "embassy-time")]
-pub use clock::EmbassyClock;
 pub use i2c::{TimeoutError, TimeoutI2c};
-pub use reporter::Reporter;
 pub use runner::{DriverError, Runner, RunnerConfig, SensorDriver};
-pub use service::{
-    MeasurementHandle, MeasurementService, MeasurementServiceError, SnapshotRequest,
-};
-pub use states::SensorStates;

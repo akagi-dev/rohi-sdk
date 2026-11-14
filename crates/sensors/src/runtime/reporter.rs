@@ -25,8 +25,8 @@ use crate::{MeasurementUpdate, SensorErrorCode, SensorEvent, SensorKind, SensorS
 use embassy_sync::blocking_mutex::raw::RawMutex;
 
 use super::bus::EventBus;
-use super::clock::Clock;
 use super::states::SensorStates;
+use rohi_time::Clock;
 
 /// Publishes events of one sensor into the [`EventBus`].
 ///

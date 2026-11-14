@@ -15,19 +15,19 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-//! Monotonic time.
+//! Monotonic timestamps.
 
 /// Monotonic point in time, in milliseconds since an arbitrary epoch
 /// (usually device boot).
 ///
-/// This crate never requires UTC, so valid measurements can be collected
+/// Monotonic time never requires UTC, so measurements can be collected
 /// before time synchronization succeeds. The caller supplies all timestamps
-/// (on ESP32 `rohi_hal_esp::EmbassyClock`, through [`Clock`](crate::runtime::Clock));
+/// (on a device `EmbassyClock`, through [`Clock`](crate::Clock));
 /// this crate never reads a clock. Ordering and equality compare the
 /// millisecond value.
 ///
 /// ```
-/// use rohi_hal::MonotonicTimestamp;
+/// use rohi_time::MonotonicTimestamp;
 ///
 /// let boot_plus_1s = MonotonicTimestamp::from_millis(1_000);
 /// let boot_plus_3s = MonotonicTimestamp::from_millis(3_000);

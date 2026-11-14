@@ -47,14 +47,14 @@ use rohi_connectivity::{
     ClockError, ConnectivityService, ConnectivityShared, Endpoint, HttpTransport, NONCE_LEN,
     NonceError, NonceSource, ServiceConfig, SnapshotSource, UtcClock,
 };
-use rohi_hal::runtime::Clock;
-use rohi_hal::{
-    Bmx280Update, Celsius, Decibels, MeasurementStore, MeasurementUpdate, MeasurementsSnapshot,
-    MicrogramsPerCubicMeter, MonotonicTimestamp, NoiseUpdate, Pascal, RelativeHumidity,
-    Sds011Update, SensorEvent,
-};
 use rohi_identity::MockSigner;
 use rohi_net::{IpBackend, NetError, NetworkHandle, UdpSocket};
+use rohi_sensors::{
+    Bmx280Update, Celsius, Decibels, MeasurementStore, MeasurementUpdate, MeasurementsSnapshot,
+    MicrogramsPerCubicMeter, NoiseUpdate, Pascal, RelativeHumidity, Sds011Update, SensorEvent,
+};
+use rohi_time::Clock;
+use rohi_time::MonotonicTimestamp;
 
 /// Blocking `std::net` TCP, enough for a host test of the HTTP transport.
 struct StdIp;

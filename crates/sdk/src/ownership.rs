@@ -28,7 +28,7 @@
 //!
 //! | Service | Owner | Handle | Reached through |
 //! |---------|-------|--------|-----------------|
-//! | Measurements | the store task owns `MeasurementStore` | `MeasurementHandle` ([`rohi-hal`](../../rohi_hal/runtime/index.html)) | bounded snapshot request/response |
+//! | Measurements | the store task owns `MeasurementStore` | `MeasurementHandle` ([`rohi-sensors`](../../rohi_sensors/runtime/index.html)) | bounded snapshot request/response |
 //! | Configuration | the configuration task of the firmware owns `ConfigStore` | `ConfigHandle` (firmware, `src/config.rs`) | bounded, numbered request/response |
 //! | Wi-Fi | the `WifiManager` task owns the Wi-Fi backend | `WifiHandle` ([`rohi-net`](../../rohi_net/wifi/index.html)) | desired-state cell, bounded commands, published status |
 //! | IP stack | the platform stack (`EspIp`) behind the stack runner task | `NetworkHandle` ([`rohi-net`](../../rohi_net/ip/index.html)) | DNS, TCP and UDP through standard traits |

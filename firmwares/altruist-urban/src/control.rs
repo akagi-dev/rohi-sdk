@@ -46,10 +46,10 @@
 use embassy_time::Delay;
 use rohi_sdk::connectivity::ConnectivityStatusService;
 use rohi_sdk::control::{Device, DeviceInfo};
-use rohi_sdk::hal::SensorsService;
 use rohi_sdk::identity::{Identity, IdentityService, IdentityStore, IdentityStoreError, PublicKey};
 use rohi_sdk::location::LocationService;
 use rohi_sdk::net::{BleProbe, BleService, IpBackend, NetworkHandle, NetworkService, WifiService};
+use rohi_sdk::sensors::SensorsService;
 use rohi_sdk::service::{
     Action, ActionRegistry, ConfigError as RegistryError, ConfigRegistry, FactoryReset, Startup,
     Status, StatusSet, Statuses,

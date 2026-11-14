@@ -70,8 +70,9 @@ pub enum MeasurementServiceError {
 /// ```
 /// use embassy_futures::{block_on, join::join};
 /// use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-/// use rohi_hal::runtime::MeasurementService;
-/// use rohi_hal::{MeasurementStore, MonotonicTimestamp};
+/// use rohi_time::MonotonicTimestamp;
+/// use rohi_sensors::runtime::MeasurementService;
+/// use rohi_sensors::{MeasurementStore};
 ///
 /// let service = MeasurementService::<NoopRawMutex>::new();
 /// let store = MeasurementStore::new();
@@ -203,13 +204,13 @@ mod tests {
     use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 
     use super::*;
-    use crate::runtime::Clock;
     use crate::sensor::Scd4xUpdate;
     use crate::testutil::block_on;
     use crate::{
-        Celsius, MeasurementState, MeasurementStore, MeasurementUpdate, MonotonicTimestamp, Ppm,
-        RelativeHumidity, SensorEvent, SensorKind,
+        Celsius, MeasurementState, MeasurementStore, MeasurementUpdate, Ppm, RelativeHumidity,
+        SensorEvent, SensorKind,
     };
+    use rohi_time::{Clock, MonotonicTimestamp};
 
     type Service = MeasurementService<NoopRawMutex>;
 

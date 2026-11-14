@@ -27,7 +27,7 @@
 //! representation.
 //!
 //! ```
-//! use rohi_hal::{Celsius, Ppm, Unit};
+//! use rohi_sensors::{Celsius, Ppm, Unit};
 //!
 //! let temperature = Celsius(22.5);
 //! assert_eq!(temperature.0, 22.5);

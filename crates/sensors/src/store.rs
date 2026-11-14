@@ -32,7 +32,7 @@ use crate::measurements::{
 use crate::sensor::{
     MeasurementUpdate, SensorErrorCode, SensorEvent, SensorKind, SensorState, SensorStatuses,
 };
-use crate::time::MonotonicTimestamp;
+use rohi_time::MonotonicTimestamp;
 
 /// Records the latest observation of every physical sensor.
 ///
@@ -48,8 +48,9 @@ use crate::time::MonotonicTimestamp;
 /// and is `Copy`.
 ///
 /// ```
-/// use rohi_hal::{
-///     Celsius, MeasurementState, MeasurementStore, MeasurementUpdate, MonotonicTimestamp, Ppm,
+/// use rohi_time::MonotonicTimestamp;
+/// use rohi_sensors::{
+///     Celsius, MeasurementState, MeasurementStore, MeasurementUpdate, Ppm,
 ///     RelativeHumidity, Scd4xUpdate, SensorEvent, SensorKind, SensorState,
 /// };
 ///

@@ -68,8 +68,9 @@ pub const EVENT_QUEUE_CAPACITY: usize = 16;
 ///
 /// ```
 /// use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-/// use rohi_hal::runtime::EventBus;
-/// use rohi_hal::{MonotonicTimestamp, SensorErrorCode, SensorEvent, SensorKind};
+/// use rohi_time::MonotonicTimestamp;
+/// use rohi_sensors::runtime::EventBus;
+/// use rohi_sensors::{SensorErrorCode, SensorEvent, SensorKind};
 ///
 /// let error_at = |ms| SensorEvent::Error {
 ///     sensor: SensorKind::Scd4x,
@@ -147,8 +148,9 @@ impl<M: RawMutex, const N: usize> Default for EventBus<M, N> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MonotonicTimestamp, SensorErrorCode, SensorKind};
+    use crate::{SensorErrorCode, SensorKind};
     use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+    use rohi_time::MonotonicTimestamp;
 
     fn error_at(ms: u64) -> SensorEvent {
         SensorEvent::Error {

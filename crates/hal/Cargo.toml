@@ -7,7 +7,7 @@ edition.workspace = true
 homepage.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Robonomics Open Hardware abstraction layer"
+description = "Robonomics Open Hardware abstraction layer: physical sensor drivers, the driver runner and bounded hardware I/O"
 
 [badges]
 maintenance = { status = "actively-developed" }
@@ -18,13 +18,11 @@ embedded-hal.workspace = true
 embedded-hal-async.workspace = true
 embedded-io-async.workspace = true
 embassy-sync.workspace = true
-rohi-service.workspace = true
+rohi-sensors.workspace = true
+rohi-time.workspace = true
 heapless.workspace = true
 embassy-futures.workspace = true
 libm.workspace = true
-embassy-time = { workspace = true, optional = true }
 
 [features]
 default = []
-# `EmbassyClock`: the monotonic `Clock` over `embassy-time`.
-embassy-time = ["dep:embassy-time"]

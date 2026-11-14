@@ -37,8 +37,8 @@ use embassy_sync::blocking_mutex::raw::RawMutex;
 ///
 /// ```
 /// use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-/// use rohi_hal::runtime::SensorStates;
-/// use rohi_hal::{SensorKind, SensorState};
+/// use rohi_sensors::runtime::SensorStates;
+/// use rohi_sensors::{SensorKind, SensorState};
 ///
 /// let states = SensorStates::<NoopRawMutex>::new();
 /// assert_eq!(states.get(SensorKind::Sds011), SensorState::NotDetected);

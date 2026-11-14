@@ -4040,10 +4040,10 @@ dependencies = [
  "minicbor",
  "rohi-config",
  "rohi-connectivity-proto",
- "rohi-hal",
  "rohi-identity",
  "rohi-location",
  "rohi-net",
+ "rohi-sensors",
  "rohi-service",
  "rohi-time",
 ]
@@ -4142,14 +4142,14 @@ version = "0.7.0"
 dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",
- "embassy-time",
  "embedded-hal 1.0.0",
  "embedded-hal-async",
  "embedded-io-async 0.7.0",
  "heapless 0.9.3",
  "libm",
  "log",
- "rohi-service",
+ "rohi-sensors",
+ "rohi-time",
 ]
 
 [[package]]
@@ -4158,6 +4158,7 @@ version = "0.7.0"
 dependencies = [
  "esp-hal",
  "rohi-hal",
+ "rohi-time",
 ]
 
 [[package]]
@@ -4200,7 +4201,6 @@ dependencies = [
  "lz4_flex",
  "minicbor",
  "rohi-config",
- "rohi-hal",
  "rohi-service",
  "rohi-time",
 ]
@@ -4291,11 +4291,23 @@ dependencies = [
  "rohi-net",
  "rohi-net-esp",
  "rohi-net-std",
+ "rohi-sensors",
  "rohi-service",
  "rohi-sim",
  "rohi-system",
  "rohi-time",
  "rohi-time-ntp",
+]
+
+[[package]]
+name = "rohi-sensors"
+version = "0.7.0"
+dependencies = [
+ "embassy-futures",
+ "embassy-sync 0.8.0",
+ "heapless 0.9.3",
+ "rohi-service",
+ "rohi-time",
 ]
 
 [[package]]
@@ -4343,6 +4355,8 @@ dependencies = [
  "rohi-logging",
  "rohi-net",
  "rohi-net-std",
+ "rohi-sensors",
+ "rohi-time",
  "serde",
  "tempfile",
  "tokio",
@@ -4363,10 +4377,10 @@ version = "0.7.0"
 dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",
+ "embassy-time",
  "embedded-hal-async",
  "heapless 0.9.3",
  "log",
- "rohi-hal",
  "rohi-service",
 ]
 
@@ -4382,7 +4396,6 @@ dependencies = [
  "log",
  "minicbor",
  "rohi-config",
- "rohi-hal",
  "rohi-net",
  "rohi-service",
  "rohi-time",

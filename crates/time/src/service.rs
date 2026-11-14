@@ -87,12 +87,12 @@
 use core::cell::RefCell;
 use core::time::Duration;
 
+use crate::Clock;
+use crate::MonotonicTimestamp;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use heapless::Vec;
 use log::{info, warn};
-use rohi_hal::MonotonicTimestamp;
-use rohi_hal::runtime::Clock;
 use rohi_service::{
     EnumDescriptor, EnumVariant, FieldDescriptor, Issue, IssueDescriptor, IssueSeverity,
     MAX_ISSUES, Service, ServiceHealth, ServiceState, ServiceSummary, Status, StatusWriter, Unit,
@@ -208,8 +208,8 @@ struct Inner {
 /// ```
 /// use core::cell::Cell;
 /// use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-/// use rohi_hal::MonotonicTimestamp;
-/// use rohi_hal::runtime::Clock;
+/// use rohi_time::MonotonicTimestamp;
+/// use rohi_time::Clock;
 /// use rohi_time::{
 ///     SyncFailure, TimeConfig, TimeSample, TimeService, TimeSourceKind, TimeSyncState,
 ///     UnixTime,

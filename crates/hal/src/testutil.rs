@@ -21,12 +21,10 @@ use core::future::Future;
 use std::collections::VecDeque;
 use std::vec::Vec;
 
-use crate::MonotonicTimestamp;
 use embedded_hal::i2c::{ErrorKind, ErrorType, NoAcknowledgeSource, Operation};
 use embedded_hal_async::delay::DelayNs;
 use embedded_hal_async::i2c::I2c;
-
-use crate::runtime::Clock;
+use rohi_time::{Clock, MonotonicTimestamp};
 
 pub fn block_on<F: Future>(f: F) -> F::Output {
     embassy_futures::block_on(f)

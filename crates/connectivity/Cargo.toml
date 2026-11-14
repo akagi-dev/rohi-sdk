@@ -14,7 +14,7 @@ maintenance = { status = "actively-developed" }
 
 [dependencies]
 rohi-connectivity-proto.workspace = true
-rohi-hal.workspace = true
+rohi-sensors.workspace = true
 rohi-identity.workspace = true
 rohi-config.workspace = true
 rohi-service.workspace = true
