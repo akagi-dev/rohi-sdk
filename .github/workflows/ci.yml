@@ -1,4 +1,11 @@
 name: CI
+      - name: Sensors, time and telemetry do not depend on the HAL
+        run: |
+          for crate in rohi-sensors rohi-time rohi-telemetry; do
+            if cargo tree -p "$crate" -e normal --prefix none | grep -E '^(rohi-hal|rohi-hal-esp|esp-|rohi-connectivity|rohi-telemetry-robonomics|micropb) '; then
+              echo "$crate must not depend on rohi-hal, ESP, connectivity or protobuf crates"; exit 1
+            fi
+          done
 
 on:
   push:
@@ -87,6 +94,19 @@ jobs:
           cargo test -p rohi-net-std --features ble
       - name: Clippy
         run: cargo clippy -p altruist-urban -p rohi-sim -p rohi-net-std --all-targets --features altruist-urban/std,altruist-urban/std-tcp,altruist-urban/std-ble,altruist-urban/sensor-simulator,rohi-net-std/ble,rohi-sim/sensors -- -D warnings
+      - name: No ESP, async-io or blocking dependency
+        run: |
+          tree=$(cargo tree -p altruist-urban --features std,std-tcp,std-ble,sensor-simulator -e normal --prefix none)
+          if echo "$tree" | grep -E '^(esp-|rohi-(hal|net|config)-esp|async-io|blocking) '; then
+            echo "the std platform must not depend on ESP crates, async-io or blocking"; exit 1
+          fi
+      - name: Sensors, time and telemetry do not depend on the HAL
+        run: |
+          for crate in rohi-sensors rohi-time rohi-telemetry; do
+            if cargo tree -p "$crate" -e normal --prefix none | grep -E '^(rohi-hal|rohi-hal-esp|esp-|rohi-connectivity|rohi-telemetry-robonomics|micropb) '; then
+              echo "$crate must not depend on rohi-hal, ESP, connectivity or protobuf crates"; exit 1
+            fi
+          done
 
   firmware:
     name: Firmware (${{ matrix.chip }})
