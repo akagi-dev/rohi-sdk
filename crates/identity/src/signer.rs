@@ -68,6 +68,10 @@ pub struct IdentitySigner {
 }
 
 impl IdentitySigner {
+    pub(crate) fn seed(&self) -> &[u8] {
+        self.key.as_ref()
+    }
+
     pub(crate) fn new(secret: &Secret<[u8; SECRET_LEN]>) -> Self {
         let key = SigningKey::from(*secret.expose_secret());
         let public = PublicKey::from_bytes(VerificationKeyBytes::from(&key).into());
@@ -138,6 +142,11 @@ pub struct MockSigner {
 
 #[cfg(any(test, feature = "mock"))]
 impl MockSigner {
+    /// The real signer behind the mock, for key agreement.
+    pub(crate) fn identity_signer(&self) -> &IdentitySigner {
+        &self.signer
+    }
+
     /// Signs with the key of `secret`.
     pub fn new(secret: [u8; SECRET_LEN]) -> Self {
         Self {

@@ -13,7 +13,7 @@ description = "Robonomics Open Hardware telemetry: signed connectivity-protocol 
 maintenance = { status = "actively-developed" }
 
 [dependencies]
-rohi-connectivity-proto.workspace = true
+rohi-telemetry-robonomics.workspace = true
 rohi-sensors.workspace = true
 rohi-identity.workspace = true
 rohi-config.workspace = true

@@ -273,6 +273,7 @@
 #[cfg(any(test, feature = "std"))]
 extern crate std;
 
+mod agreement;
 mod error;
 mod identity;
 mod keys;
@@ -283,6 +284,7 @@ mod signer;
 #[cfg(test)]
 mod tests;
 
+pub use agreement::{KeyAgreement, SharedSecret};
 pub use error::IdentityError;
 pub use identity::{Identity, SECRET_LEN};
 pub use keys::{PUBLIC_KEY_LEN, PublicKey, SIGNATURE_LEN, Signature};

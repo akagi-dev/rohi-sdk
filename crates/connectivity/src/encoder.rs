@@ -63,19 +63,19 @@
 use core::fmt;
 
 use heapless::Vec;
-use rohi_connectivity_proto::core_v1::{Message, Message_, Meta};
-use rohi_connectivity_proto::device_v1::{Urban, UrbanSensor, UrbanSensor_};
-use rohi_connectivity_proto::limits::MAX_MESSAGE_LEN;
-use rohi_connectivity_proto::sensor_v1::{
-    BME280, BME280_, GPS, Humidity, ICS43434, ICS43434_, NoiseLevel, PM10, PM25, Pressure, SDS011,
-    SDS011_, Temperature,
-};
-use rohi_connectivity_proto::{EncodeError as WireError, encode};
 use rohi_location::Location;
 use rohi_sensors::{
     Bmx280Measurements, Measurement, MeasurementState, MeasurementsSnapshot, NoiseMeasurements,
     Sds011Measurements,
 };
+use rohi_telemetry_robonomics::wire::core_v1::{Message, Message_, Meta};
+use rohi_telemetry_robonomics::wire::device_v1::{Urban, UrbanSensor, UrbanSensor_};
+use rohi_telemetry_robonomics::wire::limits::MAX_MESSAGE_LEN;
+use rohi_telemetry_robonomics::wire::sensor_v1::{
+    BME280, BME280_, GPS, Humidity, ICS43434, ICS43434_, NoiseLevel, PM10, PM25, Pressure, SDS011,
+    SDS011_, Temperature,
+};
+use rohi_telemetry_robonomics::wire::{EncodeError as WireError, encode};
 
 /// Counters of one encoding.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -196,6 +196,7 @@ impl UrbanEncoder {
         });
         message.payload = Some(Message_::Payload::Urban(Urban {
             public: builder.sensors,
+            ..Urban::default()
         }));
         Ok((message, builder.stats))
     }
@@ -240,8 +241,8 @@ impl UrbanEncoder {
     ///
     /// ```
     /// use rohi_connectivity::UrbanEncoder;
-    /// use rohi_connectivity_proto::core_v1::Message;
-    /// use rohi_connectivity_proto::decode;
+    /// use rohi_telemetry_robonomics::wire::core_v1::Message;
+    /// use rohi_telemetry_robonomics::wire::decode;
     /// use rohi_sensors::{
     ///     Bmx280Update, Celsius, MeasurementStore, MeasurementUpdate, Pascal,
     ///     RelativeHumidity, SensorEvent,
@@ -293,7 +294,7 @@ impl UrbanEncoder {
 
 #[derive(Default)]
 struct Builder {
-    sensors: Vec<UrbanSensor, { rohi_connectivity_proto::limits::MAX_SENSORS_PER_MESSAGE }>,
+    sensors: Vec<UrbanSensor, { rohi_telemetry_robonomics::wire::limits::MAX_SENSORS_PER_MESSAGE }>,
     stats: EncodeStats,
 }
 

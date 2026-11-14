@@ -20,11 +20,6 @@ use core::cell::{Cell, RefCell};
 use embassy_futures::block_on;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embedded_hal_async::delay::DelayNs;
-use rohi_connectivity_proto::core_v1::{Message, Message_};
-use rohi_connectivity_proto::crypto_v1::SignedEnvelope;
-use rohi_connectivity_proto::device_v1::UrbanSensor_::Sensor;
-use rohi_connectivity_proto::sensor_v1::{BME280_, ICS43434_, SDS011_};
-use rohi_connectivity_proto::{decode, limits};
 use rohi_identity::{IdentityError, MockSigner, Signature, Signer};
 use rohi_sensors::{
     Ags3871Update, Aqi, Bmx280Update, Celsius, Decibels, MeasurementState, MeasurementStore,
@@ -32,6 +27,11 @@ use rohi_sensors::{
     Ppm, PulseCount, RadSensUpdate, RadiationLevel, RelativeHumidity, Scd4xUpdate, Sds011Update,
     SensorEvent, SensorKind, SensorState, Zmod4510Update,
 };
+use rohi_telemetry_robonomics::wire::core_v1::{Message, Message_};
+use rohi_telemetry_robonomics::wire::crypto_v1::SignedEnvelope;
+use rohi_telemetry_robonomics::wire::device_v1::UrbanSensor_::Sensor;
+use rohi_telemetry_robonomics::wire::sensor_v1::{BME280_, ICS43434_, SDS011_};
+use rohi_telemetry_robonomics::wire::{decode, limits};
 use rohi_time::Clock;
 use rohi_time::MonotonicTimestamp;
 
@@ -111,11 +111,11 @@ fn valid_measurements_are_emitted_with_expected_fields() {
     let sensors = sensors(&message);
     assert_eq!(sensors.len(), 7);
     let bme = |m: BME280_::Measurement| {
-        Sensor::Bme280(rohi_connectivity_proto::sensor_v1::BME280 {
+        Sensor::Bme280(rohi_telemetry_robonomics::wire::sensor_v1::BME280 {
             measurement: Some(m),
         })
     };
-    use rohi_connectivity_proto::sensor_v1::{
+    use rohi_telemetry_robonomics::wire::sensor_v1::{
         Humidity, NoiseLevel, PM10, PM25, Pressure, Temperature,
     };
     assert_eq!(
@@ -137,7 +137,7 @@ fn valid_measurements_are_emitted_with_expected_fields() {
         }))
     );
     let sds = |m| {
-        Sensor::Sds011(rohi_connectivity_proto::sensor_v1::SDS011 {
+        Sensor::Sds011(rohi_telemetry_robonomics::wire::sensor_v1::SDS011 {
             measurement: Some(m),
         })
     };
@@ -150,7 +150,7 @@ fn valid_measurements_are_emitted_with_expected_fields() {
         sds(SDS011_::Measurement::Pm10(PM10 { deci_ug_m3: 201 }))
     );
     let mic = |m| {
-        Sensor::Ics43434(rohi_connectivity_proto::sensor_v1::ICS43434 {
+        Sensor::Ics43434(rohi_telemetry_robonomics::wire::sensor_v1::ICS43434 {
             measurement: Some(m),
         })
     };
@@ -341,7 +341,7 @@ fn humidity_noise_is_clamped_to_the_schema_range() {
 
 #[test]
 fn the_largest_message_fits_its_bound() {
-    use rohi_connectivity_proto::MessageEncode;
+    use rohi_telemetry_robonomics::wire::MessageEncode;
     assert!(Message::MAX_SIZE.unwrap() <= limits::MAX_MESSAGE_LEN);
     assert!(SignedEnvelope::MAX_SIZE.unwrap() <= limits::MAX_ENVELOPE_LEN);
 }

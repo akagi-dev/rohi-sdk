@@ -251,7 +251,11 @@ impl<const N: usize> SourceWriter<'_, N> {
             .map_err(|_| WriteError::Full)
     }
 
-    pub(crate) fn finish(self, result: Result<(), SourceFailure>) {
+    /// Ends the contribution of the source: keeps its observations on `Ok`,
+    /// discards all of them on `Err` or when a structural error occurred, and
+    /// records the report. [`collect_one`](crate::collect_one) does this for
+    /// sources; call it when composing a snapshot by hand.
+    pub fn finish(self, result: Result<(), SourceFailure>) {
         let failure = self.fatal.or(result.err());
         let (outcome, accepted) = match failure {
             None => (SourceOutcome::Collected, self.accepted),

@@ -32,7 +32,7 @@
 //!   signature are never regenerated and nothing is re-encoded from decoded
 //!   fields.
 //! - The signing preimage is documented and tested in
-//!   [`rohi_connectivity_proto::signing_preimage`]; golden vectors generated
+//!   [`rohi_telemetry_robonomics::wire::signing_preimage`]; golden vectors generated
 //!   with `robins` pin the whole chain (see the
 //!   [crate documentation](crate#testing-and-interoperability)).
 //!
@@ -48,10 +48,10 @@
 use core::fmt;
 
 use heapless::Vec;
-use rohi_connectivity_proto::crypto_v1::SignedEnvelope;
-use rohi_connectivity_proto::limits::{ED25519_KEY_LEN, MAX_ENVELOPE_LEN, MAX_MESSAGE_LEN};
-use rohi_connectivity_proto::{encode, signing_preimage};
 use rohi_identity::{IdentityError, PublicKey, Signature, Signer};
+use rohi_telemetry_robonomics::wire::crypto_v1::SignedEnvelope;
+use rohi_telemetry_robonomics::wire::limits::{ED25519_KEY_LEN, MAX_ENVELOPE_LEN, MAX_MESSAGE_LEN};
+use rohi_telemetry_robonomics::wire::{encode, signing_preimage};
 
 use crate::clock::{NONCE_LEN, NonceSource};
 
@@ -199,8 +199,8 @@ impl<'a, S: FrameSigner, N: NonceSource> EnvelopeBuilder<'a, S, N> {
     /// use rohi_connectivity::{
     ///     BuildError, EnvelopeBuilder, EnvelopeFrame, NONCE_LEN, NonceError, NonceSource,
     /// };
-    /// use rohi_connectivity_proto::crypto_v1::SignedEnvelope;
-    /// use rohi_connectivity_proto::decode;
+    /// use rohi_telemetry_robonomics::wire::crypto_v1::SignedEnvelope;
+    /// use rohi_telemetry_robonomics::wire::decode;
     /// use rohi_identity::Identity;
     ///
     /// struct Counter(u8);
@@ -231,7 +231,7 @@ impl<'a, S: FrameSigner, N: NonceSource> EnvelopeBuilder<'a, S, N> {
     /// assert_ne!(frame, again);
     /// // ... and the bounds are enforced.
     /// assert_eq!(
-    ///     builder.sign::<544>(&[0; 401]),
+    ///     builder.sign::<1024>(&[0; 781]),
     ///     Err(BuildError::TooLarge)
     /// );
     /// ```

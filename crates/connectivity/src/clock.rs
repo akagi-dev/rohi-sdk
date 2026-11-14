@@ -41,7 +41,7 @@ use rohi_time::Clock;
 use rohi_time::TimeService;
 
 /// Size of the nonce of a telemetry envelope, in bytes.
-pub const NONCE_LEN: usize = rohi_connectivity_proto::limits::NONCE_LEN;
+pub const NONCE_LEN: usize = rohi_telemetry_robonomics::wire::limits::NONCE_LEN;
 
 /// The UTC time is not available.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

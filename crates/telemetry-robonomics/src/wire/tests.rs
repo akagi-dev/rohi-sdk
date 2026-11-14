@@ -18,11 +18,11 @@
 
 use micropb::MessageEncode;
 
-use crate::core_v1::{Message, Message_, Meta};
-use crate::crypto_v1::SignedEnvelope;
-use crate::device_v1::{Urban, UrbanSensor, UrbanSensor_};
-use crate::sensor_v1::{BME280, BME280_, Temperature};
-use crate::{DecodeError, EncodeError, decode, encode, limits, signing_preimage};
+use crate::wire::core_v1::{Message, Message_, Meta};
+use crate::wire::crypto_v1::SignedEnvelope;
+use crate::wire::device_v1::{Urban, UrbanSensor, UrbanSensor_};
+use crate::wire::sensor_v1::{BME280, BME280_, Temperature};
+use crate::wire::{DecodeError, EncodeError, decode, encode, limits, signing_preimage};
 
 #[test]
 fn worst_case_sizes_fit_the_limits() {
@@ -99,11 +99,15 @@ fn envelope_has_no_unknown_extra_fields_at_the_pinned_revision() {
 }
 
 #[test]
-fn private_sections_are_skipped_when_decoding() {
-    // Urban.private (2) holding an `Encrypted`: not generated, ignored.
+fn private_sections_decode_as_a_bounded_list() {
+    // Urban.private (2) holding an `Encrypted`: decodes into the bounded list.
     let bytes = [0x12, 0x04, 0x12, 0x02, 0x08, 0x01];
     let decoded: Message = decode(&bytes).unwrap();
     assert!(decoded.payload.is_some());
+    let Some(crate::wire::core_v1::Message_::Payload::Urban(urban)) = decoded.payload else {
+        panic!("an urban payload")
+    };
+    assert_eq!(urban.private.len(), 1);
 }
 
 #[test]

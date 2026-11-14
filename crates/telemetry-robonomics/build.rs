@@ -27,6 +27,7 @@ use micropb_gen::{Config, Generator};
 const PROTO_ROOT: &str = "proto";
 const PROTOS: &[&str] = &[
     "proto/core/v1/message.proto",
+    "proto/crypto/v1/encrypted.proto",
     "proto/crypto/v1/envelope.proto",
     "proto/device/v1/insight.proto",
     "proto/device/v1/urban.proto",
@@ -60,17 +61,37 @@ const LIMITS: &[(&str, usize, &str)] = &[
     ),
     (
         "MAX_SENSORS_PER_MESSAGE",
-        12,
+        9,
         "Maximum number of sensor entries in one telemetry message.",
     ),
     (
+        "MAX_PRIVATE_SECTIONS",
+        2,
+        "Maximum number of private (encrypted) sections in one telemetry message.",
+    ),
+    (
+        "MAX_PRIVATE_PLAINTEXT_LEN",
+        128,
+        "Maximum size of an encoded `device.v1.EncryptedUrban` before encryption, in bytes.",
+    ),
+    (
+        "NONCE_XCHACHA_LEN",
+        24,
+        "Size of the XChaCha20-Poly1305 nonce of a private section, in bytes.",
+    ),
+    (
+        "MAX_ENCRYPTED_LEN",
+        232,
+        "Maximum size of an encoded `crypto.v1.Encrypted` (one private section), in bytes.",
+    ),
+    (
         "MAX_MESSAGE_LEN",
-        400,
+        780,
         "Maximum size of an encoded `core.v1.Message`, in bytes.",
     ),
     (
         "MAX_ENVELOPE_LEN",
-        544,
+        920,
         "Maximum size of an encoded `crypto.v1.SignedEnvelope`, in bytes.",
     ),
 ];
@@ -123,11 +144,29 @@ fn main() {
         generator.configure(path, Config::new().max_bytes(limit(name)));
     }
 
-    // Private (encrypted) sections and batches are not produced by this SDK:
-    // they are not generated, and decoding skips them as unknown fields.
+    // Private sections are produced for `Urban` only: each is one encoded
+    // `crypto.v1.Encrypted`. Batches and the `Insight` payload are not used by
+    // this SDK; they are not generated and decoding skips them.
+    generator.configure(
+        ".device.v1.Urban.private",
+        Config::new()
+            .max_len(limit("MAX_PRIVATE_SECTIONS"))
+            .max_bytes(limit("MAX_ENCRYPTED_LEN")),
+    );
+    for (path, size) in [
+        (".crypto.v1.Encrypted.algorithm", 16),
+        (".crypto.v1.Encrypted.from", limit("ED25519_KEY_LEN")),
+        (".crypto.v1.Encrypted.nonce", limit("NONCE_XCHACHA_LEN")),
+        (
+            ".crypto.v1.Encrypted.ciphertext",
+            limit("MAX_PRIVATE_PLAINTEXT_LEN") + 16,
+        ),
+    ] {
+        let config = Config::new().max_bytes(size);
+        generator.configure(path, config);
+    }
     for path in [
         ".crypto.v1.SignedEnvelopeBatch",
-        ".device.v1.Urban.private",
         ".device.v1.Insight.private",
     ] {
         generator.configure(path, Config::new().skip(true));

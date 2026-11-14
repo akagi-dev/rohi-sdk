@@ -70,6 +70,12 @@ impl<'s, const N: usize> SectionView<'s, N> {
             .filter(move |o| sources.includes(o.source) && measurements.contains(o.measurement))
     }
 
+    /// The snapshot the section selects from. A format may need context the
+    /// section does not contain, for example which chip produced a value.
+    pub fn snapshot(&self) -> &'s TelemetrySnapshot<N> {
+        self.snapshot
+    }
+
     /// Whether the section selects no observation of this snapshot.
     pub fn is_empty(&self) -> bool {
         self.observations().next().is_none()

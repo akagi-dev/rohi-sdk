@@ -54,7 +54,7 @@ use crate::tasks::RawMutex;
 use crate::{location, time};
 
 /// Frames the telemetry outbox holds while the uplink is down. Each frame is
-/// up to `rohi_connectivity_proto::limits::MAX_ENVELOPE_LEN` bytes; when the
+/// up to `rohi_telemetry_robonomics::wire::limits::MAX_ENVELOPE_LEN` bytes; when the
 /// outbox is full new frames are skipped, never queued over old ones.
 pub const CONNECTIVITY_OUTBOX_DEPTH: usize = 4;
 

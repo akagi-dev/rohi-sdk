@@ -119,7 +119,7 @@ fn message_bytes_match_the_reference() {
 fn preimage_and_signature_match_the_reference() {
     let message = hex(MESSAGE);
     let mut preimage = [0u8; 256];
-    let len = rohi_connectivity_proto::signing_preimage(
+    let len = rohi_telemetry_robonomics::wire::signing_preimage(
         &hex(PUBLIC_KEY),
         &NONCE,
         &message,

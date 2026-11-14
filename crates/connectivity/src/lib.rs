@@ -45,7 +45,7 @@
 //! not know where the device is ([`rohi_location`]); it consumes those through
 //! small traits. The wire format is pinned to a revision of the protocol whose
 //! schema is vendored in
-//! [`rohi_connectivity_proto`](../rohi_connectivity_proto/index.html), see its
+//! [`rohi_telemetry_robonomics::wire`](../rohi_telemetry_robonomics::wire/index.html), see its
 //! documentation for the pinned revision and the messages.
 //!
 //! # Quick Example
@@ -67,9 +67,9 @@
 //!     EnvelopeTransport, NONCE_LEN, NonceError, NonceSource, ServiceConfig, SnapshotSource,
 //!     TransportAck, TransportError, UtcClock,
 //! };
-//! use rohi_connectivity_proto::core_v1::Message;
-//! use rohi_connectivity_proto::crypto_v1::SignedEnvelope;
-//! use rohi_connectivity_proto::{decode, limits, signing_preimage};
+//! use rohi_telemetry_robonomics::wire::core_v1::Message;
+//! use rohi_telemetry_robonomics::wire::crypto_v1::SignedEnvelope;
+//! use rohi_telemetry_robonomics::wire::{decode, limits, signing_preimage};
 //! use rohi_time::Clock;
 //! use rohi_sensors::{
 //!     Bmx280Update, Celsius, MeasurementStore, MeasurementUpdate, MeasurementsSnapshot,
@@ -223,7 +223,7 @@
 //! | [`rohi_location`] | A [`LocationSource`](rohi_location::LocationSource) adds the `GPS` entry, see [`encoder`]. |
 //! | [`rohi_net`] | [`HttpTransport`] runs over a [`NetworkHandle`](rohi_net::NetworkHandle). |
 //! | [`rohi_config`], [`rohi_service`] | [`ConnectivityConfig`] is a configuration section; [`ConnectivityStatusService`] is a status-plane service. |
-//! | [`rohi_connectivity_proto`](../rohi_connectivity_proto/index.html) | The protobuf messages, the encoder and the signing preimage. |
+//! | [`rohi_telemetry_robonomics::wire`](../rohi_telemetry_robonomics::wire/index.html) | The protobuf messages, the encoder and the signing preimage. |
 //!
 //! The reference firmware is `firmwares/altruist-urban` (`src/connectivity.rs`):
 //! one embassy task runs [`ConnectivityService::run`] and is stopped and
@@ -283,9 +283,9 @@
 //!
 //! | Constant | Value |
 //! |----------|-------|
-//! | [`MAX_SENSORS_PER_MESSAGE`](rohi_connectivity_proto::limits::MAX_SENSORS_PER_MESSAGE) | 12 |
-//! | [`MAX_MESSAGE_LEN`](rohi_connectivity_proto::limits::MAX_MESSAGE_LEN) | 400 B (worst case of the schema: 399 B) |
-//! | [`MAX_ENVELOPE_LEN`](rohi_connectivity_proto::limits::MAX_ENVELOPE_LEN) | 544 B |
+//! | [`MAX_SENSORS_PER_MESSAGE`](rohi_telemetry_robonomics::wire::limits::MAX_SENSORS_PER_MESSAGE) | 12 |
+//! | [`MAX_MESSAGE_LEN`](rohi_telemetry_robonomics::wire::limits::MAX_MESSAGE_LEN) | 400 B (worst case of the schema: 399 B) |
+//! | [`MAX_ENVELOPE_LEN`](rohi_telemetry_robonomics::wire::limits::MAX_ENVELOPE_LEN) | 544 B |
 //! | [`NONCE_LEN`] | 16 B |
 //! | [`DEFAULT_OUTBOX_DEPTH`](service::DEFAULT_OUTBOX_DEPTH) | 4 frames |
 //! | `CONNECTIVITY_OUTBOX_DEPTH` (Altruist Urban firmware) | 4 frames |

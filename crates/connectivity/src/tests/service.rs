@@ -488,15 +488,16 @@ fn a_known_location_goes_into_the_frame() {
     assert_eq!(service.diagnostics().frames_without_location, 0);
 
     let frame = service.front().unwrap();
-    let envelope: rohi_connectivity_proto::crypto_v1::SignedEnvelope =
-        rohi_connectivity_proto::decode(frame.as_bytes()).unwrap();
-    let message: rohi_connectivity_proto::core_v1::Message =
-        rohi_connectivity_proto::decode(&envelope.message).unwrap();
-    let Some(rohi_connectivity_proto::core_v1::Message_::Payload::Urban(urban)) = message.payload
+    let envelope: rohi_telemetry_robonomics::wire::crypto_v1::SignedEnvelope =
+        rohi_telemetry_robonomics::wire::decode(frame.as_bytes()).unwrap();
+    let message: rohi_telemetry_robonomics::wire::core_v1::Message =
+        rohi_telemetry_robonomics::wire::decode(&envelope.message).unwrap();
+    let Some(rohi_telemetry_robonomics::wire::core_v1::Message_::Payload::Urban(urban)) =
+        message.payload
     else {
         panic!("not an urban payload");
     };
-    let Some(rohi_connectivity_proto::device_v1::UrbanSensor_::Sensor::Gps(gps)) =
+    let Some(rohi_telemetry_robonomics::wire::device_v1::UrbanSensor_::Sensor::Gps(gps)) =
         &urban.public[0].sensor
     else {
         panic!("the location is the first entry");

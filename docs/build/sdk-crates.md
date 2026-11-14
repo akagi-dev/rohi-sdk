@@ -20,7 +20,7 @@ Released crates are also published on docs.rs, for example [`rohi-sdk`](https://
 | `rohi-control-proto`, `rohi-control`, `rohi-control-ble` | the control protocol, its dispatcher and its firmware-side BLE binding (the `rohi` tool reuses only its frame and uuid modules) |
 | `rohi-control-tcp` | the control protocol over TCP: independent length-prefixed records and the serving loop |
 | `rohi-sim` | the simulated world of a `std` application: sensors, Wi-Fi, IP faults, flash file, scenarios |
-| `rohi-connectivity`, `rohi-connectivity-proto` | signed telemetry |
+| `rohi-connectivity`, `rohi-telemetry-robonomics` | signed telemetry |
 | `rohi-time`, `rohi-time-ntp` | wall-clock time |
 | `rohi-identity` | device identity and signer |
 | `rohi-location` | device location |

@@ -15,7 +15,6 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-#![no_std]
 
 //! Bounded Rust bindings of the `airalab/connectivity-protocol` telemetry
 //! wire format.
@@ -37,7 +36,7 @@
 //!
 //! The **authoritative description of the messages is the schema**, the
 //! `.proto` files in
-//! [`crates/connectivity-proto/proto/`](https://github.com/akagi-dev/rohi-sdk/tree/master/crates/connectivity-proto/proto)
+//! [`crates/telemetry-robonomics/proto/`](https://github.com/akagi-dev/rohi-sdk/tree/master/crates/telemetry-robonomics/proto)
 //! (comments there define units and scaling). The generated Rust types
 //! mirror it one to one and are not listed item by item here; the table in
 //! [Schema map](#schema-map) says where to look.
@@ -48,10 +47,10 @@
 //! it again, and compute the bytes a signature covers:
 //!
 //! ```
-//! use rohi_connectivity_proto::core_v1::{Message, Message_, Meta};
-//! use rohi_connectivity_proto::device_v1::{Urban, UrbanSensor, UrbanSensor_};
-//! use rohi_connectivity_proto::sensor_v1::GPS;
-//! use rohi_connectivity_proto::{decode, encode, limits, signing_preimage};
+//! use rohi_telemetry_robonomics::wire::core_v1::{Message, Message_, Meta};
+//! use rohi_telemetry_robonomics::wire::device_v1::{Urban, UrbanSensor, UrbanSensor_};
+//! use rohi_telemetry_robonomics::wire::sensor_v1::GPS;
+//! use rohi_telemetry_robonomics::wire::{decode, encode, limits, signing_preimage};
 //!
 //! // `Meta.timestamp` is the telemetry time: Unix UTC milliseconds.
 //! let mut message = Message::default();
@@ -157,8 +156,8 @@
 //! The wire format is pinned to
 //! [`airalab/connectivity-protocol`](https://github.com/airalab/connectivity-protocol)
 //! revision `33b4e7ec6eaa19a930b91bfb59bd3337c1ec88ac`, recorded in
-//! `crates/connectivity-proto/UPSTREAM_REV`. The `.proto` files (and the
-//! upstream license) are vendored in `crates/connectivity-proto/proto/`, so
+//! `crates/telemetry-robonomics/UPSTREAM_REV`. The `.proto` files (and the
+//! upstream license) are vendored in `crates/telemetry-robonomics/proto/`, so
 //! no build downloads anything. The copy is the pinned revision except for
 //! one deliberate difference: in `device/v1/urban.proto` and
 //! `device/v1/insight.proto` the `private` field is declared as
@@ -174,7 +173,7 @@
 //!
 //! ## Validation level
 //!
-//! Host-tested (`cargo test -p rohi-connectivity-proto`): golden bytes pin the
+//! Host-tested (`cargo test -p rohi-telemetry-robonomics`): golden bytes pin the
 //! field numbers, oversized fields are rejected with
 //! [`DecodeError::Capacity`] and unknown fields are skipped. Interoperability
 //! with the reference implementation is checked by the vectors in
@@ -197,22 +196,27 @@ use micropb::{PbDecoder, PbEncoder};
 /// | `ED25519_SIGNATURE_LEN` | 64 B |
 /// | `NONCE_LEN` | 16 B (nonce produced by this SDK) |
 /// | `MAX_NONCE_LEN` | 32 B (largest nonce accepted when decoding) |
-/// | `MAX_SENSORS_PER_MESSAGE` | 12 |
-/// | `MAX_MESSAGE_LEN` | 400 B (worst case of the schema: 399 B) |
-/// | `MAX_ENVELOPE_LEN` | 544 B |
+/// | `MAX_SENSORS_PER_MESSAGE` | 9 |
+/// | `MAX_PRIVATE_SECTIONS` | 2 |
+/// | `MAX_PRIVATE_PLAINTEXT_LEN` | 128 B (encoded `EncryptedUrban`) |
+/// | `NONCE_XCHACHA_LEN` | 24 B |
+/// | `MAX_ENCRYPTED_LEN` | 232 B (one encoded `crypto.v1.Encrypted`) |
+/// | `MAX_MESSAGE_LEN` | 780 B (worst case of the schema: 776 B) |
+/// | `MAX_ENVELOPE_LEN` | 920 B |
 ///
-/// A full Altruist Urban frame (7 measurements) is about 200 B.
+/// A full Altruist Urban frame (7 measurements) is about 200 B; every private
+/// section adds about 150 B.
 ///
 /// The bounds are enforced when decoding (a longer field is
 /// [`DecodeError::Capacity`]) and, for the sizes of whole messages, checked
 /// against the worst case computed from the schema:
 ///
 /// ```
-/// use rohi_connectivity_proto::core_v1::Message;
-/// use rohi_connectivity_proto::crypto_v1::SignedEnvelope;
-/// use rohi_connectivity_proto::{MessageEncode, limits};
+/// use rohi_telemetry_robonomics::wire::core_v1::Message;
+/// use rohi_telemetry_robonomics::wire::crypto_v1::SignedEnvelope;
+/// use rohi_telemetry_robonomics::wire::{MessageEncode, limits};
 ///
-/// assert_eq!(Message::MAX_SIZE, Ok(399));
+/// assert_eq!(Message::MAX_SIZE, Ok(776));
 /// assert!(Message::MAX_SIZE.unwrap() <= limits::MAX_MESSAGE_LEN);
 /// assert!(SignedEnvelope::MAX_SIZE.unwrap() <= limits::MAX_ENVELOPE_LEN);
 /// ```
@@ -286,8 +290,8 @@ impl fmt::Display for DecodeError {
 /// message.
 ///
 /// ```
-/// use rohi_connectivity_proto::core_v1::{Message, Meta};
-/// use rohi_connectivity_proto::{EncodeError, encode};
+/// use rohi_telemetry_robonomics::wire::core_v1::{Message, Meta};
+/// use rohi_telemetry_robonomics::wire::{EncodeError, encode};
 ///
 /// let mut message = Message::default();
 /// message.set_metadata(Meta { node_id: 7, timestamp: 1 });
@@ -322,8 +326,8 @@ pub fn encode<M: MessageEncode>(message: &M, buf: &mut [u8]) -> Result<usize, En
 /// field exceeds its compile-time bound (see [`limits`]).
 ///
 /// ```
-/// use rohi_connectivity_proto::crypto_v1::SignedEnvelope;
-/// use rohi_connectivity_proto::{DecodeError, decode};
+/// use rohi_telemetry_robonomics::wire::crypto_v1::SignedEnvelope;
+/// use rohi_telemetry_robonomics::wire::{DecodeError, decode};
 ///
 /// // sensor_id (field 1) with 3 bytes, then an unknown field 5 that is skipped.
 /// let envelope: SignedEnvelope = decode(&[0x0a, 0x03, 1, 2, 3, 0x28, 0x09]).unwrap();
@@ -364,7 +368,7 @@ pub fn decode<M: MessageDecode + Default>(bytes: &[u8]) -> Result<M, DecodeError
 /// `sensor_id.len() + nonce.len() + message.len()`.
 ///
 /// ```
-/// use rohi_connectivity_proto::signing_preimage;
+/// use rohi_telemetry_robonomics::wire::signing_preimage;
 ///
 /// let mut out = [0u8; 8];
 /// let len = signing_preimage(&[1, 2], &[3], &[4, 5, 6], &mut out).unwrap();
@@ -385,9 +389,6 @@ pub fn signing_preimage(
     message_out.copy_from_slice(message);
     Ok(total)
 }
-
-#[cfg(test)]
-extern crate std;
 
 #[cfg(test)]
 mod tests;
