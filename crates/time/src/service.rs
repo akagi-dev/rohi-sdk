@@ -358,7 +358,7 @@ impl<C: Clock, M: RawMutex> TimeService<C, M> {
             return Err(SyncFailure::Implausible);
         }
         let now = self.clock.now();
-        self.inner.lock(|inner| {
+        let step = self.inner.lock(|inner| {
             let mut inner = inner.borrow_mut();
             let step = inner
                 .anchor
@@ -372,14 +372,17 @@ impl<C: Clock, M: RawMutex> TimeService<C, M> {
             });
             inner.consecutive_failures = 0;
             inner.last_failure = None;
-            match step {
-                Some(step) => info!(
-                    "time: synchronized from {:?}, stepped by {} ms",
-                    source, step
-                ),
-                None => info!("time: synchronized from {:?}", source),
-            }
+            step
         });
+        // Log outside the critical section: the log sink stamps entries with
+        // `now()`, which borrows the same cell.
+        match step {
+            Some(step) => info!(
+                "time: synchronized from {:?}, stepped by {} ms",
+                source, step
+            ),
+            None => info!("time: synchronized from {:?}", source),
+        }
         Ok(())
     }
 
