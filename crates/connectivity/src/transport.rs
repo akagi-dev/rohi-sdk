@@ -17,28 +17,28 @@
 ///////////////////////////////////////////////////////////////////////////////
 //! Transport abstraction and error classification.
 //!
-//! [`EnvelopeTransport`] operates on the immutable
-//! [`EnvelopeFrame`]: a transport cannot change what was
-//! signed. [`HttpTransport`](crate::HttpTransport) is the implementation
-//! shipped.
+//! A [`PacketTransport`] sends the exact bytes of a sealed packet to one
+//! endpoint and reports an acknowledgement or a classified error. It never
+//! sees decoded content, so it cannot change what was signed.
+//! [`HttpTransport`](crate::HttpTransport) is the implementation shipped.
 //!
 //! ```
-//! use rohi_connectivity::{EnvelopeFrame, EnvelopeTransport, TransportAck, TransportError};
+//! use rohi_connectivity::{Endpoint, PacketTransport, TransportAck, TransportError};
 //!
-//! /// Accepts every frame and counts the bytes it was given.
+//! /// Accepts every packet and counts the bytes it was given.
 //! struct Sink(usize);
 //!
-//! impl EnvelopeTransport for Sink {
-//!     async fn send(&mut self, frame: &EnvelopeFrame) -> Result<TransportAck, TransportError> {
-//!         self.0 += frame.len();
+//! impl PacketTransport for Sink {
+//!     async fn deliver(
+//!         &mut self,
+//!         _endpoint: Endpoint<'_>,
+//!         packet: &[u8],
+//!     ) -> Result<TransportAck, TransportError> {
+//!         self.0 += packet.len();
 //!         Ok(TransportAck { status: 202 })
 //!     }
 //! }
 //! ```
-//!
-//! [`HttpTransport`](crate::HttpTransport) is the maintained implementation; a
-//! complete host exchange against an in-memory network is in its
-//! documentation.
 //!
 //! # Error classification
 //!
@@ -46,29 +46,25 @@
 //!
 //! | Result | Disposition |
 //! |--------|-------------|
-//! | `202 Accepted` | delivered, frame removed |
-//! | network unavailable, DNS, connect, timeout, I/O error, malformed response | [`Retry`](Disposition::Retry): the same frame with backoff |
-//! | `408`, `429`, `5xx` | retry with backoff |
-//! | `1xx`, `3xx`, `2xx` other than `202` (captive portal, proxy) | retry (not an acceptance) |
-//! | `401`, `403` | [`Unauthorized`](Disposition::Unauthorized): frame dropped, pause for the longest backoff (no hot loop) |
-//! | `400`, `413`, any other `4xx` | [`Permanent`](Disposition::Permanent): frame dropped |
-//!
-//! The service applies the disposition in
-//! [`ConnectivityService::deliver`](crate::ConnectivityService::deliver) and
-//! its backoff is described in [`service`](crate::service).
+//! | `202 Accepted` | delivered: the logical route is complete for this packet |
+//! | network unavailable, DNS, connect, timeout, I/O error, malformed response | [`Transient`](Disposition::Transient): try the next path, retry later with backoff |
+//! | `408`, `429`, `5xx` | transient |
+//! | `1xx`, `3xx`, `2xx` other than `202` (captive portal, proxy) | transient (not an acknowledgement) |
+//! | `401`, `403` | [`Unauthorized`](Disposition::Unauthorized): try the next path, and the failing path pauses for the long authorization backoff |
+//! | `400`, `413`, any other `4xx` | [`Permanent`](Disposition::Permanent): the packet is dropped and is **not** offered to other endpoints |
 
 use core::fmt;
 
-use crate::envelope::EnvelopeFrame;
+use crate::endpoint::Endpoint;
 
-/// The ingress accepted the frame; it can be removed from the outbox.
+/// The ingress accepted the packet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TransportAck {
     /// Transport specific status (the HTTP status code for HTTP).
     pub status: u16,
 }
 
-/// A frame could not be delivered.
+/// A packet could not be delivered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportError {
     /// The network cannot carry traffic right now.
@@ -87,16 +83,18 @@ pub enum TransportError {
     Status(u16),
 }
 
-/// What the service does after a failed delivery.
+/// What the publisher does after a failed delivery attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Disposition {
-    /// Keep the same frame, wait (with backoff) and send it again.
-    Retry,
-    /// The frame can never be accepted: drop it.
+    /// Keep the same packet: try the next path, wait with backoff and send
+    /// it again.
+    Transient,
+    /// The packet can never be accepted: drop it and do not offer it to
+    /// another endpoint.
     Permanent,
-    /// The device is not authorized or not provisioned at the ingress: drop
-    /// the frame and pause for the longest backoff, a quick retry cannot
-    /// help and must not turn into a hot loop.
+    /// The device is not authorized at this endpoint: keep the packet and try
+    /// the next path, but the failing path pauses for the longest backoff, a
+    /// quick retry cannot help and must not turn into a hot loop.
     Unauthorized,
 }
 
@@ -106,10 +104,10 @@ impl TransportError {
     /// ```
     /// use rohi_connectivity::{Disposition, TransportError};
     ///
-    /// assert_eq!(TransportError::Timeout.disposition(), Disposition::Retry);
-    /// assert_eq!(TransportError::Status(503).disposition(), Disposition::Retry);
-    /// // Not an acceptance (a captive portal answers 200): the frame is kept.
-    /// assert_eq!(TransportError::Status(200).disposition(), Disposition::Retry);
+    /// assert_eq!(TransportError::Timeout.disposition(), Disposition::Transient);
+    /// assert_eq!(TransportError::Status(503).disposition(), Disposition::Transient);
+    /// // Not an acceptance (a captive portal answers 200): the packet is kept.
+    /// assert_eq!(TransportError::Status(200).disposition(), Disposition::Transient);
     /// assert_eq!(TransportError::Status(401).disposition(), Disposition::Unauthorized);
     /// assert_eq!(TransportError::Status(413).disposition(), Disposition::Permanent);
     /// ```
@@ -120,7 +118,7 @@ impl TransportError {
             | Self::Connect
             | Self::Timeout
             | Self::Io
-            | Self::BadResponse => Disposition::Retry,
+            | Self::BadResponse => Disposition::Transient,
             Self::Status(status) => classify_status_code(status),
         }
     }
@@ -129,18 +127,18 @@ impl TransportError {
 const fn classify_status_code(status: u16) -> Disposition {
     match status {
         // Request timeout, throttling and server failures are transient.
-        408 | 429 | 500..=599 => Disposition::Retry,
+        408 | 429 | 500..=599 => Disposition::Transient,
         401 | 403 => Disposition::Unauthorized,
         // Malformed (400), too large (413) and every other client error.
         400..=499 => Disposition::Permanent,
         // Informational, redirects and 2xx other than 202 (a captive portal,
-        // a proxy) are not an acceptance: keep the frame.
-        _ => Disposition::Retry,
+        // a proxy) are not an acceptance: keep the packet.
+        _ => Disposition::Transient,
     }
 }
 
 /// Maps an HTTP status code to the delivery result: only `202 Accepted`
-/// commits the frame.
+/// commits the packet.
 ///
 /// # Errors
 ///
@@ -177,22 +175,25 @@ impl fmt::Display for TransportError {
 
 impl core::error::Error for TransportError {}
 
-/// Delivers immutable envelope frames.
+/// Delivers sealed packets to an endpoint.
 ///
-/// Implementations send exactly [`EnvelopeFrame::as_bytes`]; they never see
-/// decoded protocol structures, so a transport cannot change what was signed.
+/// Implementations send exactly the bytes they are given.
 #[allow(async_fn_in_trait)]
-pub trait EnvelopeTransport {
-    /// Sends `frame` and waits for the acknowledgement.
+pub trait PacketTransport {
+    /// Sends `packet` to `endpoint` and waits for the acknowledgement.
     ///
-    /// Cancellation: safe at any point; the frame is not modified, so it can
+    /// Cancellation: safe at any point; the packet is not modified, so it can
     /// be sent again (the ingress may or may not have received the cancelled
-    /// attempt).
+    /// attempt, delivery is at-least-once).
     ///
     /// # Errors
     ///
     /// A [`TransportError`], classified by
     /// [`TransportError::disposition`]. Only an acknowledgement
-    /// ([`TransportAck`]) lets the service remove the frame.
-    async fn send(&mut self, frame: &EnvelopeFrame) -> Result<TransportAck, TransportError>;
+    /// ([`TransportAck`]) completes the packet.
+    async fn deliver(
+        &mut self,
+        endpoint: Endpoint<'_>,
+        packet: &[u8],
+    ) -> Result<TransportAck, TransportError>;
 }

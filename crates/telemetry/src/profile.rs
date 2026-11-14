@@ -170,7 +170,11 @@ pub struct PacketProfile<const RECIPIENTS: usize> {
     pub public: DataSelection,
     /// The private sections, one per recipient.
     #[n(3)]
-    #[cbor(with = "seq")]
+    #[cbor(
+        encode_with = "rohi_config::cbor::seq::encode",
+        decode_with = "rohi_config::cbor::seq::decode",
+        cbor_len = "rohi_config::cbor::seq::cbor_len"
+    )]
     pub private: Vec<PrivateSectionPolicy, RECIPIENTS>,
     /// The generation at which the profile was created.
     #[n(4)]
@@ -211,7 +215,11 @@ pub struct TelemetryConfig<const PROFILES: usize, const RECIPIENTS: usize> {
     pub generation: u32,
     /// The profiles, in creation order.
     #[n(1)]
-    #[cbor(with = "seq")]
+    #[cbor(
+        encode_with = "rohi_config::cbor::seq::encode",
+        decode_with = "rohi_config::cbor::seq::decode",
+        cbor_len = "rohi_config::cbor::seq::cbor_len"
+    )]
     pub profiles: Vec<PacketProfile<RECIPIENTS>, PROFILES>,
 }
 
@@ -438,46 +446,6 @@ impl<const P: usize, const R: usize> TelemetryConfig<P, R> {
             }
         }
         Ok(())
-    }
-}
-
-/// CBOR of `heapless::Vec<T, N>` as a definite array.
-mod seq {
-    use heapless::Vec;
-    use minicbor::decode::Error as DecodeError;
-    use minicbor::encode::{Error as EncodeError, Write};
-    use minicbor::{CborLen, Decode, Decoder, Encode, Encoder};
-
-    pub fn encode<C, W: Write, T: Encode<C>, const N: usize>(
-        value: &Vec<T, N>,
-        e: &mut Encoder<W>,
-        ctx: &mut C,
-    ) -> Result<(), EncodeError<W::Error>> {
-        e.array(value.len() as u64)?;
-        for item in value {
-            item.encode(e, ctx)?;
-        }
-        Ok(())
-    }
-
-    pub fn decode<'b, C, T: Decode<'b, C>, const N: usize>(
-        d: &mut Decoder<'b>,
-        ctx: &mut C,
-    ) -> Result<Vec<T, N>, DecodeError> {
-        let len = d
-            .array()?
-            .ok_or_else(|| DecodeError::message("indefinite arrays are not accepted"))?;
-        let mut out = Vec::new();
-        for _ in 0..len {
-            out.push(T::decode(d, ctx)?)
-                .map_err(|_| DecodeError::message("too many elements"))?;
-        }
-        Ok(out)
-    }
-
-    pub fn cbor_len<C, T: CborLen<C>, const N: usize>(value: &Vec<T, N>, ctx: &mut C) -> usize {
-        (value.len() as u64).cbor_len(ctx)
-            + value.iter().map(|item| item.cbor_len(ctx)).sum::<usize>()
     }
 }
 

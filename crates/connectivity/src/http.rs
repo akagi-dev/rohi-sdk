@@ -21,7 +21,7 @@
 //! POST /v1/telemetry HTTP/1.1
 //! Host: <host>[:<port>]
 //! Content-Type: application/protobuf
-//! Content-Length: <frame length>
+//! Content-Length: <packet length>
 //! Connection: close
 //!
 //! <exact SignedEnvelope bytes>
@@ -49,9 +49,8 @@ use heapless::String;
 use rohi_net::{IpBackend, NetError, NetworkHandle};
 use rohi_time::with_timeout;
 
-use crate::config::Endpoint;
-use crate::envelope::EnvelopeFrame;
-use crate::transport::{EnvelopeTransport, TransportAck, TransportError, classify_status};
+use crate::endpoint::Endpoint;
+use crate::transport::{PacketTransport, TransportAck, TransportError, classify_status};
 
 /// Path of the telemetry ingress.
 pub const TELEMETRY_PATH: &str = "/v1/telemetry";
@@ -63,11 +62,11 @@ pub const DEFAULT_TIMEOUT_MS: u32 = 20_000;
 const HEAD_CAPACITY: usize = 256;
 const RESPONSE_CAPACITY: usize = 64;
 
-/// HTTP transport of [`EnvelopeFrame`]s.
+/// HTTP transport of sealed packets.
 ///
 /// One attempt resolves the host (an IP literal skips DNS), opens a
 /// connection through the [`NetworkHandle`], writes the request head and the
-/// exact frame bytes and reads the status line; everything is bounded by the
+/// exact packet bytes and reads the status line; everything is bounded by the
 /// timeout of the transport. Only `202` is an acknowledgement, see
 /// [`classify_status`].
 ///
@@ -80,21 +79,10 @@ const RESPONSE_CAPACITY: usize = 64;
 /// use embassy_futures::{block_on, join::join, yield_now};
 /// use embedded_hal_async::delay::DelayNs;
 /// use rohi_connectivity::http::request_head;
-/// use rohi_connectivity::{
-///     Endpoint, EnvelopeBuilder, EnvelopeFrame, EnvelopeTransport, HttpTransport, NONCE_LEN,
-///     NonceError, NonceSource, TransportAck,
-/// };
-/// use rohi_identity::Identity;
+/// use rohi_connectivity::{Endpoint, HttpTransport, PacketTransport, TransportAck};
 /// use rohi_net::NetworkHandle;
 /// use rohi_net::testing::FakeIp;
 ///
-/// struct Counter;
-/// impl NonceSource for Counter {
-///     fn fill_nonce(&mut self, dst: &mut [u8; NONCE_LEN]) -> Result<(), NonceError> {
-///         dst.fill(1);
-///         Ok(())
-///     }
-/// }
 /// // A timeout that never fires; the firmware passes its embassy delay.
 /// struct NeverDelay;
 /// impl DelayNs for NeverDelay {
@@ -103,10 +91,8 @@ const RESPONSE_CAPACITY: usize = 64;
 ///     }
 /// }
 ///
-/// let signer = Identity::from_secret(&[7; 32]).unwrap().signer();
-/// let frame: EnvelopeFrame = EnvelopeBuilder::new(&signer, &mut Counter)
-///     .sign(&[0x0a, 0x04, 0x08, 0x07, 0x10, 0x01])
-///     .unwrap();
+/// // Any sealed packet: the transport sends exactly these bytes.
+/// let packet = [0x0a, 0x04, 0x08, 0x07, 0x10, 0x01];
 ///
 /// let server_addr = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7));
 /// let ip = FakeIp::<2, 1024>::new();
@@ -114,14 +100,14 @@ const RESPONSE_CAPACITY: usize = 64;
 /// ip.add_host("ingress.test", server_addr);
 ///
 /// let endpoint = Endpoint::parse("http://ingress.test").unwrap();
-/// let head = request_head(endpoint, frame.len()).unwrap();
-/// let mut transport = HttpTransport::new(NetworkHandle::new(&ip), endpoint, NeverDelay);
+/// let head = request_head(endpoint, packet.len()).unwrap();
+/// let mut transport = HttpTransport::new(NetworkHandle::new(&ip), NeverDelay);
 ///
-/// // The server: wait for head and frame, answer `202 Accepted`.
+/// // The server: wait for head and packet, answer `202 Accepted`.
 /// let remote = SocketAddr::new(server_addr, 80);
 /// let server = async {
 ///     let mut received = Vec::new();
-///     while received.len() < head.len() + frame.len() {
+///     while received.len() < head.len() + packet.len() {
 ///         received.extend_from_slice(&ip.peer_received(remote));
 ///         yield_now().await;
 ///     }
@@ -130,31 +116,28 @@ const RESPONSE_CAPACITY: usize = 64;
 ///     received
 /// };
 ///
-/// let (result, received) = block_on(join(transport.send(&frame), server));
+/// let (result, received) = block_on(join(transport.deliver(endpoint, &packet), server));
 /// assert_eq!(result, Ok(TransportAck { status: 202 }));
 /// assert!(received.starts_with(head.as_bytes()));
-/// assert!(received.ends_with(frame.as_bytes())); // the exact signed bytes
+/// assert!(received.ends_with(&packet)); // the exact signed bytes
 /// ```
 pub struct HttpTransport<'a, B, D> {
     net: NetworkHandle<'a, B>,
-    endpoint: Endpoint<'a>,
     delay: D,
     timeout_ms: u32,
 }
 
 impl<'a, B: IpBackend, D: DelayNs> HttpTransport<'a, B, D> {
-    /// A transport posting to `endpoint` through `net`, with the default
-    /// timeout. `delay` bounds every attempt.
-    pub fn new(net: NetworkHandle<'a, B>, endpoint: Endpoint<'a>, delay: D) -> Self {
+    /// A transport over `net`; `delay` bounds every attempt.
+    pub fn new(net: NetworkHandle<'a, B>, delay: D) -> Self {
         Self {
             net,
-            endpoint,
             delay,
             timeout_ms: DEFAULT_TIMEOUT_MS,
         }
     }
 
-    /// Replaces the budget of one delivery attempt.
+    /// Replaces the budget of one attempt.
     pub fn with_timeout_ms(mut self, timeout_ms: u32) -> Self {
         self.timeout_ms = timeout_ms;
         self
@@ -162,8 +145,8 @@ impl<'a, B: IpBackend, D: DelayNs> HttpTransport<'a, B, D> {
 
     async fn exchange(
         net: NetworkHandle<'a, B>,
-        endpoint: Endpoint<'a>,
-        frame: &EnvelopeFrame,
+        endpoint: Endpoint<'_>,
+        packet: &[u8],
     ) -> Result<u16, TransportError> {
         let address = match endpoint.host.parse::<IpAddr>() {
             Ok(address) => address,
@@ -177,15 +160,12 @@ impl<'a, B: IpBackend, D: DelayNs> HttpTransport<'a, B, D> {
             .await
             .map_err(map_error)?;
 
-        let head = request_head(endpoint, frame.len())?;
+        let head = request_head(endpoint, packet.len())?;
         connection
             .write_all(head.as_bytes())
             .await
             .map_err(map_error)?;
-        connection
-            .write_all(frame.as_bytes())
-            .await
-            .map_err(map_error)?;
+        connection.write_all(packet).await.map_err(map_error)?;
         connection.flush().await.map_err(map_error)?;
 
         let mut response = [0u8; RESPONSE_CAPACITY];
@@ -206,9 +186,13 @@ impl<'a, B: IpBackend, D: DelayNs> HttpTransport<'a, B, D> {
     }
 }
 
-impl<B: IpBackend, D: DelayNs> EnvelopeTransport for HttpTransport<'_, B, D> {
-    async fn send(&mut self, frame: &EnvelopeFrame) -> Result<TransportAck, TransportError> {
-        let exchange = Self::exchange(self.net, self.endpoint, frame);
+impl<B: IpBackend, D: DelayNs> PacketTransport for HttpTransport<'_, B, D> {
+    async fn deliver(
+        &mut self,
+        endpoint: Endpoint<'_>,
+        packet: &[u8],
+    ) -> Result<TransportAck, TransportError> {
+        let exchange = Self::exchange(self.net, endpoint, packet);
         let status = with_timeout(&mut self.delay, self.timeout_ms, exchange)
             .await
             .map_err(|_| TransportError::Timeout)??;

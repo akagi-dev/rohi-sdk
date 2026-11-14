@@ -302,7 +302,7 @@ fn none_clear_and_values_are_three_distinct_operations() {
 
 #[test]
 fn oversized_value_is_rejected_with_capacity() {
-    // string_value (field 6) of 65 bytes in a request, of 33 in a response.
+    // string_value (field 6) of 65 bytes in a request and in a response.
     let mut wire = [b'a'; 67];
     wire[0] = 0x32;
     wire[1] = 65;
@@ -312,13 +312,13 @@ fn oversized_value_is_rejected_with_capacity() {
     );
     wire[1] = 64;
     assert!(decode::<ActionArg>(&wire[..66]).is_ok());
-    wire[1] = 33;
+    wire[1] = 65;
     assert_eq!(
-        decode::<FieldValue>(&wire[..35]).err(),
+        decode::<FieldValue>(&wire[..67]).err(),
         Some(DecodeError::Capacity)
     );
-    wire[1] = 32;
-    assert!(decode::<FieldValue>(&wire[..34]).is_ok());
+    wire[1] = 64;
+    assert!(decode::<FieldValue>(&wire[..66]).is_ok());
 }
 
 #[test]
@@ -653,11 +653,14 @@ fn a_rejection_carries_a_reason() {
 // headroom. Before the compact layout: 760, 2616, 352, 88, 792 and 1272 (the
 // last one for a page of eight values).
 const REQUEST_BUDGET: usize = 768;
-const RESPONSE_BUDGET: usize = 1900;
+// A status value or action result is up to 64 bytes (it was 32): a route list
+// reports a complete 64-byte endpoint. That costs 360 B in the `Response`; the
+// worst encoded response still fits `MAX_RESPONSE_LEN`.
+const RESPONSE_BUDGET: usize = 2200;
 const FIELD_DESCRIPTOR_BUDGET: usize = 56;
-const FIELD_VALUE_BUDGET: usize = 64;
+const FIELD_VALUE_BUDGET: usize = 96;
 const SERVICES_STATUS_BUDGET: usize = 832;
-const SERVICE_STATUS_BUDGET: usize = 1280;
+const SERVICE_STATUS_BUDGET: usize = 1900;
 const CONFIG_SECTION_BUDGET: usize = 1536;
 const PATCH_BUDGET: usize = 768;
 

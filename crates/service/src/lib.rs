@@ -202,7 +202,7 @@
 //! | action records ([`MAX_RECORDS`]) | 6 |
 //! | files of a stream ([`MAX_STREAM_FILES`]), bytes of a stream chunk ([`MAX_STREAM_CHUNK`]) | 24, 512 |
 //! | fields per record ([`MAX_RECORD_FIELDS`]) | 4 |
-//! | string or bytes status value or action result ([`MAX_FIELD_VALUE_LEN`]) | 32 bytes |
+//! | string or bytes status value or action result ([`MAX_FIELD_VALUE_LEN`]) | 64 bytes |
 //! | string or bytes config value or action argument ([`MAX_VALUE_LEN`]) | 64 bytes |
 //! | section, service, action, field or issue name ([`MAX_NAME_LEN`]) | 24 bytes |
 //! | enum variant name ([`MAX_VARIANT_NAME_LEN`]) | 16 bytes |
@@ -250,7 +250,7 @@ pub use status::{
 /// Maximum length of a string or bytes status value or action result, in
 /// bytes; longer values are an error, never cut. Arguments and config values
 /// may be [`MAX_VALUE_LEN`] long.
-pub const MAX_FIELD_VALUE_LEN: usize = 32;
+pub const MAX_FIELD_VALUE_LEN: usize = 64;
 /// Maximum length of a section, service, action, field or issue name, in
 /// bytes. Names are checked when a section or service is built.
 pub const MAX_NAME_LEN: usize = 24;

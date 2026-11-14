@@ -135,6 +135,50 @@ pub mod bytes {
     }
 }
 
+/// A bounded vector of elements, a definite CBOR array.
+pub mod seq {
+    use heapless::Vec;
+    use minicbor::decode::{self, Decoder};
+    use minicbor::encode::{self, Encoder, Write};
+    use minicbor::{CborLen, Decode, Encode};
+
+    /// Encodes the elements.
+    pub fn encode<C, W: Write, T: Encode<C>, const N: usize>(
+        value: &Vec<T, N>,
+        e: &mut Encoder<W>,
+        ctx: &mut C,
+    ) -> Result<(), encode::Error<W::Error>> {
+        e.array(value.len() as u64)?;
+        for item in value {
+            item.encode(e, ctx)?;
+        }
+        Ok(())
+    }
+
+    /// Decodes at most `N` elements; an indefinite array is refused.
+    pub fn decode<'b, C, T: Decode<'b, C>, const N: usize>(
+        d: &mut Decoder<'b>,
+        ctx: &mut C,
+    ) -> Result<Vec<T, N>, decode::Error> {
+        let position = d.position();
+        let len = d.array()?.ok_or_else(|| {
+            decode::Error::message("indefinite arrays are not accepted").at(position)
+        })?;
+        let mut out = Vec::new();
+        for _ in 0..len {
+            out.push(T::decode(d, ctx)?)
+                .map_err(|_| decode::Error::message("too many elements").at(position))?;
+        }
+        Ok(out)
+    }
+
+    /// The encoded length of the elements.
+    pub fn cbor_len<C, T: CborLen<C>, const N: usize>(value: &Vec<T, N>, ctx: &mut C) -> usize {
+        (value.len() as u64).cbor_len(ctx)
+            + value.iter().map(|item| item.cbor_len(ctx)).sum::<usize>()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;

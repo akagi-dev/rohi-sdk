@@ -56,7 +56,7 @@ const LIMITS: &[(&str, usize, &str)] = &[
     ),
     (
         "MAX_FIELD_VALUE_LEN",
-        32,
+        64,
         "Maximum length of a string or bytes status value or action result, in bytes.",
     ),
     (

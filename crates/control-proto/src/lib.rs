@@ -202,7 +202,7 @@
 //! | [`limits::MAX_TEXT_LEN`] | 32 | firmware and board strings |
 //! | [`limits::MAX_NAME_LEN`] | 24 | section, service, action, field, issue names |
 //! | [`limits::MAX_VALUE_LEN`] | 64 | string/bytes of requests and config values |
-//! | [`limits::MAX_FIELD_VALUE_LEN`] | 32 | string/bytes of status values and action results |
+//! | [`limits::MAX_FIELD_VALUE_LEN`] | 64 | string/bytes of status values and action results |
 //! | [`limits::MAX_REASON_LEN`] | 32 | `Error.reason` |
 //! | [`limits::MAX_VARIANT_NAME_LEN`] | 16 | enum variant name |
 //! | [`limits::MAX_ENUMS`], [`limits::MAX_ENUM_VARIANTS`] | 1, 9 | enums per schema, variants per enum |

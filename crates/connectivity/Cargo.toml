@@ -7,30 +7,25 @@ edition.workspace = true
 homepage.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Robonomics Open Hardware telemetry: signed connectivity-protocol frames, bounded outbox, HTTP transport"
+description = "Robonomics Open Hardware connectivity: per-route publication of sealed telemetry packets with ordered fallback delivery over HTTP"
 
 [badges]
 maintenance = { status = "actively-developed" }
 
 [dependencies]
-rohi-telemetry-robonomics.workspace = true
-rohi-sensors.workspace = true
-rohi-identity.workspace = true
+rohi-telemetry.workspace = true
 rohi-config.workspace = true
 rohi-service.workspace = true
-rohi-location.workspace = true
 rohi-net.workspace = true
 rohi-time.workspace = true
 minicbor.workspace = true
 heapless.workspace = true
-libm.workspace = true
 embassy-sync.workspace = true
+embassy-futures.workspace = true
 embedded-hal-async.workspace = true
 embedded-io-async.workspace = true
 embedded-nal-async.workspace = true
 log.workspace = true
 
 [dev-dependencies]
-rohi-identity = { path = "../identity", features = ["mock"] }
 rohi-net = { path = "../net", features = ["testing"] }
-embassy-futures.workspace = true

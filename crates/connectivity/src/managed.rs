@@ -15,543 +15,805 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-//! The telemetry configuration and status in the generic management plane.
+//! The managed `connectivity` service: route Actions, packet export and
+//! status.
 //!
-//! [`ConnectivityStatusService`] is the `connectivity` service of the status
-//! plane (see [`rohi_service`]). It reports the
-//! state of [`ConnectivityShared`] and the counters without any cooperation
-//! from the sending task. It is not essential for the device. The effective
-//! configuration is not repeated in the status, see
-//! [`config`](crate::config).
+//! The persisted state is one [`ConnectivitySection`](crate::ConnectivitySection), a typed bounded value
+//! kept by the firmware's configuration owner: it is not a generic config
+//! section, clients change it only through the Actions. Every mutation loads
+//! the committed value, applies the change to a candidate, validates it
+//! (including the 1 024-byte section budget) and asks the store to commit it
+//! atomically; the runtime sees it only after the commit. A refused or failed
+//! edit changes nothing.
 //!
-//! | State of the sender | Service state / health / ready | Issue code |
-//! |---|---|---|
-//! | telemetry disabled by the effective configuration | `disabled` / unknown / no | |
-//! | `Starting` | `starting` / unknown / no | |
-//! | `Idle` | `running` / **ok** / yes, **degraded** while no location is set | `no_location` |
-//! | `WaitingForIdentity` | `running` / degraded / no | `no_identity` |
-//! | `WaitingForUtc` | `running` / degraded / no | `no_utc_time` |
-//! | `Backoff(error)` | `running` / degraded / no | [`issue::NETWORK_UNAVAILABLE`], [`issue::DNS_FAILED`], [`issue::CONNECT_FAILED`], [`issue::CONNECTION_TIMEOUT`], [`issue::IO_ERROR`], [`issue::BAD_RESPONSE`], [`issue::DELIVERY_REJECTED`] |
-//! | `Unauthorized` | `running` / **error** / no | `unauthorized` |
+//! # Actions
 //!
-//! Status fields ([`status_field`]): `frames_created`, `frames_delivered`,
-//! `send_retries`, `frames_rejected`, `queue_depth` and
-//! `frames_without_location`.
+//! | Action | Arguments | Access | Result |
+//! |--------|-----------|--------|--------|
+//! | `route_add` | `route_id`, `profile_id`, `endpoint` | Mutate | |
+//! | `route_remove` | `route_id` | Mutate | |
+//! | `set_interval` | `route_id`, `interval_s` | Mutate | |
+//! | `fallback_add` | `route_id`, `fallback_id`, `endpoint` | Mutate | |
+//! | `fallback_remove` | `route_id`, `fallback_id` | Mutate | |
+//! | `route_list` | `offset` | Read | `route_id`, `profile_id`, `endpoint`, `interval_s` |
+//! | `fallback_list` | `route_id`, `offset` | Read | `fallback_id`, `endpoint`, `priority` |
+//! | `packet_get` | `profile_id` | Read, stream | one file `packet.bin` |
 //!
-//! Without a location an otherwise healthy service is `degraded` with the
-//! warning `no_location` (and so is the device health), because the frames are
-//! sent but incomplete; `rohi config location latitude=.. longitude=..` fixes
-//! it, see [`rohi_location`].
+//! `route_add` binds the existing profile (see `telemetry.profile_list`) at
+//! its current incarnation, uses the default interval of 60 s and no fallback;
+//! the id, profile and primary endpoint of a route change only by removing and
+//! adding it again. Offsets are zero-based ordinals of the stable order of
+//! creation (routes) or priority (fallbacks); an empty page ends the listing.
+//! `fallback_list` priorities start at 1.
+//!
+//! `packet_get` builds a fresh sealed packet for a profile, with no route and
+//! no network, retains it for the lifetime of the stream and serves it
+//! through the standard stream chunks: reading never builds or signs again.
+//! It is an ordinary `Read` action: the packet is public as an *encrypted*
+//! signed packet, a reader gets no key and cannot change a profile. A stream
+//! is released on `close_stream`, when the control link is lost and when the
+//! policy of its profile changed; the number of open streams is bounded and
+//! more requests are answered with `Busy`.
+//!
+//! # Status
+//!
+//! Static slots, not a dynamic tree: for each of [`MAX_ROUTES`] route slots
+//! the fields `route<i>.id`, `.state`, `.queue_depth`, `.delivered`,
+//! `.retries` and `.active_path` (`0` none, `1` the primary, `n + 1` the
+//! fallback `n`), plus `active_routes` and `total_queue_depth`. Packet
+//! contents and keys never appear in status or logs.
 
+use core::cell::RefCell;
+
+use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::blocking_mutex::raw::RawMutex;
+use embassy_sync::mutex::Mutex;
 use heapless::Vec;
-use rohi_location::LocationSource;
 use rohi_service::{
-    FieldDescriptor, FieldError, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES, Service,
-    ServiceHealth, ServiceState, ServiceSummary, Status, StatusWriter, ValueKind, WriteError,
+    Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, EnumDescriptor, EnumVariant,
+    FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES, MAX_RECORDS,
+    MAX_STREAM_CHUNK, Service, ServiceHealth, ServiceState, ServiceSummary, Status, StatusWriter,
+    StreamChunk, StreamFile, StreamInfo, Value, ValueKind, WriteError,
 };
 
-use crate::ConnectivityConfig;
-use crate::service::{ConnectivityShared, ConnectivityState};
-use crate::transport::TransportError;
+use crate::config::{MAX_ROUTES, ProfileBinding, RouteError, RouteSet};
+use crate::pool::{PacketHandle, PacketPool};
+use crate::provider::PacketExporter;
+use crate::router::RouteState;
+use crate::state::ConnectivityState;
 
-/// A section without an endpoint is valid: telemetry is disabled. The fields, their
-/// ids and the persisted overrides of the `connectivity` section are declared
-/// once, on [`ConnectivityConfig`].
-pub(crate) fn validate_section(config: &ConnectivityConfig) -> Result<(), FieldError> {
-    ConnectivityConfig::validate(config).map_err(|_| FieldError::Invalid)
+pub use rohi_config::MAX_SECTION_PAYLOAD;
+
+/// Ids of the Actions of the `connectivity` service.
+pub mod action {
+    /// Adds a route.
+    pub const ROUTE_ADD: u32 = 1;
+    /// Removes a route.
+    pub const ROUTE_REMOVE: u32 = 2;
+    /// Changes the publication interval of a route.
+    pub const SET_INTERVAL: u32 = 3;
+    /// Appends a fallback.
+    pub const FALLBACK_ADD: u32 = 4;
+    /// Removes a fallback.
+    pub const FALLBACK_REMOVE: u32 = 5;
+    /// Pages the routes.
+    pub const ROUTE_LIST: u32 = 6;
+    /// Pages the fallbacks of a route.
+    pub const FALLBACK_LIST: u32 = 7;
+    /// Exports a sealed packet as a stream.
+    pub const PACKET_GET: u32 = 8;
 }
 
-/// Issue codes of the `connectivity` service.
-pub mod issue {
-    use rohi_service::FIRST_SERVICE_ISSUE as BASE;
-
-    /// The network cannot carry traffic.
-    pub const NETWORK_UNAVAILABLE: u32 = BASE;
-    /// Name resolution failed.
-    pub const DNS_FAILED: u32 = BASE + 1;
-    /// The connection failed.
-    pub const CONNECT_FAILED: u32 = BASE + 2;
-    /// The exchange timed out.
-    pub const CONNECTION_TIMEOUT: u32 = BASE + 3;
-    /// The connection closed unexpectedly.
-    pub const IO_ERROR: u32 = BASE + 4;
-    /// The response is invalid.
-    pub const BAD_RESPONSE: u32 = BASE + 5;
-    /// The ingress rejected the frame.
-    pub const DELIVERY_REJECTED: u32 = BASE + 6;
-    /// The device has no identity yet.
-    pub const NO_IDENTITY: u32 = BASE + 7;
-    /// UTC time is not synchronized yet.
-    pub const NO_UTC_TIME: u32 = BASE + 8;
-    /// The ingress does not authorize the device.
-    pub const UNAUTHORIZED: u32 = BASE + 9;
-    /// No location is set; telemetry is sent without it.
-    pub const NO_LOCATION: u32 = BASE + 10;
+/// Field ids of the Actions.
+pub mod action_field {
+    /// Argument: route id (every route Action).
+    pub const ROUTE_ID: u32 = 1;
+    /// Argument of `route_add`: the profile.
+    pub const PROFILE_ID: u32 = 2;
+    /// Argument of `route_add`: the primary endpoint.
+    pub const ENDPOINT: u32 = 3;
+    /// Argument of `set_interval`: seconds.
+    pub const INTERVAL_S: u32 = 2;
+    /// Argument of the fallback Actions: the fallback id.
+    pub const FALLBACK_ID: u32 = 2;
+    /// Argument of `fallback_add`: the endpoint.
+    pub const FALLBACK_ENDPOINT: u32 = 3;
+    /// Argument of `route_list`: the offset.
+    pub const OFFSET: u32 = 1;
+    /// Argument of `fallback_list`: the offset (the route takes id 1).
+    pub const FALLBACK_OFFSET: u32 = 2;
+    /// Argument of `packet_get`: the profile.
+    pub const PACKET_PROFILE: u32 = 1;
+    /// Result of `route_list`: route id.
+    pub const LIST_ROUTE: u32 = 1;
+    /// Result of `route_list`: profile id.
+    pub const LIST_PROFILE: u32 = 2;
+    /// Result of `route_list`: primary endpoint.
+    pub const LIST_ENDPOINT: u32 = 3;
+    /// Result of `route_list`: interval in seconds.
+    pub const LIST_INTERVAL: u32 = 4;
+    /// Result of `fallback_list`: fallback id.
+    pub const FALLBACK_LIST_ID: u32 = 1;
+    /// Result of `fallback_list`: endpoint.
+    pub const FALLBACK_LIST_ENDPOINT: u32 = 2;
+    /// Result of `fallback_list`: priority, starting at 1.
+    pub const FALLBACK_LIST_PRIORITY: u32 = 3;
 }
 
-/// Field ids of the `connectivity` service status.
+/// Field ids of the status of the service.
 pub mod status_field {
-    /// Frames signed and queued.
-    pub const FRAMES_CREATED: u32 = 1;
-    /// Frames accepted by the ingress.
-    pub const FRAMES_DELIVERED: u32 = 2;
-    /// Delivery attempts that failed and will be retried.
-    pub const SEND_RETRIES: u32 = 3;
-    /// Frames dropped after a permanent rejection.
-    pub const FRAMES_REJECTED: u32 = 4;
-    /// Frames waiting for delivery.
-    pub const QUEUE_DEPTH: u32 = 5;
-    /// Frames created without a location.
-    pub const FRAMES_WITHOUT_LOCATION: u32 = 6;
-}
+    /// Routes with a queue or a publication due.
+    pub const ACTIVE_ROUTES: u32 = 1;
+    /// Packets queued over all routes.
+    pub const TOTAL_QUEUE_DEPTH: u32 = 2;
 
-fn warning(code: u32) -> Issue {
-    Issue {
-        severity: IssueSeverity::Warning,
-        code,
-        age_ms: None,
+    /// The id of field `n` (0 id, 1 state, 2 queue depth, 3 delivered, 4
+    /// retries, 5 active path) of route slot `slot`.
+    pub const fn route(slot: usize, n: u32) -> u32 {
+        10 * (slot as u32 + 1) + n
     }
 }
 
-fn transport_issue(error: TransportError) -> Issue {
-    match error {
-        TransportError::NetworkUnavailable => warning(issue::NETWORK_UNAVAILABLE),
-        TransportError::Dns => warning(issue::DNS_FAILED),
-        TransportError::Connect => warning(issue::CONNECT_FAILED),
-        TransportError::Timeout => warning(issue::CONNECTION_TIMEOUT),
-        TransportError::Io => warning(issue::IO_ERROR),
-        TransportError::BadResponse => warning(issue::BAD_RESPONSE),
-        TransportError::Status(_) => warning(issue::DELIVERY_REJECTED),
+/// Issue codes of the service.
+pub mod issue {
+    use rohi_service::FIRST_SERVICE_ISSUE;
+
+    /// The routes cannot be read from storage; none is active.
+    pub const STORAGE_UNAVAILABLE: u32 = FIRST_SERVICE_ISSUE;
+    /// A route's profile is missing or was recreated; the route is suspended.
+    pub const PROFILE_MISSING: u32 = FIRST_SERVICE_ISSUE + 1;
+    /// The last attempt to build a packet failed.
+    pub const PACKET_BUILD_FAILED: u32 = FIRST_SERVICE_ISSUE + 2;
+}
+
+const SERVICE_ID: u32 = rohi_service::service_id("connectivity");
+const STATE_ENUM: u32 = 1;
+
+/// Failure of the persistence behind the routes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StoreError {
+    /// The storage is unavailable or the stored section is unreadable.
+    Unavailable,
+    /// Unexpected failure.
+    Internal,
+}
+
+impl From<StoreError> for ActionError {
+    fn from(error: StoreError) -> Self {
+        match error {
+            StoreError::Unavailable => Self::Unavailable,
+            StoreError::Internal => Self::Internal,
+        }
     }
 }
 
-/// The telemetry service as a `connectivity` service of the status plane.
-///
-/// `effective` returns the configuration the service currently runs, or `None`
-/// while it is disabled or invalid; a disabled service is not an error. The
-/// configuration itself is not repeated in the status.
-///
-/// Telemetry without a location still flows but is incomplete: while the
-/// device does not know where it is, an otherwise healthy service is
-/// `degraded` with the issue `no_location`.
-///
-/// ```
-/// use embassy_futures::block_on;
-/// use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-/// use rohi_connectivity::{ConnectivityConfig, ConnectivityShared, ConnectivityStatusService};
-/// use rohi_location::NoLocation;
-/// use rohi_service::{ServiceHealth, ServiceState, Status};
-///
-/// fn disabled() -> Option<ConnectivityConfig> {
-///     None
-/// }
-/// fn enabled() -> Option<ConnectivityConfig> {
-///     Some(ConnectivityConfig::default())
-/// }
-///
-/// let shared = ConnectivityShared::<NoopRawMutex>::new();
-///
-/// // No endpoint configured: disabled, which is not an error.
-/// let service = ConnectivityStatusService::new(&shared, disabled, &NoLocation);
-/// assert_eq!(block_on(service.summary()).state, ServiceState::Disabled);
-///
-/// // Enabled, but the sender has not run yet.
-/// let service = ConnectivityStatusService::new(&shared, enabled, &NoLocation);
-/// let summary = block_on(service.summary());
-/// assert_eq!(summary.state, ServiceState::Starting);
-/// assert_eq!(summary.health, ServiceHealth::Unknown);
-/// assert!(!summary.ready);
-/// ```
-#[derive(Service)]
-#[service(name = "connectivity")]
-pub struct ConnectivityStatusService<'a, M: RawMutex> {
-    shared: &'a ConnectivityShared<M>,
-    effective: fn() -> Option<ConnectivityConfig>,
-    location: &'a dyn LocationSource,
+/// Persistence of the routes, implemented by the firmware over the
+/// configuration owner. `commit` is durable: it persists the whole candidate
+/// atomically and publishes it to [`ConnectivityState`], or fails and changes
+/// nothing.
+#[allow(async_fn_in_trait)]
+pub trait ConnectivityStore {
+    /// The committed routes; none when nothing was stored.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError`]; an unreadable section is an error, not an empty set.
+    async fn load(&self) -> Result<RouteSet, StoreError>;
+
+    /// Atomically persists `candidate` and publishes it.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError`]; nothing changed.
+    async fn commit(&self, candidate: &RouteSet) -> Result<(), StoreError>;
 }
 
-impl<'a, M: RawMutex> ConnectivityStatusService<'a, M> {
-    /// Status of the service publishing through `shared`.
-    pub const fn new(
-        shared: &'a ConnectivityShared<M>,
-        effective: fn() -> Option<ConnectivityConfig>,
-        location: &'a dyn LocationSource,
-    ) -> Self {
+struct Export {
+    id: u32,
+    handle: PacketHandle,
+}
+
+struct Exports<const N: usize, const BYTES: usize> {
+    pool: PacketPool<N, BYTES>,
+    open: Vec<Export, N>,
+    next: u32,
+}
+
+/// The `connectivity` service over a [`ConnectivityStore`] and a
+/// [`PacketExporter`], with room for `EXPORTS` open packet streams of up to
+/// `BYTES` bytes.
+pub struct ConnectivityService<'a, M: RawMutex, S, X, const EXPORTS: usize, const BYTES: usize> {
+    store: S,
+    exporter: X,
+    state: &'a ConnectivityState<M>,
+    // Serializes read-modify-write: no lost updates between Actions.
+    edit: Mutex<M, ()>,
+    exports: BlockingMutex<M, RefCell<Exports<EXPORTS, BYTES>>>,
+}
+
+impl<M: RawMutex, S, X, const E: usize, const B: usize> Service
+    for ConnectivityService<'_, M, S, X, E, B>
+{
+    const ID: u32 = SERVICE_ID;
+    const NAME: &'static str = "connectivity";
+}
+
+impl<'a, M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const B: usize>
+    ConnectivityService<'a, M, S, X, E, B>
+{
+    /// A service over `store`, building exports with `exporter` and reporting
+    /// the runtime state of `state`.
+    pub const fn new(store: S, exporter: X, state: &'a ConnectivityState<M>) -> Self {
         Self {
-            shared,
-            effective,
-            location,
+            store,
+            exporter,
+            state,
+            edit: Mutex::new(()),
+            exports: BlockingMutex::new(RefCell::new(Exports {
+                pool: PacketPool::new(),
+                open: Vec::new(),
+                next: 1,
+            })),
         }
     }
 
-    /// Adds the `no_location` issue while the device does not know where it
-    /// is.
-    fn no_location(&self, out: &mut Vec<Issue, MAX_ISSUES>) {
-        if self.location.location().is_none() {
-            let _ = out.push(warning(issue::NO_LOCATION));
+    async fn edit(
+        &self,
+        change: impl FnOnce(&mut RouteSet) -> Result<(), RouteError>,
+    ) -> Result<(), ActionError> {
+        let _guard = self.edit.lock().await;
+        let mut candidate = self.store.load().await?;
+        change(&mut candidate).map_err(reject)?;
+        if minicbor::len(SectionRef(&candidate)) > MAX_SECTION_PAYLOAD {
+            return Err(ActionError::Rejected("section_too_large"));
         }
+        self.store.commit(&candidate).await?;
+        Ok(())
+    }
+
+    /// The number of open packet streams.
+    pub fn open_streams(&self) -> usize {
+        self.exports.lock(|exports| exports.borrow().open.len())
+    }
+
+    fn release(&self, stream: u32) -> bool {
+        self.exports.lock(|exports| {
+            let mut exports = exports.borrow_mut();
+            match exports.open.iter().position(|e| e.id == stream) {
+                Some(position) => {
+                    let export = exports.open.swap_remove(position);
+                    exports.pool.release(export.handle);
+                    true
+                }
+                None => false,
+            }
+        })
     }
 }
 
-impl<M: RawMutex> Status for ConnectivityStatusService<'_, M> {
+struct SectionRef<'a>(&'a RouteSet);
+
+impl<C> minicbor::Encode<C> for SectionRef<'_> {
+    fn encode<W: minicbor::encode::Write>(
+        &self,
+        e: &mut minicbor::Encoder<W>,
+        ctx: &mut C,
+    ) -> Result<(), minicbor::encode::Error<W::Error>> {
+        minicbor::Encode::encode(self.0, e, ctx)
+    }
+}
+
+impl<C> minicbor::CborLen<C> for SectionRef<'_> {
+    fn cbor_len(&self, ctx: &mut C) -> usize {
+        minicbor::CborLen::cbor_len(self.0, ctx)
+    }
+}
+
+fn reject(error: RouteError) -> ActionError {
+    ActionError::Rejected(match error {
+        RouteError::InvalidId => "invalid_id",
+        RouteError::DuplicateRoute => "route_exists",
+        RouteError::RouteNotFound => "route_not_found",
+        RouteError::DuplicateFallback => "fallback_exists",
+        RouteError::FallbackNotFound => "fallback_not_found",
+        RouteError::DuplicateEndpoint => "duplicate_endpoint",
+        RouteError::InvalidEndpoint => "invalid_endpoint",
+        RouteError::InvalidInterval => "invalid_interval",
+        RouteError::TooManyRoutes => "too_many_routes",
+        RouteError::TooManyFallbacks => "too_many_fallbacks",
+    })
+}
+
+fn arg(args: &[(u32, Value)], id: u32) -> Result<&Value, ActionError> {
+    args.iter()
+        .find(|(field, _)| *field == id)
+        .map(|(_, value)| value)
+        .ok_or(ActionError::InvalidArgument)
+}
+
+fn text(args: &[(u32, Value)], id: u32) -> Result<&str, ActionError> {
+    arg(args, id)?.as_str().ok_or(ActionError::InvalidArgument)
+}
+
+fn offset(args: &[(u32, Value)], id: u32) -> Result<usize, ActionError> {
+    let offset = arg(args, id)?
+        .as_u64()
+        .ok_or(ActionError::InvalidArgument)?;
+    usize::try_from(offset).map_err(|_| ActionError::InvalidArgument)
+}
+
+fn write(result: Result<(), WriteError>) -> Result<(), ActionError> {
+    result.map_err(|_| ActionError::Internal)
+}
+
+const ROUTE: FieldDescriptor =
+    FieldDescriptor::new(action_field::ROUTE_ID, "route_id", ValueKind::String);
+
+const STATES: &[EnumDescriptor] = &[EnumDescriptor::new(
+    STATE_ENUM,
+    &[
+        EnumVariant::new(0, "idle"),
+        EnumVariant::new(1, "delivering"),
+        EnumVariant::new(2, "backoff"),
+        EnumVariant::new(3, "profile_missing"),
+    ],
+)];
+
+const fn slot_fields(slot: usize) -> [FieldDescriptor; 6] {
+    const NAMES: [[&str; 6]; MAX_ROUTES] = [
+        [
+            "route0.id",
+            "route0.state",
+            "route0.queue_depth",
+            "route0.delivered",
+            "route0.retries",
+            "route0.active_path",
+        ],
+        [
+            "route1.id",
+            "route1.state",
+            "route1.queue_depth",
+            "route1.delivered",
+            "route1.retries",
+            "route1.active_path",
+        ],
+        [
+            "route2.id",
+            "route2.state",
+            "route2.queue_depth",
+            "route2.delivered",
+            "route2.retries",
+            "route2.active_path",
+        ],
+    ];
+    [
+        FieldDescriptor::new(
+            status_field::route(slot, 0),
+            NAMES[slot][0],
+            ValueKind::String,
+        ),
+        FieldDescriptor::new(
+            status_field::route(slot, 1),
+            NAMES[slot][1],
+            ValueKind::Enum,
+        )
+        .with_enum(STATE_ENUM),
+        FieldDescriptor::new(status_field::route(slot, 2), NAMES[slot][2], ValueKind::U64),
+        FieldDescriptor::new(status_field::route(slot, 3), NAMES[slot][3], ValueKind::U64),
+        FieldDescriptor::new(status_field::route(slot, 4), NAMES[slot][4], ValueKind::U64),
+        FieldDescriptor::new(status_field::route(slot, 5), NAMES[slot][5], ValueKind::U64),
+    ]
+}
+
+const STATUS_FIELDS: [FieldDescriptor; 20] = {
+    let aggregate = [
+        FieldDescriptor::new(status_field::ACTIVE_ROUTES, "active_routes", ValueKind::U64),
+        FieldDescriptor::new(
+            status_field::TOTAL_QUEUE_DEPTH,
+            "total_queue_depth",
+            ValueKind::U64,
+        ),
+    ];
+    let (a, b, c) = (slot_fields(0), slot_fields(1), slot_fields(2));
+    let mut all = [aggregate[0]; 20];
+    all[1] = aggregate[1];
+    let mut i = 0;
+    while i < 6 {
+        all[2 + i] = a[i];
+        all[8 + i] = b[i];
+        all[14 + i] = c[i];
+        i += 1;
+    }
+    all
+};
+
+fn state_number(state: RouteState) -> u32 {
+    match state {
+        RouteState::Idle => 0,
+        RouteState::Delivering => 1,
+        RouteState::Backoff => 2,
+        RouteState::ProfileMissing => 3,
+    }
+}
+
+impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const B: usize> Status
+    for ConnectivityService<'_, M, S, X, E, B>
+{
     const VERSION: u16 = 1;
-    const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
-        FieldDescriptor::new(
-            status_field::FRAMES_CREATED,
-            "frames_created",
-            ValueKind::U64,
-        ),
-        FieldDescriptor::new(
-            status_field::FRAMES_DELIVERED,
-            "frames_delivered",
-            ValueKind::U64,
-        ),
-        FieldDescriptor::new(status_field::SEND_RETRIES, "send_retries", ValueKind::U64),
-        FieldDescriptor::new(
-            status_field::FRAMES_REJECTED,
-            "frames_rejected",
-            ValueKind::U64,
-        ),
-        FieldDescriptor::new(status_field::QUEUE_DEPTH, "queue_depth", ValueKind::U64),
-        FieldDescriptor::new(
-            status_field::FRAMES_WITHOUT_LOCATION,
-            "frames_without_location",
-            ValueKind::U64,
-        ),
-    ];
+    const STATUS_SCHEMA: &'static [FieldDescriptor] = &STATUS_FIELDS;
+    const ENUMS: &'static [EnumDescriptor] = STATES;
     const ISSUES: &'static [IssueDescriptor] = &[
-        IssueDescriptor::new(issue::NETWORK_UNAVAILABLE, "network_unavailable"),
-        IssueDescriptor::new(issue::DNS_FAILED, "dns_failed"),
-        IssueDescriptor::new(issue::CONNECT_FAILED, "connect_failed"),
-        IssueDescriptor::new(issue::CONNECTION_TIMEOUT, "connection_timeout"),
-        IssueDescriptor::new(issue::IO_ERROR, "io_error"),
-        IssueDescriptor::new(issue::BAD_RESPONSE, "bad_response"),
-        IssueDescriptor::new(issue::DELIVERY_REJECTED, "delivery_rejected"),
-        IssueDescriptor::new(issue::NO_IDENTITY, "no_identity"),
-        IssueDescriptor::new(issue::NO_UTC_TIME, "no_utc_time"),
-        IssueDescriptor::new(issue::UNAUTHORIZED, "unauthorized"),
-        IssueDescriptor::new(issue::NO_LOCATION, "no_location"),
+        IssueDescriptor::new(issue::STORAGE_UNAVAILABLE, "storage_unavailable"),
+        IssueDescriptor::new(issue::PROFILE_MISSING, "profile_missing"),
+        IssueDescriptor::new(issue::PACKET_BUILD_FAILED, "packet_build_failed"),
     ];
-    const ESSENTIAL: bool = false;
 
     async fn summary(&self) -> ServiceSummary {
-        use ServiceHealth as H;
-        use ServiceState as S;
-        if (self.effective)().is_none() {
-            return ServiceSummary::new(S::Disabled, H::Unknown, false);
+        if self.state.is_unreadable() {
+            return ServiceSummary::new(ServiceState::Failed, ServiceHealth::Error, false);
         }
-        match self.shared.status().state {
-            ConnectivityState::Starting => ServiceSummary::new(S::Starting, H::Unknown, false),
-            // Frames are sent, only the location is missing.
-            ConnectivityState::Idle if self.location.location().is_none() => {
-                ServiceSummary::new(S::Running, H::Degraded, true)
-            }
-            ConnectivityState::Idle => ServiceSummary::new(S::Running, H::Ok, true),
-            ConnectivityState::WaitingForIdentity
-            | ConnectivityState::WaitingForUtc
-            | ConnectivityState::Backoff(_) => ServiceSummary::new(S::Running, H::Degraded, false),
-            ConnectivityState::Unauthorized(_) => ServiceSummary::new(S::Running, H::Error, false),
+        let routes = self.state.routes();
+        if routes.routes.is_empty() {
+            // No route is a valid state: nothing is sent.
+            return ServiceSummary::new(ServiceState::Stopped, ServiceHealth::Unknown, false);
         }
+        let degraded = self
+            .state
+            .views()
+            .iter()
+            .any(|view| view.state == RouteState::ProfileMissing)
+            || self.state.health().last_build_failure.is_some();
+        let health = if degraded {
+            ServiceHealth::Degraded
+        } else {
+            ServiceHealth::Ok
+        };
+        ServiceSummary::new(ServiceState::Running, health, true)
     }
 
     async fn issues(&self, out: &mut Vec<Issue, MAX_ISSUES>) {
-        if (self.effective)().is_none() {
-            return;
-        }
-        let issue = match self.shared.status().state {
-            ConnectivityState::Starting => return,
-            ConnectivityState::Idle => {
-                self.no_location(out);
-                return;
-            }
-            ConnectivityState::WaitingForIdentity => warning(issue::NO_IDENTITY),
-            ConnectivityState::WaitingForUtc => warning(issue::NO_UTC_TIME),
-            ConnectivityState::Backoff(error) => transport_issue(error),
-            ConnectivityState::Unauthorized(_) => Issue {
-                severity: IssueSeverity::Error,
-                code: issue::UNAUTHORIZED,
+        let mut push = |code| {
+            let _ = out.push(Issue {
+                severity: IssueSeverity::Warning,
+                code,
                 age_ms: None,
-            },
+            });
         };
-        let _ = out.push(issue);
-        self.no_location(out);
+        if self.state.is_unreadable() {
+            push(issue::STORAGE_UNAVAILABLE);
+        }
+        if self
+            .state
+            .views()
+            .iter()
+            .any(|view| view.state == RouteState::ProfileMissing)
+        {
+            push(issue::PROFILE_MISSING);
+        }
+        if self.state.health().last_build_failure.is_some() {
+            push(issue::PACKET_BUILD_FAILED);
+        }
     }
 
     async fn status(&self, out: &mut impl StatusWriter) -> Result<(), WriteError> {
-        let status = self.shared.status();
-        let counters = status.diagnostics;
-        out.u64(
-            status_field::FRAMES_CREATED,
-            u64::from(counters.frames_created),
-        )?;
-        out.u64(
-            status_field::FRAMES_DELIVERED,
-            u64::from(counters.frames_delivered),
-        )?;
-        out.u64(status_field::SEND_RETRIES, u64::from(counters.send_retries))?;
-        out.u64(
-            status_field::FRAMES_REJECTED,
-            u64::from(counters.frames_rejected),
-        )?;
-        out.u64(status_field::QUEUE_DEPTH, status.outbox_len as u64)?;
-        out.u64(
-            status_field::FRAMES_WITHOUT_LOCATION,
-            u64::from(counters.frames_without_location),
-        )?;
+        let views = self.state.views();
+        let active = views.iter().filter(|v| v.queue_depth > 0).count();
+        let total: usize = views.iter().map(|v| v.queue_depth).sum();
+        out.u64(status_field::ACTIVE_ROUTES, active as u64)?;
+        out.u64(status_field::TOTAL_QUEUE_DEPTH, total as u64)?;
+        for (slot, view) in views.iter().enumerate().take(MAX_ROUTES) {
+            out.text(status_field::route(slot, 0), view.id.as_str())?;
+            out.variant(status_field::route(slot, 1), state_number(view.state))?;
+            out.u64(status_field::route(slot, 2), view.queue_depth as u64)?;
+            out.u64(
+                status_field::route(slot, 3),
+                u64::from(view.counters.delivered),
+            )?;
+            out.u64(
+                status_field::route(slot, 4),
+                u64::from(view.counters.retries),
+            )?;
+            out.u64(
+                status_field::route(slot, 5),
+                view.active_path.map_or(0, |path| path as u64 + 1),
+            )?;
+        }
         Ok(())
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use embassy_futures::block_on;
-    use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-    use rohi_config::ConfigOverrides;
-    use rohi_location::NoLocation;
-    use rohi_service::{Bounds, Config, Unit, Value};
+impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const B: usize> Action
+    for ConnectivityService<'_, M, S, X, E, B>
+{
+    const ACTIONS: &'static [ActionDescriptor] = &[
+        ActionDescriptor::new(action::ROUTE_ADD, "route_add", ActionAccess::Mutate).args(&[
+            ROUTE,
+            FieldDescriptor::new(action_field::PROFILE_ID, "profile_id", ValueKind::String),
+            FieldDescriptor::new(action_field::ENDPOINT, "endpoint", ValueKind::String),
+        ]),
+        ActionDescriptor::new(action::ROUTE_REMOVE, "route_remove", ActionAccess::Mutate)
+            .args(&[ROUTE]),
+        ActionDescriptor::new(action::SET_INTERVAL, "set_interval", ActionAccess::Mutate).args(&[
+            ROUTE,
+            FieldDescriptor::new(action_field::INTERVAL_S, "interval_s", ValueKind::U64),
+        ]),
+        ActionDescriptor::new(action::FALLBACK_ADD, "fallback_add", ActionAccess::Mutate).args(&[
+            ROUTE,
+            FieldDescriptor::new(action_field::FALLBACK_ID, "fallback_id", ValueKind::String),
+            FieldDescriptor::new(
+                action_field::FALLBACK_ENDPOINT,
+                "endpoint",
+                ValueKind::String,
+            ),
+        ]),
+        ActionDescriptor::new(
+            action::FALLBACK_REMOVE,
+            "fallback_remove",
+            ActionAccess::Mutate,
+        )
+        .args(&[
+            ROUTE,
+            FieldDescriptor::new(action_field::FALLBACK_ID, "fallback_id", ValueKind::String),
+        ]),
+        ActionDescriptor::new(action::ROUTE_LIST, "route_list", ActionAccess::Read)
+            .args(&[FieldDescriptor::new(
+                action_field::OFFSET,
+                "offset",
+                ValueKind::U64,
+            )])
+            .results(&[
+                FieldDescriptor::new(action_field::LIST_ROUTE, "route_id", ValueKind::String),
+                FieldDescriptor::new(action_field::LIST_PROFILE, "profile_id", ValueKind::String),
+                FieldDescriptor::new(action_field::LIST_ENDPOINT, "endpoint", ValueKind::String),
+                FieldDescriptor::new(action_field::LIST_INTERVAL, "interval_s", ValueKind::U64),
+            ]),
+        ActionDescriptor::new(action::FALLBACK_LIST, "fallback_list", ActionAccess::Read)
+            .args(&[
+                ROUTE,
+                FieldDescriptor::new(action_field::FALLBACK_OFFSET, "offset", ValueKind::U64),
+            ])
+            .results(&[
+                FieldDescriptor::new(
+                    action_field::FALLBACK_LIST_ID,
+                    "fallback_id",
+                    ValueKind::String,
+                ),
+                FieldDescriptor::new(
+                    action_field::FALLBACK_LIST_ENDPOINT,
+                    "endpoint",
+                    ValueKind::String,
+                ),
+                FieldDescriptor::new(
+                    action_field::FALLBACK_LIST_PRIORITY,
+                    "priority",
+                    ValueKind::U64,
+                ),
+            ]),
+        ActionDescriptor::new(action::PACKET_GET, "packet_get", ActionAccess::Read)
+            .args(&[FieldDescriptor::new(
+                action_field::PACKET_PROFILE,
+                "profile_id",
+                ValueKind::String,
+            )])
+            .stream(),
+    ];
 
-    use super::*;
-    use crate::ConnectivityOverrides;
-    use crate::EndpointUri;
-    use crate::config::{MAX_INTERVAL_S, MIN_INTERVAL_S};
-
-    const NODE_ID: u32 = 2;
-    const INTERVAL_S: u32 = 3;
-    const ENDPOINT: u32 = 4;
-
-    fn text(value: &str) -> Value {
-        Value::text(value).unwrap()
-    }
-
-    #[test]
-    fn an_endpoint_enables_telemetry_and_none_disables_it() {
-        let mut config = ConnectivityConfig::default();
-        // Disabled is a valid state, without any endpoint.
-        assert!(!config.is_enabled());
-        assert_eq!(Config::validate(&config), Ok(()));
-        assert_eq!(config.read_field(ENDPOINT), Ok(None));
-        assert_eq!(config.field_is_set(ENDPOINT), Ok(false));
-
-        config
-            .set_field(ENDPOINT, text("http://ingress.example.org:8080"))
-            .unwrap();
-        config.set_field(NODE_ID, Value::U64(42)).unwrap();
-        config.set_field(INTERVAL_S, Value::U64(120)).unwrap();
-        assert!(config.is_enabled());
-        assert_eq!(Config::validate(&config), Ok(()));
-        assert_eq!(
-            config.read_field(ENDPOINT),
-            Ok(Some(text("http://ingress.example.org:8080")))
-        );
-        assert_eq!(config.interval_s, 120);
-
-        // `none` disables telemetry again.
-        assert_eq!(config.set_none(ENDPOINT), Ok(()));
-        assert!(!config.is_enabled());
-        assert_eq!(config.read_field(ENDPOINT), Ok(None));
-    }
-
-    #[test]
-    fn typed_conversions_reject_what_does_not_fit() {
-        let mut config = ConnectivityConfig::default();
-        for refused in [
-            "ingress.example.org",
-            "https://ingress.example.org",
-            "http://ingress.example.org/v1",
-            "http://bad host!",
-            "http://a.io:70000",
-        ] {
-            assert_eq!(
-                config.set_field(ENDPOINT, text(refused)),
-                Err(FieldError::Invalid),
-                "{refused}"
-            );
-        }
-        assert_eq!(
-            config.set_field(ENDPOINT, Value::U64(80)),
-            Err(FieldError::WrongKind)
-        );
-        assert_eq!(
-            config.set_field(INTERVAL_S, Value::Bool(true)),
-            Err(FieldError::WrongKind)
-        );
-        assert_eq!(config.set_none(NODE_ID), Err(FieldError::NotOptional));
-        assert_eq!(
-            config.set_field(99, Value::U64(1)),
-            Err(FieldError::UnknownField)
-        );
-        // The removed fields are unknown: there is no `enabled` and no port.
-        for retired in [1, 5] {
-            assert_eq!(
-                config.set_field(retired, Value::U64(1)),
-                Err(FieldError::UnknownField)
-            );
-        }
-    }
-
-    #[test]
-    fn every_field_can_be_overridden_and_cleared() {
-        let mut ids: std::vec::Vec<_> = ConnectivityConfig::FIELDS
-            .iter()
-            .map(|f| f.field.id)
-            .collect();
-        ids.sort_unstable();
-        assert_eq!(ids, ConnectivityOverrides::FIELD_IDS);
-
-        let mut overrides = ConnectivityOverrides::default();
-        let mut config =
-            rohi_config::materialize::<ConnectivityConfig>(&Default::default(), &overrides);
-        config.set_field(INTERVAL_S, Value::U64(120)).unwrap();
-        overrides.capture(&config, INTERVAL_S);
-        assert_eq!(
-            rohi_config::materialize::<ConnectivityConfig>(&Default::default(), &overrides)
-                .interval_s,
-            120
-        );
-        overrides.clear(INTERVAL_S);
-        assert_eq!(
-            rohi_config::materialize::<ConnectivityConfig>(&Default::default(), &overrides)
-                .interval_s,
-            ConnectivityConfig::default().interval_s
-        );
-    }
-
-    #[test]
-    fn the_schema_bounds_match_the_typed_validation() {
-        let field = |id| {
-            ConnectivityConfig::FIELDS
-                .iter()
-                .find(|field| field.field.id == id)
-                .unwrap()
-        };
-        assert_eq!(
-            field(INTERVAL_S).bounds,
-            Some(Bounds::U64(MIN_INTERVAL_S.into(), MAX_INTERVAL_S.into()))
-        );
-        assert_eq!(field(INTERVAL_S).field.unit, Unit::S);
-    }
-
-    fn enabled() -> Option<ConnectivityConfig> {
-        Some(ConnectivityConfig {
-            endpoint: EndpointUri::new("http://ingress.example.org:443"),
-            ..ConnectivityConfig::default()
-        })
-    }
-
-    fn disabled() -> Option<ConnectivityConfig> {
-        None
-    }
-
-    struct Located;
-
-    impl LocationSource for Located {
-        fn location(&self) -> Option<rohi_location::Location> {
-            Some(rohi_location::Location {
-                latitude: 52.52,
-                longitude: 13.405,
-                height_m: None,
-                source: rohi_location::LocationSourceKind::Configured,
-            })
-        }
-    }
-
-    #[test]
-    fn without_a_location_a_working_service_is_degraded_with_a_reason() {
-        use crate::service::{ConnectivityState, ConnectivityStatus};
-
-        let shared = ConnectivityShared::<NoopRawMutex>::new();
-        shared.publish(ConnectivityStatus {
-            state: ConnectivityState::Idle,
-            ..Default::default()
-        });
-
-        let unlocated = ConnectivityStatusService::new(&shared, enabled, &NoLocation);
-        let summary = block_on(unlocated.summary());
-        assert_eq!(summary.state, ServiceState::Running);
-        assert_eq!(summary.health, ServiceHealth::Degraded);
-        // Frames still go out: only the location is missing.
-        assert!(summary.ready);
-        let mut issues = Vec::new();
-        block_on(unlocated.issues(&mut issues));
-        assert_eq!(issues[0].code, issue::NO_LOCATION);
-        assert_eq!(issues[0].severity, IssueSeverity::Warning);
-
-        let located = ConnectivityStatusService::new(&shared, enabled, &Located);
-        let summary = block_on(located.summary());
-        assert_eq!(summary.health, ServiceHealth::Ok);
-        let mut issues = Vec::new();
-        block_on(located.issues(&mut issues));
-        assert!(issues.is_empty());
-
-        // Disabled telemetry is not degraded by a missing location.
-        let off = ConnectivityStatusService::new(&shared, disabled, &NoLocation);
-        assert_eq!(block_on(off.summary()).state, ServiceState::Disabled);
-        let mut issues = Vec::new();
-        block_on(off.issues(&mut issues));
-        assert!(issues.is_empty());
-    }
-
-    #[test]
-    fn a_backing_off_service_lists_its_own_issue_first_then_the_missing_location() {
-        use crate::service::{ConnectivityState, ConnectivityStatus};
-        use crate::transport::TransportError;
-
-        let shared = ConnectivityShared::<NoopRawMutex>::new();
-        shared.publish(ConnectivityStatus {
-            state: ConnectivityState::Backoff(TransportError::Timeout),
-            ..Default::default()
-        });
-        let service = ConnectivityStatusService::new(&shared, enabled, &NoLocation);
-        let mut issues = Vec::new();
-        block_on(service.issues(&mut issues));
-        let codes: std::vec::Vec<_> = issues.iter().map(|issue| issue.code).collect();
-        assert_eq!(codes, [issue::CONNECTION_TIMEOUT, issue::NO_LOCATION]);
-    }
-
-    #[test]
-    fn the_service_state_follows_the_published_status() {
-        let shared = ConnectivityShared::<NoopRawMutex>::new();
-        let service = ConnectivityStatusService::new(&shared, enabled, &NoLocation);
-        let summary = block_on(service.summary());
-        assert_eq!(summary.state, ServiceState::Starting);
-
-        // The configuration is not repeated in the status.
-        struct Sink(std::vec::Vec<u32>);
-        impl StatusWriter for Sink {
-            fn put(&mut self, id: u32, _: Value) -> Result<(), WriteError> {
-                self.0.push(id);
+    async fn invoke(
+        &self,
+        action: u32,
+        args: &[(u32, Value)],
+        out: &mut impl ActionOutput,
+    ) -> Result<(), ActionError> {
+        match action {
+            action::ROUTE_ADD => {
+                let id = text(args, action_field::ROUTE_ID)?;
+                let profile = text(args, action_field::PROFILE_ID)?;
+                let endpoint = text(args, action_field::ENDPOINT)?;
+                let stamp = self
+                    .exporter
+                    .resolve(profile)
+                    .ok_or(ActionError::Rejected("profile_not_found"))?;
+                let binding = ProfileBinding {
+                    id: stamp.id,
+                    incarnation: stamp.incarnation,
+                };
+                self.edit(|routes| routes.add_route(id, binding, endpoint))
+                    .await
+            }
+            action::ROUTE_REMOVE => {
+                let id = text(args, action_field::ROUTE_ID)?;
+                self.edit(|routes| routes.remove_route(id)).await
+            }
+            action::SET_INTERVAL => {
+                let id = text(args, action_field::ROUTE_ID)?;
+                let seconds = arg(args, action_field::INTERVAL_S)?
+                    .as_u64()
+                    .ok_or(ActionError::InvalidArgument)?;
+                let seconds = u32::try_from(seconds)
+                    .map_err(|_| ActionError::Rejected("invalid_interval"))?;
+                self.edit(|routes| routes.set_interval(id, seconds)).await
+            }
+            action::FALLBACK_ADD => {
+                let route = text(args, action_field::ROUTE_ID)?;
+                let fallback = text(args, action_field::FALLBACK_ID)?;
+                let endpoint = text(args, action_field::FALLBACK_ENDPOINT)?;
+                self.edit(|routes| routes.add_fallback(route, fallback, endpoint))
+                    .await
+            }
+            action::FALLBACK_REMOVE => {
+                let route = text(args, action_field::ROUTE_ID)?;
+                let fallback = text(args, action_field::FALLBACK_ID)?;
+                self.edit(|routes| routes.remove_fallback(route, fallback))
+                    .await
+            }
+            action::ROUTE_LIST => {
+                let offset = offset(args, action_field::OFFSET)?;
+                let routes = self.store.load().await?;
+                for route in routes.routes.iter().skip(offset).take(MAX_RECORDS) {
+                    out.next_record().map_err(|_| ActionError::Internal)?;
+                    write(out.text(action_field::LIST_ROUTE, route.id.as_str()))?;
+                    write(out.text(action_field::LIST_PROFILE, route.profile.id.as_str()))?;
+                    write(out.text(action_field::LIST_ENDPOINT, route.primary.as_str()))?;
+                    write(out.u64(action_field::LIST_INTERVAL, u64::from(route.interval_s)))?;
+                }
                 Ok(())
             }
+            action::FALLBACK_LIST => {
+                let id = text(args, action_field::ROUTE_ID)?;
+                let offset = offset(args, action_field::FALLBACK_OFFSET)?;
+                let routes = self.store.load().await?;
+                let route = routes
+                    .get(id)
+                    .ok_or(ActionError::Rejected("route_not_found"))?;
+                for (index, fallback) in route
+                    .fallbacks
+                    .iter()
+                    .enumerate()
+                    .skip(offset)
+                    .take(MAX_RECORDS)
+                {
+                    out.next_record().map_err(|_| ActionError::Internal)?;
+                    write(out.text(action_field::FALLBACK_LIST_ID, fallback.id.as_str()))?;
+                    write(out.text(
+                        action_field::FALLBACK_LIST_ENDPOINT,
+                        fallback.endpoint.as_str(),
+                    ))?;
+                    write(out.u64(action_field::FALLBACK_LIST_PRIORITY, index as u64 + 1))?;
+                }
+                Ok(())
+            }
+            action::PACKET_GET => {
+                let profile = text(args, action_field::PACKET_PROFILE)?;
+                let stamp = self
+                    .exporter
+                    .resolve(profile)
+                    .ok_or(ActionError::Rejected("profile_not_found"))?;
+                if self.exports.lock(|exports| {
+                    let exports = exports.borrow();
+                    exports.open.is_full() || exports.pool.in_use() >= E
+                }) {
+                    return Err(ActionError::Busy);
+                }
+                // Built once, outside any lock; then retained until the stream
+                // is closed: reading never builds or signs again.
+                let mut buffer = [0u8; B];
+                let (built, len) = self
+                    .exporter
+                    .export(profile, &mut buffer)
+                    .await
+                    .map_err(|failure| ActionError::Rejected(failure.code()))?;
+                if built != stamp {
+                    // The policy changed while building: never offer a packet
+                    // built under another one.
+                    return Err(ActionError::Rejected("profile_changed"));
+                }
+                let info = self.exports.lock(|exports| {
+                    let mut exports = exports.borrow_mut();
+                    let (handle, slot) = exports.pool.alloc(built)?;
+                    slot[..len].copy_from_slice(&buffer[..len]);
+                    if !exports.pool.seal(handle, len) {
+                        exports.pool.release(handle);
+                        return None;
+                    }
+                    let id = exports.next;
+                    exports.next = exports.next.checked_add(1).unwrap_or(1);
+                    if exports.open.push(Export { id, handle }).is_err() {
+                        exports.pool.release(handle);
+                        return None;
+                    }
+                    Some(id)
+                });
+                let id = info.ok_or(ActionError::Busy)?;
+                let mut files = Vec::new();
+                let mut name = heapless::String::new();
+                let _ = name.push_str("packet.bin");
+                let _ = files.push(StreamFile {
+                    id: 1,
+                    name,
+                    size_bytes: len as u64,
+                });
+                if out.stream(StreamInfo { id, files }).is_err() {
+                    self.release(id);
+                    return Err(ActionError::Internal);
+                }
+                Ok(())
+            }
+            _ => Err(ActionError::UnknownAction),
         }
-        let mut sink = Sink(std::vec::Vec::new());
-        block_on(service.status(&mut sink)).unwrap();
-        assert_eq!(
-            sink.0,
-            [
-                status_field::FRAMES_CREATED,
-                status_field::FRAMES_DELIVERED,
-                status_field::SEND_RETRIES,
-                status_field::FRAMES_REJECTED,
-                status_field::QUEUE_DEPTH,
-                status_field::FRAMES_WITHOUT_LOCATION,
-            ]
-        );
-
-        let off = ConnectivityStatusService::new(&shared, disabled, &NoLocation);
-        let summary = block_on(off.summary());
-        assert_eq!(summary.state, ServiceState::Disabled);
-        assert!(!summary.ready);
-        let mut issues = Vec::new();
-        block_on(off.issues(&mut issues));
-        assert!(issues.is_empty());
     }
 
-    #[test]
-    fn the_service_identity_is_part_of_the_wire_abi() {
-        assert_eq!(
-            <ConnectivityStatusService<'static, NoopRawMutex> as Service>::NAME,
-            "connectivity"
-        );
+    async fn read_stream(
+        &self,
+        stream: u32,
+        file: u32,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> Result<StreamChunk, ActionError> {
+        if file != 1 {
+            return Err(ActionError::UnknownStream);
+        }
+        let exporter = &self.exporter;
+        enum Read {
+            Chunk(StreamChunk),
+            Stale,
+            Missing,
+            Beyond,
+        }
+        let read = self.exports.lock(|exports| {
+            let exports = exports.borrow_mut();
+            let Some(export) = exports.open.iter().find(|e| e.id == stream) else {
+                return Read::Missing;
+            };
+            let handle = export.handle;
+            let Some((stamp, bytes)) = exports.pool.get(handle) else {
+                return Read::Missing;
+            };
+            // A packet built under a policy that is no longer current is not
+            // served any more.
+            if exporter.resolve(stamp.id.as_str()).as_ref() != Some(stamp) {
+                return Read::Stale;
+            }
+            let Ok(offset) = usize::try_from(offset) else {
+                return Read::Beyond;
+            };
+            if offset > bytes.len() {
+                return Read::Beyond;
+            }
+            let len = (bytes.len() - offset).min(buf.len()).min(MAX_STREAM_CHUNK);
+            buf[..len].copy_from_slice(&bytes[offset..offset + len]);
+            Read::Chunk(StreamChunk {
+                len,
+                eof: offset + len == bytes.len(),
+            })
+        });
+        match read {
+            Read::Chunk(chunk) => Ok(chunk),
+            Read::Missing => Err(ActionError::UnknownStream),
+            Read::Beyond => Err(ActionError::InvalidArgument),
+            Read::Stale => {
+                self.release(stream);
+                Err(ActionError::UnknownStream)
+            }
+        }
+    }
+
+    async fn close_stream(&self, stream: u32) -> Result<(), ActionError> {
+        if self.release(stream) {
+            Ok(())
+        } else {
+            Err(ActionError::UnknownStream)
+        }
+    }
+
+    fn link_lost(&self) {
+        self.exports.lock(|exports| {
+            let mut exports = exports.borrow_mut();
+            while let Some(export) = exports.open.pop() {
+                exports.pool.release(export.handle);
+            }
+        });
     }
 }
+
+#[cfg(test)]
+mod tests;

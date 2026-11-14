@@ -4099,16 +4099,12 @@ dependencies = [
  "embedded-io-async 0.7.0",
  "embedded-nal-async",
  "heapless 0.9.3",
- "libm",
  "log",
  "minicbor",
  "rohi-config",
- "rohi-identity",
- "rohi-location",
  "rohi-net",
- "rohi-sensors",
  "rohi-service",
- "rohi-telemetry-robonomics",
+ "rohi-telemetry",
  "rohi-time",
 ]
 
