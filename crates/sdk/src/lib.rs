@@ -39,6 +39,9 @@
 //! | `service` | `service` | `rohi-service` | `config` |
 //! | `sensors` | `sensors` | `rohi-sensors`: typed measurements, sensor state, store, event bus, the `sensors` service | `time`, `service` |
 //! | `hal` | `hal` | `rohi-hal`: physical sensor drivers (`hal::sensors`) and their runner | `sensors` |
+//! | `telemetry` | `telemetry` | `rohi-telemetry`: observations from any source, measurement catalog, packet profiles, public/private sections, the `telemetry` service | `time`, `service` |
+//! | `telemetry-sensors`, `telemetry-location` | `telemetry::adapters` | sources over `rohi-sensors` and `rohi-location` | `telemetry`, `sensors` / `location` |
+//! | `telemetry-robonomics` | `telemetry_robonomics` | `rohi-telemetry-robonomics`: the Robonomics Connectivity Protocol packet format | `telemetry`, `identity` |
 //! | `time` | `time` | `rohi-time`: monotonic `Clock`, `Backoff`, the time service | `service` |
 //! | `net` | `net` | `rohi-net` | `service` |
 //! | `ntp` | `ntp` | `rohi-time-ntp` | `time`, `net` |
@@ -294,6 +297,12 @@ pub use rohi_control_tcp as tcp;
 #[cfg(feature = "hal")]
 #[cfg_attr(docsrs, doc(cfg(feature = "hal")))]
 pub use rohi_hal as hal;
+#[cfg(feature = "telemetry")]
+#[cfg_attr(docsrs, doc(cfg(feature = "telemetry")))]
+pub use rohi_telemetry as telemetry;
+#[cfg(feature = "telemetry-robonomics")]
+#[cfg_attr(docsrs, doc(cfg(feature = "telemetry-robonomics")))]
+pub use rohi_telemetry_robonomics as telemetry_robonomics;
 #[cfg(feature = "identity")]
 #[cfg_attr(docsrs, doc(cfg(feature = "identity")))]
 pub use rohi_identity as identity;

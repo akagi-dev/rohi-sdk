@@ -19,6 +19,10 @@ features = [
   "service",
   "hal",
   "sensors",
+  "telemetry",
+  "telemetry-sensors",
+  "telemetry-location",
+  "telemetry-robonomics",
   "time",
   "net",
   "ntp",
@@ -40,6 +44,8 @@ rohi-config = { workspace = true, optional = true }
 rohi-service = { workspace = true, optional = true }
 rohi-hal = { workspace = true, optional = true }
 rohi-sensors = { workspace = true, optional = true }
+rohi-telemetry = { workspace = true, optional = true }
+rohi-telemetry-robonomics = { workspace = true, optional = true }
 rohi-time = { workspace = true, optional = true }
 rohi-time-ntp = { workspace = true, optional = true }
 rohi-net = { workspace = true, optional = true }
@@ -81,6 +87,13 @@ ble = ["control", "net", "dep:rohi-control-ble"]
 tcp = ["control", "dep:rohi-control-tcp"]
 # `time::EmbassyClock`, the monotonic clock over `embassy-time`.
 embassy-time = ["time", "rohi-time/embassy-time"]
+# Source-independent telemetry: observations, catalog, packet profiles, the `telemetry` service.
+telemetry = ["time", "service", "dep:rohi-telemetry", "rohi-telemetry/service"]
+# `telemetry::adapters`: sources over `sensors` and `location`.
+telemetry-sensors = ["telemetry", "sensors", "rohi-telemetry/sensors"]
+telemetry-location = ["telemetry", "location", "rohi-telemetry/location"]
+# The Robonomics Connectivity Protocol packet format.
+telemetry-robonomics = ["telemetry", "identity", "dep:rohi-telemetry-robonomics"]
 connectivity = ["sensors", "identity", "location", "net", "time", "dep:rohi-connectivity"]
 
 # Host (`std`) backends, module `host`: DNS, TCP and UDP over the sockets of the

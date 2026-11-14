@@ -4353,6 +4353,8 @@ dependencies = [
  "rohi-service",
  "rohi-sim",
  "rohi-system",
+ "rohi-telemetry",
+ "rohi-telemetry-robonomics",
  "rohi-time",
  "rohi-time-ntp",
 ]
