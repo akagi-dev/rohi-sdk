@@ -4383,6 +4383,7 @@ dependencies = [
  "rohi-config",
  "rohi-location",
  "rohi-sensors",
+ "rohi-service",
  "rohi-time",
 ]
 

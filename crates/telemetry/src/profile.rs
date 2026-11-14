@@ -53,6 +53,14 @@ pub enum PacketFormatId {
 }
 
 impl PacketFormatId {
+    /// The number of the format on the control wire (the enum value of the
+    /// Actions).
+    pub const fn number(self) -> u32 {
+        match self {
+            Self::Robonomics => 1,
+        }
+    }
+
     /// The canonical name of the format, as the Actions show it.
     pub const fn name(self) -> &'static str {
         match self {

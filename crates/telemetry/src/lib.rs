@@ -16,6 +16,17 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 #![no_std]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented
+    )
+)]
 
 //! Robonomics Open Hardware Interface (ROHI): transport-independent telemetry.
 //!
@@ -139,6 +150,8 @@ extern crate std;
 
 pub mod adapters;
 pub mod catalog;
+#[cfg(feature = "service")]
+pub mod managed;
 pub mod observation;
 pub mod packet;
 pub mod profile;

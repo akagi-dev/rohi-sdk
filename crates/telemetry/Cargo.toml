@@ -15,6 +15,7 @@ maintenance = { status = "actively-developed" }
 [dependencies]
 rohi-time.workspace = true
 rohi-config.workspace = true
+rohi-service = { workspace = true, optional = true }
 heapless.workspace = true
 embassy-sync.workspace = true
 minicbor.workspace = true
@@ -24,7 +25,9 @@ rohi-location = { workspace = true, optional = true }
 
 [features]
 default = []
-# `SensorsSource`: an adapter over `rohi_sensors::runtime::MeasurementHandle`.
+# The managed `telemetry` service: profile Actions, catalog and status.
+service = ["dep:rohi-service"]
+# `adapters::SensorsTelemetrySource` over `rohi_sensors::runtime::MeasurementHandle`.
 sensors = ["dep:rohi-sensors"]
 # `LocationSource` adapter over `rohi_location::LocationSource`.
 location = ["dep:rohi-location"]
