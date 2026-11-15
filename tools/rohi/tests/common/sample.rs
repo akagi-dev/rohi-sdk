@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! A managed config section with a node id, an interval and an optional
 //! endpoint, named `connectivity`.
 //!
