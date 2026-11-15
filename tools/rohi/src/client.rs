@@ -421,6 +421,15 @@ impl<T: ClientTransport> Device<T> {
                 info.service, info.name
             )));
         };
+        if info.access != ActionAccess::Read
+            || schema.action.access != ActionAccess::Read
+            || offset.kind != ValueKind::U64
+        {
+            return Err(Error::Protocol(format!(
+                "the catalog {} {} must be read-only and take a u64 offset",
+                info.service, info.name
+            )));
+        }
         let offset_id = offset.id;
         let mut entries = Vec::new();
         loop {
