@@ -17,6 +17,7 @@ rohi-config-derive.workspace = true
 minicbor.workspace = true
 heapless.workspace = true
 zeroize.workspace = true
+log.workspace = true
 
 [features]
 # Field codecs of `std` types, for tests of crates that have `std`.

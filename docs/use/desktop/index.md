@@ -66,7 +66,7 @@ What the columns mean and how status differs from configuration is explained in
 | `config export`, `diff`, `apply` | configuration files (your overrides) |
 | `action [SERVICE] [ACTION] [ARG=VALUE...]` | list and run the actions of the services |
 | `SERVICE [ACTION] [ARG...]` | the same actions with positional arguments, for example `system reboot` and `system factory_reset` |
-| `logs [-n N] [-f]`, `logs download [-d DIR]`, `logs clear` | read, follow, save and clear the persistent device log |
+| `logs [-n N] [-f]`, `logs download [-d DIR]`, `logs clear` | show and follow the latest records in RAM, save and clear the archive of the device log |
 
 Each command has its own page: [Discovery & connection](discovery.md), [Configuration](configuration.md), [Status & diagnostics](status.md), [Actions](actions.md), [Device log](logs.md) and [Automation](automation.md).
 

@@ -28,7 +28,7 @@ use crate::action::{ActionDescriptor, MAX_ACTION_ARGS, MAX_RECORD_FIELDS};
 use crate::field::{ConfigField, EnumDescriptor, FieldDescriptor};
 use crate::status::{FIRST_SERVICE_ISSUE, ISSUE_STARTUP_FAILED, IssueDescriptor};
 use crate::{
-    MAX_ENUM_VARIANTS, MAX_ENUMS, MAX_ISSUE_DESCRIPTORS, MAX_NAME_LEN, MAX_VARIANT_NAME_LEN,
+    MAX_ENUM_VARIANTS, MAX_ISSUE_DESCRIPTORS, MAX_NAME_LEN, MAX_SERVICE_ENUMS, MAX_VARIANT_NAME_LEN,
 };
 use rohi_config::ValueKind;
 
@@ -162,8 +162,8 @@ const fn contains(ids: &[u32], id: u32) -> bool {
 /// Whether the enums fit the limits of the control protocol and are unique:
 /// ids are non-zero and unique, variant values and names are unique within
 /// their enum and names fit the wire.
-pub(crate) const fn enums_valid(enums: &[EnumDescriptor]) -> bool {
-    if enums.len() > MAX_ENUMS {
+pub(crate) const fn enums_valid(enums: &[EnumDescriptor], max_enums: usize) -> bool {
+    if enums.len() > max_enums {
         return false;
     }
     let mut index = 0;
@@ -237,7 +237,7 @@ pub(crate) const fn actions_valid(actions: &[ActionDescriptor]) -> bool {
         if !name_ok(action.name)
             || action.args.len() > MAX_ACTION_ARGS
             || action.results.len() > MAX_RECORD_FIELDS
-            || !enums_valid(action.enums)
+            || !enums_valid(action.enums, MAX_SERVICE_ENUMS)
             || !fields_valid(action.args, action.enums)
             || !fields_valid(action.results, action.enums)
         {

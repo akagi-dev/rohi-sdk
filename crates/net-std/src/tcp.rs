@@ -23,7 +23,7 @@ use core::net::SocketAddr;
 use std::io::ErrorKind;
 
 use embedded_io_async::{ErrorType, Read, Write};
-use log::warn;
+use log::{debug, info, trace, warn};
 use rohi_control_tcp::Acceptor;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpListener, TcpStream};
@@ -47,11 +47,18 @@ impl TcpAcceptor {
     /// The socket cannot be switched to non-blocking mode or registered with
     /// the reactor.
     pub fn new(listener: std::net::TcpListener) -> std::io::Result<Self> {
-        listener.set_nonblocking(true)?;
+        listener.set_nonblocking(true).inspect_err(|error| {
+            warn!(target: "control.tcp", "Cannot make the listener non-blocking (err={error})");
+        })?;
         let _entered = handle().enter();
-        Ok(Self {
-            listener: TcpListener::from_std(listener)?,
-        })
+        let listener = TcpListener::from_std(listener).inspect_err(|error| {
+            warn!(target: "control.tcp", "Cannot register the listener (err={error})");
+        })?;
+        match listener.local_addr() {
+            Ok(address) => info!(target: "control.tcp", "Listening (addr={address})"),
+            Err(_) => info!(target: "control.tcp", "Listener started"),
+        }
+        Ok(Self { listener })
     }
 
     /// Binds a listener to `address` (port 0 picks a free port).
@@ -60,7 +67,10 @@ impl TcpAcceptor {
     ///
     /// The address cannot be bound.
     pub fn bind(address: SocketAddr) -> std::io::Result<Self> {
-        Self::new(std::net::TcpListener::bind(address)?)
+        let listener = std::net::TcpListener::bind(address).inspect_err(|error| {
+            warn!(target: "control.tcp", "Cannot bind the listener (addr={address} err={error})");
+        })?;
+        Self::new(listener)
     }
 
     /// The address the listener is bound to, with the port that was chosen.
@@ -84,8 +94,8 @@ impl Acceptor for TcpAcceptor {
             match within(self.listener.accept()).await {
                 Ok((stream, peer)) => {
                     let _ = stream.set_nodelay(true);
-                    log::debug!("control: connection from {peer}");
-                    return Ok(TcpConnection { stream });
+                    debug!(target: "control.tcp", "Connection accepted (peer={peer})");
+                    return Ok(TcpConnection { stream, peer });
                 }
                 Err(error)
                     if matches!(
@@ -96,9 +106,12 @@ impl Acceptor for TcpAcceptor {
                             | ErrorKind::TimedOut
                     ) =>
                 {
-                    warn!("control: accept skipped: {error}");
+                    warn!(target: "control.tcp", "Accept skipped (err={error})");
                 }
-                Err(error) => return Err(error),
+                Err(error) => {
+                    warn!(target: "control.tcp", "Accept failed (err={error})");
+                    return Err(error);
+                }
             }
         }
     }
@@ -107,6 +120,13 @@ impl Acceptor for TcpAcceptor {
 /// A client connection of a [`TcpAcceptor`]. Dropping it closes the socket.
 pub struct TcpConnection {
     stream: TcpStream,
+    peer: SocketAddr,
+}
+
+impl Drop for TcpConnection {
+    fn drop(&mut self) {
+        debug!(target: "control.tcp", "Connection closed (peer={})", self.peer);
+    }
 }
 
 impl ErrorType for TcpConnection {
@@ -115,16 +135,26 @@ impl ErrorType for TcpConnection {
 
 impl Read for TcpConnection {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, std::io::Error> {
-        within(self.stream.read(buf)).await
+        let read = within(self.stream.read(buf)).await.inspect_err(
+            |error| debug!(target: "control.tcp", "Read failed (peer={} err={error})", self.peer),
+        )?;
+        trace!(target: "control.tcp", "Read from peer (size_b={read} peer={})", self.peer);
+        Ok(read)
     }
 }
 
 impl Write for TcpConnection {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, std::io::Error> {
-        within(self.stream.write(buf)).await
+        let written = within(self.stream.write(buf)).await.inspect_err(
+            |error| debug!(target: "control.tcp", "Write failed (peer={} err={error})", self.peer),
+        )?;
+        trace!(target: "control.tcp", "Wrote to peer (size_b={written} peer={})", self.peer);
+        Ok(written)
     }
 
     async fn flush(&mut self) -> Result<(), std::io::Error> {
-        within(self.stream.flush()).await
+        within(self.stream.flush()).await.inspect_err(
+            |error| debug!(target: "control.tcp", "Flush failed (peer={} err={error})", self.peer),
+        )
     }
 }

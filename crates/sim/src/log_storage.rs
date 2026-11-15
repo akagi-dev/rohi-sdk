@@ -20,7 +20,7 @@
 //!
 //! The ring journal of `rohi-logging` runs on it unchanged: it sees a
 //! [`Medium`] with the geometry of the `rohi-log` partition of the Altruist
-//! Urban (64 erase sectors of 4 KiB) and the rules of NOR flash: erase sets
+//! Urban (256 erase sectors of 4 KiB, 1 MiB) and the rules of NOR flash: erase sets
 //! bytes to `0xFF` and a byte that is programmed cannot be written again until
 //! its sector is erased. The file is the raw image of the region, nothing else.
 //!
@@ -44,9 +44,12 @@ use rohi_logging::storage::{Medium, SECTOR_SIZE};
 use crate::storage::OpenError;
 
 /// Erase sectors of the log region, as the `rohi-log` partition of the device.
-pub const LOG_SECTORS: u32 = 64;
+pub const LOG_SECTORS: u32 = 256;
 
 const REGION_SIZE: usize = LOG_SECTORS as usize * SECTOR_SIZE;
+
+// The region of the first layout of the log, 64 sectors.
+const LEGACY_REGION_SIZE: usize = 64 * SECTOR_SIZE;
 
 /// A failed access to the log flash.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,7 +87,8 @@ impl FileLogFlash {
     /// # Errors
     ///
     /// The file cannot be created, read or locked, or is not a region image
-    /// of [`LOG_SECTORS`] sectors. The file is locked while the flash is open,
+    /// of [`LOG_SECTORS`] sectors; an image of the former 256 KiB log region is
+    /// refused, not migrated. The file is locked while the flash is open,
     /// so two processes cannot share a log file.
     pub fn open(path: &Path) -> Result<Self, OpenError> {
         let fail = |what: &str, error: &dyn std::fmt::Display| {
@@ -110,11 +114,19 @@ impl FileLogFlash {
         if length == 0 {
             file.write_all(&image)
                 .map_err(|e| fail("cannot initialize", &e))?;
-            info!("Log storage: created {}", path.display());
+            info!(target: "sim.storage", "Log flash image created (path={})", path.display());
         } else if length == REGION_SIZE as u64 {
             file.read_exact(&mut image)
                 .map_err(|e| fail("cannot read", &e))?;
-            info!("Log storage: opened {}", path.display());
+            info!(target: "sim.storage", "Log flash image opened (path={})", path.display());
+        } else if length == LEGACY_REGION_SIZE as u64 {
+            return Err(fail(
+                "a log flash image of the former 256 KiB layout",
+                &format!(
+                    "the log region is now {REGION_SIZE} bytes and the old history is not migrated: delete {} to start a new log",
+                    path.display()
+                ),
+            ));
         } else {
             return Err(fail(
                 "not a log flash image",
@@ -146,7 +158,7 @@ impl FileLogFlash {
         if let Some(file) = &self.lock().file
             && let Err(e) = file.sync_all()
         {
-            warn!("Log storage: cannot sync: {e}");
+            warn!(target: "sim.storage", "Cannot sync the log flash image (err={e})");
         }
     }
 
@@ -276,5 +288,29 @@ mod tests {
         drop(flash);
         std::fs::write(&path, b"short").unwrap();
         assert!(FileLogFlash::open(&path).is_err(), "not an image");
+    }
+
+    #[test]
+    fn an_image_of_the_former_256_kib_region_is_refused_and_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("device.log.flash");
+        let legacy = vec![0xAB; LEGACY_REGION_SIZE];
+        std::fs::write(&path, &legacy).unwrap();
+        let error = FileLogFlash::open(&path).unwrap_err().to_string();
+        assert!(
+            error.contains("256 KiB") && error.contains("delete"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), legacy);
+    }
+
+    #[test]
+    fn a_new_file_is_a_whole_erased_region() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("device.log.flash");
+        drop(FileLogFlash::open(&path).unwrap());
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(bytes.len(), 1 << 20);
+        assert!(bytes.iter().all(|byte| *byte == 0xFF));
     }
 }

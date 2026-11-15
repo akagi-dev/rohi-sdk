@@ -19,7 +19,7 @@
 //! The `logging` config section.
 
 use minicbor::{CborLen, Decode, Encode};
-use rohi_config::{Text, TextValue, Variant, VariantValue};
+use rohi_config::{Variant, VariantValue};
 use rohi_service::{Config, EnumDescriptor, EnumVariant, FieldError};
 
 use crate::LogLevel;
@@ -34,10 +34,12 @@ pub const RETENTION_BYTES_RANGE: (u32, u32) = (8 * 1024, 64 * 1024 * 1024);
 /// Smallest and largest `flush_interval`, in milliseconds.
 pub const FLUSH_INTERVAL_RANGE_MS: (u32, u32) = (1_000, 600_000);
 
-/// Default retention budget: 128 KiB.
-pub const DEFAULT_RETENTION_BYTES: u32 = 128 * 1024;
-/// Default segment size: 8 KiB.
-pub const DEFAULT_SEGMENT_BYTES: u32 = 8 * 1024;
+/// Default retention budget: 1 MiB, the `rohi-log` partition of the Altruist
+/// Urban. The storage keeps what the medium has beyond its own header sectors.
+pub const DEFAULT_RETENTION_BYTES: u32 = 1024 * 1024;
+/// Default segment size: 64 KiB, so 16 segments fit in the default retention
+/// and stay below [`MAX_SEGMENTS`](crate::storage::MAX_SEGMENTS).
+pub const DEFAULT_SEGMENT_BYTES: u32 = 64 * 1024;
 /// Default flush interval: 10 s.
 pub const DEFAULT_FLUSH_INTERVAL_MS: u32 = 10_000;
 
@@ -48,9 +50,12 @@ pub const DEVELOPMENT_LEVEL: LogLevel = LogLevel::Info;
 
 /// Id of the enum of the `level` field.
 pub const LEVEL_ENUM: u32 = 1;
+/// Id of the enum of the `storage` field.
+pub const STORAGE_ENUM: u32 = 2;
+/// Id of the enum of the `compression` field.
+pub const COMPRESSION_ENUM: u32 = 3;
 
-/// The enum of the `level` config field.
-pub const LEVELS: &[EnumDescriptor] = &[EnumDescriptor::new(
+const LEVEL_VARIANTS: EnumDescriptor = EnumDescriptor::new(
     LEVEL_ENUM,
     &[
         EnumVariant::new(0, "off"),
@@ -59,7 +64,25 @@ pub const LEVELS: &[EnumDescriptor] = &[EnumDescriptor::new(
         EnumVariant::new(3, "info"),
         EnumVariant::new(4, "debug"),
     ],
-)];
+);
+
+const STORAGE_VARIANTS: EnumDescriptor = EnumDescriptor::new(
+    STORAGE_ENUM,
+    &[EnumVariant::new(0, "internal"), EnumVariant::new(1, "sd")],
+);
+
+const COMPRESSION_VARIANTS: EnumDescriptor = EnumDescriptor::new(
+    COMPRESSION_ENUM,
+    &[EnumVariant::new(0, "none"), EnumVariant::new(1, "lz4")],
+);
+
+/// The enum of the `level` field, which the `logging` service status shares.
+pub const LEVELS: &[EnumDescriptor] = &[LEVEL_VARIANTS];
+
+/// The enums of the `logging` config section: `level`, `storage` and
+/// `compression`.
+pub const CONFIG_ENUMS: &[EnumDescriptor] =
+    &[LEVEL_VARIANTS, STORAGE_VARIANTS, COMPRESSION_VARIANTS];
 
 impl VariantValue for LogLevel {
     fn variant(&self) -> u32 {
@@ -94,17 +117,20 @@ impl LogStorageKind {
     }
 }
 
-impl TextValue for LogStorageKind {
-    fn from_text(text: &str) -> Option<Self> {
-        match text {
-            "internal" => Some(Self::Internal),
-            "sd" => Some(Self::Sd),
-            _ => None,
+impl VariantValue for LogStorageKind {
+    fn variant(&self) -> u32 {
+        match self {
+            Self::Internal => 0,
+            Self::Sd => 1,
         }
     }
 
-    fn as_text(&self) -> Option<&str> {
-        Some(self.name())
+    fn from_variant(variant: u32) -> Option<Self> {
+        match variant {
+            0 => Some(Self::Internal),
+            1 => Some(Self::Sd),
+            _ => None,
+        }
     }
 }
 
@@ -131,17 +157,20 @@ impl Compression {
     }
 }
 
-impl TextValue for Compression {
-    fn from_text(text: &str) -> Option<Self> {
-        match text {
-            "none" => Some(Self::None),
-            "lz4" => Some(Self::Lz4),
-            _ => None,
+impl VariantValue for Compression {
+    fn variant(&self) -> u32 {
+        match self {
+            Self::None => 0,
+            Self::Lz4 => 1,
         }
     }
 
-    fn as_text(&self) -> Option<&str> {
-        Some(self.name())
+    fn from_variant(variant: u32) -> Option<Self> {
+        match variant {
+            0 => Some(Self::None),
+            1 => Some(Self::Lz4),
+            _ => None,
+        }
     }
 }
 
@@ -149,16 +178,16 @@ impl TextValue for Compression {
 ///
 /// | Field | Id | Type | Meaning |
 /// |-------|----|------|---------|
-/// | `level` | 1 | enum `off`/`error`/`warn`/`info`/`debug` | what the persistent log keeps |
-/// | `storage` | 2 | text `internal`/`sd` | the backend that holds the history |
-/// | `compression` | 3 | text `none`/`lz4` | codec of **new** segments |
+/// | `level` | 1 | enum 1: `off`/`error`/`warn`/`info`/`debug` | what the persistent log keeps |
+/// | `storage` | 2 | enum 2: `internal`=0/`sd`=1 | the backend that holds the history |
+/// | `compression` | 3 | enum 3: `none`=0/`lz4`=1 | codec of **new** segments |
 /// | `retention_bytes` | 4 | bytes | budget of the active backend |
 /// | `segment_bytes` | 5 | bytes | rotation granularity |
 /// | `flush_interval` | 6 | ms | longest a record waits in RAM |
 ///
-/// `storage` and `compression` are text, not enums, because a section can
-/// describe one enum ([`MAX_ENUMS`](rohi_service::MAX_ENUMS)) and `level` is
-/// the one with the most use for discovery.
+/// All three are enums of the schema ([`MAX_ENUMS`](rohi_service::MAX_ENUMS)), so
+/// a client discovers their names and values. Persisted overrides store the
+/// variant number as before (a CBOR unsigned integer).
 ///
 /// # Validation
 ///
@@ -166,6 +195,18 @@ impl TextValue for Compression {
 /// every field is in its range, `segment_bytes` is a multiple of
 /// [`SEGMENT_GRANULE`] and `retention_bytes` holds at least two segments, so
 /// rotation always has a sealed segment to evict.
+///
+/// # Defaults and stored overrides
+///
+/// The defaults suit the 1 MiB `rohi-log` partition: 1 MiB of retention in
+/// 64 KiB segments. They apply to every field a user never set; a stored
+/// override stays authoritative and is never rewritten. An override that was
+/// valid next to the former 8 KiB default segment can be invalid next to the
+/// new one (for example `retention_bytes` below 128 KiB): the section is then
+/// refused as a whole, the firmware warns at boot and keeps the defaults of the
+/// build until the user sets `segment_bytes` or removes the override. The
+/// storage never retains more than its medium holds, whatever `retention_bytes`
+/// says.
 ///
 /// ```
 /// use rohi_logging::{Compression, LogLevel, LoggingConfig};
@@ -184,17 +225,17 @@ impl TextValue for Compression {
     overrides = LoggingOverrides,
     version = 1,
     validate = validate_section,
-    enums = LEVELS
+    enums = CONFIG_ENUMS
 )]
 pub struct LoggingConfig {
     /// What the persistent log keeps.
     #[config(id = 1, with = Variant, enum_id = LEVEL_ENUM)]
     pub level: LogLevel,
     /// The backend that holds the history.
-    #[config(id = 2, with = Text)]
+    #[config(id = 2, with = Variant, enum_id = STORAGE_ENUM)]
     pub storage: LogStorageKind,
     /// Codec of newly created segments.
-    #[config(id = 3, with = Text)]
+    #[config(id = 3, with = Variant, enum_id = COMPRESSION_ENUM)]
     pub compression: Compression,
     /// Budget of the active backend, in bytes.
     #[config(
@@ -224,8 +265,8 @@ pub struct LoggingConfig {
 }
 
 impl LoggingConfig {
-    /// The defaults: [`PRODUCTION_LEVEL`], internal flash, LZ4, 128 KiB in
-    /// 8 KiB segments, flushed every 10 s.
+    /// The defaults: [`PRODUCTION_LEVEL`], internal flash, LZ4, 1 MiB in
+    /// 64 KiB segments, flushed every 10 s.
     pub const DEFAULT: Self = Self {
         level: PRODUCTION_LEVEL,
         storage: LogStorageKind::Internal,

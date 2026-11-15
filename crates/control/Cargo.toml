@@ -17,6 +17,7 @@ rohi-control-proto.workspace = true
 rohi-service.workspace = true
 embassy-sync.workspace = true
 heapless.workspace = true
+log.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]

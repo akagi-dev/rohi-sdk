@@ -98,6 +98,7 @@
 //! | `ListActions`, `GetActionSchema` | [`ActionRegistry`](rohi_service::ActionRegistry) | `Read` |
 //! | `InvokeAction` | `ActionRegistry` | the [`ActionAccess`](rohi_service::ActionAccess) the action declares: `Read`, `Mutate` or `Provision`; secret arguments are a separate property (they are only wiped) |
 //! | `ReadStream`, `CloseStream` | `ActionRegistry` | that of the action that created the stream |
+//! | `TailLogs` | `ActionRegistry` (`Action::tail_logs`) | `Read`; one request, one bounded reply, no stream |
 //!
 //! The three built-in policies are [`OpenPolicy`] (everything),
 //! [`RequireEncryption`] (reads are open, anything else needs an encrypted
@@ -202,6 +203,7 @@ extern crate std;
 
 mod backend;
 mod controller;
+mod diag;
 mod mapping;
 mod policy;
 

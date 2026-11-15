@@ -80,9 +80,15 @@ impl Identity {
     /// ));
     /// ```
     pub fn from_secret(secret: &[u8]) -> Result<Self, IdentityError> {
-        let mut bytes: [u8; SECRET_LEN] = secret
-            .try_into()
-            .map_err(|_| IdentityError::InvalidSecret)?;
+        let mut bytes: [u8; SECRET_LEN] = secret.try_into().map_err(|_| {
+            log::warn!(
+                target: "identity",
+                "Secret rejected: wrong length (size_b={} expected_b={})",
+                secret.len(),
+                SECRET_LEN
+            );
+            IdentityError::InvalidSecret
+        })?;
         let identity = Self {
             secret: Secret::new(bytes),
         };

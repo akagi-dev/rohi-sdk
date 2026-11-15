@@ -233,7 +233,7 @@ use rohi_config::{ConfigOverrides, ConfigSection, FieldError, HasOverrides, mate
 use crate::field::{ConfigField, EnumDescriptor};
 use crate::isolated::isolated;
 use crate::schema::{config_fields_valid, enums_valid, field_ids_match, name_ok};
-use crate::{MAX_CONFIG_FIELDS, MAX_REGISTRY_ENTRIES};
+use crate::{MAX_CONFIG_FIELDS, MAX_ENUMS, MAX_REGISTRY_ENTRIES};
 use rohi_config::Value;
 
 /// The typed configuration of one managed section.
@@ -675,7 +675,7 @@ impl<C: Config, S: SectionStore<C>, M: RawMutex> Section<C, S, M> {
                 C::FIELDS.len() <= MAX_CONFIG_FIELDS,
                 "too many config fields"
             );
-            assert!(enums_valid(C::ENUMS), "invalid section enums");
+            assert!(enums_valid(C::ENUMS, MAX_ENUMS), "invalid section enums");
             assert!(
                 config_fields_valid(C::FIELDS, C::ENUMS),
                 "invalid config fields: ids and names must be unique and fit"
@@ -709,6 +709,15 @@ impl<C: Config, S: SectionStore<C>, M: RawMutex> Section<C, S, M> {
     }
 
     fn apply(&self, overrides: &mut C::Overrides, mutation: &Mutation) -> Result<(), FieldError> {
+        self.apply_inner(overrides, mutation)
+            .inspect_err(|error| log_mutation_rejected(C::NAME, mutation.field_id, *error))
+    }
+
+    fn apply_inner(
+        &self,
+        overrides: &mut C::Overrides,
+        mutation: &Mutation,
+    ) -> Result<(), FieldError> {
         let field = Self::field(mutation.field_id)?;
         if !field.writable {
             return Err(FieldError::ReadOnly);
@@ -760,17 +769,32 @@ impl<C: Config, S: SectionStore<C>, M: RawMutex> Section<C, S, M> {
     ) -> Result<Patched, ConfigError> {
         // The value validated here is the one stored and published.
         let effective = self.effective(next);
-        effective.validate()?;
+        effective
+            .validate()
+            .inspect_err(|error| log_validation_failed(C::NAME, *error))?;
         let restart_required = self.store.restart_required();
         if dry_run {
+            log::debug!(target: "config", "Dry run passed (section={})", C::NAME);
             return Ok(Patched { restart_required });
         }
         if !next.is_empty() {
-            self.store.store(next, &effective).await?;
+            self.store
+                .store(next, &effective)
+                .await
+                .inspect_err(|error| log_store_failed("store", C::NAME, *error))?;
         } else if persisted {
             // The last user override is gone: only the firmware policy applies.
-            self.store.remove(&effective).await?;
+            self.store
+                .remove(&effective)
+                .await
+                .inspect_err(|error| log_store_failed("remove", C::NAME, *error))?;
         }
+        log::info!(
+            target: "config",
+            "Section applied (section={} restart_required={})",
+            C::NAME,
+            restart_required
+        );
         Ok(Patched { restart_required })
     }
 }
@@ -798,7 +822,12 @@ impl<C: Config, S: SectionStore<C>, M: RawMutex> ConfigSectionOps for Section<C,
 
     async fn get(&self) -> Result<SectionValues, ConfigError> {
         let _transaction = self.transaction.lock().await;
-        let overrides = self.store.load().await?.unwrap_or_default();
+        let overrides = self
+            .store
+            .load()
+            .await
+            .inspect_err(|error| log_store_failed("load", C::NAME, *error))?
+            .unwrap_or_default();
         let config = self.effective(&overrides);
         let mut entries = Vec::new();
         let mut overridden = Vec::new();
@@ -837,7 +866,18 @@ impl<C: Config, S: SectionStore<C>, M: RawMutex> ConfigSectionOps for Section<C,
 
     async fn patch(&self, mutations: &[Mutation], dry_run: bool) -> Result<Patched, ConfigError> {
         let _transaction = self.transaction.lock().await;
-        let stored = self.store.load().await?;
+        log::debug!(
+            target: "config",
+            "Patching section (section={} count={} dry_run={})",
+            C::NAME,
+            mutations.len(),
+            dry_run
+        );
+        let stored = self
+            .store
+            .load()
+            .await
+            .inspect_err(|error| log_store_failed("load", C::NAME, *error))?;
         let persisted = stored.is_some();
         let mut next = stored.unwrap_or_default();
         for mutation in mutations {
@@ -848,12 +888,22 @@ impl<C: Config, S: SectionStore<C>, M: RawMutex> ConfigSectionOps for Section<C,
 
     async fn reset(&self, dry_run: bool) -> Result<Patched, ConfigError> {
         let _transaction = self.transaction.lock().await;
+        log::debug!(target: "config", "Resetting section (section={} dry_run={})", C::NAME, dry_run);
         let restart_required = self.store.restart_required();
         if dry_run {
             return Ok(Patched { restart_required });
         }
         let effective = self.effective(&C::Overrides::default());
-        self.store.remove(&effective).await?;
+        self.store
+            .remove(&effective)
+            .await
+            .inspect_err(|error| log_store_failed("remove", C::NAME, *error))?;
+        log::info!(
+            target: "config",
+            "Section reset to firmware defaults (section={} restart_required={})",
+            C::NAME,
+            restart_required
+        );
         Ok(Patched { restart_required })
     }
 
@@ -887,7 +937,12 @@ impl<C: Config, S: SectionStore<C>, M: RawMutex> ConfigUpdate<C> for Section<C, 
         change: F,
     ) -> Result<Patched, ConfigError> {
         let _transaction = self.transaction.lock().await;
-        let stored = self.store.load().await?;
+        log::debug!(target: "config", "Updating section (section={})", C::NAME);
+        let stored = self
+            .store
+            .load()
+            .await
+            .inspect_err(|error| log_store_failed("load", C::NAME, *error))?;
         let persisted = stored.is_some();
         let mut next = stored.unwrap_or_default();
         change(&mut next);
@@ -966,12 +1021,21 @@ pub trait ConfigRegistry {
     ///
     /// The first error of a section reset; the sections before it stay reset.
     async fn factory_reset(&self) -> Result<FactoryReset, ConfigError> {
+        log::info!(
+            target: "config",
+            "Factory reset started (count={})",
+            self.section_count()
+        );
         let mut restart_required = false;
         for index in 0..self.section_count() {
             let Some(info) = self.section_info(index) else {
                 continue;
             };
-            restart_required |= self.reset(info.id, false).await?.restart_required;
+            restart_required |= self
+                .reset(info.id, false)
+                .await
+                .inspect_err(|error| log_reset_failed(info.name, *error))?
+                .restart_required;
         }
         Ok(FactoryReset { restart_required })
     }
@@ -1007,6 +1071,64 @@ impl ConfigRegistry for () {
     }
 }
 
+// Values are never logged: a field can be secret.
+#[cold]
+#[inline(never)]
+fn log_mutation_rejected(section: &'static str, field: u32, error: FieldError) {
+    log::warn!(
+        target: "config",
+        "Field rejected: {:?} (section={} id={})",
+        error,
+        section,
+        field
+    );
+}
+
+#[cold]
+#[inline(never)]
+fn log_validation_failed(section: &'static str, error: FieldError) {
+    log::warn!(
+        target: "config",
+        "Validation failed: {:?} (section={})",
+        error,
+        section
+    );
+}
+
+#[cold]
+#[inline(never)]
+fn log_store_failed(operation: &'static str, section: &'static str, error: StoreError) {
+    log::warn!(
+        target: "config",
+        "Section {} failed: {:?} (section={})",
+        operation,
+        error,
+        section
+    );
+}
+
+#[cold]
+#[inline(never)]
+fn log_reset_failed(section: &'static str, error: ConfigError) {
+    log::warn!(
+        target: "config",
+        "Factory reset stopped: {:?} (section={})",
+        error,
+        section
+    );
+}
+
+#[cold]
+#[inline(never)]
+fn log_unknown_section(operation: &'static str, section: u64) {
+    log::warn!(
+        target: "config",
+        "Unknown section in {} (id={:#018x})",
+        operation,
+        section
+    );
+}
+
 macro_rules! tuple_config_registry {
     ($count:expr; $($name:ident . $index:tt),+) => {
         impl<$($name: ConfigSectionOps),+> ConfigRegistry for ($($name,)+) {
@@ -1032,6 +1154,7 @@ macro_rules! tuple_config_registry {
                 $(if self.$index.id() == section {
                     return isolated(self.$index.get()).await;
                 })+
+                log_unknown_section("get", section);
                 Err(ConfigError::UnknownSection)
             }
 
@@ -1044,6 +1167,7 @@ macro_rules! tuple_config_registry {
                 $(if self.$index.id() == section {
                     return isolated(self.$index.patch(mutations, dry_run)).await;
                 })+
+                log_unknown_section("patch", section);
                 Err(ConfigError::UnknownSection)
             }
 
@@ -1055,6 +1179,7 @@ macro_rules! tuple_config_registry {
                 $(if self.$index.id() == section {
                     return isolated(self.$index.reset(dry_run)).await;
                 })+
+                log_unknown_section("reset", section);
                 Err(ConfigError::UnknownSection)
             }
 

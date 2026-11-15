@@ -19,6 +19,7 @@
 use core::fmt;
 
 use heapless::Vec;
+use log::debug;
 use minicbor::{CborLen, Decode, Encode};
 use rohi_config::Text;
 use rohi_service::Config;
@@ -358,7 +359,56 @@ impl WifiConfig {
         if valid {
             Ok(())
         } else {
+            self.log_invalid();
             Err(WifiError::InvalidConfig)
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn log_invalid(&self) {
+        if self.ssid.as_ref().is_some_and(|ssid| ssid.is_empty()) {
+            debug!(target: "wifi", "Invalid config: empty SSID");
+        }
+        if let Some(password) = self.password.as_ref()
+            && password.len() < MIN_WIFI_PASSWORD_LEN
+        {
+            debug!(
+                target: "wifi",
+                "Invalid config: password too short (min_b={})",
+                MIN_WIFI_PASSWORD_LEN
+            );
+        }
+        let timings = [
+            ("scan_timeout", self.scan_timeout_ms, SCAN_TIMEOUT_RANGE_MS),
+            (
+                "connect_timeout",
+                self.connect_timeout_ms,
+                CONNECT_TIMEOUT_RANGE_MS,
+            ),
+            (
+                "backoff_initial",
+                self.backoff_initial_ms,
+                BACKOFF_INITIAL_RANGE_MS,
+            ),
+            ("backoff_max", self.backoff_max_ms, BACKOFF_MAX_RANGE_MS),
+            ("link_refresh", self.link_refresh_ms, LINK_REFRESH_RANGE_MS),
+        ];
+        for (name, value, (min, max)) in timings {
+            if !within(value, (min, max)) {
+                debug!(
+                    target: "wifi",
+                    "Invalid config: timing out of range (name={} value_ms={} min_ms={} max_ms={})",
+                    name, value, min, max
+                );
+            }
+        }
+        if self.backoff_initial_ms > self.backoff_max_ms {
+            debug!(
+                target: "wifi",
+                "Invalid config: initial backoff exceeds maximum (initial_ms={} max_ms={})",
+                self.backoff_initial_ms, self.backoff_max_ms
+            );
         }
     }
 

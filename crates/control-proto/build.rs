@@ -60,8 +60,13 @@ const LIMITS: &[(&str, usize, &str)] = &[
     ),
     (
         "MAX_ENUMS",
+        3,
+        "Maximum number of enums in one config schema response.",
+    ),
+    (
+        "MAX_SERVICE_ENUMS",
         1,
-        "Maximum number of enums in one schema response.",
+        "Maximum number of enums in one service or action schema response.",
     ),
     (
         "MAX_ENUM_VARIANTS",
@@ -142,6 +147,11 @@ const LIMITS: &[(&str, usize, &str)] = &[
         "MAX_STREAM_FILES",
         24,
         "Maximum number of files of one stream.",
+    ),
+    (
+        "MAX_TAIL_CHUNK",
+        512,
+        "Maximum number of bytes of text one `TailLogsResponse` carries.",
     ),
     (
         "MAX_REASON_LEN",
@@ -272,7 +282,7 @@ fn main() {
         ),
         (
             ".rohi.control.v1.GetServiceSchemaResponse.enums",
-            "MAX_ENUMS",
+            "MAX_SERVICE_ENUMS",
         ),
         (
             ".rohi.control.v1.GetServiceSchemaResponse.issues",
@@ -303,7 +313,7 @@ fn main() {
         ),
         (
             ".rohi.control.v1.GetActionSchemaResponse.enums",
-            "MAX_ENUMS",
+            "MAX_SERVICE_ENUMS",
         ),
         (
             ".rohi.control.v1.InvokeActionRequest.args",
@@ -321,6 +331,8 @@ fn main() {
             ".rohi.control.v1.ReadStreamResponse.data",
             "MAX_STREAM_CHUNK",
         ),
+        // Log tail.
+        (".rohi.control.v1.TailLogsResponse.data", "MAX_TAIL_CHUNK"),
     ];
     for (path, name) in bounded {
         let size = limit(name) as u32;

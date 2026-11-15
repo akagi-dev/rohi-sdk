@@ -365,3 +365,52 @@ fn pivot_is_only_a_guess_before_the_first_sample() {
     clock.advance_secs(1);
     assert_eq!(service.pivot(), UnixTime::from_secs(NOW + 1));
 }
+
+std::thread_local! {
+    static LOG_HOOK: core::cell::RefCell<Option<std::boxed::Box<dyn Fn()>>> =
+        const { core::cell::RefCell::new(None) };
+}
+
+/// A log sink that runs the per-thread hook, like a sink stamping entries
+/// with the time.
+struct HookLogger;
+
+impl log::Log for HookLogger {
+    fn enabled(&self, _: &log::Metadata) -> bool {
+        true
+    }
+
+    fn log(&self, _: &log::Record) {
+        LOG_HOOK.with(|hook| {
+            if let Some(hook) = hook.borrow().as_ref() {
+                hook();
+            }
+        });
+    }
+
+    fn flush(&self) {}
+}
+
+#[test]
+fn logging_from_submit_may_read_the_time() {
+    static LOGGER: HookLogger = HookLogger;
+    let _ = log::set_logger(&LOGGER);
+    log::set_max_level(log::LevelFilter::Trace);
+
+    let (service, _clock) = service();
+    let service = std::rc::Rc::new(service);
+    let reader = service.clone();
+    LOG_HOOK.with(|hook| {
+        *hook.borrow_mut() = Some(std::boxed::Box::new(move || {
+            let _ = reader.now();
+            let _ = reader.status();
+        }));
+    });
+
+    service.submit(TimeSourceKind::Ntp, sample(NOW)).unwrap();
+    service
+        .submit(TimeSourceKind::Ntp, sample(NOW + 5))
+        .unwrap();
+    assert!(service.submit(TimeSourceKind::Ntp, sample(1)).is_err());
+    LOG_HOOK.with(|hook| *hook.borrow_mut() = None);
+}

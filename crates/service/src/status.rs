@@ -304,8 +304,29 @@ pub(crate) struct Collector {
     pub(crate) fields: Vec<(u32, Value), MAX_FIELDS>,
 }
 
+/// A service wrote a field that the schema does not accept. Only `debug`: it can
+/// repeat on every poll.
+#[cold]
+#[inline(never)]
+pub(crate) fn log_rejected_field(area: &'static str, id: u32, error: WriteError) {
+    log::debug!(
+        target: "service",
+        "Rejected {} field: {:?} (id={})",
+        area,
+        error,
+        id
+    );
+}
+
 impl StatusWriter for Collector {
     fn put(&mut self, id: u32, value: Value) -> Result<(), WriteError> {
+        self.store(id, value)
+            .inspect_err(|error| log_rejected_field("status", id, *error))
+    }
+}
+
+impl Collector {
+    fn store(&mut self, id: u32, value: Value) -> Result<(), WriteError> {
         let field = self
             .schema
             .iter()
@@ -538,6 +559,7 @@ pub(crate) type TrackCell<M> = Mutex<M, Cell<Option<Track>>>;
 /// state, health, readiness and the active issues only, never the
 /// service-specific status fields.
 pub(crate) fn track_observation<M: RawMutex>(
+    name: &'static str,
     cell: &TrackCell<M>,
     summary: &ServiceSummary,
     issues: &mut Vec<Issue, MAX_ISSUES>,
@@ -545,8 +567,9 @@ pub(crate) fn track_observation<M: RawMutex>(
 ) -> Track {
     let issues_hash = issues_hash(issues);
     let hash = observable_hash(summary, issues_hash);
-    let track = cell.lock(|cell| {
-        let mut track = cell.get().unwrap_or(Track {
+    let (track, previous) = cell.lock(|cell| {
+        let previous = cell.get();
+        let mut track = previous.unwrap_or(Track {
             revision: 1,
             hash,
             issues_hash,
@@ -567,14 +590,77 @@ pub(crate) fn track_observation<M: RawMutex>(
             track.issues_since_ms = now_ms;
         }
         cell.set(Some(track));
-        track
+        (track, previous)
     });
+    log_observation(name, summary, issues.len(), previous, &track);
     for issue in issues.iter_mut() {
         if issue.age_ms.is_none() {
             issue.age_ms = Some(now_ms.saturating_sub(track.issues_since_ms));
         }
     }
     track
+}
+
+fn log_observation(
+    name: &'static str,
+    summary: &ServiceSummary,
+    issues: usize,
+    previous: Option<Track>,
+    track: &Track,
+) {
+    if previous.is_some_and(|previous| previous.revision == track.revision) {
+        return;
+    }
+    log_status_change(
+        name,
+        summary,
+        issues,
+        previous.map(|previous| previous.state),
+        track,
+    );
+}
+
+#[cold]
+#[inline(never)]
+fn log_status_change(
+    name: &'static str,
+    summary: &ServiceSummary,
+    issues: usize,
+    previous: Option<ServiceState>,
+    track: &Track,
+) {
+    if summary.state == ServiceState::Failed && previous != Some(ServiceState::Failed) {
+        log::warn!(
+            target: "service",
+            "Service failed (service={} health={:?} issues={} revision={})",
+            name,
+            summary.health,
+            issues,
+            track.revision
+        );
+        return;
+    }
+    match previous {
+        Some(previous) => log::debug!(
+            target: "service",
+            "State changed: {:?} -> {:?} (service={} health={:?} issues={} revision={})",
+            previous,
+            summary.state,
+            name,
+            summary.health,
+            issues,
+            track.revision
+        ),
+        None => log::debug!(
+            target: "service",
+            "Service first seen: {:?} (service={} health={:?} ready={} issues={})",
+            summary.state,
+            name,
+            summary.health,
+            summary.ready,
+            issues
+        ),
+    }
 }
 
 /// The status schema of a service.

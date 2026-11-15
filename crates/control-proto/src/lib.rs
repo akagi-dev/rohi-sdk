@@ -110,6 +110,7 @@
 //! | status | `GetServicesStatus` (17), `GetServiceSchema` (18), `GetServiceStatus` (19) |
 //! | actions | `ListActions` (20), `GetActionSchema` (21), `InvokeAction` (22) |
 //! | stream | `ReadStream` (23), `CloseStream` (24); the files of a stream come as `action_stream` (25), the answer of `InvokeAction` |
+//! | log tail | `TailLogs` (25), answered by `tail_logs` (26): one cursor paged page of text of at most [`limits::MAX_TAIL_CHUNK`] bytes, no stream |
 //!
 //! **Schemas drive clients.** The protocol knows no device module. A device
 //! publishes descriptors (`FieldDescriptor`, `ConfigFieldDescriptor`,
@@ -201,12 +202,13 @@
 //! | [`limits::MAX_FIELD_VALUE_LEN`] | 32 | string/bytes of status values and action results |
 //! | [`limits::MAX_REASON_LEN`] | 32 | `Error.reason` |
 //! | [`limits::MAX_VARIANT_NAME_LEN`] | 16 | enum variant name |
-//! | [`limits::MAX_ENUMS`], [`limits::MAX_ENUM_VARIANTS`] | 1, 9 | enums per schema, variants per enum |
+//! | [`limits::MAX_ENUMS`], [`limits::MAX_SERVICE_ENUMS`], [`limits::MAX_ENUM_VARIANTS`] | 3, 1, 9 | enums per config schema, enums per service or action schema, variants per enum |
 //! | [`limits::MAX_SCHEMA_FIELDS`], [`limits::MAX_STATUS_FIELDS`] | 20, 20 | service schema and status fields |
 //! | [`limits::MAX_CONFIG_FIELDS`], [`limits::MAX_MUTATIONS`] | 16, 8 | config fields per section, mutations per patch |
 //! | [`limits::MAX_CONFIG_SECTIONS`], [`limits::MAX_SERVICES`], [`limits::MAX_ACTIONS`] | 12, 12, 12 | registry entries listed |
 //! | [`limits::MAX_ISSUES`], [`limits::MAX_ISSUE_DESCRIPTORS`] | 4, 12 | active issues, issue descriptors |
 //! | [`limits::MAX_ACTION_ARGS`], [`limits::MAX_RECORDS`], [`limits::MAX_RECORD_FIELDS`] | 3, 6, 4 | action arguments, result records, fields per record |
+//! | [`limits::MAX_STREAM_CHUNK`], [`limits::MAX_TAIL_CHUNK`] | 512, 512 | bytes of one stream chunk, bytes of text of one tail page |
 //!
 //! The limits are defined once, in the build script of this crate, which also
 //! applies them to the generated types, so the schema and the constants

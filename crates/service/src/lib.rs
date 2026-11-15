@@ -201,12 +201,14 @@
 //! | action arguments ([`MAX_ACTION_ARGS`]) | 3 |
 //! | action records ([`MAX_RECORDS`]) | 6 |
 //! | files of a stream ([`MAX_STREAM_FILES`]), bytes of a stream chunk ([`MAX_STREAM_CHUNK`]) | 24, 512 |
+//! | bytes of text of a tail page ([`MAX_TAIL_CHUNK`]) | 512 |
 //! | fields per record ([`MAX_RECORD_FIELDS`]) | 4 |
 //! | string or bytes status value or action result ([`MAX_FIELD_VALUE_LEN`]) | 32 bytes |
 //! | string or bytes config value or action argument ([`MAX_VALUE_LEN`]) | 64 bytes |
 //! | section, service, action, field or issue name ([`MAX_NAME_LEN`]) | 24 bytes |
 //! | enum variant name ([`MAX_VARIANT_NAME_LEN`]) | 16 bytes |
-//! | enums per section, service or action ([`MAX_ENUMS`]) | 1 |
+//! | enums per config section ([`MAX_ENUMS`]) | 3 |
+//! | enums per service or action ([`MAX_SERVICE_ENUMS`]) | 1 |
 //! | variants per enum ([`MAX_ENUM_VARIANTS`]) | 9 |
 //! | sections or services in a registry ([`MAX_REGISTRY_ENTRIES`]) | 12 |
 
@@ -223,8 +225,8 @@ pub mod status;
 
 pub use action::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, ActionResult,
-    MAX_ACTION_ARGS, MAX_RECORD_FIELDS, MAX_RECORDS, MAX_STREAM_CHUNK, MAX_STREAM_FILES, Records,
-    StreamChunk, StreamFile, StreamInfo,
+    MAX_ACTION_ARGS, MAX_RECORD_FIELDS, MAX_RECORDS, MAX_STREAM_CHUNK, MAX_STREAM_FILES,
+    MAX_TAIL_CHUNK, Records, StreamChunk, StreamFile, StreamInfo, TailPage, TailRequest,
 };
 pub use config::{
     Config, ConfigEntry, ConfigError, ConfigRegistry, ConfigSectionOps, ConfigUpdate, EntryState,
@@ -256,7 +258,11 @@ pub const MAX_VARIANT_NAME_LEN: usize = 16;
 /// Maximum number of enums of a section, service or action. A hard constraint
 /// of the compact control protocol, which describes enum variants once per
 /// schema: a schema that needs more enums does not fit it.
-pub const MAX_ENUMS: usize = 1;
+pub const MAX_ENUMS: usize = 3;
+/// Maximum number of enums of a service or an action. A hard constraint of the
+/// compact control protocol: every service or action schema response carries
+/// them, and the response buffers are sized for the largest of those.
+pub const MAX_SERVICE_ENUMS: usize = 1;
 /// Maximum number of variants of an enum.
 pub const MAX_ENUM_VARIANTS: usize = 9;
 /// Maximum number of status fields of a service.

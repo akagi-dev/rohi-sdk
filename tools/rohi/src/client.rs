@@ -555,6 +555,34 @@ impl<T: ClientTransport> Device<T> {
         }
     }
 
+    /// One page of the tail of a service (its latest log lines, kept in RAM):
+    /// whole lines after `after`, or the oldest ones the device still holds when
+    /// `session` or `after` is 0. Continue with the `cursor` and the `session` of
+    /// the page; an empty page means there is nothing newer.
+    ///
+    /// Nothing is opened on the device: there is no stream to close, and the
+    /// call can be repeated as often as needed.
+    pub async fn tail_logs(&mut self, service: &str, session: u32, after: u64) -> Result<TailPage> {
+        let service_id = self.service_id(service).await?;
+        let call = Call::TailLogs(pb::TailLogsRequest {
+            service_id,
+            session,
+            after,
+        });
+        match self.call(call).await? {
+            Reply::TailLogs(page) => Ok(TailPage {
+                session: page.session,
+                cursor: page.cursor,
+                oldest_sequence: page.oldest_sequence,
+                newest_sequence: page.newest_sequence,
+                reset: page.reset,
+                gap: page.gap,
+                data: page.data.to_vec(),
+            }),
+            other => Err(unexpected(&other)),
+        }
+    }
+
     /// Closes a stream: the device releases what it holds for it.
     pub async fn close_stream(&mut self, stream: &Stream) -> Result<()> {
         let call = Call::CloseStream(pb::CloseStreamRequest {

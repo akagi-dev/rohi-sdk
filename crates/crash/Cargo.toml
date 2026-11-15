@@ -1,0 +1,13 @@
+[package]
+name = "rohi-crash"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Robonomics Open Hardware crash records: a bounded, checksummed panic record for reset-retained memory, and the crash-loop policy"
+
+[badges]
+maintenance = { status = "actively-developed" }

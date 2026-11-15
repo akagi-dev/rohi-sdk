@@ -115,6 +115,12 @@ where
 {
     /// Source talking to the servers of `config` through `net`.
     pub fn new(net: NetworkHandle<'a, B>, delay: D, config: NtpConfig<'a>, pivot: P) -> Self {
+        log::info!(
+            target: "ntp",
+            "Time source ready (servers={} timeout_ms={})",
+            config.servers().len(),
+            config.timeout_ms
+        );
         Self {
             net,
             delay,
@@ -126,10 +132,12 @@ where
 
     async fn exchange(&mut self) -> Result<TimeSample, NtpError> {
         if !self.net.is_ready() {
+            log::debug!(target: "ntp", "Network not ready");
             return Err(NtpError::NetworkUnavailable);
         }
         let host = self.config.servers()[self.next_server];
         let timeout_ms = self.config.timeout_ms;
+        log::debug!(target: "ntp", "Querying server (host={})", host);
 
         let address = with_timeout(
             &mut self.delay,
@@ -141,13 +149,20 @@ where
         .map_err(|error| match error {
             NetError::NetworkUnavailable => NtpError::NetworkUnavailable,
             NetError::Timeout => NtpError::Timeout,
-            _ => NtpError::Resolve,
+            error => {
+                log_net_error("resolve server", host, error);
+                NtpError::Resolve
+            }
         })?;
+        log::debug!(target: "ntp", "Server resolved (addr={} host={})", address, host);
 
         let socket = self.net.udp_socket().map_err(|error| match error {
             NetError::NetworkUnavailable => NtpError::NetworkUnavailable,
             NetError::NoSocketAvailable => NtpError::NoSocket,
-            _ => NtpError::Network,
+            error => {
+                log_net_error("open udp socket", host, error);
+                NtpError::Network
+            }
         })?;
         let socket = Socket {
             socket: &socket,
@@ -164,7 +179,16 @@ where
         .map_err(|_| NtpError::Timeout)?;
 
         match result {
-            Ok(result) => Ok(sample_of(&result)),
+            Ok(result) => {
+                let sample = sample_of(&result);
+                log::debug!(
+                    target: "ntp",
+                    "Server answered (uncertainty_ms={:?} host={})",
+                    sample.uncertainty.map(|u| u.as_millis()),
+                    host
+                );
+                Ok(sample)
+            }
             Err(error) => Err(map_error(error, socket.error.get())),
         }
     }
@@ -188,9 +212,36 @@ where
 
     async fn sample(&mut self) -> Result<TimeSample, NtpError> {
         let result = self.exchange().await;
+        if let Err(error) = result {
+            log_failure(self.config.servers()[self.next_server], error);
+        }
         self.next_server = (self.next_server + 1) % self.config.servers().len();
         result
     }
+}
+
+/// A failed attempt with the server it used. `NetworkUnavailable` is routine
+/// (the loop polls it) and stays at debug level.
+#[cold]
+#[inline(never)]
+fn log_failure(host: &str, error: NtpError) {
+    if error == NtpError::NetworkUnavailable {
+        log::debug!(target: "ntp", "Server not queried (reason={:?} host={})", error, host);
+    } else {
+        log::warn!(target: "ntp", "Server query failed (reason={:?} host={})", error, host);
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn log_net_error(stage: &str, host: &str, error: NetError) {
+    log::debug!(
+        target: "ntp",
+        "Failed to {} (err={:?} host={})",
+        stage,
+        error,
+        host
+    );
 }
 
 /// The server's transmit time moved forward by half the round trip, with half
@@ -219,6 +270,12 @@ fn sample_of(result: &NtpResult) -> TimeSample {
 
 fn map_error(error: sntpc::Error, network: Option<NetError>) -> NtpError {
     use sntpc::Error;
+    log::debug!(
+        target: "ntp",
+        "Exchange failed (err={:?} socket_err={:?})",
+        error,
+        network
+    );
     match error {
         Error::Network if network == Some(NetError::NetworkUnavailable) => {
             NtpError::NetworkUnavailable
@@ -283,6 +340,7 @@ struct Socket<'s, U> {
 
 impl<U: UdpSocket> NtpUdpSocket for Socket<'_, U> {
     async fn send_to(&self, buf: &[u8], addr: SocketAddr) -> sntpc::Result<usize> {
+        log::trace!(target: "ntp", "Sending request (size_b={} addr={})", buf.len(), addr);
         match self.socket.send_to(buf, addr).await {
             Ok(()) => Ok(buf.len()),
             Err(error) => {
@@ -294,7 +352,10 @@ impl<U: UdpSocket> NtpUdpSocket for Socket<'_, U> {
 
     async fn recv_from(&self, buf: &mut [u8]) -> sntpc::Result<(usize, SocketAddr)> {
         match self.socket.recv_from(buf).await {
-            Ok(received) => Ok(received),
+            Ok(received) => {
+                log::trace!(target: "ntp", "Received response (size_b={} addr={})", received.0, received.1);
+                Ok(received)
+            }
             Err(error) => {
                 self.error.set(Some(error));
                 Err(sntpc::Error::Network)

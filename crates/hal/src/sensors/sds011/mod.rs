@@ -232,7 +232,7 @@ impl<U: Read, D: DelayNs> TimedUart<U, D> {
         for _ in 0..DRAIN_MAX_READS {
             match with_timeout(&mut self.delay, DRAIN_TIMEOUT_MS, self.uart.read(&mut buf)).await {
                 Ok(Ok(n)) if n > 0 => {
-                    log::debug!("[sds011] discarded {:02x?}", &buf[..n]);
+                    log::debug!(target: "sensor.sds011", "Stale bytes discarded (count={})", n);
                 }
                 _ => break,
             }
@@ -249,7 +249,11 @@ impl<U: Read, D: DelayNs> Read for TimedUart<U, D> {
         match with_timeout(&mut self.delay, READ_TIMEOUT_MS, self.uart.read(buf)).await {
             Ok(result) => result.map_err(UartError::Io),
             Err(_) => {
-                log::debug!("[sds011] UART read timed out after {} ms", READ_TIMEOUT_MS);
+                log::debug!(
+                    target: "sensor.sds011",
+                    "UART read timed out (timeout_ms={})",
+                    READ_TIMEOUT_MS
+                );
                 Err(UartError::TimedOut)
             }
         }
@@ -336,7 +340,7 @@ impl<U: Read + Write, D: DelayNs + Clone> Sds011<U, D> {
 
     async fn send(&mut self, command: Command) -> Result<(), Error<U::Error>> {
         let packet = protocol::encode(command);
-        log::trace!("[sds011] sending {:?}: {:02x?}", command, packet);
+        log::trace!(target: "sensor.sds011", "Command sent (cmd={:?} bytes={:02x?})", command, packet);
         self.uart.write_all(&packet).await?;
         Ok(())
     }
@@ -352,6 +356,7 @@ impl<U: Read + Write, D: DelayNs + Clone> Sds011<U, D> {
             }
             skipped += 1;
             if skipped > MAX_SKIPPED_BYTES {
+                log::debug!(target: "sensor.sds011", "No frame header found (skipped={})", skipped);
                 return Err(Error::InvalidFrames);
             }
         }
@@ -359,14 +364,14 @@ impl<U: Read + Write, D: DelayNs + Clone> Sds011<U, D> {
         match self.uart.read_exact(&mut buf[1..]).await {
             Ok(()) => {}
             Err(ReadExactError::Other(UartError::TimedOut) | ReadExactError::UnexpectedEof) => {
-                log::debug!("[sds011] truncated frame");
+                log::debug!(target: "sensor.sds011", "Truncated frame");
                 return Err(Error::TruncatedFrame);
             }
             Err(e) => return Err(e.into()),
         }
-        log::trace!("[sds011] received {:02x?}", buf);
+        log::trace!(target: "sensor.sds011", "Frame received (bytes={:02x?})", buf);
         protocol::parse(&buf).map_err(|e| {
-            log::debug!("[sds011] rejected frame {:02x?}: {:?}", buf, e);
+            log::debug!(target: "sensor.sds011", "Frame rejected (err={:?})", e);
             Error::InvalidFrames
         })
     }
@@ -383,12 +388,24 @@ impl<U: Read + Write, D: DelayNs + Clone> Sds011<U, D> {
             match self.read_frame().await {
                 Ok(frame) => match pick(&frame) {
                     Some(value) => return Ok(value),
-                    None => log::debug!("[sds011] unexpected {:?} after {:?}", frame, command),
+                    None => log::debug!(
+                        target: "sensor.sds011",
+                        "Unexpected reply (cmd={:?} id={:#06x} reply={:?})",
+                        command,
+                        frame.id,
+                        frame.reply
+                    ),
                 },
                 Err(Error::InvalidFrames | Error::TruncatedFrame) => {}
                 Err(e) => return Err(e),
             }
         }
+        log::debug!(
+            target: "sensor.sds011",
+            "No reply to command (cmd={:?} frames={})",
+            command,
+            MAX_SKIPPED_FRAMES + 1
+        );
         Err(Error::InvalidFrames)
     }
 
@@ -410,7 +427,8 @@ impl<U: Read + Write, D: DelayNs + Clone> Sds011<U, D> {
             })
             .await?;
         log::debug!(
-            "[sds011] ready: ID {:#06x}, firmware 20{:02}.{:02}.{:02}",
+            target: "sensor.sds011",
+            "Sensor ready (id={:#06x} firmware=20{:02}.{:02}.{:02})",
             id,
             year,
             month,
@@ -429,8 +447,18 @@ impl<U: Read + Write, D: DelayNs + Clone> Sds011<U, D> {
             if let Reply::Measurement { pm25, pm10 } = frame.reply {
                 return Ok((pm25, pm10));
             }
-            log::debug!("[sds011] unexpected {:?} after a query", frame);
+            log::debug!(
+                target: "sensor.sds011",
+                "Unexpected reply after query (id={:#06x} reply={:?})",
+                frame.id,
+                frame.reply
+            );
         }
+        log::debug!(
+            target: "sensor.sds011",
+            "No measurement reply (frames={})",
+            MAX_SKIPPED_FRAMES + 1
+        );
         Err(Error::InvalidFrames)
     }
 
@@ -438,6 +466,12 @@ impl<U: Read + Write, D: DelayNs + Clone> Sds011<U, D> {
     /// over, then aggregate them.
     async fn sample_cycle(&mut self) -> Result<(u16, u16), Error<U::Error>> {
         let target = self.config.sample_count.clamp(1, MAX_SAMPLES);
+        log::debug!(
+            target: "sensor.sds011",
+            "Sampling started (count={} timeout_ms={})",
+            target,
+            self.config.cycle_timeout_ms
+        );
         let mut samples = Samples::new();
         let mut spent_ms = 0u32;
         let mut first = true;
@@ -456,18 +490,28 @@ impl<U: Read + Write, D: DelayNs + Clone> Sds011<U, D> {
                     samples.push(pm25, pm10);
                 }
                 Ok((pm25, pm10)) => {
-                    log::debug!("[sds011] out-of-range sample pm25 {} pm10 {}", pm25, pm10);
+                    log::debug!(
+                        target: "sensor.sds011",
+                        "Out-of-range sample dropped (pm25_ugm3_x10={} pm10_ugm3_x10={})",
+                        pm25,
+                        pm10
+                    );
                 }
-                Err(Error::InvalidFrames) => log::debug!("[sds011] sample dropped"),
+                Err(Error::InvalidFrames) => log::debug!(target: "sensor.sds011", "Sample dropped"),
                 Err(Error::TruncatedFrame) => {
-                    log::debug!("[sds011] sample dropped (truncated)");
+                    log::debug!(target: "sensor.sds011", "Sample dropped: truncated frame");
                     // The wait for the missing bytes used up part of the window.
                     spent_ms = spent_ms.saturating_add(READ_TIMEOUT_MS);
                 }
                 Err(e) => return Err(e),
             }
         }
-        log::debug!("[sds011] {}/{} valid samples", samples.len(), target);
+        log::debug!(
+            target: "sensor.sds011",
+            "Samples collected (valid={} target={})",
+            samples.len(),
+            target
+        );
         if samples.len() < target {
             return Err(Error::InsufficientSamples);
         }
@@ -477,6 +521,7 @@ impl<U: Read + Write, D: DelayNs + Clone> Sds011<U, D> {
     }
 
     async fn go_to_sleep(&mut self) -> Result<(), Error<U::Error>> {
+        log::debug!(target: "sensor.sds011", "Going to sleep");
         self.exchange(Command::Sleep, |f| {
             matches!(f.reply, Reply::Sleep { work: false }).then_some(())
         })
@@ -492,12 +537,21 @@ impl<U: Read + Write, D: DelayNs + Clone> Sds011<U, D> {
                 Ok(()) => break,
                 Err(Error::Uart(_)) => return result.map(|()| None),
                 Err(e) => log::debug!(
-                    "[sds011] wake-up attempt {}/{} failed: {:?}",
+                    target: "sensor.sds011",
+                    "Wake-up attempt failed (attempt={} max={} err={:?})",
                     attempt,
                     INIT_ATTEMPTS,
                     e
                 ),
             }
+        }
+        if let Err(e) = &result {
+            log::debug!(
+                target: "sensor.sds011",
+                "Wake-up failed (attempts={} err={:?})",
+                INIT_ATTEMPTS,
+                e
+            );
         }
         result?;
 
@@ -505,7 +559,7 @@ impl<U: Read + Write, D: DelayNs + Clone> Sds011<U, D> {
             self.go_to_sleep().await?;
             return Ok(None);
         }
-        log::debug!("[sds011] warm-up {} ms", self.config.warmup_ms);
+        log::debug!(target: "sensor.sds011", "Warm-up started (warmup_ms={})", self.config.warmup_ms);
         // The first answer after waking up is not trusted; only silence matters.
         match self.query_sample().await {
             Ok(_) | Err(Error::InvalidFrames | Error::TruncatedFrame) => {}
@@ -520,9 +574,22 @@ impl<U: Read + Write, D: DelayNs + Clone> Sds011<U, D> {
     /// Run a session; on failure tell the sensor to sleep, the fan may still
     /// be running. No reply is awaited, it is discarded in the next session.
     async fn session(&mut self, measure: bool) -> Result<Option<(u16, u16)>, Error<U::Error>> {
+        log::debug!(target: "sensor.sds011", "Session started (measure={})", measure);
         let result = self.run(measure).await;
-        if result.is_err() {
-            let _ = self.uart.write_all(&protocol::encode(Command::Sleep)).await;
+        if let Err(e) = &result {
+            log::debug!(
+                target: "sensor.sds011",
+                "Session failed, putting the sensor to sleep (err={:?})",
+                e
+            );
+            if self
+                .uart
+                .write_all(&protocol::encode(Command::Sleep))
+                .await
+                .is_err()
+            {
+                log::debug!(target: "sensor.sds011", "Sleep command after a failure was not sent");
+            }
         }
         result
     }
@@ -544,7 +611,12 @@ impl<U: Read + Write, D: DelayNs + Clone> SensorDriver for Sds011<U, D> {
         let Some((pm25, pm10)) = self.session(true).await? else {
             return Ok(None);
         };
-        log::debug!("[sds011] result: pm25 {} pm10 {} (0.1 ug/m3)", pm25, pm10);
+        log::debug!(
+            target: "sensor.sds011",
+            "Result measured (pm25_ugm3_x10={} pm10_ugm3_x10={})",
+            pm25,
+            pm10
+        );
         Ok(Some(MeasurementUpdate::Sds011(Sds011Update {
             pm25: MicrogramsPerCubicMeter(f32::from(pm25) / 10.0),
             pm10: MicrogramsPerCubicMeter(f32::from(pm10) / 10.0),

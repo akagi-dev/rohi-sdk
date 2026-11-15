@@ -135,6 +135,7 @@ pub struct SnapshotRequest<'a, M: RawMutex> {
 impl<M: RawMutex> SnapshotRequest<'_, M> {
     /// Answer with a snapshot generated now by the owner.
     pub fn respond(self, snapshot: MeasurementsSnapshot) {
+        log::trace!(target: "sensor", "Responding to snapshot request (seq={})", self.seq);
         self.service.responses.signal((self.seq, snapshot));
     }
 }
@@ -173,23 +174,29 @@ impl<M: RawMutex> MeasurementHandle<'_, M> {
     ///
     /// Cancellation: as for [`snapshot`](Self::snapshot).
     pub async fn try_snapshot(&self) -> Result<MeasurementsSnapshot, MeasurementServiceError> {
-        let mut seq = self
-            .service
-            .call
-            .try_lock()
-            .map_err(|_| MeasurementServiceError::Busy)?;
+        let mut seq = self.service.call.try_lock().map_err(|_| {
+            log::debug!(target: "sensor", "Snapshot request rejected: another one is in flight");
+            MeasurementServiceError::Busy
+        })?;
         Ok(self.call(&mut seq).await)
     }
 
     async fn call(&self, seq: &mut u32) -> MeasurementsSnapshot {
         *seq = seq.wrapping_add(1);
         let seq = *seq;
+        log::trace!(target: "sensor", "Snapshot request sent to the owner (seq={})", seq);
         self.service.requests.send(seq).await;
         loop {
             let (answered, snapshot) = self.service.responses.wait().await;
             if answered == seq {
                 return snapshot;
             }
+            log::trace!(
+                target: "sensor",
+                "Stale snapshot response discarded (seq={} answered={})",
+                seq,
+                answered
+            );
         }
     }
 }

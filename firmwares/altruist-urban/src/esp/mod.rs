@@ -35,7 +35,10 @@ compile_error!(
 pub mod config;
 pub mod connectivity;
 pub mod control;
+pub mod crash;
 pub mod flash;
+#[cfg(feature = "crash-inject")]
+pub mod inject;
 pub mod logging;
 pub mod net;
 pub mod reboot;

@@ -31,14 +31,14 @@ use heapless::Vec;
 use rohi_service::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, EnumDescriptor,
     FIRST_SERVICE_ISSUE, FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES,
-    MAX_STREAM_CHUNK, Service, ServiceHealth, ServiceState, ServiceSummary, Status, StatusWriter,
-    StreamChunk, StreamFile, StreamInfo, Unit, Value, ValueKind, WriteError,
+    MAX_STREAM_CHUNK, MAX_TAIL_CHUNK, Service, ServiceHealth, ServiceState, ServiceSummary, Status,
+    StatusWriter, StreamChunk, StreamFile, StreamInfo, TailPage, TailRequest, Unit, Value,
+    ValueKind, WriteError,
 };
 
-use crate::segment::text::write_line;
-use crate::segment::{Batch, MAX_CHUNK_LEN, SegmentDecoder, file_name};
+use crate::segment::{Batch, MAX_CHUNK_LEN, file_name};
 use crate::storage::{
-    ChunkMeta, Limits, LogStorage, MAX_SEGMENTS, SegmentId, StorageError, StorageStats,
+    ChunkMeta, Limits, LogStorage, MAX_SEGMENTS, Recovery, SegmentId, StorageError, StorageStats,
 };
 use crate::{
     Compression, LEVEL_ENUM, LEVELS, LogClock, LogRecord, LogSink, LogStorageKind, LoggingConfig,
@@ -56,8 +56,8 @@ pub mod issue {
     pub const STORAGE_CORRUPT: u32 = FIRST_SERVICE_ISSUE + 1;
     /// Writing a segment failed; the records of that batch are lost.
     pub const WRITE_FAILED: u32 = FIRST_SERVICE_ISSUE + 2;
-    /// Reading the history failed.
-    pub const READ_FAILED: u32 = FIRST_SERVICE_ISSUE + 3;
+    // `FIRST_SERVICE_ISSUE + 3` was `read_failed`, issued by the removed
+    // `read` action. Ids are never reused.
     /// Records were dropped because the queue was full in the last
     /// [`OVERFLOW_WINDOW_MS`](super::OVERFLOW_WINDOW_MS).
     pub const QUEUE_OVERFLOW: u32 = FIRST_SERVICE_ISSUE + 4;
@@ -93,63 +93,215 @@ pub mod status_field {
 
 /// Action ids of the `logging` service.
 pub mod action {
-    /// Reads records after a sequence, as a stream of text lines.
-    pub const READ: u32 = 1;
+    // Id 1 was `read`, removed with the persistent read path. Ids are never
+    // reused.
     /// Exports the retained segment files, as a stream of files.
     pub const DOWNLOAD: u32 = 2;
     /// Removes the history of the active backend.
     pub const CLEAR: u32 = 3;
+    // Id 4 was `tail`, an action that returned a stream; the tail is the
+    // `TailLogs` request now, see `Action::tail_logs`. Ids are never reused.
 }
 
-/// Field ids of the arguments of `read`.
-pub mod read_arg {
-    /// Records with a sequence above this are returned; 0 starts at the
-    /// oldest record.
-    pub const AFTER: u32 = 1;
-    /// The most records returned, 1 to [`MAX_READ_RECORDS`](super::MAX_READ_RECORDS).
-    pub const LIMIT: u32 = 2;
-}
-
-/// The most records one `read` returns.
-pub const MAX_READ_RECORDS: u64 = 200;
 /// How long an idle stream is kept before its segments are released.
 pub const STREAM_TIMEOUT_MS: u64 = 60_000;
 /// Records were dropped "recently" when the last drop is younger than this.
 pub const OVERFLOW_WINDOW_MS: u64 = 30_000;
-/// The longest name of the file `read` returns.
-pub const MAX_READ_FILE_NAME_LEN: usize = 22;
-/// The reason of the `rejected` error of a `read` that met a damaged segment.
-pub const READ_CORRUPT: &str = "segment_corrupt";
-/// The id of the one file `read` returns.
-pub const READ_FILE_ID: u32 = 1;
-
-/// The name of the file `read` returns for the history `history`:
-/// `records-<history>.log`.
-///
-/// A cursor (the sequence of a record) belongs to one history, the
-/// `history` of the status. The name tells which history the records come
-/// from, so a client that follows the log sees that it was cleared or lost
-/// and starts over instead of waiting for sequences it already passed.
-pub fn read_file_name(history: u32) -> heapless::String<MAX_READ_FILE_NAME_LEN> {
-    use core::fmt::Write;
-    let mut name = heapless::String::new();
-    let _ = write!(name, "records-{history}.log");
-    name
-}
-
-/// The history a file name of `read` belongs to, see [`read_file_name`].
-pub fn history_of_read_file(name: &str) -> Option<u32> {
-    name.strip_prefix("records-")?
-        .strip_suffix(".log")?
-        .parse()
-        .ok()
-}
-
+// Streams that pin segments of the archive: `download`.
 const MAX_STREAMS: usize = 2;
 const RETRY_MS: u64 = 10_000;
+
+// The reports are kept out of line: they run once in a while, and inlined into
+// the task they would only grow its frame.
+#[cold]
+#[inline(never)]
+fn warn_storage(what: &str, error: &dyn core::fmt::Display) {
+    log::warn!(target: "logging", "Cannot {what}: {error}");
+}
+
+#[cold]
+#[inline(never)]
+fn notice_formatted() {
+    log::info!(target: "logging", "No valid format header, the region was formatted");
+}
+
+#[cold]
+#[inline(never)]
+fn notice_started() {
+    log::info!(target: "logging", "Task started");
+}
+
+#[cold]
+#[inline(never)]
+fn notice_applied(config: &LoggingConfig) {
+    log::info!(
+        target: "logging",
+        "Config applied (level={} storage={} compression={} retention_b={} segment_b={} flush_ms={})",
+        config.level.name(),
+        config.storage.name(),
+        config.compression.name(),
+        config.retention_bytes,
+        config.segment_bytes,
+        config.flush_interval_ms,
+    );
+}
+
+#[cold]
+#[inline(never)]
+fn warn_rejected_config(error: &dyn core::fmt::Debug) {
+    log::warn!(target: "logging", "Config rejected (err={error:?})");
+}
+
+#[cold]
+#[inline(never)]
+fn notice_switching(from: LogStorageKind, to: LogStorageKind) {
+    log::info!(
+        target: "logging",
+        "Storage switching (from={} to={})",
+        from.name(),
+        to.name()
+    );
+}
+
+// The first failure is a warning; the retries every few seconds stay out of
+// the persisted levels.
+#[cold]
+#[inline(never)]
+fn warn_unavailable(kind: LogStorageKind, first: bool) {
+    if first {
+        log::warn!(
+            target: "logging",
+            "Storage backend unavailable (kind={} retry_ms={})",
+            kind.name(),
+            RETRY_MS
+        );
+    } else {
+        log::trace!(
+            target: "logging",
+            "Storage backend still unavailable (kind={})",
+            kind.name()
+        );
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn notice_opened(kind: LogStorageKind, recovery: &Recovery) {
+    log::info!(
+        target: "logging",
+        "Storage opened (kind={} segments={} dropped={} corrupted={})",
+        kind.name(),
+        recovery.segments,
+        recovery.dropped,
+        recovery.corrupted,
+    );
+    if recovery.dropped > 0 {
+        log::warn!(
+            target: "logging",
+            "Recovery dropped damaged segments (count={} corrupted={})",
+            recovery.dropped,
+            recovery.corrupted,
+        );
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn notice_recovered(recovery: &Recovery) {
+    log::info!(
+        target: "logging",
+        "Storage recovered after a failed write (segments={} dropped={})",
+        recovery.segments,
+        recovery.dropped,
+    );
+}
+
+#[cold]
+#[inline(never)]
+fn warn_write_failed(what: &str, error: Option<&dyn core::fmt::Display>, lost: u64, retry_ms: u64) {
+    match error {
+        Some(error) => log::warn!(
+            target: "logging",
+            "Write failed at {what}: {error} (lost={lost} retry_ms={retry_ms})"
+        ),
+        None => log::warn!(
+            target: "logging",
+            "Write failed at {what} (lost={lost} retry_ms={retry_ms})"
+        ),
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn trace_stalled(wait_ms: u64) {
+    log::trace!(
+        target: "logging",
+        "Oldest segment pinned by a download, write retried (delay_ms={wait_ms})"
+    );
+}
+
+#[cold]
+#[inline(never)]
+fn debug_released(streams: usize, pins: usize) {
+    log::debug!(target: "logging", "Open streams released (streams={streams} pins={pins})");
+}
+
+#[cold]
+#[inline(never)]
+fn debug_action(what: &str, key: &str, detail: &dyn core::fmt::Debug) {
+    log::debug!(target: "logging", "{what} ({key}={detail:?})");
+}
+
+#[cold]
+#[inline(never)]
+fn warn_action(what: &str, key: &str, detail: &dyn core::fmt::Debug) {
+    log::warn!(target: "logging", "{what} ({key}={detail:?})");
+}
+
+#[cold]
+#[inline(never)]
+// Trace, not debug: a client that follows the tail polls every second, and a
+// record per poll would feed the tail it reads.
+fn trace_tail(session: u32, after: u64, len: usize, reset: bool, gap: u64) {
+    log::trace!(
+        target: "logging",
+        "Tail served (session={session} after={after} size_b={len} reset={reset} gap={gap})"
+    );
+}
+
+#[cold]
+#[inline(never)]
+fn debug_download(segments: usize, stream: u32) {
+    log::debug!(
+        target: "logging",
+        "Segments pinned for a download (count={segments} stream={stream})"
+    );
+}
+
+#[cold]
+#[inline(never)]
+fn notice_cleared() {
+    log::info!(target: "logging", "History cleared");
+}
+
+#[cold]
+#[inline(never)]
+fn notice_boot_records(count: usize) {
+    log::info!(target: "logging", "Records of the previous run written (count={count})");
+}
+
+#[cold]
+#[inline(never)]
+fn warn_boot_records_too_large() {
+    log::warn!(target: "logging", "Records of the previous run too large for one batch, not written");
+}
 const PINNED_RETRY_MS: u64 = 1_000;
 const SWEEP_MS: u64 = 10_000;
 const FLUSH_BYTES: usize = 1_536;
+
+// The shortest page the tail serves: the longest line without a message.
+const MIN_TAIL_CHUNK: usize = crate::segment::text::MIN_WITHIN_LEN;
+const _: () = assert!(MIN_TAIL_CHUNK < MAX_TAIL_CHUNK);
 
 /// Opens the backend a `storage` setting names.
 ///
@@ -163,30 +315,49 @@ pub trait Backends {
 
     /// The storage of `kind`, `None` when it is not available.
     async fn open(&mut self, kind: LogStorageKind) -> Option<Self::Storage>;
+
+    /// The `index`-th record the platform brings from the previous run, from 0
+    /// up to the first `None`: for example the panic that reset the device.
+    ///
+    /// The task asks right after the storage opens and writes the records
+    /// **before** anything of this run, in order, at once, without the queue and
+    /// whatever the level of the section is. They keep the stamps they carry.
+    /// The default has none.
+    ///
+    /// It is called again, with the same answers, until
+    /// [`boot_records_written`](Self::boot_records_written) says they are in
+    /// the storage, so a record must stay available until then. It runs inside
+    /// the logging task: keep it cheap and do not block. A platform that
+    /// returns more records than one batch holds (a few lines of at most
+    /// [`MAX_MESSAGE_LEN`](crate::MAX_MESSAGE_LEN) bytes) gets none written.
+    fn boot_record(&mut self, _index: usize) -> Option<LogRecord> {
+        None
+    }
+
+    /// Every [`boot_record`](Self::boot_record) is in the storage: the platform
+    /// may release them. Not called when the write failed; the records are then
+    /// offered again after the storage recovers, so a failure that came after
+    /// the data was written can duplicate them.
+    fn boot_records_written(&mut self) {}
 }
 
-enum Content<const READ: usize> {
-    Records(Vec<u8, READ>),
-    Files(Vec<(SegmentId, u32), MAX_SEGMENTS>),
-}
-
-struct Open<const READ: usize> {
+// A download: the segments it pins, with their sizes.
+struct Open {
     id: u32,
-    content: Content<READ>,
+    files: Vec<(SegmentId, u32), MAX_SEGMENTS>,
     deadline_ms: u64,
 }
 
-struct State<const READ: usize> {
+struct State {
     config: LoggingConfig,
     started: bool,
     unavailable_since: Option<u64>,
     corrupt_since: Option<u64>,
     write_failed_since: Option<u64>,
-    read_failed_since: Option<u64>,
     stats: StorageStats,
     active: Option<LogStorageKind>,
     lost: u64,
-    streams: Vec<Open<READ>, MAX_STREAMS>,
+    streams: Vec<Open, MAX_STREAMS>,
     next_stream: u32,
     release_all: bool,
 }
@@ -195,21 +366,18 @@ struct State<const READ: usize> {
 // `MAX_STREAMS` streams, so it never overflows.
 type Pins = Vec<SegmentId, { MAX_STREAMS * MAX_SEGMENTS }>;
 
-impl<const READ: usize> State<READ> {
+impl State {
     // Removes the streams `selected` accepts, in place, and returns what they
-    // pinned. Nothing else of a stream is moved or copied: a stream holds up to
-    // `READ` bytes of records.
-    fn release(&mut self, mut selected: impl FnMut(&Open<READ>) -> bool) -> Pins {
+    // pinned.
+    fn release(&mut self, mut selected: impl FnMut(&Open) -> bool) -> Pins {
         let mut pins = Pins::new();
         self.streams.retain_mut(|stream| {
             if !selected(stream) {
                 return true;
             }
-            if let Content::Files(files) = &stream.content {
-                for (id, _) in files {
-                    // Cannot be full, see `Pins`.
-                    let _ = pins.push(*id);
-                }
+            for (id, _) in &stream.files {
+                // Cannot be full, see `Pins`.
+                let _ = pins.push(*id);
             }
             false
         });
@@ -229,6 +397,7 @@ pub(crate) struct Inner<B: Backends> {
     faulted: bool,
     stalled_until_ms: u64,
     carry: Option<LogRecord>,
+    boot_done: bool,
 }
 
 /// The logging runtime: the queue, the storage, the status and the streams.
@@ -239,17 +408,17 @@ pub(crate) struct Inner<B: Backends> {
 /// hands every committed `logging` section to [`apply`](Self::apply).
 ///
 /// `M` is the [`RawMutex`] of the firmware, `C` the [`LogClock`], `B` the
-/// [`Backends`], `N` the capacity of the record queue and `READ` the bytes one
-/// `read` can return.
-pub struct Logging<M: RawMutex, C, B: Backends, const N: usize, const READ: usize> {
-    sink: LogSink<M, C, N>,
-    state: BlockingMutex<M, RefCell<State<READ>>>,
+/// [`Backends`], `N` the capacity of the record queue and `TAIL` the records of
+/// the RAM tail that `tail` serves.
+pub struct Logging<M: RawMutex, C, B: Backends, const N: usize, const TAIL: usize> {
+    sink: LogSink<M, C, N, TAIL>,
+    state: BlockingMutex<M, RefCell<State>>,
     inner: Mutex<M, Inner<B>>,
     wake: Signal<M, ()>,
 }
 
-impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
-    Logging<M, C, B, N, READ>
+impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize>
+    Logging<M, C, B, N, TAIL>
 {
     /// A runtime that persists as `config` says until it is
     /// [applied](Self::apply) another one.
@@ -262,7 +431,6 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
                 unavailable_since: None,
                 corrupt_since: None,
                 write_failed_since: None,
-                read_failed_since: None,
                 stats: StorageStats {
                     capacity_bytes: 0,
                     used_bytes: 0,
@@ -291,18 +459,28 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
                 faulted: false,
                 stalled_until_ms: 0,
                 carry: None,
+                boot_done: false,
             }),
             wake: Signal::new(),
         }
     }
 
     /// The producer side: register it as the `log` backend, or push to it.
-    pub fn sink(&self) -> &LogSink<M, C, N> {
+    pub fn sink(&self) -> &LogSink<M, C, N, TAIL> {
         &self.sink
     }
 
+    /// Identifies this boot to a client of the tail: pass a token that differs
+    /// on every boot and does not depend on storage that can fail (the boot
+    /// counter of the `system` service can; see
+    /// [`set_tail_session`](LogSink::set_tail_session)). Call it before the
+    /// first request; 0 is stored as 1.
+    pub fn set_session(&self, session: u32) {
+        self.sink.set_tail_session(session);
+    }
+
     /// The service for the status and action registries.
-    pub fn service(&self) -> LoggingService<'_, M, C, B, N, READ> {
+    pub fn service(&self) -> LoggingService<'_, M, C, B, N, TAIL> {
         LoggingService(self)
     }
 
@@ -310,19 +488,73 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
     /// next log call, a new backend is opened by the task, and new segments
     /// use the new codec and sizes. Synchronous and cheap.
     pub fn apply(&self, config: LoggingConfig) {
-        if config.validate().is_err() {
+        if let Err(error) = config.validate() {
+            warn_rejected_config(&error);
             return;
         }
         self.sink.set_level(config.level);
         self.state.lock(|state| state.borrow_mut().config = config);
+        notice_applied(&config);
         self.wake.signal(());
+    }
+
+    // Writes the records the platform brought from the previous run, ahead of
+    // the queue, so that the history follows the order of the events. Called by
+    // the task right after the storage opens, with the batch empty; the
+    // platform is told only when the storage has all of them, so what it keeps
+    // until then survives a failed write.
+    async fn write_boot_records(&self, inner: &mut Inner<B>, now: u64) {
+        let ready = inner.storage.is_some()
+            && !inner.faulted
+            && !inner.boot_done
+            && inner.batch.is_empty()
+            && inner.carry.is_none()
+            && now >= inner.stalled_until_ms;
+        if !ready {
+            return;
+        }
+        let first = inner.next_sequence;
+        inner.batch_since_ms = now;
+        let mut index = 0;
+        while let Some(mut record) = inner.backends.boot_record(index) {
+            record.sequence = inner.next_sequence;
+            if inner.batch.push(&record).is_err() {
+                // More than a batch holds: keep what the platform has, write nothing.
+                inner.batch.clear();
+                inner.next_sequence = first;
+                inner.boot_done = true;
+                warn_boot_records_too_large();
+                return;
+            }
+            inner.next_sequence += 1;
+            index += 1;
+        }
+        if index == 0 {
+            inner.boot_done = true;
+            return;
+        }
+        self.flush(inner, now).await;
+        if inner.faulted {
+            // The records are lost for this run; the platform still has them.
+            inner.next_sequence = first;
+            return;
+        }
+        if !inner.batch.is_empty() {
+            // The flush waited for a download: take the records back and try again.
+            inner.batch.clear();
+            inner.next_sequence = first;
+            return;
+        }
+        inner.boot_done = true;
+        inner.backends.boot_records_written();
+        notice_boot_records(index);
     }
 
     fn now(&self) -> u64 {
         self.sink.clock().monotonic_ms()
     }
 
-    fn with<R>(&self, f: impl FnOnce(&mut State<READ>) -> R) -> R {
+    fn with<R>(&self, f: impl FnOnce(&mut State) -> R) -> R {
         self.state.lock(|state| f(&mut state.borrow_mut()))
     }
 
@@ -345,15 +577,21 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
         let wanted = self.config().storage;
         let switching = inner.kind.is_some_and(|kind| kind != wanted);
         if switching {
+            if let Some(kind) = inner.kind {
+                notice_switching(kind, wanted);
+            }
             while self.drain(inner, now) {
                 self.flush(inner, now).await;
             }
             self.flush(inner, now).await;
-            if let Some(storage) = inner.storage.as_mut() {
-                let _ = storage.seal().await;
+            if let Some(storage) = inner.storage.as_mut()
+                && let Err(error) = storage.seal().await
+            {
+                warn_storage("seal before the switch", &error);
             }
             inner.storage = None;
             inner.kind = None;
+            inner.boot_done = false;
             inner.open_codec = None;
             inner.faulted = false;
             self.release_streams(inner, true);
@@ -361,7 +599,6 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
                 state.active = None;
                 state.stats = StorageStats::default();
                 state.write_failed_since = None;
-                state.read_failed_since = None;
                 state.corrupt_since = None;
             });
         }
@@ -375,14 +612,21 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
     async fn open(&self, inner: &mut Inner<B>, kind: LogStorageKind, now: u64) {
         let Some(mut storage) = inner.backends.open(kind).await else {
             inner.retry_at_ms = now + RETRY_MS;
-            self.with(|state| {
+            let first = self.with(|state| {
                 state.started = true;
+                let first = state.unavailable_since.is_none();
                 state.unavailable_since.get_or_insert(now);
+                first
             });
+            warn_unavailable(kind, first);
             return;
         };
         match storage.recover().await {
             Ok(recovery) => {
+                if recovery.formatted {
+                    notice_formatted();
+                }
+                notice_opened(kind, &recovery);
                 if let Some(newest) = recovery.newest_sequence {
                     inner.next_sequence = inner.next_sequence.max(newest + 1);
                 }
@@ -396,7 +640,10 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
                     state.corrupt_since = (recovery.dropped > 0).then_some(now);
                 });
             }
-            Err(_) => {
+            Err(error) => {
+                if self.with(|state| state.unavailable_since.is_none()) {
+                    warn_storage("open", &error);
+                }
                 inner.retry_at_ms = now + RETRY_MS;
                 self.with(|state| {
                     state.started = true;
@@ -418,6 +665,7 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
                 if let Some(newest) = recovery.newest_sequence {
                     inner.next_sequence = inner.next_sequence.max(newest + 1);
                 }
+                notice_recovered(&recovery);
                 inner.faulted = false;
                 inner.open_codec = None;
                 self.with(|state| {
@@ -427,17 +675,25 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
                     }
                 });
             }
-            Err(_) => inner.retry_at_ms = now + RETRY_MS,
+            Err(error) => {
+                warn_storage("recover", &error);
+                inner.retry_at_ms = now + RETRY_MS;
+            }
         }
         self.refresh(inner).await;
     }
 
     fn release_streams(&self, inner: &mut Inner<B>, all: bool) {
         let now = self.now();
-        let pins = self.with(|state| {
+        let (pins, released) = self.with(|state| {
             let all = all || core::mem::take(&mut state.release_all);
-            state.release(|stream| all || stream.deadline_ms <= now)
+            let before = state.streams.len();
+            let pins = state.release(|stream| all || stream.deadline_ms <= now);
+            (pins, before - state.streams.len())
         });
+        if released > 0 {
+            debug_released(released, pins.len());
+        }
         Self::unpin(inner, &pins);
     }
 
@@ -511,9 +767,12 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
                     Err(StorageError::Pinned) => {
                         // A download holds the oldest segment: wait, the batch stays.
                         inner.stalled_until_ms = now + PINNED_RETRY_MS;
+                        trace_stalled(PINNED_RETRY_MS);
                         return;
                     }
-                    Err(_) => return self.write_failed(inner, now),
+                    Err(error) => {
+                        return self.write_failed(inner, now, "begin segment", Some(&error));
+                    }
                 }
                 continue;
             }
@@ -528,8 +787,13 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
                     inner.batch.clear();
                     if storage.open_capacity() < MAX_CHUNK_LEN {
                         // Sealed as soon as it is full, so it can be downloaded.
-                        if storage.seal().await.is_err() {
-                            return self.write_failed(inner, now);
+                        if let Err(error) = storage.seal().await {
+                            return self.write_failed(
+                                inner,
+                                now,
+                                "seal full segment",
+                                Some(&error),
+                            );
                         }
                         inner.open_codec = None;
                     }
@@ -541,17 +805,24 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
                     let _ = storage.seal().await;
                     inner.open_codec = None;
                 }
-                Err(_) => return self.write_failed(inner, now),
+                Err(error) => return self.write_failed(inner, now, "append", Some(&error)),
             }
         }
-        self.write_failed(inner, now);
+        self.write_failed(inner, now, "encode or rotate", None);
     }
 
-    fn write_failed(&self, inner: &mut Inner<B>, now: u64) {
+    fn write_failed(
+        &self,
+        inner: &mut Inner<B>,
+        now: u64,
+        what: &str,
+        error: Option<&dyn core::fmt::Display>,
+    ) {
         let lost = u64::from(inner.batch.records());
         inner.batch.clear();
         inner.faulted = true;
         inner.retry_at_ms = now + RETRY_MS;
+        warn_write_failed(what, error, lost, RETRY_MS);
         self.with(|state| {
             state.lost += lost;
             state.write_failed_since.get_or_insert(now);
@@ -564,6 +835,7 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
         let now = self.now();
         self.release_streams(inner, false);
         self.reconcile(inner, now).await;
+        self.write_boot_records(inner, now).await;
         loop {
             let full = self.drain(inner, now);
             let interval = u64::from(self.config().flush_interval_ms);
@@ -626,6 +898,7 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
     /// Every await point is a place a power loss or a cancel may stop; the
     /// task is meant to run for the life of the device.
     pub async fn run<D: DelayNs>(&self, mut delay: D) -> ! {
+        notice_started();
         loop {
             let (wait, accepting) = {
                 let mut inner = self.inner.lock().await;
@@ -663,12 +936,12 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
 /// The `logging` service of the control plane. Create it with
 /// [`Logging::service`].
 #[derive(Service)]
-pub struct LoggingService<'a, M: RawMutex, C, B: Backends, const N: usize, const READ: usize>(
-    &'a Logging<M, C, B, N, READ>,
+pub struct LoggingService<'a, M: RawMutex, C, B: Backends, const N: usize, const TAIL: usize>(
+    &'a Logging<M, C, B, N, TAIL>,
 );
 
-impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize> Status
-    for LoggingService<'_, M, C, B, N, READ>
+impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize> Status
+    for LoggingService<'_, M, C, B, N, TAIL>
 {
     const VERSION: u16 = 1;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
@@ -713,7 +986,6 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize> S
         IssueDescriptor::new(issue::STORAGE_UNAVAILABLE, "storage_unavailable"),
         IssueDescriptor::new(issue::STORAGE_CORRUPT, "storage_corrupt"),
         IssueDescriptor::new(issue::WRITE_FAILED, "write_failed"),
-        IssueDescriptor::new(issue::READ_FAILED, "read_failed"),
         IssueDescriptor::new(issue::QUEUE_OVERFLOW, "queue_overflow"),
     ];
     // Diagnostics: the device works without them.
@@ -726,7 +998,7 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize> S
                 state.started,
                 state.unavailable_since.is_some(),
                 state.write_failed_since.is_some(),
-                state.corrupt_since.is_some() || state.read_failed_since.is_some(),
+                state.corrupt_since.is_some(),
             )
         });
         if !started {
@@ -750,11 +1022,10 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize> S
             .sink
             .last_drop_ms()
             .filter(|at| now.saturating_sub(*at) <= OVERFLOW_WINDOW_MS);
-        let (unavailable, write, read, corrupt) = logging.with(|state| {
+        let (unavailable, write, corrupt) = logging.with(|state| {
             (
                 state.unavailable_since,
                 state.write_failed_since,
-                state.read_failed_since,
                 state.corrupt_since,
             )
         });
@@ -765,7 +1036,6 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize> S
                 IssueSeverity::Error,
             ),
             (write, issue::WRITE_FAILED, IssueSeverity::Error),
-            (read, issue::READ_FAILED, IssueSeverity::Warning),
             (corrupt, issue::STORAGE_CORRUPT, IssueSeverity::Warning),
             (overflow, issue::QUEUE_OVERFLOW, IssueSeverity::Warning),
         ] {
@@ -813,27 +1083,10 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize> S
     }
 }
 
-/// A [`Bounded`](crate) text buffer for the records of a `read`.
-struct ReadBuffer<'a, const READ: usize>(&'a mut Vec<u8, READ>);
-
-impl<const READ: usize> core::fmt::Write for ReadBuffer<'_, READ> {
-    fn write_str(&mut self, text: &str) -> core::fmt::Result {
-        self.0
-            .extend_from_slice(text.as_bytes())
-            .map_err(|_| core::fmt::Error)
-    }
-}
-
-impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize> Action
-    for LoggingService<'_, M, C, B, N, READ>
+impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize> Action
+    for LoggingService<'_, M, C, B, N, TAIL>
 {
     const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new(action::READ, "read", ActionAccess::Read)
-            .args(&[
-                FieldDescriptor::new(read_arg::AFTER, "after", ValueKind::U64),
-                FieldDescriptor::new(read_arg::LIMIT, "limit", ValueKind::U64),
-            ])
-            .stream(),
         ActionDescriptor::new(action::DOWNLOAD, "download", ActionAccess::Read).stream(),
         ActionDescriptor::new(action::CLEAR, "clear", ActionAccess::Mutate),
     ];
@@ -841,30 +1094,20 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize> A
     async fn invoke(
         &self,
         action: u32,
-        args: &[(u32, Value)],
+        _args: &[(u32, Value)],
         out: &mut impl ActionOutput,
     ) -> Result<(), ActionError> {
         let logging = self.0;
         match action {
-            action::READ => {
-                let number = |id| {
-                    args.iter()
-                        .find(|(field, _)| *field == id)
-                        .and_then(|(_, value)| value.as_u64())
-                };
-                let after = number(read_arg::AFTER).ok_or(ActionError::InvalidArgument)?;
-                let limit = number(read_arg::LIMIT).ok_or(ActionError::InvalidArgument)?;
-                let info = logging
-                    .read(after, limit.clamp(1, MAX_READ_RECORDS))
-                    .await?;
-                out.stream(info).map_err(|_| ActionError::Internal)
-            }
             action::DOWNLOAD => {
                 let info = logging.download().await?;
                 out.stream(info).map_err(|_| ActionError::Internal)
             }
             action::CLEAR => logging.clear().await,
-            _ => Err(ActionError::UnknownAction),
+            _ => {
+                warn_action("Unknown action", "id", &action);
+                Err(ActionError::UnknownAction)
+            }
         }
     }
 
@@ -883,15 +1126,25 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize> A
     }
 
     fn link_lost(&self) {
+        log::debug!(target: "logging", "Link lost, open streams are released");
         self.0.with(|state| state.release_all = true);
         self.0.wake.signal(());
     }
+
+    fn tail_logs(&self, request: TailRequest, buf: &mut [u8]) -> Result<TailPage, ActionError> {
+        self.0.tail_logs(request, buf)
+    }
 }
 
-impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
-    Logging<M, C, B, N, READ>
+impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize>
+    Logging<M, C, B, N, TAIL>
 {
-    fn register(&self, content: Content<READ>) -> Result<u32, ActionError> {
+    // A download holds at most `MAX_STREAMS` streams and is refused with `Busy`
+    // beyond that.
+    fn register_download(
+        &self,
+        files: Vec<(SegmentId, u32), MAX_SEGMENTS>,
+    ) -> Result<u32, ActionError> {
         let deadline_ms = self.now() + STREAM_TIMEOUT_MS;
         self.with(|state| {
             let id = state.next_stream;
@@ -899,111 +1152,37 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
                 .streams
                 .push(Open {
                     id,
-                    content,
+                    files,
                     deadline_ms,
                 })
-                .map_err(|_| ActionError::Busy)?;
+                .map_err(|_| {
+                    debug_action("Stream table is full", "max", &MAX_STREAMS);
+                    ActionError::Busy
+                })?;
             state.next_stream = state.next_stream.checked_add(1).unwrap_or(1);
             Ok(id)
         })
     }
 
-    async fn read(&self, after: u64, limit: u64) -> Result<StreamInfo, ActionError> {
-        let mut inner = self.inner.lock().await;
-        self.commit(&mut inner).await;
-        let mut records = Vec::<u8, READ>::new();
-        let Some(storage) = inner.storage.as_mut() else {
-            return Err(ActionError::Unavailable);
-        };
-        let result = Self::collect(storage, after, limit, &mut records).await;
-        match result {
-            Ok(()) => self.with(|state| state.read_failed_since = None),
-            Err(error) => {
-                let now = self.now();
-                self.with(|state| {
-                    state.read_failed_since.get_or_insert(now);
-                });
-                return Err(error);
-            }
+    // The tail reads the RAM ring and nothing else: no storage, no commit, no
+    // lock shared with the logging task, so it answers while the archive is
+    // busy, faulted or pinned by a download, and a clear of the archive does
+    // not touch it. The page is written straight into `buf`.
+    fn tail_logs(&self, request: TailRequest, buf: &mut [u8]) -> Result<TailPage, ActionError> {
+        let len = buf.len().min(MAX_TAIL_CHUNK);
+        if len < MIN_TAIL_CHUNK {
+            debug_action("Tail rejected: buffer too small", "size_b", &buf.len());
+            return Err(ActionError::InvalidArgument);
         }
-        let size = records.len() as u64;
-        let history = storage
-            .stats()
-            .await
-            .map_err(|_| ActionError::Internal)?
-            .generation;
-        let id = self.register(Content::Records(records))?;
-        let name = read_file_name(history);
-        Self::stream_info(id, &[(READ_FILE_ID, name.as_str(), size)])
-    }
-
-    // Decodes the segments that can hold records above `after`. Stopping at
-    // the limit or at the end of the buffer is the pagination of a read; a
-    // segment that cannot be read to its end is an error.
-    async fn collect(
-        storage: &mut B::Storage,
-        after: u64,
-        limit: u64,
-        records: &mut Vec<u8, READ>,
-    ) -> Result<(), ActionError> {
-        let segments = storage
-            .segments()
-            .await
-            .map_err(|_| ActionError::Internal)?;
-        let mut taken = 0u64;
-        let mut finished = false;
-        for info in segments.iter().filter(|info| info.last_sequence > after) {
-            let mut decoder = SegmentDecoder::new(info.codec);
-            let mut offset = 0u32;
-            let mut piece = [0u8; 256];
-            while !finished {
-                let count = storage
-                    .read(info.id, offset, &mut piece)
-                    .await
-                    .map_err(|_| ActionError::Internal)?;
-                if count == 0 {
-                    break;
-                }
-                offset += count as u32;
-                let pushed = decoder.push(&piece[..count], &mut |record: LogRecord| {
-                    if finished || record.sequence <= after {
-                        return;
-                    }
-                    let before = records.len();
-                    if taken >= limit
-                        || write_line(&mut ReadBuffer(&mut *records), &record).is_err()
-                    {
-                        records.truncate(before);
-                        finished = true;
-                        return;
-                    }
-                    taken += 1;
-                });
-                if pushed.is_err() {
-                    return Err(ActionError::Rejected(READ_CORRUPT));
-                }
-            }
-            if finished {
-                break;
-            }
-            if !decoder.is_complete() {
-                return Err(ActionError::Rejected(READ_CORRUPT));
-            }
-        }
-        Ok(())
-    }
-
-    fn stream_info(id: u32, files: &[(u32, &str, u64)]) -> Result<StreamInfo, ActionError> {
-        let mut list = Vec::new();
-        for (file, name, size) in files {
-            list.push(StreamFile {
-                id: *file,
-                name: heapless::String::try_from(*name).map_err(|_| ActionError::Internal)?,
-                size_bytes: *size,
-            })
-            .map_err(|_| ActionError::Internal)?;
-        }
-        Ok(StreamInfo { id, files: list })
+        let page = self.sink.tail_page(request, &mut buf[..len]);
+        trace_tail(
+            request.session,
+            request.after,
+            page.len,
+            page.reset,
+            page.gap,
+        );
+        Ok(page)
     }
 
     async fn download(&self) -> Result<StreamInfo, ActionError> {
@@ -1011,24 +1190,38 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
         self.commit(&mut inner).await;
         inner.open_codec = None;
         let Some(storage) = inner.storage.as_mut() else {
+            debug_action(
+                "Download rejected: no storage",
+                "err",
+                &ActionError::Unavailable,
+            );
             return Err(ActionError::Unavailable);
         };
         if self.with(|state| state.streams.is_full()) {
+            debug_action(
+                "Download rejected: stream table is full",
+                "max",
+                &MAX_STREAMS,
+            );
             return Err(ActionError::Busy);
         }
         // From now on new records go to a new segment; this download holds the
         // ones that exist.
-        storage.seal().await.map_err(|_| ActionError::Internal)?;
-        let segments = storage
-            .segments()
-            .await
-            .map_err(|_| ActionError::Internal)?;
+        storage.seal().await.map_err(|error| {
+            warn_storage("seal for download", &error);
+            ActionError::Internal
+        })?;
+        let segments = storage.segments().await.map_err(|error| {
+            warn_storage("list segments for download", &error);
+            ActionError::Internal
+        })?;
         let mut pinned = Vec::<(SegmentId, u32), MAX_SEGMENTS>::new();
         for info in &segments {
-            if storage.pin(info.id).await.is_err() {
+            if let Err(error) = storage.pin(info.id).await {
                 for (id, _) in &pinned {
                     storage.unpin(*id);
                 }
+                warn_storage("pin segment for download", &error);
                 return Err(ActionError::Internal);
             }
             let _ = pinned.push((info.id, info.file_len));
@@ -1042,8 +1235,11 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
                 size_bytes: u64::from(info.file_len),
             });
         }
-        match self.register(Content::Files(pinned)) {
-            Ok(id) => Ok(StreamInfo { id, files }),
+        match self.register_download(pinned) {
+            Ok(id) => {
+                debug_download(files.len(), id);
+                Ok(StreamInfo { id, files })
+            }
             Err(error) => {
                 for info in &segments {
                     storage.unpin(info.id);
@@ -1060,9 +1256,24 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
         let now = self.now();
         self.reconcile(&mut inner, now).await;
         if inner.storage.is_none() {
+            debug_action(
+                "Clear rejected: no storage",
+                "err",
+                &ActionError::Unavailable,
+            );
             return Err(ActionError::Unavailable);
         }
-        self.release_streams(&mut inner, true);
+        // A download holds the segments it was given, so it is not cut short: a
+        // stream that expired, or whose link was lost, is released first, and one
+        // that is still open makes the clear wait (`Busy`) before anything is
+        // changed. A download registers its stream under the same lock, so one
+        // cannot start between this check and the erase. The RAM tail is not part
+        // of the archive and is not touched.
+        self.release_streams(&mut inner, false);
+        if self.with(|state| !state.streams.is_empty()) {
+            debug_action("Clear rejected: a download is open", "max", &MAX_STREAMS);
+            return Err(ActionError::Busy);
+        }
         inner.batch.clear();
         // Records still waiting in RAM belong to the history being removed.
         inner.carry = None;
@@ -1071,14 +1282,24 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
         let Some(storage) = inner.storage.as_mut() else {
             return Err(ActionError::Unavailable);
         };
-        storage.clear().await.map_err(|error| match error {
-            StorageError::Busy => ActionError::Busy,
-            _ => ActionError::Internal,
-        })?;
+        if let Err(error) = storage.clear().await {
+            warn_storage("clear", &error);
+            if error != StorageError::Busy {
+                // What the erase left is finished by a recovery.
+                inner.faulted = true;
+                inner.retry_at_ms = now + RETRY_MS;
+            }
+            // The history may be gone already, the status must say what is left.
+            self.refresh(&mut inner).await;
+            return Err(match error {
+                StorageError::Busy => ActionError::Busy,
+                _ => ActionError::Internal,
+            });
+        }
         self.with(|state| {
             state.corrupt_since = None;
-            state.read_failed_since = None;
         });
+        notice_cleared();
         self.refresh(&mut inner).await;
         Ok(())
     }
@@ -1093,91 +1314,70 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
         let now = self.now();
         let limit = buf.len().min(MAX_STREAM_CHUNK);
         let buf = &mut buf[..limit];
-        enum Source {
-            Done(StreamChunk),
-            Segment(SegmentId, u32),
-        }
         let source = self.with(|state| {
-            let entry = state
+            if let Some(entry) = state
                 .streams
                 .iter_mut()
                 .find(|entry| entry.id == stream && entry.deadline_ms > now)
-                .ok_or(ActionError::UnknownStream)?;
-            entry.deadline_ms = now + STREAM_TIMEOUT_MS;
-            match &entry.content {
-                Content::Records(data) => {
-                    if file != READ_FILE_ID {
-                        return Err(ActionError::UnknownStream);
-                    }
-                    let offset =
-                        usize::try_from(offset).map_err(|_| ActionError::InvalidArgument)?;
-                    let rest = data.get(offset..).ok_or(ActionError::InvalidArgument)?;
-                    let len = rest.len().min(buf.len());
-                    buf[..len].copy_from_slice(&rest[..len]);
-                    Ok(Source::Done(StreamChunk {
-                        len,
-                        eof: len == rest.len(),
-                    }))
+            {
+                entry.deadline_ms = now + STREAM_TIMEOUT_MS;
+                let (segment, size) = *entry
+                    .files
+                    .get((file as usize).wrapping_sub(1))
+                    .ok_or(ActionError::UnknownStream)?;
+                if offset > u64::from(size) {
+                    return Err(ActionError::InvalidArgument);
                 }
-                Content::Files(files) => {
-                    let (segment, size) = *files
-                        .get((file as usize).wrapping_sub(1))
-                        .ok_or(ActionError::UnknownStream)?;
-                    if offset > u64::from(size) {
-                        return Err(ActionError::InvalidArgument);
-                    }
-                    Ok(Source::Segment(segment, size))
-                }
+                return Ok((segment, size));
             }
-        })?;
-        match source {
-            Source::Done(chunk) => Ok(chunk),
-            Source::Segment(segment, size) => {
-                let mut inner = self.inner.lock().await;
-                let storage = inner.storage.as_mut().ok_or(ActionError::UnknownStream)?;
-                let wanted = buf.len().min((u64::from(size) - offset) as usize);
-                let len = storage
-                    .read(segment, offset as u32, &mut buf[..wanted])
-                    .await
-                    .map_err(|_| ActionError::Internal)?;
-                Ok(StreamChunk {
-                    len,
-                    eof: offset + len as u64 >= u64::from(size),
-                })
+            Err(ActionError::UnknownStream)
+        });
+        let (segment, size) = match source {
+            Ok(source) => source,
+            Err(error) => {
+                debug_action("Stream read rejected", "err", &error);
+                return Err(error);
             }
-        }
+        };
+        let mut inner = self.inner.lock().await;
+        let Some(storage) = inner.storage.as_mut() else {
+            debug_action("Stream read rejected: no storage", "stream", &stream);
+            return Err(ActionError::UnknownStream);
+        };
+        let wanted = buf.len().min((u64::from(size) - offset) as usize);
+        let len = storage
+            .read(segment, offset as u32, &mut buf[..wanted])
+            .await
+            .map_err(|error| {
+                warn_storage("read stream segment", &error);
+                ActionError::Internal
+            })?;
+        Ok(StreamChunk {
+            len,
+            eof: offset + len as u64 >= u64::from(size),
+        })
     }
 
     async fn close_stream(&self, stream: u32) -> Result<(), ActionError> {
-        let pinning = self.with(|state| {
-            state
-                .streams
-                .iter()
-                .find(|entry| entry.id == stream)
-                .map(|entry| matches!(entry.content, Content::Files(_)))
-        });
-        match pinning {
-            None => return Err(ActionError::UnknownStream),
-            Some(false) => {
-                self.with(|state| state.release(|entry| entry.id == stream));
-            }
-            Some(true) => {
-                // The storage first, then the stream is removed and its segments
-                // are unpinned without waiting in between: a caller that gives up
-                // while waiting leaves the stream to expire, with its pins.
-                let mut inner = self.inner.lock().await;
-                let pins = self.with(|state| state.release(|entry| entry.id == stream));
-                Self::unpin(&mut inner, &pins);
-            }
+        if !self.with(|state| state.streams.iter().any(|entry| entry.id == stream)) {
+            debug_action("Stream close rejected: unknown stream", "stream", &stream);
+            return Err(ActionError::UnknownStream);
         }
+        // The storage first, then the stream is removed and its segments
+        // are unpinned without waiting in between: a caller that gives up
+        // while waiting leaves the stream to expire, with its pins.
+        let mut inner = self.inner.lock().await;
+        let pins = self.with(|state| state.release(|entry| entry.id == stream));
+        Self::unpin(&mut inner, &pins);
+        debug_action("Stream closed", "stream", &stream);
         self.wake.signal(());
         Ok(())
     }
 }
 
 #[cfg(test)]
-impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
-    Logging<M, C, B, N, READ>
+impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize>
+    Logging<M, C, B, N, TAIL>
 {
     /// One pass of the task, for tests.
     pub(crate) async fn step(&self) {
@@ -1186,16 +1386,7 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
     }
 
     pub(crate) fn pins(&self) -> usize {
-        self.with(|state| {
-            state
-                .streams
-                .iter()
-                .map(|stream| match &stream.content {
-                    Content::Files(files) => files.len(),
-                    Content::Records(_) => 0,
-                })
-                .sum()
-        })
+        self.with(|state| state.streams.iter().map(|stream| stream.files.len()).sum())
     }
 
     pub(crate) fn open_streams(&self) -> usize {
@@ -1214,6 +1405,49 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
                     .unwrap_or(0),
                 None => 0,
             }
+        })
+    }
+}
+
+#[cfg(test)]
+impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize>
+    Logging<M, C, B, N, TAIL>
+{
+    /// The archived records above `after`, decoded from the segments, at most
+    /// `limit` of them; `None` when a segment does not decode. What the tests
+    /// compare the archive with, now that no action reads it.
+    pub(crate) fn archive(&self, after: u64, limit: u64) -> Option<std::vec::Vec<LogRecord>> {
+        use crate::segment::SegmentDecoder;
+        embassy_futures::block_on(async {
+            let mut inner = self.inner.lock().await;
+            self.commit(&mut inner).await;
+            self.refresh(&mut inner).await;
+            let storage = inner.storage.as_mut()?;
+            let segments = storage.segments().await.ok()?;
+            let mut records = std::vec::Vec::new();
+            for info in segments.iter().filter(|info| info.last_sequence > after) {
+                let mut decoder = SegmentDecoder::new(info.codec);
+                let mut offset = 0u32;
+                let mut piece = [0u8; 256];
+                loop {
+                    let count = storage.read(info.id, offset, &mut piece).await.ok()?;
+                    if count == 0 {
+                        break;
+                    }
+                    offset += count as u32;
+                    decoder
+                        .push(&piece[..count], &mut |record: LogRecord| {
+                            if record.sequence > after && (records.len() as u64) < limit {
+                                records.push(record);
+                            }
+                        })
+                        .ok()?;
+                }
+                if !decoder.is_complete() {
+                    return None;
+                }
+            }
+            Some(records)
         })
     }
 }

@@ -22,6 +22,22 @@ symbol = "__control_task_task"
 max_growth = 3200
 reason = "the Controller request path was split; its 30 KB frame became 1.7 KB or less"
 
+# The crash records and the boot records of the logging pull request.
+[[regression.approved_frame_growth]]
+symbol = "__logging_task_task"
+max_growth = 768
+reason = "the log task poll now writes the boot records of the previous crash (Backends::boot_record)"
+
+[[regression.approved_frame_growth]]
+symbol = "rust_begin_unwind"
+max_growth = 640
+reason = "the panic handler now stores the crash in the retained slot (rohi_crash_esp::on_panic)"
+
+[[regression.approved_frame_growth]]
+symbol = "registry::observe::<rohi_hal::sensors_service::SensorsService"
+max_growth = 768
+reason = "the sensors status observer is laid out differently after the logging changes; 2 160 B stays far below max_frame"
+
 [chips.esp32c3]
 max_data = 30000
 max_bss = 206000

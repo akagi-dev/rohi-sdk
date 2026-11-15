@@ -17,31 +17,30 @@
 ///////////////////////////////////////////////////////////////////////////////
 //! `rohi logs`: the device log, as the actions of the `logging` service.
 //!
-//! This module is a convenience over the generic action interface and knows
-//! nothing the device does not tell it: `read` returns a stream of text lines
-//! after a sequence number, `download` a stream of the retained segment
-//! files, `clear` nothing. `rohi action logging ...` reaches the same
-//! actions.
+//! This module is a convenience over the generic interfaces of the device and
+//! knows nothing the device does not tell it: the tail is the `TailLogs` request,
+//! one bounded page of the latest records the device keeps in RAM per call (no
+//! stream, nothing opened on the device), `download` a stream of the retained
+//! segment files, `clear` nothing. `rohi action logging ...` reaches the actions.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+use rohi_logging::LogRecord;
 use rohi_logging::segment::text::{parse_line, write_line};
-use rohi_logging::{LogRecord, history_of_read_file};
 use serde::Serialize;
 
 use super::args::LogsAction;
 use super::diagnostic::CliError;
 use super::{Ctx, OutputFormat, dto};
-use crate::model::{
-    ActionOutcome, ErrorCode, FieldValue, ServiceSchema, ServiceStatus, Stream, Value,
-};
+use crate::model::{ActionOutcome, Stream};
 use crate::{ClientTransport, Device, Error};
 
 const SERVICE: &str = "logging";
-/// Records asked for in one `read`; the device returns fewer when its answer
-/// is full and the next page continues after the last record.
-const PAGE: u64 = 200;
+/// Pages one snapshot is read in at most: far more than the RAM tail of any
+/// device holds, so a device that logs faster than it is read cannot keep one
+/// call going for ever.
+const MAX_PAGES: usize = 64;
 
 pub async fn run<T: ClientTransport>(
     device: &mut Device<T>,
@@ -74,6 +73,8 @@ struct RecordDto {
 
 #[derive(Serialize)]
 struct Records {
+    /// Identifies the boot of the device the sequences belong to.
+    session: u32,
     records: Vec<RecordDto>,
 }
 
@@ -104,174 +105,44 @@ fn text_of(records: &[LogRecord]) -> String {
     text
 }
 
-fn field_id(schema: &ServiceSchema, name: &str) -> Option<u32> {
-    schema
-        .fields
-        .iter()
-        .find(|field| field.name == name)
-        .map(|field| field.id)
-}
-
-fn status_u64(schema: &ServiceSchema, status: &ServiceStatus, name: &str) -> Option<u64> {
-    let id = field_id(schema, name)?;
-    status
-        .fields
-        .iter()
-        .find(|field| field.field_id == id)
-        .and_then(|field| match field.value {
-            Value::U64(value) => Some(value),
-            _ => None,
-        })
-}
-
-/// What a read returned: the history the records belong to, when the device
-/// says, and the records.
-struct Page {
-    history: Option<u32>,
+/// What one `TailLogs` page held.
+struct Tailed {
+    /// Identifies the boot of the device the sequences belong to.
+    session: u32,
+    /// The request did not belong to this boot: `records` start over.
+    reset: bool,
+    /// Lines the device overwrote before this page could be read.
+    gap: u64,
+    /// The cursor of the next request.
+    cursor: u64,
+    /// The newest sequence the device holds.
+    newest: u64,
+    /// Oldest first, by tail sequence.
     records: Vec<LogRecord>,
 }
 
-/// One `logging.read`: up to `limit` records after `after`, oldest first.
-async fn read_page<T: ClientTransport>(
+/// One `TailLogs` page: the records after `after` of the boot `session`; the
+/// oldest ones the device holds when `session` or `after` is 0.
+async fn tail<T: ClientTransport>(
     device: &mut Device<T>,
+    session: u32,
     after: u64,
-    limit: u64,
-) -> Result<Page, CliError> {
-    for attempt in 0..2 {
-        let schema = device.action_schema(SERVICE, "read").await?;
-        let mut args = Vec::new();
-        for (name, value) in [("after", after), ("limit", limit)] {
-            let field = schema
-                .args
-                .iter()
-                .find(|field| field.name == name)
-                .ok_or_else(|| Error::Protocol(format!("logging.read has no {name} argument")))?;
-            args.push(FieldValue {
-                field_id: field.id,
-                value: Value::U64(value),
-            });
-        }
-        let stream = match device.invoke_outcome(SERVICE, "read", &args).await? {
-            ActionOutcome::Stream(stream) => stream,
-            ActionOutcome::Records(_) => {
-                return Err(Error::Protocol("logging.read returned records".into()).into());
-            }
-        };
-        let history = stream
-            .files
-            .first()
-            .and_then(|file| history_of_read_file(&file.name));
-        let data = read_all(device, &stream).await;
-        // Whatever happened, release the stream; its content is already here.
-        let _ = device.close_stream(&stream).await;
-        let data = match data {
-            Ok(data) => data,
-            // A concurrent clear can revoke the stream after `read` returned it.
-            Err(CliError::Device(Error::Device(ErrorCode::NotFound))) if attempt == 0 => continue,
-            Err(error) => return Err(error),
-        };
-        let text = String::from_utf8_lossy(&data).into_owned();
-        // A line that is not a record is skipped, never trusted.
-        return Ok(Page {
-            history,
-            records: text.lines().filter_map(parse_line).collect(),
-        });
-    }
-    Err(Error::Device(ErrorCode::NotFound).into())
+) -> Result<Tailed, CliError> {
+    let page = device.tail_logs(SERVICE, session, after).await?;
+    let text = String::from_utf8_lossy(&page.data);
+    // A line that is not a record is skipped, never trusted.
+    let records: Vec<_> = text.lines().filter_map(parse_line).collect();
+    Ok(Tailed {
+        session: page.session,
+        reset: page.reset,
+        gap: page.gap,
+        cursor: page.cursor,
+        newest: page.newest_sequence,
+        records,
+    })
 }
 
-/// The first file of a stream, whole.
-async fn read_all<T: ClientTransport>(
-    device: &mut Device<T>,
-    stream: &Stream,
-) -> Result<Vec<u8>, CliError> {
-    let Some(file) = stream.files.first() else {
-        return Ok(Vec::new());
-    };
-    let mut data = Vec::new();
-    loop {
-        let chunk = device
-            .read_stream(stream, file.id, data.len() as u64)
-            .await?;
-        data.extend_from_slice(&chunk.data);
-        if chunk.eof {
-            return Ok(data);
-        }
-        if chunk.data.is_empty() {
-            return Err(Error::Protocol("the device returned an empty chunk".into()).into());
-        }
-    }
-}
-
-/// Every record after `after`, a page at a time, and the history they are
-/// from. A history that changes while reading (the log was cleared) restarts
-/// the read from the beginning of the new one.
-async fn read_after<T: ClientTransport>(
-    device: &mut Device<T>,
-    mut after: u64,
-) -> Result<(Option<u32>, Vec<LogRecord>), CliError> {
-    let mut all = Vec::new();
-    let mut history = None;
-    loop {
-        let page = read_page(device, after, PAGE).await?;
-        if page.history.is_some() && history.is_some() && page.history != history {
-            history = page.history;
-            all.clear();
-            after = 0;
-            continue;
-        }
-        history = history.or(page.history);
-        let Some(last) = page.records.last().map(|record| record.sequence) else {
-            return Ok((history, all));
-        };
-        if last <= after {
-            return Err(Error::Protocol("the log did not move forward".into()).into());
-        }
-        after = last;
-        all.extend(page.records);
-    }
-}
-
-/// The latest `count` records, the sequence to continue after and the history
-/// they belong to.
-///
-/// The device keeps sequence numbers, not counts, so the window is placed by
-/// the newest sequence the status reports and widened while it holds fewer
-/// than `count` records and the oldest retained record is not reached.
-async fn latest<T: ClientTransport>(
-    device: &mut Device<T>,
-    count: usize,
-) -> Result<(Vec<LogRecord>, u64, Option<u32>), CliError> {
-    // The device writes records in batches: what was logged a moment ago may
-    // still be waiting. A read commits it, and this one asks for nothing
-    // (no record has a sequence above the maximum), so that the status below
-    // describes everything the device has accepted.
-    read_page(device, u64::MAX, 1).await?;
-    let schema = device.service_schema(SERVICE).await?;
-    let status = device.service_status(SERVICE).await?;
-    let history = status_u64(&schema, &status, "history").and_then(|id| u32::try_from(id).ok());
-    let Some(newest) = status_u64(&schema, &status, "newest_sequence") else {
-        return Ok((Vec::new(), 0, history));
-    };
-    if count == 0 {
-        return Ok((Vec::new(), newest, history));
-    }
-    let oldest = status_u64(&schema, &status, "oldest_sequence").unwrap_or(1);
-    let mut want = count as u64;
-    loop {
-        let after = newest.saturating_sub(want);
-        let (read_history, mut records) = read_after(device, after).await?;
-        if records.len() >= count || after < oldest || after == 0 {
-            let cursor = records.last().map_or(newest, |record| record.sequence);
-            let skip = records.len().saturating_sub(count);
-            records.drain(..skip);
-            return Ok((records, cursor, read_history.or(history)));
-        }
-        want = want.saturating_mul(2);
-    }
-}
-
-fn print(records: &[LogRecord], ctx: &mut Ctx, follow: bool) -> Result<(), CliError> {
+fn print(session: u32, records: &[LogRecord], ctx: &mut Ctx, follow: bool) -> Result<(), CliError> {
     if records.is_empty() {
         return Ok(());
     }
@@ -281,6 +152,7 @@ fn print(records: &[LogRecord], ctx: &mut Ctx, follow: bool) -> Result<(), CliEr
         OutputFormat::Json if follow => {
             for record in records {
                 let mut line = serde_json::to_string(&dto::Versioned::new(Records {
+                    session,
                     records: vec![dto_of(record)],
                 }))
                 .map_err(|error| CliError::Output(std::io::Error::other(error)))?;
@@ -299,42 +171,87 @@ async fn show<T: ClientTransport>(
     follow: bool,
     ctx: &mut Ctx,
 ) -> Result<(), CliError> {
-    let (records, mut cursor, mut history) = latest(device, lines).await?;
-    if follow {
-        print(&records, ctx, true)?;
-    } else {
+    // The snapshot: the device holds a few records, and a page carries a few
+    // of them, so it is read page by page up to the newest record it held when
+    // it was first asked. `-n` keeps the last ones.
+    let first = tail(device, 0, 0).await?;
+    let session = first.session;
+    let newest = first.newest;
+    let mut cursor = first.cursor;
+    let mut records = first.records;
+    for _ in 1..MAX_PAGES {
+        if cursor >= newest || records.is_empty() {
+            break;
+        }
+        let page = tail(device, session, cursor).await?;
+        if page.reset {
+            // The device restarted meanwhile: what it holds now is the snapshot.
+            records = page.records;
+            cursor = page.cursor;
+            continue;
+        }
+        if page.records.is_empty() {
+            break;
+        }
+        cursor = page.cursor;
+        records.extend(page.records);
+    }
+    let skip = records.len().saturating_sub(lines);
+    records.drain(..skip);
+    if !follow {
         if records.is_empty() {
             ctx.io.note("No log records\n");
         }
         return ctx.io.emit(
             ctx.format,
             &dto::Versioned::new(Records {
+                session,
                 records: records.iter().map(dto_of).collect(),
             }),
             || text_of(&records),
         );
     }
+    print(session, &records, ctx, true)?;
+    follow_tail(device, session, &mut cursor, ctx).await
+}
+
+// Asks for what is new, forever (or `watch_limit` times in tests). The
+// session and the cursor of the device are the only state; the device keeps
+// nothing for the client.
+async fn follow_tail<T: ClientTransport>(
+    device: &mut Device<T>,
+    mut session: u32,
+    cursor: &mut u64,
+    ctx: &mut Ctx,
+) -> Result<(), CliError> {
     let mut polls = 0;
     loop {
         if ctx.watch_limit.is_some_and(|limit| polls >= limit) {
             return Ok(());
         }
         tokio::time::sleep(ctx.follow_interval).await;
-        let (now, mut new) = read_after(device, cursor).await?;
-        if history.is_some() && now.is_some() && now != history {
-            // Cleared or lost on the device: the cursor means nothing in the
-            // new history, so it is read from its start.
-            ctx.io
-                .note("The log history was cleared or reset on the device\n");
-            history = now;
-            new = read_after(device, 0).await?.1;
-        } else {
-            history = history.or(now);
+        // A page carries what fits 512 bytes; ask again until nothing is new.
+        loop {
+            let page = tail(device, session, *cursor).await?;
+            if page.reset {
+                ctx.io
+                    .note("The device restarted: the log it keeps in RAM starts over\n");
+            } else if page.gap > 0 {
+                ctx.io.note(&format!(
+                    "{} log record(s) were overwritten on the device before they could be read\n",
+                    page.gap
+                ));
+            }
+            session = page.session;
+            if page.records.is_empty() && page.cursor == *cursor {
+                break;
+            }
+            *cursor = page.cursor;
+            print(session, &page.records, ctx, true)?;
+            if page.records.is_empty() {
+                break;
+            }
         }
-        if let Some(last) = new.last() {
-            cursor = last.sequence;
-        }
-        print(&new, ctx, true)?;
         polls += 1;
     }
 }

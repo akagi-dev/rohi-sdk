@@ -1567,3 +1567,157 @@ fn a_new_session_cannot_use_the_streams_of_a_lost_link() {
         pb::ErrorCode::NotFound
     );
 }
+
+#[derive(Service)]
+#[service(name = "tailing")]
+struct Tailing {
+    served: Cell<u32>,
+    oversized: Cell<bool>,
+}
+
+const TAIL_TEXT: &[u8] = b"1 5 - INFO t: one\n2 6 - INFO t: two\n";
+
+impl Action for Tailing {
+    const ACTIONS: &'static [ActionDescriptor] = &[];
+
+    async fn invoke(
+        &self,
+        _: u32,
+        _: &[(u32, Value)],
+        _: &mut impl ActionOutput,
+    ) -> Result<(), ActionError> {
+        Err(ActionError::UnknownAction)
+    }
+
+    fn tail_logs(
+        &self,
+        request: rohi_service::TailRequest,
+        buf: &mut [u8],
+    ) -> Result<rohi_service::TailPage, ActionError> {
+        self.served.set(self.served.get() + 1);
+        assert_eq!(buf.len(), limits::MAX_TAIL_CHUNK);
+        let len = if self.oversized.get() {
+            buf.len() + 1
+        } else {
+            buf[..TAIL_TEXT.len()].copy_from_slice(TAIL_TEXT);
+            TAIL_TEXT.len()
+        };
+        Ok(rohi_service::TailPage {
+            session: if request.session == 0 {
+                7
+            } else {
+                request.session
+            },
+            len,
+            cursor: request.after + 2,
+            oldest_sequence: 1,
+            newest_sequence: request.after + 2,
+            reset: request.session == 99,
+            gap: 3,
+        })
+    }
+}
+
+fn tail_request(service_id: u32, session: u32, after: u64) -> Call {
+    Call::TailLogs(pb::TailLogsRequest {
+        service_id,
+        session,
+        after,
+    })
+}
+
+#[test]
+fn a_tail_page_is_one_request_and_one_reply_without_a_stream() {
+    let tailing = Tailing {
+        served: Cell::new(0),
+        oversized: Cell::new(false),
+    };
+    let controller = Controller::new(
+        Device::new(INFO, uptime, (), (), (&tailing,)),
+        RequireEncryption,
+    );
+    // Reads are open on a plain link: a tail page needs no encryption.
+    let Reply::TailLogs(page) = call(&controller, &PLAIN, tail_request(Tailing::ID, 0, 10)) else {
+        panic!("not a tail page");
+    };
+    assert_eq!(page.data.as_slice(), TAIL_TEXT);
+    assert_eq!(
+        (
+            page.session,
+            page.cursor,
+            page.oldest_sequence,
+            page.newest_sequence
+        ),
+        (7, 12, 1, 12)
+    );
+    assert_eq!((page.reset, page.gap), (false, 3));
+    // The reply of another session is flagged by the service, as it set it.
+    let Reply::TailLogs(page) = call(&controller, &PLAIN, tail_request(Tailing::ID, 99, 0)) else {
+        panic!("not a tail page");
+    };
+    assert!(page.reset);
+    assert_eq!(tailing.served.get(), 2);
+    // Nothing was registered: no stream is open, whatever the client does next.
+    assert_eq!(
+        error_code(&call(
+            &controller,
+            &PLAIN,
+            Call::ReadStream(pb::ReadStreamRequest {
+                service_id: Tailing::ID,
+                stream_id: 1,
+                file_id: 1,
+                offset: 0,
+            })
+        )),
+        pb::ErrorCode::NotFound
+    );
+}
+
+#[test]
+fn a_tail_page_is_refused_for_a_service_without_a_tail_or_an_oversized_page() {
+    let tailing = Tailing {
+        served: Cell::new(0),
+        oversized: Cell::new(false),
+    };
+    let files = files();
+    let controller = Controller::new(
+        Device::new(INFO, uptime, (), (), (&tailing, &files)),
+        OpenPolicy,
+    );
+    // The service has actions but no tail.
+    assert_eq!(
+        error_code(&call(&controller, &PLAIN, tail_request(Files::ID, 0, 0))),
+        pb::ErrorCode::NotFound
+    );
+    // No such service.
+    assert_eq!(
+        error_code(&call(&controller, &PLAIN, tail_request(12345, 0, 0))),
+        pb::ErrorCode::NotFound
+    );
+    // A service that answers more than a page is an internal error, not a
+    // truncated reply.
+    tailing.oversized.set(true);
+    assert_eq!(
+        error_code(&call(&controller, &PLAIN, tail_request(Tailing::ID, 0, 0))),
+        pb::ErrorCode::Internal
+    );
+}
+
+#[test]
+fn a_status_only_service_has_no_tail() {
+    let radio = radio();
+    let controller = Controller::new(
+        Device::new(
+            INFO,
+            uptime,
+            (),
+            Statuses::<NoopRawMutex, _>::new((&radio,)),
+            (),
+        ),
+        OpenPolicy,
+    );
+    assert_eq!(
+        error_code(&call(&controller, &PLAIN, tail_request(RADIO, 0, 0))),
+        pb::ErrorCode::NotSupported
+    );
+}

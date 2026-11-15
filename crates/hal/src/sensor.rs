@@ -108,6 +108,19 @@ impl SensorKind {
     pub const fn index(self) -> usize {
         self as usize
     }
+
+    /// Lowercase `[tag]` of log messages, the same as the driver of the sensor uses.
+    pub(crate) const fn tag(self) -> &'static str {
+        match self {
+            SensorKind::Bmx280 => "bmx280",
+            SensorKind::Scd4x => "scd4x",
+            SensorKind::Sds011 => "sds011",
+            SensorKind::Microphone => "noise",
+            SensorKind::Zmod4510 => "zmod4510",
+            SensorKind::Ags3871 => "ags3871",
+            SensorKind::RadSens => "radsens",
+        }
+    }
 }
 
 /// Runtime state of a sensor, separate from its measurement values.

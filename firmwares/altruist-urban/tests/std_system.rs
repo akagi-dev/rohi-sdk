@@ -24,10 +24,9 @@ mod common;
 use std::time::Duration;
 
 use common::*;
-use rohi::model::{ActionAccess, ActionOutcome, FieldValue, Stream, Value};
+use rohi::model::{ActionAccess, FieldValue, Value};
 use rohi::{Device, TcpLink};
 use rohi_sdk::config::{ConfigStore, SectionId};
-use rohi_sdk::logging::read_arg;
 use rohi_sdk::sim::storage::FileFlash;
 use tempfile::TempDir;
 
@@ -62,41 +61,9 @@ async fn provisioned(device: &mut Device<TcpLink>) -> bool {
     )
 }
 
-/// The text of the retained log records, read through the stream plane.
+/// Every retained record of the archive, with the sequence of the archive.
 async fn log_text(device: &mut Device<TcpLink>) -> String {
-    let arg = |field_id, value| FieldValue {
-        field_id,
-        value: Value::U64(value),
-    };
-    let outcome = device
-        .invoke_outcome(
-            "logging",
-            "read",
-            &[arg(read_arg::AFTER, 0), arg(read_arg::LIMIT, 500)],
-        )
-        .await
-        .unwrap();
-    let ActionOutcome::Stream(stream) = outcome else {
-        panic!("logging.read returned records");
-    };
-    let data = read_file(device, &stream).await;
-    device.close_stream(&stream).await.unwrap();
-    String::from_utf8(data).unwrap()
-}
-
-async fn read_file(device: &mut Device<TcpLink>, stream: &Stream) -> Vec<u8> {
-    let file = stream.files[0].id;
-    let mut data = Vec::new();
-    loop {
-        let chunk = device
-            .read_stream(stream, file, data.len() as u64)
-            .await
-            .unwrap();
-        data.extend_from_slice(&chunk.data);
-        if chunk.eof {
-            return data;
-        }
-    }
+    archive_text(device).await
 }
 
 /// The sections stored in the configuration flash file of a stopped device.
@@ -106,13 +73,14 @@ fn stored_sections(storage: &std::path::Path) -> usize {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn system_is_an_action_only_service_with_explicit_access() {
+async fn system_has_explicit_access_and_a_status_without_crash_data_on_the_host() {
     let sim = Sim::start(&Launch::new());
     let mut device = sim.device().await;
 
-    // No status: the service is not in the list of services.
+    // The status exists for the reset and crash report of a device with
+    // retained memory; the host has none, so it has no fields.
     let services = device.services().await.unwrap();
-    assert!(services.iter().all(|service| service.name != "system"));
+    assert!(services.iter().any(|service| service.name == "system"));
 
     let actions = device.actions().await.unwrap();
     let system: Vec<_> = actions
@@ -185,12 +153,17 @@ async fn factory_reset_formats_the_configuration_and_keeps_the_log_and_the_proce
     drop(device);
     assert!(sim.stop().success());
 
-    // The whole region was formatted: not even the unknown section is left.
-    assert_eq!(stored_sections(&storage), 0);
+    // The whole region was formatted: not even the unknown section is left. Only
+    // the boot counter was written again, so that it only grows.
+    assert_eq!(stored_sections(&storage), 1);
 
-    // A restart finds the factory state.
+    // A restart finds the factory state, and counts one more start.
     let sim = Sim::start(&Launch::new().storage(&storage));
     let mut device = sim.device().await;
+    assert_eq!(
+        fields(&mut device, "system").await.get("boot_count"),
+        Some(&Value::U64(2))
+    );
     assert_eq!(config_text(&mut device, "wifi", wifi::SSID).await, None);
     assert!(!provisioned(&mut device).await);
     drop(device);
@@ -202,8 +175,8 @@ async fn factory_reset_repairs_a_corrupted_configuration_storage() {
     let dir = TempDir::new().unwrap();
     let storage = dir.path().join("device.flash");
 
-    // The only committed slot loses its checksum: the store cannot open, but
-    // the region can still be formatted.
+    // The committed slots lose their checksum: the store cannot open, but the
+    // region can still be formatted.
     let sim = Sim::start(&Launch::new().storage(&storage));
     let mut device = sim.device().await;
     device
@@ -211,8 +184,14 @@ async fn factory_reset_repairs_a_corrupted_configuration_storage() {
         .await
         .unwrap();
     drop(device);
-    sim.manage_ok("storage corrupt crc");
     assert!(sim.stop().success());
+    // The boot counter gave the store a second generation: both slots lose their
+    // checksum, so that no committed slot is valid.
+    let mut image = std::fs::read(&storage).unwrap();
+    for slot in 0..2 {
+        image[slot * 8192 + 16] ^= 0x01;
+    }
+    std::fs::write(&storage, image).unwrap();
 
     let sim = Sim::start(&Launch::new().storage(&storage));
     let mut device = sim.device().await;

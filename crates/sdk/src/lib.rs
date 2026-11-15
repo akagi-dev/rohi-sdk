@@ -111,7 +111,8 @@
 //! | Control | Generic local control protocol over BLE or TCP, `rohi` desktop client | [`rohi-control`](../rohi_control/index.html), [`rohi-control-ble`](../rohi_control_ble/index.html), [`rohi-control-tcp`](../rohi_control_tcp/index.html), [`rohi`](../rohi/index.html) |
 //! | Time | Synchronized wall-clock time and its NTP source | [`rohi-time`](../rohi_time/index.html), [`rohi-time-ntp`](../rohi_time_ntp/index.html) |
 //! | Location | Where the device is (user-configured; no GNSS runtime exists yet), sent in telemetry | [`rohi-location`](../rohi_location/index.html) |
-//! | System | Reboot and factory reset as generic Actions of the `system` service | [`rohi-system`](../rohi_system/index.html) |
+//! | System | Reboot and factory reset as generic Actions, and why the device started, in the `system` service | [`rohi-system`](../rohi_system/index.html) |
+//! | Crash records | A bounded panic record in reset-retained memory, the crash-loop policy, the ESP panic handler | [`rohi-crash`](../rohi_crash/index.html), [`rohi-crash-esp`](../rohi_crash_esp/index.html) |
 //! | Identity | Provisioned Ed25519 device identity and signer | [`rohi-identity`](../rohi_identity/index.html) |
 //! | Telemetry | Measurement snapshots as signed `connectivity-protocol` frames | [`rohi-connectivity`](../rohi_connectivity/index.html) |
 //! | Firmware | Altruist Urban, a complete product built from the above | `firmwares/altruist-urban`, [Boards](https://docs.rs/rohi-hal-esp) |
@@ -187,7 +188,9 @@
 //! | [`rohi-time`](../rohi_time/index.html) | Synchronized wall-clock time: `TimeService`, `TimeSource`, validation, background `Synchronizer` | portable | `TimeService`, `TimeSource`, `TimeSample`, `UnixTime`, `TimeStatus`, `Synchronizer` | `rohi-hal` (monotonic `Clock`, `Backoff`), `rohi-service`, Embassy sync | Network or clock hardware, any concrete source |
 //! | [`rohi-time-ntp`](../rohi_time_ntp/index.html) | NTP/SNTP `TimeSource` over the IP data plane | portable | `NtpTimeSource`, `NtpConfig`, `NtpServersConfig` (the `time` config section) | `rohi-time`, `rohi-net`, `rohi-hal`, `rohi-config`, `rohi-service`, `sntpc` | The global concept of time, the UDP stack |
 //! | [`rohi-location`](../rohi_location/index.html) | The location of the device (user-configured; no GNSS runtime exists yet): `LocationConfig` section, `LocationShared`, `LocationService` | portable | `Location`, `LocationConfig`, `LocationShared`, `LocationSource`, `LocationService` | `rohi-config`, `rohi-service`, Embassy sync | GNSS hardware, telemetry |
-//! | [`rohi-system`](../rohi_system/index.html) | The `system` service: `reboot` and `factory_reset` Actions over a `SystemPlatform` the firmware implements | portable | `SystemService`, `SystemPlatform`, `SystemError` | `rohi-service` | Chip reset, flash formatting |
+//! | [`rohi-system`](../rohi_system/index.html) | The `system` service: `reboot` and `factory_reset` Actions and the reset and crash status over a `SystemPlatform` the firmware implements | portable | `SystemService`, `SystemPlatform`, `SystemError` | `rohi-service`, `rohi-crash` | Chip reset, flash formatting |
+//! | [`rohi-crash`](../rohi_crash/index.html) | The record of a panic for reset-retained memory (magic, version, CRC-32), the crash-loop policy and the reset reason | portable | `Slot`, `Crash`, `Policy`, `Next`, `Reset`, `Report` | none | The panic handler, the memory it lives in, the log |
+//! | [`rohi-crash-esp`](../rohi_crash_esp/index.html) | ESP32-C3 and ESP32-C6 panic path: RTC fast memory slot, handler body, watchdog fallback, software reset | ESP | `on_panic`, `init`, `report`, `pending`, `acknowledge` | `rohi-crash`, `esp-hal`, `esp-backtrace`, `esp-println` | Persisting the record to the log (the firmware does it with `rohi-logging`) |
 //! | [`rohi-logging`](../rohi_logging/index.html) | Persistent logging: the `log` sink, segment format, flash ring storage over any `Medium`, `LoggingConfig` and the `logging` service | portable | `LogSink`, `LogRecord`, `LogLevel`, `LogClock`, `Logging`, `LoggingService`, `LoggingConfig`, `LogStorage`, `RingStorage` | `rohi-config`, `rohi-service`, `rohi-time`, `rohi-hal`, Embassy sync, `log` | The flash driver, an SD backend |
 //! | [`rohi-connectivity-proto`](../rohi_connectivity_proto/index.html) | Bounded bindings of `airalab/connectivity-protocol` (vendored, pinned revision) | portable | `core_v1`, `crypto_v1`, `device_v1`, `sensor_v1`, `limits` | `micropb` | Signing, mapping, transports |
 //! | [`rohi-connectivity`](../rohi_connectivity/index.html) | Telemetry: snapshot (+ location) to signed envelope frame, bounded outbox, retry, HTTP transport, `ConnectivityConfig` section, `connectivity` service | portable | `UrbanEncoder`, `EnvelopeBuilder`, `EnvelopeFrame`, `EnvelopeTransport`, `HttpTransport`, `ConnectivityService`, `UtcClock`, `NonceSource`, `FrameSigner` | `rohi-connectivity-proto`, `rohi-hal`, `rohi-identity`, `rohi-location`, `rohi-net`, `rohi-time`, `rohi-config`, `rohi-service` | Private keys, Wi-Fi lifecycle, sensors, backend logic |
@@ -297,6 +300,9 @@ pub use rohi_identity as identity;
 #[cfg_attr(docsrs, doc(cfg(feature = "location")))]
 pub use rohi_location as location;
 
+#[cfg(feature = "crash")]
+#[cfg_attr(docsrs, doc(cfg(feature = "crash")))]
+pub use rohi_crash as crash;
 #[cfg(feature = "logging")]
 #[cfg_attr(docsrs, doc(cfg(feature = "logging")))]
 pub use rohi_logging as logging;
@@ -338,6 +344,9 @@ pub mod host {
 pub mod esp {
     /// Flash backend of the configuration store, see [`rohi_config_esp`].
     pub use rohi_config_esp as config;
+    /// Panic handler body, reset-retained crash slot and watchdog fallback, see
+    /// [`rohi_crash_esp`].
+    pub use rohi_crash_esp as crash;
     /// Boards, buses and clock of the HAL, see [`rohi_hal_esp`].
     pub use rohi_hal_esp as hal;
     /// ESP backend of the network, see [`rohi_net_esp`].

@@ -153,11 +153,17 @@ impl<M: RawMutex> LocationShared<M> {
         let configured = config
             .filter(|config| config.is_valid())
             .map(LocationConfig::location);
-        self.state.lock(|cell| {
+        let previous = self.state.lock(|cell| {
             let mut state = cell.get();
+            let previous = state.configured;
             state.configured = configured;
             cell.set(state);
+            previous
         });
+        let rejected = configured.is_none() && config.is_some_and(|config| !config.is_unset());
+        if previous != configured || rejected {
+            log_configured(config, configured.is_some());
+        }
     }
 
     /// Publishes the fix of a GNSS receiver. The receiver must publish `None`
@@ -167,14 +173,21 @@ impl<M: RawMutex> LocationShared<M> {
     ///
     /// Reserved for a GNSS runtime, which does not exist yet.
     pub fn publish_fix(&self, fix: Option<Location>) {
-        self.state.lock(|cell| {
+        let had_fix = self.state.lock(|cell| {
             let mut state = cell.get();
+            let had_fix = state.fix.is_some();
             state.fix = fix.map(|fix| Location {
                 source: LocationSourceKind::Gps,
                 ..fix
             });
             cell.set(state);
+            had_fix
         });
+        match (had_fix, fix.is_some()) {
+            (false, true) => log::debug!(target: "location", "GPS fix acquired"),
+            (true, false) => log::debug!(target: "location", "GPS fix lost"),
+            _ => log::trace!(target: "location", "GPS fix updated"),
+        }
     }
 
     /// The best location: a live fix, otherwise the configured one, otherwise
@@ -184,6 +197,22 @@ impl<M: RawMutex> LocationShared<M> {
             let state = cell.get();
             state.fix.or(state.configured)
         })
+    }
+}
+
+// The coordinates are never logged: the log is persistent and they locate the device.
+#[cold]
+#[inline(never)]
+fn log_configured(config: Option<&LocationConfig>, valid: bool) {
+    match config {
+        _ if valid => log::debug!(target: "location", "Configured position published"),
+        Some(config) if !config.is_unset() => {
+            log::warn!(
+                target: "location",
+                "Configured position is out of range, ignored"
+            )
+        }
+        _ => log::debug!(target: "location", "Configured position cleared"),
     }
 }
 

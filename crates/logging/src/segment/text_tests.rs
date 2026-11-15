@@ -145,3 +145,85 @@ fn damaged_or_foreign_lines_are_not_records() {
         assert_eq!(parse_line(bad), None, "{bad:?}");
     }
 }
+
+fn within(record: &LogRecord, max_len: usize) -> (String, usize) {
+    let mut out = String::new();
+    let len = write_line_within(&mut out, record, max_len).unwrap();
+    (out, len)
+}
+
+#[test]
+fn a_line_that_fits_is_the_ordinary_line() {
+    let record = record(None, "wifi", "connected to home");
+    let (text, len) = within(&record, 512);
+    assert_eq!(text, line(&record));
+    assert_eq!((len, line_len(&record)), (text.len(), text.len()));
+    // Exactly the length of the line fits too.
+    assert_eq!(within(&record, text.len()).0, text);
+}
+
+#[test]
+fn a_longer_line_is_shortened_to_the_limit_and_still_parses() {
+    let message = "é\u{1}\\\n€😀x".repeat(MAX_MESSAGE_LEN);
+    let long = record(None, "ctl", &message);
+    assert!(long.truncated);
+    for max_len in [MIN_WITHIN_LEN, MIN_WITHIN_LEN + 1, 200, 256, 333, 512] {
+        let (text, len) = within(&long, max_len);
+        assert_eq!(len, text.len());
+        assert!(text.len() <= max_len, "{max_len}: {}", text.len());
+        assert!(text.ends_with('\n') && text.matches('\n').count() == 1);
+        let parsed = parse_line(text.trim_end_matches('\n')).unwrap();
+        assert!(parsed.truncated);
+        assert_eq!((parsed.sequence, parsed.monotonic_ms), (42, 12_345));
+        // A prefix of the message, cut at whole characters.
+        assert!(long.message.starts_with(parsed.message.as_str()));
+    }
+}
+
+#[test]
+fn shortening_cuts_what_does_not_fit_and_nothing_else() {
+    let mut message = String::new();
+    while message.len() + 4 <= MAX_MESSAGE_LEN {
+        message.push('\u{1}');
+    }
+    let mut target = String::new();
+    while target.len() + 4 <= MAX_TARGET_LEN {
+        target.push('\u{2}');
+    }
+    let long = record(
+        Some(UnixTime::from_millis(1_700_000_000_123)),
+        &target,
+        &message,
+    );
+    let full = line_len(&long);
+    assert!(full > 512, "{full}");
+    let (text, len) = within(&long, 512);
+    assert!(len <= 512);
+    // One more character would not have fit: the line is as long as it can be.
+    assert!(len + 4 > 512, "{len}");
+    let parsed = parse_line(text.trim_end_matches('\n')).unwrap();
+    assert!(parsed.message.len() < message.len());
+    assert!(parsed.message.chars().all(|c| c == '\u{1}'));
+}
+
+#[test]
+fn the_shortest_page_still_holds_the_longest_line_without_a_message() {
+    let mut target = String::new();
+    while target.len() + 4 <= MAX_TARGET_LEN {
+        target.push('\u{2}');
+    }
+    let message = "x".repeat(MAX_MESSAGE_LEN);
+    let mut long = record(
+        Some(UnixTime::from_millis(1_700_000_000_123)),
+        &target,
+        &message,
+    );
+    long.sequence = u64::MAX;
+    long.monotonic_ms = u64::MAX;
+    let (text, _) = within(&long, MIN_WITHIN_LEN);
+    assert!(text.len() <= MIN_WITHIN_LEN);
+    assert!(parse_line(text.trim_end_matches('\n')).is_some());
+    // A limit that cannot hold even the fields before the message is an error.
+    let mut out = String::new();
+    assert!(write_line_within(&mut out, &long, 10).is_err());
+}

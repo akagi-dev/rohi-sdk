@@ -68,7 +68,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use log::{debug, info, warn};
+use log::{debug, info, trace, warn};
 use rohi_net::{
     BleConfig, BleConnectionInfo, BleError, BleName, BleProbe, BleState, BleTransport,
     DEFAULT_BLE_PAYLOAD, MAX_BLE_PAYLOAD,
@@ -154,12 +154,22 @@ impl BleTransport for BluezBle {
         match self.inbox.recv().await {
             Some(Inbound::Chunk(chunk)) => {
                 if chunk.len() > out.len() {
+                    warn!(
+                        target: "ble",
+                        "Inbound chunk does not fit the buffer (size_b={} buffer_b={})",
+                        chunk.len(),
+                        out.len()
+                    );
                     return Err(BleError::BufferTooSmall);
                 }
                 out[..chunk.len()].copy_from_slice(&chunk);
+                trace!(target: "ble", "Received chunk (size_b={})", chunk.len());
                 Ok(chunk.len())
             }
-            Some(Inbound::Disconnected) => Err(BleError::Disconnected),
+            Some(Inbound::Disconnected) => {
+                debug!(target: "ble", "Transport told that the central disconnected");
+                Err(BleError::Disconnected)
+            }
             // The supervisor is gone: nothing will ever arrive.
             None => core::future::pending().await,
         }
@@ -167,15 +177,23 @@ impl BleTransport for BluezBle {
 
     async fn send(&mut self, data: &[u8]) -> Result<(), BleError> {
         if data.len() > self.max_payload() {
+            warn!(
+                target: "ble",
+                "Outbound chunk exceeds the payload (size_b={} payload_b={})",
+                data.len(),
+                self.max_payload()
+            );
             return Err(BleError::BufferTooSmall);
         }
         if self.connection_info().is_none() {
+            debug!(target: "ble", "Send without a central (size_b={})", data.len());
             return Err(BleError::Disconnected);
         }
-        self.outbox
-            .send(data.to_vec())
-            .await
-            .map_err(|_| BleError::DriverError)
+        trace!(target: "ble", "Sending chunk (size_b={})", data.len());
+        self.outbox.send(data.to_vec()).await.map_err(|_| {
+            warn!(target: "ble", "Outbound queue is closed, the peripheral is gone");
+            BleError::DriverError
+        })
     }
 
     fn connection_info(&self) -> Option<BleConnectionInfo> {
@@ -247,13 +265,18 @@ impl Peripheral {
     /// A central is using the link. Starts a new connection unless one is
     /// already tracked.
     fn connected(&self) {
-        self.shared.with(|link| {
-            if !matches!(link.state, BleState::Connected(_)) {
-                link.epoch = link.epoch.wrapping_add(1);
-                link.state = BleState::Connected(BleConnectionInfo::default());
-                link.payload = DEFAULT_BLE_PAYLOAD;
+        let started = self.shared.with(|link| {
+            if matches!(link.state, BleState::Connected(_)) {
+                return None;
             }
+            link.epoch = link.epoch.wrapping_add(1);
+            link.state = BleState::Connected(BleConnectionInfo::default());
+            link.payload = DEFAULT_BLE_PAYLOAD;
+            Some(link.epoch)
         });
+        if let Some(epoch) = started {
+            info!(target: "ble", "Central connected (id={epoch})");
+        }
     }
 
     /// The ATT MTU negotiated with the central.
@@ -262,26 +285,33 @@ impl Peripheral {
             .saturating_sub(ATT_HEADER)
             .clamp(DEFAULT_BLE_PAYLOAD, MAX_BLE_PAYLOAD);
         self.shared.with(|link| link.payload = payload);
+        debug!(target: "ble", "MTU negotiated (mtu_b={mtu} payload_b={payload})");
     }
 
     /// A chunk written by the central.
     async fn received(&self, chunk: Vec<u8>) {
-        let _ = self.inbox.send(Inbound::Chunk(chunk)).await;
+        trace!(target: "ble", "Central wrote chunk (size_b={})", chunk.len());
+        if self.inbox.send(Inbound::Chunk(chunk)).await.is_err() {
+            debug!(target: "ble", "Transport dropped, written chunk discarded");
+        }
     }
 
     /// The connection ended: tells the transport once and the supervisor.
     async fn disconnected(&self) {
-        let was = self.shared.with(|link| {
+        let ended = self.shared.with(|link| {
             let was = matches!(link.state, BleState::Connected(_));
             if was {
                 link.state = BleState::Advertising;
                 link.payload = DEFAULT_BLE_PAYLOAD;
             }
-            was
+            was.then_some(link.epoch)
         });
-        if was {
+        if let Some(epoch) = ended {
+            info!(target: "ble", "Central disconnected (id={epoch})");
             let _ = self.inbox.send(Inbound::Disconnected).await;
             self.ended.notify_one();
+        } else {
+            trace!(target: "ble", "Disconnect without a tracked connection");
         }
     }
 }
@@ -290,6 +320,7 @@ impl Peripheral {
 /// the last two bytes of the adapter address.
 fn advertised_name(config: &BleConfig, address: [u8; 6]) -> Option<BleName> {
     if let Some(name) = &config.name {
+        debug!(target: "ble", "Using the configured name (name={})", name.as_str());
         return Some(name.clone());
     }
     let suffix = format!("-{:02X}{:02X}", address[4], address[5]);
@@ -298,7 +329,11 @@ fn advertised_name(config: &BleConfig, address: [u8; 6]) -> Option<BleName> {
     while prefix.len() > prefix_len {
         prefix = &prefix[..prefix.floor_char_boundary(prefix.len() - 1)];
     }
-    BleName::new(&format!("{prefix}{suffix}"))
+    let name = BleName::new(&format!("{prefix}{suffix}"));
+    if name.is_none() {
+        warn!(target: "ble", "Cannot derive an advertised name from the prefix (prefix={prefix:?})");
+    }
+    name
 }
 
 /// Starts the peripheral on `adapter` (the default adapter of BlueZ when
@@ -307,6 +342,7 @@ fn advertised_name(config: &BleConfig, address: [u8; 6]) -> Option<BleName> {
 /// Returns at once: bringing BlueZ up happens in the background, see the
 /// [module documentation](self). `config` is read once.
 pub fn start(config: BleConfig, adapter: Option<String>) -> BluezBle {
+    info!(target: "ble", "Starting the peripheral (adapter={adapter:?})");
     let (transport, peripheral) = bridge();
     handle().spawn(supervise(config, adapter, peripheral));
     transport
@@ -322,10 +358,13 @@ async fn supervise(config: BleConfig, adapter: Option<String>, peripheral: Perip
         peripheral.set_state(BleState::Error(BleError::DriverError));
         if last != error {
             warn!(
-                "BLE unavailable: {error}; retrying every {} s",
+                target: "ble",
+                "Peripheral unavailable (retry_s={} err={error})",
                 RETRY.as_secs()
             );
             last = error;
+        } else {
+            debug!(target: "ble", "Peripheral still unavailable (err={last})");
         }
         tokio::time::sleep(RETRY).await;
     }
@@ -363,6 +402,11 @@ async fn serve(
         .address()
         .await
         .map_err(describe("cannot read the adapter address"))?;
+    debug!(
+        target: "ble",
+        "Adapter powered on (adapter={} address={address})",
+        adapter.name()
+    );
     let name = advertised_name(config, address.0);
     peripheral.set_name(name.clone());
 
@@ -419,7 +463,8 @@ async fn serve(
         .map_err(describe("cannot publish the GATT service"))?;
 
     info!(
-        "BLE peripheral on {} as {}",
+        target: "ble",
+        "Peripheral started (adapter={} name={})",
         adapter.name(),
         name.as_ref().map_or("(unnamed)", BleName::as_str)
     );
@@ -438,7 +483,7 @@ async fn serve(
         if !peripheral.is_connected() {
             peripheral.set_state(BleState::Advertising);
         }
-        debug!("BLE advertising");
+        debug!(target: "ble", "Advertising");
         // The advertisement is registered again after every connection.
         peripheral.ended.notified().await;
     }
@@ -451,13 +496,19 @@ async fn notifications(
     mut notifier: bluer::gatt::local::CharacteristicNotifier,
 ) {
     peripheral.connected();
+    debug!(target: "ble", "Notification session started");
     let mut outbox = peripheral.outbox.lock().await;
     loop {
         tokio::select! {
-            () = notifier.stopped() => break,
+            () = notifier.stopped() => {
+                debug!(target: "ble", "Central stopped the notifications");
+                break;
+            }
             chunk = outbox.recv() => {
                 let Some(chunk) = chunk else { break };
-                if notifier.notify(chunk).await.is_err() {
+                trace!(target: "ble", "Notifying chunk (size_b={})", chunk.len());
+                if let Err(error) = notifier.notify(chunk).await {
+                    warn!(target: "ble", "Notification failed (err={error})");
                     break;
                 }
             }
@@ -469,7 +520,13 @@ async fn notifications(
 }
 
 fn discard_queued(outbox: &mut mpsc::Receiver<Vec<u8>>) {
-    while outbox.try_recv().is_ok() {}
+    let mut discarded = 0usize;
+    while outbox.try_recv().is_ok() {
+        discarded += 1;
+    }
+    if discarded > 0 {
+        debug!(target: "ble", "Discarded queued chunks (count={discarded})");
+    }
 }
 
 #[cfg(test)]

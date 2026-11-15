@@ -68,7 +68,7 @@ use esp_radio::wifi::{
     AuthenticationMethod, AuthenticationMethodConfig, Config, ConnectionError, ControllerConfig,
     DisconnectReason, Interface, Password, Ssid, WifiController, WifiError as VendorError,
 };
-use log::{debug, warn};
+use log::{debug, info, trace, warn};
 
 use rohi_net::{
     LinkConfig, NetworkConfig, NetworkInfo, ScanCollector, WifiBackend, WifiConfig, WifiError,
@@ -89,6 +89,7 @@ impl NetRunner {
     /// Runs the IP stack forever. Spawn it on its own task; the IP data plane
     /// does not make progress without it.
     pub async fn run(mut self) -> ! {
+        info!(target: "wifi", "IP stack runner started");
         self.0.run().await
     }
 }
@@ -114,8 +115,10 @@ impl EspWifi {
         wifi: WIFI<'static>,
         resources: &'static mut StackResources<SOCKETS>,
     ) -> Result<(Self, NetRunner, Stack<'static>), WifiError> {
+        debug!(target: "wifi", "Starting the driver in station mode");
         let controller = WifiController::new(wifi, ControllerConfig::default())
             .map_err(|error| map_driver_error(&error))?;
+        info!(target: "wifi", "Driver started");
         let interface = Interface::station();
 
         let seed = (u64::from(Rng::new().random()) << 32) | u64::from(Rng::new().random());
@@ -171,12 +174,24 @@ impl EspWifi {
     /// Waits until the previous connection's IP configuration is gone, so a
     /// stale lease is never mistaken for the new one.
     async fn wait_stale_config_cleared(&self) {
-        for _ in 0..STALE_CONFIG_LIMIT {
+        for waited in 0..STALE_CONFIG_LIMIT {
             if !self.stack.is_config_up() {
+                if waited > 0 {
+                    debug!(
+                        target: "wifi",
+                        "Stale IP configuration cleared (polls={})",
+                        waited
+                    );
+                }
                 return;
             }
             Timer::after(STALE_CONFIG_POLL).await;
         }
+        warn!(
+            target: "wifi",
+            "Stale IP configuration still up (timeout_ms={})",
+            STALE_CONFIG_POLL.as_millis() * u64::from(STALE_CONFIG_LIMIT)
+        );
     }
 
     /// Hands the address settings of `config` to the IP stack: the static
@@ -184,6 +199,11 @@ impl EspWifi {
     fn apply_address(&self, config: &NetworkConfig) -> Result<(), WifiError> {
         let ipv4 = match config.static_settings() {
             Some(settings) => {
+                debug!(
+                    target: "wifi",
+                    "Using static address (ip={} prefix_len={} gateway={})",
+                    settings.address, settings.prefix_len, settings.gateway
+                );
                 let address = Ipv4Cidr::new(
                     Ipv4Address::from(settings.address.octets()),
                     settings.prefix_len,
@@ -199,12 +219,14 @@ impl EspWifi {
                 })
             }
             None => {
+                debug!(target: "wifi", "Using DHCP address (hostname={:?})", config.hostname);
                 let mut dhcp = DhcpConfig::default();
                 if let Some(hostname) = &config.hostname {
-                    dhcp.hostname = Some(
-                        heapless::String::try_from(hostname.as_str())
-                            .map_err(|_| WifiError::InvalidConfig)?,
-                    );
+                    dhcp.hostname =
+                        Some(heapless::String::try_from(hostname.as_str()).map_err(|_| {
+                            warn!(target: "wifi", "Host name does not fit the DHCP client");
+                            WifiError::InvalidConfig
+                        })?);
                 }
                 ConfigV4::Dhcp(dhcp)
             }
@@ -220,6 +242,7 @@ impl EspWifi {
             self.wait_stale_config_cleared().await;
         }
         let station = station_config(&config.wifi)?;
+        debug!(target: "wifi", "Associating with access point (ssid={:?})", config.wifi.ssid);
         self.controller
             .set_config(&Config::Station(station))
             .map_err(|error| map_driver_error(&error))?;
@@ -229,12 +252,26 @@ impl EspWifi {
         let connect_timeout = Duration::from_millis(config.wifi.connect_timeout_ms.into());
         with_timeout(connect_timeout, self.controller.connect_async())
             .await
-            .map_err(|_| WifiError::Timeout)?
+            .map_err(|_| {
+                debug!(
+                    target: "wifi",
+                    "Association timed out (timeout_ms={})",
+                    config.wifi.connect_timeout_ms
+                );
+                WifiError::Timeout
+            })?
             .map_err(|error| match error {
-                ConnectionError::Failed(info) => map_connect_reason(info.reason),
+                ConnectionError::Failed(info) => {
+                    warn!(target: "wifi", "Association failed (reason={:?})", info.reason);
+                    map_connect_reason(info.reason)
+                }
                 ConnectionError::WifiError(error) => map_driver_error(&error),
-                _ => WifiError::DriverError,
+                _ => {
+                    warn!(target: "wifi", "Association failed for an unknown reason");
+                    WifiError::DriverError
+                }
             })?;
+        debug!(target: "wifi", "Associated, waiting for the IPv4 configuration");
 
         // Association alone is not network ready: wait for the DHCP lease, or
         // for the link when the address is static.
@@ -242,15 +279,32 @@ impl EspWifi {
         if config.network.static_settings().is_some() {
             with_timeout(wait, self.stack.wait_link_up())
                 .await
-                .map_err(|_| WifiError::Timeout)?;
+                .map_err(|_| {
+                    debug!(
+                        target: "wifi",
+                        "Link not up in time (timeout_ms={})",
+                        config.network.dhcp_timeout_ms
+                    );
+                    WifiError::Timeout
+                })?;
         } else {
             with_timeout(wait, self.stack.wait_config_up())
                 .await
-                .map_err(|_| WifiError::DhcpFailed)?;
+                .map_err(|_| {
+                    debug!(
+                        target: "wifi",
+                        "No DHCP lease in time (timeout_ms={})",
+                        config.network.dhcp_timeout_ms
+                    );
+                    WifiError::DhcpFailed
+                })?;
         }
 
         self.ssid = config.wifi.ssid.clone();
-        self.current_info().ok_or(WifiError::DhcpFailed)
+        self.current_info().ok_or_else(|| {
+            warn!(target: "wifi", "IPv4 configuration disappeared right after it was obtained");
+            WifiError::DhcpFailed
+        })
     }
 }
 
@@ -259,10 +313,11 @@ impl WifiBackend for EspWifi {
         let scan = ScanConfig::default().with_max(MAX_RAW_SCAN_RESULTS);
         // The vendor result is a heap-backed `Vec`; it never leaves this function.
         let access_points = self.controller.scan_async(&scan).await.map_err(|error| {
-            warn!("Wi-Fi scan failed: {:?}", error);
+            warn!(target: "wifi", "Scan failed (err={:?})", error);
             WifiError::ScanFailed
         })?;
 
+        trace!(target: "wifi", "Scan returned raw results (count={})", access_points.len());
         let mut collector = ScanCollector::new();
         for access_point in &access_points {
             let Some(ssid) = WifiSsid::from_bytes(access_point.ssid.as_str().as_bytes()) else {
@@ -275,14 +330,21 @@ impl WifiBackend for EspWifi {
                 channel: access_point.channel,
             });
         }
-        debug!("Wi-Fi scan: {} raw result(s)", access_points.len());
-        Ok(collector.finish())
+        let results = collector.finish();
+        debug!(
+            target: "wifi",
+            "Scan finished (raw_count={} kept_count={})",
+            access_points.len(),
+            results.len()
+        );
+        Ok(results)
     }
 
     async fn connect(&mut self, config: &LinkConfig) -> Result<NetworkInfo, WifiError> {
         match self.connect_inner(config).await {
             Ok(info) => Ok(info),
             Err(error) => {
+                debug!(target: "wifi", "Connect failed, leaving the network (err={:?})", error);
                 self.ssid = None;
                 let _ = self.disconnect().await;
                 Err(error)
@@ -293,16 +355,33 @@ impl WifiBackend for EspWifi {
     async fn disconnect(&mut self) -> Result<(), WifiError> {
         self.ssid = None;
         match self.controller.disconnect_async().await {
-            Ok(_) | Err(VendorError::NotConnected) => Ok(()),
+            Ok(_) => {
+                debug!(target: "wifi", "Disconnected");
+                Ok(())
+            }
+            Err(VendorError::NotConnected) => {
+                trace!(target: "wifi", "Disconnect while not connected");
+                Ok(())
+            }
             Err(error) => Err(map_driver_error(&error)),
         }
     }
 
     async fn wait_link_lost(&mut self) -> WifiError {
         match self.controller.wait_for_disconnect_async().await {
-            Ok(info) => map_link_lost_reason(info.reason),
+            Ok(info) => {
+                debug!(target: "wifi", "Link lost (reason={:?})", info.reason);
+                map_link_lost_reason(info.reason)
+            }
             // Not connected (any more): the link is already lost.
-            Err(_) => WifiError::Disconnected,
+            Err(error) => {
+                debug!(
+                    target: "wifi",
+                    "Wait for disconnect failed, link is down (err={:?})",
+                    error
+                );
+                WifiError::Disconnected
+            }
         }
     }
 
@@ -312,12 +391,21 @@ impl WifiBackend for EspWifi {
 }
 
 fn station_config(config: &WifiConfig) -> Result<StationConfig, WifiError> {
-    let ssid = config.ssid.as_ref().ok_or(WifiError::InvalidConfig)?;
-    let ssid = Ssid::try_from(ssid.as_bytes()).map_err(|_| WifiError::InvalidConfig)?;
+    let ssid = config.ssid.as_ref().ok_or_else(|| {
+        warn!(target: "wifi", "No SSID to connect to");
+        WifiError::InvalidConfig
+    })?;
+    let ssid = Ssid::try_from(ssid.as_bytes()).map_err(|_| {
+        warn!(target: "wifi", "Driver rejected the SSID");
+        WifiError::InvalidConfig
+    })?;
     let authentication = match &config.password {
         None => AuthenticationMethodConfig::Open,
         Some(password) => AuthenticationMethodConfig::WpaWpa2Personal(
-            Password::try_from(password.expose_secret()).map_err(|_| WifiError::InvalidConfig)?,
+            Password::try_from(password.expose_secret()).map_err(|_| {
+                warn!(target: "wifi", "Driver rejected the password");
+                WifiError::InvalidConfig
+            })?,
         ),
     };
     Ok(StationConfig::default()
@@ -372,7 +460,7 @@ fn map_link_lost_reason(reason: DisconnectReason) -> WifiError {
 }
 
 fn map_driver_error(error: &VendorError) -> WifiError {
-    warn!("Wi-Fi driver error: {:?}", error);
+    warn!(target: "wifi", "Driver error (err={:?})", error);
     match error {
         VendorError::InvalidSsid | VendorError::InvalidPassword | VendorError::InvalidArguments => {
             WifiError::InvalidConfig
