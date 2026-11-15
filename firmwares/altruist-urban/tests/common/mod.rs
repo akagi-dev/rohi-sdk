@@ -319,3 +319,132 @@ pub fn f32_of(value: Option<&Value>) -> Option<f32> {
         _ => None,
     }
 }
+
+/// The whole first file of a stream, read in chunks.
+pub async fn read_stream_file(
+    device: &mut Device<TcpLink>,
+    stream: &rohi::model::Stream,
+    file: u32,
+) -> Vec<u8> {
+    let mut data = Vec::new();
+    loop {
+        let chunk = device
+            .read_stream(stream, file, data.len() as u64)
+            .await
+            .unwrap();
+        data.extend_from_slice(&chunk.data);
+        if chunk.eof {
+            return data;
+        }
+        assert!(!chunk.data.is_empty(), "an empty chunk before the end");
+    }
+}
+
+/// What `logging.tail` returned: the session and reset flag of the boot, and
+/// the text of the records (empty when the device had nothing new).
+pub struct Tail {
+    pub session: u64,
+    pub reset: bool,
+    pub text: String,
+}
+
+impl Tail {
+    /// Tail sequence of the last line, 0 when there is none.
+    pub fn last_sequence(&self) -> u64 {
+        self.text
+            .lines()
+            .filter_map(|line| line.split(' ').next()?.parse::<u64>().ok())
+            .next_back()
+            .unwrap_or(0)
+    }
+}
+
+/// One `logging.tail` call, with the stream read and closed.
+pub async fn tail(device: &mut Device<TcpLink>, session: u64, after: u64, limit: u64) -> Tail {
+    let schema = device.action_schema("logging", "tail").await.unwrap();
+    let arg = |name: &str, value: u64| rohi::model::FieldValue {
+        field_id: schema.args.iter().find(|f| f.name == name).unwrap().id,
+        value: Value::U64(value),
+    };
+    let args = [
+        arg("session", session),
+        arg("after", after),
+        arg("limit", limit),
+    ];
+    match device
+        .invoke_outcome("logging", "tail", &args)
+        .await
+        .unwrap()
+    {
+        rohi::model::ActionOutcome::Stream(stream) => {
+            let file = &stream.files[0];
+            let name = file.name.clone();
+            let data = read_stream_file(device, &stream, file.id).await;
+            device.close_stream(&stream).await.unwrap();
+            let (reset, session) = match name.strip_prefix("reset-") {
+                Some(rest) => (true, rest),
+                None => (false, name.strip_prefix("tail-").expect("a tail file name")),
+            };
+            Tail {
+                session: session.strip_suffix(".log").unwrap().parse().unwrap(),
+                reset,
+                text: String::from_utf8(data).unwrap(),
+            }
+        }
+        rohi::model::ActionOutcome::Records(records) => {
+            let field = |name: &str| {
+                let id = schema.results.iter().find(|f| f.name == name)?.id;
+                records[0]
+                    .iter()
+                    .find(|f| f.field_id == id)
+                    .map(|f| f.value.clone())
+            };
+            let Some(Value::U64(session)) = field("session") else {
+                panic!("tail returned no session");
+            };
+            Tail {
+                session,
+                reset: field("reset") == Some(Value::Bool(true)),
+                text: String::new(),
+            }
+        }
+    }
+}
+
+/// The latest records the device keeps in RAM, as text.
+pub async fn tail_text(device: &mut Device<TcpLink>) -> String {
+    tail(device, 0, 0, 1_000).await.text
+}
+
+/// Every record of the archive in flash, decoded from `logging.download`.
+pub async fn archive_text(device: &mut Device<TcpLink>) -> String {
+    use rohi_sdk::logging::Compression;
+    use rohi_sdk::logging::segment::SegmentDecoder;
+    use rohi_sdk::logging::segment::text::write_line;
+
+    let stream = match device
+        .invoke_outcome("logging", "download", &[])
+        .await
+        .unwrap()
+    {
+        rohi::model::ActionOutcome::Stream(stream) => stream,
+        other => panic!("download returned {other:?}"),
+    };
+    let mut text = String::new();
+    for file in &stream.files {
+        let codec = if file.name.ends_with(".lz4") {
+            Compression::Lz4
+        } else {
+            Compression::None
+        };
+        let data = read_stream_file(device, &stream, file.id).await;
+        let mut decoder = SegmentDecoder::new(codec);
+        decoder
+            .push(&data, &mut |record| {
+                let _ = write_line(&mut text, &record);
+            })
+            .unwrap();
+    }
+    device.close_stream(&stream).await.unwrap();
+    text
+}

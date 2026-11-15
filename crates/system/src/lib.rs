@@ -83,9 +83,9 @@
 //! | Concept | Meaning |
 //! |---------|---------|
 //! | [`SystemService`] | the `system` service over a [`SystemPlatform`] |
-//! | [`SystemPlatform`] | what the platform provides: deferred reboot, the storage-aware factory reset and, optionally, the boot [`Report`] |
+//! | [`SystemPlatform`] | what the platform provides: deferred reboot, the storage-aware factory reset and, optionally, the boot [`Report`] and the persistent boot counter |
 //! | [`SystemError`] | why the platform could not do it |
-//! | status | why the device started (`reset_reason`: `power_on`, `software`, `panic`, `watchdog`, `brownout`, ...) and the last panic, see [`status_field`] and [`issue`] |
+//! | status | why the device started (`reset_reason`: `power_on`, `software`, `panic`, `watchdog`, `brownout`, ...), the last panic and how many times the device has started (`boot_count`), see [`status_field`] and [`issue`] |
 //!
 //! | Action | Id | Arguments | Results | Access |
 //! |--------|----|-----------|---------|--------|
@@ -107,7 +107,8 @@
 //!                                  SystemPlatform  (firmware, per platform)
 //!                                   ├─ schedule_reboot: signal, reset after a grace period
 //!                                   ├─ factory_reset:   format the configuration storage
-//!                                   └─ boot_report:     reset reason and last panic (rohi-crash)
+//!                                   ├─ boot_report:     reset reason and last panic (rohi-crash)
+//!                                   └─ boot_count:      starts of the device, kept in flash
 //!
 //! rohi status system  ──►  StatusRegistry (.., &SystemService<P>)  ──►  boot_report
 //! ```
@@ -141,7 +142,8 @@
 //!   [`SystemPlatform::factory_reset`]; persistent logs and unrelated storage
 //!   are not part of the contract of this crate.
 //! - **Status is optional and diagnostic.** Without a
-//!   [`boot_report`](SystemPlatform::boot_report) the status has no fields and
+//!   [`boot_report`](SystemPlatform::boot_report) or a
+//!   [`boot_count`](SystemPlatform::boot_count) the status has no fields and
 //!   the service is `running / ok / ready`. With one, the service is
 //!   `degraded` while the last start was one of a crash loop; the issues are
 //!   `crashed`, `crash_loop`, `crash_not_logged` and `unexpected_reset`. The
@@ -244,6 +246,19 @@ pub trait SystemPlatform {
     ///
     /// Called on every status request, so it must be cheap and must not block.
     fn boot_report(&self) -> Option<Report> {
+        None
+    }
+
+    /// How many times the device has started, counting this start; `None` (the
+    /// default) when the platform keeps no counter.
+    ///
+    /// The platform increments and stores it once at every start, before the
+    /// services that use it run, and keeps it across [`factory_reset`](Self::factory_reset):
+    /// it only grows, so two starts never share a value. The `logging` service
+    /// uses it to tell a client that follows the log that the device restarted.
+    ///
+    /// Called on every status request, so it must be cheap and must not block.
+    fn boot_count(&self) -> Option<u32> {
         None
     }
 }

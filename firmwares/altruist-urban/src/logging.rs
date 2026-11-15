@@ -63,23 +63,37 @@ pub const QUEUE_DEPTH: usize = 128;
 #[cfg(not(feature = "std"))]
 pub const QUEUE_DEPTH: usize = 24;
 
-/// Bytes of text one `logging.read` returns.
+/// Records the RAM tail of the `logging` service keeps for `logging.tail`.
 ///
-/// - Consumer: each open `read` stream of the `logging` service holds its
-///   answer in RAM, two streams at most (`rohi_sdk::logging` keeps two).
-/// - Why: about twenty records of text per call keeps a read to a few
-///   round trips on BLE and the memory small.
-/// - Exhausted: the answer ends at the last record that fits and the client
-///   asks again after the last sequence it got.
-/// - Measured: not measured.
-pub const READ_BYTES: usize = 2048;
+/// - Consumer: `rohi_sdk::logging::LogSink` keeps this many `LogRecord`s of
+///   about 200 bytes in a ring, so 8 records are about 1.6 KiB of static RAM.
+///   Nothing is allocated per request: a tail stream holds only a window of
+///   sequences and renders the records into the chunk the client asks for.
+/// - Why: `rohi logs` shows what just happened, not history; the archive in
+///   flash is `logging.download`. A small ring also keeps the static RAM and
+///   the main stack of the ESP32-C3 untouched.
+/// - Exhausted: the oldest record is overwritten; a client that follows the
+///   tail and fell behind sees a jump in the sequence numbers.
+/// - ESP32-C3: 8. ESP32-C6: 7, because `max_data` of that chip in
+///   `memcheck-budgets.toml` (33 500 B) has no room for an eighth record.
+/// - Host: 32, a process has the memory.
+/// - Measured: `.data` of the firmware, see `docs/validation/resource-budget.md`.
+#[cfg(feature = "std")]
+pub const TAIL_RECORDS: usize = 32;
+
+#[cfg(all(not(feature = "std"), feature = "esp32c6"))]
+pub const TAIL_RECORDS: usize = 7;
+
+#[cfg(all(not(feature = "std"), not(feature = "esp32c6")))]
+pub const TAIL_RECORDS: usize = 8;
 
 /// The logging runtime over the backends `K` of a platform.
-pub type Runtime<K> = Logging<RawMutex, &'static Time, K, QUEUE_DEPTH, READ_BYTES>;
+pub type Runtime<K> = Logging<RawMutex, &'static Time, K, QUEUE_DEPTH, TAIL_RECORDS>;
 
 /// The `logging` service of the control plane over the backends `K` of a
 /// platform.
-pub type Service<K> = LoggingService<'static, RawMutex, &'static Time, K, QUEUE_DEPTH, READ_BYTES>;
+pub type Service<K> =
+    LoggingService<'static, RawMutex, &'static Time, K, QUEUE_DEPTH, TAIL_RECORDS>;
 
 /// Retention budget of the chip: the whole `rohi-log` partition, 256 KiB, on the
 /// 4 MB ESP32-C3. The ring keeps two of its 4 KiB sectors for the format

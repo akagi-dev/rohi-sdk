@@ -25,9 +25,16 @@
 //! owned [`LogRecord`]s, queues them without ever blocking the caller, writes
 //! them in batches to segments of a [`LogStorage`](storage::LogStorage), and
 //! offers the history through the generic service model: a `logging` config
-//! section ([`LoggingConfig`]), a status, and the actions `read`, `download` and
+//! section ([`LoggingConfig`]), a status, and the actions `tail`, `download` and
 //! `clear` ([`LoggingService`]). There is no logging-specific control protocol:
-//! `download` and `read` return a [stream](rohi_service::StreamInfo).
+//! `download` returns the compressed archive and `tail` the latest records, both
+//! as a [stream](rohi_service::StreamInfo).
+//!
+//! Two stores, two purposes. The **archive** is the compressed, rotated history
+//! in flash; only `download` reads it. The **RAM tail** is the last few records
+//! of every `LogSink` (see [`DEFAULT_TAIL_RECORDS`]), kept for `rohi logs`: it
+//! needs no storage, so it answers while flash is busy, faulted or pinned by a
+//! download, and it is lost on a reset.
 //!
 //! It provides a ring journal over any erasable medium
 //! ([`RingStorage`](storage::RingStorage)), an adapter for NOR flash
@@ -67,6 +74,7 @@
 //! |---------|---------|
 //! | [`LogSink`] | the bounded queue and runtime level behind the `log` backend |
 //! | [`LogRecord`] | one event as owned, bounded data; the sequence is assigned by the logging task |
+//! | RAM tail | a ring of the last `T` records with a sequence of its own (from 1 on every boot, unrelated to the sequence of the archive) and a session that tells a client the device restarted |
 //! | [`LogLevel`] | `off`, `error`, `warn`, `info` or `debug` |
 //! | [`LogClock`] | where the monotonic and wall-clock stamps come from; implemented for `rohi_time::TimeService` |
 //! | [`Logging`] | the runtime: queue, storage, status and open streams; its [`run`](Logging::run) is the logging task |
@@ -83,7 +91,11 @@
 //!                                                                 ▼
 //!                      Logging::run (one task) ─► Batch ─► LogStorage ─► segments
 //!                                                                 ▲
-//! rohi logs ─► logging.read / download / clear ─► LoggingService ─┘ (streams, pins)
+//! rohi logs download / clear ─► LoggingService ─┘ (streams, pins)
+//!
+//! info!(target: "wifi", ..) ─► LogSink::push ─► RAM tail (last `T` records, overwritten)
+//!                                                     ▲
+//! rohi logs [-f] ─► logging.tail ─► LoggingService ──┘ (a window of sequences; no flash)
 //! ```
 //!
 //! Records of a download are held in sealed segments that the storage will not
@@ -98,6 +110,7 @@
 //! |------|-----------|
 //! | [`LogSink`] | register as the `log` backend (with `CriticalSectionRawMutex`) or push events directly |
 //! | [`Logging`], [`Backends`] | build the runtime over a set of storage backends |
+//! | [`Logging::set_boot_count`], [`tail_arg`], [`tail_result`], [`tail_file_name`], [`parse_tail_file_name`] | give the tail its session; the arguments, results and file names of `logging.tail` |
 //! | [`LoggingService`], [`status_field`], [`action`], [`issue`] | register the service; ids of its status fields, actions and issues |
 //! | [`LoggingConfig`], [`LoggingOverrides`] | the config section and its persisted overrides |
 //! | [`segment`] | read and write the text and the compressed files |
@@ -108,6 +121,19 @@
 //! - **Non-blocking:** [`LogSink::push`] never waits, allocates or panics. A full
 //!   queue drops the new record and counts it in [`LogSink::dropped`]; the
 //!   `logging` status reports `dropped_records` and the issue `queue_overflow`.
+//! - **RAM tail:** every record that passes the level and target filters is copied
+//!   into the tail by [`LogSink::push`], in a short critical section, even when the
+//!   queue is full and the archive copy is dropped. `logging.tail` (arguments
+//!   [`tail_arg`]) never touches storage, the batch or the queue: it opens a
+//!   *window* of consecutive tail sequences that holds no text, and every read of
+//!   the stream renders the lines into the caller's chunk, so nothing is
+//!   buffered. A window whose records were overwritten before they are read
+//!   fails with `UnknownStream` and the client asks again. A request with a
+//!   session that is not this boot's, or a cursor beyond the newest record, is
+//!   answered with the latest records in a file named `reset-<session>.log`
+//!   ([`tail_file_name`]); nothing new is a record result ([`tail_result`]) and no
+//!   stream. Tail sequences are not archive sequences, and the tail is not
+//!   persisted: it holds the records of this boot only.
 //! - **Bounds:** a record keeps at most [`MAX_TARGET_LEN`] bytes of target and
 //!   [`MAX_MESSAGE_LEN`] bytes of message; longer text is cut at a character
 //!   boundary and the record is flagged `truncated`. A batch is at most
@@ -137,6 +163,7 @@ pub mod segment;
 mod service;
 mod sink;
 pub mod storage;
+mod tail;
 
 #[cfg(test)]
 extern crate std;
@@ -156,3 +183,4 @@ pub use level::LogLevel;
 pub use record::{LogRecord, MAX_MESSAGE_LEN, MAX_TARGET_LEN};
 pub use service::*;
 pub use sink::{INTERNAL_TARGET, LogSink};
+pub use tail::DEFAULT_TAIL_RECORDS;

@@ -1,10 +1,13 @@
-Show, follow, download or clear the persistent log of the device.
+Show or follow the latest log records of the device, download or clear its
+persistent log.
 
 A convenience over the actions of the `logging` service: `rohi logs` runs
-`logging.read`, `logs download` runs `logging.download` and `logs clear`
-runs `logging.clear`. Everything it does is also possible with `rohi action
-logging ...`. What the device keeps (level, storage, compression, size) is
-the `logging` config section: `rohi config logging`.
+`logging.tail`, which reads the few most recent records the device keeps in
+RAM (they are lost on a restart, and older ones are overwritten), `logs
+download` runs `logging.download`, which saves the archive kept in flash, and
+`logs clear` runs `logging.clear`. Everything it does is also possible with
+`rohi action logging ...`. What the device keeps (level, storage,
+compression, size) is the `logging` config section: `rohi config logging`.
 
 Usage: rohi logs [OPTIONS]
        rohi logs <COMMAND>
@@ -16,7 +19,7 @@ Commands:
 
 Options:
   -n, --lines <N>
-          How many of the latest records to print first
+          How many of the latest records to print first; the device keeps only a few in RAM, use `logs download` for the archive
           
           [default: 20]
 

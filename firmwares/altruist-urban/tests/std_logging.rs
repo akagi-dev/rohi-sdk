@@ -28,17 +28,10 @@ use common::*;
 use rohi::model::{ActionOutcome, FieldValue, Stream, Value};
 use rohi::{Device, TcpLink};
 use rohi_sdk::logging::segment::SegmentDecoder;
-use rohi_sdk::logging::{Compression, read_arg, status_field};
+use rohi_sdk::logging::{Compression, status_field};
 use tempfile::TempDir;
 
 const WAIT: Duration = Duration::from_secs(20);
-
-fn arg(field_id: u32, value: u64) -> FieldValue {
-    FieldValue {
-        field_id,
-        value: Value::U64(value),
-    }
-}
 
 async fn stream_of(device: &mut Device<TcpLink>, name: &str, args: &[FieldValue]) -> Stream {
     match device.invoke_outcome("logging", name, args).await.unwrap() {
@@ -48,45 +41,7 @@ async fn stream_of(device: &mut Device<TcpLink>, name: &str, args: &[FieldValue]
 }
 
 async fn read_file(device: &mut Device<TcpLink>, stream: &Stream, file: u32) -> Vec<u8> {
-    let mut data = Vec::new();
-    loop {
-        let chunk = device
-            .read_stream(stream, file, data.len() as u64)
-            .await
-            .unwrap();
-        data.extend_from_slice(&chunk.data);
-        if chunk.eof {
-            return data;
-        }
-        assert!(!chunk.data.is_empty(), "an empty chunk before the end");
-    }
-}
-
-/// The text `logging.read` returns for every retained record: one call returns
-/// about one `READ_BYTES` of text, so it asks again after the last sequence.
-async fn records(device: &mut Device<TcpLink>) -> String {
-    let mut text = String::new();
-    let mut after = 0;
-    loop {
-        let stream = stream_of(
-            device,
-            "read",
-            &[arg(read_arg::AFTER, after), arg(read_arg::LIMIT, 200)],
-        )
-        .await;
-        let data = read_file(device, &stream, stream.files[0].id).await;
-        device.close_stream(&stream).await.unwrap();
-        let page = String::from_utf8(data).unwrap();
-        let Some(last) = page
-            .lines()
-            .filter_map(|line| line.split(' ').next()?.parse::<u64>().ok())
-            .next_back()
-        else {
-            return text;
-        };
-        after = last;
-        text.push_str(&page);
-    }
+    read_stream_file(device, stream, file).await
 }
 
 async fn status_number(device: &mut Device<TcpLink>, field: u32) -> Option<u64> {
@@ -102,7 +57,7 @@ async fn status_number(device: &mut Device<TcpLink>, field: u32) -> Option<u64> 
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn logging_is_a_service_with_read_download_and_clear() {
+async fn logging_is_a_service_with_tail_download_and_clear() {
     let sim = Sim::start(&Launch::new());
     let mut device = sim.device().await;
 
@@ -115,7 +70,7 @@ async fn logging_is_a_service_with_read_download_and_clear() {
         .map(|action| action.name.as_str())
         .collect();
     names.sort_unstable();
-    assert_eq!(names, ["clear", "download", "read"]);
+    assert_eq!(names, ["clear", "download", "tail"]);
 
     let status = fields(&mut device, "logging").await;
     assert_eq!(status["storage"], text("internal"));
@@ -131,7 +86,7 @@ async fn the_device_logs_what_it_does_and_the_history_survives_a_restart() {
     let sim = Sim::start(&Launch::new().storage(&storage));
     let mut device = sim.device().await;
     let first = eventually("the boot record", WAIT, async || {
-        let text = records(&mut device).await;
+        let text = archive_text(&mut device).await;
         text.contains("Starting").then_some(text)
     })
     .await;
@@ -148,7 +103,7 @@ async fn the_device_logs_what_it_does_and_the_history_survives_a_restart() {
     let sim = Sim::start(&Launch::new().storage(&storage));
     let mut device = sim.device().await;
     let second = eventually("the records of both runs", WAIT, async || {
-        let text = records(&mut device).await;
+        let text = archive_text(&mut device).await;
         (text.matches("Starting").count() >= 2).then_some(text)
     })
     .await;
@@ -175,7 +130,7 @@ async fn download_gives_decodable_files_and_clear_empties_the_log() {
     let sim = Sim::start(&Launch::new());
     let mut device = sim.device().await;
     eventually("a record", WAIT, async || {
-        records(&mut device)
+        tail_text(&mut device)
             .await
             .contains("Starting")
             .then_some(())
@@ -246,8 +201,9 @@ async fn a_cleared_log_stays_cleared_across_a_restart_and_keeps_working() {
 
     let sim = Sim::start(&Launch::new().storage(&storage));
     let mut device = sim.device().await;
+    // The archive has the record once it was committed, which a download does.
     eventually("the boot record", WAIT, async || {
-        records(&mut device)
+        archive_text(&mut device)
             .await
             .contains("Starting")
             .then_some(())
@@ -272,7 +228,7 @@ async fn a_cleared_log_stays_cleared_across_a_restart_and_keeps_working() {
     let sim = Sim::start(&Launch::new().storage(&storage));
     let mut device = sim.device().await;
     let text = eventually("the records of the new boot", WAIT, async || {
-        let text = records(&mut device).await;
+        let text = archive_text(&mut device).await;
         text.contains("Starting").then_some(text)
     })
     .await;
@@ -305,4 +261,115 @@ fn a_log_image_of_the_former_256_kib_layout_is_a_startup_error() {
         "{stderr}"
     );
     assert_eq!(std::fs::metadata(&log_file).unwrap().len(), 256 * 1024);
+}
+
+async fn boot_count(device: &mut Device<TcpLink>) -> u64 {
+    match fields(device, "system").await.get("boot_count") {
+        Some(Value::U64(count)) => *count,
+        other => panic!("boot_count is {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tail_serves_the_records_in_ram_and_follows_them_once() {
+    let sim = Sim::start(&Launch::new());
+    let mut device = sim.device().await;
+    let first = eventually("the boot record", WAIT, async || {
+        let tail = tail(&mut device, 0, 0, 1_000).await;
+        tail.text.contains("Starting").then_some(tail)
+    })
+    .await;
+    assert!(!first.reset);
+    assert_eq!(first.session, boot_count(&mut device).await);
+    let mut cursor = first.last_sequence();
+    assert!(cursor > 0);
+    // Whole lines of the log format, oldest first, by tail sequence.
+    let sequences: Vec<u64> = first
+        .text
+        .lines()
+        .map(|line| line.split(' ').next().unwrap().parse().unwrap())
+        .collect();
+    assert!(sequences.windows(2).all(|pair| pair[0] + 1 == pair[1]));
+
+    // New records arrive once and in order; nothing new is an empty answer.
+    let mut seen = sequences.len();
+    for round in 0..3 {
+        device
+            .config_patch(
+                "wifi",
+                &[set(wifi::SSID, text(&format!("tail-{round}")))],
+                false,
+            )
+            .await
+            .unwrap();
+        let news = eventually("a new record", WAIT, async || {
+            let news = tail(&mut device, first.session, cursor, 1_000).await;
+            (!news.text.is_empty()).then_some(news)
+        })
+        .await;
+        assert!(!news.reset);
+        assert!(news.last_sequence() > cursor);
+        assert!(news.text.lines().count() >= 1);
+        for line in news.text.lines() {
+            let sequence: u64 = line.split(' ').next().unwrap().parse().unwrap();
+            assert!(sequence > cursor, "{line}");
+        }
+        cursor = news.last_sequence();
+        seen += news.text.lines().count();
+    }
+    assert!(seen > sequences.len());
+
+    // Another boot's session means start over, with a fresh snapshot.
+    let reset = tail(&mut device, first.session + 1, cursor, 1_000).await;
+    assert!(reset.reset);
+    assert_eq!(reset.session, first.session);
+    assert!(!reset.text.is_empty());
+    drop(device);
+    sim.stop();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tail_answers_while_a_download_is_open_and_does_not_end_it() {
+    let sim = Sim::start(&Launch::new());
+    let mut device = sim.device().await;
+    eventually("a record", WAIT, async || {
+        tail_text(&mut device)
+            .await
+            .contains("Starting")
+            .then_some(())
+    })
+    .await;
+    let download = stream_of(&mut device, "download", &[]).await;
+    for _ in 0..3 {
+        assert!(tail_text(&mut device).await.contains("Starting"));
+    }
+    // The download is intact after the tails.
+    for file in &download.files {
+        let data = read_file(&mut device, &download, file.id).await;
+        assert_eq!(data.len() as u64, file.size_bytes);
+    }
+    device.close_stream(&download).await.unwrap();
+    drop(device);
+    sim.stop();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_boot_counter_is_the_session_and_grows_with_every_start() {
+    let dir = TempDir::new().unwrap();
+    let storage = dir.path().join("device.flash");
+    let mut sessions = Vec::new();
+    for start in 1..=3u64 {
+        let sim = Sim::start(&Launch::new().storage(&storage));
+        let mut device = sim.device().await;
+        assert_eq!(boot_count(&mut device).await, start);
+        let tail = eventually("the boot record", WAIT, async || {
+            let tail = tail(&mut device, 0, 0, 1_000).await;
+            tail.text.contains("Starting").then_some(tail)
+        })
+        .await;
+        sessions.push(tail.session);
+        drop(device);
+        assert!(sim.stop().success());
+    }
+    assert_eq!(sessions, [1, 2, 3]);
 }

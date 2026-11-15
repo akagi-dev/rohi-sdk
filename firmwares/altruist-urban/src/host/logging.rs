@@ -82,6 +82,12 @@ pub fn apply(config: LoggingConfig) {
     LOGGING.apply(config);
 }
 
+/// Gives the tail the boot counter as its session, once the configuration owner
+/// has counted this start, see [`crate::config::boot_count`].
+pub fn set_boot_count() {
+    LOGGING.set_boot_count(crate::config::boot_count().unwrap_or(0));
+}
+
 /// The `log` backend: the console and the persistent sink, each with its own
 /// level.
 struct Fanout {

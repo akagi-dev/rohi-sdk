@@ -35,11 +35,11 @@ use rohi_service::{
     StreamChunk, StreamFile, StreamInfo, Unit, Value, ValueKind, WriteError,
 };
 
-use crate::segment::text::write_line;
-use crate::segment::{Batch, MAX_CHUNK_LEN, SegmentDecoder, file_name};
+use crate::segment::{Batch, MAX_CHUNK_LEN, file_name};
 use crate::storage::{
     ChunkMeta, Limits, LogStorage, MAX_SEGMENTS, Recovery, SegmentId, StorageError, StorageStats,
 };
+use crate::tail::Overwritten;
 use crate::{
     Compression, LEVEL_ENUM, LEVELS, LogClock, LogRecord, LogSink, LogStorageKind, LoggingConfig,
 };
@@ -56,8 +56,8 @@ pub mod issue {
     pub const STORAGE_CORRUPT: u32 = FIRST_SERVICE_ISSUE + 1;
     /// Writing a segment failed; the records of that batch are lost.
     pub const WRITE_FAILED: u32 = FIRST_SERVICE_ISSUE + 2;
-    /// Reading the history failed.
-    pub const READ_FAILED: u32 = FIRST_SERVICE_ISSUE + 3;
+    // `FIRST_SERVICE_ISSUE + 3` was `read_failed`, issued by the removed
+    // `read` action. Ids are never reused.
     /// Records were dropped because the queue was full in the last
     /// [`OVERFLOW_WINDOW_MS`](super::OVERFLOW_WINDOW_MS).
     pub const QUEUE_OVERFLOW: u32 = FIRST_SERVICE_ISSUE + 4;
@@ -93,59 +93,76 @@ pub mod status_field {
 
 /// Action ids of the `logging` service.
 pub mod action {
-    /// Reads records after a sequence, as a stream of text lines.
-    pub const READ: u32 = 1;
+    // Id 1 was `read`, removed with the persistent read path. Ids are never
+    // reused.
     /// Exports the retained segment files, as a stream of files.
     pub const DOWNLOAD: u32 = 2;
     /// Removes the history of the active backend.
     pub const CLEAR: u32 = 3;
+    /// Returns the latest records from the RAM tail, as a stream of text lines.
+    pub const TAIL: u32 = 4;
 }
 
-/// Field ids of the arguments of `read`.
-pub mod read_arg {
-    /// Records with a sequence above this are returned; 0 starts at the
-    /// oldest record.
-    pub const AFTER: u32 = 1;
-    /// The most records returned, 1 to [`MAX_READ_RECORDS`](super::MAX_READ_RECORDS).
-    pub const LIMIT: u32 = 2;
+/// Field ids of the arguments of `tail`.
+pub mod tail_arg {
+    /// The `session` an earlier `tail` returned; 0 on the first request.
+    pub const SESSION: u32 = 1;
+    /// Records with a tail sequence above this are returned; 0 asks for the
+    /// latest records.
+    pub const AFTER: u32 = 2;
+    /// The most records returned, clamped to the depth of the RAM tail.
+    pub const LIMIT: u32 = 3;
 }
 
-/// The most records one `read` returns.
-pub const MAX_READ_RECORDS: u64 = 200;
+/// Field ids of the result `tail` returns when there is nothing to stream.
+pub mod tail_result {
+    /// The session of this boot, the token to send in the next request.
+    pub const SESSION: u32 = 1;
+    /// Whether the request carried a session or a cursor of another boot.
+    pub const RESET: u32 = 2;
+}
+
 /// How long an idle stream is kept before its segments are released.
 pub const STREAM_TIMEOUT_MS: u64 = 60_000;
 /// Records were dropped "recently" when the last drop is younger than this.
 pub const OVERFLOW_WINDOW_MS: u64 = 30_000;
-/// The longest name of the file `read` returns.
-pub const MAX_READ_FILE_NAME_LEN: usize = 22;
-/// The reason of the `rejected` error of a `read` that met a damaged segment.
-pub const READ_CORRUPT: &str = "segment_corrupt";
-/// The id of the one file `read` returns.
-pub const READ_FILE_ID: u32 = 1;
+/// The longest name of the file `tail` returns.
+pub const MAX_TAIL_FILE_NAME_LEN: usize = 20;
+/// The id of the one file `tail` returns.
+pub const TAIL_FILE_ID: u32 = 1;
 
-/// The name of the file `read` returns for the history `history`:
-/// `records-<history>.log`.
+/// The name of the file `tail` returns for the boot `session`: `tail-<session>.log`,
+/// or `reset-<session>.log` when the request did not belong to this boot.
 ///
-/// A cursor (the sequence of a record) belongs to one history, the
-/// `history` of the status. The name tells which history the records come
-/// from, so a client that follows the log sees that it was cleared or lost
-/// and starts over instead of waiting for sequences it already passed.
-pub fn read_file_name(history: u32) -> heapless::String<MAX_READ_FILE_NAME_LEN> {
+/// The cursors of `tail` are tail sequences of one boot. The name tells which
+/// boot the records come from and whether the client has to start over.
+pub fn tail_file_name(session: u32, reset: bool) -> heapless::String<MAX_TAIL_FILE_NAME_LEN> {
     use core::fmt::Write;
     let mut name = heapless::String::new();
-    let _ = write!(name, "records-{history}.log");
+    let _ = write!(
+        name,
+        "{}-{session}.log",
+        if reset { "reset" } else { "tail" }
+    );
     name
 }
 
-/// The history a file name of `read` belongs to, see [`read_file_name`].
-pub fn history_of_read_file(name: &str) -> Option<u32> {
-    name.strip_prefix("records-")?
-        .strip_suffix(".log")?
-        .parse()
-        .ok()
+/// The session and the reset flag of the file name of `tail`, see
+/// [`tail_file_name`].
+pub fn parse_tail_file_name(name: &str) -> Option<(u32, bool)> {
+    let stem = name.strip_suffix(".log")?;
+    let (session, reset) = match stem.strip_prefix("tail-") {
+        Some(session) => (session, false),
+        None => (stem.strip_prefix("reset-")?, true),
+    };
+    Some((session.parse().ok()?, reset))
 }
 
+// Streams that pin segments of the archive: `download`.
 const MAX_STREAMS: usize = 2;
+// Streams of `tail`, which hold a window of sequences and nothing else. A new
+// one replaces the oldest when the table is full, so they never block a download.
+pub const MAX_TAIL_STREAMS: usize = 2;
 const RETRY_MS: u64 = 10_000;
 
 // The reports are kept out of line: they run once in a while, and inlined into
@@ -297,10 +314,12 @@ fn warn_action(what: &str, key: &str, detail: &dyn core::fmt::Debug) {
 
 #[cold]
 #[inline(never)]
-fn debug_read(after: u64, limit: u64, bytes: usize, stream: u32, history: u32) {
-    log::debug!(
+// Trace, not debug: a client that follows the tail polls every second, and a
+// record per poll would feed the tail it reads.
+fn trace_tail(session: u64, after: u64, count: u64, reset: bool, stream: u32) {
+    log::trace!(
         target: "logging",
-        "Records read (bytes={bytes} after={after} limit={limit} stream={stream} history={history})"
+        "Tail served (session={session} after={after} count={count} reset={reset} stream={stream})"
     );
 }
 
@@ -372,28 +391,34 @@ pub trait Backends {
     fn boot_records_written(&mut self) {}
 }
 
-enum Content<const READ: usize> {
-    Records(Vec<u8, READ>),
-    Files(Vec<(SegmentId, u32), MAX_SEGMENTS>),
-}
-
-struct Open<const READ: usize> {
+// A download: the segments it pins, with their sizes.
+struct Open {
     id: u32,
-    content: Content<READ>,
+    files: Vec<(SegmentId, u32), MAX_SEGMENTS>,
     deadline_ms: u64,
 }
 
-struct State<const READ: usize> {
+// A window of the RAM tail. The records are copied out when they are read, so
+// it pins nothing and holds no text; it is a table of its own so that its slots
+// do not have the size of a download.
+struct TailOpen {
+    id: u32,
+    first: u64,
+    count: u64,
+    deadline_ms: u64,
+}
+
+struct State {
     config: LoggingConfig,
     started: bool,
     unavailable_since: Option<u64>,
     corrupt_since: Option<u64>,
     write_failed_since: Option<u64>,
-    read_failed_since: Option<u64>,
     stats: StorageStats,
     active: Option<LogStorageKind>,
     lost: u64,
-    streams: Vec<Open<READ>, MAX_STREAMS>,
+    streams: Vec<Open, MAX_STREAMS>,
+    tails: Vec<TailOpen, MAX_TAIL_STREAMS>,
     next_stream: u32,
     release_all: bool,
 }
@@ -402,21 +427,18 @@ struct State<const READ: usize> {
 // `MAX_STREAMS` streams, so it never overflows.
 type Pins = Vec<SegmentId, { MAX_STREAMS * MAX_SEGMENTS }>;
 
-impl<const READ: usize> State<READ> {
+impl State {
     // Removes the streams `selected` accepts, in place, and returns what they
-    // pinned. Nothing else of a stream is moved or copied: a stream holds up to
-    // `READ` bytes of records.
-    fn release(&mut self, mut selected: impl FnMut(&Open<READ>) -> bool) -> Pins {
+    // pinned.
+    fn release(&mut self, mut selected: impl FnMut(&Open) -> bool) -> Pins {
         let mut pins = Pins::new();
         self.streams.retain_mut(|stream| {
             if !selected(stream) {
                 return true;
             }
-            if let Content::Files(files) = &stream.content {
-                for (id, _) in files {
-                    // Cannot be full, see `Pins`.
-                    let _ = pins.push(*id);
-                }
+            for (id, _) in &stream.files {
+                // Cannot be full, see `Pins`.
+                let _ = pins.push(*id);
             }
             false
         });
@@ -447,17 +469,17 @@ pub(crate) struct Inner<B: Backends> {
 /// hands every committed `logging` section to [`apply`](Self::apply).
 ///
 /// `M` is the [`RawMutex`] of the firmware, `C` the [`LogClock`], `B` the
-/// [`Backends`], `N` the capacity of the record queue and `READ` the bytes one
-/// `read` can return.
-pub struct Logging<M: RawMutex, C, B: Backends, const N: usize, const READ: usize> {
-    sink: LogSink<M, C, N>,
-    state: BlockingMutex<M, RefCell<State<READ>>>,
+/// [`Backends`], `N` the capacity of the record queue and `TAIL` the records of
+/// the RAM tail that `tail` serves.
+pub struct Logging<M: RawMutex, C, B: Backends, const N: usize, const TAIL: usize> {
+    sink: LogSink<M, C, N, TAIL>,
+    state: BlockingMutex<M, RefCell<State>>,
     inner: Mutex<M, Inner<B>>,
     wake: Signal<M, ()>,
 }
 
-impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
-    Logging<M, C, B, N, READ>
+impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize>
+    Logging<M, C, B, N, TAIL>
 {
     /// A runtime that persists as `config` says until it is
     /// [applied](Self::apply) another one.
@@ -470,7 +492,6 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
                 unavailable_since: None,
                 corrupt_since: None,
                 write_failed_since: None,
-                read_failed_since: None,
                 stats: StorageStats {
                     capacity_bytes: 0,
                     used_bytes: 0,
@@ -484,6 +505,7 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
                 active: None,
                 lost: 0,
                 streams: Vec::new(),
+                tails: Vec::new(),
                 next_stream: 1,
                 release_all: false,
             })),
@@ -506,12 +528,19 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
     }
 
     /// The producer side: register it as the `log` backend, or push to it.
-    pub fn sink(&self) -> &LogSink<M, C, N> {
+    pub fn sink(&self) -> &LogSink<M, C, N, TAIL> {
         &self.sink
     }
 
+    /// Identifies this boot to a client of `logging.tail`: pass a number that
+    /// differs on every boot, the boot counter of the `system` service. Call it
+    /// before the first request; 0 is stored as 1.
+    pub fn set_boot_count(&self, count: u32) {
+        self.sink.set_tail_session(count);
+    }
+
     /// The service for the status and action registries.
-    pub fn service(&self) -> LoggingService<'_, M, C, B, N, READ> {
+    pub fn service(&self) -> LoggingService<'_, M, C, B, N, TAIL> {
         LoggingService(self)
     }
 
@@ -585,7 +614,7 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
         self.sink.clock().monotonic_ms()
     }
 
-    fn with<R>(&self, f: impl FnOnce(&mut State<READ>) -> R) -> R {
+    fn with<R>(&self, f: impl FnOnce(&mut State) -> R) -> R {
         self.state.lock(|state| f(&mut state.borrow_mut()))
     }
 
@@ -630,7 +659,6 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
                 state.active = None;
                 state.stats = StorageStats::default();
                 state.write_failed_since = None;
-                state.read_failed_since = None;
                 state.corrupt_since = None;
             });
         }
@@ -719,9 +747,10 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
         let now = self.now();
         let (pins, released) = self.with(|state| {
             let all = all || core::mem::take(&mut state.release_all);
-            let before = state.streams.len();
+            let before = state.streams.len() + state.tails.len();
             let pins = state.release(|stream| all || stream.deadline_ms <= now);
-            (pins, before - state.streams.len())
+            state.tails.retain(|tail| !(all || tail.deadline_ms <= now));
+            (pins, before - state.streams.len() - state.tails.len())
         });
         if released > 0 {
             debug_released(released, pins.len());
@@ -918,7 +947,7 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
         if inner.storage.is_none() || inner.faulted {
             at(inner.retry_at_ms);
         }
-        if self.with(|state| !state.streams.is_empty()) {
+        if self.with(|state| !state.streams.is_empty() || !state.tails.is_empty()) {
             at(now + SWEEP_MS);
         }
         wait
@@ -968,12 +997,12 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
 /// The `logging` service of the control plane. Create it with
 /// [`Logging::service`].
 #[derive(Service)]
-pub struct LoggingService<'a, M: RawMutex, C, B: Backends, const N: usize, const READ: usize>(
-    &'a Logging<M, C, B, N, READ>,
+pub struct LoggingService<'a, M: RawMutex, C, B: Backends, const N: usize, const TAIL: usize>(
+    &'a Logging<M, C, B, N, TAIL>,
 );
 
-impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize> Status
-    for LoggingService<'_, M, C, B, N, READ>
+impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize> Status
+    for LoggingService<'_, M, C, B, N, TAIL>
 {
     const VERSION: u16 = 1;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
@@ -1018,7 +1047,6 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize> S
         IssueDescriptor::new(issue::STORAGE_UNAVAILABLE, "storage_unavailable"),
         IssueDescriptor::new(issue::STORAGE_CORRUPT, "storage_corrupt"),
         IssueDescriptor::new(issue::WRITE_FAILED, "write_failed"),
-        IssueDescriptor::new(issue::READ_FAILED, "read_failed"),
         IssueDescriptor::new(issue::QUEUE_OVERFLOW, "queue_overflow"),
     ];
     // Diagnostics: the device works without them.
@@ -1031,7 +1059,7 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize> S
                 state.started,
                 state.unavailable_since.is_some(),
                 state.write_failed_since.is_some(),
-                state.corrupt_since.is_some() || state.read_failed_since.is_some(),
+                state.corrupt_since.is_some(),
             )
         });
         if !started {
@@ -1055,11 +1083,10 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize> S
             .sink
             .last_drop_ms()
             .filter(|at| now.saturating_sub(*at) <= OVERFLOW_WINDOW_MS);
-        let (unavailable, write, read, corrupt) = logging.with(|state| {
+        let (unavailable, write, corrupt) = logging.with(|state| {
             (
                 state.unavailable_since,
                 state.write_failed_since,
-                state.read_failed_since,
                 state.corrupt_since,
             )
         });
@@ -1070,7 +1097,6 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize> S
                 IssueSeverity::Error,
             ),
             (write, issue::WRITE_FAILED, IssueSeverity::Error),
-            (read, issue::READ_FAILED, IssueSeverity::Warning),
             (corrupt, issue::STORAGE_CORRUPT, IssueSeverity::Warning),
             (overflow, issue::QUEUE_OVERFLOW, IssueSeverity::Warning),
         ] {
@@ -1118,29 +1144,23 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize> S
     }
 }
 
-/// A [`Bounded`](crate) text buffer for the records of a `read`.
-struct ReadBuffer<'a, const READ: usize>(&'a mut Vec<u8, READ>);
-
-impl<const READ: usize> core::fmt::Write for ReadBuffer<'_, READ> {
-    fn write_str(&mut self, text: &str) -> core::fmt::Result {
-        self.0
-            .extend_from_slice(text.as_bytes())
-            .map_err(|_| core::fmt::Error)
-    }
-}
-
-impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize> Action
-    for LoggingService<'_, M, C, B, N, READ>
+impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize> Action
+    for LoggingService<'_, M, C, B, N, TAIL>
 {
     const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new(action::READ, "read", ActionAccess::Read)
-            .args(&[
-                FieldDescriptor::new(read_arg::AFTER, "after", ValueKind::U64),
-                FieldDescriptor::new(read_arg::LIMIT, "limit", ValueKind::U64),
-            ])
-            .stream(),
         ActionDescriptor::new(action::DOWNLOAD, "download", ActionAccess::Read).stream(),
         ActionDescriptor::new(action::CLEAR, "clear", ActionAccess::Mutate),
+        ActionDescriptor::new(action::TAIL, "tail", ActionAccess::Read)
+            .args(&[
+                FieldDescriptor::new(tail_arg::SESSION, "session", ValueKind::U64),
+                FieldDescriptor::new(tail_arg::AFTER, "after", ValueKind::U64),
+                FieldDescriptor::new(tail_arg::LIMIT, "limit", ValueKind::U64),
+            ])
+            .results(&[
+                FieldDescriptor::new(tail_result::SESSION, "session", ValueKind::U64),
+                FieldDescriptor::new(tail_result::RESET, "reset", ValueKind::Bool),
+            ])
+            .stream(),
     ];
 
     async fn invoke(
@@ -1151,25 +1171,25 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize> A
     ) -> Result<(), ActionError> {
         let logging = self.0;
         match action {
-            action::READ => {
+            action::TAIL => {
                 let number = |id| {
                     args.iter()
                         .find(|(field, _)| *field == id)
                         .and_then(|(_, value)| value.as_u64())
                 };
-                let (Some(after), Some(limit)) = (number(read_arg::AFTER), number(read_arg::LIMIT))
-                else {
+                let (Some(session), Some(after), Some(limit)) = (
+                    number(tail_arg::SESSION),
+                    number(tail_arg::AFTER),
+                    number(tail_arg::LIMIT),
+                ) else {
                     debug_action(
-                        "Read rejected: missing or invalid argument",
+                        "Tail rejected: missing or invalid argument",
                         "err",
                         &ActionError::InvalidArgument,
                     );
                     return Err(ActionError::InvalidArgument);
                 };
-                let info = logging
-                    .read(after, limit.clamp(1, MAX_READ_RECORDS))
-                    .await?;
-                out.stream(info).map_err(|_| ActionError::Internal)
+                logging.tail(session, after, limit, out)
             }
             action::DOWNLOAD => {
                 let info = logging.download().await?;
@@ -1204,10 +1224,15 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize> A
     }
 }
 
-impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
-    Logging<M, C, B, N, READ>
+impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize>
+    Logging<M, C, B, N, TAIL>
 {
-    fn register(&self, content: Content<READ>) -> Result<u32, ActionError> {
+    // A download holds at most `MAX_STREAMS` streams and is refused with `Busy`
+    // beyond that.
+    fn register_download(
+        &self,
+        files: Vec<(SegmentId, u32), MAX_SEGMENTS>,
+    ) -> Result<u32, ActionError> {
         let deadline_ms = self.now() + STREAM_TIMEOUT_MS;
         self.with(|state| {
             let id = state.next_stream;
@@ -1215,7 +1240,7 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
                 .streams
                 .push(Open {
                     id,
-                    content,
+                    files,
                     deadline_ms,
                 })
                 .map_err(|_| {
@@ -1227,104 +1252,69 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
         })
     }
 
-    async fn read(&self, after: u64, limit: u64) -> Result<StreamInfo, ActionError> {
-        let mut inner = self.inner.lock().await;
-        self.commit(&mut inner).await;
-        let mut records = Vec::<u8, READ>::new();
-        let Some(storage) = inner.storage.as_mut() else {
-            debug_action(
-                "Read rejected: no storage",
-                "err",
-                &ActionError::Unavailable,
-            );
-            return Err(ActionError::Unavailable);
-        };
-        let result = Self::collect(storage, after, limit, &mut records).await;
-        match result {
-            Ok(()) => self.with(|state| state.read_failed_since = None),
-            Err(error) => {
-                let now = self.now();
-                self.with(|state| {
-                    state.read_failed_since.get_or_insert(now);
-                });
-                warn_action("Read failed", "err", &error);
-                return Err(error);
+    // A tail stream pins nothing: when the table is full the oldest one is
+    // replaced, so a tail never blocks and never needs a download to end.
+    fn register_tail(&self, first: u64, count: u64) -> Result<u32, ActionError> {
+        let deadline_ms = self.now() + STREAM_TIMEOUT_MS;
+        self.with(|state| {
+            if state.tails.is_full() {
+                state.tails.remove(0);
             }
-        }
-        let size = records.len() as u64;
-        let history = storage
-            .stats()
-            .await
-            .map_err(|error| {
-                warn_storage("read stats", &error);
-                ActionError::Internal
-            })?
-            .generation;
-        let id = self.register(Content::Records(records))?;
-        debug_read(after, limit, size as usize, id, history);
-        let name = read_file_name(history);
-        Self::stream_info(id, &[(READ_FILE_ID, name.as_str(), size)])
+            let id = state.next_stream;
+            state
+                .tails
+                .push(TailOpen {
+                    id,
+                    first,
+                    count,
+                    deadline_ms,
+                })
+                .map_err(|_| ActionError::Busy)?;
+            state.next_stream = state.next_stream.checked_add(1).unwrap_or(1);
+            Ok(id)
+        })
     }
 
-    // Decodes the segments that can hold records above `after`. Stopping at
-    // the limit or at the end of the buffer is the pagination of a read; a
-    // segment that cannot be read to its end is an error.
-    async fn collect(
-        storage: &mut B::Storage,
+    // `tail` reads the RAM tail and nothing else: no storage, no commit, no
+    // lock shared with the logging task, so it answers while the archive is
+    // busy, faulted or pinned by a download.
+    fn tail(
+        &self,
+        session: u64,
         after: u64,
         limit: u64,
-        records: &mut Vec<u8, READ>,
+        out: &mut impl ActionOutput,
     ) -> Result<(), ActionError> {
-        let segments = storage.segments().await.map_err(|error| {
-            warn_storage("list segments", &error);
-            ActionError::Internal
-        })?;
-        let mut taken = 0u64;
-        let mut finished = false;
-        for info in segments.iter().filter(|info| info.last_sequence > after) {
-            let mut decoder = SegmentDecoder::new(info.codec);
-            let mut offset = 0u32;
-            let mut piece = [0u8; 256];
-            while !finished {
-                let count = storage
-                    .read(info.id, offset, &mut piece)
-                    .await
-                    .map_err(|error| {
-                        warn_storage("read segment", &error);
-                        ActionError::Internal
-                    })?;
-                if count == 0 {
-                    break;
-                }
-                offset += count as u32;
-                let pushed = decoder.push(&piece[..count], &mut |record: LogRecord| {
-                    if finished || record.sequence <= after {
-                        return;
-                    }
-                    let before = records.len();
-                    if taken >= limit
-                        || write_line(&mut ReadBuffer(&mut *records), &record).is_err()
-                    {
-                        records.truncate(before);
-                        finished = true;
-                        return;
-                    }
-                    taken += 1;
-                });
-                if pushed.is_err() {
-                    warn_action("Segment payload does not decode", "id", &info.id);
-                    return Err(ActionError::Rejected(READ_CORRUPT));
-                }
-            }
-            if finished {
-                break;
-            }
-            if !decoder.is_complete() {
-                warn_action("Segment is truncated", "id", &info.id);
-                return Err(ActionError::Rejected(READ_CORRUPT));
-            }
+        let current = self.sink.tail_session();
+        let page = self.sink.tail_page(session, after, limit);
+        if page.count == 0 {
+            out.u64(tail_result::SESSION, u64::from(current))
+                .and_then(|()| out.bool(tail_result::RESET, page.reset))
+                .map_err(|_| ActionError::Internal)?;
+            trace_tail(session, after, 0, page.reset, 0);
+            return Ok(());
         }
-        Ok(())
+        // The size of the text, counted without keeping any of it.
+        let total = match self.sink.tail_render(page.first, page.count, 0, &mut []) {
+            Ok(rendered) => rendered.total,
+            // The records were overwritten while the page was prepared.
+            Err(Overwritten) => return Err(ActionError::Busy),
+        };
+        let id = self.register_tail(page.first, page.count)?;
+        trace_tail(session, after, page.count, page.reset, id);
+        let name = tail_file_name(current, page.reset);
+        let info = Self::stream_info(id, &[(TAIL_FILE_ID, name.as_str(), total)])?;
+        out.stream(info).map_err(|_| {
+            self.release(id);
+            ActionError::Internal
+        })
+    }
+
+    fn release(&self, stream: u32) {
+        self.with(|state| {
+            state.streams.retain(|open| open.id != stream);
+            state.tails.retain(|open| open.id != stream);
+        });
     }
 
     fn stream_info(id: u32, files: &[(u32, &str, u64)]) -> Result<StreamInfo, ActionError> {
@@ -1390,7 +1380,7 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
                 size_bytes: u64::from(info.file_len),
             });
         }
-        match self.register(Content::Files(pinned)) {
+        match self.register_download(pinned) {
             Ok(id) => {
                 debug_download(files.len(), id);
                 Ok(StreamInfo { id, files })
@@ -1418,7 +1408,9 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
             );
             return Err(ActionError::Unavailable);
         }
-        self.release_streams(&mut inner, true);
+        // The archive is cleared: its downloads go, the RAM tail is not part of it.
+        let pins = self.with(|state| state.release(|_| true));
+        Self::unpin(&mut inner, &pins);
         inner.batch.clear();
         // Records still waiting in RAM belong to the history being removed.
         inner.carry = None;
@@ -1443,7 +1435,6 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
         }
         self.with(|state| {
             state.corrupt_since = None;
-            state.read_failed_since = None;
         });
         notice_cleared();
         self.refresh(&mut inner).await;
@@ -1461,41 +1452,35 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
         let limit = buf.len().min(MAX_STREAM_CHUNK);
         let buf = &mut buf[..limit];
         enum Source {
-            Done(StreamChunk),
             Segment(SegmentId, u32),
+            Tail(u64, u64),
         }
         let source = self.with(|state| {
-            let entry = state
+            if let Some(entry) = state
                 .streams
+                .iter_mut()
+                .find(|entry| entry.id == stream && entry.deadline_ms > now)
+            {
+                entry.deadline_ms = now + STREAM_TIMEOUT_MS;
+                let (segment, size) = *entry
+                    .files
+                    .get((file as usize).wrapping_sub(1))
+                    .ok_or(ActionError::UnknownStream)?;
+                if offset > u64::from(size) {
+                    return Err(ActionError::InvalidArgument);
+                }
+                return Ok(Source::Segment(segment, size));
+            }
+            let entry = state
+                .tails
                 .iter_mut()
                 .find(|entry| entry.id == stream && entry.deadline_ms > now)
                 .ok_or(ActionError::UnknownStream)?;
             entry.deadline_ms = now + STREAM_TIMEOUT_MS;
-            match &entry.content {
-                Content::Records(data) => {
-                    if file != READ_FILE_ID {
-                        return Err(ActionError::UnknownStream);
-                    }
-                    let offset =
-                        usize::try_from(offset).map_err(|_| ActionError::InvalidArgument)?;
-                    let rest = data.get(offset..).ok_or(ActionError::InvalidArgument)?;
-                    let len = rest.len().min(buf.len());
-                    buf[..len].copy_from_slice(&rest[..len]);
-                    Ok(Source::Done(StreamChunk {
-                        len,
-                        eof: len == rest.len(),
-                    }))
-                }
-                Content::Files(files) => {
-                    let (segment, size) = *files
-                        .get((file as usize).wrapping_sub(1))
-                        .ok_or(ActionError::UnknownStream)?;
-                    if offset > u64::from(size) {
-                        return Err(ActionError::InvalidArgument);
-                    }
-                    Ok(Source::Segment(segment, size))
-                }
+            if file != TAIL_FILE_ID {
+                return Err(ActionError::UnknownStream);
             }
+            Ok(Source::Tail(entry.first, entry.count))
         });
         let source = match source {
             Ok(source) => source,
@@ -1505,7 +1490,28 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
             }
         };
         match source {
-            Source::Done(chunk) => Ok(chunk),
+            Source::Tail(first, count) => {
+                let rendered =
+                    self.sink
+                        .tail_render(first, count, offset, buf)
+                        .map_err(|Overwritten| {
+                            // The records of the window are gone: the client asks again.
+                            self.release(stream);
+                            debug_action(
+                                "Tail stream read rejected: overwritten",
+                                "stream",
+                                &stream,
+                            );
+                            ActionError::UnknownStream
+                        })?;
+                if offset > rendered.total {
+                    return Err(ActionError::InvalidArgument);
+                }
+                Ok(StreamChunk {
+                    len: rendered.filled,
+                    eof: offset + rendered.filled as u64 >= rendered.total,
+                })
+            }
             Source::Segment(segment, size) => {
                 let mut inner = self.inner.lock().await;
                 let Some(storage) = inner.storage.as_mut() else {
@@ -1530,11 +1536,15 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
 
     async fn close_stream(&self, stream: u32) -> Result<(), ActionError> {
         let pinning = self.with(|state| {
-            state
-                .streams
-                .iter()
-                .find(|entry| entry.id == stream)
-                .map(|entry| matches!(entry.content, Content::Files(_)))
+            if state.streams.iter().any(|entry| entry.id == stream) {
+                Some(true)
+            } else {
+                state
+                    .tails
+                    .iter()
+                    .any(|entry| entry.id == stream)
+                    .then_some(false)
+            }
         });
         match pinning {
             None => {
@@ -1542,7 +1552,9 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
                 return Err(ActionError::UnknownStream);
             }
             Some(false) => {
-                self.with(|state| state.release(|entry| entry.id == stream));
+                // A tail stream holds nothing the logging task waits for.
+                self.with(|state| state.tails.retain(|entry| entry.id != stream));
+                return Ok(());
             }
             Some(true) => {
                 // The storage first, then the stream is removed and its segments
@@ -1560,8 +1572,8 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
 }
 
 #[cfg(test)]
-impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
-    Logging<M, C, B, N, READ>
+impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize>
+    Logging<M, C, B, N, TAIL>
 {
     /// One pass of the task, for tests.
     pub(crate) async fn step(&self) {
@@ -1570,20 +1582,11 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
     }
 
     pub(crate) fn pins(&self) -> usize {
-        self.with(|state| {
-            state
-                .streams
-                .iter()
-                .map(|stream| match &stream.content {
-                    Content::Files(files) => files.len(),
-                    Content::Records(_) => 0,
-                })
-                .sum()
-        })
+        self.with(|state| state.streams.iter().map(|stream| stream.files.len()).sum())
     }
 
     pub(crate) fn open_streams(&self) -> usize {
-        self.with(|state| state.streams.len())
+        self.with(|state| state.streams.len() + state.tails.len())
     }
 
     /// How many segments the storage keeps pinned.
@@ -1598,6 +1601,49 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const READ: usize>
                     .unwrap_or(0),
                 None => 0,
             }
+        })
+    }
+}
+
+#[cfg(test)]
+impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize>
+    Logging<M, C, B, N, TAIL>
+{
+    /// The archived records above `after`, decoded from the segments, at most
+    /// `limit` of them; `None` when a segment does not decode. What the tests
+    /// compare the archive with, now that no action reads it.
+    pub(crate) fn archive(&self, after: u64, limit: u64) -> Option<std::vec::Vec<LogRecord>> {
+        use crate::segment::SegmentDecoder;
+        embassy_futures::block_on(async {
+            let mut inner = self.inner.lock().await;
+            self.commit(&mut inner).await;
+            self.refresh(&mut inner).await;
+            let storage = inner.storage.as_mut()?;
+            let segments = storage.segments().await.ok()?;
+            let mut records = std::vec::Vec::new();
+            for info in segments.iter().filter(|info| info.last_sequence > after) {
+                let mut decoder = SegmentDecoder::new(info.codec);
+                let mut offset = 0u32;
+                let mut piece = [0u8; 256];
+                loop {
+                    let count = storage.read(info.id, offset, &mut piece).await.ok()?;
+                    if count == 0 {
+                        break;
+                    }
+                    offset += count as u32;
+                    decoder
+                        .push(&piece[..count], &mut |record: LogRecord| {
+                            if record.sequence > after && (records.len() as u64) < limit {
+                                records.push(record);
+                            }
+                        })
+                        .ok()?;
+                }
+                if !decoder.is_complete() {
+                    return None;
+                }
+            }
+            Some(records)
         })
     }
 }

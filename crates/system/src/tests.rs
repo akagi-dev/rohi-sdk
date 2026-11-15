@@ -36,6 +36,7 @@ struct Fake {
     reset: Cell<Option<SystemError>>,
     restart_required: Cell<bool>,
     report: Cell<Option<Report>>,
+    boots: Cell<Option<u32>>,
 }
 
 impl SystemPlatform for Fake {
@@ -63,6 +64,10 @@ impl SystemPlatform for Fake {
 
     fn boot_report(&self) -> Option<Report> {
         self.report.get()
+    }
+
+    fn boot_count(&self) -> Option<u32> {
+        self.boots.get()
     }
 }
 
@@ -240,6 +245,23 @@ fn a_platform_without_a_boot_report_has_an_empty_status() {
     assert!(status.summary.ready);
     assert!(fields.is_empty());
     assert!(status.issues.is_empty());
+}
+
+#[test]
+fn the_boot_count_is_a_status_field_of_its_own_and_needs_no_boot_report() {
+    let system = SystemService(Fake::default());
+    system.0.boots.set(Some(42));
+    let statuses = Statuses::<NoopRawMutex, _>::new((&system,));
+    let status = block_on(statuses.status(ID, 1_000)).unwrap();
+    assert_eq!(
+        status.fields.iter().cloned().collect::<std::vec::Vec<_>>(),
+        [(status_field::BOOT_COUNT, Value::U64(42))]
+    );
+    let field = <SystemService<Fake> as Status>::STATUS_SCHEMA
+        .iter()
+        .find(|field| field.id == status_field::BOOT_COUNT)
+        .unwrap();
+    assert_eq!((field.name, field.kind), ("boot_count", ValueKind::U64));
 }
 
 #[test]

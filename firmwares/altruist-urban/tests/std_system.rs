@@ -24,10 +24,9 @@ mod common;
 use std::time::Duration;
 
 use common::*;
-use rohi::model::{ActionAccess, ActionOutcome, FieldValue, Stream, Value};
+use rohi::model::{ActionAccess, FieldValue, Value};
 use rohi::{Device, TcpLink};
 use rohi_sdk::config::{ConfigStore, SectionId};
-use rohi_sdk::logging::read_arg;
 use rohi_sdk::sim::storage::FileFlash;
 use tempfile::TempDir;
 
@@ -62,55 +61,9 @@ async fn provisioned(device: &mut Device<TcpLink>) -> bool {
     )
 }
 
-/// Every retained record: one `logging.read` returns about one `READ_BYTES` of
-/// text, so it asks again after the last sequence.
+/// Every retained record of the archive, with the sequence of the archive.
 async fn log_text(device: &mut Device<TcpLink>) -> String {
-    let arg = |field_id, value| FieldValue {
-        field_id,
-        value: Value::U64(value),
-    };
-    let mut text = String::new();
-    let mut after = 0;
-    loop {
-        let outcome = device
-            .invoke_outcome(
-                "logging",
-                "read",
-                &[arg(read_arg::AFTER, after), arg(read_arg::LIMIT, 500)],
-            )
-            .await
-            .unwrap();
-        let ActionOutcome::Stream(stream) = outcome else {
-            panic!("logging.read returned records");
-        };
-        let data = read_file(device, &stream).await;
-        device.close_stream(&stream).await.unwrap();
-        let page = String::from_utf8(data).unwrap();
-        let Some(last) = page
-            .lines()
-            .filter_map(|line| line.split(' ').next()?.parse::<u64>().ok())
-            .next_back()
-        else {
-            return text;
-        };
-        after = last;
-        text.push_str(&page);
-    }
-}
-
-async fn read_file(device: &mut Device<TcpLink>, stream: &Stream) -> Vec<u8> {
-    let file = stream.files[0].id;
-    let mut data = Vec::new();
-    loop {
-        let chunk = device
-            .read_stream(stream, file, data.len() as u64)
-            .await
-            .unwrap();
-        data.extend_from_slice(&chunk.data);
-        if chunk.eof {
-            return data;
-        }
-    }
+    archive_text(device).await
 }
 
 /// The sections stored in the configuration flash file of a stopped device.
@@ -200,12 +153,17 @@ async fn factory_reset_formats_the_configuration_and_keeps_the_log_and_the_proce
     drop(device);
     assert!(sim.stop().success());
 
-    // The whole region was formatted: not even the unknown section is left.
-    assert_eq!(stored_sections(&storage), 0);
+    // The whole region was formatted: not even the unknown section is left. Only
+    // the boot counter was written again, so that it only grows.
+    assert_eq!(stored_sections(&storage), 1);
 
-    // A restart finds the factory state.
+    // A restart finds the factory state, and counts one more start.
     let sim = Sim::start(&Launch::new().storage(&storage));
     let mut device = sim.device().await;
+    assert_eq!(
+        fields(&mut device, "system").await.get("boot_count"),
+        Some(&Value::U64(2))
+    );
     assert_eq!(config_text(&mut device, "wifi", wifi::SSID).await, None);
     assert!(!provisioned(&mut device).await);
     drop(device);
@@ -217,8 +175,8 @@ async fn factory_reset_repairs_a_corrupted_configuration_storage() {
     let dir = TempDir::new().unwrap();
     let storage = dir.path().join("device.flash");
 
-    // The only committed slot loses its checksum: the store cannot open, but
-    // the region can still be formatted.
+    // The committed slots lose their checksum: the store cannot open, but the
+    // region can still be formatted.
     let sim = Sim::start(&Launch::new().storage(&storage));
     let mut device = sim.device().await;
     device
@@ -226,8 +184,14 @@ async fn factory_reset_repairs_a_corrupted_configuration_storage() {
         .await
         .unwrap();
     drop(device);
-    sim.manage_ok("storage corrupt crc");
     assert!(sim.stop().success());
+    // The boot counter gave the store a second generation: both slots lose their
+    // checksum, so that no committed slot is valid.
+    let mut image = std::fs::read(&storage).unwrap();
+    for slot in 0..2 {
+        image[slot * 8192 + 16] ^= 0x01;
+    }
+    std::fs::write(&storage, image).unwrap();
 
     let sim = Sim::start(&Launch::new().storage(&storage));
     let mut device = sim.device().await;

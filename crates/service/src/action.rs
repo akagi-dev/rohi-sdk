@@ -235,9 +235,10 @@ impl ActionDescriptor {
         self
     }
 
-    /// Declares that the action returns a stream (see
-    /// [`ActionOutput::stream`]) instead of records; its
-    /// [`results`](Self::results) stay empty.
+    /// Declares that the action may return a stream (see
+    /// [`ActionOutput::stream`]) instead of records. An action that has
+    /// [`results`](Self::results) too returns them when it has nothing to
+    /// stream.
     pub const fn stream(mut self) -> Self {
         self.stream = true;
         self

@@ -46,6 +46,9 @@ pub mod status_field {
     pub const LAST_CRASH_UPTIME: u32 = 6;
     /// `last_crash_logged`: whether the last panic is in the persistent log.
     pub const LAST_CRASH_LOGGED: u32 = 7;
+    /// `boot_count`: how many times the device has started, kept across resets and
+    /// power cycles; see [`SystemPlatform::boot_count`](crate::SystemPlatform::boot_count).
+    pub const BOOT_COUNT: u32 = 8;
 }
 
 /// Issue codes of the `system` service.
@@ -153,6 +156,7 @@ impl<P: SystemPlatform> Status for SystemService<P> {
             "last_crash_logged",
             ValueKind::Bool,
         ),
+        FieldDescriptor::new(status_field::BOOT_COUNT, "boot_count", ValueKind::U64),
     ];
     const ISSUES: &'static [IssueDescriptor] = &[
         IssueDescriptor::new(issue::CRASHED, "crashed"),
@@ -195,6 +199,9 @@ impl<P: SystemPlatform> Status for SystemService<P> {
     }
 
     async fn status(&self, out: &mut impl StatusWriter) -> Result<(), WriteError> {
+        if let Some(count) = self.0.boot_count() {
+            out.u64(status_field::BOOT_COUNT, u64::from(count))?;
+        }
         let Some(report) = self.0.boot_report() else {
             return Ok(());
         };

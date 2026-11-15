@@ -140,6 +140,10 @@ impl SystemPlatform for UrbanSystemPlatform {
     fn boot_report(&self) -> Option<Report> {
         (self.boot_report)()
     }
+
+    fn boot_count(&self) -> Option<u32> {
+        crate::config::boot_count()
+    }
 }
 
 /// The instances of the services of the device.
