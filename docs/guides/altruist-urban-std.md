@@ -25,7 +25,7 @@ on demand.
 ```
 
 The platform changes only what is ESP-specific. The measurement runtime, the configuration store, the Wi-Fi manager, the
-control dispatcher, identity, time and the telemetry uplink are the ones the firmware runs.
+control dispatcher, identity, time and the telemetry profiles, the connectivity routes and the publisher are the ones the firmware runs (a packet needs a synchronized UTC clock, so on the host it is built once NTP has answered).
 
 | On the device | On `std` |
 |---------------|----------|

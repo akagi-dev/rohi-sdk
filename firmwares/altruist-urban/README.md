@@ -85,7 +85,7 @@ The crate is the portable application of the Altruist Urban plus, with a chip fe
 
 | Path | Content |
 |------|---------|
-| `src/{config,bindings,control,net,connectivity,time,identity,location,reboot}.rs`, `src/tasks/` | the portable application: configuration owner and bindings, control device, Wi-Fi manager, telemetry, NTP time, identity, location, measurement store |
+| `src/{config,bindings,control,net,telemetry,connectivity,time,identity,location,reboot}.rs`, `src/tasks/` | the portable application: configuration owner and bindings, control device, Wi-Fi manager, telemetry, NTP time, identity, location, measurement store |
 | `src/esp/` (features `esp32c3` / `esp32c6`) | the ESP platform: flash, radio, BLE, sensors, resource budget (`resources.rs`) and the Embassy tasks around the portable owners |
 | `src/bin/firmware.rs` | the ESP entry point (binary `altruist-urban-firmware`) (requires a chip feature) |
 | `src/host/` (feature `std`) | the host platform: composition root, arguments, TCP and BLE control tasks, simulated sensors; entry point `src/bin/main.rs` (binary `altruist-urban`) |
