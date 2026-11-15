@@ -103,6 +103,10 @@ pub trait PacketProvider {
 /// Builds a fresh packet on demand for export, without any route.
 #[allow(async_fn_in_trait)]
 pub trait PacketExporter {
+    /// The monotonic time in milliseconds, for the lifetime of exported
+    /// packets.
+    fn now_ms(&self) -> u64;
+
     /// The current stamp of `profile`; `None` if it does not exist.
     fn resolve(&self, profile: &str) -> Option<ProfileStamp>;
 

@@ -42,9 +42,14 @@ struct Exporter<'a> {
     revision: &'a RefCell<u32>,
     fail: &'a RefCell<Option<BuildFailure>>,
     builds: &'a RefCell<u32>,
+    now: &'a RefCell<u64>,
 }
 
 impl PacketExporter for &Exporter<'_> {
+    fn now_ms(&self) -> u64 {
+        *self.now.borrow()
+    }
+
     fn resolve(&self, profile: &str) -> Option<ProfileStamp> {
         (profile == "env").then(|| ProfileStamp {
             id: PacketProfileId::new("env").unwrap(),
@@ -77,6 +82,7 @@ struct Fixture {
     revision: RefCell<u32>,
     fail: RefCell<Option<BuildFailure>>,
     builds: RefCell<u32>,
+    now: RefCell<u64>,
     state: ConnectivityState<NoopRawMutex>,
 }
 
@@ -87,6 +93,7 @@ impl Fixture {
             revision: RefCell::new(1),
             fail: RefCell::new(None),
             builds: RefCell::new(0),
+            now: RefCell::new(0),
             state: ConnectivityState::new(),
         }
     }
@@ -96,6 +103,7 @@ impl Fixture {
             revision: &self.revision,
             fail: &self.fail,
             builds: &self.builds,
+            now: &self.now,
         }
     }
 }
@@ -438,4 +446,24 @@ fn a_stream_is_not_served_after_its_policy_changed_and_failures_are_stable_codes
         ActionError::Rejected("nothing_to_package")
     );
     assert_eq!(service.open_streams(), 0);
+}
+
+#[test]
+fn an_abandoned_stream_expires_and_makes_room() {
+    let fixture = Fixture::new();
+    let exporter = fixture.exporter();
+    let service = Svc::new(&fixture.memory, &exporter, &fixture.state);
+    let (a, _) = packet(&service, "env").unwrap();
+    let (_b, _) = packet(&service, "env").unwrap();
+    assert_eq!(packet(&service, "env").unwrap_err(), ActionError::Busy);
+
+    *fixture.now.borrow_mut() = EXPORT_TTL_MS - 1;
+    assert!(read(&service, a, 0).is_ok(), "still within its lifetime");
+    *fixture.now.borrow_mut() = EXPORT_TTL_MS;
+    assert_eq!(
+        read(&service, a, 0).unwrap_err(),
+        ActionError::UnknownStream
+    );
+    assert_eq!(service.open_streams(), 0);
+    assert!(packet(&service, "env").is_ok());
 }

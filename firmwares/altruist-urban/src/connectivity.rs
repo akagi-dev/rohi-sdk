@@ -258,6 +258,10 @@ impl PacketProvider for UrbanPackets {
 }
 
 impl PacketExporter for UrbanPackets {
+    fn now_ms(&self) -> u64 {
+        EmbassyClock.now().millis
+    }
+
     fn resolve(&self, profile: &str) -> Option<ProfileStamp> {
         telemetry::state().resolve(profile)
     }

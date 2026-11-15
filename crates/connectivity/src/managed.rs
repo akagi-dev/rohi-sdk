@@ -51,7 +51,7 @@
 //! through the standard stream chunks: reading never builds or signs again.
 //! It is an ordinary `Read` action: the packet is public as an *encrypted*
 //! signed packet, a reader gets no key and cannot change a profile. A stream
-//! is released on `close_stream`, when the control link is lost and when the
+//! is released on `close_stream`, after [`EXPORT_TTL_MS`] (60 s), when the control link is lost and when the
 //! policy of its profile changed; the number of open streams is bounded and
 //! more requests are answered with `Busy`.
 //!
@@ -211,7 +211,12 @@ pub trait ConnectivityStore {
 struct Export {
     id: u32,
     handle: PacketHandle,
+    created_ms: u64,
 }
+
+/// How long an exported packet is kept when the client neither reads to the
+/// end and closes nor loses the link, in milliseconds.
+pub const EXPORT_TTL_MS: u64 = 60_000;
 
 struct Exports<const N: usize, const BYTES: usize> {
     pool: PacketPool<N, BYTES>,
@@ -274,6 +279,23 @@ impl<'a, M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, c
     /// The number of open packet streams.
     pub fn open_streams(&self) -> usize {
         self.exports.lock(|exports| exports.borrow().open.len())
+    }
+
+    /// Releases the streams that outlived [`EXPORT_TTL_MS`].
+    fn expire(&self) {
+        let now = self.exporter.now_ms();
+        self.exports.lock(|exports| {
+            let mut exports = exports.borrow_mut();
+            let mut index = 0;
+            while index < exports.open.len() {
+                if now.saturating_sub(exports.open[index].created_ms) >= EXPORT_TTL_MS {
+                    let export = exports.open.swap_remove(index);
+                    exports.pool.release(export.handle);
+                } else {
+                    index += 1;
+                }
+            }
+        });
     }
 
     fn release(&self, stream: u32) -> bool {
@@ -609,6 +631,7 @@ impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const
                 let id = text(args, action_field::ROUTE_ID)?;
                 let profile = text(args, action_field::PROFILE_ID)?;
                 let endpoint = text(args, action_field::ENDPOINT)?;
+                self.expire();
                 let stamp = self
                     .exporter
                     .resolve(profile)
@@ -696,6 +719,7 @@ impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const
                 }
                 // Built once, outside any lock; then retained until the stream
                 // is closed: reading never builds or signs again.
+                let created_ms = self.exporter.now_ms();
                 let mut buffer = [0u8; B];
                 let (built, len) = self
                     .exporter
@@ -717,7 +741,15 @@ impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const
                     }
                     let id = exports.next;
                     exports.next = exports.next.checked_add(1).unwrap_or(1);
-                    if exports.open.push(Export { id, handle }).is_err() {
+                    if exports
+                        .open
+                        .push(Export {
+                            id,
+                            handle,
+                            created_ms,
+                        })
+                        .is_err()
+                    {
                         exports.pool.release(handle);
                         return None;
                     }
@@ -752,6 +784,7 @@ impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const
         if file != 1 {
             return Err(ActionError::UnknownStream);
         }
+        self.expire();
         let exporter = &self.exporter;
         enum Read {
             Chunk(StreamChunk),
