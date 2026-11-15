@@ -417,11 +417,23 @@ async fn following_the_tail_at_debug_generates_no_records_of_its_own() {
         .config_patch("logging", &[set(1, Value::Enum("debug".to_owned()))], false)
         .await
         .unwrap();
-    let first = eventually("the boot record", WAIT, async || {
+    // Roll the bounded tail past the boot record before starting to follow it.
+    for round in 0..altruist_urban::logging::TAIL_RECORDS {
+        device
+            .config_patch(
+                "wifi",
+                &[set(wifi::SSID, text(&format!("debug-tail-{round}")))],
+                false,
+            )
+            .await
+            .unwrap();
+    }
+    let first = eventually("a tail record", WAIT, async || {
         let tail = tail(&mut device, 0, 0).await;
-        tail.text.contains("Starting").then_some(tail)
+        (!tail.text.is_empty()).then_some(tail)
     })
     .await;
+    assert!(!first.text.contains("Starting"));
     // The configuration change itself logs; let it settle, then follow.
     let mut cursor = first.cursor;
     let mut session = first.session;
