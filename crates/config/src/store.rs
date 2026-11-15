@@ -26,7 +26,9 @@ use crate::format::{
 };
 use crate::slot::{CHUNK, Entry, Fault, SlotInfo, SlotState, inspect, is_newer};
 use crate::writer::{SlotWriter, WriteAbort};
-use crate::{ConfigError, ConfigSection, ConfigStorage, Corruption, EncodeError, SectionId};
+use crate::{
+    ConfigError, ConfigSection, ConfigStorage, Corruption, EncodeError, SectionError, SectionId,
+};
 
 /// Smallest usable slot: envelope, payload head and the commit word.
 const MIN_SLOT_SIZE: usize = 64;
@@ -294,14 +296,20 @@ impl<S: ConfigStorage> ConfigStore<S> {
     /// Like [`open`](Self::open), but returns the storage with the error.
     pub fn try_open(mut storage: S) -> Result<Self, OpenFailure<S>> {
         match Self::scan(&mut storage) {
-            Ok((slot_size, active, open_state)) => Ok(Self {
-                storage,
-                slot_size,
-                active,
-                open_state,
-                damaged: open_state == ConfigOpenState::Recovered,
-            }),
-            Err(error) => Err(OpenFailure { storage, error }),
+            Ok((slot_size, active, open_state)) => {
+                log_opened(slot_size, active.as_ref(), open_state);
+                Ok(Self {
+                    storage,
+                    slot_size,
+                    active,
+                    open_state,
+                    damaged: open_state == ConfigOpenState::Recovered,
+                })
+            }
+            Err(error) => {
+                log_failed("open", &error);
+                Err(OpenFailure { storage, error })
+            }
         }
     }
 
@@ -315,9 +323,21 @@ impl<S: ConfigStorage> ConfigStore<S> {
             match inspect(storage, slot * slot_size, slot_size, true)
                 .map_err(ConfigError::Storage)?
             {
-                SlotState::Uncommitted => {}
-                SlotState::Invalid(reason) => damaged = damaged.or(Some(reason)),
+                SlotState::Uncommitted => {
+                    log::trace!(target: "config", "Slot uncommitted (slot={})", slot)
+                }
+                SlotState::Invalid(reason) => {
+                    log_slot_invalid(slot, reason);
+                    damaged = damaged.or(Some(reason));
+                }
                 SlotState::Valid(info) => {
+                    log::trace!(
+                        target: "config",
+                        "Slot valid (slot={} generation={} count={})",
+                        slot,
+                        info.generation,
+                        info.sections
+                    );
                     if best.is_none_or(|b| is_newer(info.generation, b.info.generation)) {
                         best = Some(Active { slot, info });
                     }
@@ -353,14 +373,20 @@ impl<S: ConfigStorage> ConfigStore<S> {
             Ok(slot_size)
         });
         match result {
-            Ok(slot_size) => Ok(Self {
-                storage,
-                slot_size,
-                active: None,
-                open_state: ConfigOpenState::Empty,
-                damaged: false,
-            }),
-            Err(error) => Err(OpenFailure { storage, error }),
+            Ok(slot_size) => {
+                log::info!(target: "config", "Storage formatted (slot_size_b={})", slot_size);
+                Ok(Self {
+                    storage,
+                    slot_size,
+                    active: None,
+                    open_state: ConfigOpenState::Empty,
+                    damaged: false,
+                })
+            }
+            Err(error) => {
+                log_failed("format", &error);
+                Err(OpenFailure { storage, error })
+            }
         }
     }
 
@@ -437,7 +463,8 @@ impl<S: ConfigStorage> ConfigStore<S> {
         self.storage
             .read(entry.payload_offset, payload)
             .map_err(ConfigError::Storage)?;
-        let value = T::decode_versioned(entry.version, payload)?;
+        let value = T::decode_versioned(entry.version, payload)
+            .inspect_err(|error| log_section_failed(T::ID, entry.version, error))?;
         Ok(Some(value))
     }
 
@@ -553,6 +580,13 @@ impl<S: ConfigStorage> ConfigStore<S> {
 
     fn check_section_size(&self, id: SectionId, len: usize) -> Result<(), ConfigError<S::Error>> {
         if len > MAX_SECTION_PAYLOAD {
+            log::warn!(
+                target: "config",
+                "Section too large (id={} size_b={} max_b={})",
+                id,
+                len,
+                MAX_SECTION_PAYLOAD
+            );
             return Err(ConfigError::SectionTooLarge {
                 id,
                 len,
@@ -596,6 +630,24 @@ impl<S: ConfigStorage> ConfigStore<S> {
     }
 
     fn commit<F>(&mut self, edit: Edit, fill: F) -> Result<(), ConfigError<S::Error>>
+    where
+        F: FnOnce(&mut SlotWriter<'_, S>) -> Result<(), EncodeError>,
+    {
+        log_edit(&edit);
+        let result = self.commit_inner(edit, fill);
+        match &result {
+            Ok(()) => log::debug!(
+                target: "config",
+                "Commit succeeded (slot={:?} generation={:?})",
+                self.active_slot(),
+                self.generation()
+            ),
+            Err(error) => log_failed("commit", error),
+        }
+        result
+    }
+
+    fn commit_inner<F>(&mut self, edit: Edit, fill: F) -> Result<(), ConfigError<S::Error>>
     where
         F: FnOnce(&mut SlotWriter<'_, S>) -> Result<(), EncodeError>,
     {
@@ -665,6 +717,13 @@ impl<S: ConfigStorage> ConfigStore<S> {
         // Make the inactive slot uncommitted before erasing it: an interrupted
         // erase then never leaves a committed but half-erased slot behind,
         // whatever order the flash erases its cells in.
+        log::trace!(
+            target: "config",
+            "Committing slot (slot={} generation={} count={})",
+            target,
+            generation,
+            count
+        );
         let target_base = target * slot_size;
         invalidate(&mut self.storage, target_base, slot_size).map_err(ConfigError::Storage)?;
         erase_slot(&mut self.storage, target_base, slot_size).map_err(ConfigError::Storage)?;
@@ -755,10 +814,104 @@ impl<S: ConfigStorage> ConfigStore<S> {
     }
 }
 
+fn log_edit(edit: &Edit) {
+    match edit {
+        Edit::Set { id, version, len } => {
+            log::debug!(
+                target: "config",
+                "Committing section set (id={} version={} size_b={})",
+                id,
+                version,
+                len
+            )
+        }
+        Edit::Remove(id) => log::debug!(target: "config", "Committing section removal (id={})", id),
+        Edit::Clear => log::debug!(target: "config", "Committing removal of all sections"),
+    }
+}
+
+fn log_opened(slot_size: usize, active: Option<&Active>, state: ConfigOpenState) {
+    match active {
+        Some(active) => log::info!(
+            target: "config",
+            "Storage opened: {:?} (slot={} generation={} count={} slot_size_b={})",
+            state,
+            active.slot,
+            active.info.generation,
+            active.info.sections,
+            slot_size
+        ),
+        None => {
+            log::info!(target: "config", "Storage opened: {:?} (slot_size_b={})", state, slot_size)
+        }
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn log_slot_invalid(slot: usize, reason: Corruption) {
+    log::warn!(target: "config", "Slot invalid: {:?} (slot={})", reason, slot);
+}
+
+#[cold]
+#[inline(never)]
+fn log_corrupt(reason: Corruption) {
+    log::warn!(target: "config", "Corrupt record in the active slot: {:?}", reason);
+}
+
+#[cold]
+#[inline(never)]
+fn log_section_failed(id: SectionId, version: u16, error: &SectionError) {
+    log::warn!(
+        target: "config",
+        "Section decode failed: {:?} (id={} version={})",
+        error,
+        id,
+        version
+    );
+}
+
+// The backend error is not `Debug`: it is reduced to a marker.
+fn without_backend<E>(error: &ConfigError<E>) -> ConfigError<()> {
+    match error {
+        ConfigError::Storage(_) => ConfigError::Storage(()),
+        ConfigError::Section(error) => ConfigError::Section(*error),
+        ConfigError::InvalidStorage(reason) => ConfigError::InvalidStorage(reason),
+        ConfigError::CorruptStorage(reason) => ConfigError::CorruptStorage(*reason),
+        ConfigError::SectionTooLarge { id, len, max } => ConfigError::SectionTooLarge {
+            id: *id,
+            len: *len,
+            max: *max,
+        },
+        ConfigError::StorageFull => ConfigError::StorageFull,
+        ConfigError::TooManySections => ConfigError::TooManySections,
+        ConfigError::EncodeMismatch { id } => ConfigError::EncodeMismatch { id: *id },
+        ConfigError::VerifyFailed => ConfigError::VerifyFailed,
+        ConfigError::Encode(error) => ConfigError::Encode(*error),
+        ConfigError::BufferTooSmall { required } => ConfigError::BufferTooSmall {
+            required: *required,
+        },
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn log_failed<E>(operation: &'static str, error: &ConfigError<E>) {
+    log::warn!(
+        target: "config",
+        "Storage {} failed: {:?}",
+        operation,
+        without_backend(error)
+    );
+}
+
 fn into_config<E>(fault: Fault<E>) -> ConfigError<E> {
     match fault {
         Fault::Storage(error) => ConfigError::Storage(error),
-        Fault::Corrupt(reason) => ConfigError::CorruptStorage(reason),
+        Fault::Corrupt(reason) => {
+            log_corrupt(reason);
+            ConfigError::CorruptStorage(reason)
+        }
     }
 }
 

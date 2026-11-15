@@ -55,6 +55,7 @@ use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embedded_io_async::{ErrorType, Read, Write};
 use embedded_nal_async::AddrType;
+use log::{debug, trace, warn};
 use rohi_net::{IpBackend, IpUsage, NetError, UdpSocket};
 
 /// Sockets the stack itself needs: DHCPv4 and DNS. [`NetResources`] checks at
@@ -120,6 +121,7 @@ impl<const N: usize, const RX: usize, const TX: usize> TcpPool<N, RX, TX> {
 
     fn alloc(&self) -> Option<PoolEntry<'_, N, RX, TX>> {
         let index = self.slots.acquire()?;
+        trace!(target: "ip", "TCP slot taken (index={})", index);
         Some(PoolEntry { pool: self, index })
     }
 
@@ -151,6 +153,7 @@ impl<'a, const N: usize, const RX: usize, const TX: usize> PoolEntry<'a, N, RX, 
 impl<const N: usize, const RX: usize, const TX: usize> Drop for PoolEntry<'_, N, RX, TX> {
     fn drop(&mut self) {
         self.pool.slots.release(self.index);
+        trace!(target: "ip", "TCP slot released (index={})", self.index);
     }
 }
 
@@ -188,6 +191,7 @@ impl<const N: usize, const BUF: usize> UdpPool<N, BUF> {
 
     fn alloc(&self) -> Option<UdpEntry<'_, N, BUF>> {
         let index = self.slots.acquire()?;
+        trace!(target: "ip", "UDP slot taken (index={})", index);
         Some(UdpEntry { pool: self, index })
     }
 
@@ -230,6 +234,7 @@ impl<'a, const N: usize, const BUF: usize> UdpEntry<'a, N, BUF> {
 impl<const N: usize, const BUF: usize> Drop for UdpEntry<'_, N, BUF> {
     fn drop(&mut self) {
         self.pool.slots.release(self.index);
+        trace!(target: "ip", "UDP slot released (index={})", self.index);
     }
 }
 
@@ -379,14 +384,21 @@ impl<const TCP: usize, const RX: usize, const TX: usize, const UDP: usize, const
     async fn resolve(&self, host: &str, addr_type: AddrType) -> Result<IpAddr, NetError> {
         // Only IPv4 is configured (DHCPv4).
         if matches!(addr_type, AddrType::IPv6) {
+            debug!(target: "ip", "IPv6 lookup is not supported (host={})", host);
             return Err(NetError::DnsFailed);
         }
         let addresses = self
             .stack
             .dns_query(host, DnsQueryType::A)
             .await
-            .map_err(|_| NetError::DnsFailed)?;
-        let IpAddress::Ipv4(address) = addresses.first().copied().ok_or(NetError::DnsFailed)?;
+            .map_err(|error| {
+                debug!(target: "ip", "DNS query failed (err={:?} host={})", error, host);
+                NetError::DnsFailed
+            })?;
+        let IpAddress::Ipv4(address) = addresses.first().copied().ok_or_else(|| {
+            debug!(target: "ip", "DNS query returned no address (host={})", host);
+            NetError::DnsFailed
+        })?;
         Ok(IpAddr::V4(Ipv4Addr::from(address.octets())))
     }
 
@@ -395,9 +407,13 @@ impl<const TCP: usize, const RX: usize, const TX: usize, const UDP: usize, const
         remote: SocketAddr,
     ) -> Result<EspTcpConnection<'_, TCP, RX, TX>, NetError> {
         let IpAddr::V4(address) = remote.ip() else {
+            debug!(target: "ip", "IPv6 remote is not supported (addr={})", remote);
             return Err(NetError::ConnectFailed);
         };
-        let entry = self.tcp.alloc().ok_or(NetError::NoSocketAvailable)?;
+        let entry = self.tcp.alloc().ok_or_else(|| {
+            warn!(target: "ip", "No free TCP slot (capacity={})", TCP);
+            NetError::NoSocketAvailable
+        })?;
         // SAFETY: first and only use of this entry, see `PoolEntry::buffers`.
         let (rx, tx) = unsafe { entry.buffers() };
         let socket = TcpSocket::new(self.stack, rx, tx);
@@ -408,21 +424,26 @@ impl<const TCP: usize, const RX: usize, const TX: usize, const UDP: usize, const
             _entry: entry,
         };
         let endpoint = IpEndpoint::new(IpAddress::Ipv4(address), remote.port());
-        connection
-            .socket
-            .connect(endpoint)
-            .await
-            .map_err(map_connect_error)?;
+        connection.socket.connect(endpoint).await.map_err(|error| {
+            debug!(target: "ip", "TCP connect failed (err={:?} addr={})", error, remote);
+            map_connect_error(error)
+        })?;
         Ok(connection)
     }
 
     fn udp_socket(&self) -> Result<EspUdpSocket<'_, UDP, UDP_BUF>, NetError> {
-        let entry = self.udp.alloc().ok_or(NetError::NoSocketAvailable)?;
+        let entry = self.udp.alloc().ok_or_else(|| {
+            warn!(target: "ip", "No free UDP slot (capacity={})", UDP);
+            NetError::NoSocketAvailable
+        })?;
         // SAFETY: first and only use of this entry, see `UdpEntry::buffers`.
         let (rx_meta, rx, tx_meta, tx) = unsafe { entry.buffers() };
         let mut socket = EmbassyUdpSocket::new(self.stack, rx_meta, rx, tx_meta, tx);
         // Port 0: the stack picks an ephemeral port.
-        socket.bind(0).map_err(|_| NetError::Backend)?;
+        socket.bind(0).map_err(|error| {
+            warn!(target: "ip", "Cannot bind a UDP socket (err={:?})", error);
+            NetError::Backend
+        })?;
         Ok(EspUdpSocket {
             socket,
             stack: self.stack,
@@ -452,6 +473,7 @@ impl<const TCP: usize, const RX: usize, const TX: usize> Drop
     for EspTcpConnection<'_, TCP, RX, TX>
 {
     fn drop(&mut self) {
+        trace!(target: "ip", "TCP connection aborted");
         self.socket.abort();
     }
 }
@@ -466,10 +488,12 @@ impl<const TCP: usize, const RX: usize, const TX: usize> Read
     for EspTcpConnection<'_, TCP, RX, TX>
 {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, NetError> {
-        self.socket
-            .read(buf)
-            .await
-            .map_err(|_| NetError::ConnectionReset)
+        let read = self.socket.read(buf).await.map_err(|error| {
+            debug!(target: "ip", "TCP read failed (err={:?})", error);
+            NetError::ConnectionReset
+        })?;
+        trace!(target: "ip", "TCP read (size_b={})", read);
+        Ok(read)
     }
 }
 
@@ -477,17 +501,19 @@ impl<const TCP: usize, const RX: usize, const TX: usize> Write
     for EspTcpConnection<'_, TCP, RX, TX>
 {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, NetError> {
-        self.socket
-            .write(buf)
-            .await
-            .map_err(|_| NetError::ConnectionReset)
+        let written = self.socket.write(buf).await.map_err(|error| {
+            debug!(target: "ip", "TCP write failed (err={:?})", error);
+            NetError::ConnectionReset
+        })?;
+        trace!(target: "ip", "TCP write (size_b={} requested_b={})", written, buf.len());
+        Ok(written)
     }
 
     async fn flush(&mut self) -> Result<(), NetError> {
-        self.socket
-            .flush()
-            .await
-            .map_err(|_| NetError::ConnectionReset)
+        self.socket.flush().await.map_err(|error| {
+            debug!(target: "ip", "TCP flush failed (err={:?})", error);
+            NetError::ConnectionReset
+        })
     }
 }
 
@@ -508,16 +534,19 @@ async fn wait_for_network_down(stack: Stack<'static>) {
 impl<const UDP: usize, const UDP_BUF: usize> UdpSocket for EspUdpSocket<'_, UDP, UDP_BUF> {
     async fn send_to(&self, data: &[u8], remote: SocketAddr) -> Result<(), NetError> {
         let IpAddr::V4(address) = remote.ip() else {
+            debug!(target: "ip", "IPv6 remote is not supported (addr={})", remote);
             return Err(NetError::Backend);
         };
         let endpoint = IpEndpoint::new(IpAddress::Ipv4(address), remote.port());
-        self.socket
-            .send_to(data, endpoint)
-            .await
-            .map_err(|error| match error {
+        self.socket.send_to(data, endpoint).await.map_err(|error| {
+            debug!(target: "ip", "UDP send failed (err={:?} addr={})", error, remote);
+            match error {
                 SendError::NoRoute => NetError::NetworkUnavailable,
                 _ => NetError::Backend,
-            })
+            }
+        })?;
+        trace!(target: "ip", "UDP sent (size_b={} addr={})", data.len(), remote);
+        Ok(())
     }
 
     async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr), NetError> {
@@ -529,9 +558,13 @@ impl<const UDP: usize, const UDP_BUF: usize> UdpSocket for EspUdpSocket<'_, UDP,
             .await
             {
                 Either::First(result) => result,
-                Either::Second(()) => return Err(NetError::NetworkUnavailable),
+                Either::Second(()) => {
+                    debug!(target: "ip", "Network went down while receiving");
+                    return Err(NetError::NetworkUnavailable);
+                }
             };
             if !self.stack.is_link_up() || !self.stack.is_config_up() {
+                debug!(target: "ip", "Network is down, receive abandoned");
                 return Err(NetError::NetworkUnavailable);
             }
             match result {
@@ -541,10 +574,13 @@ impl<const UDP: usize, const UDP_BUF: usize> UdpSocket for EspUdpSocket<'_, UDP,
                         IpAddr::V4(Ipv4Addr::from(address.octets())),
                         meta.endpoint.port,
                     );
+                    trace!(target: "ip", "UDP received (size_b={} addr={})", len, from);
                     return Ok((len, from));
                 }
                 // The stack already dropped the oversized datagram.
-                Err(RecvError::Truncated) => {}
+                Err(RecvError::Truncated) => {
+                    debug!(target: "ip", "Truncated UDP datagram dropped");
+                }
             }
         }
     }

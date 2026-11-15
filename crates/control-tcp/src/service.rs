@@ -19,7 +19,7 @@
 use core::fmt::Debug;
 
 use embedded_io_async::{Read, Write};
-use log::{debug, warn};
+use log::{debug, info, trace, warn};
 use rohi_control::{AuthorizationPolicy, ControlBackend, Controller, LinkSecurity};
 use rohi_control_proto::control::{self as pb, Response_::Response as Reply};
 use rohi_control_proto::limits::{MAX_REQUEST_LEN, MAX_RESPONSE_LEN};
@@ -121,12 +121,18 @@ where
     ///
     /// The error of [`Acceptor::accept`].
     pub async fn serve_next(&mut self) -> Result<(), A::Error> {
-        let stream = self.acceptor.accept().await?;
-        debug!("control: client connected");
+        let stream = match self.acceptor.accept().await {
+            Ok(stream) => stream,
+            Err(error) => {
+                log::error!(target: "control.tcp", "Acceptor failed, serving stops (err={:?})", error);
+                return Err(error);
+            }
+        };
         self.sessions = self.sessions.wrapping_add(1);
+        info!(target: "control.tcp", "Client connected (session={})", self.sessions);
         self.serve(stream).await;
         self.controller.link_lost();
-        debug!("control: client disconnected");
+        info!(target: "control.tcp", "Client disconnected (session={})", self.sessions);
         Ok(())
     }
 
@@ -139,9 +145,12 @@ where
             let mut header = [0u8; HEADER_LEN];
             match read_header(&mut stream, &mut header).await {
                 Ok(true) => {}
-                Ok(false) => return,
+                Ok(false) => {
+                    debug!(target: "control.tcp", "Client closed the connection");
+                    return;
+                }
                 Err(()) => {
-                    debug!("control: connection ended inside a record header");
+                    debug!(target: "control.tcp", "Connection ended inside a record header");
                     return;
                 }
             }
@@ -150,15 +159,20 @@ where
                 Err(error) => {
                     // The length cannot be trusted, so the stream cannot be
                     // resynchronized: answer once and close.
-                    warn!("control: rejected record: {}", error);
+                    warn!(target: "control.tcp", "Record rejected (err={})", error);
                     self.send_error(&mut stream).await;
                     return;
                 }
             };
-            if stream.read_exact(&mut self.request[..len]).await.is_err() {
-                debug!("control: connection ended inside a request");
+            if let Err(error) = stream.read_exact(&mut self.request[..len]).await {
+                debug!(
+                    target: "control.tcp",
+                    "Connection ended inside a request (size_b={} err={:?})",
+                    len, error
+                );
                 return;
             }
+            trace!(target: "control.tcp", "Request record received (size_b={})", len);
             let written = self
                 .controller
                 .handle(
@@ -167,7 +181,11 @@ where
                     &mut self.response[HEADER_LEN..],
                 )
                 .await;
-            if written == 0 || !self.send(&mut stream, written).await {
+            if written == 0 {
+                warn!(target: "control.tcp", "No response to send, closing the connection");
+                return;
+            }
+            if !self.send(&mut stream, written).await {
                 return;
             }
         }
@@ -182,14 +200,24 @@ where
                 ..Default::default()
             })),
         };
-        if let Ok(written) = encode(&response, &mut self.response[HEADER_LEN..]) {
-            self.send(stream, written).await;
+        match encode(&response, &mut self.response[HEADER_LEN..]) {
+            Ok(written) => {
+                self.send(stream, written).await;
+            }
+            Err(error) => {
+                warn!(target: "control.tcp", "Cannot encode the error response (err={:?})", error)
+            }
         }
     }
 
     /// Writes the record whose payload is `response[HEADER_LEN..][..written]`.
     async fn send(&mut self, stream: &mut A::Stream, written: usize) -> bool {
         let Ok(len) = u32::try_from(written) else {
+            warn!(
+                target: "control.tcp",
+                "Response cannot be framed (size_b={})",
+                written
+            );
             return false;
         };
         self.response[..HEADER_LEN].copy_from_slice(&encode_header(len));
@@ -200,10 +228,20 @@ where
             stream.flush().await
         }
         .await;
-        if result.is_err() {
-            debug!("control: sending a response failed");
+        match result {
+            Ok(()) => {
+                trace!(target: "control.tcp", "Response record sent (size_b={})", written);
+                true
+            }
+            Err(error) => {
+                debug!(
+                    target: "control.tcp",
+                    "Sending the response failed (size_b={} err={:?})",
+                    written, error
+                );
+                false
+            }
         }
-        result.is_ok()
     }
 }
 
@@ -213,8 +251,13 @@ async fn read_header<R: Read>(stream: &mut R, header: &mut [u8; HEADER_LEN]) -> 
     match stream.read(&mut header[..1]).await {
         Ok(0) => return Ok(false),
         Ok(_) => {}
-        Err(_) => return Err(()),
+        Err(error) => {
+            debug!(target: "control.tcp", "Reading a record header failed (err={:?})", error);
+            return Err(());
+        }
     }
-    stream.read_exact(&mut header[1..]).await.map_err(|_| ())?;
+    stream.read_exact(&mut header[1..]).await.map_err(|error| {
+        debug!(target: "control.tcp", "Reading a record header failed (err={:?})", error);
+    })?;
     Ok(true)
 }

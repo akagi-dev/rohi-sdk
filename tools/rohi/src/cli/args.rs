@@ -319,12 +319,16 @@ Examples:
     #[command(
         args_conflicts_with_subcommands = true,
         about = "Show, follow, download or clear the device log",
-        long_about = "Show, follow, download or clear the persistent log of the device.\n\n\
+        long_about = "Show or follow the latest log records of the device, download or clear its\n\
+            persistent log.\n\n\
             A convenience over the actions of the `logging` service: `rohi logs` runs\n\
-            `logging.read`, `logs download` runs `logging.download` and `logs clear`\n\
-            runs `logging.clear`. Everything it does is also possible with `rohi action\n\
-            logging ...`. What the device keeps (level, storage, compression, size) is\n\
-            the `logging` config section: `rohi config logging`.",
+            the `TailLogs` request, which reads the few most recent records the device\n\
+            keeps in RAM page by page (they are lost on a restart, and older ones are\n\
+            overwritten; nothing is opened on the device), `logs\n\
+            download` runs `logging.download`, which saves the archive kept in flash, and\n\
+            `logs clear` runs `logging.clear`. Everything it does is also possible with\n\
+            `rohi action logging ...`. What the device keeps (level, storage,\n\
+            compression, size) is the `logging` config section: `rohi config logging`.",
         after_help = "\
 Examples:
   rohi logs
@@ -341,7 +345,7 @@ Examples:
     Logs {
         #[command(subcommand)]
         action: Option<LogsAction>,
-        /// How many of the latest records to print first.
+        /// How many of the latest records to print first; the device keeps only a few in RAM, use `logs download` for the archive.
         #[arg(
             short = 'n',
             long = "lines",

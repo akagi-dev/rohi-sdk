@@ -111,6 +111,7 @@ pub fn controller(
             logging: logging::runtime().service(),
             reboot: reboot::request,
             entropy: super::app::host_entropy,
+            boot_report: || None,
         },
         config::handle(),
         identity::start(config::handle()),

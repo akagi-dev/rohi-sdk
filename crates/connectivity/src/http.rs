@@ -155,11 +155,18 @@ impl<'a, B: IpBackend, D: DelayNs> HttpTransport<'a, B, D> {
                 .await
                 .map_err(map_error)?,
         };
+        log::trace!(
+            target: "connectivity.http",
+            "Connecting (addr={} port={})",
+            address,
+            endpoint.port
+        );
         let mut connection = net
             .connect(SocketAddr::new(address, endpoint.port))
             .await
             .map_err(map_error)?;
 
+        log::trace!(target: "connectivity.http", "Connected");
         let head = request_head(endpoint, packet.len())?;
         connection
             .write_all(head.as_bytes())
@@ -175,10 +182,14 @@ impl<'a, B: IpBackend, D: DelayNs> HttpTransport<'a, B, D> {
                 return Ok(status);
             }
             if filled == response.len() {
+                log::debug!(target: "connectivity.http", "No status line in response (size_b={})", filled);
                 return Err(TransportError::BadResponse);
             }
             match connection.read(&mut response[filled..]).await {
-                Ok(0) => return Err(TransportError::Io),
+                Ok(0) => {
+                    log::debug!(target: "connectivity.http", "Connection closed before the status line");
+                    return Err(TransportError::Io);
+                }
                 Ok(read) => filled += read,
                 Err(error) => return Err(map_error(error)),
             }
@@ -192,15 +203,29 @@ impl<B: IpBackend, D: DelayNs> PacketTransport for HttpTransport<'_, B, D> {
         endpoint: Endpoint<'_>,
         packet: &[u8],
     ) -> Result<TransportAck, TransportError> {
+        log::debug!(
+            target: "connectivity.http",
+            "Posting packet (size_b={} port={} host={})",
+            packet.len(),
+            endpoint.port,
+            endpoint.host
+        );
+        let timeout_ms = self.timeout_ms;
         let exchange = Self::exchange(self.net, endpoint, packet);
         let status = with_timeout(&mut self.delay, self.timeout_ms, exchange)
             .await
-            .map_err(|_| TransportError::Timeout)??;
+            .map_err(|_| {
+                log::debug!(target: "connectivity.http", "No answer from server (timeout_ms={})", timeout_ms);
+                TransportError::Timeout
+            })??;
+        log::debug!(target: "connectivity.http", "Server answered (status={})", status);
         classify_status(status)
     }
 }
 
+#[inline(never)]
 fn map_error(error: NetError) -> TransportError {
+    log::debug!(target: "connectivity.http", "Network error (err={:?})", error);
     match error {
         NetError::NetworkUnavailable => TransportError::NetworkUnavailable,
         NetError::DnsFailed => TransportError::Dns,
@@ -256,7 +281,14 @@ pub fn request_head(
                 "Content-Type: {CONTENT_TYPE}\r\nContent-Length: {content_length}\r\nConnection: close\r\n\r\n"
             )
         })
-        .map_err(|_| TransportError::BadResponse)?;
+        .map_err(|_| {
+            log::warn!(
+                target: "connectivity.http",
+                "Request head does not fit (capacity_b={})",
+                HEAD_CAPACITY
+            );
+            TransportError::BadResponse
+        })?;
     Ok(head)
 }
 
@@ -268,10 +300,16 @@ fn parse_status(bytes: &[u8]) -> Result<Option<u16>, TransportError> {
     };
     let line = &bytes[..end];
     if line.len() < 12 || !line.starts_with(b"HTTP/1.") || line[8] != b' ' {
+        log::debug!(
+            target: "connectivity.http",
+            "Malformed status line (len_b={})",
+            line.len()
+        );
         return Err(TransportError::BadResponse);
     }
     let digits = &line[9..12];
     if !digits.iter().all(u8::is_ascii_digit) || line.get(12).is_some_and(|b| *b != b' ') {
+        log::debug!(target: "connectivity.http", "Malformed status code");
         return Err(TransportError::BadResponse);
     }
     let status = digits

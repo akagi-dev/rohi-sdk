@@ -29,6 +29,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
+use log::{debug, info, trace, warn};
 use rohi_net::WifiSecurity;
 
 use crate::command::{ApAction, Command, Field, IpFault, Sensor, SensorFault, WifiFault};
@@ -130,7 +131,14 @@ static WORLD: OnceLock<World> = OnceLock::new();
 
 /// Creates the world of `scenario`. Call once, before anything uses [`world`].
 pub fn init(scenario: &Scenario, seed: Option<u64>, device_name: String) -> &'static World {
-    WORLD.get_or_init(|| World::new(scenario, seed, device_name))
+    let world = WORLD.get_or_init(|| World::new(scenario, seed, device_name.clone()));
+    // After the initializer: the log sink reads the clock, which may read the world.
+    info!(
+        target: "sim.world",
+        "World initialized (device={device_name} seed={seed:?} access_points={})",
+        scenario.wifi.aps.len()
+    );
+    world
 }
 
 /// Creates the world for unit tests, once per process.
@@ -195,6 +203,7 @@ impl World {
     /// Storage commands, `status` and `shutdown` belong to the callers that
     /// own that state.
     pub fn apply(&self, command: &Command) -> bool {
+        trace!(target: "sim.world", "Applying command (cmd={command:?})");
         let mut state = self.lock();
         match command {
             Command::Set(field, value) => {
@@ -223,12 +232,17 @@ impl World {
                 return true;
             }
             Command::Ap { ssid, action } => {
+                let mut matched = 0usize;
                 for ap in state.wifi.aps.iter_mut().filter(|ap| &ap.ssid == ssid) {
+                    matched += 1;
                     match action {
                         ApAction::Up => ap.available = true,
                         ApAction::Down => ap.available = false,
                         ApAction::Rssi(rssi) => ap.rssi = *rssi,
                     }
+                }
+                if matched == 0 {
+                    warn!(target: "sim.world", "No matching access point (ssid={ssid} action={action:?})");
                 }
                 drop(state);
                 self.wifi_changed.signal(());
@@ -254,6 +268,7 @@ impl World {
             Command::IpLatency { ms } => state.ip.latency_ms = *ms,
             Command::IpDropNext => state.ip.drop_next += 1,
             Command::Storage(_) | Command::Status | Command::Measurements | Command::Shutdown => {
+                debug!(target: "sim.world", "Command belongs to the caller (cmd={command:?})");
                 return false;
             }
         }

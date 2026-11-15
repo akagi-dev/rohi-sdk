@@ -209,7 +209,10 @@ impl<S: IdentityStore> Status for IdentityService<S> {
             Ok(Some(_)) => ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true),
             // A fresh device: not an error, telemetry waits for provisioning.
             Ok(None) => ServiceSummary::new(ServiceState::Stopped, ServiceHealth::Unknown, false),
-            Err(_) => ServiceSummary::new(ServiceState::Failed, ServiceHealth::Error, false),
+            Err(error) => {
+                log::debug!(target: "identity", "Store unavailable (err={:?})", error);
+                ServiceSummary::new(ServiceState::Failed, ServiceHealth::Error, false)
+            }
         }
     }
 
@@ -270,28 +273,69 @@ impl<S: IdentityStore> Action for IdentityService<S> {
                     .find(|(id, _)| *id == action_field::SECRET)
                     .and_then(|(_, value)| value.as_bytes())
                     .filter(|secret| secret.len() == SECRET_LEN)
-                    .ok_or(ActionError::InvalidArgument)?;
+                    .ok_or_else(|| {
+                        log::warn!(target: "identity", "Provisioning rejected: secret missing or wrong length");
+                        ActionError::InvalidArgument
+                    })?;
                 let identity =
                     Identity::from_secret(secret).map_err(|_| ActionError::InvalidArgument)?;
                 // Never replaces an existing identity: that needs an explicit
                 // erase first.
-                if self.0.public_key().await?.is_some() {
+                if self
+                    .0
+                    .public_key()
+                    .await
+                    .inspect_err(|error| log_store_failed("read", *error))?
+                    .is_some()
+                {
+                    log::warn!(target: "identity", "Provisioning rejected: already provisioned");
                     return Err(ActionError::Rejected("already_provisioned"));
                 }
-                self.0.store(&identity).await?;
+                self.0
+                    .store(&identity)
+                    .await
+                    .inspect_err(|error| log_store_failed("store", *error))?;
                 // The stored identity is read back before success is reported.
                 let expected = identity.public_key();
-                match self.0.public_key().await? {
-                    Some(stored) if stored == expected => out
-                        .bytes(action_field::PUBLIC_KEY, expected.as_bytes())
-                        .map_err(|_| ActionError::Internal),
-                    _ => Err(ActionError::Internal),
+                match self
+                    .0
+                    .public_key()
+                    .await
+                    .inspect_err(|error| log_store_failed("read back", *error))?
+                {
+                    Some(stored) if stored == expected => {
+                        log::info!(target: "identity", "Identity provisioned (key={})", expected);
+                        out.bytes(action_field::PUBLIC_KEY, expected.as_bytes())
+                            .map_err(|_| ActionError::Internal)
+                    }
+                    _ => {
+                        log::error!(target: "identity", "Provisioning failed: stored identity does not match");
+                        Err(ActionError::Internal)
+                    }
                 }
             }
-            action::ERASE => Ok(self.0.erase().await?),
+            action::ERASE => {
+                self.0
+                    .erase()
+                    .await
+                    .inspect_err(|error| log_store_failed("erase", *error))?;
+                log::info!(target: "identity", "Identity erased");
+                Ok(())
+            }
             _ => Err(ActionError::UnknownAction),
         }
     }
+}
+
+#[cold]
+#[inline(never)]
+fn log_store_failed(operation: &'static str, error: StoreError) {
+    log::warn!(
+        target: "identity",
+        "Store {} failed (err={:?})",
+        operation,
+        error
+    );
 }
 
 #[cfg(test)]

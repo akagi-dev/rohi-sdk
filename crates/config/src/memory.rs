@@ -151,6 +151,13 @@ impl<const N: usize, const ERASE: usize> ConfigStorage for MemoryStorage<N, ERAS
             *budget -= allowed;
         }
         if allowed < data.len() {
+            log::trace!(
+                target: "config",
+                "Memory write fault (offset={} written_b={} size_b={})",
+                offset,
+                allowed,
+                data.len()
+            );
             return Err(MemoryError::Injected);
         }
         Ok(())
@@ -172,6 +179,13 @@ impl<const N: usize, const ERASE: usize> ConfigStorage for MemoryStorage<N, ERAS
         }
         debug_assert!(offset + allowed <= end);
         if allowed < len {
+            log::trace!(
+                target: "config",
+                "Memory erase fault (offset={} erased_b={} size_b={})",
+                offset,
+                allowed,
+                len
+            );
             return Err(MemoryError::Injected);
         }
         Ok(())

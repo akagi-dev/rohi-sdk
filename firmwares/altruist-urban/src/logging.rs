@@ -37,8 +37,17 @@
 //! cannot be generic). This module has the parts every platform shares: the
 //! queue and read sizes, the aliases of the runtime and of the service for the
 //! [`Backends`](rohi_sdk::logging::Backends) of a platform, and the initial configuration.
+//!
+//! The RAM tail is served by the `TailLogs` request, one bounded page per
+//! request. Its **session** identifies a start to a client that follows it. Each
+//! platform sets a fresh random token when it starts the logging task (the
+//! hardware RNG on the ESP, a process-seeded hash on the host). It is
+//! deliberately not the boot counter of the configuration storage: that counter
+//! can fail to be read or written, and a repeated value would let a client take
+//! the records of a new start for those of the old one.
 
-use rohi_sdk::logging::{Logging, LoggingConfig, LoggingService};
+use rohi_sdk::config::Override;
+use rohi_sdk::logging::{Logging, LoggingConfig, LoggingOverrides, LoggingService};
 
 use crate::tasks::RawMutex;
 use crate::time::Time;
@@ -53,34 +62,148 @@ use crate::time::Time;
 ///   stall while a flash sector is erased (tens of milliseconds).
 /// - Exhausted: the new record is dropped and counted in the `dropped_records`
 ///   status field of the `logging` service; the caller never waits.
+/// - Host: 128, a process has the memory and a debug build persists `debug`
+///   records, so its boot burst is several times that of a chip.
 /// - Measured: not measured.
+#[cfg(feature = "std")]
+pub const QUEUE_DEPTH: usize = 128;
+
+#[cfg(not(feature = "std"))]
 pub const QUEUE_DEPTH: usize = 24;
 
-/// Bytes of text one `logging.read` returns.
+/// Records the RAM tail of the `logging` service keeps for the `TailLogs`
+/// request.
 ///
-/// - Consumer: each open `read` stream of the `logging` service holds its
-///   answer in RAM, two streams at most (`rohi_sdk::logging` keeps two).
-/// - Why: about twenty records of text per call keeps a read to a few
-///   round trips on BLE and the memory small.
-/// - Exhausted: the answer ends at the last record that fits and the client
-///   asks again after the last sequence it got.
-/// - Measured: not measured.
-pub const READ_BYTES: usize = 2048;
+/// - Consumer: `rohi_sdk::logging::LogSink` keeps this many `LogRecord`s of
+///   about 200 bytes in a ring, so 8 records are about 1.6 KiB of static RAM.
+///   Nothing is allocated per request: a page of at most 512 bytes of whole
+///   lines is written straight into the reply, from at most `TAIL_RECORDS`
+///   records copied out one at a time.
+/// - Why: `rohi logs` shows what just happened, not history; the archive in
+///   flash is `logging.download`. A small ring also keeps the static RAM and
+///   the main stack of the ESP32-C3 untouched.
+/// - Exhausted: the oldest record is overwritten; a client that follows the
+///   tail and fell behind sees a jump in the sequence numbers.
+/// - ESP32-C3: 8. ESP32-C6: 7, because `max_data` of that chip in
+///   `memcheck-budgets.toml` (33 500 B) has no room for an eighth record.
+/// - Host: 32, a process has the memory.
+/// - Measured: `.data` of the firmware, see `docs/validation/resource-budget.md`.
+#[cfg(feature = "std")]
+pub const TAIL_RECORDS: usize = 32;
+
+#[cfg(all(not(feature = "std"), feature = "esp32c6"))]
+pub const TAIL_RECORDS: usize = 7;
+
+#[cfg(all(not(feature = "std"), not(feature = "esp32c6")))]
+pub const TAIL_RECORDS: usize = 8;
 
 /// The logging runtime over the backends `K` of a platform.
-pub type Runtime<K> = Logging<RawMutex, &'static Time, K, QUEUE_DEPTH, READ_BYTES>;
+pub type Runtime<K> = Logging<RawMutex, &'static Time, K, QUEUE_DEPTH, TAIL_RECORDS>;
 
 /// The `logging` service of the control plane over the backends `K` of a
 /// platform.
-pub type Service<K> = LoggingService<'static, RawMutex, &'static Time, K, QUEUE_DEPTH, READ_BYTES>;
+pub type Service<K> =
+    LoggingService<'static, RawMutex, &'static Time, K, QUEUE_DEPTH, TAIL_RECORDS>;
 
-/// What a build persists before the stored configuration is applied: the
-/// default section with the persistent level of the build profile.
-pub const INITIAL: LoggingConfig = LoggingConfig {
-    level: if cfg!(debug_assertions) {
+/// Retention budget of the chip: the whole `rohi-log` partition, 512 KiB, on the
+/// 4 MB ESP32-C3. The ring keeps two of its 4 KiB sectors for the format
+/// header, so with [`SEGMENT_BYTES`] it retains 15 full segments (480 KiB).
+#[cfg(feature = "esp32c3")]
+pub const RETENTION_BYTES: u32 = 512 * 1024;
+
+/// Segment size of the chip: 32 KiB, eight erase sectors, on the ESP32-C3.
+#[cfg(feature = "esp32c3")]
+pub const SEGMENT_BYTES: u32 = 32 * 1024;
+
+/// Retention budget of the chip: the 1 MiB `rohi-log` partition of the
+/// ESP32-C6 and the host image.
+#[cfg(not(feature = "esp32c3"))]
+pub const RETENTION_BYTES: u32 = rohi_sdk::logging::DEFAULT_RETENTION_BYTES;
+
+/// Segment size of the chip: 64 KiB, sixteen erase sectors.
+#[cfg(not(feature = "esp32c3"))]
+pub const SEGMENT_BYTES: u32 = rohi_sdk::logging::DEFAULT_SEGMENT_BYTES;
+
+const fn persistent_level(development: bool) -> rohi_sdk::logging::LogLevel {
+    if development {
         rohi_sdk::logging::DEVELOPMENT_LEVEL
     } else {
         rohi_sdk::logging::PRODUCTION_LEVEL
-    },
+    }
+}
+
+/// What a build persists before the stored configuration is applied: the
+/// default section with the persistent level of the build profile and the
+/// retention and segment size of the chip.
+pub const INITIAL: LoggingConfig = LoggingConfig {
+    level: persistent_level(cfg!(debug_assertions)),
+    retention_bytes: RETENTION_BYTES,
+    segment_bytes: SEGMENT_BYTES,
     ..LoggingConfig::DEFAULT
 };
+
+/// The firmware policy of the `logging` section: the level of the build
+/// profile and the retention and segment size of the chip. It sits between the
+/// defaults and the user overrides, so a user value stays authoritative.
+pub fn firmware_overrides(development: bool) -> LoggingOverrides {
+    LoggingOverrides {
+        retention_bytes: Override::Value(RETENTION_BYTES),
+        segment_bytes: Override::Value(SEGMENT_BYTES),
+        ..LoggingConfig::firmware_overrides(development)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rohi_sdk::config::materialize;
+
+    use super::*;
+
+    #[test]
+    fn the_chip_policy_is_what_the_section_starts_from() {
+        for development in [false, true] {
+            let effective =
+                materialize::<LoggingConfig>(&firmware_overrides(development), &Default::default());
+            assert_eq!(effective.retention_bytes, RETENTION_BYTES);
+            assert_eq!(effective.segment_bytes, SEGMENT_BYTES);
+            assert_eq!(effective.validate(), Ok(()));
+        }
+        assert_eq!(INITIAL.retention_bytes, RETENTION_BYTES);
+        assert_eq!(INITIAL.segment_bytes, SEGMENT_BYTES);
+        assert_eq!(INITIAL.validate(), Ok(()));
+    }
+
+    #[test]
+    fn the_user_overrides_beat_the_chip_policy() {
+        let user = LoggingOverrides {
+            retention_bytes: Override::Value(128 * 1024),
+            segment_bytes: Override::Value(8 * 1024),
+            ..Default::default()
+        };
+        let effective = materialize::<LoggingConfig>(&firmware_overrides(false), &user);
+        assert_eq!(effective.retention_bytes, 128 * 1024);
+        assert_eq!(effective.segment_bytes, 8 * 1024);
+    }
+
+    #[test]
+    fn both_chip_policies_are_valid_for_their_partition() {
+        // ESP32-C3: 512 KiB partition, 32 KiB segments; ESP32-C6 and the host:
+        // 1 MiB, 64 KiB segments. Checked on every build, whatever the chip.
+        for (retention_bytes, segment_bytes) in [(512 * 1024, 32 * 1024), (1024 * 1024, 64 * 1024)]
+        {
+            let config = LoggingConfig {
+                retention_bytes,
+                segment_bytes,
+                ..LoggingConfig::DEFAULT
+            };
+            assert_eq!(config.validate(), Ok(()));
+        }
+    }
+
+    #[cfg(not(feature = "esp32c3"))]
+    #[test]
+    fn the_default_policy_is_the_section_default() {
+        assert_eq!(RETENTION_BYTES, LoggingConfig::DEFAULT.retention_bytes);
+        assert_eq!(SEGMENT_BYTES, LoggingConfig::DEFAULT.segment_bytes);
+    }
+}

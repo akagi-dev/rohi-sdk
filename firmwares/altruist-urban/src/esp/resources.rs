@@ -41,7 +41,7 @@ use rohi_sdk::esp::net::STACK_INTERNAL_SOCKETS;
 /// - Measured: minimum free heap with both radios active is reported by
 ///   `rohi_sdk::esp::net::wireless_heap()` (`heap-stats`) and logged by the store
 ///   task. Current high-water mark with the final value: *not measured*.
-pub const WIRELESS_HEAP_SIZE: usize = 128 * 1024;
+pub const WIRELESS_HEAP_SIZE: usize = 112 * 1024;
 
 /// Simultaneous TCP connections of the IP data plane.
 ///

@@ -28,7 +28,7 @@
 //! buffers with [`NetResources`] and [`BleResources`].
 
 use esp_hal::peripherals::{BT, WIFI};
-use log::info;
+use log::{info, warn};
 use rohi_net::{BleConfig, WifiError};
 
 use crate::ble::{BleResources, BleRunner, EspBle};
@@ -143,7 +143,7 @@ impl EspWireless {
     /// the peripherals and the heap region are moved in, so a second call
     /// cannot compile.
     pub fn new(wifi: WIFI<'static>, bt: BT<'static>, heap: WirelessHeapRegion) -> Self {
-        info!("Wireless heap: {} B", heap.size);
+        info!(target: "wireless", "Heap configured (size_b={})", heap.size);
         Self {
             wifi: Some(wifi),
             bt: Some(bt),
@@ -176,9 +176,13 @@ impl EspWireless {
         &mut self,
         resources: &'static mut NetResources<SOCKETS, TCP, RX, TX, UDP, UDP_BUF>,
     ) -> Result<(EspWifi, NetRunner, EspIp<TCP, RX, TX, UDP, UDP_BUF>), WifiError> {
-        let wifi = self.wifi.take().ok_or(WifiError::DriverError)?;
+        let wifi = self.wifi.take().ok_or_else(|| {
+            warn!(target: "wireless", "Wi-Fi driver was already taken");
+            WifiError::DriverError
+        })?;
         let (stack_resources, tcp, udp) = resources.split();
         let (wifi, runner, stack) = EspWifi::new(wifi, stack_resources)?;
+        info!(target: "wireless", "Wi-Fi driver and IP stack created");
         Ok((wifi, runner, EspIp::new(stack, tcp, udp)))
     }
 
@@ -232,7 +236,10 @@ impl EspWireless {
         ),
         WirelessError,
     > {
-        let bt = self.bt.take().ok_or(WirelessError::AlreadyTaken)?;
+        let bt = self.bt.take().ok_or_else(|| {
+            warn!(target: "wireless", "BLE controller was already taken");
+            WirelessError::AlreadyTaken
+        })?;
         crate::ble::new(bt, config, resources)
     }
 

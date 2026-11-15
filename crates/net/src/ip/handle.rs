@@ -19,6 +19,7 @@
 use core::net::{IpAddr, SocketAddr};
 
 use embedded_nal_async::{AddrType, Dns, TcpConnect};
+use log::{debug, trace};
 
 use super::{IpBackend, IpUsage, NetError};
 
@@ -93,6 +94,16 @@ impl<'a, B: IpBackend> NetworkHandle<'a, B> {
     ///
     /// Cancellation: cancel-safe, nothing is allocated across the await.
     pub async fn resolve(&self, host: &str, addr_type: AddrType) -> Result<IpAddr, NetError> {
+        debug!(target: "ip", "Resolving host (host={})", host);
+        let result = self.resolve_checked(host, addr_type).await;
+        match &result {
+            Ok(address) => debug!(target: "ip", "Resolved host (addr={} host={})", address, host),
+            Err(error) => report::resolve_failed(host, *error),
+        }
+        result
+    }
+
+    async fn resolve_checked(&self, host: &str, addr_type: AddrType) -> Result<IpAddr, NetError> {
         self.ensure_ready()?;
         if host.is_empty() {
             return Err(NetError::DnsFailed);
@@ -108,6 +119,16 @@ impl<'a, B: IpBackend> NetworkHandle<'a, B> {
     /// Cancellation: cancel-safe. Dropping the future before it completes
     /// aborts the attempt and releases the connection slot.
     pub async fn connect(&self, remote: SocketAddr) -> Result<B::Connection<'a>, NetError> {
+        debug!(target: "ip", "Connecting to remote (addr={})", remote);
+        let result = self.connect_checked(remote).await;
+        match &result {
+            Ok(_) => debug!(target: "ip", "Connected to remote (addr={})", remote),
+            Err(error) => report::connect_failed(remote, *error),
+        }
+        result
+    }
+
+    async fn connect_checked(&self, remote: SocketAddr) -> Result<B::Connection<'a>, NetError> {
         self.ensure_ready()?;
         self.backend
             .connect(remote)
@@ -121,10 +142,16 @@ impl<'a, B: IpBackend> NetworkHandle<'a, B> {
     /// carry traffic and with [`NetError::NoSocketAvailable`] when every UDP
     /// slot is in use. Dropping the socket releases its slot.
     pub fn udp_socket(&self) -> Result<B::Udp<'a>, NetError> {
-        self.ensure_ready()?;
-        self.backend
-            .udp_socket()
-            .map_err(|error| self.classify(error))
+        let result = self.ensure_ready().and_then(|()| {
+            self.backend
+                .udp_socket()
+                .map_err(|error| self.classify(error))
+        });
+        match &result {
+            Ok(_) => trace!(target: "ip", "UDP socket opened"),
+            Err(error) => report::udp_socket_failed(*error),
+        }
+        result
     }
 }
 
@@ -156,5 +183,32 @@ impl<'a, B: IpBackend> TcpConnect for NetworkHandle<'a, B> {
 
     async fn connect<'c>(&'c self, remote: SocketAddr) -> Result<B::Connection<'a>, NetError> {
         NetworkHandle::connect(self, remote).await
+    }
+}
+
+// Out of line, so that the reports do not enlarge the frames of the async operations.
+mod report {
+    use core::net::SocketAddr;
+
+    use log::warn;
+
+    use super::NetError;
+
+    #[cold]
+    #[inline(never)]
+    pub(super) fn resolve_failed(host: &str, error: NetError) {
+        warn!(target: "ip", "Host resolution failed (err={:?} host={})", error, host);
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub(super) fn connect_failed(remote: SocketAddr, error: NetError) {
+        warn!(target: "ip", "Connecting to remote failed (err={:?} addr={})", error, remote);
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub(super) fn udp_socket_failed(error: NetError) {
+        warn!(target: "ip", "Opening UDP socket failed (err={:?})", error);
     }
 }

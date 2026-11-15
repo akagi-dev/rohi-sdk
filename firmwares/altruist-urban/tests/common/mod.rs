@@ -319,3 +319,118 @@ pub fn f32_of(value: Option<&Value>) -> Option<f32> {
         _ => None,
     }
 }
+
+/// The whole first file of a stream, read in chunks.
+pub async fn read_stream_file(
+    device: &mut Device<TcpLink>,
+    stream: &rohi::model::Stream,
+    file: u32,
+) -> Vec<u8> {
+    let mut data = Vec::new();
+    loop {
+        let chunk = device
+            .read_stream(stream, file, data.len() as u64)
+            .await
+            .unwrap();
+        data.extend_from_slice(&chunk.data);
+        if chunk.eof {
+            return data;
+        }
+        assert!(!chunk.data.is_empty(), "an empty chunk before the end");
+    }
+}
+
+/// What the tail of the device returned: the session and reset flag of the
+/// boot, the text of the records (empty when the device had nothing new) and
+/// the cursor to continue with.
+pub struct Tail {
+    pub session: u32,
+    pub reset: bool,
+    /// Lines the device had overwritten before they could be read.
+    pub gap: u64,
+    pub cursor: u64,
+    pub newest: u64,
+    pub text: String,
+}
+
+impl Tail {
+    /// Tail sequence of the last line, 0 when there is none.
+    pub fn last_sequence(&self) -> u64 {
+        self.text
+            .lines()
+            .filter_map(|line| line.split(' ').next()?.parse::<u64>().ok())
+            .next_back()
+            .unwrap_or(0)
+    }
+}
+
+/// One `TailLogs` page, as the device answered it.
+pub async fn tail_page(device: &mut Device<TcpLink>, session: u32, after: u64) -> Tail {
+    let page = device.tail_logs("logging", session, after).await.unwrap();
+    assert!(page.data.len() <= 512, "a page is at most 512 bytes");
+    Tail {
+        session: page.session,
+        reset: page.reset,
+        gap: page.gap,
+        cursor: page.cursor,
+        newest: page.newest_sequence,
+        text: String::from_utf8(page.data).unwrap(),
+    }
+}
+
+/// The pages after `after`, followed with their cursor until an empty page, as
+/// one text. `session` and `reset` are those of the first page.
+pub async fn tail(device: &mut Device<TcpLink>, session: u32, after: u64) -> Tail {
+    let mut all = tail_page(device, session, after).await;
+    let mut pages = 0;
+    while !all.text.is_empty() {
+        let next = tail_page(device, all.session, all.cursor).await;
+        if next.text.is_empty() {
+            break;
+        }
+        all.text.push_str(&next.text);
+        all.cursor = next.cursor;
+        all.newest = next.newest;
+        pages += 1;
+        assert!(pages < 200, "the tail does not end");
+    }
+    all
+}
+
+/// The latest records the device keeps in RAM, as text.
+pub async fn tail_text(device: &mut Device<TcpLink>) -> String {
+    tail(device, 0, 0).await.text
+}
+
+/// Every record of the archive in flash, decoded from `logging.download`.
+pub async fn archive_text(device: &mut Device<TcpLink>) -> String {
+    use rohi_sdk::logging::Compression;
+    use rohi_sdk::logging::segment::SegmentDecoder;
+    use rohi_sdk::logging::segment::text::write_line;
+
+    let stream = match device
+        .invoke_outcome("logging", "download", &[])
+        .await
+        .unwrap()
+    {
+        rohi::model::ActionOutcome::Stream(stream) => stream,
+        other => panic!("download returned {other:?}"),
+    };
+    let mut text = String::new();
+    for file in &stream.files {
+        let codec = if file.name.ends_with(".lz4") {
+            Compression::Lz4
+        } else {
+            Compression::None
+        };
+        let data = read_stream_file(device, &stream, file.id).await;
+        let mut decoder = SegmentDecoder::new(codec);
+        decoder
+            .push(&data, &mut |record| {
+                let _ = write_line(&mut text, &record);
+            })
+            .unwrap();
+    }
+    device.close_stream(&stream).await.unwrap();
+    text
+}

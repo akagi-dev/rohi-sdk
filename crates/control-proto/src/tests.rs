@@ -774,3 +774,73 @@ fn a_stream_chunk_and_its_requests_round_trip() {
 fn the_response_fits_the_limit_in_the_worst_case() {
     assert!(Response::MAX_SIZE.unwrap() <= limits::MAX_RESPONSE_LEN);
 }
+
+#[test]
+fn the_tail_envelope_fields_match_the_wire_schema() {
+    let request = Request {
+        protocol_version: PROTOCOL_VERSION,
+        request_id: 7,
+        request: Some(Request_::Request::TailLogs(TailLogsRequest::default())),
+    };
+    let response = Response {
+        protocol_version: PROTOCOL_VERSION,
+        request_id: 7,
+        response: Some(Response_::Response::TailLogs(TailLogsResponse::default())),
+    };
+    let mut buf = [0u8; 16];
+    let len = encode(&request, &mut buf).unwrap();
+    // Field 25 of `Request`, length-delimited.
+    assert_eq!(&buf[..len], &[0x08, 0x01, 0x10, 0x07, 0xca, 0x01, 0x00]);
+    let len = encode(&response, &mut buf).unwrap();
+    // Field 26 of `Response`.
+    assert_eq!(&buf[..len], &[0x08, 0x01, 0x10, 0x07, 0xd2, 0x01, 0x00]);
+}
+
+fn full_tail_reply() -> TailLogsResponse {
+    TailLogsResponse {
+        session: u32::MAX,
+        cursor: u64::MAX,
+        oldest_sequence: u64::MAX,
+        newest_sequence: u64::MAX,
+        reset: true,
+        gap: u64::MAX,
+        data: bytes(&[b'x'; limits::MAX_TAIL_CHUNK]),
+    }
+}
+
+#[test]
+fn a_full_tail_page_fits_the_response_limit_with_room_to_spare() {
+    // The page is bounded at compile time: text of at most `MAX_TAIL_CHUNK`
+    // bytes and a fixed amount of metadata.
+    const METADATA: usize = 2 + 2 + 5 + 3 * 11 + 2 + 11 + 5;
+    assert_eq!(limits::MAX_TAIL_CHUNK, 512);
+    let worst = TailLogsResponse::MAX_SIZE.unwrap();
+    assert!(worst <= limits::MAX_TAIL_CHUNK + METADATA + 8, "{worst}");
+    let reply = response(Response_::Response::TailLogs(full_tail_reply()));
+    let len = round_trip(reply);
+    assert!(len <= limits::MAX_RESPONSE_LEN / 2, "{len}");
+    assert!(len > limits::MAX_TAIL_CHUNK);
+}
+
+#[test]
+fn a_tail_page_above_its_bound_is_a_capacity_error() {
+    let mut buf = [0u8; 32];
+    // Field 7 (`data`), length 513, but only a few bytes follow: the bound is
+    // checked before the bytes are read.
+    buf[0] = 0x3a;
+    buf[1] = 0x81;
+    buf[2] = 0x04;
+    assert_eq!(
+        decode::<TailLogsResponse>(&buf[..3]),
+        Err(DecodeError::Capacity)
+    );
+}
+
+#[test]
+fn the_tail_reply_does_not_grow_the_largest_message() {
+    // The tail page has the capacity of a stream chunk: the largest response
+    // of the control task is not made larger by it.
+    assert!(
+        core::mem::size_of::<TailLogsResponse>() <= core::mem::size_of::<ReadStreamResponse>() + 40
+    );
+}

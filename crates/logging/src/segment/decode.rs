@@ -100,6 +100,7 @@ impl SegmentDecoder {
     ///
     /// [`DecodeError::Corrupt`] when a block is damaged; the decoder then
     /// refuses further input.
+    #[inline(never)]
     pub fn push(
         &mut self,
         mut bytes: &[u8],
@@ -126,6 +127,7 @@ impl SegmentDecoder {
         Ok(())
     }
 
+    #[inline(never)]
     fn blocks(&mut self, on_record: &mut impl FnMut(LogRecord)) -> Result<(), DecodeError> {
         if !self.header_done {
             if self.pending.len() < FRAME_HEADER_LEN {

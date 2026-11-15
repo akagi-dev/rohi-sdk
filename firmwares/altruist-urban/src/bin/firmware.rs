@@ -45,22 +45,32 @@ use altruist_urban::bindings::ConfigRuntime;
 use altruist_urban::esp::reboot::reboot_task;
 use altruist_urban::esp::resources::WIRELESS_HEAP_SIZE;
 use altruist_urban::esp::{
-    config, connectivity, control, flash, logging, net, sensors, store, time,
+    config, connectivity, control, crash, flash, logging, net, sensors, store, time,
 };
 use altruist_urban::{identity, net as wifi, tasks};
 use rohi_sdk::esp::hal::board::altruist_urban::{AltruistUrban, Hardware};
 use rohi_sdk::esp::net::{EspWireless, wireless_heap};
 
-use esp_backtrace as _;
-
 esp_bootloader_esp_idf::esp_app_desc!();
+
+/// The panic path: the panic goes to the retained crash slot, the chip resets,
+/// and the next boot writes the record to the log (`altruist_urban::esp::crash`).
+#[panic_handler]
+fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
+    rohi_sdk::esp::crash::on_panic(info)
+}
 
 /// Longest wait for the first Wi-Fi connection attempt before sensing starts.
 const WIFI_FIRST_ATTEMPT_WAIT: Duration = Duration::from_secs(30);
 
 #[esp_rtos::main]
 async fn main(spawner: Spawner) -> ! {
+    // First of all: why the chip started, before anything can panic again.
+    let reset = rohi_sdk::esp::crash::init();
     logging::init_logger();
+    crash::log_reset(reset);
+    #[cfg(feature = "crash-inject")]
+    altruist_urban::esp::inject::at("early");
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
     let (hardware, runtime) = Hardware::split(peripherals);
@@ -71,10 +81,7 @@ async fn main(spawner: Spawner) -> ! {
     let heap = wireless_heap!(WIRELESS_HEAP_SIZE);
     let mut wireless = EspWireless::new(runtime.wifi, runtime.bt, heap);
     esp_rtos::start(TimerGroup::new(runtime.timg0).timer0, runtime.sw_interrupt);
-    info!(
-        "Embassy execution engine ready, wireless heap free {} B",
-        wireless.heap().free
-    );
+    info!("Embassy execution engine ready");
 
     // The configuration task is the single owner of the store; everything else
     // uses the handle. A missing partition (old partition table) or corrupted
@@ -137,6 +144,9 @@ async fn main(spawner: Spawner) -> ! {
     if let Some(board) = board {
         sensors::start(spawner, board);
     }
+
+    #[cfg(feature = "crash-inject")]
+    altruist_urban::esp::inject::running().await;
 
     core::future::pending().await
 }

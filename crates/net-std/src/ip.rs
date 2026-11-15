@@ -29,6 +29,7 @@ use std::io::ErrorKind;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use embedded_nal_async::AddrType;
+use log::{debug, trace, warn};
 use rohi_net::{IpBackend, IpUsage, NetError, UdpSocket};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpStream, UdpSocket as TokioUdp};
@@ -114,7 +115,8 @@ struct Slot<'a>(&'a AtomicUsize);
 
 impl Drop for Slot<'_> {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::AcqRel);
+        let before = self.0.fetch_sub(1, Ordering::AcqRel);
+        trace!(target: "ip", "Socket slot released (in_use={})", before - 1);
     }
 }
 
@@ -128,6 +130,7 @@ pub struct NativeConnection<'a> {
 
 /// Maps an error of the host into the portable categories.
 pub fn net_error(error: &std::io::Error) -> NetError {
+    debug!(target: "ip", "I/O error (kind={:?} err={})", error.kind(), error);
     match error.kind() {
         ErrorKind::TimedOut => NetError::Timeout,
         ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted | ErrorKind::BrokenPipe => {
@@ -144,17 +147,21 @@ impl embedded_io_async::ErrorType for NativeConnection<'_> {
 
 impl embedded_io_async::Read for NativeConnection<'_> {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, NetError> {
-        within(self.stream.read(buf))
+        let read = within(self.stream.read(buf))
             .await
-            .map_err(|e| net_error(&e))
+            .map_err(|e| net_error(&e))?;
+        trace!(target: "ip", "TCP read (size_b={})", read);
+        Ok(read)
     }
 }
 
 impl embedded_io_async::Write for NativeConnection<'_> {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, NetError> {
-        within(self.stream.write(buf))
+        let written = within(self.stream.write(buf))
             .await
-            .map_err(|e| net_error(&e))
+            .map_err(|e| net_error(&e))?;
+        trace!(target: "ip", "TCP write (size_b={} requested_b={})", written, buf.len());
+        Ok(written)
     }
 
     async fn flush(&mut self) -> Result<(), NetError> {
@@ -174,14 +181,17 @@ impl UdpSocket for NativeUdp<'_> {
     async fn send_to(&self, data: &[u8], remote: SocketAddr) -> Result<(), NetError> {
         within(self.socket.send_to(data, remote))
             .await
-            .map(|_| ())
-            .map_err(|e| net_error(&e))
+            .map_err(|e| net_error(&e))?;
+        trace!(target: "ip", "UDP sent (size_b={} addr={})", data.len(), remote);
+        Ok(())
     }
 
     async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr), NetError> {
-        within(self.socket.recv_from(buf))
+        let (read, remote) = within(self.socket.recv_from(buf))
             .await
-            .map_err(|e| net_error(&e))
+            .map_err(|e| net_error(&e))?;
+        trace!(target: "ip", "UDP received (size_b={} addr={})", read, remote);
+        Ok((read, remote))
     }
 }
 
@@ -218,20 +228,31 @@ impl<const TCP: usize, const UDP: usize> IpBackend for NativeIp<TCP, UDP> {
             return if wanted(&address) {
                 Ok(address)
             } else {
+                debug!(target: "ip", "Address is not of the requested family (host={})", host);
                 Err(NetError::DnsFailed)
             };
         }
         let resolved = within(tokio::net::lookup_host((host, 0)))
             .await
-            .map_err(|_| NetError::DnsFailed)?;
-        resolved
-            .map(|address| address.ip())
-            .find(wanted)
-            .ok_or(NetError::DnsFailed)
+            .map_err(|error| {
+                debug!(target: "ip", "Lookup failed (host={} err={})", host, error);
+                NetError::DnsFailed
+            })?;
+        let address = resolved.map(|address| address.ip()).find(wanted);
+        if address.is_none() {
+            debug!(
+                target: "ip",
+                "Lookup found no address of the requested family (host={})",
+                host
+            );
+        }
+        address.ok_or(NetError::DnsFailed)
     }
 
     async fn connect(&self, remote: SocketAddr) -> Result<Self::Connection<'_>, NetError> {
-        let slot = Self::reserve(&self.tcp, TCP)?;
+        let slot = Self::reserve(&self.tcp, TCP).inspect_err(|_| {
+            warn!(target: "ip", "No free TCP slot (capacity={})", TCP);
+        })?;
         let stream = within(TcpStream::connect(remote))
             .await
             .map_err(|e| match net_error(&e) {
@@ -239,6 +260,13 @@ impl<const TCP: usize, const UDP: usize> IpBackend for NativeIp<TCP, UDP> {
                 other => other,
             })?;
         let _ = stream.set_nodelay(true);
+        debug!(
+            target: "ip",
+            "TCP connected (addr={} in_use={} capacity={})",
+            remote,
+            self.tcp.load(Ordering::Acquire),
+            TCP
+        );
         Ok(NativeConnection {
             stream,
             _slot: slot,
@@ -246,14 +274,24 @@ impl<const TCP: usize, const UDP: usize> IpBackend for NativeIp<TCP, UDP> {
     }
 
     fn udp_socket(&self) -> Result<Self::Udp<'_>, NetError> {
-        let slot = Self::reserve(&self.udp, UDP)?;
-        let socket = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0))
-            .map_err(|_| NetError::Backend)?;
-        socket
-            .set_nonblocking(true)
-            .map_err(|_| NetError::Backend)?;
+        let slot = Self::reserve(&self.udp, UDP).inspect_err(|_| {
+            warn!(target: "ip", "No free UDP slot (capacity={})", UDP);
+        })?;
+        let socket =
+            std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0)).map_err(|error| {
+                warn!(target: "ip", "Cannot bind a UDP socket (err={})", error);
+                NetError::Backend
+            })?;
+        socket.set_nonblocking(true).map_err(|error| {
+            warn!(target: "ip", "Cannot make the UDP socket non-blocking (err={})", error);
+            NetError::Backend
+        })?;
         let _entered = crate::runtime::handle().enter();
-        let socket = TokioUdp::from_std(socket).map_err(|_| NetError::Backend)?;
+        let socket = TokioUdp::from_std(socket).map_err(|error| {
+            warn!(target: "ip", "Cannot register the UDP socket (err={})", error);
+            NetError::Backend
+        })?;
+        trace!(target: "ip", "UDP socket bound (addr={:?})", socket.local_addr());
         Ok(NativeUdp {
             socket,
             _slot: slot,

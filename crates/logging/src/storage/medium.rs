@@ -54,7 +54,8 @@ pub enum RamError {
     OutOfBounds,
     /// A byte was written that is not erased, which NOR flash cannot do.
     NotErased,
-    /// An injected fault, see [`RamMedium::fail_after`].
+    /// An injected fault, see [`RamMedium::fail_after`] and
+    /// [`RamMedium::fail_erase_after`].
     Injected,
 }
 
@@ -66,6 +67,7 @@ pub struct RamMedium<const SECTORS: usize> {
     data: [[u8; SECTOR_SIZE]; SECTORS],
     erases: [u32; SECTORS],
     budget: Option<usize>,
+    erase_budget: Option<usize>,
 }
 
 impl<const SECTORS: usize> Default for RamMedium<SECTORS> {
@@ -81,6 +83,7 @@ impl<const SECTORS: usize> RamMedium<SECTORS> {
             data: [[0xFF; SECTOR_SIZE]; SECTORS],
             erases: [0; SECTORS],
             budget: None,
+            erase_budget: None,
         }
     }
 
@@ -95,9 +98,17 @@ impl<const SECTORS: usize> RamMedium<SECTORS> {
         self.budget = Some(bytes);
     }
 
+    /// Lets the next `sectors` sector erasures complete and then fails every
+    /// erase, the one cut by the power loss leaving the second half of its
+    /// sector as it was.
+    pub fn fail_erase_after(&mut self, sectors: usize) {
+        self.erase_budget = Some(sectors);
+    }
+
     /// Stops injecting faults.
     pub fn restore_power(&mut self) {
         self.budget = None;
+        self.erase_budget = None;
     }
 
     /// The raw content, for tests that damage it.
@@ -120,6 +131,13 @@ impl<const SECTORS: usize> Medium for RamMedium<SECTORS> {
             return Err(RamError::OutOfBounds);
         }
         for sector in first as usize..end {
+            if let Some(budget) = &mut self.erase_budget {
+                if *budget == 0 {
+                    self.data[sector][..SECTOR_SIZE / 2].fill(0xFF);
+                    return Err(RamError::Injected);
+                }
+                *budget -= 1;
+            }
             self.data[sector] = [0xFF; SECTOR_SIZE];
             self.erases[sector] += 1;
         }

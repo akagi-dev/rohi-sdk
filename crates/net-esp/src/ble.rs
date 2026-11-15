@@ -68,7 +68,7 @@ use embassy_sync::channel::Channel;
 use esp_hal::efuse::base_mac_address;
 use esp_radio::ble::controller::BleConnector;
 use heapless::Vec;
-use log::{debug, info, warn};
+use log::{debug, info, trace};
 use rohi_net::{
     BleConfig, BleConnectionInfo, BleError, BleName, BleProbe, BleState, BleTransport,
     DEFAULT_BLE_PAYLOAD, MAX_BLE_PAYLOAD,
@@ -285,13 +285,18 @@ impl<const RX_DEPTH: usize, const TX_DEPTH: usize> BleTransport for EspBle<RX_DE
     /// Cancel-safe: a chunk is taken from the queue only when it is returned.
     async fn recv(&mut self, out: &mut [u8]) -> Result<usize, BleError> {
         match self.shared.rx.receive().await {
-            RxEvent::Disconnected => Err(BleError::Disconnected),
+            RxEvent::Disconnected => {
+                debug!(target: "ble", "Transport told that the central disconnected");
+                Err(BleError::Disconnected)
+            }
             RxEvent::Data(chunk) => {
                 let data = chunk.bytes();
                 if data.len() > out.len() {
+                    report::chunk_too_big("inbound", data.len(), out.len());
                     return Err(BleError::BufferTooSmall);
                 }
                 out[..data.len()].copy_from_slice(data);
+                trace!(target: "ble", "Received chunk (size_b={})", data.len());
                 Ok(data.len())
             }
         }
@@ -301,11 +306,14 @@ impl<const RX_DEPTH: usize, const TX_DEPTH: usize> BleTransport for EspBle<RX_DE
     async fn send(&mut self, data: &[u8]) -> Result<(), BleError> {
         let current = self.shared.link();
         if current.info.is_none() {
+            debug!(target: "ble", "Send without a central (size_b={})", data.len());
             return Err(BleError::Disconnected);
         }
         if data.len() > current.payload {
+            report::chunk_too_big("outbound", data.len(), current.payload);
             return Err(BleError::BufferTooSmall);
         }
+        trace!(target: "ble", "Queueing chunk (size_b={})", data.len());
         self.shared.tx.send(Chunk::new(current.epoch, data)).await;
         Ok(())
     }
@@ -367,10 +375,12 @@ pub(crate) fn new<
     ),
     WirelessError,
 > {
+    debug!(target: "ble", "Initializing the controller");
     let connector = BleConnector::new(bt, Default::default()).map_err(|error| {
-        warn!("BLE controller init failed: {:?}", error);
+        report::controller_init_failed(&error);
         WirelessError::BleInit
     })?;
+    info!(target: "ble", "Controller initialized");
     let shared: &'static Shared<RX_DEPTH, TX_DEPTH> = &resources.shared;
     shared.update_link(|link| link.state = BleState::Advertising);
     Ok((
@@ -456,13 +466,13 @@ impl<
 
         let name = device_name(&self.config);
         shared.set_name(name.as_str());
-        info!("BLE: device name {}", name.as_str());
+        info!(target: "ble", "Runner started (name={})", name.as_str());
         let mut rx_store = [0u8; MAX_BLE_PAYLOAD];
         let mut tx_store = [0u8; MAX_BLE_PAYLOAD];
         let mut table: AttributeTable<'_, CriticalSectionRawMutex, ATTRIBUTES> =
             AttributeTable::new();
         if GapConfig::default(name.as_str()).build(&mut table).is_err() {
-            warn!("BLE: GAP service not created");
+            report::gap_failed();
         }
         let (rx_handle, tx_handle) = {
             let mut service = table.add_service(Service::new(self.config.gatt.service));
@@ -499,7 +509,7 @@ impl<
         let host = async {
             loop {
                 if let Err(error) = runner.run().await {
-                    warn!("BLE host stopped: {:?}", error);
+                    report::host_stopped(&error);
                     shared.update_link(|link| link.state = BleState::Error(BleError::DriverError));
                     embassy_time::Timer::after_secs(1).await;
                 }
@@ -522,7 +532,7 @@ impl<
                         end_connection(shared).await;
                     }
                     Err(error) => {
-                        warn!("BLE advertising failed: {:?}", error);
+                        report::advertising_failed(&error);
                         shared.update_link(|link| {
                             link.state = BleState::Error(BleError::DriverError)
                         });
@@ -591,8 +601,9 @@ async fn advertise<
             },
         )
         .await?;
-    debug!("BLE: advertising");
+    debug!(target: "ble", "Advertising");
     let connection = advertiser.accept().await?.with_attribute_server(server)?;
+    debug!(target: "ble", "Connection accepted");
     Ok(connection)
 }
 
@@ -617,11 +628,22 @@ fn refresh_link<const RX_DEPTH: usize, const TX_DEPTH: usize>(
     let info = connection_info(connection);
     let mtu = connection.raw().att_mtu().saturating_sub(ATT_OVERHEAD);
     let payload = usize::from(mtu).clamp(DEFAULT_BLE_PAYLOAD, MAX_BLE_PAYLOAD);
+    let before = shared.link();
     shared.update_link(|link| {
         link.info = Some(info);
         link.payload = payload;
         link.state = BleState::Connected(info);
     });
+    if before.payload != payload {
+        debug!(target: "ble", "MTU negotiated (mtu_b={} payload_b={})", mtu, payload);
+    }
+    if before.info != Some(info) {
+        debug!(
+            target: "ble",
+            "Link security changed (encrypted={} authenticated={})",
+            info.encrypted, info.authenticated
+        );
+    }
 }
 
 /// Serves one connection until it ends: receives writes and notifies
@@ -640,14 +662,14 @@ async fn serve_connection<const RX_DEPTH: usize, const TX_DEPTH: usize>(
         link.payload = DEFAULT_BLE_PAYLOAD;
     });
     refresh_link(shared, connection);
-    info!("BLE: central connected");
     let epoch = shared.link().epoch;
+    info!(target: "ble", "Central connected (id={})", epoch);
 
     let events = async {
         loop {
             match connection.next().await {
                 GattConnectionEvent::Disconnected { reason } => {
-                    debug!("BLE: disconnected: {:?}", reason);
+                    debug!(target: "ble", "Central disconnected (reason={:?})", reason);
                     return;
                 }
                 GattConnectionEvent::Gatt { event } => {
@@ -665,6 +687,7 @@ async fn serve_connection<const RX_DEPTH: usize, const TX_DEPTH: usize>(
                                 }
                             });
                             if ok {
+                                trace!(target: "ble", "Central wrote chunk (size_b={})", len);
                                 // Waits for room: the central is not answered
                                 // before the chunk is queued.
                                 shared
@@ -673,6 +696,7 @@ async fn serve_connection<const RX_DEPTH: usize, const TX_DEPTH: usize>(
                                     .await;
                                 write.accept_unprocessed()
                             } else {
+                                report::write_rejected();
                                 write.reject(AttErrorCode::INVALID_ATTRIBUTE_VALUE_LENGTH)
                             }
                         }
@@ -680,7 +704,7 @@ async fn serve_connection<const RX_DEPTH: usize, const TX_DEPTH: usize>(
                     };
                     match reply {
                         Ok(reply) => reply.send().await,
-                        Err(error) => warn!("BLE: GATT reply failed: {:?}", error),
+                        Err(error) => report::reply_failed(&error),
                     }
                     refresh_link(shared, connection);
                 }
@@ -693,17 +717,19 @@ async fn serve_connection<const RX_DEPTH: usize, const TX_DEPTH: usize>(
         loop {
             let chunk = shared.tx.receive().await;
             if chunk.epoch != epoch {
+                trace!(target: "ble", "Chunk of an old connection dropped (id={})", chunk.epoch);
                 continue;
             }
+            trace!(target: "ble", "Notifying chunk (size_b={})", chunk.len);
             if let Err(error) = tx.notify_raw(connection, chunk.bytes(), false).await {
-                warn!("BLE: notification failed: {:?}", error);
+                report::notification_failed(&error);
                 return;
             }
         }
     };
 
     if let Either::Second(()) = select(events, notifier).await {
-        debug!("BLE: notifier stopped");
+        debug!(target: "ble", "Notifier stopped");
     }
 }
 
@@ -717,5 +743,69 @@ async fn end_connection<const RX_DEPTH: usize, const TX_DEPTH: usize>(
     while shared.tx.try_receive().is_ok() {}
     // Never dropped: the consumer needs this marker to reset its state.
     shared.rx.send(RxEvent::Disconnected).await;
-    info!("BLE: central disconnected");
+    info!(
+        target: "ble",
+        "Central disconnected (id={})",
+        shared.link().epoch
+    );
+}
+
+// Out of line, so that the reports do not enlarge the frames of the runner and
+// of the connection tasks.
+mod report {
+    use core::fmt::Debug;
+
+    use log::warn;
+
+    #[cold]
+    #[inline(never)]
+    pub(super) fn chunk_too_big(direction: &str, len: usize, limit: usize) {
+        warn!(
+            target: "ble",
+            "Chunk exceeds the limit (direction={} size_b={} limit_b={})",
+            direction, len, limit
+        );
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub(super) fn controller_init_failed(error: &dyn Debug) {
+        warn!(target: "ble", "Controller init failed (err={:?})", error);
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub(super) fn gap_failed() {
+        warn!(target: "ble", "GAP service not created");
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub(super) fn host_stopped(error: &dyn Debug) {
+        warn!(target: "ble", "Host stopped, restarting (err={:?})", error);
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub(super) fn advertising_failed(error: &dyn Debug) {
+        warn!(target: "ble", "Advertising failed, retrying (err={:?})", error);
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub(super) fn write_rejected() {
+        warn!(target: "ble", "Write rejected: invalid offset or length");
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub(super) fn reply_failed(error: &dyn Debug) {
+        warn!(target: "ble", "GATT reply failed (err={:?})", error);
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub(super) fn notification_failed(error: &dyn Debug) {
+        warn!(target: "ble", "Notification failed (err={:?})", error);
+    }
 }

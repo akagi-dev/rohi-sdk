@@ -335,6 +335,7 @@ impl<C> minicbor::CborLen<C> for SectionRef<'_> {
 }
 
 fn reject(error: RouteError) -> ActionError {
+    log::debug!(target: "connectivity", "Route change rejected (err={:?})", error);
     ActionError::Rejected(match error {
         RouteError::InvalidId => "invalid_id",
         RouteError::DuplicateRoute => "route_exists",

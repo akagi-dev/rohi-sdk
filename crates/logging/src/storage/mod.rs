@@ -126,6 +126,9 @@ pub struct Recovery {
     pub dropped: u32,
     /// Of those, sealed segments whose payload did not match its checksum.
     pub corrupted: u32,
+    /// The medium had no valid format header and was formatted: it is new,
+    /// foreign or a format was interrupted, and nothing it held was kept.
+    pub formatted: bool,
 }
 
 /// Why a storage operation failed.

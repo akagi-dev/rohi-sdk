@@ -33,14 +33,33 @@ pub enum FlashMediumError {
     Flash(NorFlashErrorKind),
 }
 
-/// The widest write word of a flash [`FlashMedium`] supports, in bytes.
+/// The widest read or write word of a flash [`FlashMedium`] supports, in bytes.
 const MAX_WORD: usize = 16;
+
+/// The bytes a flash call moves at most.
+///
+/// Every call goes through a buffer of this size, aligned to [`MAX_WORD`]: the
+/// ESP32 driver uses the caller's slice only when it is word-aligned and
+/// otherwise copies through a buffer of a whole sector on the stack, which a
+/// task of the firmware cannot afford.
+const SCRATCH: usize = 256;
+
+#[repr(C, align(16))]
+struct Scratch([u8; SCRATCH]);
+
+impl Scratch {
+    const fn new() -> Self {
+        Self([0xFF; SCRATCH])
+    }
+}
 
 /// A region of a NOR flash as a [`Medium`].
 ///
 /// The region is `sectors` sectors of [`SECTOR_SIZE`] bytes from `offset`.
-/// The flash driver's erase size must divide [`SECTOR_SIZE`] and its write
-/// size must be at most 16 bytes.
+/// The flash driver's erase size must divide [`SECTOR_SIZE`] and be a multiple
+/// of its read size, and its read and write sizes must be at most 16 bytes: a
+/// driver that reads whole words only (the ESP32 one) is served too, the words
+/// at the ends of a read are read whole and the asked part is copied out.
 ///
 /// Appending a chunk rarely ends on a write-word boundary, so a write may
 /// program the first and the last word of its range partly: the bytes of the
@@ -69,8 +88,13 @@ impl<F: NorFlash + MultiwriteNorFlash> FlashMedium<F> {
         let end = u64::from(offset) + u64::from(sectors) * SECTOR_SIZE as u64;
         let aligned = SECTOR_SIZE.is_multiple_of(F::ERASE_SIZE)
             && (offset as usize).is_multiple_of(F::ERASE_SIZE)
+            && F::ERASE_SIZE.is_multiple_of(F::READ_SIZE)
+            && F::READ_SIZE <= MAX_WORD
+            && F::READ_SIZE > 0
+            && SCRATCH.is_multiple_of(F::READ_SIZE)
             && F::WRITE_SIZE <= MAX_WORD
             && F::WRITE_SIZE > 0
+            && SCRATCH.is_multiple_of(F::WRITE_SIZE)
             && sectors > 0;
         if !aligned || end > flash.capacity() as u64 {
             return Err(FlashMediumError::OutOfBounds);
@@ -101,9 +125,24 @@ impl<F: NorFlash + MultiwriteNorFlash> FlashMedium<F> {
     }
 
     fn read_raw(&mut self, offset: u32, buf: &mut [u8]) -> Result<(), FlashMediumError> {
-        self.flash
-            .read(self.offset + offset, buf)
-            .map_err(Self::map)
+        let word = F::READ_SIZE;
+        let mut scratch = Scratch::new();
+        let mut at = offset as usize;
+        let mut rest = buf;
+        while !rest.is_empty() {
+            let start = at - at % word;
+            let skip = at - start;
+            let take = rest.len().min(SCRATCH - skip);
+            let span = (skip + take).next_multiple_of(word);
+            self.flash
+                .read(self.offset + start as u32, &mut scratch.0[..span])
+                .map_err(Self::map)?;
+            let (head, tail) = rest.split_at_mut(take);
+            head.copy_from_slice(&scratch.0[skip..skip + take]);
+            at += take;
+            rest = tail;
+        }
+        Ok(())
     }
 }
 
@@ -130,26 +169,26 @@ where
         let word = F::WRITE_SIZE;
         let mut at = offset as usize;
         let mut rest = data;
-        let mut buffer = [0xFFu8; MAX_WORD];
+        let mut scratch = Scratch::new();
         while !rest.is_empty() {
             let start = at - at % word;
             let skip = at - start;
             let take = rest.len().min(word - skip);
             if skip == 0 && take == word {
-                // Whole words go out in one call.
-                let whole = rest.len() / word * word;
+                let whole = rest.len().min(SCRATCH) / word * word;
+                scratch.0[..whole].copy_from_slice(&rest[..whole]);
                 self.flash
-                    .write(self.offset + at as u32, &rest[..whole])
+                    .write(self.offset + at as u32, &scratch.0[..whole])
                     .map_err(Self::map)?;
                 at += whole;
                 rest = &rest[whole..];
                 continue;
             }
             // A partial word: what it holds already stays, the rest is new.
-            self.read_raw(start as u32, &mut buffer[..word])?;
-            buffer[skip..skip + take].copy_from_slice(&rest[..take]);
+            self.read_raw(start as u32, &mut scratch.0[..word])?;
+            scratch.0[skip..skip + take].copy_from_slice(&rest[..take]);
             self.flash
-                .write(self.offset + start as u32, &buffer[..word])
+                .write(self.offset + start as u32, &scratch.0[..word])
                 .map_err(Self::map)?;
             at += take;
             rest = &rest[take..];

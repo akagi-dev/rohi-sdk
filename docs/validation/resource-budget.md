@@ -183,7 +183,7 @@ from the ELF, nothing measured on a device):
 | `logging_task` pool | 2 304 | 2 304 |
 | Main stack (`.stack`, placed directly above `.bss`) | 22 024 | 121 848 |
 | Largest frame, `Controller` request handling | 30 112 | 29 104 |
-| Frame of `Logging` read path | 8 400 | 4 432 |
+| Frame of `Logging` read path (removed with `logging.read`, #70) | 8 400 | 4 432 |
 | Frames with metadata | 1 520 of 3 827 (39.7 %) | 1 947 of 5 383 (36.1 %) |
 
 The largest frame on both chips, the generic `Controller` request path, is larger than the whole ESP32-C3 main stack.
@@ -228,7 +228,7 @@ frame that remained in it (an upper bound, not a measurement). Nothing here was 
 What changed and why it works:
 
 - `release_streams` collected the released streams *by value* into a second `Vec<Open<READ>, 2>` (two stream payloads
-  of `READ` = 2 048 B plus bookkeeping). Streams are now removed in place with `retain_mut` and only the ids of the
+  of `READ` = 2 048 B plus bookkeeping; the `read` action and its buffers no longer exist, see below). Streams are now removed in place with `retain_mut` and only the ids of the
   segments they pinned (at most 2 × 24 `u32`) are kept, then unpinned outside the stream table. `close_stream` takes the
   storage lock first and removes and unpins in one step, so a caller that gives up while waiting leaves the stream to
   expire with its pins instead of leaking them (before, the stream was removed first and the pins were released after the
@@ -288,13 +288,74 @@ Release build of `altruist-urban`, measured with `nm -S` on the ELF (`cargo buil
 
 | Item | ESP32-C3 | ESP32-C6 |
 |------|---------:|---------:|
-| `altruist_urban::esp::logging::LOGGING` (queue, batch, streams, status; initialized data in RAM) | 12 512 B | 12 512 B |
+| `altruist_urban::esp::logging::LOGGING` (queue, batch, RAM tail, download streams, status; initialized data in RAM) | 10 544 B | 10 352 B |
 | `altruist_urban::esp::logging::logging_task` future (`.bss`) | 2 304 B | 2 304 B |
 
-The limits are in `firmwares/altruist-urban/src/logging.rs` (`QUEUE_DEPTH` 24 records, `READ_BYTES` 2 048 B per
-open `read` stream, at most two streams) and in `rohi_logging` (batch of 2 KiB of text, one compressed block of at most 2 056 B). Flash:
-the `rohi-log` partition is 256 KiB of the 4 MB / 8 MB flash (the `factory` partition shrank by that amount).
+The limits are in `firmwares/altruist-urban/src/logging.rs` (`QUEUE_DEPTH` 24 records, `TAIL_RECORDS` 8 on the ESP32-C3 and
+7 on the ESP32-C6, about 200 B each; at most two download streams, and none for the tail) and in `rohi_logging` (batch of 2 KiB of text, one compressed block of at most 2 056 B).
+
+**Flash.** The `rohi-log` partition is the last partition of the flash. ESP32-C3 (4 MB): 512 KiB (`0x80000`) at `0x380000`,
+128 sectors of 4 KiB, 126 for the ring and the last two for the format header; with 32 KiB segments it retains 15 full segments (480 KiB).
+ESP32-C6 (8 MB): 1 MiB at `0x700000`, 256 sectors, 254 for the ring. The `factory` partition starts at `0x20000` and is `0x360000`
+B (ESP32-C3) / `0x6E0000` B (ESP32-C6). On both chips the app area ends on a 64 KiB boundary (`0x380000` on the ESP32-C3), for future A/B OTA slots (#29). `scripts/image-fits.sh <chip>` (CI job Firmware) runs `espflash save-image`, which
+refuses an image that does not fit: the ESP32-C3 `firmware`-profile image is 1 361 472 B of the 3 538 944 B (`0x360000`) of the
+reduced `factory` partition (38.5 %), the ESP32-C6 `release` image 1 845 552 B of 7 208 960 B (25.6 %); the C3 partition holds the image
+with 2.1 MB to spare.
+
+**RAM does not scale with the flash.** The default retention is 512 KiB in 32 KiB segments on the ESP32-C3 and 1 MiB in 64 KiB segments on the ESP32-C6 (at most 24 segments are kept), and
+nothing is allocated per sector or per segment byte: a format or a clear erases one 4 KiB sector at a time and yields
+between two erases (no flash lock is held across the region), the recovery reads through 20 B to 128 B buffers, a sealed
+segment is checked with a streaming CRC-32 and the metadata is at most 24 segments. Static analysis of this change against
+`master` at `72caa63` (`scripts/memcheck.sh`, same toolchain and flags, nothing measured on a device):
+
+| | ESP32-C3 | ESP32-C6 |
+|---|---:|---:|
+| `.data` | +16 B (29 840 B) | +24 B (33 108 B) |
+| `.bss` | 0 (204 824 B) | +8 B (208 936 B) |
+| Task pools (`logging_task` 2 304 B) | unchanged (40 352 B) | unchanged (40 328 B) |
+| Main stack | −16 B (21 976 B) | −32 B (121 816 B) |
+| Largest frame | unchanged (12 240 B) | unchanged (9 232 B) |
+| Logging frames (`Logging::step`, `invoke_of<LoggingService>`, `observe`) | +16 B each | +16 B to +32 B |
+
+The growth of `LOGGING` (+8 B) is the index of the active format header slot that the ring keeps. The log lines for a failed open, recover or clear
+are out of line (`#[cold]`): inlined into the config publication they enlarged the `EspWifi::new` frame by 832 B in a
+trial build. The new `Recovery::formatted` flag and the format loop add no buffer.
+
+**`TailLogs` instead of `logging.read` (#70).** `read` decoded archive segments into a 2 048 B buffer held in each open
+stream slot and polled the decoder and its scratch inside the `control_task` future. The tail only copies records of a RAM ring
+out one at a time, formats at most 512 B of whole lines and writes them **straight into the `data` field of the reply**: there is
+no stream (no table, no id, no timeout, nothing to close and nothing that can be overwritten between selecting a window and
+reading it), no buffer besides the reply that is built anyway, no `SegmentDecoder`, no flash read and no LZ4 on its path. The
+reply has the capacity of a stream chunk, so the largest response, and with it the stack of the `control_task`, does not grow:
+`Controller::tail_logs` is a function of its own (`#[inline(never)]`), the page is written into the `Vec` of the reply, and
+a record copied out of the ring (about 200 B) is the only temporary. Static analysis of this change (`scripts/memcheck.sh
+images|analyze`, same toolchain and flags; nothing was measured on a device), where "before" is the stream-based
+`logging.tail` of the commit before:
+
+| | ESP32-C3 before → after | ESP32-C6 before → after |
+|---|---:|---:|
+| `.data` (limit 30 000 / 33 500) | 29 992 → 29 944 B | 33 492 → 33 380 B |
+| `.bss` | 186 088 → 186 088 B | 190 200 → 190 200 B |
+| Task pools | 37 992 → 37 992 B | 37 968 → 37 968 B |
+| `control_task` pool | 14 752 → 14 752 B | 14 752 → 14 752 B |
+| `LOGGING` | 10 616 → 10 544 B | 10 424 → 10 352 B |
+| Main stack | 40 560 → 40 608 B | 140 168 → 140 280 B |
+| Largest frame | 12 256 → 12 256 B | 8 560 → 9 232 B |
+
+The tail table of `LOGGING` (two `TailOpen` slots) is gone, so `.data` shrinks by 72 B on each chip. All budgets of
+`memcheck-budgets.toml` hold with the same limits (`NEEDS HARDWARE DATA`: the static evidence is within them and no stack peak is
+measured); none was raised. The largest frame of the ESP32-C6 is the `control_task` poll, as before; compare it with the base
+branch in CI (`--base`) rather than with the figure of an older commit.
+
+The RAM tail is `TAIL_RECORDS` × 200 B inside `LOGGING` (1 600 B on the ESP32-C3, 1 400 B on the ESP32-C6); the 4 096 B of
+`READ` buffers of two streams are gone, and a download slot no longer has the size of a record buffer. `.data` fits the
+budgets by 56 B (ESP32-C3) and 120 B (ESP32-C6): the whole `LOGGING` static is initialized data (it holds a pointer to the clock and the initial
+configuration), so one more record (200 B) would exceed the budget of both chips, which is why the ESP32-C6 keeps 7. The budgets were not raised. After the merge with the telemetry and connectivity rewrite (#58, #59, #66) `.data` measured 30 400 B (ESP32-C3) and 33 740 B (ESP32-C6), so `max_data` was raised to 30 500 and 33 800 B; the other budgets hold.
+What is left of the `invoke_of<LoggingService>` poll is mostly `download` (the pinned file table and the stream
+description). Not measured: the stack high-water mark of the main task during repeated `rohi logs`, which needs a device.
 
 **Not measured:** the share of `.text` the logging code adds, stack depth of the logging task while it compresses (the
-LZ4 compressor keeps a 2 KiB table and the writer a 2 KiB chunk on the stack), the CPU time of a flush, and how long a
-flash sector erase stalls Wi-Fi, BLE and the microphone DMA ring. These need a device.
+LZ4 compressor keeps a 2 KiB table and the writer a 2 KiB chunk on the stack), the CPU time of a flush, how long a
+flash sector erase stalls Wi-Fi, BLE and the microphone DMA ring, how long the first format of the 128 (ESP32-C3) or 256 (ESP32-C6) sectors takes, how long
+`rohi logs clear` takes (it has to stay below the 40 s action timeout of the client) and how long recovery spends on the checksums
+of up to 1 MiB of sealed segments at boot (the CRC-32 is computed bit by bit). These need a device.

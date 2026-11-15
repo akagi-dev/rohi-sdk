@@ -171,11 +171,17 @@ where
     C: Clock,
     M: RawMutex,
 {
+    log::debug!(target: "time", "Sampling time source (source={:?})", source.kind());
     match source.sample().await {
         Ok(sample) => service.submit(source.kind(), sample),
         Err(error) => {
             let failure = error.into();
-            log::warn!("time: {:?} source failed: {:?}", source.kind(), failure);
+            log::warn!(
+                target: "time",
+                "Time source failed (source={:?} reason={:?})",
+                source.kind(),
+                failure
+            );
             service.record_failure(failure);
             Err(failure)
         }
@@ -228,6 +234,7 @@ where
     /// [`SyncSchedule::unavailable_poll_ms`] while the source is unavailable.
     pub async fn step(&mut self) {
         if !self.source.is_available() {
+            log::trace!(target: "time", "Time source not available, polling again");
             self.service
                 .record_unavailable(SyncFailure::NetworkUnavailable);
             self.delay.delay_ms(self.schedule.unavailable_poll_ms).await;
@@ -236,9 +243,14 @@ where
         let wait = match sync_once(self.service, &mut self.source).await {
             Ok(()) => {
                 self.backoff.reset();
+                log::debug!(target: "time", "Next synchronization scheduled (delay_ms={})", self.schedule.resync_ms);
                 self.schedule.resync_ms
             }
-            Err(_) => self.backoff.next_delay_ms(),
+            Err(_) => {
+                let wait = self.backoff.next_delay_ms();
+                log::debug!(target: "time", "Synchronization retry scheduled (delay_ms={})", wait);
+                wait
+            }
         };
         self.delay.delay_ms(wait).await;
     }
@@ -252,6 +264,11 @@ where
     /// Runs forever: [`step`](Self::step) in a loop. Drop the future to stop
     /// it.
     pub async fn run(&mut self) -> ! {
+        log::info!(
+            target: "time",
+            "Synchronizer started (source={:?})",
+            self.source.kind()
+        );
         loop {
             self.step().await;
         }

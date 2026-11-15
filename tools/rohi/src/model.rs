@@ -553,6 +553,26 @@ pub enum ActionOutcome {
     Stream(Stream),
 }
 
+/// One page of the tail of a service, see
+/// [`Device::tail_logs`](crate::Device::tail_logs).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TailPage {
+    /// Identifies the boot of the device the sequences belong to.
+    pub session: u32,
+    /// Sequence of the last line of `data`: the cursor of the next request.
+    pub cursor: u64,
+    /// Sequence of the oldest line the device holds.
+    pub oldest_sequence: u64,
+    /// Sequence of the newest line the device holds; 0 when it holds none.
+    pub newest_sequence: u64,
+    /// The request belonged to another boot: `data` starts over.
+    pub reset: bool,
+    /// Lines the device overwrote between the cursor of the request and `data`.
+    pub gap: u64,
+    /// Whole text lines, each ending in a newline; empty when nothing is new.
+    pub data: Vec<u8>,
+}
+
 /// A chunk of a stream file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StreamChunk {

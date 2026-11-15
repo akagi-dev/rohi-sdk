@@ -161,6 +161,13 @@ pub struct AltruistUrban {
     pub microphone: I2sMicrophone,
 }
 
+#[cold]
+#[inline(never)]
+fn failed(error: Error) -> Error {
+    log::error!(target: "board", "Initialization failed (err={:?})", error);
+    error
+}
+
 impl AltruistUrban {
     /// Configure buses and peripherals. Does not talk to any sensor.
     ///
@@ -179,7 +186,7 @@ impl AltruistUrban {
             hardware.i2c,
             I2cConfig::default().with_timeout(BusTimeout::Maximum),
         )
-        .map_err(Error::I2c)?
+        .map_err(|e| failed(Error::I2c(e)))?
         .with_sda(hardware.i2c_sda)
         .with_scl(hardware.i2c_scl)
         .into_async();
@@ -188,7 +195,7 @@ impl AltruistUrban {
             .with_baudrate(SDS011_BAUD_RATE)
             .with_rx(RxConfig::default().with_fifo_full_threshold(10u16));
         let sds011_uart = Uart::new(hardware.uart, uart_config)
-            .map_err(Error::Uart)?
+            .map_err(|e| failed(Error::Uart(e)))?
             .with_tx(hardware.uart_tx)
             .with_rx(hardware.uart_rx)
             .into_async();
@@ -198,7 +205,7 @@ impl AltruistUrban {
             .with_data_format(DataFormat::Data32Channel32)
             .with_channels(Channels::MONO);
         let i2s = I2s::new(hardware.i2s, hardware.i2s_dma, i2s_config)
-            .map_err(Error::I2s)?
+            .map_err(|e| failed(Error::I2s(e)))?
             .into_async();
         let rx = i2s
             .i2s_rx
@@ -207,7 +214,15 @@ impl AltruistUrban {
             .with_din(hardware.i2s_din)
             .build();
         let buffer = dma_rx_stream_buffer!(I2S_DMA_BUFFER_BYTES, I2S_DMA_CHUNK_BYTES);
-        let microphone = I2sMicrophone::new(rx, buffer).map_err(Error::Microphone)?;
+        let microphone =
+            I2sMicrophone::new(rx, buffer).map_err(|e| failed(Error::Microphone(e)))?;
+
+        log::info!(
+            target: "board",
+            "Altruist Urban ready (sds011_baud={} mic_rate_hz={})",
+            SDS011_BAUD_RATE,
+            SAMPLE_RATE_HZ
+        );
 
         Ok(Self {
             i2c,

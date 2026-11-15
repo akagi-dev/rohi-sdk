@@ -52,6 +52,17 @@ pub struct LogRecord {
 }
 
 impl LogRecord {
+    /// A record that holds nothing: all zero bytes, sequence 0.
+    pub(crate) const EMPTY: Self = Self {
+        sequence: 0,
+        monotonic_ms: 0,
+        wall_time: None,
+        level: LogLevel::Off,
+        target: String::new(),
+        message: String::new(),
+        truncated: false,
+    };
+
     /// Formats `args` into a record. Text that does not fit is cut at a
     /// character boundary and `truncated` is set; formatting never fails.
     pub fn new(

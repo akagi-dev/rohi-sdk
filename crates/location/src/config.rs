@@ -210,6 +210,10 @@ fn validate_section(config: &LocationConfig) -> Result<(), FieldError> {
     if config.is_unset() || config.is_valid() {
         Ok(())
     } else {
+        log::warn!(
+            target: "location",
+            "Configuration rejected: a coordinate or the height is out of range"
+        );
         Err(FieldError::Invalid)
     }
 }

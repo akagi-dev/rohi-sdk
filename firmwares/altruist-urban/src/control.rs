@@ -24,7 +24,7 @@
 //!                                             UrbanDevice (this module)
 //!                          config sections: wifi, network, ble, connectivity, location, time, logging
 //!                          status: wifi, network, ble, connectivity, location, time,
-//!                                  sensors, identity, logging
+//!                                  sensors, identity, logging, system
 //!                          actions: wifi, identity, logging (read, download, clear),
 //!                                   system (reboot, factory_reset)
 //! ```
@@ -45,6 +45,7 @@
 
 use embassy_time::Delay;
 use rohi_sdk::control::{Device, DeviceInfo};
+use rohi_sdk::crash::Report;
 use rohi_sdk::identity::{Identity, IdentityService, IdentityStore, IdentityStoreError, PublicKey};
 use rohi_sdk::location::LocationService;
 use rohi_sdk::net::{BleProbe, BleService, IpBackend, NetworkHandle, NetworkService, WifiService};
@@ -117,6 +118,7 @@ type UrbanTelemetry = telemetry::UrbanTelemetry;
 pub struct UrbanSystemPlatform {
     config: UrbanConfig,
     reboot: fn(),
+    boot_report: fn() -> Option<Report>,
 }
 
 impl SystemPlatform for UrbanSystemPlatform {
@@ -133,6 +135,14 @@ impl SystemPlatform for UrbanSystemPlatform {
                 RegistryError::Unavailable => SystemError::Unavailable,
                 _ => SystemError::Internal,
             })
+    }
+
+    fn boot_report(&self) -> Option<Report> {
+        (self.boot_report)()
+    }
+
+    fn boot_count(&self) -> Option<u32> {
+        crate::config::boot_count()
     }
 }
 
@@ -166,12 +176,13 @@ pub type UrbanStatusServices<I, B, L> = (
     &'static UrbanIdentity,
     &'static UrbanTelemetry,
     &'static L,
+    &'static UrbanSystem,
 );
 
 /// The status registry of the device.
 pub type UrbanStatuses<I, B, L> = Statuses<RawMutex, UrbanStatusServices<I, B, L>>;
 
-/// The services that offer actions. `system` has no status.
+/// The services that offer actions.
 pub type UrbanActions<I, L> = (
     &'static UrbanWifi<I>,
     &'static UrbanIdentity,
@@ -214,6 +225,9 @@ pub struct Platform<I: 'static, B: 'static, L: 'static> {
     pub reboot: fn(),
     /// Entropy for the nonces of encrypted telemetry sections.
     pub entropy: connectivity::EntropyFn,
+    /// Why the device started and what its last panic was, for the `system`
+    /// status; `None` on a platform that keeps no crash record.
+    pub boot_report: fn() -> Option<Report>,
 }
 
 /// The device over the runtime handles of the firmware.
@@ -242,6 +256,7 @@ where
         logging,
         reboot: reboot_fn,
         entropy,
+        boot_report,
     } = platform;
     let network_failed = network.is_none();
     let sections: &'static ConfigSections = SECTIONS.init(config_sections(config));
@@ -268,6 +283,7 @@ where
         system: SystemService(UrbanSystemPlatform {
             config: storage_config,
             reboot: reboot_fn,
+            boot_report,
         }),
     });
     Device::new(
@@ -285,6 +301,7 @@ where
             &services.identity,
             &services.telemetry,
             &services.logging,
+            &services.system,
         )),
         (
             &services.wifi,

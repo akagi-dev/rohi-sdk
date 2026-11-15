@@ -73,8 +73,11 @@ impl Backends for Ram {
     }
 }
 
-type Runtime = Logging<NoopRawMutex, &'static Clock, Ram, 512, 4096>;
-type Service = LoggingService<'static, NoopRawMutex, &'static Clock, Ram, 512, 4096>;
+// What the device keeps in RAM for `rohi logs`.
+const TAIL: usize = 16;
+
+type Runtime = Logging<NoopRawMutex, &'static Clock, Ram, 512, TAIL>;
+type Service = LoggingService<'static, NoopRawMutex, &'static Clock, Ram, 512, TAIL>;
 
 const CONFIG: LoggingConfig = LoggingConfig {
     level: rohi_logging::LogLevel::Debug,
@@ -346,22 +349,25 @@ fn the_logs_command_line_parses() {
 // Reading
 // ---------------------------------------------------------------------------
 
+fn sequences(outcome: &Outcome) -> Vec<u64> {
+    outcome
+        .lines()
+        .iter()
+        .map(|(sequence, _)| *sequence)
+        .collect()
+}
+
 #[tokio::test(flavor = "current_thread")]
-async fn the_default_is_the_latest_twenty_records_oldest_first() {
+async fn the_default_is_the_latest_records_the_device_keeps_in_ram_oldest_first() {
     let bench = Bench::new();
     bench.log(1, 50);
     let outcome = run(&bench, &["logs"]).await;
     outcome.ok();
     let lines = outcome.lines();
-    assert_eq!(lines.len(), 20);
-    assert_eq!(
-        lines
-            .iter()
-            .map(|(sequence, _)| *sequence)
-            .collect::<Vec<_>>(),
-        (31..=50).collect::<Vec<_>>()
-    );
-    assert!(lines[0].1.starts_with("event 31:"));
+    // The default is 20 but the device keeps `TAIL` records in RAM.
+    assert_eq!(lines.len(), TAIL);
+    assert_eq!(sequences(&outcome), (35..=50).collect::<Vec<_>>());
+    assert!(lines[0].1.starts_with("event 35:"));
     assert_eq!(outcome.stderr, "");
     // The text is the stable line format of the log files.
     assert!(
@@ -375,16 +381,19 @@ async fn the_default_is_the_latest_twenty_records_oldest_first() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn n_selects_the_count_also_across_many_pages() {
+async fn n_selects_the_count_up_to_what_the_ram_holds() {
     let bench = Bench::new();
     bench.log(1, 400);
-    for (count, expected) in [(1usize, 1usize), (7, 7), (100, 100), (250, 250)] {
+    for (count, expected) in [(1usize, 1usize), (7, 7), (TAIL, TAIL), (250, TAIL)] {
         let outcome = run(&bench, &["logs", "-n", &count.to_string()]).await;
         outcome.ok();
         let lines = outcome.lines();
         assert_eq!(lines.len(), expected, "-n {count}");
-        let first = 400 - expected as u64 + 1;
-        assert_eq!(lines.first().unwrap().0, first, "-n {count}");
+        assert_eq!(
+            lines.first().unwrap().0,
+            400 - expected as u64 + 1,
+            "-n {count}"
+        );
         assert_eq!(lines.last().unwrap().0, 400);
         for pair in lines.windows(2) {
             assert_eq!(pair[1].0, pair[0].0 + 1);
@@ -398,8 +407,7 @@ async fn fewer_records_than_asked_are_all_of_them() {
     bench.log(1, 5);
     let outcome = run(&bench, &["logs", "-n", "100"]).await;
     outcome.ok();
-    assert_eq!(outcome.lines().len(), 5);
-    assert_eq!(outcome.lines()[0].0, 1);
+    assert_eq!(sequences(&outcome), [1, 2, 3, 4, 5]);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -424,14 +432,92 @@ async fn n_zero_prints_no_records() {
     assert_eq!(outcome.stdout, "");
 }
 
+/// Records the device has in its archive, from the status of the service.
+async fn stored(bench: &Bench) -> u64 {
+    let status = run(bench, &["-o", "json", "status", "logging"]).await;
+    status.ok();
+    status.json()["values"]["stored_records"].as_u64().unwrap()
+}
+
+/// Puts what is logged so far into the archive: a download commits it.
+async fn archive(bench: &Bench, name: &str) {
+    let dir = temp_dir(name);
+    run(bench, &["logs", "download", "-d", dir.to_str().unwrap()])
+        .await
+        .ok();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[tokio::test(flavor = "current_thread")]
-async fn json_has_one_object_per_record() {
+async fn the_tail_is_served_in_pages_of_at_most_512_bytes_and_continued_by_its_cursor() {
     let bench = Bench::new();
+    bench.log(1, 40);
+    let (client, device) = link(244);
+    let controller = Controller::new(backend(&bench), OpenPolicy);
+    let mut server = ControlBle::new(device, &controller);
+    let pages = tokio::select! {
+        () = async { server.run().await } => unreachable!(),
+        pages = async {
+            let mut device = Device::new(client);
+            let mut pages = Vec::new();
+            let (mut session, mut cursor) = (0, 0);
+            loop {
+                let page = device.tail_logs("logging", session, cursor).await.unwrap();
+                if page.data.is_empty() {
+                    assert_eq!(page.cursor, cursor);
+                    break;
+                }
+                session = page.session;
+                cursor = page.cursor;
+                pages.push(page);
+            }
+            pages
+        } => pages,
+    };
+    // Sixteen records of about a hundred bytes need several pages.
+    assert!(pages.len() > 2, "{}", pages.len());
+    let mut sequences = Vec::new();
+    for page in &pages {
+        assert!(page.data.len() <= 512);
+        assert!(page.data.ends_with(b"\n"));
+        assert!(!page.reset);
+        assert_eq!((page.oldest_sequence, page.newest_sequence), (25, 40));
+        for line in std::str::from_utf8(&page.data).unwrap().lines() {
+            sequences.push(
+                rohi_logging::segment::text::parse_line(line)
+                    .unwrap()
+                    .sequence,
+            );
+        }
+        assert_eq!(page.cursor, *sequences.last().unwrap());
+    }
+    // No record is lost or repeated across the pages.
+    assert_eq!(sequences, (25..=40).collect::<Vec<_>>());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_tail_never_touches_the_archive() {
+    let bench = Bench::new();
+    bench.log(1, 30);
+    for _ in 0..3 {
+        run(&bench, &["logs"]).await.ok();
+    }
+    // Reading the log commits nothing to flash: only a download does.
+    assert_eq!(stored(&bench).await, 0);
+    archive(&bench, "tail-archive").await;
+    assert_eq!(stored(&bench).await, 30);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn json_has_one_object_per_record_and_the_session_of_the_boot() {
+    let bench = Bench::new();
+    bench.logging.set_session(9);
     bench.log(1, 5);
     let outcome = run(&bench, &["-o", "json", "logs", "-n", "2"]).await;
     outcome.ok();
     let json = outcome.json();
     assert_eq!(json["schema_version"], 1);
+    assert_eq!(json["session"], 9);
     let records = json["records"].as_array().unwrap();
     assert_eq!(records.len(), 2);
     assert_eq!(records[0]["sequence"], 4);
@@ -459,91 +545,123 @@ async fn json_has_one_object_per_record() {
 // Following
 // ---------------------------------------------------------------------------
 
+async fn follow<'a>(
+    bench: &'a Bench,
+    args: &[&str],
+    polls: usize,
+    injector: impl std::future::Future<Output = ()> + 'a,
+) -> Outcome {
+    let terminal = Terminal {
+        interactive: false,
+        input: &[],
+    };
+    run_with(bench, args, terminal, Some((polls, Box::new(injector)))).await
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn follow_prints_the_latest_and_then_only_new_records() {
     let bench = Bench::new();
     bench.log(1, 10);
-    let injector = async {
+    let outcome = follow(&bench, &["logs", "-n", "2", "-f"], 4, async {
         tokio::time::sleep(Duration::from_millis(60)).await;
         bench.log(11, 3);
         tokio::time::sleep(Duration::from_millis(60)).await;
         bench.log(14, 2);
-    };
-    let outcome = run_with(
-        &bench,
-        &["logs", "-n", "2", "-f"],
-        Terminal {
-            interactive: false,
-            input: &[],
-        },
-        Some((4, Box::new(injector))),
-    )
+    })
     .await;
     outcome.ok();
-    let sequences: Vec<u64> = outcome
-        .lines()
-        .iter()
-        .map(|(sequence, _)| *sequence)
-        .collect();
     // The last two, then each new record once and in order.
-    assert_eq!(sequences, [9, 10, 11, 12, 13, 14, 15]);
+    assert_eq!(sequences(&outcome), [9, 10, 11, 12, 13, 14, 15]);
+    assert_eq!(outcome.stderr, "");
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn follow_notices_that_the_history_was_cleared_and_goes_on() {
+async fn follow_says_when_records_were_overwritten_before_it_read_them() {
+    let bench = Bench::new();
+    bench.log(1, 4);
+    let outcome = follow(&bench, &["logs", "-n", "1", "-f"], 3, async {
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        // More than the device keeps, between two polls.
+        bench.log(5, 3 * TAIL as u64);
+    })
+    .await;
+    outcome.ok();
+    assert!(outcome.stderr.contains("overwritten"), "{}", outcome.stderr);
+    let sequences = sequences(&outcome);
+    assert_eq!(sequences.first(), Some(&4));
+    assert_eq!(sequences.last(), Some(&(4 + 3 * TAIL as u64)));
+    // Every record that reached the screen is in order and shown once.
+    assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn follow_notices_a_restart_of_the_device_and_goes_on() {
+    let bench = Bench::new();
+    bench.logging.set_session(1);
+    bench.log(1, 5);
+    let outcome = follow(&bench, &["logs", "-n", "1", "-f"], 5, async {
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        // The device starts again: another session, a RAM tail of its own.
+        bench.logging.set_session(2);
+        bench.log(6, 2);
+    })
+    .await;
+    outcome.ok();
+    assert!(outcome.stderr.contains("restarted"), "{}", outcome.stderr);
+    let sequences = sequences(&outcome);
+    assert_eq!(sequences.first(), Some(&5));
+    assert_eq!(sequences.last(), Some(&7));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn clear_does_not_empty_the_tail_and_follow_does_not_notice_it() {
     let bench = Bench::new();
     bench.log(1, 10);
-    let injector = async {
+    let outcome = follow(&bench, &["logs", "-n", "1", "-f"], 5, async {
         tokio::time::sleep(Duration::from_millis(60)).await;
         bench.log(11, 2);
         tokio::time::sleep(Duration::from_millis(60)).await;
         run(&bench, &["logs", "clear", "--yes"]).await.ok();
         bench.log(13, 2);
-    };
-    let outcome = run_with(
-        &bench,
-        &["logs", "-n", "1", "-f"],
-        Terminal {
-            interactive: false,
-            input: &[],
-        },
-        Some((5, Box::new(injector))),
-    )
+    })
     .await;
     outcome.ok();
-    assert!(
-        outcome.stderr.contains("cleared or reset"),
-        "{}",
-        outcome.stderr
-    );
-    let messages: Vec<u64> = outcome
-        .lines()
-        .iter()
-        .map(|(sequence, _)| *sequence)
-        .collect();
-    // What was cleared is not repeated; what came after it is all there.
-    assert_eq!(messages.last(), Some(&14));
-    assert!(messages.contains(&13), "{messages:?}");
-    assert_eq!(messages.iter().filter(|s| **s == 13).count(), 1);
+    assert_eq!(sequences(&outcome), [10, 11, 12, 13, 14]);
+    assert_eq!(outcome.stderr, "");
+    // The tail is still there after the archive is gone.
+    let after = run(&bench, &["logs", "-n", "3"]).await;
+    after.ok();
+    assert_eq!(sequences(&after), [12, 13, 14]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn follow_goes_on_while_the_archive_is_downloaded() {
+    let bench = Bench::new();
+    bench.log(1, 200);
+    let dir = temp_dir("follow-download");
+    let outcome = follow(&bench, &["logs", "-n", "1", "-f"], 5, async {
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        run(&bench, &["logs", "download", "-d", dir.to_str().unwrap()])
+            .await
+            .ok();
+        bench.log(201, 2);
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        bench.log(203, 1);
+    })
+    .await;
+    outcome.ok();
+    assert_eq!(sequences(&outcome), [200, 201, 202, 203]);
+    assert!(!files_in(&dir).is_empty());
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn follow_with_n_zero_starts_at_the_end_and_json_is_one_document_per_line() {
     let bench = Bench::new();
     bench.log(1, 10);
-    let injector = async {
+    let outcome = follow(&bench, &["-o", "json", "logs", "-n", "0", "-f"], 3, async {
         tokio::time::sleep(Duration::from_millis(60)).await;
         bench.log(11, 2);
-    };
-    let outcome = run_with(
-        &bench,
-        &["-o", "json", "logs", "-n", "0", "-f"],
-        Terminal {
-            interactive: false,
-            input: &[],
-        },
-        Some((3, Box::new(injector))),
-    )
+    })
     .await;
     outcome.ok();
     let documents: Vec<Value> = outcome
@@ -559,29 +677,20 @@ async fn follow_with_n_zero_starts_at_the_end_and_json_is_one_document_per_line(
     assert!(
         documents
             .iter()
-            .all(|document| document["schema_version"] == 1)
+            .all(|document| document["schema_version"] == 1 && document["session"] == 1)
     );
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn follow_on_an_empty_log_waits_for_the_first_record() {
     let bench = Bench::new();
-    let injector = async {
+    let outcome = follow(&bench, &["logs", "-f"], 3, async {
         tokio::time::sleep(Duration::from_millis(60)).await;
         bench.log(1, 2);
-    };
-    let outcome = run_with(
-        &bench,
-        &["logs", "-f"],
-        Terminal {
-            interactive: false,
-            input: &[],
-        },
-        Some((3, Box::new(injector))),
-    )
+    })
     .await;
     outcome.ok();
-    assert_eq!(outcome.lines().len(), 2);
+    assert_eq!(sequences(&outcome), [1, 2]);
 }
 
 // ---------------------------------------------------------------------------
@@ -726,12 +835,14 @@ async fn records_logged_during_and_after_a_download_are_not_in_it() {
 async fn clear_asks_first_and_is_refused_when_it_cannot_ask() {
     let bench = Bench::new();
     bench.log(1, 30);
+    archive(&bench, "clear-asks").await;
+    assert_eq!(stored(&bench).await, 30);
     let outcome = run(&bench, &["logs", "clear"]).await;
     assert!(matches!(
         outcome.result,
         Err(CliError::ConfirmationRequired)
     ));
-    assert_eq!(run(&bench, &["logs"]).await.lines().len(), 20);
+    assert_eq!(stored(&bench).await, 30);
 
     // Declined.
     let declined = run_with(
@@ -745,7 +856,7 @@ async fn clear_asks_first_and_is_refused_when_it_cannot_ask() {
     )
     .await;
     assert!(matches!(declined.result, Err(CliError::Cancelled)));
-    assert_eq!(run(&bench, &["logs", "-n", "100"]).await.lines().len(), 30);
+    assert_eq!(stored(&bench).await, 30);
 
     // Confirmed.
     let confirmed = run_with(
@@ -761,15 +872,16 @@ async fn clear_asks_first_and_is_refused_when_it_cannot_ask() {
     confirmed.ok();
     assert!(confirmed.stdout.contains("cleared"));
     assert!(confirmed.stderr.contains("Continue?"));
-    assert_eq!(run(&bench, &["logs", "-n", "100"]).await.stdout, "");
+    assert_eq!(stored(&bench).await, 0);
+    // Only the archive is cleared: what the device holds in RAM is still there.
+    assert_eq!(run(&bench, &["logs"]).await.lines().len(), TAIL);
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn clear_yes_does_not_ask_and_logging_goes_on() {
     let bench = Bench::new();
     bench.log(1, 30);
-    // Committed on the device before it is cleared.
-    run(&bench, &["logs"]).await.ok();
+    archive(&bench, "clear-yes").await;
     let outcome = run(&bench, &["logs", "clear", "--yes"]).await;
     outcome.ok();
     assert_eq!(outcome.stderr, "");
@@ -780,11 +892,8 @@ async fn clear_yes_does_not_ask_and_logging_goes_on() {
     bench.log(31, 3);
     let after = run(&bench, &["logs", "-n", "10"]).await;
     after.ok();
-    // The sequence goes on; it never restarts at 1.
-    assert_eq!(
-        after.lines().iter().map(|(s, _)| *s).collect::<Vec<_>>(),
-        [31, 32, 33]
-    );
+    // The tail sequence goes on across a clear; it never restarts at 1.
+    assert_eq!(sequences(&after), (24..=33).collect::<Vec<_>>());
 }
 
 // ---------------------------------------------------------------------------
@@ -798,25 +907,24 @@ async fn the_actions_are_ordinary_actions_of_the_logging_service() {
     let outcome = run(&bench, &["-o", "json", "action"]).await;
     outcome.ok();
     let text = outcome.stdout;
-    for name in ["read", "download", "clear"] {
+    for name in ["download", "clear"] {
         assert!(text.contains(&format!("\"{name}\"")), "{text}");
     }
     assert!(text.contains("\"logging\""));
-
-    // Both action syntaxes write streams and release them after reading.
-    let read = run(&bench, &["action", "logging", "read", "after=0", "limit=2"]).await;
-    read.ok();
-    assert_eq!(read.lines().len(), 2);
-    let positional = run(&bench, &["logging", "read", "0", "2"]).await;
-    positional.ok();
-    assert_eq!(positional.lines().len(), 2);
+    // The tail is the `TailLogs` request, not an action and not a stream.
+    assert!(!text.contains("\"tail\""), "{text}");
+    let gone = run(&bench, &["action", "logging", "tail", "session=0"]).await;
+    assert!(gone.result.is_err());
 
     let download = run(&bench, &["logging", "download"]).await;
     download.ok();
     assert!(!download.stdout.is_empty());
-    // Repeated reads and downloads fit within the device's open-stream limit.
-    run(&bench, &["logs"]).await.ok();
-    run(&bench, &["logs"]).await.ok();
+    // Repeated reads and downloads fit within the device's open-stream limit,
+    // and reading the tail takes none.
+    for _ in 0..5 {
+        run(&bench, &["logs"]).await.ok();
+    }
+    run(&bench, &["logging", "download"]).await.ok();
     run(&bench, &["logging", "download"]).await.ok();
 }
 

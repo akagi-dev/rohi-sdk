@@ -15,6 +15,7 @@ maintenance = { status = "actively-developed" }
 [dependencies]
 heapless.workspace = true
 embassy-sync.workspace = true
+log.workspace = true
 zeroize.workspace = true
 pin-project-lite.workspace = true
 rohi-config.workspace = true

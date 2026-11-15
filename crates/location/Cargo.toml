@@ -18,6 +18,7 @@ rohi-service.workspace = true
 minicbor.workspace = true
 heapless.workspace = true
 embassy-sync.workspace = true
+log.workspace = true
 
 [dev-dependencies]
 minicbor = { workspace = true, features = ["std"] }

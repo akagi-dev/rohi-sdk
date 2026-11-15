@@ -1,9 +1,15 @@
 # Device log
 
-The device keeps a persistent log: what its firmware reports through the standard Rust `log` facade (Wi-Fi came up,
-a request timed out, a storage write failed), kept in a bounded ring in internal flash (a file next to the configuration flash for the simulated device), so it survives a reset. `rohi logs`
-reads it. Nothing here is a special protocol: the log is the `logging` [service](status.md) with its own status,
-configuration section and three [actions](actions.md), and `rohi logs` is a convenience over them.
+The device keeps two logs of what its firmware reports through the standard Rust `log` facade (Wi-Fi came up, a request
+timed out, a storage write failed):
+
+- the **latest records in RAM**, a few of them, lost on a reset: `rohi logs` shows them and `rohi logs -f` follows them;
+- the **archive**, a bounded ring of compressed files in internal flash (a file next to the configuration flash for the
+  simulated device) that survives a reset: `rohi logs download` saves it.
+
+The log is the `logging` [service](status.md) with its own status, configuration section and two [actions](actions.md)
+(`download`, `clear`). The latest records in RAM are not an action: `rohi logs` reads them with the `TailLogs` request of the
+control protocol, one bounded reply (at most 512 bytes of text) per request, with no stream to open or close.
 
 > **Status.** The behaviour below is covered by host tests, including an emulated flash with power-loss injection, and by
 > end-to-end tests of the `altruist-urban` host process. It has not been run on a device: see the
@@ -11,16 +17,22 @@ configuration section and three [actions](actions.md), and `rohi logs` is a conv
 > storage, and issue #26 is implemented only in part.
 
 ```bash
-rohi logs                       # the latest 20 records, oldest first
-rohi logs -n 100                # the latest 100
+rohi logs                       # the latest records the device keeps in RAM, oldest first
+rohi logs -n 5                  # the latest 5 of them
 rohi logs -f                    # follow new records like `tail -f` (Ctrl-C to stop)
-rohi logs -n 100 -f             # the latest 100, then follow
+rohi logs -n 5 -f               # the latest 5, then follow
 
-rohi logs download              # save every retained log file to the current directory
+rohi logs download              # save every retained archive file to the current directory
 rohi logs download -d ./logs    # ... to another directory
-rohi logs clear                 # remove the history of the active storage (asks first)
-rohi -o json logs -n 50
+rohi logs clear                 # remove the archive of the active storage (asks first)
+rohi -o json logs -n 5
 ```
+
+`-n N` returns at most what the device keeps in RAM: 8 records on the ESP32-C3, 7 on the ESP32-C6 and 32 on the host, however
+large `N` is. That is a window onto what just happened, not a way to read history: for anything older, `rohi logs download`.
+The device answers with at most 512 bytes of whole lines per request, so `rohi logs` asks for the next page with the cursor of the
+previous one until nothing newer is left. A line is never split across pages; a line whose escaped text is longer than a page is
+shortened by the device (a `*` follows its level) so that every page makes progress.
 
 A record is one line:
 
@@ -29,12 +41,28 @@ A record is one line:
 ```
 
 the sequence number, milliseconds since boot, the wall-clock time in UTC (`-` while the device has no synchronized
-time), the level (`*` after it when the message was cut), the target and the message. Sequence numbers only grow within a
-*history*, also across resets, so they tell a gap from a quiet device. A history ends when it is cleared or lost to damage;
-the next one is identified by a new `history` number in `rohi status logging` and numbers its records from 1 again. A sequence is
-a cursor into one history only. `rohi logs -f` notices the change, says so on stderr and shows the new history from its start
-instead of waiting for sequences it has already passed. `-o json` prints `{ "schema_version", "records": [..] }`; with `-f` it
-prints one such document per line.
+time), the level (`*` after it when the message was cut), the target and the message.
+
+The sequence number of `rohi logs` is the **tail** sequence: it starts at 1 on every boot, counts every record the device
+accepted (also one that the archive later drops because its queue was full) and is **not** the number you find in a
+downloaded file. A client keeps a *session* with the sequence: the device gives every start its own session, a random number
+that does **not** come from the `boot_count` of `rohi status system` (that counter lives in the configuration storage, which can
+fail to be read or written, and a repeated value would make a client take the records of a new boot for those of the old one).
+A cursor of an earlier boot is therefore never mistaken for one of this boot, even when the boot counter could not be kept.
+
+`rohi logs -f` asks the device for what is new once a second and prints each record once, in order. A client that is caught up
+gets an empty page, and polling the tail writes no log records of its own, not even at the `debug` level of the persistent
+log (the control plane reports requests at `trace`, which the persistent log never keeps), so following never feeds the tail it
+reads. It says so on stderr when something happened it cannot hide:
+
+- `The device restarted: the log it keeps in RAM starts over`: the session changed (the device reports `reset`); the records of
+  the new boot are shown from the start;
+- `N log record(s) were overwritten on the device before they could be read`: more records came between two requests
+  than the device keeps; the device counts them in the `gap` of the page and the sequence numbers jump.
+
+`-o json` prints `{ "schema_version", "session", "records": [..] }`; with `-f` it prints one such document per line.
+
+The tail needs no flash: it answers while the archive is being written, is faulted, or is held by a download.
 
 ## What is kept
 
@@ -43,9 +71,9 @@ prints one such document per line.
 | Field | Meaning |
 |-------|---------|
 | `level` | `off`, `error`, `warn`, `info` or `debug`. The default is `warn` in a release build and `info` in a development build. Only the persistent log is affected, not the serial console |
-| `storage` | `internal` (flash; a file on the host). `sd` is selectable but this firmware has no card: the service then reports `storage_unavailable` and does **not** fall back to flash |
-| `compression` | `lz4` or `none`, for **new** segments only; old segments keep their form |
-| `retention_bytes`, `segment_bytes` | the budget of the history and the size at which a file is closed; the oldest files are dropped when the budget is used |
+| `storage` | an enum: `internal` (0, flash; a file on the host) or `sd` (1). `sd` is selectable but this firmware has no card: the service then reports `storage_unavailable` and does **not** fall back to flash |
+| `compression` | an enum: `none` (0) or `lz4` (1), for **new** segments only; old segments keep their form |
+| `retention_bytes`, `segment_bytes` | the budget of the history and the size at which a file is closed; the oldest files are dropped when the budget is used. The chip sets the defaults, and a value you set stays in force: on the ESP32-C3 the `rohi-log` partition is 512 KiB, so the default is 512 KiB in 32 KiB segments (the partition is not the journal: two 4 KiB sectors hold the format header, so 15 full segments, 480 KiB, are retained); on the ESP32-C6 and the host it is 1 MiB in 64 KiB segments, below the limit of 24 segments. A value you set is kept as it is, and one that is only valid next to the former 8 KiB segment (a budget below 128 KiB) makes the section invalid until you also set `segment_bytes` or remove it |
 | `flush_interval` | the longest a record waits in RAM before it is written |
 
 Records are written in small batches and files are compressed one batch at a time, so a power loss costs at most the
@@ -58,9 +86,8 @@ for a full ring: the next write replaces the oldest file. At most 24 segments ar
 count, not `retention_bytes`, limits `capacity_bytes`.
 
 When the device starts, every sealed segment is checked against the checksum stored with it. A segment whose content does
-not match is **dropped whole** (the rest of the history stays) and the service reports `storage_corrupt`. A `read` that meets a
-damaged segment fails with the reason `segment_corrupt` and the service reports `read_failed` until a read succeeds; a read that
-only stops at its record limit is not an error.
+not match is **dropped whole** (the rest of the history stays) and the service reports `storage_corrupt`. The records in RAM are not
+affected.
 
 ## Download
 
@@ -77,8 +104,24 @@ until the download ends, so records logged meanwhile are not part of it. `rohi` 
 
 ## Clear
 
-`rohi logs clear` removes the history of the active storage after you confirm (`--yes` skips the question, a script
-must pass it). It does not touch the configuration, the identity or another storage.
+`rohi logs clear` removes the archive of the active storage after you confirm (`--yes` skips the question, a script
+must pass it). It does not touch the configuration, the identity or another storage. It **destroys all retained log history**
+and physically erases the whole log region of the flash, one sector at a time, not only the headers of the files, so it takes
+longer than the other actions (the time on a device is not measured yet). The `history` number grows, the log starts again
+empty and keeps working; a reset in the middle of a clear leaves either the old history or an empty one, never a part of it.
+A clear is refused as `Busy` while a download holds files, before anything is erased: close the download (`rohi` does it when it
+ends) or wait until the device expires it (60 s without a read), then clear again. A download that was just started and a clear
+that is called at the same time are ordered: whichever the device takes first wins, and the other one never sees a half-cleared
+archive. It does not touch the records the device keeps in RAM:
+`rohi logs` (and a running `rohi logs -f`) show them as before, and the session does not change.
+
+## First start and upgrades
+
+The log region carries a *format header* in its last two sectors. A region without a valid one (a new device, a partition table that
+moved the region over other data, an interrupted format) is erased once, sector by sector, and then the header is written; a region with a valid
+header is never erased by a start, whatever else happens to be damaged in it. Only the `rohi-log` partition is formatted. The region
+moved to the end of the flash (the last 512 KiB on the ESP32-C3, the last 1 MiB, grown from 256 KiB, on the ESP32-C6): the old history is **not** migrated and the first start of the new firmware formats the new region
+(see the [firmware README](https://github.com/akagi-dev/rohi-sdk/blob/master/firmwares/altruist-urban/README.md)). Records logged while it runs wait in a bounded queue.
 
 ## Secrets
 

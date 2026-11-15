@@ -37,6 +37,22 @@ symbol = "____embassy_main_task_inner_function"
 max_growth = 900
 reason = "the async main future holds the telemetry and connectivity statics it initializes"
 
+# The crash records and the boot records of the logging pull request.
+[[regression.approved_frame_growth]]
+symbol = "__logging_task_task"
+max_growth = 768
+reason = "the log task poll now writes the boot records of the previous crash (Backends::boot_record)"
+
+[[regression.approved_frame_growth]]
+symbol = "rust_begin_unwind"
+max_growth = 640
+reason = "the panic handler now stores the crash in the retained slot (rohi_crash_esp::on_panic)"
+
+[[regression.approved_frame_growth]]
+symbol = "registry::observe::<rohi_sensors::managed::SensorsService"
+max_growth = 768
+reason = "the sensors status observer is laid out differently after the logging changes; 2 160 B stays far below max_frame"
+
 # Re-baselined for the telemetry and connectivity rewrite (#58, #59, #66). Growth since the previous limits:
 # the `telemetry` and `connectivity` services and their Actions, the effective profile and route state, the
 # packet pool and outboxes of the publisher (3 x 920 B), one export slot (920 B), a larger envelope bound
@@ -44,8 +60,12 @@ reason = "the async main future holds the telemetry and connectivity statics it 
 # 360 B). The main stack of the ESP32-C3 shrank accordingly: it is what remains of the RAM. It is NOT measured on
 # hardware; the largest poll frame (the async main future, 13.1 KB) is below it, but the call depth under it is
 # unknown, so treat this as the number to improve first.
+#
+# `max_data` was raised by 200 B (ESP32-C3, 30 300 → 30 500) and 300 B (ESP32-C6, 33 500 → 33 800) when the
+# connectivity rewrite was merged with the persistent logging (#68): `.data` measured 30 400 B and 33 740 B.
+
 [chips.esp32c3]
-max_data = 30300
+max_data = 30500
 max_bss = 210800
 max_task_ram = 43400
 min_main_stack = 15800
@@ -56,7 +76,7 @@ control_dispatch = ["rohi_control::controller", "rohi_service::registry"]
 logging = ["rohi_logging::service", "rohi_logging::storage", "rohi_logging::segment"]
 
 [chips.esp32c6]
-max_data = 33500
+max_data = 33800
 max_bss = 214900
 max_task_ram = 43400
 min_main_stack = 115700

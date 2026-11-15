@@ -28,6 +28,7 @@ ed25519-zebra.workspace = true
 curve25519-dalek.workspace = true
 sha2.workspace = true
 zeroize.workspace = true
+log.workspace = true
 
 [dev-dependencies]
 embassy-futures.workspace = true

@@ -16,6 +16,7 @@ maintenance = { status = "actively-developed" }
 rohi-time.workspace = true
 heapless.workspace = true
 embassy-sync.workspace = true
+log.workspace = true
 rohi-service = { workspace = true, optional = true }
 
 [features]

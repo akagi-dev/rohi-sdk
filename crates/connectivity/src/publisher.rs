@@ -39,9 +39,9 @@ use rohi_time::{Clock, MonotonicTimestamp};
 use crate::config::{MAX_ROUTES, RouteSet};
 use crate::pool::PacketHandle;
 use crate::provider::{BuildFailure, PacketProvider};
-use crate::router::{Admit, Router, SkipReason};
+use crate::router::{Admit, Delivery, Router, SkipReason};
 use crate::state::{ConnectivityState, Health};
-use crate::transport::PacketTransport;
+use crate::transport::{Disposition, PacketTransport, TransportAck, TransportError};
 
 /// Drives the routes of a device.
 pub struct Publisher<
@@ -106,6 +106,7 @@ impl<
 
     /// Runs forever.
     pub async fn run(&mut self) -> ! {
+        log::info!(target: "connectivity", "Publisher started");
         loop {
             self.step().await;
             self.sleep().await;
@@ -161,7 +162,10 @@ impl<
                 Some(stamp) => {
                     let _ = context.push((*index, stamp));
                 }
-                None => self.router.skip(*index, SkipReason::BuildFailed, now),
+                None => {
+                    log_skip(SkipReason::BuildFailed, *index);
+                    self.router.skip(*index, SkipReason::BuildFailed, now)
+                }
             }
         }
         if context.is_empty() {
@@ -171,6 +175,7 @@ impl<
             Ok(snapshot) => snapshot,
             Err(failure) => {
                 self.health.last_build_failure = Some(failure.code());
+                log_failure("capture failed", failure, self.health.captures);
                 for (index, _) in &context {
                     self.router.skip(*index, SkipReason::BuildFailed, now);
                 }
@@ -196,9 +201,13 @@ impl<
                 Ok(handle) => {
                     if self.router.admit(*index, handle, now) == Admit::OutboxFull {
                         // Counted by the router; the older packets stay.
+                        log_skip_outbox_full(*index);
                     }
                 }
-                Err(reason) => self.router.skip(*index, reason, now),
+                Err(reason) => {
+                    log_skip(reason, *index);
+                    self.router.skip(*index, reason, now)
+                }
             }
         }
         // The references of the builder: the routes hold their own.
@@ -226,11 +235,17 @@ impl<
             Ok(_) => {
                 self.router.pool_mut().release(handle);
                 self.health.last_build_failure = Some(BuildFailure::TooLarge.code());
+                log_failure(
+                    "packet too large",
+                    BuildFailure::TooLarge,
+                    self.health.built,
+                );
                 Err(SkipReason::BuildFailed)
             }
             Err(failure) => {
                 self.router.pool_mut().release(handle);
                 self.health.last_build_failure = Some(failure.code());
+                log_failure("build failed", failure, self.health.built);
                 Err(SkipReason::BuildFailed)
             }
         }
@@ -275,11 +290,13 @@ impl<
         match select(attempt, provider.changed()).await {
             Either::First(result) => {
                 let now = self.clock.now();
+                log_delivery(&delivery, &result);
                 self.router.complete(delivery, result, now);
             }
             Either::Second(()) => {
                 // The policy changed during the attempt: it is dropped and
                 // the queues are checked before anything is sent again.
+                log::debug!(target: "connectivity", "Delivery dropped: the policy changed");
                 self.router.invalidate(|stamp| provider.is_current(stamp));
             }
         }
@@ -305,6 +322,69 @@ impl<
         {
             Either3::First(()) | Either3::Second(_) | Either3::Third(()) => {}
         }
+    }
+}
+
+// The helpers below keep logging temporaries out of the frames of the async
+// `publish` and `deliver`.
+
+#[cold]
+#[inline(never)]
+fn log_skip(reason: SkipReason, route: usize) {
+    log::debug!(target: "connectivity", "Publication skipped (route={} reason={:?})", route, reason);
+}
+
+#[cold]
+#[inline(never)]
+fn log_skip_outbox_full(route: usize) {
+    log::debug!(target: "connectivity", "Packet skipped: outbox full (route={})", route);
+}
+
+/// Warns on the 1st, 2nd, 4th, ... occurrence and stays at debug level in
+/// between, so a persistent fault does not fill the flash log.
+#[cold]
+#[inline(never)]
+fn log_failure(what: &'static str, failure: BuildFailure, count: u32) {
+    if count.wrapping_add(1).is_power_of_two() {
+        log::warn!(target: "connectivity", "Publication failed: {} (err={:?})", what, failure);
+    } else {
+        log::debug!(target: "connectivity", "Publication failed: {} (err={:?})", what, failure);
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn log_delivery(delivery: &Delivery, result: &Result<TransportAck, TransportError>) {
+    match result {
+        Ok(_) => log::debug!(
+            target: "connectivity",
+            "Packet delivered (route={} path={})",
+            delivery.route,
+            delivery.path
+        ),
+        Err(error) => match error.disposition() {
+            Disposition::Transient => log::debug!(
+                target: "connectivity",
+                "Send failed (route={} path={} err={:?})",
+                delivery.route,
+                delivery.path,
+                error
+            ),
+            Disposition::Permanent => log::warn!(
+                target: "connectivity",
+                "Packet dropped, rejected (route={} path={} err={:?})",
+                delivery.route,
+                delivery.path,
+                error
+            ),
+            Disposition::Unauthorized => log::warn!(
+                target: "connectivity",
+                "Delivery unauthorized (route={} path={} err={:?})",
+                delivery.route,
+                delivery.path,
+                error
+            ),
+        },
     }
 }
 

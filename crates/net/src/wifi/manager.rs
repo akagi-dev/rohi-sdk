@@ -26,7 +26,7 @@ use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
 use embassy_sync::watch::{Receiver, Watch};
 use embedded_hal_async::delay::DelayNs;
-use log::{info, warn};
+use log::{debug, info, trace, warn};
 
 use super::backoff::Backoff;
 use super::config::{
@@ -45,7 +45,7 @@ pub const STATUS_RECEIVERS: usize = 3;
 /// Transient, imperative requests. Persistent configuration is never a
 /// command: it is published as desired state, see
 /// [`WifiHandle::set_wifi_config`].
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Command {
     Reconnect,
     Disconnect,
@@ -182,10 +182,16 @@ impl<M: RawMutex> Copy for WifiHandle<'_, M> {}
 
 impl<M: RawMutex> WifiHandle<'_, M> {
     fn send(&self, command: Command) -> Result<(), WifiError> {
-        self.shared
-            .commands
-            .try_send(command)
-            .map_err(|_| WifiError::Busy)
+        match self.shared.commands.try_send(command) {
+            Ok(()) => {
+                debug!(target: "wifi", "Command queued (command={:?})", command);
+                Ok(())
+            }
+            Err(_) => {
+                report::queue_full(command);
+                Err(WifiError::Busy)
+            }
+        }
     }
 
     /// Publishes the desired Wi-Fi configuration, the whole effective section:
@@ -203,12 +209,18 @@ impl<M: RawMutex> WifiHandle<'_, M> {
     /// The manager validates the value again. Completion does not mean the
     /// access point was reached; follow [`status`](Self::status) for that.
     pub fn set_wifi_config(&self, config: WifiConfig) {
+        trace!(
+            target: "wifi",
+            "Desired Wi-Fi config published (ssid={:?})",
+            config.ssid
+        );
         self.publish_desired(|desired| desired.wifi = config);
     }
 
     /// Publishes the desired IPv4 configuration. A change reconnects, as
     /// the address is obtained while joining the network.
     pub fn set_network_config(&self, config: NetworkConfig) {
+        debug!(target: "wifi", "Desired network config published");
         self.publish_desired(|desired| desired.network = config);
     }
 
@@ -284,6 +296,7 @@ impl<M: RawMutex> WifiHandle<'_, M> {
             .scan_pending
             .lock(|pending| pending.replace(true))
         {
+            report::scan_in_flight();
             return Err(WifiError::Busy);
         }
         self.shared.scan.reset();
@@ -436,6 +449,7 @@ impl<'a, B: WifiBackend, D: DelayNs, M: RawMutex> WifiManager<'a, B, D, M> {
     /// lifetime of the firmware. Use [`step`](Self::step) to drive it by hand,
     /// for example in tests.
     pub async fn run(&mut self) -> ! {
+        info!(target: "wifi", "Manager started");
         loop {
             self.step().await;
         }
@@ -443,12 +457,16 @@ impl<'a, B: WifiBackend, D: DelayNs, M: RawMutex> WifiManager<'a, B, D, M> {
 
     /// Performs one state machine transition, waiting for its trigger.
     pub async fn step(&mut self) {
-        match self.phase {
+        let before = self.phase;
+        match before {
             Phase::NoConfig => self.offline(WifiState::NotConfigured).await,
             Phase::Idle => self.offline(WifiState::Idle).await,
             Phase::Attempt => self.attempt().await,
             Phase::Retry => self.retry().await,
             Phase::Online => self.online().await,
+        }
+        if self.phase != before {
+            debug!(target: "wifi", "Phase changed (from={:?} to={:?})", before, self.phase);
         }
     }
 
@@ -504,6 +522,7 @@ impl<'a, B: WifiBackend, D: DelayNs, M: RawMutex> WifiManager<'a, B, D, M> {
             let Some(config) = self.config.as_ref() else {
                 return;
             };
+            report::connecting(config);
             let mut connect = pin!(self.backend.connect(config));
             loop {
                 if desired_differs(shared, seen, &self.config) {
@@ -520,7 +539,10 @@ impl<'a, B: WifiBackend, D: DelayNs, M: RawMutex> WifiManager<'a, B, D, M> {
                     // The radio is busy connecting: serve the scan afterwards
                     // instead of aborting the attempt, so periodic scans
                     // cannot starve the connection.
-                    Either3::Second(Command::Scan) => scan_requested = true,
+                    Either3::Second(Command::Scan) => {
+                        debug!(target: "wifi", "Scan deferred until the connect attempt ends");
+                        scan_requested = true;
+                    }
                     Either3::Second(command) => break Err(Interrupt::Command(command)),
                     // Same configuration republished: keep connecting.
                     Either3::Third(()) => {}
@@ -531,19 +553,21 @@ impl<'a, B: WifiBackend, D: DelayNs, M: RawMutex> WifiManager<'a, B, D, M> {
         match outcome {
             Ok(Ok(info)) => {
                 // The backoff is reset only once the link proved stable, see `online`.
+                report::connected(&info);
                 self.set_info(Some(info));
                 self.record_connected();
                 self.phase = Phase::Online;
                 self.publish(WifiStatus::new(WifiState::Connected));
             }
             Ok(Err(error)) => {
-                warn!("Wi-Fi connect failed: {}", error);
+                report::connect_failed(error);
                 self.phase = Phase::Retry;
                 self.publish(WifiStatus::failed(WifiState::Error, error));
             }
             Err(interrupt) => {
                 // The interrupted attempt may have left the driver half-connected.
-                let _ = self.backend.disconnect().await;
+                debug!(target: "wifi", "Connect attempt interrupted");
+                self.disconnect().await;
                 self.on_interrupt(interrupt).await;
             }
         }
@@ -555,6 +579,7 @@ impl<'a, B: WifiBackend, D: DelayNs, M: RawMutex> WifiManager<'a, B, D, M> {
 
     async fn retry(&mut self) {
         let wait = self.backoff.next_delay_ms();
+        debug!(target: "wifi", "Reconnect scheduled (delay_ms={})", wait);
         let shared = self.shared;
         let interrupt = {
             // The timer keeps running while scans are served, so scans
@@ -604,7 +629,7 @@ impl<'a, B: WifiBackend, D: DelayNs, M: RawMutex> WifiManager<'a, B, D, M> {
                 .await;
                 match event {
                     Either4::First(error) => {
-                        warn!("Wi-Fi link lost: {}", error);
+                        report::link_lost(error);
                         set_info(shared, None);
                         self.phase = Phase::Retry;
                         publish(
@@ -620,8 +645,10 @@ impl<'a, B: WifiBackend, D: DelayNs, M: RawMutex> WifiManager<'a, B, D, M> {
                     Either4::Second(command) => break Interrupt::Command(command),
                     Either4::Third(()) => {
                         // The link survived a full interval: it is stable.
+                        debug!(target: "wifi", "Link stable, backoff reset");
                         self.backoff.reset();
                         if let Some(info) = self.backend.network_info() {
+                            trace!(target: "wifi", "Link refreshed (rssi_dbm={})", info.rssi_dbm);
                             set_info(shared, Some(info));
                         }
                         return;
@@ -636,7 +663,10 @@ impl<'a, B: WifiBackend, D: DelayNs, M: RawMutex> WifiManager<'a, B, D, M> {
     async fn on_interrupt(&mut self, interrupt: Interrupt) {
         match interrupt {
             Interrupt::Command(command) => self.on_command(command).await,
-            Interrupt::Desired => self.reconcile().await,
+            Interrupt::Desired => {
+                debug!(target: "wifi", "Wait interrupted by a new desired config");
+                self.reconcile().await;
+            }
         }
     }
 
@@ -650,17 +680,20 @@ impl<'a, B: WifiBackend, D: DelayNs, M: RawMutex> WifiManager<'a, B, D, M> {
         match desired {
             None => {
                 if self.config.is_some() {
-                    let _ = self.backend.disconnect().await;
+                    info!(target: "wifi", "Configuration removed, disconnecting");
+                    self.disconnect().await;
                 }
                 self.forget();
             }
             Some(config) => {
                 if let Err(error) = config.validate() {
-                    let _ = self.backend.disconnect().await;
+                    report::config_rejected(error);
+                    self.disconnect().await;
                     self.forget();
                     self.publish(WifiStatus::failed(WifiState::NotConfigured, error));
                 } else if self.config.as_ref() != Some(&config) {
-                    let _ = self.backend.disconnect().await;
+                    report::config_applied(&config);
+                    self.disconnect().await;
                     // Retry state belongs to the previous network.
                     self.settings = self.settings.with_wifi(&config.wifi);
                     self.backoff = Backoff::new(
@@ -670,29 +703,33 @@ impl<'a, B: WifiBackend, D: DelayNs, M: RawMutex> WifiManager<'a, B, D, M> {
                     self.config = Some(config);
                     self.set_info(None);
                     self.phase = Phase::Attempt;
+                } else {
+                    trace!(target: "wifi", "Desired config unchanged");
                 }
             }
         }
     }
 
     async fn on_command(&mut self, command: Command) {
+        debug!(target: "wifi", "Serving command (command={:?})", command);
         match command {
             Command::Reconnect => {
                 if self.config.is_none() {
+                    warn!(target: "wifi", "Reconnect ignored: not configured");
                     self.publish(WifiStatus::failed(
                         WifiState::NotConfigured,
                         WifiError::NotConfigured,
                     ));
                     return;
                 }
-                let _ = self.backend.disconnect().await;
+                self.disconnect().await;
                 self.backoff.reset();
                 self.set_info(None);
                 count_reconnect(self.shared);
                 self.phase = Phase::Attempt;
             }
             Command::Disconnect => {
-                let _ = self.backend.disconnect().await;
+                self.disconnect().await;
                 self.set_info(None);
                 self.backoff.reset();
                 let (phase, state) = if self.config.is_some() {
@@ -718,6 +755,12 @@ impl<'a, B: WifiBackend, D: DelayNs, M: RawMutex> WifiManager<'a, B, D, M> {
     async fn scan(&mut self) {
         scan(&mut self.backend, self.shared, &mut self.status).await;
     }
+
+    async fn disconnect(&mut self) {
+        if let Err(error) = self.backend.disconnect().await {
+            report::disconnect_failed(error);
+        }
+    }
 }
 
 // Free functions over disjoint manager fields, so they can run while a
@@ -725,7 +768,12 @@ impl<'a, B: WifiBackend, D: DelayNs, M: RawMutex> WifiManager<'a, B, D, M> {
 
 fn publish<M: RawMutex>(shared: &WifiShared<M>, current: &mut WifiStatus, status: WifiStatus) {
     if *current != status {
-        info!("Wi-Fi: {:?} {:?}", status.state, status.error);
+        // Scans toggle the state around themselves: not a lifecycle event.
+        if status.state == WifiState::Scanning || current.state == WifiState::Scanning {
+            debug!(target: "wifi", "State changed (state={:?} err={:?})", status.state, status.error);
+        } else {
+            info!(target: "wifi", "State changed (state={:?} err={:?})", status.state, status.error);
+        }
         *current = status;
         shared.status.sender().send(status);
     }
@@ -788,10 +836,88 @@ async fn scan<B: WifiBackend, M: RawMutex>(
     if previous.state != WifiState::Connected {
         publish(shared, current, WifiStatus::new(WifiState::Scanning));
     }
+    debug!(target: "wifi", "Scan started");
     let result = backend.scan().await;
+    report::scan_finished(&result);
     publish(shared, current, previous);
     shared.scan_pending.lock(|pending| pending.set(false));
     shared.scan.signal(result);
+}
+
+// Out of line: the rare and error reports do not enlarge the frames of the
+// async state machine.
+mod report {
+    use log::{debug, info, warn};
+
+    use super::Command;
+    use crate::{LinkConfig, NetworkInfo, WifiError, WifiScanResults};
+
+    #[cold]
+    #[inline(never)]
+    pub(super) fn queue_full(command: Command) {
+        warn!(target: "wifi", "Command rejected: queue is full (command={:?})", command);
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub(super) fn scan_in_flight() {
+        warn!(target: "wifi", "Scan rejected: another scan is in flight");
+    }
+
+    #[inline(never)]
+    pub(super) fn connecting(config: &LinkConfig) {
+        debug!(
+            target: "wifi",
+            "Connecting to access point (ssid={:?} timeout_ms={})",
+            config.wifi.ssid, config.wifi.connect_timeout_ms
+        );
+    }
+
+    #[inline(never)]
+    pub(super) fn connected(info: &NetworkInfo) {
+        info!(
+            target: "wifi",
+            "Connected to access point (ssid={:?} rssi_dbm={} ip={})",
+            info.ssid, info.rssi_dbm, info.ipv4
+        );
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub(super) fn connect_failed(error: WifiError) {
+        warn!(target: "wifi", "Connect failed (err={:?})", error);
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub(super) fn link_lost(error: WifiError) {
+        warn!(target: "wifi", "Link lost (err={:?})", error);
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub(super) fn config_rejected(error: WifiError) {
+        warn!(target: "wifi", "Configuration rejected (err={:?})", error);
+    }
+
+    #[inline(never)]
+    pub(super) fn config_applied(config: &LinkConfig) {
+        info!(target: "wifi", "Configuration applied (ssid={:?})", config.wifi.ssid);
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub(super) fn disconnect_failed(error: WifiError) {
+        warn!(target: "wifi", "Disconnect failed (err={:?})", error);
+    }
+
+    #[inline(never)]
+    pub(super) fn scan_finished(result: &Result<WifiScanResults, WifiError>) {
+        match result {
+            Ok(networks) => debug!(target: "wifi", "Scan finished (count={})", networks.len()),
+            Err(error) => warn!(target: "wifi", "Scan failed (err={:?})", error),
+        }
+    }
 }
 
 #[cfg(test)]

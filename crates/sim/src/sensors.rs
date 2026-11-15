@@ -36,6 +36,7 @@
 use core::marker::PhantomData;
 
 use embassy_time::{Instant, Timer};
+use log::trace;
 use rohi_hal::runtime::{DriverError, RunnerConfig, SensorDriver};
 use rohi_sensors::{
     Bmx280Update, Celsius, Decibels, MeasurementUpdate, MicrogramsPerCubicMeter, NoiseUpdate,
@@ -233,7 +234,9 @@ impl<O: Observe> SensorDriver for SimDriver<O> {
     type Error = SimError;
 
     async fn init(&mut self) -> Result<(), SimError> {
-        match world().lock().sensors[O::SENSOR.index()].fault {
+        let fault = world().lock().sensors[O::SENSOR.index()].fault;
+        trace!(target: "sim.sensors", "Sensor initializing (sensor={} fault={fault:?})", O::SENSOR.name());
+        match fault {
             Some(SensorFault::Unavailable) => Err(SimError::Absent),
             Some(SensorFault::Init) => Err(SimError::Init),
             _ => Ok(()),
@@ -252,15 +255,23 @@ impl<O: Observe> SensorDriver for SimDriver<O> {
             )
         };
         match fault {
-            Some(SensorFault::Unavailable | SensorFault::Read) => return Err(SimError::Read),
+            Some(SensorFault::Unavailable | SensorFault::Read) => {
+                trace!(target: "sim.sensors", "Sensor read failed: injected fault (sensor={})", O::SENSOR.name());
+                return Err(SimError::Read);
+            }
             Some(SensorFault::Timeout) => {
+                trace!(target: "sim.sensors", "Sensor timed out: injected fault (sensor={})", O::SENSOR.name());
                 Timer::after_millis(TIMEOUT_MS).await;
                 return Err(SimError::Timeout);
             }
-            Some(SensorFault::NoData) => return Ok(None),
+            Some(SensorFault::NoData) => {
+                trace!(target: "sim.sensors", "Sensor gives no data: injected fault (sensor={})", O::SENSOR.name());
+                return Ok(None);
+            }
             Some(SensorFault::Init) | None => {}
         }
         if Instant::now().as_millis() < warm_until_ms {
+            trace!(target: "sim.sensors", "Sensor is warming up (sensor={})", O::SENSOR.name());
             return Ok(None);
         }
         let jitter = &mut self.jitter;

@@ -42,6 +42,19 @@ clippy::unreachable, clippy::todo, clippy::unimplemented))]` in `altruist-urban`
 Embassy tasks with `altruist_urban::tasks::spawn`, never `spawner.spawn(task().unwrap())`. Code in a new firmware or ESP crate
 carries the same attribute.
 
+
+## Logging
+
+Follow the logging conventions of PR #68. Every call has an explicit lowercase `target:` of at most 24 bytes (`wifi`, `ble`,
+`config`, `logging`, `sensor.scd4x`); the message is sentence case without a trailing period and does not repeat the
+component; diagnostic context follows in parentheses with units (`Update started (id=42 size_b=1572864)`). The message
+fits 120 UTF-8 bytes, important information first, one event per record. Levels: `error` operation failed, `warn`
+unexpected degradation, `info` lifecycle and state transitions (rare, persisted), `debug` detailed diagnostics, `trace`
+low-level and not persisted; no per-packet logging at `info`/`warn`. Never log passwords, tokens, keys, provisioning
+secrets or payloads. Rare reports in stack-sensitive code go in `#[cold] #[inline(never)]` helpers. Storage-layer events
+of `rohi-logging` keep the module-path target so they stay out of the persistent sink. The persistent queue holds
+`QUEUE_DEPTH` records (24 on a chip) and drops the newest on overflow: keep the boot burst small.
+
 ## Before you finish
 
 - `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`, `cargo test`, `cargo clippy --all-targets -- -D warnings` pass.

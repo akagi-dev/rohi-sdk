@@ -81,6 +81,7 @@ pub fn device(
             logging: logging::runtime().service(),
             reboot: reboot::request,
             entropy: super::connectivity::esp_entropy,
+            boot_report: super::crash::boot_report,
         },
         config,
         identity,

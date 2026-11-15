@@ -19,6 +19,7 @@ maintenance = { status = "actively-developed" }
 [dependencies]
 rohi-hal.workspace = true
 rohi-time.workspace = true
+log.workspace = true
 esp-hal = { workspace = true, optional = true }
 
 [features]

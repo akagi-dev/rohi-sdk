@@ -76,6 +76,7 @@
 //! which keeps [`ConfigHandle`] and everything that holds it non-generic.
 
 use core::fmt;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use embassy_sync::channel::Channel;
 use embassy_sync::mutex::Mutex;
@@ -98,6 +99,73 @@ use crate::bindings::{
 use crate::connectivity::ConnectivityBinding;
 use crate::tasks::RawMutex;
 use crate::telemetry::TelemetryBinding;
+
+/// The section that keeps the boot counter: four little-endian bytes. It is no
+/// configuration of a service: nothing registers or shows it, the `system`
+/// status reports its value.
+const BOOT_COUNT_ID: SectionId = SectionId::from_name("BootCount");
+const BOOT_COUNT_VERSION: u16 = 1;
+
+/// Starts of the device, this one included; 0 until the owner has counted it.
+static BOOT_COUNT: AtomicU32 = AtomicU32::new(0);
+
+/// How many times the device has started, counting this start; `None` when
+/// the configuration storage could not be read at boot.
+///
+/// The configuration owner increments and stores it in
+/// [`ConfigOwner::publish_boot`], once per start, and keeps it across a factory
+/// reset, so no two starts share a value. It is the `boot_count` of the
+/// `system` status. It is not the session of the log tail, which must not
+/// depend on storage that can fail (see `crate::logging`).
+pub fn boot_count() -> Option<u32> {
+    match BOOT_COUNT.load(Ordering::Relaxed) {
+        0 => None,
+        count => Some(count),
+    }
+}
+
+// Counts this start. A counter that cannot be read starts again from 1, which
+// can repeat an earlier value; the log tail does not use it (its session is a
+// fresh token of every start), so nothing but the reported number is affected.
+fn count_boot<S: ConfigStorage>(store: &mut ConfigStore<S>)
+where
+    S::Error: fmt::Debug,
+{
+    let mut bytes = [0u8; 4];
+    let previous = match store.read_raw(BOOT_COUNT_ID, &mut bytes) {
+        Ok(Some(info)) if info.version == BOOT_COUNT_VERSION && info.length == bytes.len() => {
+            u32::from_le_bytes(bytes)
+        }
+        Ok(_) => 0,
+        Err(error) => {
+            warn_boot_count("read", &error);
+            0
+        }
+    };
+    let count = previous.saturating_add(1);
+    BOOT_COUNT.store(count, Ordering::Relaxed);
+    keep_boot_count(store);
+}
+
+// Writes the counter of this start into a store that was just formatted or
+// counted.
+fn keep_boot_count<S: ConfigStorage>(store: &mut ConfigStore<S>)
+where
+    S::Error: fmt::Debug,
+{
+    let Some(count) = boot_count() else {
+        return;
+    };
+    if let Err(error) = store.set_raw(BOOT_COUNT_ID, BOOT_COUNT_VERSION, &count.to_le_bytes()) {
+        warn_boot_count("write", &error);
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn warn_boot_count(what: &str, error: &dyn fmt::Debug) {
+    warn!(target: "config", "Boot counter {what} failed ({error:?})");
+}
 
 /// A failure of the storage backend, as text: the backend error type does not
 /// leak into the runtime API.
@@ -399,8 +467,10 @@ impl StorageMaintenance {
     /// connectivity, NTP, location) to its defaults in the same step.
     ///
     /// Everything is discarded: the sections of this firmware, the identity,
-    /// sections it does not know and the generation counter. A missing
-    /// partition cannot be formatted and fails with [`ServiceError::Unavailable`].
+    /// sections it does not know and the generation counter. Only the boot
+    /// counter (see [`boot_count`]) is written again, so that it only grows. A
+    /// missing partition cannot be formatted and fails with
+    /// [`ServiceError::Unavailable`].
     pub async fn factory_reset(&self) -> Result<(), ServiceError> {
         let handle = ConfigHandle {
             service: self.service,
@@ -415,9 +485,9 @@ impl StorageMaintenance {
 
 /// A registry of config sections plus the factory reset of the storage behind
 /// them, which formats the whole region: this also removes the identity and
-/// sections this firmware does not know. Nothing else is
-/// written afterwards: the format already left every section at its firmware
-/// defaults and the owner published them. Everything else is delegated to the
+/// sections this firmware does not know. Only the boot counter is written
+/// again afterwards, so that it only grows; the format already left every
+/// section at its firmware defaults and the owner published them. Everything else is delegated to the
 /// sections.
 pub struct StorageConfig<R: 'static> {
     sections: &'static R,
@@ -575,6 +645,9 @@ where
             },
             runtime,
         );
+        if let Self::Ready(store) = self {
+            count_boot(store);
+        }
     }
 
     /// Answers the requests of the [`ConfigHandle`]s, one at a time; never
@@ -671,8 +744,9 @@ where
             }
         };
         match ConfigStore::format(raw) {
-            Ok(store) => {
+            Ok(mut store) => {
                 warn!("Configuration: factory reset, region formatted");
+                keep_boot_count(&mut store);
                 *self = Self::Ready(store);
                 publish_factory_reset(runtime);
                 Outcome::Done
@@ -700,8 +774,9 @@ where
                     return Outcome::Failed(ServiceError::Unavailable(reason.clone()));
                 };
                 match ConfigStore::format(raw) {
-                    Ok(store) => {
+                    Ok(mut store) => {
                         warn!("Configuration: region formatted, previous configuration discarded");
+                        keep_boot_count(&mut store);
                         *self = Self::Ready(store);
                         publish_factory_reset(runtime);
                         Outcome::Done
