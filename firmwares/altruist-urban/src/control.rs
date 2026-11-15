@@ -44,7 +44,6 @@
 //! the static storage of the services are the platform's.
 
 use embassy_time::Delay;
-use rohi_sdk::connectivity::ConnectivityStatusService;
 use rohi_sdk::control::{Device, DeviceInfo};
 use rohi_sdk::identity::{Identity, IdentityService, IdentityStore, IdentityStoreError, PublicKey};
 use rohi_sdk::location::LocationService;
@@ -101,7 +100,7 @@ static SECTIONS: StaticCell<ConfigSections> = StaticCell::new();
 type UrbanWifi<I> = Startup<WifiService<'static, RawMutex, Delay, net::Probe<I>>>;
 type UrbanNetwork<I> = Startup<NetworkService<'static, RawMutex, net::Probe<I>>>;
 type UrbanBle<B> = BleService<B>;
-type UrbanConnectivity = Startup<ConnectivityStatusService<'static, RawMutex>>;
+type UrbanConnectivity = connectivity::UrbanConnectivity;
 type UrbanLocation = LocationService<'static, RawMutex>;
 type UrbanSensors = SensorsService<'static, RawMutex>;
 type UrbanIdentity = IdentityService<StoredIdentity>;
@@ -177,6 +176,7 @@ pub type UrbanActions<I, L> = (
     &'static UrbanWifi<I>,
     &'static UrbanIdentity,
     &'static UrbanTelemetry,
+    &'static UrbanConnectivity,
     &'static L,
     &'static UrbanSystem,
 );
@@ -212,6 +212,8 @@ pub struct Platform<I: 'static, B: 'static, L: 'static> {
     /// Schedules the reset of the device for `system.reboot`, see
     /// [`crate::reboot`].
     pub reboot: fn(),
+    /// Entropy for the nonces of encrypted telemetry sections.
+    pub entropy: connectivity::EntropyFn,
 }
 
 /// The device over the runtime handles of the firmware.
@@ -239,6 +241,7 @@ where
         ble,
         logging,
         reboot: reboot_fn,
+        entropy,
     } = platform;
     let network_failed = network.is_none();
     let sections: &'static ConfigSections = SECTIONS.init(config_sections(config));
@@ -253,13 +256,9 @@ where
             network_failed,
         ),
         ble: BleService(ble),
-        connectivity: Startup::new(
-            ConnectivityStatusService::new(
-                connectivity::shared(),
-                connectivity::effective_config,
-                location::shared(),
-            ),
-            network_failed,
+        connectivity: connectivity::service(
+            config,
+            connectivity::packets(store::handle(), entropy),
         ),
         location: LocationService(location::shared()),
         sensors: SensorsService(store::handle()),
@@ -291,6 +290,7 @@ where
             &services.wifi,
             &services.identity,
             &services.telemetry,
+            &services.connectivity,
             &services.logging,
             &services.system,
         ),

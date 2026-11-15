@@ -94,7 +94,7 @@ telemetry-sensors = ["telemetry", "sensors", "rohi-telemetry/sensors"]
 telemetry-location = ["telemetry", "location", "rohi-telemetry/location"]
 # The Robonomics Connectivity Protocol packet format.
 telemetry-robonomics = ["telemetry", "identity", "dep:rohi-telemetry-robonomics"]
-connectivity = ["sensors", "identity", "location", "net", "time", "dep:rohi-connectivity"]
+connectivity = ["telemetry", "net", "time", "dep:rohi-connectivity"]
 
 # Host (`std`) backends, module `host`: DNS, TCP and UDP over the sockets of the
 # operating system and the TCP listener of the control transport.

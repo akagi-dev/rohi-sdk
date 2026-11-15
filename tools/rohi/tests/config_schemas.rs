@@ -29,7 +29,6 @@
 use std::fmt::Write as _;
 
 use rohi_config::{ConfigOverrides, ConfigSection, HasOverrides};
-use rohi_connectivity::ConnectivityConfig;
 use rohi_location::LocationConfig;
 use rohi_net::{BleSettings, NetworkConfig, WifiConfig};
 use rohi_service::{Config, FieldError, Value};
@@ -130,7 +129,6 @@ fn the_managed_sections_of_the_device_are_pinned() {
     describe::<WifiConfig>(&mut out);
     describe::<NetworkConfig>(&mut out);
     describe::<BleSettings>(&mut out);
-    describe::<ConnectivityConfig>(&mut out);
     describe::<LocationConfig>(&mut out);
     describe::<NtpServersConfig>(&mut out);
     golden("config-sections.txt", &out);

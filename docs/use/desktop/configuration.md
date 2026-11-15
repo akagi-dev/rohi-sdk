@@ -10,16 +10,15 @@ enums) and checked again by the device.
 
 ```bash
 rohi config                                        # sections and their versions
-rohi config connectivity                           # the effective values; secrets are shown as <redacted>
-rohi config connectivity --help                    # fields: type, unit, allowed values (from the device)
+rohi config wifi                                   # the effective values; secrets are shown as <redacted>
+rohi config wifi --help                            # fields: type, unit, allowed values (from the device)
 
-rohi config connectivity host=ingress.example.org port=443 enabled=true
-rohi config connectivity interval_s=120 --dry-run
+rohi config wifi ssid=office scan_timeout=20 --dry-run
 rohi config wifi ssid=office password=-               # secret from stdin or a hidden prompt
 rohi config wifi ssid=none                            # disable Wi-Fi (no ssid is the default)
 rohi config wifi scan_timeout=null                    # remove the override: back to the firmware default
 rohi config wifi password=none                        # explicit "no value": an open network
-rohi config reset connectivity                     # remove every override of the section
+rohi config reset wifi                             # remove every override of the section
 ```
 
 A name that is also a command (`reset`, `export`, `diff`, `apply`) is not a valid section name. `rohi config --help`

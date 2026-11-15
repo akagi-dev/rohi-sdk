@@ -159,7 +159,7 @@
 //! | [`rohi_config`] | The [`Identity`] section lives in the normal configuration store (A/B transactional writes, CRC, power-loss recovery); see [`Identity`] for the storage contract. |
 //! | [`rohi_service`] | [`IdentityService`] is the `identity` service of the status and action planes over an [`IdentityStore`] that the firmware implements. |
 //! | [`rohi-control`](../rohi_control/index.html) | Carries the `provision` and `erase` requests from the `rohi` tool; link policies decide who may call them. |
-//! | [`rohi-connectivity`](../rohi_connectivity/index.html) | Signs every telemetry frame through a `FrameSigner`; every [`Signer`] with [`IdentityError`] as error is one. |
+//! | [`rohi-telemetry-robonomics`](../rohi_telemetry_robonomics/index.html) | Signs every telemetry packet and derives the key of encrypted sections through `DeviceKey`; every [`Signer`] with [`IdentityError`] as error and a [`KeyAgreement`] is one. |
 //! | Altruist Urban firmware | The `identity` module loads the identity at boot and keeps an [`IdentitySigner`] as runtime state (`IdentityHandle::sign`, and a `StaticSigner` for telemetry that follows provisioning and erase). |
 //!
 //! The signer is updated by the **configuration owner task** in the same step

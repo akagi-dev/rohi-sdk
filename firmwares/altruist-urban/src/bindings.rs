@@ -42,7 +42,6 @@ use core::marker::PhantomData;
 use embassy_sync::blocking_mutex::Mutex;
 use log::{info, warn};
 use rohi_sdk::config::{ConfigSection, HasOverrides, materialize};
-use rohi_sdk::connectivity::ConnectivityConfig;
 use rohi_sdk::identity::Identity;
 use rohi_sdk::location::LocationConfig;
 use rohi_sdk::logging::LoggingConfig;
@@ -52,7 +51,7 @@ use rohi_sdk::service::{Config, SectionStore, StoreError};
 
 use crate::config::{ConfigHandle, ServiceError};
 use crate::tasks::RawMutex;
-use crate::{connectivity, identity, location, time};
+use crate::{identity, location, time};
 
 /// The cheap handles runtime publication needs. Hardware and storage stay
 /// single-owner elsewhere.
@@ -219,22 +218,6 @@ impl Binding for BleBinding {
 
     fn publish(_: &ConfigRuntime, effective: &BleSettings) {
         BLE_SETTINGS.lock(|settings| *settings.borrow_mut() = effective.clone());
-    }
-}
-
-/// `connectivity`: the telemetry task restarts with the new values. The
-/// product policy is the build-time one, see [`connectivity::firmware_overrides`].
-pub struct ConnectivityBinding;
-
-impl Binding for ConnectivityBinding {
-    type Config = ConnectivityConfig;
-
-    fn firmware_overrides() -> rohi_sdk::connectivity::ConnectivityOverrides {
-        connectivity::firmware_overrides()
-    }
-
-    fn publish(_: &ConfigRuntime, effective: &ConnectivityConfig) {
-        connectivity::publish(effective.clone());
     }
 }
 

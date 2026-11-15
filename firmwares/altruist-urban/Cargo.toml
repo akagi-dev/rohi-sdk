@@ -43,6 +43,8 @@ rohi-sdk = { workspace = true, features = [
   "control",
   "ble",
   "connectivity",
+  "telemetry-sensors",
+  "telemetry-location",
   "telemetry-robonomics",
   "embassy-time",
 ] }

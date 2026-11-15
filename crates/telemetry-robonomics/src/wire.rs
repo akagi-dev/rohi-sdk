@@ -109,8 +109,8 @@
 //! # Architecture & Integration
 //!
 //! ```text
-//!  MeasurementsSnapshot ──► rohi-connectivity ──► core.v1.Message ──encode──► bytes
-//!                          (UrbanEncoder)                                       │
+//!  PreparedSections ──► RobonomicsFormat ──► core.v1.Message ──encode──► bytes
+//!                          (public + encrypted private sections)               │
 //!                                                      signing_preimage ◄───────┤
 //!                                                             │ Signer (rohi-identity)
 //!                                                             ▼

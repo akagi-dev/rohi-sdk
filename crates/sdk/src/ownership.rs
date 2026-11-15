@@ -35,7 +35,7 @@
 //! | ESP wireless resources | `EspWireless` (radio peripherals, wireless heap) | the drivers it hands out once | `wifi()`, `ble()` ([`rohi-net-esp`](../../rohi_net_esp/index.html)) |
 //! | BLE peripheral | the `BleRunner` task owns the controller and host stack | `EspBle` (`BleTransport`) | bounded RX/TX queues |
 //! | Device identity | the configuration task publishes the stored identity (and so the signer) in the commit step | `IdentityHandle` (firmware, `src/identity.rs`) | runtime state, writes go through `ConfigHandle` |
-//! | Telemetry | the telemetry task owns the `ConnectivityService` | `ConnectivityShared` ([`rohi-connectivity`](../../rohi_connectivity/index.html)) | latest-configuration signal, status; it only reads measurement snapshots |
+//! | Telemetry | the publisher task owns the delivery queues and the packet pool | `ConnectivityState` ([`rohi-connectivity`](../../rohi_connectivity/index.html)) | latest-routes signal, route status; it only reads measurement snapshots |
 //!
 //! ```text
 //! MeasurementStore  ─ one owner task ─►  MeasurementHandle
@@ -78,7 +78,7 @@
 //! | Interaction | Kind | Mechanism |
 //! |-------------|------|-----------|
 //! | Desired `WifiConfig` and `NetworkConfig` | state | `WifiHandle::set_wifi_config` / `set_network_config` (latest value wins, synchronous) |
-//! | Effective `ConnectivityConfig` and NTP servers | state | latest-value signal to the running task, only the newest value matters |
+//! | Effective routes, telemetry profiles and NTP servers | state | latest-value signal to the running task, only the newest value matters |
 //! | Latest system / Wi-Fi status | state | published `WifiStatus` (`Watch`) |
 //! | Scan, reconnect, disconnect | command | bounded queue, `Busy` when full |
 //! | One-shot request (snapshot, config read) | command | bounded request/response |

@@ -56,7 +56,7 @@
 //! | `host-ble` | `host::ble` | BlueZ BLE peripheral of `rohi-net-std` (Linux) | `host`, `ble` |
 //! | `sim` | `sim` | `rohi-sim`: simulated world for `std` applications | `host`, `hal`, `config` |
 //! | `sim-sensors` | `sim::sensors` | simulated sensor drivers of `rohi-sim` | `sim` |
-//! | `connectivity` | `connectivity` | `rohi-connectivity` | `sensors`, `identity`, `location`, `net`, `time` |
+//! | `connectivity` | `connectivity` | `rohi-connectivity`: routes, fallback delivery and packet export | `telemetry`, `net`, `time` |
 //! | `embassy-time` | `time::EmbassyClock` | the `embassy-time` clock of `rohi-time` | `time` |
 //! | `esp` | `esp::{hal, config, net}` | `rohi-hal-esp`, `rohi-config-esp`, `rohi-net-esp` | `hal`, `config`, `net` |
 //! | `esp32c3`, `esp32c6` | | chip selection of the `esp` crates | `esp` |
@@ -195,7 +195,9 @@
 //! | [`rohi-system`](../rohi_system/index.html) | The `system` service: `reboot` and `factory_reset` Actions over a `SystemPlatform` the firmware implements | portable | `SystemService`, `SystemPlatform`, `SystemError` | `rohi-service` | Chip reset, flash formatting |
 //! | [`rohi-logging`](../rohi_logging/index.html) | Persistent logging: the `log` sink, segment format, flash ring storage over any `Medium`, `LoggingConfig` and the `logging` service | portable | `LogSink`, `LogRecord`, `LogLevel`, `LogClock`, `Logging`, `LoggingService`, `LoggingConfig`, `LogStorage`, `RingStorage` | `rohi-config`, `rohi-service`, `rohi-time`, Embassy sync, `log` | The flash driver, an SD backend |
 //! | [`rohi-telemetry-robonomics`](../rohi_telemetry_robonomics::wire/index.html) | Bounded bindings of `airalab/connectivity-protocol` (vendored, pinned revision) | portable | `core_v1`, `crypto_v1`, `device_v1`, `sensor_v1`, `limits` | `micropb` | Signing, mapping, transports |
-//! | [`rohi-connectivity`](../rohi_connectivity/index.html) | Telemetry: snapshot (+ location) to signed envelope frame, bounded outbox, retry, HTTP transport, `ConnectivityConfig` section, `connectivity` service | portable | `UrbanEncoder`, `EnvelopeBuilder`, `EnvelopeFrame`, `EnvelopeTransport`, `HttpTransport`, `ConnectivityService`, `UtcClock`, `NonceSource`, `FrameSigner` | `rohi-telemetry-robonomics`, `rohi-sensors`, `rohi-identity`, `rohi-location`, `rohi-net`, `rohi-time`, `rohi-config`, `rohi-service` | Private keys, Wi-Fi lifecycle, sensors, backend logic |
+//! | [`rohi-connectivity`](../rohi_connectivity/index.html) | Delivery of sealed telemetry packets: per-route publication, ordered fallback endpoints, bounded outboxes over a packet pool, HTTP transport, packet export, the `connectivity` service | portable | `Router`, `Publisher`, `PacketProvider`, `PacketTransport`, `HttpTransport`, `ConnectivityService`, `ConnectivitySection` | `rohi-telemetry`, `rohi-net`, `rohi-time`, `rohi-config`, `rohi-service` | Packet contents, keys, sensors, protocol messages |
+//! | [`rohi-telemetry`](../rohi_telemetry/index.html) | Source-independent telemetry: observations, measurement catalog, packet profiles, public and private sections, the `telemetry` service | portable | `TelemetrySource`, `TelemetrySnapshot`, `PacketProfile`, `PacketFormat`, `TelemetryService` | `rohi-time`, `rohi-config`, `rohi-service` | Transports, protobuf, physical drivers |
+//! | [`rohi-telemetry-robonomics`](../rohi_telemetry_robonomics/index.html) | The Robonomics Connectivity Protocol as a packet format: vendored schema, recipient encryption, signed envelope | portable | `RobonomicsFormat`, `wire` | `rohi-telemetry`, `rohi-identity`, `micropb` | Routes, HTTP, sensors |
 //! | [`rohi-net-esp`](../rohi_net_esp/index.html) | ESP backend of `rohi-net` | ESP | `EspWireless`, `EspWifi`, `EspIp`, `EspBle`, `NetResources`, `BleResources`, `wireless_heap!` | `rohi-net`, `esp-radio`, `embassy-net`, TrouBLE | Product resource sizes, control protocol |
 //! | [`rohi-control-proto`](../rohi_control_proto/index.html) | Bounded protobuf schema of the control protocol | portable | generated messages, `PROTOCOL_VERSION`, `limits` | `micropb` | Transport, behaviour |
 //! | [`rohi-control`](../rohi_control/index.html) | Transport-agnostic control dispatcher and authorization; serves the registries of `rohi-service` | portable | `Controller`, `ControlBackend`, `Device`, `AuthorizationPolicy` | `rohi-control-proto`, `rohi-service` | BLE, stores, the radio, any knowledge of a module (Wi-Fi, sensors, ...) |
@@ -234,9 +236,11 @@
 //! rohi-time-ntp ──► rohi-time, rohi-net, rohi-config, rohi-service
 //!                                             (a source: DNS + UDP samples, owns the `time` section;
 //!                                              rohi-time never depends on it)
-//! rohi-connectivity ──► rohi-telemetry-robonomics, rohi-sensors, rohi-identity, rohi-location,
-//!                       rohi-net, rohi-time, rohi-config, rohi-service
-//!                                             (snapshots, location, signing, NetworkHandle, UtcClock)
+//! rohi-telemetry ──► rohi-time, rohi-config, rohi-service (adapters: rohi-sensors, rohi-location)
+//! rohi-telemetry-robonomics ──► rohi-telemetry, rohi-identity, rohi-time
+//!                                             (the format; telemetry never depends on it)
+//! rohi-connectivity ──► rohi-telemetry, rohi-net, rohi-time, rohi-config, rohi-service
+//!                                             (routes and delivery of sealed packets; no protocol, keys or sensors)
 //!
 //! rohi-control-ble ──► rohi-control ──► rohi-control-proto
 //! rohi-control-ble ──► rohi-net               (BleTransport)

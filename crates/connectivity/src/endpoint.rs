@@ -129,3 +129,13 @@ impl fmt::Debug for EndpointUri {
         fmt::Debug::fmt(self.as_str(), f)
     }
 }
+
+impl rohi_config::TextValue for EndpointUri {
+    fn from_text(text: &str) -> Option<Self> {
+        Self::new(text)
+    }
+
+    fn as_text(&self) -> Option<&str> {
+        Some(self.as_str())
+    }
+}

@@ -38,13 +38,12 @@ use std::collections::hash_map::RandomState;
 use std::hash::BuildHasher as _;
 use std::net::{SocketAddr, TcpListener};
 use std::process::ExitCode;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use embassy_executor::{Executor, Spawner};
 use embassy_time::Timer;
 use log::{error, info};
-use rohi_sdk::connectivity::{NONCE_LEN, NonceError, NonceSource};
 use rohi_sdk::host::NativeIp;
 use rohi_sdk::net::NetworkHandle;
 use rohi_sdk::sensors::runtime::MeasurementHandle;
@@ -77,49 +76,52 @@ const SHUTDOWN_GRACE: Duration = Duration::from_millis(100);
 /// The name of the device when neither the command line nor the scenario say.
 const DEFAULT_NAME: &str = "urban-std";
 
-/// Nonces for the telemetry frames.
+/// Entropy for the nonces of the telemetry packets.
 ///
-/// Without a seed they come from the randomness of the host; with `--seed`
-/// they are a reproducible sequence. Clones share the sequence, so a restart of
-/// the telemetry service never repeats a nonce.
-#[derive(Clone)]
-pub struct HostNonce(Arc<Mutex<Sequence>>);
-
+/// Without a seed it comes from the randomness of the host; with `--seed` it
+/// is a reproducible sequence. One sequence serves the publisher and the
+/// export, so a nonce is never repeated.
 enum Sequence {
     Host(RandomState, u64),
     Seeded(u64),
 }
 
-impl HostNonce {
-    /// A source of nonces, reproducible with `seed`.
-    pub fn new(seed: Option<u64>) -> Self {
-        Self(Arc::new(Mutex::new(match seed {
+static SEQUENCE: Mutex<Option<Sequence>> = Mutex::new(None);
+
+/// Chooses the source of the nonces; call once before the telemetry runs.
+pub fn init_entropy(seed: Option<u64>) {
+    if let Ok(mut sequence) = SEQUENCE.lock() {
+        *sequence = Some(match seed {
             Some(seed) => Sequence::Seeded(seed.max(1)),
             None => Sequence::Host(RandomState::new(), 0),
-        })))
+        });
     }
 }
 
-impl NonceSource for HostNonce {
-    fn fill_nonce(&mut self, dst: &mut [u8; NONCE_LEN]) -> Result<(), NonceError> {
-        let mut sequence = self.0.lock().map_err(|_| NonceError)?;
-        for chunk in dst.chunks_mut(8) {
-            let word = match &mut *sequence {
-                Sequence::Host(random, counter) => {
-                    *counter += 1;
-                    random.hash_one(*counter)
-                }
-                Sequence::Seeded(state) => {
-                    *state ^= *state >> 12;
-                    *state ^= *state << 25;
-                    *state ^= *state >> 27;
-                    state.wrapping_mul(0x2545_F491_4F6C_DD1D)
-                }
-            };
-            chunk.copy_from_slice(&word.to_le_bytes()[..chunk.len()]);
-        }
-        Ok(())
+/// [`crate::connectivity::EntropyFn`] of the host platform.
+pub fn host_entropy(dst: &mut [u8]) -> bool {
+    let Ok(mut guard) = SEQUENCE.lock() else {
+        return false;
+    };
+    let Some(sequence) = guard.as_mut() else {
+        return false;
+    };
+    for chunk in dst.chunks_mut(8) {
+        let word = match sequence {
+            Sequence::Host(random, counter) => {
+                *counter += 1;
+                random.hash_one(*counter)
+            }
+            Sequence::Seeded(state) => {
+                *state ^= *state >> 12;
+                *state ^= *state << 25;
+                *state ^= *state >> 27;
+                state.wrapping_mul(0x2545_F491_4F6C_DD1D)
+            }
+        };
+        chunk.copy_from_slice(&word.to_le_bytes()[..chunk.len()]);
     }
+    true
 }
 
 static IP: StaticCell<HostIp> = StaticCell::new();
@@ -184,6 +186,7 @@ fn prepare(args: Args) -> Result<Prepared, StartupError> {
         .or_else(|| scenario.device_name.clone())
         .unwrap_or_else(|| DEFAULT_NAME.to_owned());
     world::init(&scenario, args.seed, name);
+    init_entropy(args.seed);
     Ok(Prepared {
         args,
         scenario,
@@ -269,7 +272,7 @@ fn start(spawner: Spawner, prepared: Prepared) -> Result<(), StartupError> {
     crate::tasks::spawn(
         spawner,
         "connectivity_task",
-        connectivity_task(network, store::handle(), args.seed),
+        connectivity_task(network, store::handle()),
     );
 
     #[cfg(feature = "std-ble")]
@@ -339,9 +342,8 @@ async fn ntp_task(network: NetworkHandle<'static, HostIp>) {
 async fn connectivity_task(
     network: NetworkHandle<'static, HostIp>,
     measurements: MeasurementHandle<'static, crate::tasks::RawMutex>,
-    seed: Option<u64>,
 ) {
-    connectivity::run(network, measurements, HostNonce::new(seed)).await
+    connectivity::run(network, connectivity::packets(measurements, host_entropy)).await
 }
 
 #[embassy_executor::task]

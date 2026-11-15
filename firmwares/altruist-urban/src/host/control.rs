@@ -110,6 +110,7 @@ pub fn controller(
             ble,
             logging: logging::runtime().service(),
             reboot: reboot::request,
+            entropy: super::app::host_entropy,
         },
         config::handle(),
         identity::start(config::handle()),

@@ -80,6 +80,7 @@ pub fn device(
             ble,
             logging: logging::runtime().service(),
             reboot: reboot::request,
+            entropy: super::connectivity::esp_entropy,
         },
         config,
         identity,

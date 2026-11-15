@@ -18,7 +18,7 @@
 //! Maps observations to the sensors of `device.v1.Urban`.
 //!
 //! Only what the protocol can say correctly is encoded; the rest is rejected
-//! when a profile is edited (see [`SUPPORTED`]) and never relabelled:
+//! when a profile is edited (see [`supported`]) and never relabelled:
 //!
 //! * `bmx280.temperature` and `bmx280.pressure` are `BME280` messages, so
 //!   they are only encoded when the same source also reported a humidity,

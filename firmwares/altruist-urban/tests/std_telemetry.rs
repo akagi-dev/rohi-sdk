@@ -228,3 +228,152 @@ async fn profiles_are_edited_persist_and_a_factory_reset_removes_them() {
     drop(device);
     sim.stop();
 }
+
+async fn routes(device: &mut Device<TcpLink>) -> Vec<(String, String, String, u64)> {
+    let records = device
+        .invoke("connectivity", "route_list", &[arg(1, Value::U64(0))])
+        .await
+        .unwrap();
+    records
+        .iter()
+        .map(|record| {
+            let text = |id| match &record.iter().find(|f| f.field_id == id).unwrap().value {
+                Value::String(text) => text.clone(),
+                other => panic!("text, not {other:?}"),
+            };
+            let Value::U64(interval) = record.iter().find(|f| f.field_id == 4).unwrap().value
+            else {
+                panic!("interval")
+            };
+            (text(1), text(2), text(3), interval)
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn routes_are_edited_with_actions_persist_and_a_factory_reset_removes_them() {
+    let dir = TempDir::new().unwrap();
+    let storage = dir.path().join("device.flash");
+    let sim = Sim::start(&Launch::new().storage(&storage));
+    let mut device = sim.device().await;
+
+    let actions = device.actions().await.unwrap();
+    let connectivity: Vec<_> = actions
+        .iter()
+        .filter(|action| action.service == "connectivity")
+        .map(|action| (action.name.as_str(), action.access))
+        .collect();
+    assert_eq!(
+        connectivity,
+        [
+            ("route_add", ActionAccess::Mutate),
+            ("route_remove", ActionAccess::Mutate),
+            ("set_interval", ActionAccess::Mutate),
+            ("fallback_add", ActionAccess::Mutate),
+            ("fallback_remove", ActionAccess::Mutate),
+            ("route_list", ActionAccess::Read),
+            ("fallback_list", ActionAccess::Read),
+            ("packet_get", ActionAccess::Read),
+        ]
+    );
+    assert!(routes(&mut device).await.is_empty(), "no route by default");
+
+    // A route needs an existing telemetry profile.
+    let add = |route: &str, profile: &str, endpoint: &str| {
+        vec![
+            arg(1, text(route)),
+            arg(2, text(profile)),
+            arg(3, text(endpoint)),
+        ]
+    };
+    assert!(
+        device
+            .invoke(
+                "connectivity",
+                "route_add",
+                &add("r", "env", "http://a.example")
+            )
+            .await
+            .is_err()
+    );
+    device
+        .invoke(
+            "telemetry",
+            "profile_add",
+            &[
+                arg(1, text("env")),
+                arg(2, Value::Enum("robonomics".into())),
+            ],
+        )
+        .await
+        .unwrap();
+    // The longest supported endpoint (64 bytes) is listed back in full.
+    let long = format!("http://{}.example.org:8080", "h".repeat(40));
+    assert_eq!(long.len(), 64);
+    device
+        .invoke("connectivity", "route_add", &add("community", "env", &long))
+        .await
+        .unwrap();
+    device
+        .invoke(
+            "connectivity",
+            "set_interval",
+            &[arg(1, text("community")), arg(2, Value::U64(120))],
+        )
+        .await
+        .unwrap();
+    device
+        .invoke(
+            "connectivity",
+            "fallback_add",
+            &[
+                arg(1, text("community")),
+                arg(2, text("backup")),
+                arg(3, text("http://backup.example")),
+            ],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        routes(&mut device).await,
+        [("community".to_owned(), "env".to_owned(), long.clone(), 120)]
+    );
+    let fallbacks = device
+        .invoke(
+            "connectivity",
+            "fallback_list",
+            &[arg(1, text("community")), arg(2, Value::U64(0))],
+        )
+        .await
+        .unwrap();
+    assert_eq!(fallbacks.len(), 1);
+    assert_eq!(fallbacks[0][2].value, Value::U64(1));
+
+    // An invalid interval is refused; the route is unchanged.
+    assert!(
+        device
+            .invoke(
+                "connectivity",
+                "set_interval",
+                &[arg(1, text("community")), arg(2, Value::U64(5))],
+            )
+            .await
+            .is_err()
+    );
+    // The service reports its route in the static status slots.
+    let status = fields(&mut device, "connectivity").await;
+    assert_eq!(
+        status.get("route0.id"),
+        Some(&Value::String("community".into()))
+    );
+    drop(device);
+    assert!(sim.stop().success());
+
+    let sim = Sim::start(&Launch::new().storage(&storage));
+    let mut device = sim.device().await;
+    assert_eq!(routes(&mut device).await.len(), 1, "persisted");
+    device.invoke("system", "factory_reset", &[]).await.unwrap();
+    assert!(routes(&mut device).await.is_empty());
+    drop(device);
+    sim.stop();
+}
