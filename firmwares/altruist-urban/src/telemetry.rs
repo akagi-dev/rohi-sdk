@@ -106,10 +106,12 @@ fn store_error(error: ServiceError) -> StoreError {
 impl TelemetryStore for StoredProfiles {
     async fn load(&self) -> Result<ProfileSet, StoreError> {
         match self.0.get::<TelemetrySection>().await {
-            Ok(section) => Ok(section.map(|section| section.0).unwrap_or_else(|| ProfileSet {
-                generation: STATE.generation(),
-                ..ProfileSet::default()
-            })),
+            Ok(section) => Ok(section
+                .map(|section| section.0)
+                .unwrap_or_else(|| ProfileSet {
+                    generation: STATE.generation(),
+                    ..ProfileSet::default()
+                })),
             Err(error) => Err(store_error(error)),
         }
     }
