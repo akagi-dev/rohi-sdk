@@ -47,6 +47,8 @@ impl DelayNs for Never {
 
 #[derive(Default)]
 struct World {
+    recreated: Cell<bool>,
+    recreate_on_capture: Cell<bool>,
     revision: Cell<u32>,
     captures: Cell<u32>,
     builds: Cell<u32>,
@@ -64,7 +66,7 @@ impl PacketProvider for Provider<'_> {
     fn resolve(&self, profile: &str) -> Option<ProfileStamp> {
         (profile == "env").then(|| ProfileStamp {
             id: PacketProfileId::new("env").unwrap(),
-            incarnation: 1,
+            incarnation: if self.0.recreated.get() { 2 } else { 1 },
             revision: self.0.revision.get(),
         })
     }
@@ -74,6 +76,10 @@ impl PacketProvider for Provider<'_> {
     }
 
     async fn capture(&mut self) -> Result<u32, BuildFailure> {
+        if self.0.recreate_on_capture.get() {
+            // The profile is deleted and recreated while the capture runs.
+            self.0.recreated.set(true);
+        }
         self.0.captures.set(self.0.captures.get() + 1);
         Ok(self.0.captures.get())
     }
@@ -380,5 +386,37 @@ fn an_unreadable_store_leaves_no_active_route() {
     assert!(state.routes().routes.is_empty());
     let mut publisher: P<4> = publisher(&world, &state, &clock);
     block_on(publisher.step());
+    assert!(world.sent.borrow().is_empty());
+}
+
+#[test]
+fn a_profile_recreated_during_the_capture_never_joins_the_execution() {
+    let world = World::default();
+    world.recreate_on_capture.set(true);
+    let state = ConnectivityState::<NoopRawMutex>::new();
+    let clock = Cell::new(0);
+    let mut config = RouteSet::default();
+    config
+        .add_route("a", binding(), "http://a.example")
+        .unwrap();
+    state.publish(&config);
+    let mut publisher: P<4> = publisher(&world, &state, &clock);
+
+    block_on(publisher.step());
+    // The route is bound to incarnation 1; the capture finished while the
+    // profile already was incarnation 2. Nothing is built or sent for it.
+    assert_eq!(world.builds.get(), 0);
+    assert!(world.sent.borrow().is_empty());
+    assert_eq!(publisher.router().pool().in_use(), 0);
+
+    // The next execution sees the new incarnation and suspends the route
+    // instead of rebinding it.
+    clock.set(60_000);
+    block_on(publisher.step());
+    assert_eq!(
+        state.views()[0].state,
+        crate::router::RouteState::ProfileMissing
+    );
+    assert_eq!(world.builds.get(), 0);
     assert!(world.sent.borrow().is_empty());
 }

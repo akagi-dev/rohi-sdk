@@ -141,11 +141,37 @@ impl<
     }
 
     async fn publish(&mut self, config: &RouteSet, due: &[usize], now: MonotonicTimestamp) {
+        // The publication context is fixed before anything is awaited: each due
+        // route with the stamp of the profile it is bound to. A profile that
+        // changes during the capture or the build never joins this execution;
+        // the build refuses a stamp that is no longer current and the change
+        // takes effect in the next one.
+        let mut context: Vec<(usize, ProfileStamp), MAX_ROUTES> = Vec::new();
+        for index in due {
+            let resolved = self
+                .router
+                .id(*index)
+                .and_then(|id| config.get(id.as_str()))
+                .and_then(|route| {
+                    self.provider
+                        .resolve(route.profile.id.as_str())
+                        .filter(|stamp| stamp.incarnation == route.profile.incarnation)
+                });
+            match resolved {
+                Some(stamp) => {
+                    let _ = context.push((*index, stamp));
+                }
+                None => self.router.skip(*index, SkipReason::BuildFailed, now),
+            }
+        }
+        if context.is_empty() {
+            return;
+        }
         let snapshot = match self.provider.capture().await {
             Ok(snapshot) => snapshot,
             Err(failure) => {
                 self.health.last_build_failure = Some(failure.code());
-                for index in due {
+                for (index, _) in &context {
                     self.router.skip(*index, SkipReason::BuildFailed, now);
                 }
                 return;
@@ -156,23 +182,12 @@ impl<
         // One packet per distinct stamp: (stamp, the built packet or the failure).
         let mut built: Vec<(ProfileStamp, Result<PacketHandle, SkipReason>), MAX_ROUTES> =
             Vec::new();
-        for index in due {
-            let Some(route) = self
-                .router
-                .id(*index)
-                .and_then(|id| config.get(id.as_str()))
-            else {
-                continue;
-            };
-            let Some(stamp) = self.provider.resolve(route.profile.id.as_str()) else {
-                self.router.skip(*index, SkipReason::BuildFailed, now);
-                continue;
-            };
-            let existing = built.iter().position(|(known, _)| *known == stamp);
+        for (index, stamp) in &context {
+            let existing = built.iter().position(|(known, _)| known == stamp);
             let outcome = match existing {
                 Some(position) => built[position].1,
                 None => {
-                    let outcome = self.build(&snapshot, &stamp).await;
+                    let outcome = self.build(&snapshot, stamp).await;
                     let _ = built.push((stamp.clone(), outcome));
                     outcome
                 }

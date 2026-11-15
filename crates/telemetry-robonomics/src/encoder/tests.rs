@@ -193,5 +193,34 @@ fn out_of_range_values_are_omitted() {
     assert_eq!(centi_celsius(1.0e9), None);
     assert_eq!(deci(-1.0), None);
     assert_eq!(whole(-3.0), None);
-    assert_eq!(centi_percent(140.0), Some(10_000));
+    assert_eq!(centi_percent(100.0), Some(10_000));
+    assert_eq!(centi_percent(0.0), Some(0));
+    // Not clamped into a valid-looking value.
+    assert_eq!(centi_percent(-5.0), None);
+    assert_eq!(centi_percent(120.0), None);
+    assert_eq!(centi_percent(f32::NAN), None);
+}
+
+#[test]
+fn an_invalid_humidity_is_left_out_of_the_packet_not_published_as_a_valid_one() {
+    for faulty in [-5.0f32, 120.0] {
+        let mut snapshot = TelemetrySnapshot::<16>::new(at(10));
+        let mut writer = snapshot.writer(SourceId::LOCAL);
+        writer.number(BMX280_TEMPERATURE, 21.0, at(1)).unwrap();
+        writer.number(BMX280_HUMIDITY, faulty, at(1)).unwrap();
+        writer.finish(Ok(()));
+        let list = encode_public(
+            &snapshot,
+            Selection::NONE
+                .with(BMX280_TEMPERATURE)
+                .with(BMX280_HUMIDITY),
+        )
+        .unwrap();
+        // The temperature stays (the sensor is a BME280), the humidity does not.
+        assert_eq!(list.len(), 1, "{faulty}");
+        assert!(matches!(
+            list[0].sensor,
+            Some(Sensor::Bme280(b)) if matches!(b.measurement, Some(BME280_::Measurement::Temperature(_)))
+        ));
+    }
 }

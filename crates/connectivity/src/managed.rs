@@ -164,6 +164,9 @@ pub mod issue {
     pub const PROFILE_MISSING: u32 = FIRST_SERVICE_ISSUE + 1;
     /// The last attempt to build a packet failed.
     pub const PACKET_BUILD_FAILED: u32 = FIRST_SERVICE_ISSUE + 2;
+    /// Packets are queued but every delivery path of a route is failing and
+    /// cooling down.
+    pub const DELIVERY_FAILING: u32 = FIRST_SERVICE_ISSUE + 3;
 }
 
 const SERVICE_ID: u32 = rohi_service::service_id("connectivity");
@@ -468,6 +471,7 @@ impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const
         IssueDescriptor::new(issue::STORAGE_UNAVAILABLE, "storage_unavailable"),
         IssueDescriptor::new(issue::PROFILE_MISSING, "profile_missing"),
         IssueDescriptor::new(issue::PACKET_BUILD_FAILED, "packet_build_failed"),
+        IssueDescriptor::new(issue::DELIVERY_FAILING, "delivery_failing"),
     ];
 
     async fn summary(&self) -> ServiceSummary {
@@ -479,11 +483,13 @@ impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const
             // No route is a valid state: nothing is sent.
             return ServiceSummary::new(ServiceState::Stopped, ServiceHealth::Unknown, false);
         }
+        // Producing packets and delivering them are different things: a route
+        // whose every path is failing is degraded even when packets are built.
         let degraded = self
             .state
             .views()
             .iter()
-            .any(|view| view.state == RouteState::ProfileMissing)
+            .any(|view| matches!(view.state, RouteState::ProfileMissing | RouteState::Backoff))
             || self.state.health().last_build_failure.is_some();
         let health = if degraded {
             ServiceHealth::Degraded
@@ -514,6 +520,14 @@ impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const
         }
         if self.state.health().last_build_failure.is_some() {
             push(issue::PACKET_BUILD_FAILED);
+        }
+        if self
+            .state
+            .views()
+            .iter()
+            .any(|view| view.state == RouteState::Backoff)
+        {
+            push(issue::DELIVERY_FAILING);
         }
     }
 
@@ -631,7 +645,6 @@ impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const
                 let id = text(args, action_field::ROUTE_ID)?;
                 let profile = text(args, action_field::PROFILE_ID)?;
                 let endpoint = text(args, action_field::ENDPOINT)?;
-                self.expire();
                 let stamp = self
                     .exporter
                     .resolve(profile)
@@ -707,6 +720,8 @@ impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const
             }
             action::PACKET_GET => {
                 let profile = text(args, action_field::PACKET_PROFILE)?;
+                // An abandoned stream must not keep its slot past its lifetime.
+                self.expire();
                 let stamp = self
                     .exporter
                     .resolve(profile)

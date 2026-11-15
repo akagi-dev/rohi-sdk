@@ -403,3 +403,40 @@ fn the_wakeup_is_the_earliest_publication_or_cooldown() {
         RouteState::Backoff
     );
 }
+
+#[test]
+fn a_busy_route_cannot_starve_the_others() {
+    let mut config = RouteSet::default();
+    for (id, host) in [
+        ("a", "http://a.example"),
+        ("b", "http://b.example"),
+        ("c", "http://c.example"),
+    ] {
+        config.add_route(id, binding(1), host).unwrap();
+    }
+    let mut router = R::new();
+    router.sync(&config, resolve, t(0));
+    // Every route always has a packet waiting: route "a" is refilled after
+    // each of its deliveries, the others hold one packet each.
+    let first = packet(&mut router, 1, b"x");
+    for index in 0..3 {
+        router.admit(index, first, t(0));
+    }
+    router.pool_mut().release(first);
+
+    let mut served = [0u32; 3];
+    for round in 0..9u64 {
+        let delivery = router.next_delivery(&config, t(round)).unwrap();
+        served[delivery.route] += 1;
+        router.complete(delivery, ok(), t(round));
+        // Route "a" immediately has another packet to send.
+        let refill = packet(&mut router, 1, b"y");
+        router.admit(0, refill, t(round));
+        router.pool_mut().release(refill);
+    }
+    // "b" and "c" had one packet each: both were served despite "a" always
+    // having one queued.
+    assert_eq!(served[1], 1, "{served:?}");
+    assert_eq!(served[2], 1, "{served:?}");
+    assert!(served[0] >= 6, "{served:?}");
+}

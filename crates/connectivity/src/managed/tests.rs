@@ -484,3 +484,69 @@ fn an_abandoned_stream_expires_and_makes_room() {
     assert_eq!(service.open_streams(), 0);
     assert!(packet(&service, "env").is_ok());
 }
+
+#[test]
+fn an_expired_stream_does_not_block_a_new_packet_get() {
+    let fixture = Fixture::new();
+    let exporter = fixture.exporter();
+    // One slot only: the abandoned stream holds all of the capacity.
+    let service: ConnectivityService<'_, NoopRawMutex, &Memory, &Exporter<'_>, 1, 1024> =
+        ConnectivityService::new(&fixture.memory, &exporter, &fixture.state);
+    let registry = (&service,);
+    let open =
+        |service: &ConnectivityService<'_, NoopRawMutex, &Memory, &Exporter<'_>, 1, 1024>| {
+            block_on((service,).invoke(Svc::ID, action::PACKET_GET, &[(1, text("env"))]))
+        };
+    assert!(open(&service).is_ok());
+    assert_eq!(open(&service).unwrap_err(), ActionError::Busy);
+
+    // Past its lifetime, with no read of the old stream in between.
+    *fixture.now.borrow_mut() = EXPORT_TTL_MS;
+    assert!(open(&service).is_ok(), "the new request reclaims the slot");
+    assert_eq!(service.open_streams(), 1);
+    registry.link_lost();
+}
+
+fn failing_view(state: RouteState) -> crate::router::RouteView {
+    crate::router::RouteView {
+        id: crate::RouteId::new("r").unwrap(),
+        state,
+        queue_depth: 1,
+        counters: crate::router::RouteCounters::default(),
+        active_path: None,
+    }
+}
+
+#[test]
+fn failing_deliveries_degrade_the_health_even_when_packets_are_built() {
+    let fixture = Fixture::new();
+    let exporter = fixture.exporter();
+    let service = Svc::new(&fixture.memory, &exporter, &fixture.state);
+    let mut routes = RouteSet::default();
+    routes
+        .add_route(
+            "r",
+            ProfileBinding {
+                id: PacketProfileId::new("env").unwrap(),
+                incarnation: 4,
+            },
+            "http://a.example",
+        )
+        .unwrap();
+    fixture.state.publish(&routes);
+
+    // Delivering normally: healthy.
+    let mut views = heapless::Vec::new();
+    views.push(failing_view(RouteState::Delivering)).unwrap();
+    fixture.state.report(views, crate::state::Health::default());
+    assert_eq!(block_on(service.summary()).health, ServiceHealth::Ok);
+
+    // Every path is failing and cooling down: degraded, with an issue.
+    let mut views = heapless::Vec::new();
+    views.push(failing_view(RouteState::Backoff)).unwrap();
+    fixture.state.report(views, crate::state::Health::default());
+    assert_eq!(block_on(service.summary()).health, ServiceHealth::Degraded);
+    let mut issues = heapless::Vec::new();
+    block_on(service.issues(&mut issues));
+    assert!(issues.iter().any(|i| i.code == issue::DELIVERY_FAILING));
+}

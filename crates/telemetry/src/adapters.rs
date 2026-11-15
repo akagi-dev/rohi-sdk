@@ -237,6 +237,10 @@ mod tests {
     }
 
     fn collect(store: &MeasurementStore, now: u64) -> TelemetrySnapshot<16> {
+        collect_n(store, now)
+    }
+
+    fn collect_n<const N: usize>(store: &MeasurementStore, now: u64) -> TelemetrySnapshot<N> {
         let service = MeasurementService::<NoopRawMutex>::new();
         let mut source = SensorsTelemetrySource::new(service.handle());
         let mut snapshot = TelemetrySnapshot::new(MonotonicTimestamp::from_millis(now));
@@ -251,6 +255,93 @@ mod tests {
             serve,
         ));
         snapshot
+    }
+
+    fn every_sensor_active() -> MeasurementStore {
+        use rohi_sensors::{
+            Ags3871Update, Aqi, Decibels, MicrogramsPerCubicMeter, NoiseUpdate, Ppb, Ppm,
+            PulseCount, RadSensUpdate, RadiationLevel, Sds011Update, Zmod4510Update,
+        };
+        let at = MonotonicTimestamp::from_millis(1_000);
+        let mut store = MeasurementStore::new();
+        let mut apply = |update| store.apply(SensorEvent::Measurements(update));
+        apply(MeasurementUpdate::Bmx280(Bmx280Update::bme280(
+            Celsius(21.5),
+            RelativeHumidity(45.0),
+            Pascal(100_800.0),
+            at,
+        )));
+        apply(MeasurementUpdate::Scd4x(Scd4xUpdate {
+            co2: Ppm(640.0),
+            temperature: Celsius(22.0),
+            humidity: RelativeHumidity(40.0),
+            timestamp: at,
+        }));
+        apply(MeasurementUpdate::Sds011(Sds011Update {
+            pm25: MicrogramsPerCubicMeter(6.5),
+            pm10: MicrogramsPerCubicMeter(12.0),
+            timestamp: at,
+        }));
+        apply(MeasurementUpdate::Microphone(NoiseUpdate {
+            average: Decibels(41.0),
+            maximum: Decibels(55.0),
+            timestamp: at,
+        }));
+        apply(MeasurementUpdate::Zmod4510(Zmod4510Update {
+            o3: Ppb(30.0),
+            no2: Ppb(12.0),
+            fast_aqi: Aqi(40),
+            epa_aqi: Aqi(35),
+            timestamp: at,
+        }));
+        apply(MeasurementUpdate::Ags3871(Ags3871Update {
+            co: Ppm(1.5),
+            timestamp: at,
+        }));
+        apply(MeasurementUpdate::RadSens(RadSensUpdate {
+            radiation: RadiationLevel(0.12),
+            pulses: PulseCount(7),
+            timestamp: at,
+        }));
+        store
+    }
+
+    #[test]
+    fn all_sensors_active_fit_a_snapshot_of_the_catalog_size_without_a_location() {
+        // 17 sensor measurements and no location source at all: a packet of
+        // sensors only must be possible, and a snapshot sized by the catalog
+        // never overflows.
+        let snapshot =
+            collect_n::<{ crate::catalog::CATALOG.len() }>(&every_sensor_active(), 2_000);
+        assert_eq!(
+            snapshot.observations.len(),
+            crate::catalog::CATALOG.len() - 1
+        );
+        let report = snapshot.diagnostics.of(SourceId::LOCAL).unwrap();
+        assert_eq!(
+            report.outcome,
+            crate::snapshot::SourceOutcome::Collected,
+            "{report:?}"
+        );
+        assert!(
+            snapshot
+                .get(SourceId::LOCAL, crate::catalog::RADSENS_PULSES)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn a_snapshot_that_is_too_small_is_reported_as_a_discarded_source() {
+        // The failure mode the capacity must prevent: all 17 values do not fit
+        // 16 slots, so the whole source is discarded and says why.
+        let snapshot = collect_n::<16>(&every_sensor_active(), 2_000);
+        assert!(snapshot.observations.is_empty());
+        assert_eq!(
+            snapshot.diagnostics.of(SourceId::LOCAL).unwrap().outcome,
+            crate::snapshot::SourceOutcome::Discarded(
+                crate::snapshot::SourceFailure::CapacityExceeded
+            )
+        );
     }
 
     #[test]

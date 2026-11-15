@@ -176,6 +176,9 @@ pub struct RouteView {
 pub struct Router<const DEPTH: usize, const SLOTS: usize, const BYTES: usize> {
     pool: PacketPool<SLOTS, BYTES>,
     routes: Vec<Runtime<DEPTH>, MAX_ROUTES>,
+    // Where the next delivery search starts: it moves past a route after every
+    // attempt, so a busy route cannot starve the others.
+    cursor: usize,
 }
 
 impl<const DEPTH: usize, const SLOTS: usize, const BYTES: usize> Default
@@ -192,6 +195,7 @@ impl<const DEPTH: usize, const SLOTS: usize, const BYTES: usize> Router<DEPTH, S
         Self {
             pool: PacketPool::new(),
             routes: Vec::new(),
+            cursor: 0,
         }
     }
 
@@ -326,7 +330,10 @@ impl<const DEPTH: usize, const SLOTS: usize, const BYTES: usize> Router<DEPTH, S
     /// highest-priority path that is not cooling down. `endpoints` is the
     /// number of paths the route has (1 + its fallbacks).
     pub fn next_delivery(&self, config: &RouteSet, now: MonotonicTimestamp) -> Option<Delivery> {
-        for (index, runtime) in self.routes.iter().enumerate() {
+        let count = self.routes.len();
+        for offset in 0..count {
+            let index = (self.cursor + offset) % count;
+            let runtime = &self.routes[index];
             let Some(packet) = runtime.outbox.front() else {
                 continue;
             };
@@ -357,6 +364,9 @@ impl<const DEPTH: usize, const SLOTS: usize, const BYTES: usize> Router<DEPTH, S
         let Some(runtime) = self.routes.get_mut(delivery.route) else {
             return;
         };
+        // The attempt is over, whatever its result: the next search starts with
+        // the following route.
+        self.cursor = delivery.route + 1;
         // The queue may have been flushed while the attempt was in flight.
         if runtime.outbox.front() != Some(&delivery.packet) {
             return;

@@ -71,7 +71,7 @@ pub enum EncodeError {
 }
 
 /// Encodes the observations of `view`. Values that cannot be represented
-/// (out of range) are omitted; relative humidity is limited to 0-100 %.
+/// (out of range) are omitted; a relative humidity outside 0-100 % is omitted, never clamped into a valid-looking value.
 ///
 /// # Errors
 ///
@@ -175,7 +175,12 @@ fn centi_celsius(celsius: f32) -> Option<i32> {
 }
 
 fn centi_percent(percent: f32) -> Option<u32> {
-    let v = scaled(percent.clamp(0.0, 100.0), 100.0)?;
+    // A relative humidity outside 0-100 % is a sensor fault, not a value to
+    // bring into range: it is omitted.
+    if !(0.0..=100.0).contains(&percent) {
+        return None;
+    }
+    let v = scaled(percent, 100.0)?;
     Some(v as u32)
 }
 

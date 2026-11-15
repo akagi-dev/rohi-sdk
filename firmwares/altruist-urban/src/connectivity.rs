@@ -60,8 +60,11 @@ pub const POOL_SLOTS: usize = 3;
 pub const EXPORT_STREAMS: usize = 1;
 /// Size of a sealed packet buffer: the largest envelope of the format.
 pub const PACKET_BYTES: usize = MAX_ENVELOPE_LEN;
-/// Observations a capture holds.
-pub const SNAPSHOT_OBSERVATIONS: usize = 16;
+/// Observations a capture holds: one slot for every measurement of the
+/// catalog, so every sensor and the location fit together. A smaller snapshot
+/// would discard the whole dataset of a source (a capture is atomic per
+/// source), so this is never a tuning knob below the catalog size.
+pub const SNAPSHOT_OBSERVATIONS: usize = rohi_sdk::telemetry::CATALOG.len();
 /// Budget of one source during a capture, in milliseconds.
 const SOURCE_TIMEOUT_MS: u32 = 2_000;
 

@@ -11,8 +11,8 @@
 
 [regression]
 # Allowed growth against the base branch, for identical build inputs.
-max_section_growth = 5600
-max_task_growth = 2700
+max_section_growth = 5900
+max_task_growth = 2900
 max_frame_growth = 512
 
 # The `control_task` poll gained the response slots of the request path it now polls through `Isolated`, while the
@@ -24,7 +24,7 @@ reason = "the Controller request path was split; its 30 KB frame became 1.7 KB o
 
 [[regression.approved_frame_growth]]
 symbol = "__connectivity_task_task"
-max_growth = 2000
+max_growth = 2200
 reason = "the publisher owns the packet pool and the route outboxes (3 x 920 B) and builds a sealed packet in its poll"
 
 [[regression.approved_frame_growth]]
@@ -46,9 +46,9 @@ reason = "the async main future holds the telemetry and connectivity statics it 
 # unknown, so treat this as the number to improve first.
 [chips.esp32c3]
 max_data = 30300
-max_bss = 210500
-max_task_ram = 43200
-min_main_stack = 16000
+max_bss = 210800
+max_task_ram = 43400
+min_main_stack = 15800
 max_frame = 13200
 
 [chips.esp32c3.focus]
@@ -57,9 +57,9 @@ logging = ["rohi_logging::service", "rohi_logging::storage", "rohi_logging::segm
 
 [chips.esp32c6]
 max_data = 33500
-max_bss = 214600
-max_task_ram = 43200
-min_main_stack = 116000
+max_bss = 214900
+max_task_ram = 43400
+min_main_stack = 115700
 max_frame = 10900
 
 [chips.esp32c6.focus]
