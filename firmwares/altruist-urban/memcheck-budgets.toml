@@ -11,7 +11,9 @@
 
 [regression]
 # Allowed growth against the base branch, for identical build inputs.
-max_section_growth = 5900
+# The telemetry publisher adds bounded route state and packet storage; the measured `.bss` growth is 7,480 B,
+# while the absolute `.bss` limit remains unchanged.
+max_section_growth = 7600
 max_task_growth = 2900
 max_frame_growth = 512
 
@@ -24,8 +26,8 @@ reason = "the Controller request path was split; its 30 KB frame became 1.7 KB o
 
 [[regression.approved_frame_growth]]
 symbol = "__connectivity_task_task"
-max_growth = 2200
-reason = "the publisher owns the packet pool and the route outboxes (3 x 920 B) and builds a sealed packet in its poll"
+max_growth = 2400
+reason = "the publisher task owns the bounded telemetry packet pool and route outboxes"
 
 [[regression.approved_frame_growth]]
 symbol = "publish_section"
