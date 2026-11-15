@@ -340,11 +340,16 @@ pub async fn read_stream_file(
     }
 }
 
-/// What `logging.tail` returned: the session and reset flag of the boot, and
-/// the text of the records (empty when the device had nothing new).
+/// What the tail of the device returned: the session and reset flag of the
+/// boot, the text of the records (empty when the device had nothing new) and
+/// the cursor to continue with.
 pub struct Tail {
-    pub session: u64,
+    pub session: u32,
     pub reset: bool,
+    /// Lines the device had overwritten before they could be read.
+    pub gap: u64,
+    pub cursor: u64,
+    pub newest: u64,
     pub text: String,
 }
 
@@ -359,61 +364,42 @@ impl Tail {
     }
 }
 
-/// One `logging.tail` call, with the stream read and closed.
-pub async fn tail(device: &mut Device<TcpLink>, session: u64, after: u64, limit: u64) -> Tail {
-    let schema = device.action_schema("logging", "tail").await.unwrap();
-    let arg = |name: &str, value: u64| rohi::model::FieldValue {
-        field_id: schema.args.iter().find(|f| f.name == name).unwrap().id,
-        value: Value::U64(value),
-    };
-    let args = [
-        arg("session", session),
-        arg("after", after),
-        arg("limit", limit),
-    ];
-    match device
-        .invoke_outcome("logging", "tail", &args)
-        .await
-        .unwrap()
-    {
-        rohi::model::ActionOutcome::Stream(stream) => {
-            let file = &stream.files[0];
-            let name = file.name.clone();
-            let data = read_stream_file(device, &stream, file.id).await;
-            device.close_stream(&stream).await.unwrap();
-            let (reset, session) = match name.strip_prefix("reset-") {
-                Some(rest) => (true, rest),
-                None => (false, name.strip_prefix("tail-").expect("a tail file name")),
-            };
-            Tail {
-                session: session.strip_suffix(".log").unwrap().parse().unwrap(),
-                reset,
-                text: String::from_utf8(data).unwrap(),
-            }
-        }
-        rohi::model::ActionOutcome::Records(records) => {
-            let field = |name: &str| {
-                let id = schema.results.iter().find(|f| f.name == name)?.id;
-                records[0]
-                    .iter()
-                    .find(|f| f.field_id == id)
-                    .map(|f| f.value.clone())
-            };
-            let Some(Value::U64(session)) = field("session") else {
-                panic!("tail returned no session");
-            };
-            Tail {
-                session,
-                reset: field("reset") == Some(Value::Bool(true)),
-                text: String::new(),
-            }
-        }
+/// One `TailLogs` page, as the device answered it.
+pub async fn tail_page(device: &mut Device<TcpLink>, session: u32, after: u64) -> Tail {
+    let page = device.tail_logs("logging", session, after).await.unwrap();
+    assert!(page.data.len() <= 512, "a page is at most 512 bytes");
+    Tail {
+        session: page.session,
+        reset: page.reset,
+        gap: page.gap,
+        cursor: page.cursor,
+        newest: page.newest_sequence,
+        text: String::from_utf8(page.data).unwrap(),
     }
+}
+
+/// The pages after `after`, followed with their cursor until an empty page, as
+/// one text. `session` and `reset` are those of the first page.
+pub async fn tail(device: &mut Device<TcpLink>, session: u32, after: u64) -> Tail {
+    let mut all = tail_page(device, session, after).await;
+    let mut pages = 0;
+    while !all.text.is_empty() {
+        let next = tail_page(device, all.session, all.cursor).await;
+        if next.text.is_empty() {
+            break;
+        }
+        all.text.push_str(&next.text);
+        all.cursor = next.cursor;
+        all.newest = next.newest;
+        pages += 1;
+        assert!(pages < 200, "the tail does not end");
+    }
+    all
 }
 
 /// The latest records the device keeps in RAM, as text.
 pub async fn tail_text(device: &mut Device<TcpLink>) -> String {
-    tail(device, 0, 0, 1_000).await.text
+    tail(device, 0, 0).await.text
 }
 
 /// Every record of the archive in flash, decoded from `logging.download`.

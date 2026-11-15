@@ -138,7 +138,9 @@ where
             Ok(None) => return,
             Ok(Some(message)) => {
                 let id = message.id;
-                debug!(
+                // Trace, not debug: a client that follows the log tail polls every
+                // second, and a record per request would feed the tail it reads.
+                trace!(
                     target: "control.ble",
                     "Request reassembled (id={} size_b={})",
                     id,
@@ -209,7 +211,7 @@ where
                 return;
             }
         };
-        debug!(
+        trace!(
             target: "control.ble",
             "Sending response (id={} size_b={} frames={})",
             id,

@@ -82,10 +82,31 @@ pub fn apply(config: LoggingConfig) {
     LOGGING.apply(config);
 }
 
-/// Gives the tail the boot counter as its session, once the configuration owner
-/// has counted this start, see [`crate::config::boot_count`].
-pub fn set_boot_count() {
-    LOGGING.set_boot_count(crate::config::boot_count().unwrap_or(0));
+/// A token for this start of the process, for the session of the tail: random
+/// per process (the hasher is seeded by the OS), mixed with the clock and the
+/// process id. It does not depend on the configuration storage, see
+/// [`set_session`].
+fn fresh_session() -> u32 {
+    use std::hash::{BuildHasher, Hasher};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    hasher.write_u128(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos()),
+    );
+    hasher.write_u32(std::process::id());
+    let hash = hasher.finish();
+    (hash ^ (hash >> 32)) as u32
+}
+
+/// Gives the tail a session of its own for this start. It is deliberately not
+/// the boot counter: the counter lives in the configuration storage, which can
+/// fail to be read or written (or be ephemeral), and a counter that repeats
+/// would let a client take the records of a new start for those of the old one.
+fn set_session() {
+    LOGGING.set_session(fresh_session());
 }
 
 /// The `log` backend: the console and the persistent sink, each with its own
@@ -136,5 +157,29 @@ async fn logging_task() {
 /// Starts the logging task on `flash`.
 pub fn start(spawner: Spawner, flash: FileLogFlash) {
     let _ = FLASH.set(flash);
+    set_session();
     crate::tasks::spawn(spawner, "logging_task", logging_task());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_start_gets_a_session_of_its_own() {
+        let sessions: std::collections::HashSet<u32> = (0..64).map(|_| fresh_session()).collect();
+        assert_eq!(sessions.len(), 64);
+    }
+
+    #[test]
+    fn the_session_is_set_without_any_storage() {
+        // No configuration store was opened in this test, so there is no boot
+        // counter, and the tail still gets a session.
+        assert_eq!(crate::config::boot_count(), None);
+        set_session();
+        let session = LOGGING.sink().tail_session();
+        assert_ne!(session, 0);
+        set_session();
+        assert_ne!(LOGGING.sink().tail_session(), session);
+    }
 }

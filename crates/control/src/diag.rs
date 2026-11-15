@@ -44,6 +44,7 @@ fn op_name(call: &Call) -> &'static str {
         Call::InvokeAction(_) => "invoke_action",
         Call::ReadStream(_) => "read_stream",
         Call::CloseStream(_) => "close_stream",
+        Call::TailLogs(_) => "tail_logs",
     }
 }
 
@@ -301,6 +302,17 @@ pub(crate) fn stream_read_oversized(service: u32, stream: u32, len: usize) {
         "Stream read returned more than a chunk (service={} stream={} size_b={})",
         service,
         stream,
+        len
+    );
+}
+
+#[cold]
+#[inline(never)]
+pub(crate) fn tail_oversized(service: u32, len: usize) {
+    log::warn!(
+        target: "control",
+        "Tail page is larger than the limit (service={} size_b={})",
+        service,
         len
     );
 }

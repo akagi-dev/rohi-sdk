@@ -17,31 +17,30 @@
 ///////////////////////////////////////////////////////////////////////////////
 //! `rohi logs`: the device log, as the actions of the `logging` service.
 //!
-//! This module is a convenience over the generic action interface and knows
-//! nothing the device does not tell it: `tail` returns the latest records from the
-//! RAM of the device as a stream of text lines, `download` a stream of the
-//! retained segment files, `clear` nothing. `rohi action logging ...` reaches
-//! the same actions.
+//! This module is a convenience over the generic interfaces of the device and
+//! knows nothing the device does not tell it: the tail is the `TailLogs` request,
+//! one bounded page of the latest records the device keeps in RAM per call (no
+//! stream, nothing opened on the device), `download` a stream of the retained
+//! segment files, `clear` nothing. `rohi action logging ...` reaches the actions.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+use rohi_logging::LogRecord;
 use rohi_logging::segment::text::{parse_line, write_line};
-use rohi_logging::{LogRecord, parse_tail_file_name};
 use serde::Serialize;
 
 use super::args::LogsAction;
 use super::diagnostic::CliError;
 use super::{Ctx, OutputFormat, dto};
-use crate::model::{ActionOutcome, ErrorCode, FieldValue, Stream, Value};
+use crate::model::{ActionOutcome, Stream};
 use crate::{ClientTransport, Device, Error};
 
 const SERVICE: &str = "logging";
-/// Records asked for in one `tail`; the device clamps it to its RAM tail.
-const PAGE: u64 = u64::MAX;
-/// A tail stream can be replaced by newer records between the call and the
-/// read; the call is then repeated.
-const ATTEMPTS: usize = 3;
+/// Pages one snapshot is read in at most: far more than the RAM tail of any
+/// device holds, so a device that logs faster than it is read cannot keep one
+/// call going for ever.
+const MAX_PAGES: usize = 64;
 
 pub async fn run<T: ClientTransport>(
     device: &mut Device<T>,
@@ -106,119 +105,41 @@ fn text_of(records: &[LogRecord]) -> String {
     text
 }
 
-/// What one `tail` returned.
+/// What one `TailLogs` page held.
 struct Tailed {
     /// Identifies the boot of the device the sequences belong to.
     session: u32,
-    /// The request did not belong to this boot: `records` are a fresh
-    /// snapshot and the cursor starts over.
+    /// The request did not belong to this boot: `records` start over.
     reset: bool,
+    /// Lines the device overwrote before this page could be read.
+    gap: u64,
+    /// The cursor of the next request.
+    cursor: u64,
+    /// The newest sequence the device holds.
+    newest: u64,
     /// Oldest first, by tail sequence.
     records: Vec<LogRecord>,
 }
 
-fn arg(
-    schema: &crate::model::ActionSchema,
-    name: &str,
-    value: u64,
-) -> Result<FieldValue, CliError> {
-    let field = schema
-        .args
-        .iter()
-        .find(|field| field.name == name)
-        .ok_or_else(|| Error::Protocol(format!("logging.tail has no {name} argument")))?;
-    Ok(FieldValue {
-        field_id: field.id,
-        value: Value::U64(value),
-    })
-}
-
-/// One `logging.tail`: up to `limit` records after `after` of the boot
-/// `session`, oldest first; the latest ones when `session` or `after` is 0.
+/// One `TailLogs` page: the records after `after` of the boot `session`; the
+/// oldest ones the device holds when `session` or `after` is 0.
 async fn tail<T: ClientTransport>(
     device: &mut Device<T>,
     session: u32,
     after: u64,
-    limit: u64,
 ) -> Result<Tailed, CliError> {
-    let schema = device.action_schema(SERVICE, "tail").await?;
-    let args = [
-        arg(&schema, "session", u64::from(session))?,
-        arg(&schema, "after", after)?,
-        arg(&schema, "limit", limit)?,
-    ];
-    for attempt in 1..=ATTEMPTS {
-        match device.invoke_outcome(SERVICE, "tail", &args).await? {
-            ActionOutcome::Records(records) => {
-                let result = |name: &str| {
-                    let id = schema.results.iter().find(|field| field.name == name)?.id;
-                    records
-                        .first()?
-                        .iter()
-                        .find(|field| field.field_id == id)
-                        .map(|field| field.value.clone())
-                };
-                let session = match result("session") {
-                    Some(Value::U64(session)) => u32::try_from(session).ok(),
-                    _ => None,
-                }
-                .ok_or_else(|| Error::Protocol("logging.tail returned no session".into()))?;
-                return Ok(Tailed {
-                    session,
-                    reset: result("reset") == Some(Value::Bool(true)),
-                    records: Vec::new(),
-                });
-            }
-            ActionOutcome::Stream(stream) => {
-                let name = stream.files.first().map(|file| file.name.as_str());
-                let (session, reset) = name.and_then(parse_tail_file_name).ok_or_else(|| {
-                    Error::Protocol("logging.tail returned an unexpected file".into())
-                })?;
-                let data = read_all(device, &stream).await;
-                // Whatever happened, release the stream; its content is already here.
-                let _ = device.close_stream(&stream).await;
-                match data {
-                    Ok(data) => {
-                        let text = String::from_utf8_lossy(&data).into_owned();
-                        // A line that is not a record is skipped, never trusted.
-                        return Ok(Tailed {
-                            session,
-                            reset,
-                            records: text.lines().filter_map(parse_line).collect(),
-                        });
-                    }
-                    // New records replaced the window before it was read.
-                    Err(CliError::Device(Error::Device(ErrorCode::NotFound)))
-                        if attempt < ATTEMPTS => {}
-                    Err(error) => return Err(error),
-                }
-            }
-        }
-    }
-    Err(Error::Device(ErrorCode::NotFound).into())
-}
-
-/// The first file of a stream, whole.
-async fn read_all<T: ClientTransport>(
-    device: &mut Device<T>,
-    stream: &Stream,
-) -> Result<Vec<u8>, CliError> {
-    let Some(file) = stream.files.first() else {
-        return Ok(Vec::new());
-    };
-    let mut data = Vec::new();
-    loop {
-        let chunk = device
-            .read_stream(stream, file.id, data.len() as u64)
-            .await?;
-        data.extend_from_slice(&chunk.data);
-        if chunk.eof {
-            return Ok(data);
-        }
-        if chunk.data.is_empty() {
-            return Err(Error::Protocol("the device returned an empty chunk".into()).into());
-        }
-    }
+    let page = device.tail_logs(SERVICE, session, after).await?;
+    let text = String::from_utf8_lossy(&page.data);
+    // A line that is not a record is skipped, never trusted.
+    let records: Vec<_> = text.lines().filter_map(parse_line).collect();
+    Ok(Tailed {
+        session: page.session,
+        reset: page.reset,
+        gap: page.gap,
+        cursor: page.cursor,
+        newest: page.newest_sequence,
+        records,
+    })
 }
 
 fn print(session: u32, records: &[LogRecord], ctx: &mut Ctx, follow: bool) -> Result<(), CliError> {
@@ -250,14 +171,33 @@ async fn show<T: ClientTransport>(
     follow: bool,
     ctx: &mut Ctx,
 ) -> Result<(), CliError> {
-    // With `-n 0` one record is asked for, only to learn where to continue.
-    let first = tail(device, 0, 0, (lines as u64).max(1)).await?;
+    // The snapshot: the device holds a few records, and a page carries a few
+    // of them, so it is read page by page up to the newest record it held when
+    // it was first asked. `-n` keeps the last ones.
+    let first = tail(device, 0, 0).await?;
     let session = first.session;
+    let newest = first.newest;
+    let mut cursor = first.cursor;
     let mut records = first.records;
-    let mut cursor = records.last().map_or(0, |record| record.sequence);
-    if lines == 0 {
-        records.clear();
+    for _ in 1..MAX_PAGES {
+        if cursor >= newest || records.is_empty() {
+            break;
+        }
+        let page = tail(device, session, cursor).await?;
+        if page.reset {
+            // The device restarted meanwhile: what it holds now is the snapshot.
+            records = page.records;
+            cursor = page.cursor;
+            continue;
+        }
+        if page.records.is_empty() {
+            break;
+        }
+        cursor = page.cursor;
+        records.extend(page.records);
     }
+    let skip = records.len().saturating_sub(lines);
+    records.drain(..skip);
     if !follow {
         if records.is_empty() {
             ctx.io.note("No log records\n");
@@ -276,7 +216,8 @@ async fn show<T: ClientTransport>(
 }
 
 // Asks for what is new, forever (or `watch_limit` times in tests). The
-// session and the cursor of the device are the only state.
+// session and the cursor of the device are the only state; the device keeps
+// nothing for the client.
 async fn follow_tail<T: ClientTransport>(
     device: &mut Device<T>,
     mut session: u32,
@@ -289,29 +230,27 @@ async fn follow_tail<T: ClientTransport>(
             return Ok(());
         }
         tokio::time::sleep(ctx.follow_interval).await;
-        // The device answers at most what its RAM holds; ask again until
-        // nothing is new.
+        // A page carries what fits 512 bytes; ask again until nothing is new.
         loop {
-            let page = tail(device, session, *cursor, PAGE).await?;
+            let page = tail(device, session, *cursor).await?;
             if page.reset {
                 ctx.io
                     .note("The device restarted: the log it keeps in RAM starts over\n");
-                *cursor = 0;
-            }
-            session = page.session;
-            let Some(first) = page.records.first().map(|record| record.sequence) else {
-                break;
-            };
-            if !page.reset && *cursor > 0 && first > *cursor + 1 {
+            } else if page.gap > 0 {
                 ctx.io.note(&format!(
                     "{} log record(s) were overwritten on the device before they could be read\n",
-                    first - *cursor - 1
+                    page.gap
                 ));
             }
-            if let Some(last) = page.records.last() {
-                *cursor = last.sequence;
+            session = page.session;
+            if page.records.is_empty() && page.cursor == *cursor {
+                break;
             }
+            *cursor = page.cursor;
             print(session, &page.records, ctx, true)?;
+            if page.records.is_empty() {
+                break;
+            }
         }
         polls += 1;
     }

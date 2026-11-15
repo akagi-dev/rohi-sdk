@@ -177,8 +177,8 @@
 //!   0x09000  nvs        0x6000
 //!   0x0f000  phy_init   0x1000
 //!   0x10000  rohi-cfg   0x4000   <- FlashRegion: slot A (8 KiB) | slot B (8 KiB)
-//!   0x20000  rohi-log   0x40000  <- persistent log ring (rohi-logging)
-//!   0x60000  factory    0x3A0000 (ESP32-C3, 4 MB) / 0x7A0000 (ESP32-C6, 8 MB)
+//!   0x20000  factory    0x360000 (ESP32-C3, 4 MB) / 0x6E0000 (ESP32-C6, 8 MB)
+//!   0x380000 rohi-log   0x80000 (ESP32-C3) / 0x700000, 0x100000 (ESP32-C6): the last partition, the persistent log ring (rohi-logging)
 //! ```
 //!
 //! | Crate | Role |

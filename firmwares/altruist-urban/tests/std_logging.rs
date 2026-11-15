@@ -57,7 +57,7 @@ async fn status_number(device: &mut Device<TcpLink>, field: u32) -> Option<u64> 
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn logging_is_a_service_with_tail_download_and_clear() {
+async fn logging_is_a_service_with_download_and_clear_and_the_tail_is_no_action() {
     let sim = Sim::start(&Launch::new());
     let mut device = sim.device().await;
 
@@ -70,7 +70,7 @@ async fn logging_is_a_service_with_tail_download_and_clear() {
         .map(|action| action.name.as_str())
         .collect();
     names.sort_unstable();
-    assert_eq!(names, ["clear", "download", "tail"]);
+    assert_eq!(names, ["clear", "download"]);
 
     let status = fields(&mut device, "logging").await;
     assert_eq!(status["storage"], text("internal"));
@@ -275,12 +275,12 @@ async fn tail_serves_the_records_in_ram_and_follows_them_once() {
     let sim = Sim::start(&Launch::new());
     let mut device = sim.device().await;
     let first = eventually("the boot record", WAIT, async || {
-        let tail = tail(&mut device, 0, 0, 1_000).await;
+        let tail = tail(&mut device, 0, 0).await;
         tail.text.contains("Starting").then_some(tail)
     })
     .await;
     assert!(!first.reset);
-    assert_eq!(first.session, boot_count(&mut device).await);
+    assert_ne!(first.session, 0);
     let mut cursor = first.last_sequence();
     assert!(cursor > 0);
     // Whole lines of the log format, oldest first, by tail sequence.
@@ -303,7 +303,7 @@ async fn tail_serves_the_records_in_ram_and_follows_them_once() {
             .await
             .unwrap();
         let news = eventually("a new record", WAIT, async || {
-            let news = tail(&mut device, first.session, cursor, 1_000).await;
+            let news = tail(&mut device, first.session, cursor).await;
             (!news.text.is_empty()).then_some(news)
         })
         .await;
@@ -320,7 +320,7 @@ async fn tail_serves_the_records_in_ram_and_follows_them_once() {
     assert!(seen > sequences.len());
 
     // Another boot's session means start over, with a fresh snapshot.
-    let reset = tail(&mut device, first.session + 1, cursor, 1_000).await;
+    let reset = tail(&mut device, first.session.wrapping_add(1), cursor).await;
     assert!(reset.reset);
     assert_eq!(reset.session, first.session);
     assert!(!reset.text.is_empty());
@@ -354,7 +354,8 @@ async fn tail_answers_while_a_download_is_open_and_does_not_end_it() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn the_boot_counter_is_the_session_and_grows_with_every_start() {
+async fn every_start_has_a_session_of_its_own_whatever_the_boot_counter_does() {
+    // A file keeps the counter: it grows, and the sessions still all differ.
     let dir = TempDir::new().unwrap();
     let storage = dir.path().join("device.flash");
     let mut sessions = Vec::new();
@@ -363,7 +364,7 @@ async fn the_boot_counter_is_the_session_and_grows_with_every_start() {
         let mut device = sim.device().await;
         assert_eq!(boot_count(&mut device).await, start);
         let tail = eventually("the boot record", WAIT, async || {
-            let tail = tail(&mut device, 0, 0, 1_000).await;
+            let tail = tail(&mut device, 0, 0).await;
             tail.text.contains("Starting").then_some(tail)
         })
         .await;
@@ -371,5 +372,134 @@ async fn the_boot_counter_is_the_session_and_grows_with_every_start() {
         drop(device);
         assert!(sim.stop().success());
     }
-    assert_eq!(sessions, [1, 2, 3]);
+    assert_distinct(&sessions);
+
+    // Nothing keeps the counter (an ephemeral device forgets it, like a storage
+    // that cannot be written): it is 1 at every start, and the sessions differ
+    // all the same, so a client with the session of an earlier start is told to
+    // start over instead of taking the new records for the old ones.
+    let mut sessions = Vec::new();
+    for _ in 0..3 {
+        let sim = Sim::start(&Launch::new());
+        let mut device = sim.device().await;
+        assert_eq!(boot_count(&mut device).await, 1);
+        let tail = eventually("the boot record", WAIT, async || {
+            let tail = tail(&mut device, 0, 0).await;
+            tail.text.contains("Starting").then_some(tail)
+        })
+        .await;
+        if let Some(earlier) = sessions.last() {
+            let stale = tail_page(&mut device, *earlier, 3).await;
+            assert!(stale.reset, "the session of the earlier start is not valid");
+            assert_eq!(stale.session, tail.session);
+        }
+        sessions.push(tail.session);
+        drop(device);
+        assert!(sim.stop().success());
+    }
+    assert_distinct(&sessions);
+}
+
+fn assert_distinct(sessions: &[u32]) {
+    let mut sorted = sessions.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(sorted.len(), sessions.len(), "{sessions:?}");
+    assert!(sessions.iter().all(|session| *session != 0));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn following_the_tail_at_debug_generates_no_records_of_its_own() {
+    let sim = Sim::start(&Launch::new());
+    let mut device = sim.device().await;
+    // The persistent level is the one that feeds the tail: raise it to debug.
+    device
+        .config_patch("logging", &[set(1, Value::Enum("debug".to_owned()))], false)
+        .await
+        .unwrap();
+    let first = eventually("the boot record", WAIT, async || {
+        let tail = tail(&mut device, 0, 0).await;
+        tail.text.contains("Starting").then_some(tail)
+    })
+    .await;
+    // The configuration change itself logs; let it settle, then follow.
+    let mut cursor = first.cursor;
+    let mut session = first.session;
+    let mut settled = 0;
+    while settled < 3 {
+        let page = tail_page(&mut device, session, cursor).await;
+        session = page.session;
+        if page.text.is_empty() {
+            settled += 1;
+        } else {
+            settled = 0;
+            cursor = page.cursor;
+        }
+    }
+    // Polling for a while now creates nothing to read: every page is empty
+    // and the newest sequence of the device does not move.
+    let newest = tail_page(&mut device, session, cursor).await.newest;
+    for _ in 0..40 {
+        let page = tail_page(&mut device, session, cursor).await;
+        assert!(page.text.is_empty(), "polling wrote: {:?}", page.text);
+        assert_eq!((page.newest, page.cursor, page.gap), (newest, cursor, 0));
+        assert!(!page.reset);
+    }
+    drop(device);
+    sim.stop();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn clear_is_busy_while_a_download_is_open_and_the_tail_is_not_affected() {
+    use rohi::{Error, model::ErrorCode};
+    let sim = Sim::start(&Launch::new());
+    let mut device = sim.device().await;
+    eventually("a record in the archive", WAIT, async || {
+        archive_text(&mut device)
+            .await
+            .contains("Starting")
+            .then_some(())
+    })
+    .await;
+    let before = tail(&mut device, 0, 0).await;
+    let stored = status_number(&mut device, status_field::STORED_RECORDS)
+        .await
+        .unwrap();
+    assert!(stored > 0);
+
+    let stream = stream_of(&mut device, "download", &[]).await;
+    for _ in 0..2 {
+        match device.invoke("logging", "clear", &[]).await {
+            Err(Error::Device(ErrorCode::Busy)) => {}
+            other => panic!("clear while a download is open: {other:?}"),
+        }
+    }
+    assert_eq!(
+        status_number(&mut device, status_field::STORED_RECORDS).await,
+        Some(stored),
+        "nothing was cleared"
+    );
+    // The download is intact and the tail answers as before.
+    for file in &stream.files {
+        let data = read_file(&mut device, &stream, file.id).await;
+        assert_eq!(data.len() as u64, file.size_bytes);
+    }
+    let during = tail(&mut device, 0, 0).await;
+    assert_eq!(during.session, before.session);
+    assert!(during.text.starts_with(before.text.lines().next().unwrap()));
+
+    device.close_stream(&stream).await.unwrap();
+    device.invoke("logging", "clear", &[]).await.unwrap();
+    eventually("an empty history", WAIT, async || {
+        (status_number(&mut device, status_field::STORED_RECORDS).await == Some(0)).then_some(())
+    })
+    .await;
+    // The archive is gone, the RAM tail and its session are not.
+    let after = tail(&mut device, 0, 0).await;
+    assert_eq!(after.session, before.session);
+    assert!(after.text.starts_with(before.text.lines().next().unwrap()));
+    let continued = tail_page(&mut device, before.session, before.last_sequence()).await;
+    assert!(!continued.reset);
+    drop(device);
+    sim.stop();
 }

@@ -228,8 +228,8 @@ fn flash_wear_is_spread_over_the_whole_region() {
 
 #[test]
 fn at_most_the_segment_limit_is_retained() {
-    let mut medium = std::boxed::Box::new(RamMedium::<64>::new());
-    medium.erase(0, 64).unwrap();
+    let mut medium = std::boxed::Box::new(RamMedium::<128>::new());
+    medium.erase(0, 128).unwrap();
     let mut storage = RingStorage::new(*medium);
     block_on(storage.recover()).unwrap();
     let limits = Limits {
@@ -577,23 +577,23 @@ fn a_medium_that_is_too_small_is_refused() {
 
 #[test]
 fn the_esp32c3_partition_retains_fifteen_whole_segments() {
-    // 64 sectors (256 KiB): two format header sectors and a ring of 62, cut
-    // into 16 KiB segments of four sectors.
-    let mut medium = std::boxed::Box::new(RamMedium::<64>::new());
-    medium.erase(0, 64).unwrap();
+    // 128 sectors (512 KiB): two format header sectors and a ring of 126, cut
+    // into 32 KiB segments of eight sectors.
+    let mut medium = std::boxed::Box::new(RamMedium::<128>::new());
+    medium.erase(0, 128).unwrap();
     let mut storage = RingStorage::new(*medium);
     block_on(storage.recover()).unwrap();
     let limits = Limits {
-        segment_bytes: 16 * 1024,
-        retention_bytes: 256 * 1024,
+        segment_bytes: 32 * 1024,
+        retention_bytes: 512 * 1024,
     };
     let mut writer = Writer::new(1, Compression::None, limits);
     let mut most_sealed = 0;
     for _ in 0..400 {
         writer.push_many(&mut storage, 100).unwrap();
         let stats = block_on(storage.stats()).unwrap();
-        assert!(stats.used_bytes <= 62 * 4096, "{stats:?}");
-        assert_eq!(stats.capacity_bytes, 62 * 4096, "{stats:?}");
+        assert!(stats.used_bytes <= 126 * 4096, "{stats:?}");
+        assert_eq!(stats.capacity_bytes, 126 * 4096, "{stats:?}");
         most_sealed = most_sealed.max(stats.segments);
     }
     assert!(most_sealed >= 15, "{most_sealed}");

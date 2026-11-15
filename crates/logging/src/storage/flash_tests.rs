@@ -59,9 +59,13 @@ struct Emu {
 
 impl Emu {
     fn new() -> Self {
+        Self::with_sectors(FLASH_SECTORS)
+    }
+
+    fn with_sectors(sectors: usize) -> Self {
         Self {
-            data: std::vec![0xFF; FLASH_SECTORS * 4096],
-            programs: std::vec![0; FLASH_SECTORS * 1024],
+            data: std::vec![0xFF; sectors * 4096],
+            programs: std::vec![0; sectors * 1024],
             budget: None,
         }
     }
@@ -284,4 +288,124 @@ fn reads_of_any_alignment_return_what_was_written() {
             assert_eq!(back, data[at..at + len], "read of {len} at {at}");
         }
     }
+}
+
+// The ESP32-C3 upgrade: 4 MB of flash, the former `rohi-log` of 256 KiB at
+// 0x3C0000 and the new one of 512 KiB at 0x380000, which ends in the same place
+// and so has its header slots in the same sectors.
+const C3_SECTORS: usize = 1024;
+const C3_OLD_FIRST: u32 = 0x3C_0000 / 4096;
+const C3_OLD_SECTORS: u32 = 64;
+const C3_NEW_FIRST: u32 = 0x38_0000 / 4096;
+const C3_NEW_SECTORS: u32 = 128;
+
+fn c3_flash_with_the_former_log() -> Emu {
+    let mut flash = Emu::with_sectors(C3_SECTORS);
+    // Everything below the new log: other partitions and the end of the former
+    // application image (0x380000..0x3C0000 held the application before).
+    flash.data[..C3_OLD_FIRST as usize * 4096].fill(0x5A);
+    let medium = FlashMedium::new(flash, C3_OLD_FIRST * 4096, C3_OLD_SECTORS).unwrap();
+    let mut storage = RingStorage::new(medium);
+    block_on(storage.recover()).unwrap();
+    let mut writer = Writer::new(1, Compression::Lz4, LIMITS);
+    writer.push_many(&mut storage, 300).unwrap();
+    writer.flush(&mut storage).unwrap();
+    assert!(!all_records(&mut storage).is_empty());
+    let mut flash = storage.into_medium().into_inner();
+    flash.budget = None;
+    flash
+}
+
+fn open_c3(flash: Emu) -> (Storage, Recovery) {
+    let medium = FlashMedium::new(flash, C3_NEW_FIRST * 4096, C3_NEW_SECTORS).unwrap();
+    let mut storage = RingStorage::new(medium);
+    let recovery = block_on(storage.recover()).unwrap();
+    (storage, recovery)
+}
+
+#[test]
+fn the_resized_esp32c3_region_is_formatted_on_the_first_start_and_kept_afterwards() {
+    let flash = c3_flash_with_the_former_log();
+    let outside = flash.data[..C3_NEW_FIRST as usize * 4096].to_vec();
+    // The former header sits in the last two sectors, where the new header
+    // slots are too, but it says 64 sectors: it is not a header of this region.
+    let (mut storage, recovery) = open_c3(flash);
+    assert!(recovery.formatted);
+    assert_eq!((recovery.segments, recovery.newest_sequence), (0, None));
+    assert!(all_records(&mut storage).is_empty());
+    assert_eq!(
+        block_on(storage.stats()).unwrap().capacity_bytes,
+        126 * 4096
+    );
+    let mut writer = Writer::new(1, Compression::Lz4, LIMITS);
+    writer.push_many(&mut storage, 200).unwrap();
+    writer.flush(&mut storage).unwrap();
+
+    // The next start finds the header and keeps the history.
+    let mut flash = storage.into_medium().into_inner();
+    flash.budget = None;
+    let (mut storage, recovery) = open_c3(flash);
+    assert!(!recovery.formatted);
+    assert_contiguous(&all_records(&mut storage));
+    assert_eq!(all_records(&mut storage).len(), 200);
+
+    // Nothing below the region was touched: the partitions before it, the
+    // application included, are as they were. Above it there is no flash.
+    let flash = storage.into_medium().into_inner();
+    assert_eq!(flash.data[..C3_NEW_FIRST as usize * 4096], outside[..]);
+}
+
+#[test]
+fn a_format_of_the_resized_region_cut_by_a_power_loss_is_repeated_and_never_corrupts_the_neighbours()
+ {
+    for budget in [0usize, 1, 3, 4, 8, 12, 16, 19] {
+        let mut flash = c3_flash_with_the_former_log();
+        let outside = flash.data[..C3_NEW_FIRST as usize * 4096].to_vec();
+        // The header is the last write of a format: cut it.
+        flash.budget = Some(budget);
+        let medium = FlashMedium::new(flash, C3_NEW_FIRST * 4096, C3_NEW_SECTORS).unwrap();
+        let mut storage = RingStorage::new(medium);
+        assert!(block_on(storage.recover()).is_err(), "budget {budget}");
+
+        let mut flash = storage.into_medium().into_inner();
+        flash.budget = None;
+        let (mut storage, recovery) = open_c3(flash);
+        assert!(recovery.formatted, "budget {budget}: no valid header yet");
+        assert!(all_records(&mut storage).is_empty());
+        let mut writer = Writer::new(1, Compression::None, LIMITS);
+        writer.push_many(&mut storage, 50).unwrap();
+        writer.flush(&mut storage).unwrap();
+        let mut flash = storage.into_medium().into_inner();
+        flash.budget = None;
+        let (mut storage, recovery) = open_c3(flash);
+        assert!(!recovery.formatted);
+        assert_eq!(all_records(&mut storage).len(), 50);
+        let flash = storage.into_medium().into_inner();
+        assert_eq!(flash.data[..C3_NEW_FIRST as usize * 4096], outside[..]);
+    }
+}
+
+#[test]
+fn the_esp32c3_region_clears_and_wraps_with_the_default_segments_inside_its_bounds() {
+    let flash = c3_flash_with_the_former_log();
+    let (mut storage, _) = open_c3(flash);
+    let limits = Limits {
+        segment_bytes: 32 * 1024,
+        retention_bytes: 512 * 1024,
+    };
+    let mut writer = Writer::new(1, Compression::None, limits);
+    let mut most = 0;
+    for _ in 0..300 {
+        writer.push_many(&mut storage, 100).unwrap();
+        let stats = block_on(storage.stats()).unwrap();
+        assert!(stats.used_bytes <= 126 * 4096, "{stats:?}");
+        most = most.max(stats.segments);
+    }
+    assert!(most >= 15 && most as usize <= MAX_SEGMENTS, "{most}");
+    assert_contiguous(&all_records(&mut storage));
+    block_on(storage.clear()).unwrap();
+    assert!(all_records(&mut storage).is_empty());
+    let (mut storage, recovery) = open_c3(storage.into_medium().into_inner());
+    assert!(!recovery.formatted);
+    assert!(all_records(&mut storage).is_empty());
 }

@@ -449,6 +449,53 @@ async fn archive(bench: &Bench, name: &str) {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn the_tail_is_served_in_pages_of_at_most_512_bytes_and_continued_by_its_cursor() {
+    let bench = Bench::new();
+    bench.log(1, 40);
+    let (client, device) = link(244);
+    let controller = Controller::new(backend(&bench), OpenPolicy);
+    let mut server = ControlBle::new(device, &controller);
+    let pages = tokio::select! {
+        () = async { server.run().await } => unreachable!(),
+        pages = async {
+            let mut device = Device::new(client);
+            let mut pages = Vec::new();
+            let (mut session, mut cursor) = (0, 0);
+            loop {
+                let page = device.tail_logs("logging", session, cursor).await.unwrap();
+                if page.data.is_empty() {
+                    assert_eq!(page.cursor, cursor);
+                    break;
+                }
+                session = page.session;
+                cursor = page.cursor;
+                pages.push(page);
+            }
+            pages
+        } => pages,
+    };
+    // Sixteen records of about a hundred bytes need several pages.
+    assert!(pages.len() > 2, "{}", pages.len());
+    let mut sequences = Vec::new();
+    for page in &pages {
+        assert!(page.data.len() <= 512);
+        assert!(page.data.ends_with(b"\n"));
+        assert!(!page.reset);
+        assert_eq!((page.oldest_sequence, page.newest_sequence), (25, 40));
+        for line in std::str::from_utf8(&page.data).unwrap().lines() {
+            sequences.push(
+                rohi_logging::segment::text::parse_line(line)
+                    .unwrap()
+                    .sequence,
+            );
+        }
+        assert_eq!(page.cursor, *sequences.last().unwrap());
+    }
+    // No record is lost or repeated across the pages.
+    assert_eq!(sequences, (25..=40).collect::<Vec<_>>());
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn the_tail_never_touches_the_archive() {
     let bench = Bench::new();
     bench.log(1, 30);
@@ -464,7 +511,7 @@ async fn the_tail_never_touches_the_archive() {
 #[tokio::test(flavor = "current_thread")]
 async fn json_has_one_object_per_record_and_the_session_of_the_boot() {
     let bench = Bench::new();
-    bench.logging.set_boot_count(9);
+    bench.logging.set_session(9);
     bench.log(1, 5);
     let outcome = run(&bench, &["-o", "json", "logs", "-n", "2"]).await;
     outcome.ok();
@@ -550,12 +597,12 @@ async fn follow_says_when_records_were_overwritten_before_it_read_them() {
 #[tokio::test(flavor = "current_thread")]
 async fn follow_notices_a_restart_of_the_device_and_goes_on() {
     let bench = Bench::new();
-    bench.logging.set_boot_count(1);
+    bench.logging.set_session(1);
     bench.log(1, 5);
     let outcome = follow(&bench, &["logs", "-n", "1", "-f"], 5, async {
         tokio::time::sleep(Duration::from_millis(60)).await;
         // The device starts again: another session, a RAM tail of its own.
-        bench.logging.set_boot_count(2);
+        bench.logging.set_session(2);
         bench.log(6, 2);
     })
     .await;
@@ -860,36 +907,24 @@ async fn the_actions_are_ordinary_actions_of_the_logging_service() {
     let outcome = run(&bench, &["-o", "json", "action"]).await;
     outcome.ok();
     let text = outcome.stdout;
-    for name in ["tail", "download", "clear"] {
+    for name in ["download", "clear"] {
         assert!(text.contains(&format!("\"{name}\"")), "{text}");
     }
     assert!(text.contains("\"logging\""));
-
-    // Both action syntaxes write streams and release them after reading.
-    let read = run(
-        &bench,
-        &[
-            "action",
-            "logging",
-            "tail",
-            "session=0",
-            "after=0",
-            "limit=2",
-        ],
-    )
-    .await;
-    read.ok();
-    assert_eq!(read.lines().len(), 2);
-    let positional = run(&bench, &["logging", "tail", "0", "0", "2"]).await;
-    positional.ok();
-    assert_eq!(positional.lines().len(), 2);
+    // The tail is the `TailLogs` request, not an action and not a stream.
+    assert!(!text.contains("\"tail\""), "{text}");
+    let gone = run(&bench, &["action", "logging", "tail", "session=0"]).await;
+    assert!(gone.result.is_err());
 
     let download = run(&bench, &["logging", "download"]).await;
     download.ok();
     assert!(!download.stdout.is_empty());
-    // Repeated reads and downloads fit within the device's open-stream limit.
-    run(&bench, &["logs"]).await.ok();
-    run(&bench, &["logs"]).await.ok();
+    // Repeated reads and downloads fit within the device's open-stream limit,
+    // and reading the tail takes none.
+    for _ in 0..5 {
+        run(&bench, &["logs"]).await.ok();
+    }
+    run(&bench, &["logging", "download"]).await.ok();
     run(&bench, &["logging", "download"]).await.ok();
 }
 

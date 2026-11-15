@@ -42,6 +42,7 @@ use core::cell::Cell;
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_time::Delay;
+use esp_hal::rng::Rng;
 use log::{LevelFilter, Log, Metadata, Record, warn};
 use rohi_sdk::esp::config::FlashRegion;
 use rohi_sdk::esp::config::esp::PartitionError;
@@ -129,10 +130,16 @@ pub fn apply(config: LoggingConfig) {
     LOGGING.apply(config);
 }
 
-/// Gives the tail the boot counter as its session, once the configuration owner
-/// has counted this start, see [`crate::config::boot_count`].
-pub fn set_boot_count() {
-    LOGGING.set_boot_count(crate::config::boot_count().unwrap_or(0));
+/// Gives the tail a session of its own for this start: a word of the hardware
+/// RNG. It is deliberately not the boot counter. The counter lives in the
+/// configuration storage, which can fail to be read, written or have no room, and
+/// a counter that repeats would let a client take the records of a new boot for
+/// those of the old one. The RNG does not depend on any storage; it is a true
+/// random source while the radio runs and still differs from one start to the
+/// next before that. A client that holds the session of an earlier start sees
+/// `reset` and starts over; two starts share a session with a chance of 2^-32.
+fn set_session() {
+    LOGGING.set_session(Rng::new().random());
 }
 
 /// The level of the console, from `ESP_LOG` at build time (`INFO` if unset or
@@ -213,5 +220,6 @@ async fn logging_task() {
 /// does not stop the firmware: the service reports `storage_unavailable`.
 pub fn start(spawner: Spawner, flash: Flash, region: Result<FlashRegion, PartitionError>) {
     PARTITION.lock(|cell| cell.set(Some((flash, region))));
+    set_session();
     crate::tasks::spawn(spawner, "logging_task", logging_task());
 }

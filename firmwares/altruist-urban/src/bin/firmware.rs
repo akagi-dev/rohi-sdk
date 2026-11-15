@@ -97,7 +97,6 @@ async fn main(spawner: Spawner) -> ! {
         partitions.config,
         ConfigRuntime::new(wifi::handle(), logging::apply),
     );
-    logging::set_boot_count();
     // Identity is provisioned from the host, never generated; a fresh device
     // simply has none and keeps sensing.
     let identity = identity::start(config);

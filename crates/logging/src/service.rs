@@ -31,15 +31,15 @@ use heapless::Vec;
 use rohi_service::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, EnumDescriptor,
     FIRST_SERVICE_ISSUE, FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES,
-    MAX_STREAM_CHUNK, Service, ServiceHealth, ServiceState, ServiceSummary, Status, StatusWriter,
-    StreamChunk, StreamFile, StreamInfo, Unit, Value, ValueKind, WriteError,
+    MAX_STREAM_CHUNK, MAX_TAIL_CHUNK, Service, ServiceHealth, ServiceState, ServiceSummary, Status,
+    StatusWriter, StreamChunk, StreamFile, StreamInfo, TailPage, TailRequest, Unit, Value,
+    ValueKind, WriteError,
 };
 
 use crate::segment::{Batch, MAX_CHUNK_LEN, file_name};
 use crate::storage::{
     ChunkMeta, Limits, LogStorage, MAX_SEGMENTS, Recovery, SegmentId, StorageError, StorageStats,
 };
-use crate::tail::Overwritten;
 use crate::{
     Compression, LEVEL_ENUM, LEVELS, LogClock, LogRecord, LogSink, LogStorageKind, LoggingConfig,
 };
@@ -99,70 +99,16 @@ pub mod action {
     pub const DOWNLOAD: u32 = 2;
     /// Removes the history of the active backend.
     pub const CLEAR: u32 = 3;
-    /// Returns the latest records from the RAM tail, as a stream of text lines.
-    pub const TAIL: u32 = 4;
-}
-
-/// Field ids of the arguments of `tail`.
-pub mod tail_arg {
-    /// The `session` an earlier `tail` returned; 0 on the first request.
-    pub const SESSION: u32 = 1;
-    /// Records with a tail sequence above this are returned; 0 asks for the
-    /// latest records.
-    pub const AFTER: u32 = 2;
-    /// The most records returned, clamped to the depth of the RAM tail.
-    pub const LIMIT: u32 = 3;
-}
-
-/// Field ids of the result `tail` returns when there is nothing to stream.
-pub mod tail_result {
-    /// The session of this boot, the token to send in the next request.
-    pub const SESSION: u32 = 1;
-    /// Whether the request carried a session or a cursor of another boot.
-    pub const RESET: u32 = 2;
+    // Id 4 was `tail`, an action that returned a stream; the tail is the
+    // `TailLogs` request now, see `Action::tail_logs`. Ids are never reused.
 }
 
 /// How long an idle stream is kept before its segments are released.
 pub const STREAM_TIMEOUT_MS: u64 = 60_000;
 /// Records were dropped "recently" when the last drop is younger than this.
 pub const OVERFLOW_WINDOW_MS: u64 = 30_000;
-/// The longest name of the file `tail` returns.
-pub const MAX_TAIL_FILE_NAME_LEN: usize = 20;
-/// The id of the one file `tail` returns.
-pub const TAIL_FILE_ID: u32 = 1;
-
-/// The name of the file `tail` returns for the boot `session`: `tail-<session>.log`,
-/// or `reset-<session>.log` when the request did not belong to this boot.
-///
-/// The cursors of `tail` are tail sequences of one boot. The name tells which
-/// boot the records come from and whether the client has to start over.
-pub fn tail_file_name(session: u32, reset: bool) -> heapless::String<MAX_TAIL_FILE_NAME_LEN> {
-    use core::fmt::Write;
-    let mut name = heapless::String::new();
-    let _ = write!(
-        name,
-        "{}-{session}.log",
-        if reset { "reset" } else { "tail" }
-    );
-    name
-}
-
-/// The session and the reset flag of the file name of `tail`, see
-/// [`tail_file_name`].
-pub fn parse_tail_file_name(name: &str) -> Option<(u32, bool)> {
-    let stem = name.strip_suffix(".log")?;
-    let (session, reset) = match stem.strip_prefix("tail-") {
-        Some(session) => (session, false),
-        None => (stem.strip_prefix("reset-")?, true),
-    };
-    Some((session.parse().ok()?, reset))
-}
-
 // Streams that pin segments of the archive: `download`.
 const MAX_STREAMS: usize = 2;
-// Streams of `tail`, which hold a window of sequences and nothing else. A new
-// one replaces the oldest when the table is full, so they never block a download.
-pub const MAX_TAIL_STREAMS: usize = 2;
 const RETRY_MS: u64 = 10_000;
 
 // The reports are kept out of line: they run once in a while, and inlined into
@@ -316,10 +262,10 @@ fn warn_action(what: &str, key: &str, detail: &dyn core::fmt::Debug) {
 #[inline(never)]
 // Trace, not debug: a client that follows the tail polls every second, and a
 // record per poll would feed the tail it reads.
-fn trace_tail(session: u64, after: u64, count: u64, reset: bool, stream: u32) {
+fn trace_tail(session: u32, after: u64, len: usize, reset: bool, gap: u64) {
     log::trace!(
         target: "logging",
-        "Tail served (session={session} after={after} count={count} reset={reset} stream={stream})"
+        "Tail served (session={session} after={after} size_b={len} reset={reset} gap={gap})"
     );
 }
 
@@ -352,6 +298,10 @@ fn warn_boot_records_too_large() {
 const PINNED_RETRY_MS: u64 = 1_000;
 const SWEEP_MS: u64 = 10_000;
 const FLUSH_BYTES: usize = 1_536;
+
+// The shortest page the tail serves: the longest line without a message.
+const MIN_TAIL_CHUNK: usize = crate::segment::text::MIN_WITHIN_LEN;
+const _: () = assert!(MIN_TAIL_CHUNK < MAX_TAIL_CHUNK);
 
 /// Opens the backend a `storage` setting names.
 ///
@@ -398,16 +348,6 @@ struct Open {
     deadline_ms: u64,
 }
 
-// A window of the RAM tail. The records are copied out when they are read, so
-// it pins nothing and holds no text; it is a table of its own so that its slots
-// do not have the size of a download.
-struct TailOpen {
-    id: u32,
-    first: u64,
-    count: u64,
-    deadline_ms: u64,
-}
-
 struct State {
     config: LoggingConfig,
     started: bool,
@@ -418,7 +358,6 @@ struct State {
     active: Option<LogStorageKind>,
     lost: u64,
     streams: Vec<Open, MAX_STREAMS>,
-    tails: Vec<TailOpen, MAX_TAIL_STREAMS>,
     next_stream: u32,
     release_all: bool,
 }
@@ -505,7 +444,6 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize>
                 active: None,
                 lost: 0,
                 streams: Vec::new(),
-                tails: Vec::new(),
                 next_stream: 1,
                 release_all: false,
             })),
@@ -532,11 +470,13 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize>
         &self.sink
     }
 
-    /// Identifies this boot to a client of `logging.tail`: pass a number that
-    /// differs on every boot, the boot counter of the `system` service. Call it
-    /// before the first request; 0 is stored as 1.
-    pub fn set_boot_count(&self, count: u32) {
-        self.sink.set_tail_session(count);
+    /// Identifies this boot to a client of the tail: pass a token that differs
+    /// on every boot and does not depend on storage that can fail (the boot
+    /// counter of the `system` service can; see
+    /// [`set_tail_session`](LogSink::set_tail_session)). Call it before the
+    /// first request; 0 is stored as 1.
+    pub fn set_session(&self, session: u32) {
+        self.sink.set_tail_session(session);
     }
 
     /// The service for the status and action registries.
@@ -747,10 +687,9 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize>
         let now = self.now();
         let (pins, released) = self.with(|state| {
             let all = all || core::mem::take(&mut state.release_all);
-            let before = state.streams.len() + state.tails.len();
+            let before = state.streams.len();
             let pins = state.release(|stream| all || stream.deadline_ms <= now);
-            state.tails.retain(|tail| !(all || tail.deadline_ms <= now));
-            (pins, before - state.streams.len() - state.tails.len())
+            (pins, before - state.streams.len())
         });
         if released > 0 {
             debug_released(released, pins.len());
@@ -947,7 +886,7 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize>
         if inner.storage.is_none() || inner.faulted {
             at(inner.retry_at_ms);
         }
-        if self.with(|state| !state.streams.is_empty() || !state.tails.is_empty()) {
+        if self.with(|state| !state.streams.is_empty()) {
             at(now + SWEEP_MS);
         }
         wait
@@ -1150,47 +1089,16 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize> A
     const ACTIONS: &'static [ActionDescriptor] = &[
         ActionDescriptor::new(action::DOWNLOAD, "download", ActionAccess::Read).stream(),
         ActionDescriptor::new(action::CLEAR, "clear", ActionAccess::Mutate),
-        ActionDescriptor::new(action::TAIL, "tail", ActionAccess::Read)
-            .args(&[
-                FieldDescriptor::new(tail_arg::SESSION, "session", ValueKind::U64),
-                FieldDescriptor::new(tail_arg::AFTER, "after", ValueKind::U64),
-                FieldDescriptor::new(tail_arg::LIMIT, "limit", ValueKind::U64),
-            ])
-            .results(&[
-                FieldDescriptor::new(tail_result::SESSION, "session", ValueKind::U64),
-                FieldDescriptor::new(tail_result::RESET, "reset", ValueKind::Bool),
-            ])
-            .stream(),
     ];
 
     async fn invoke(
         &self,
         action: u32,
-        args: &[(u32, Value)],
+        _args: &[(u32, Value)],
         out: &mut impl ActionOutput,
     ) -> Result<(), ActionError> {
         let logging = self.0;
         match action {
-            action::TAIL => {
-                let number = |id| {
-                    args.iter()
-                        .find(|(field, _)| *field == id)
-                        .and_then(|(_, value)| value.as_u64())
-                };
-                let (Some(session), Some(after), Some(limit)) = (
-                    number(tail_arg::SESSION),
-                    number(tail_arg::AFTER),
-                    number(tail_arg::LIMIT),
-                ) else {
-                    debug_action(
-                        "Tail rejected: missing or invalid argument",
-                        "err",
-                        &ActionError::InvalidArgument,
-                    );
-                    return Err(ActionError::InvalidArgument);
-                };
-                logging.tail(session, after, limit, out)
-            }
             action::DOWNLOAD => {
                 let info = logging.download().await?;
                 out.stream(info).map_err(|_| ActionError::Internal)
@@ -1222,6 +1130,10 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize> A
         self.0.with(|state| state.release_all = true);
         self.0.wake.signal(());
     }
+
+    fn tail_logs(&self, request: TailRequest, buf: &mut [u8]) -> Result<TailPage, ActionError> {
+        self.0.tail_logs(request, buf)
+    }
 }
 
 impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize>
@@ -1252,82 +1164,25 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize>
         })
     }
 
-    // A tail stream pins nothing: when the table is full the oldest one is
-    // replaced, so a tail never blocks and never needs a download to end.
-    fn register_tail(&self, first: u64, count: u64) -> Result<u32, ActionError> {
-        let deadline_ms = self.now() + STREAM_TIMEOUT_MS;
-        self.with(|state| {
-            if state.tails.is_full() {
-                state.tails.remove(0);
-            }
-            let id = state.next_stream;
-            state
-                .tails
-                .push(TailOpen {
-                    id,
-                    first,
-                    count,
-                    deadline_ms,
-                })
-                .map_err(|_| ActionError::Busy)?;
-            state.next_stream = state.next_stream.checked_add(1).unwrap_or(1);
-            Ok(id)
-        })
-    }
-
-    // `tail` reads the RAM tail and nothing else: no storage, no commit, no
+    // The tail reads the RAM ring and nothing else: no storage, no commit, no
     // lock shared with the logging task, so it answers while the archive is
-    // busy, faulted or pinned by a download.
-    fn tail(
-        &self,
-        session: u64,
-        after: u64,
-        limit: u64,
-        out: &mut impl ActionOutput,
-    ) -> Result<(), ActionError> {
-        let current = self.sink.tail_session();
-        let page = self.sink.tail_page(session, after, limit);
-        if page.count == 0 {
-            out.u64(tail_result::SESSION, u64::from(current))
-                .and_then(|()| out.bool(tail_result::RESET, page.reset))
-                .map_err(|_| ActionError::Internal)?;
-            trace_tail(session, after, 0, page.reset, 0);
-            return Ok(());
+    // busy, faulted or pinned by a download, and a clear of the archive does
+    // not touch it. The page is written straight into `buf`.
+    fn tail_logs(&self, request: TailRequest, buf: &mut [u8]) -> Result<TailPage, ActionError> {
+        let len = buf.len().min(MAX_TAIL_CHUNK);
+        if len < MIN_TAIL_CHUNK {
+            debug_action("Tail rejected: buffer too small", "size_b", &buf.len());
+            return Err(ActionError::InvalidArgument);
         }
-        // The size of the text, counted without keeping any of it.
-        let total = match self.sink.tail_render(page.first, page.count, 0, &mut []) {
-            Ok(rendered) => rendered.total,
-            // The records were overwritten while the page was prepared.
-            Err(Overwritten) => return Err(ActionError::Busy),
-        };
-        let id = self.register_tail(page.first, page.count)?;
-        trace_tail(session, after, page.count, page.reset, id);
-        let name = tail_file_name(current, page.reset);
-        let info = Self::stream_info(id, &[(TAIL_FILE_ID, name.as_str(), total)])?;
-        out.stream(info).map_err(|_| {
-            self.release(id);
-            ActionError::Internal
-        })
-    }
-
-    fn release(&self, stream: u32) {
-        self.with(|state| {
-            state.streams.retain(|open| open.id != stream);
-            state.tails.retain(|open| open.id != stream);
-        });
-    }
-
-    fn stream_info(id: u32, files: &[(u32, &str, u64)]) -> Result<StreamInfo, ActionError> {
-        let mut list = Vec::new();
-        for (file, name, size) in files {
-            list.push(StreamFile {
-                id: *file,
-                name: heapless::String::try_from(*name).map_err(|_| ActionError::Internal)?,
-                size_bytes: *size,
-            })
-            .map_err(|_| ActionError::Internal)?;
-        }
-        Ok(StreamInfo { id, files: list })
+        let page = self.sink.tail_page(request, &mut buf[..len]);
+        trace_tail(
+            request.session,
+            request.after,
+            page.len,
+            page.reset,
+            page.gap,
+        );
+        Ok(page)
     }
 
     async fn download(&self) -> Result<StreamInfo, ActionError> {
@@ -1408,9 +1263,17 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize>
             );
             return Err(ActionError::Unavailable);
         }
-        // The archive is cleared: its downloads go, the RAM tail is not part of it.
-        let pins = self.with(|state| state.release(|_| true));
-        Self::unpin(&mut inner, &pins);
+        // A download holds the segments it was given, so it is not cut short: a
+        // stream that expired, or whose link was lost, is released first, and one
+        // that is still open makes the clear wait (`Busy`) before anything is
+        // changed. A download registers its stream under the same lock, so one
+        // cannot start between this check and the erase. The RAM tail is not part
+        // of the archive and is not touched.
+        self.release_streams(&mut inner, false);
+        if self.with(|state| !state.streams.is_empty()) {
+            debug_action("Clear rejected: a download is open", "max", &MAX_STREAMS);
+            return Err(ActionError::Busy);
+        }
         inner.batch.clear();
         // Records still waiting in RAM belong to the history being removed.
         inner.carry = None;
@@ -1451,10 +1314,6 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize>
         let now = self.now();
         let limit = buf.len().min(MAX_STREAM_CHUNK);
         let buf = &mut buf[..limit];
-        enum Source {
-            Segment(SegmentId, u32),
-            Tail(u64, u64),
-        }
         let source = self.with(|state| {
             if let Some(entry) = state
                 .streams
@@ -1469,102 +1328,47 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize>
                 if offset > u64::from(size) {
                     return Err(ActionError::InvalidArgument);
                 }
-                return Ok(Source::Segment(segment, size));
+                return Ok((segment, size));
             }
-            let entry = state
-                .tails
-                .iter_mut()
-                .find(|entry| entry.id == stream && entry.deadline_ms > now)
-                .ok_or(ActionError::UnknownStream)?;
-            entry.deadline_ms = now + STREAM_TIMEOUT_MS;
-            if file != TAIL_FILE_ID {
-                return Err(ActionError::UnknownStream);
-            }
-            Ok(Source::Tail(entry.first, entry.count))
+            Err(ActionError::UnknownStream)
         });
-        let source = match source {
+        let (segment, size) = match source {
             Ok(source) => source,
             Err(error) => {
                 debug_action("Stream read rejected", "err", &error);
                 return Err(error);
             }
         };
-        match source {
-            Source::Tail(first, count) => {
-                let rendered =
-                    self.sink
-                        .tail_render(first, count, offset, buf)
-                        .map_err(|Overwritten| {
-                            // The records of the window are gone: the client asks again.
-                            self.release(stream);
-                            debug_action(
-                                "Tail stream read rejected: overwritten",
-                                "stream",
-                                &stream,
-                            );
-                            ActionError::UnknownStream
-                        })?;
-                if offset > rendered.total {
-                    return Err(ActionError::InvalidArgument);
-                }
-                Ok(StreamChunk {
-                    len: rendered.filled,
-                    eof: offset + rendered.filled as u64 >= rendered.total,
-                })
-            }
-            Source::Segment(segment, size) => {
-                let mut inner = self.inner.lock().await;
-                let Some(storage) = inner.storage.as_mut() else {
-                    debug_action("Stream read rejected: no storage", "stream", &stream);
-                    return Err(ActionError::UnknownStream);
-                };
-                let wanted = buf.len().min((u64::from(size) - offset) as usize);
-                let len = storage
-                    .read(segment, offset as u32, &mut buf[..wanted])
-                    .await
-                    .map_err(|error| {
-                        warn_storage("read stream segment", &error);
-                        ActionError::Internal
-                    })?;
-                Ok(StreamChunk {
-                    len,
-                    eof: offset + len as u64 >= u64::from(size),
-                })
-            }
-        }
+        let mut inner = self.inner.lock().await;
+        let Some(storage) = inner.storage.as_mut() else {
+            debug_action("Stream read rejected: no storage", "stream", &stream);
+            return Err(ActionError::UnknownStream);
+        };
+        let wanted = buf.len().min((u64::from(size) - offset) as usize);
+        let len = storage
+            .read(segment, offset as u32, &mut buf[..wanted])
+            .await
+            .map_err(|error| {
+                warn_storage("read stream segment", &error);
+                ActionError::Internal
+            })?;
+        Ok(StreamChunk {
+            len,
+            eof: offset + len as u64 >= u64::from(size),
+        })
     }
 
     async fn close_stream(&self, stream: u32) -> Result<(), ActionError> {
-        let pinning = self.with(|state| {
-            if state.streams.iter().any(|entry| entry.id == stream) {
-                Some(true)
-            } else {
-                state
-                    .tails
-                    .iter()
-                    .any(|entry| entry.id == stream)
-                    .then_some(false)
-            }
-        });
-        match pinning {
-            None => {
-                debug_action("Stream close rejected: unknown stream", "stream", &stream);
-                return Err(ActionError::UnknownStream);
-            }
-            Some(false) => {
-                // A tail stream holds nothing the logging task waits for.
-                self.with(|state| state.tails.retain(|entry| entry.id != stream));
-                return Ok(());
-            }
-            Some(true) => {
-                // The storage first, then the stream is removed and its segments
-                // are unpinned without waiting in between: a caller that gives up
-                // while waiting leaves the stream to expire, with its pins.
-                let mut inner = self.inner.lock().await;
-                let pins = self.with(|state| state.release(|entry| entry.id == stream));
-                Self::unpin(&mut inner, &pins);
-            }
+        if !self.with(|state| state.streams.iter().any(|entry| entry.id == stream)) {
+            debug_action("Stream close rejected: unknown stream", "stream", &stream);
+            return Err(ActionError::UnknownStream);
         }
+        // The storage first, then the stream is removed and its segments
+        // are unpinned without waiting in between: a caller that gives up
+        // while waiting leaves the stream to expire, with its pins.
+        let mut inner = self.inner.lock().await;
+        let pins = self.with(|state| state.release(|entry| entry.id == stream));
+        Self::unpin(&mut inner, &pins);
         debug_action("Stream closed", "stream", &stream);
         self.wake.signal(());
         Ok(())
@@ -1586,7 +1390,7 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize>
     }
 
     pub(crate) fn open_streams(&self) -> usize {
-        self.with(|state| state.streams.len() + state.tails.len())
+        self.with(|state| state.streams.len())
     }
 
     /// How many segments the storage keeps pinned.

@@ -26,8 +26,9 @@ use std::vec::Vec;
 use embassy_futures::block_on;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use rohi_service::{
-    Action, ActionAccess, ActionError, ActionRegistry, ActionResult, MAX_STREAM_CHUNK, Service,
-    ServiceHealth, ServiceState, Status, StatusRegistry, StatusWriter, Statuses, Value, WriteError,
+    Action, ActionAccess, ActionError, ActionRegistry, ActionResult, MAX_STREAM_CHUNK,
+    MAX_TAIL_CHUNK, Service, ServiceHealth, ServiceState, Status, StatusRegistry, StatusWriter,
+    Statuses, TailPage, TailRequest, Value, WriteError,
 };
 use rohi_time::UnixTime;
 
@@ -209,14 +210,6 @@ fn settle(rig: &Rig, logging: &TestLogging<'_>) {
     panic!("the queue does not drain");
 }
 
-fn args(session: u64, after: u64, limit: u64) -> [(u32, Value); 3] {
-    [
-        (tail_arg::SESSION, Value::U64(session)),
-        (tail_arg::AFTER, Value::U64(after)),
-        (tail_arg::LIMIT, Value::U64(limit)),
-    ]
-}
-
 fn invoke(
     logging: &TestLogging<'_>,
     action: u32,
@@ -319,8 +312,7 @@ fn the_service_is_a_normal_service_with_a_valid_schema() {
         names,
         [
             ("download", ActionAccess::Read, true),
-            ("clear", ActionAccess::Mutate, false),
-            ("tail", ActionAccess::Read, true)
+            ("clear", ActionAccess::Mutate, false)
         ]
     );
 }
@@ -383,41 +375,6 @@ fn a_record_waits_for_the_flush_interval_unless_a_read_wants_it() {
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].message.as_str(), "first");
     assert_eq!(number(&logging, status_field::STORED_RECORDS), Some(1));
-}
-
-#[test]
-fn a_tail_stream_is_retryable_by_offset_and_ends() {
-    let rig = Rig::new();
-    let logging = rig.logging(CONFIG);
-    log_many(&logging, 10, 1);
-    let info = stream_of(invoke(&logging, action::TAIL, &args(0, 0, 10)));
-    let service = logging.service();
-    let mut first = [0u8; 64];
-    let mut again = [0u8; 64];
-    let a = block_on(service.read_stream(info.id, TAIL_FILE_ID, 20, &mut first)).unwrap();
-    let b = block_on(service.read_stream(info.id, TAIL_FILE_ID, 20, &mut again)).unwrap();
-    assert_eq!((a.len, a.eof), (b.len, b.eof));
-    assert_eq!(first[..a.len], again[..b.len]);
-    let size = info.files[0].size_bytes;
-    let end = block_on(service.read_stream(info.id, TAIL_FILE_ID, size, &mut first)).unwrap();
-    assert_eq!((end.len, end.eof), (0, true));
-    assert_eq!(
-        block_on(service.read_stream(info.id, TAIL_FILE_ID, size + 1, &mut first)),
-        Err(ActionError::InvalidArgument)
-    );
-    assert_eq!(
-        block_on(service.read_stream(info.id, 9, 0, &mut first)),
-        Err(ActionError::UnknownStream)
-    );
-    assert_eq!(
-        block_on(service.read_stream(info.id + 7, TAIL_FILE_ID, 0, &mut first)),
-        Err(ActionError::UnknownStream)
-    );
-    block_on(service.close_stream(info.id)).unwrap();
-    assert_eq!(
-        block_on(service.close_stream(info.id)),
-        Err(ActionError::UnknownStream)
-    );
 }
 
 #[test]
@@ -678,8 +635,8 @@ fn too_many_streams_are_busy_until_one_is_closed() {
         invoke(&logging, action::DOWNLOAD, &[]).err(),
         Some(ActionError::Busy)
     );
-    // Tail streams pin nothing and have a table of their own.
-    assert!(invoke(&logging, action::TAIL, &args(0, 0, 5)).is_ok());
+    // The tail is no stream: it needs no slot of the table.
+    assert_eq!(tail_page(&logging, 0, 0, MAX_TAIL_CHUNK).1.len(), 5);
     block_on(logging.service().close_stream(second.id)).unwrap();
     assert!(invoke(&logging, action::DOWNLOAD, &[]).is_ok());
     block_on(logging.service().close_stream(first.id)).unwrap();
@@ -783,7 +740,7 @@ fn an_unavailable_backend_is_reported_and_never_replaced_by_another() {
         Some(ActionError::Unavailable)
     );
     // The RAM tail does not need the storage.
-    assert!(invoke(&logging, action::TAIL, &args(0, 0, 5)).is_ok());
+    assert!(!tail_page(&logging, 0, 0, MAX_TAIL_CHUNK).1.is_empty());
     assert_eq!(
         invoke(&logging, action::DOWNLOAD, &[]).err(),
         Some(ActionError::Unavailable)
@@ -964,7 +921,7 @@ fn damaged_storage_does_not_stop_the_log_and_is_reported() {
 }
 
 #[test]
-fn clear_mutates_and_tail_does_not() {
+fn clear_mutates_and_download_reads() {
     let actions = <LoggingService<'_, NoopRawMutex, &Clock, Test, 64, 8> as Action>::ACTIONS;
     let access = |id| {
         actions
@@ -974,7 +931,6 @@ fn clear_mutates_and_tail_does_not() {
             .access
     };
     assert_eq!(access(action::CLEAR), ActionAccess::Mutate);
-    assert_eq!(access(action::TAIL), ActionAccess::Read);
     assert_eq!(access(action::DOWNLOAD), ActionAccess::Read);
 }
 
@@ -983,10 +939,6 @@ fn bad_arguments_are_refused() {
     let rig = Rig::new();
     let logging = rig.logging(CONFIG);
     step(&rig, &logging);
-    assert_eq!(
-        invoke(&logging, action::TAIL, &[(tail_arg::AFTER, Value::U64(0))]).err(),
-        Some(ActionError::InvalidArgument)
-    );
     assert_eq!(
         invoke(&logging, 99, &[]).err(),
         Some(ActionError::UnknownAction)
@@ -1136,8 +1088,7 @@ fn a_damaged_segment_does_not_touch_the_tail() {
     assert!(logging.archive(0, 200).is_none());
 
     // The tail is RAM: it does not decode anything.
-    let info = stream_of(invoke(&logging, action::TAIL, &args(0, 0, 8)));
-    assert_eq!(parse(&read_all(&logging, &info, TAIL_FILE_ID)).len(), 8);
+    assert_eq!(tailed(&logging, 0, 0).len(), 8);
     assert!(issues(&logging).is_empty());
 }
 
@@ -1299,29 +1250,183 @@ fn clear_without_open_streams_pins_and_releases_nothing() {
 }
 
 #[test]
-fn clear_releases_downloads_and_leaves_tail_streams_alone() {
+fn clear_is_busy_while_a_download_is_open_and_changes_nothing() {
     for downloads in [1, 2] {
         let rig = Rig::new();
         let logging = rig.logging(CONFIG);
         many_segments(&rig, &logging);
+        let stored = number(&logging, status_field::STORED_RECORDS);
+        let history = number(&logging, status_field::HISTORY);
+        let oldest = number(&logging, status_field::OLDEST_SEQUENCE);
 
         let mut streams = Vec::new();
         for _ in 0..downloads {
-            streams.push(stream_of(invoke(&logging, action::DOWNLOAD, &[])).id);
+            streams.push(stream_of(invoke(&logging, action::DOWNLOAD, &[])));
         }
-        assert!(logging.pinned_segments() > 0);
-        let tail = stream_of(invoke(&logging, action::TAIL, &args(0, 0, 5))).id;
-        assert_eq!(logging.open_streams(), downloads + 1);
+        let pinned = logging.pinned_segments();
+        assert!(pinned > 0);
 
-        assert!(invoke(&logging, action::CLEAR, &[]).is_ok());
-        assert_eq!((logging.open_streams(), logging.pins()), (1, 0));
-        assert_eq!(logging.pinned_segments(), 0);
-        assert!(streams.iter().all(|stream| is_gone(&logging, *stream)));
-        assert!(!is_gone(&logging, tail));
-        // The download table is free again.
-        let again = stream_of(invoke(&logging, action::DOWNLOAD, &[]));
-        block_on(logging.service().close_stream(again.id)).unwrap();
+        // Refused, repeatedly, with the archive, the downloads and the pins intact.
+        for _ in 0..3 {
+            assert_eq!(
+                invoke(&logging, action::CLEAR, &[]).err(),
+                Some(ActionError::Busy)
+            );
+        }
+        assert_eq!(logging.open_streams(), downloads);
+        assert_eq!(logging.pinned_segments(), pinned);
+        assert!(streams.iter().all(|stream| !is_gone(&logging, stream.id)));
+        assert_eq!(number(&logging, status_field::STORED_RECORDS), stored);
+        assert_eq!(number(&logging, status_field::HISTORY), history);
+        assert_eq!(number(&logging, status_field::OLDEST_SEQUENCE), oldest);
+        // The download is still readable, whole.
+        for stream in &streams {
+            let data = read_all(&logging, stream, 1);
+            assert_eq!(data.len() as u64, stream.files[0].size_bytes);
+        }
+        assert!(issues(&logging).is_empty());
     }
+}
+
+#[test]
+fn clear_works_once_the_last_download_is_closed() {
+    let rig = Rig::new();
+    let logging = rig.logging(CONFIG);
+    many_segments(&rig, &logging);
+    let first = stream_of(invoke(&logging, action::DOWNLOAD, &[]));
+    let second = stream_of(invoke(&logging, action::DOWNLOAD, &[]));
+    let service = logging.service();
+
+    block_on(service.close_stream(first.id)).unwrap();
+    assert_eq!(
+        invoke(&logging, action::CLEAR, &[]).err(),
+        Some(ActionError::Busy)
+    );
+    block_on(service.close_stream(second.id)).unwrap();
+    assert!(invoke(&logging, action::CLEAR, &[]).is_ok());
+    assert_eq!(number(&logging, status_field::STORED_RECORDS), Some(0));
+    assert_eq!((logging.open_streams(), logging.pinned_segments()), (0, 0));
+    // The download table is free again.
+    let again = stream_of(invoke(&logging, action::DOWNLOAD, &[]));
+    block_on(service.close_stream(again.id)).unwrap();
+}
+
+#[test]
+fn clear_works_after_an_idle_download_expired_before_the_task_noticed() {
+    let rig = Rig::new();
+    let logging = rig.logging(CONFIG);
+    many_segments(&rig, &logging);
+    let download = stream_of(invoke(&logging, action::DOWNLOAD, &[]));
+    // Not yet expired: refused.
+    rig.advance(STREAM_TIMEOUT_MS - 1_000);
+    assert_eq!(
+        invoke(&logging, action::CLEAR, &[]).err(),
+        Some(ActionError::Busy)
+    );
+    // Expired, and the logging task has not run to sweep it: the clear does.
+    rig.advance(2_000);
+    assert!(invoke(&logging, action::CLEAR, &[]).is_ok());
+    assert!(is_gone(&logging, download.id));
+    assert_eq!((logging.open_streams(), logging.pinned_segments()), (0, 0));
+    assert_eq!(number(&logging, status_field::STORED_RECORDS), Some(0));
+}
+
+#[test]
+fn a_read_keeps_a_download_alive_and_so_keeps_clear_waiting() {
+    let rig = Rig::new();
+    let logging = rig.logging(CONFIG);
+    many_segments(&rig, &logging);
+    let download = stream_of(invoke(&logging, action::DOWNLOAD, &[]));
+    for _ in 0..4 {
+        rig.advance(STREAM_TIMEOUT_MS * 6 / 10);
+        let mut chunk = [0u8; 16];
+        block_on(logging.service().read_stream(download.id, 1, 0, &mut chunk)).unwrap();
+        assert_eq!(
+            invoke(&logging, action::CLEAR, &[]).err(),
+            Some(ActionError::Busy)
+        );
+    }
+    block_on(logging.service().close_stream(download.id)).unwrap();
+    assert!(invoke(&logging, action::CLEAR, &[]).is_ok());
+}
+
+#[test]
+fn clear_works_after_the_link_that_held_a_download_was_lost() {
+    let rig = Rig::new();
+    let logging = rig.logging(CONFIG);
+    many_segments(&rig, &logging);
+    let download = stream_of(invoke(&logging, action::DOWNLOAD, &[]));
+    logging.service().link_lost();
+    // Whether or not the task has run since.
+    assert!(invoke(&logging, action::CLEAR, &[]).is_ok());
+    assert!(is_gone(&logging, download.id));
+    assert_eq!((logging.open_streams(), logging.pinned_segments()), (0, 0));
+}
+
+#[test]
+fn a_download_and_a_clear_started_together_do_not_interleave() {
+    use embassy_futures::join::join;
+    for download_first in [true, false] {
+        let rig = Rig::new();
+        let logging = rig.logging(CONFIG);
+        many_segments(&rig, &logging);
+        let before = number(&logging, status_field::STORED_RECORDS).unwrap();
+        assert!(before > 0);
+        let service = logging.service();
+        let registry = (&service,);
+        let id = <LoggingService<'_, NoopRawMutex, &Clock, Test, 64, 8> as Service>::ID;
+        let download = registry.invoke(id, action::DOWNLOAD, &[]);
+        let clear = registry.invoke(id, action::CLEAR, &[]);
+        let (download, clear) = if download_first {
+            block_on(join(download, clear))
+        } else {
+            let (clear, download) = block_on(join(clear, download));
+            (download, clear)
+        };
+        let download = match download.unwrap() {
+            ActionResult::Stream(info) => info,
+            other => panic!("{other:?}"),
+        };
+        if download_first {
+            // The download got the archive first: the clear waits and nothing is lost.
+            assert_eq!(clear.err(), Some(ActionError::Busy));
+            assert_eq!(number(&logging, status_field::STORED_RECORDS), Some(before));
+            assert_eq!(download.files.len(), logging.pins());
+            assert!(!download.files.is_empty());
+            block_on(logging.service().close_stream(download.id)).unwrap();
+        } else {
+            // The clear came first: the download then sees the empty archive.
+            assert!(clear.is_ok());
+            assert_eq!(number(&logging, status_field::STORED_RECORDS), Some(0));
+            assert!(download.files.is_empty());
+            block_on(logging.service().close_stream(download.id)).unwrap();
+        }
+        assert_eq!((logging.open_streams(), logging.pinned_segments()), (0, 0));
+    }
+}
+
+#[test]
+fn concurrent_download_attempts_are_bounded_and_block_the_clear_until_closed() {
+    let rig = Rig::new();
+    let logging = rig.logging(CONFIG);
+    many_segments(&rig, &logging);
+    let first = stream_of(invoke(&logging, action::DOWNLOAD, &[]));
+    let second = stream_of(invoke(&logging, action::DOWNLOAD, &[]));
+    for _ in 0..3 {
+        assert_eq!(
+            invoke(&logging, action::DOWNLOAD, &[]).err(),
+            Some(ActionError::Busy)
+        );
+    }
+    assert_eq!(
+        invoke(&logging, action::CLEAR, &[]).err(),
+        Some(ActionError::Busy)
+    );
+    assert_eq!(logging.open_streams(), 2);
+    let service = logging.service();
+    block_on(service.close_stream(first.id)).unwrap();
+    block_on(service.close_stream(second.id)).unwrap();
+    assert!(invoke(&logging, action::CLEAR, &[]).is_ok());
 }
 
 #[test]
@@ -1378,39 +1483,39 @@ fn a_lost_link_releases_every_stream_at_once() {
     let logging = rig.logging(CONFIG);
     many_segments(&rig, &logging);
     let download = stream_of(invoke(&logging, action::DOWNLOAD, &[]));
-    let read = stream_of(invoke(&logging, action::TAIL, &args(0, 0, 5)));
+    let other = stream_of(invoke(&logging, action::DOWNLOAD, &[]));
     assert_eq!(logging.open_streams(), 2);
 
     logging.service().link_lost();
     block_on(logging.step());
     assert_eq!((logging.open_streams(), logging.pins()), (0, 0));
     assert_eq!(logging.pinned_segments(), 0);
-    assert!(is_gone(&logging, download.id) && is_gone(&logging, read.id));
+    assert!(is_gone(&logging, download.id) && is_gone(&logging, other.id));
 }
 
 #[test]
 fn closing_streams_in_any_order_leaves_the_other_one_intact() {
-    for close_records_first in [true, false] {
+    for close_first_one_first in [true, false] {
         let rig = Rig::new();
         let logging = rig.logging(CONFIG);
         many_segments(&rig, &logging);
-        let records = stream_of(invoke(&logging, action::TAIL, &args(0, 0, 5)));
-        let files = stream_of(invoke(&logging, action::DOWNLOAD, &[]));
+        let first = stream_of(invoke(&logging, action::DOWNLOAD, &[]));
+        let second = stream_of(invoke(&logging, action::DOWNLOAD, &[]));
         let pinned = logging.pinned_segments();
-        assert_eq!(pinned, files.files.len());
-        let expected = read_all(&logging, &records, 1);
+        assert_eq!(pinned, first.files.len());
+        let expected = read_all(&logging, &first, 1);
         let service = logging.service();
 
-        if close_records_first {
-            block_on(service.close_stream(records.id)).unwrap();
+        if close_first_one_first {
+            block_on(service.close_stream(first.id)).unwrap();
             assert_eq!(logging.pinned_segments(), pinned);
-            assert!(!read_all(&logging, &files, 1).is_empty());
-            block_on(service.close_stream(files.id)).unwrap();
+            assert!(!read_all(&logging, &second, 1).is_empty());
+            block_on(service.close_stream(second.id)).unwrap();
         } else {
-            block_on(service.close_stream(files.id)).unwrap();
-            assert_eq!(logging.pinned_segments(), 0);
-            assert_eq!(read_all(&logging, &records, 1), expected);
-            block_on(service.close_stream(records.id)).unwrap();
+            block_on(service.close_stream(second.id)).unwrap();
+            assert_eq!(logging.pinned_segments(), pinned);
+            assert_eq!(read_all(&logging, &first, 1), expected);
+            block_on(service.close_stream(first.id)).unwrap();
         }
         assert_eq!((logging.open_streams(), logging.pinned_segments()), (0, 0));
     }
@@ -1442,7 +1547,11 @@ fn repeated_clear_and_logging_after_it_keeps_working() {
     for round in 0..3 {
         many_segments(&rig, &logging);
         let download = stream_of(invoke(&logging, action::DOWNLOAD, &[]));
-        let records = stream_of(invoke(&logging, action::TAIL, &args(0, 0, 3)));
+        assert_eq!(
+            invoke(&logging, action::CLEAR, &[]).err(),
+            Some(ActionError::Busy)
+        );
+        block_on(logging.service().close_stream(download.id)).unwrap();
         assert!(
             invoke(&logging, action::CLEAR, &[]).is_ok(),
             "round {round}"
@@ -1452,8 +1561,7 @@ fn repeated_clear_and_logging_after_it_keeps_working() {
             "round {round}"
         );
         assert_eq!(logging.pinned_segments(), 0);
-        assert!(is_gone(&logging, download.id) && !is_gone(&logging, records.id));
-        block_on(logging.service().close_stream(records.id)).unwrap();
+        assert!(is_gone(&logging, download.id));
         assert!(read_in_history(&logging, 0).1.is_empty());
 
         log_many(&logging, 3, 1);
@@ -1732,163 +1840,188 @@ fn a_download_that_pins_the_ring_defers_the_records_without_writing_them() {
     );
 }
 
-// The RAM tail: `logging.tail`.
+// The RAM tail: the `TailLogs` request.
 
-fn tail_args(session: u64, after: u64, limit: u64) -> [(u32, Value); 3] {
-    args(session, after, limit)
+/// A page of the tail through the registry, the way the controller asks for it.
+fn tail_page(
+    logging: &TestLogging<'_>,
+    session: u32,
+    after: u64,
+    room: usize,
+) -> (TailPage, Vec<LogRecord>) {
+    let service = logging.service();
+    let registry = (&service,);
+    let mut buf = std::vec![0u8; room];
+    let page = registry
+        .tail_logs(
+            <LoggingService<'_, NoopRawMutex, &Clock, Test, 64, 8> as Service>::ID,
+            TailRequest { session, after },
+            &mut buf,
+        )
+        .unwrap();
+    let text = std::str::from_utf8(&buf[..page.len]).unwrap();
+    assert!(text.is_empty() || text.ends_with('\n'), "whole lines only");
+    (page, parse(text.as_bytes()))
 }
 
-/// What `tail` answers.
-enum Tailed {
-    /// Lines, with the session and the reset flag of the file name.
-    Lines(u32, bool, Vec<LogRecord>),
-    /// Nothing to stream: the session and the reset flag of the record.
-    Empty(u64, bool),
-}
-
-fn tail_call(logging: &TestLogging<'_>, session: u64, after: u64, limit: u64) -> Tailed {
-    match invoke(logging, action::TAIL, &tail_args(session, after, limit)).unwrap() {
-        ActionResult::Stream(info) => {
-            assert_eq!(info.files.len(), 1);
-            let name = info.files[0].name.as_str();
-            let (session, reset) = parse_tail_file_name(name).unwrap();
-            let data = read_all(logging, &info, TAIL_FILE_ID);
-            assert_eq!(data.len() as u64, info.files[0].size_bytes);
-            block_on(logging.service().close_stream(info.id)).unwrap();
-            Tailed::Lines(session, reset, parse(&data))
+/// The records of the pages of `session` after `after`, until an empty page.
+fn tailed(logging: &TestLogging<'_>, session: u32, after: u64) -> Vec<LogRecord> {
+    let mut all = Vec::new();
+    let mut cursor = after;
+    let mut session = session;
+    for _ in 0..100 {
+        let (page, records) = tail_page(logging, session, cursor, MAX_TAIL_CHUNK);
+        assert!(!page.reset, "unexpected reset");
+        if records.is_empty() {
+            return all;
         }
-        ActionResult::Records(records) => {
-            assert_eq!(records.len(), 1);
-            let field = |id| {
-                records[0]
-                    .iter()
-                    .find(|(field, _)| *field == id)
-                    .map(|(_, value)| value.clone())
-            };
-            let reset = field(tail_result::RESET) == Some(Value::Bool(true));
-            let session = field(tail_result::SESSION).and_then(|value| value.as_u64());
-            Tailed::Empty(session.unwrap(), reset)
-        }
+        // The session of the first page is the one to follow.
+        session = page.session;
+        cursor = page.cursor;
+        all.extend(records);
     }
+    panic!("the tail does not end");
 }
 
-fn tailed(logging: &TestLogging<'_>, session: u64, after: u64, limit: u64) -> Vec<LogRecord> {
-    match tail_call(logging, session, after, limit) {
-        Tailed::Lines(_, false, records) => records,
-        Tailed::Empty(_, false) => Vec::new(),
-        _ => panic!("unexpected reset"),
-    }
-}
+/// The least page the service serves.
+const MIN_PAGE: usize = segment::text::MIN_WITHIN_LEN;
 
 fn sequences(records: &[LogRecord]) -> Vec<u64> {
     records.iter().map(|record| record.sequence).collect()
 }
 
 #[test]
-fn the_first_tail_is_the_latest_records_in_order_with_the_session_of_the_boot() {
+fn the_first_page_is_the_oldest_records_held_in_order_with_the_session_of_the_boot() {
     let rig = Rig::new();
     let logging = rig.logging(CONFIG);
-    logging.set_boot_count(7);
+    logging.set_session(7);
     log_many(&logging, 20, 1);
-    let Tailed::Lines(session, reset, records) = tail_call(&logging, 0, 0, 5) else {
-        panic!("lines expected");
-    };
-    assert_eq!((session, reset), (7, false));
-    assert_eq!(sequences(&records), [16, 17, 18, 19, 20]);
-    assert!(records[0].message.contains("record 16 "));
-    // More than the ring holds is the ring.
+    let (page, records) = tail_page(&logging, 0, 0, MAX_TAIL_CHUNK);
+    assert_eq!(page.session, 7);
+    assert_eq!((page.reset, page.gap), (false, 0));
+    let capacity = logging.sink().tail_capacity() as u64;
     assert_eq!(
-        tailed(&logging, 0, 0, 1_000).len(),
-        logging.sink().tail_capacity()
+        (page.oldest_sequence, page.newest_sequence),
+        (21 - capacity, 20)
+    );
+    // Whatever fits one page, from the oldest record held.
+    assert_eq!(records[0].sequence, 21 - capacity);
+    assert_eq!(page.cursor, records.last().unwrap().sequence);
+    assert!(
+        records[0]
+            .message
+            .contains(&std::format!("record {} ", 21 - capacity))
+    );
+    // The pages, followed to the end, are exactly the ring.
+    assert_eq!(
+        sequences(&tailed(&logging, 7, 0)),
+        (21 - capacity..=20).collect::<Vec<_>>()
     );
     assert_eq!(logging.sink().tail_session(), 7);
 }
 
 #[test]
-fn an_unknown_boot_count_still_gives_a_session() {
+fn a_session_is_never_zero() {
     let rig = Rig::new();
     let logging = rig.logging(CONFIG);
     log(&logging, "one");
-    assert!(matches!(
-        tail_call(&logging, 0, 0, 3),
-        Tailed::Lines(1, false, _)
-    ));
-    logging.set_boot_count(0);
+    assert_eq!(tail_page(&logging, 0, 0, MAX_TAIL_CHUNK).0.session, 1);
+    logging.set_session(0);
     assert_eq!(logging.sink().tail_session(), 1);
 }
 
 #[test]
-fn following_returns_each_record_once_and_an_empty_poll_is_a_record() {
+fn following_returns_each_record_once_and_an_idle_poll_is_an_empty_page() {
     let rig = Rig::new();
     let logging = rig.logging(CONFIG);
-    logging.set_boot_count(3);
-    // Nothing yet: no stream, only the session.
-    assert!(matches!(
-        tail_call(&logging, 0, 0, 8),
-        Tailed::Empty(3, false)
-    ));
+    logging.set_session(3);
+    let (idle, records) = tail_page(&logging, 0, 0, MAX_TAIL_CHUNK);
+    assert!(records.is_empty());
+    assert_eq!(
+        (idle.session, idle.len, idle.cursor, idle.reset),
+        (3, 0, 0, false)
+    );
+    assert_eq!((idle.oldest_sequence, idle.newest_sequence), (1, 0));
     let mut seen = 0;
     let mut all = Vec::new();
     for round in 0..6 {
         log_many(&logging, 2 + round, round * 10);
-        for record in tailed(&logging, 3, seen, 8) {
+        for record in tailed(&logging, 3, seen) {
             assert!(record.sequence > seen, "duplicate {}", record.sequence);
             seen = record.sequence;
             all.push(record);
         }
-        assert!(matches!(
-            tail_call(&logging, 3, seen, 8),
-            Tailed::Empty(3, false)
-        ));
+        let (empty, records) = tail_page(&logging, 3, seen, MAX_TAIL_CHUNK);
+        assert!(records.is_empty());
+        assert_eq!((empty.cursor, empty.reset, empty.gap), (seen, false, 0));
     }
     assert_eq!(sequences(&all), (1..=all.len() as u64).collect::<Vec<_>>());
     assert_eq!(all.len(), (0..6).map(|r| 2 + r).sum::<u64>() as usize);
 }
 
 #[test]
-fn a_page_is_bounded_by_the_limit_and_the_next_one_continues() {
+fn a_page_carries_at_most_its_buffer_and_the_next_one_continues() {
     let rig = Rig::new();
     let logging = rig.logging(CONFIG);
-    logging.set_boot_count(3);
-    log_many(&logging, 8, 1);
-    let first = tailed(&logging, 3, 1, 3);
-    assert_eq!(sequences(&first), [2, 3, 4]);
-    let next = tailed(&logging, 3, 4, 3);
-    assert_eq!(sequences(&next), [5, 6, 7]);
+    logging.set_session(3);
+    for n in 0..8 {
+        log(&logging, &std::format!("{n} {}", "y".repeat(100)));
+    }
+    let first = tail_page(&logging, 0, 0, MAX_TAIL_CHUNK);
+    let line = segment::text::line_len(first.1.last().unwrap());
+    assert!(line * 2 > MIN_PAGE);
+    let mut cursor = 0;
+    let mut pages = 0;
+    let mut seen = Vec::new();
+    loop {
+        // Room for two lines and a bit.
+        let (page, records) = tail_page(&logging, 3, cursor, line * 2 + line / 2);
+        if records.is_empty() {
+            break;
+        }
+        assert!(records.len() <= 2, "{}", records.len());
+        seen.extend(sequences(&records));
+        cursor = page.cursor;
+        pages += 1;
+    }
+    assert_eq!(seen, (1..=8).collect::<Vec<_>>());
+    assert!(pages >= 4, "{pages}");
 }
 
 #[test]
-fn an_overwritten_cursor_skips_ahead_and_the_gap_is_visible() {
+fn an_overwritten_cursor_is_a_gap_and_the_page_continues_at_the_oldest_record() {
     let rig = Rig::new();
     let logging = rig.logging(CONFIG);
-    logging.set_boot_count(3);
+    logging.set_session(3);
     log_many(&logging, 30, 1);
     let capacity = logging.sink().tail_capacity() as u64;
-    let records = tailed(&logging, 3, 2, 100);
-    assert_eq!(records.len() as u64, capacity);
+    let (page, records) = tail_page(&logging, 3, 2, MAX_TAIL_CHUNK);
+    assert!(!page.reset);
     assert_eq!(records[0].sequence, 30 - capacity + 1);
-    assert!(records[0].sequence > 2 + 1);
+    // Records 3.. up to the oldest held are gone, and the page says so.
+    assert_eq!(page.gap, 30 - capacity - 2);
+    // Following on from the page there is no gap.
+    let (next, _) = tail_page(&logging, 3, page.cursor, MAX_TAIL_CHUNK);
+    assert_eq!(next.gap, 0);
 }
 
 #[test]
-fn another_boot_or_a_cursor_from_the_future_is_a_reset_with_a_fresh_snapshot() {
+fn another_boot_or_a_cursor_from_the_future_is_a_reset_with_the_start_of_the_snapshot() {
     let rig = Rig::new();
     let logging = rig.logging(CONFIG);
-    logging.set_boot_count(5);
+    logging.set_session(5);
     log_many(&logging, 4, 1);
-    let Tailed::Lines(session, reset, records) = tail_call(&logging, 4, 3, 8) else {
-        panic!("lines expected");
-    };
-    assert_eq!((session, reset), (5, true));
+    let (page, records) = tail_page(&logging, 4, 3, MAX_TAIL_CHUNK);
+    assert_eq!((page.session, page.reset), (5, true));
     assert_eq!(sequences(&records), [1, 2, 3, 4]);
-    let Tailed::Lines(_, reset, records) = tail_call(&logging, 5, 99, 2) else {
-        panic!("lines expected");
-    };
-    assert!(reset);
-    assert_eq!(sequences(&records), [3, 4]);
+    let (page, records) = tail_page(&logging, 5, 99, MAX_TAIL_CHUNK);
+    assert!(page.reset);
+    assert_eq!(sequences(&records), [1, 2, 3, 4]);
     let empty = rig.logging(CONFIG);
-    empty.set_boot_count(6);
-    assert!(matches!(tail_call(&empty, 5, 3, 8), Tailed::Empty(6, true)));
+    empty.set_session(6);
+    let (page, records) = tail_page(&empty, 5, 3, MAX_TAIL_CHUNK);
+    assert!(records.is_empty());
+    assert_eq!((page.session, page.reset, page.cursor), (6, true, 0));
 }
 
 #[test]
@@ -1900,7 +2033,7 @@ fn the_tail_does_not_touch_the_storage_or_the_queue() {
     let operations = rig.internal.operations();
     let queued = logging.sink().queued();
     for after in 0..6 {
-        let _ = tail_call(&logging, 0, after, 8);
+        let _ = tail_page(&logging, 0, after, MAX_TAIL_CHUNK);
     }
     assert_eq!(rig.internal.operations(), operations);
     assert_eq!(logging.sink().queued(), queued);
@@ -1920,7 +2053,7 @@ fn the_tail_works_while_the_storage_is_unavailable_failing_or_pinned() {
     let logging = rig.logging(missing);
     step(&rig, &logging);
     log_many(&logging, 3, 1);
-    assert_eq!(tailed(&logging, 0, 0, 8).len(), 3);
+    assert_eq!(tailed(&logging, 0, 0).len(), 3);
 
     // A medium that fails.
     let rig = Rig::new();
@@ -1930,7 +2063,7 @@ fn the_tail_works_while_the_storage_is_unavailable_failing_or_pinned() {
     log_many(&logging, 3, 1);
     step(&rig, &logging);
     step(&rig, &logging);
-    assert_eq!(tailed(&logging, 0, 0, 8).len(), 3);
+    assert_eq!(tailed(&logging, 0, 0).len(), 3);
 
     // The archive is pinned by a download.
     let rig = Rig::new();
@@ -1939,7 +2072,9 @@ fn the_tail_works_while_the_storage_is_unavailable_failing_or_pinned() {
     let download = stream_of(invoke(&logging, action::DOWNLOAD, &[]));
     log_many(&logging, 2, 1_000);
     assert!(
-        tailed(&logging, 0, 0, 2)[1]
+        tailed(&logging, 0, 0)
+            .last()
+            .unwrap()
             .message
             .contains("record 1001 ")
     );
@@ -1955,7 +2090,7 @@ fn a_full_persistence_queue_does_not_stop_the_tail() {
         log(&logging, &std::format!("burst {n}"));
     }
     assert!(logging.sink().dropped() > 0);
-    let records = tailed(&logging, 0, 0, 8);
+    let records = tailed(&logging, 0, 0);
     assert_eq!(records.len(), 8);
     assert_eq!(records.last().unwrap().message.as_str(), "burst 99");
     // The tail has its own sequence: the archive copy of a dropped record
@@ -1964,20 +2099,24 @@ fn a_full_persistence_queue_does_not_stop_the_tail() {
 }
 
 #[test]
-fn clear_empties_the_archive_and_not_the_tail() {
+fn clear_empties_the_archive_and_neither_the_tail_nor_its_session() {
     let rig = Rig::new();
     let logging = rig.logging(CONFIG);
-    logging.set_boot_count(2);
+    logging.set_session(2);
     log_many(&logging, 4, 1);
+    let before = tail_page(&logging, 2, 0, MAX_TAIL_CHUNK);
     settle(&rig, &logging);
     assert!(invoke(&logging, action::CLEAR, &[]).is_ok());
     assert_eq!(number(&logging, status_field::STORED_RECORDS), Some(0));
-    assert_eq!(sequences(&tailed(&logging, 2, 0, 8)), [1, 2, 3, 4]);
+    let after = tail_page(&logging, 2, 0, MAX_TAIL_CHUNK);
+    assert_eq!(sequences(&after.1), [1, 2, 3, 4]);
+    assert_eq!(sequences(&before.1), sequences(&after.1));
+    assert_eq!((after.0.session, after.0.reset), (2, false));
     assert_eq!(logging.sink().tail_session(), 2);
 }
 
 #[test]
-fn the_tail_and_the_download_are_independent_streams() {
+fn the_tail_needs_no_stream_and_leaves_the_download_table_alone() {
     let rig = Rig::new();
     let logging = rig.logging(CONFIG);
     many_segments(&rig, &logging);
@@ -1987,8 +2126,10 @@ fn the_tail_and_the_download_are_independent_streams() {
         invoke(&logging, action::DOWNLOAD, &[]).err(),
         Some(ActionError::Busy)
     );
-    // Both downloads are open and the tail answers.
-    assert_eq!(tailed(&logging, 0, 0, 4).len(), 4);
+    // Both downloads are open and the tail answers, however often.
+    for _ in 0..10 {
+        assert_eq!(tailed(&logging, 0, 0).len(), 8);
+    }
     assert_eq!(
         (logging.pins(), logging.open_streams()),
         (first.files.len() + second.files.len(), 2)
@@ -1996,80 +2137,82 @@ fn the_tail_and_the_download_are_independent_streams() {
 }
 
 #[test]
-fn a_new_tail_stream_replaces_the_oldest_and_never_blocks() {
+fn the_tail_is_not_an_action_and_its_old_id_stays_unused() {
+    let actions = <LoggingService<'_, NoopRawMutex, &Clock, Test, 64, 8> as Action>::ACTIONS;
+    assert!(actions.iter().all(|action| action.id != 4));
     let rig = Rig::new();
     let logging = rig.logging(CONFIG);
-    log_many(&logging, 6, 1);
-    let mut ids = Vec::new();
-    for _ in 0..MAX_TAIL_STREAMS + 2 {
-        ids.push(stream_of(invoke(&logging, action::TAIL, &tail_args(0, 0, 4))).id);
-    }
-    assert_eq!(logging.open_streams(), MAX_TAIL_STREAMS);
-    let (old, young) = ids.split_at(ids.len() - MAX_TAIL_STREAMS);
-    assert!(old.iter().all(|id| is_gone(&logging, *id)));
-    assert!(young.iter().all(|id| !is_gone(&logging, *id)));
-}
-
-#[test]
-fn a_tail_stream_whose_records_were_overwritten_is_gone() {
-    let rig = Rig::new();
-    let logging = rig.logging(CONFIG);
-    log_many(&logging, 8, 1);
-    let info = stream_of(invoke(&logging, action::TAIL, &tail_args(0, 0, 8)));
-    log_many(&logging, 20, 100);
-    let mut buf = [0u8; 64];
     assert_eq!(
-        block_on(
-            logging
-                .service()
-                .read_stream(info.id, TAIL_FILE_ID, 0, &mut buf)
-        ),
-        Err(ActionError::UnknownStream)
+        invoke(&logging, 4, &[]).err(),
+        Some(ActionError::UnknownAction)
     );
-    // The stream is released: the client asks again.
-    assert_eq!(logging.open_streams(), 0);
-    assert_eq!(tailed(&logging, 0, 0, 8).len(), 8);
 }
 
 #[test]
-fn a_tail_stream_expires_and_is_released_with_the_link() {
+fn a_buffer_too_small_for_a_line_is_refused() {
     let rig = Rig::new();
     let logging = rig.logging(CONFIG);
-    step(&rig, &logging);
-    log_many(&logging, 3, 1);
-    let idle = stream_of(invoke(&logging, action::TAIL, &tail_args(0, 0, 3)));
-    rig.advance(STREAM_TIMEOUT_MS + 1);
-    block_on(logging.step());
-    assert!(is_gone(&logging, idle.id));
-    let linked = stream_of(invoke(&logging, action::TAIL, &tail_args(0, 0, 3)));
-    logging.service().link_lost();
-    block_on(logging.step());
-    assert!(is_gone(&logging, linked.id));
-    assert_eq!(logging.open_streams(), 0);
+    log(&logging, "one");
+    let service = logging.service();
+    let mut buf = [0u8; 16];
+    assert_eq!(
+        service.tail_logs(
+            TailRequest {
+                session: 0,
+                after: 0
+            },
+            &mut buf
+        ),
+        Err(ActionError::InvalidArgument)
+    );
+    // A buffer bigger than a page is used up to a page.
+    let mut big = [0u8; MAX_TAIL_CHUNK * 2];
+    let page = service
+        .tail_logs(
+            TailRequest {
+                session: 0,
+                after: 0,
+            },
+            &mut big,
+        )
+        .unwrap();
+    assert!(page.len > 0 && page.len <= MAX_TAIL_CHUNK);
 }
 
 #[test]
-fn a_line_longer_than_a_chunk_is_returned_whole_in_several_reads() {
+fn the_worst_case_line_is_shortened_whole_and_every_page_makes_progress() {
     let rig = Rig::new();
     let logging = rig.logging(CONFIG);
     let message = "\u{1}".repeat(MAX_MESSAGE_LEN);
-    for _ in 0..2 {
+    let target = "\u{2}".repeat(MAX_TARGET_LEN);
+    for _ in 0..3 {
         assert!(
             logging
                 .sink()
-                .push(log::Level::Error, "ctl", format_args!("{message}"))
+                .push(log::Level::Error, &target, format_args!("{message}"))
         );
     }
-    let info = stream_of(invoke(&logging, action::TAIL, &tail_args(0, 0, 2)));
-    assert!(info.files[0].size_bytes > MAX_STREAM_CHUNK as u64);
-    let data = read_all(&logging, &info, TAIL_FILE_ID);
-    assert_eq!(data.len() as u64, info.files[0].size_bytes);
-    let records = parse(&data);
-    assert_eq!(records.len(), 2);
+    let mut cursor = 0;
+    let mut session = 0;
+    let mut lines = 0;
+    for _ in 0..3 {
+        let (page, records) = tail_page(&logging, session, cursor, MAX_TAIL_CHUNK);
+        session = page.session;
+        assert!(page.len <= MAX_TAIL_CHUNK);
+        assert_eq!(records.len(), 1, "one oversized line fills a page");
+        // Shortened, flagged, still a valid record of control characters.
+        assert!(records[0].truncated);
+        assert!(records[0].message.len() < MAX_MESSAGE_LEN);
+        assert!(records[0].message.chars().all(|c| c == '\u{1}'));
+        assert!(page.cursor > cursor);
+        cursor = page.cursor;
+        lines += 1;
+    }
+    assert_eq!(lines, 3);
     assert!(
-        records
-            .iter()
-            .all(|record| record.message.as_str() == message)
+        tail_page(&logging, session, cursor, MAX_TAIL_CHUNK)
+            .1
+            .is_empty()
     );
 }
 
@@ -2082,9 +2225,9 @@ fn tail_levels_follow_the_sink_level_and_the_tail_is_not_the_archive() {
             .sink()
             .push(log::Level::Debug, "x", format_args!("filtered"))
     );
-    assert!(tailed(&logging, 0, 0, 8).is_empty());
+    assert!(tailed(&logging, 0, 0).is_empty());
     log(&logging, "kept");
-    let kept = tailed(&logging, 0, 0, 8);
+    let kept = tailed(&logging, 0, 0);
     assert_eq!(texts(&kept), ["kept"]);
     // The tail sequence is its own: the archive assigns another one later.
     settle(&rig, &logging);
@@ -2092,33 +2235,18 @@ fn tail_levels_follow_the_sink_level_and_the_tail_is_not_the_archive() {
 }
 
 #[test]
-fn the_tail_file_name_round_trips_and_fits() {
-    for (session, reset) in [(1, false), (u32::MAX, true), (0, false)] {
-        let name = tail_file_name(session, reset);
-        assert!(name.len() <= MAX_TAIL_FILE_NAME_LEN);
-        assert_eq!(parse_tail_file_name(name.as_str()), Some((session, reset)));
-    }
-    assert_eq!(parse_tail_file_name("records-3.log"), None);
-    assert_eq!(parse_tail_file_name("tail-x.log"), None);
-}
-
-#[test]
 fn the_tail_survives_a_reboot_only_as_a_new_session() {
     let rig = Rig::new();
     let session = {
         let logging = rig.logging(CONFIG);
-        logging.set_boot_count(1);
+        logging.set_session(11);
         log_many(&logging, 3, 1);
-        match tail_call(&logging, 0, 0, 8) {
-            Tailed::Lines(session, _, _) => session,
-            _ => panic!("lines expected"),
-        }
+        tail_page(&logging, 0, 0, MAX_TAIL_CHUNK).0.session
     };
     let logging = rig.logging(CONFIG);
-    logging.set_boot_count(2);
+    logging.set_session(12);
     // The client reconnects with the old session: it must start over.
-    assert!(matches!(
-        tail_call(&logging, u64::from(session), 3, 8),
-        Tailed::Empty(2, true)
-    ));
+    let (page, records) = tail_page(&logging, session, 3, MAX_TAIL_CHUNK);
+    assert!(records.is_empty());
+    assert_eq!((page.session, page.reset), (12, true));
 }

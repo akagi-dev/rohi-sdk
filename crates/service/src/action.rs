@@ -138,6 +138,13 @@
 //! ([`Action::link_lost`]); a service that has no free stream answers
 //! [`ActionError::Busy`]. An action returns records or a stream, never both.
 //!
+//! # Tail
+//!
+//! The recent text a service keeps in RAM (the log tail) is not a stream: it has
+//! no lifecycle and the service keeps nothing for the client. [`Action::tail_logs`]
+//! writes one page of at most [`MAX_TAIL_CHUNK`] bytes of whole lines into a
+//! buffer, described by a [`TailPage`]; the client continues with its cursor.
+//!
 //! Who may use a stream is decided by the control plane, not by the service: the
 //! controller lets only the connection that invoked the action read or close the
 //! stream, and with the privilege of that action, so a service needs no session
@@ -161,6 +168,8 @@ pub const MAX_RECORD_FIELDS: usize = 4;
 pub const MAX_STREAM_FILES: usize = 24;
 /// Maximum number of bytes of one stream chunk.
 pub const MAX_STREAM_CHUNK: usize = 512;
+/// Maximum number of bytes of text of one tail page, see [`TailPage`].
+pub const MAX_TAIL_CHUNK: usize = 512;
 
 /// What a link must be allowed to do to invoke an action.
 ///
@@ -314,6 +323,22 @@ pub trait Action: Service {
 
     /// The control link was lost: release every stream the client left open.
     fn link_lost(&self) {}
+
+    /// Writes one page of the tail of the service, the recent text it keeps in
+    /// RAM, into `buf` (at most [`MAX_TAIL_CHUNK`] bytes).
+    ///
+    /// A tail page is one request and one reply: nothing is registered, so a
+    /// client may poll for as long as it likes. The service answers from RAM,
+    /// without waiting for storage or for another task. The default answers that
+    /// the service has no tail.
+    ///
+    /// # Errors
+    ///
+    /// [`ActionError::UnknownAction`] when the service has no tail.
+    fn tail_logs(&self, request: TailRequest, buf: &mut [u8]) -> Result<TailPage, ActionError> {
+        let _ = (request, buf);
+        Err(ActionError::UnknownAction)
+    }
 }
 
 /// Why an action failed.
@@ -384,6 +409,36 @@ impl ActionResult {
             Self::Stream(_) => &[],
         }
     }
+}
+
+/// Which page of the tail a client asks for, see [`Action::tail_logs`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TailRequest {
+    /// The session of an earlier page, 0 on the first request.
+    pub session: u32,
+    /// The cursor of an earlier page: lines with a greater sequence are
+    /// returned. 0 asks for the oldest line the service still holds.
+    pub after: u64,
+}
+
+/// One page of the tail, see [`Action::tail_logs`]. The text is in the buffer
+/// the service was given: whole lines, each ending in a newline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TailPage {
+    /// Identifies this boot; sequences are valid inside one session only.
+    pub session: u32,
+    /// Bytes written to the buffer.
+    pub len: usize,
+    /// Sequence of the last line of the page; the cursor of the next request.
+    pub cursor: u64,
+    /// Sequence of the oldest line held; 1 when there is none.
+    pub oldest_sequence: u64,
+    /// Sequence of the newest line held; 0 when there is none.
+    pub newest_sequence: u64,
+    /// The request belonged to another boot: the page starts over.
+    pub reset: bool,
+    /// Lines overwritten between the cursor of the request and this page.
+    pub gap: u64,
 }
 
 /// A chunk read from a stream file.

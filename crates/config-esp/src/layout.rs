@@ -33,7 +33,7 @@
 //! `partitions-esp32c6.csv` (8 MB flash) are mirrored by the constants of this
 //! module; a host test of this module keeps both in sync. The tables differ in
 //! the size of the `factory` partition and of `rohi-log`, which is always the
-//! last partition of the flash: 256 KiB on ESP32-C3, 1 MiB on ESP32-C6.
+//! last partition of the flash: 512 KiB on ESP32-C3, 1 MiB on ESP32-C6.
 //!
 //! # Flash layout (Altruist Urban, ESP32-C3 4 MB / ESP32-C6 8 MB)
 //!
@@ -43,14 +43,14 @@
 //! 0x010000  rohi-cfg   16 KiB   <- configuration region
 //!             ├─ slot A  8 KiB (2 sectors)
 //!             └─ slot B  8 KiB (2 sectors)
-//! 0x020000  factory    app: 0x3A0000 bytes on ESP32-C3, 0x6E0000 on ESP32-C6
+//! 0x020000  factory    app: 0x360000 bytes on ESP32-C3, 0x6E0000 on ESP32-C6
 //! ```
 //!
 //! ESP32-C3 (4 MB), the end of the flash:
 //!
 //! ```text
-//! 0x3C0000  rohi-log   256 KiB (0x40000), up to 0x400000
-//!             62 ring sectors, then 2 format header sectors
+//! 0x380000  rohi-log   512 KiB (0x80000), up to 0x400000
+//!             126 ring sectors, then 2 format header sectors
 //! ```
 //!
 //! The app area ends on a 64 KiB boundary on both chips, so that two equal OTA
@@ -86,18 +86,18 @@ pub const REGION_SIZE: usize = 2 * SLOT_SIZE;
 /// Label of the data partition that holds the persistent log.
 pub const LOG_PARTITION_LABEL: &str = "rohi-log";
 
-/// Size of the `rohi-log` partition of the ESP32-C3 in bytes: 256 KiB, 64
+/// Size of the `rohi-log` partition of the ESP32-C3 in bytes: 512 KiB, 128
 /// sectors. This is the partition, not the journal: the log is a ring of
 /// segments of whole sectors and two format header sectors (`rohi-logging`), so
-/// with 16 KiB segments it retains 15 full segments (240 KiB).
-pub const LOG_REGION_SIZE_ESP32C3: usize = 64 * SECTOR_SIZE;
+/// with 32 KiB segments it retains 15 full segments (480 KiB).
+pub const LOG_REGION_SIZE_ESP32C3: usize = 128 * SECTOR_SIZE;
 
 /// Size of the `rohi-log` partition of the ESP32-C6 in bytes: 1 MiB, 256
 /// sectors.
 pub const LOG_REGION_SIZE_ESP32C6: usize = 256 * SECTOR_SIZE;
 
 /// Size of the `factory` partition of the ESP32-C3 in bytes.
-pub const APP_REGION_SIZE_ESP32C3: usize = 0x3A_0000;
+pub const APP_REGION_SIZE_ESP32C3: usize = 0x36_0000;
 
 /// Size of the `factory` partition of the ESP32-C6 in bytes.
 pub const APP_REGION_SIZE_ESP32C6: usize = 0x6E_0000;
@@ -213,21 +213,58 @@ mod tests {
     #[test]
     fn the_log_regions_are_whole_sectors() {
         assert_eq!(LOG_REGION_SIZE_ESP32C3 % SECTOR_SIZE, 0);
-        assert_eq!(LOG_REGION_SIZE_ESP32C3, 256 * 1024);
-        assert_eq!(LOG_REGION_SIZE_ESP32C3, 0x40000);
-        assert_eq!(LOG_REGION_SIZE_ESP32C3 / SECTOR_SIZE, 64);
+        assert_eq!(LOG_REGION_SIZE_ESP32C3, 512 * 1024);
+        assert_eq!(LOG_REGION_SIZE_ESP32C3, 0x80000);
+        assert_eq!(LOG_REGION_SIZE_ESP32C3 / SECTOR_SIZE, 128);
         assert_eq!(LOG_REGION_SIZE_ESP32C6 % SECTOR_SIZE, 0);
         assert_eq!(LOG_REGION_SIZE_ESP32C6, 1 << 20);
         assert_eq!(LOG_REGION_SIZE_ESP32C6 / SECTOR_SIZE, 256);
     }
 
     #[test]
+    fn the_partition_geometry_is_exact() {
+        // (chip table, factory offset and size, rohi-log offset and size)
+        let tables = [
+            (
+                include_str!("../../../firmwares/altruist-urban/partitions-esp32c3.csv"),
+                (0x20000, 0x36_0000),
+                (0x38_0000, 0x8_0000),
+                0x40_0000,
+            ),
+            (
+                include_str!("../../../firmwares/altruist-urban/partitions-esp32c6.csv"),
+                (0x20000, 0x6E_0000),
+                (0x70_0000, 0x10_0000),
+                0x80_0000,
+            ),
+        ];
+        for (csv, factory, log, flash_end) in tables {
+            let table = rows(csv);
+            let find = |label: &str| {
+                let row = table.iter().find(|row| row[0] == label).unwrap();
+                (parse_number(row[3]), parse_number(row[4]))
+            };
+            assert_eq!(find("factory"), factory);
+            assert_eq!(find(LOG_PARTITION_LABEL), log);
+            // `factory` ends where `rohi-log` starts, and `rohi-log` ends the flash.
+            assert_eq!(factory.0 + factory.1, log.0);
+            assert_eq!(log.0 + log.1, flash_end);
+            // Both ends of the app area are 64 KiB aligned (OTA, #29); the log
+            // is whole 4 KiB erase sectors.
+            assert_eq!(factory.0 % 0x10000, 0);
+            assert_eq!((factory.0 + factory.1) % 0x10000, 0);
+            assert_eq!(log.0 % SECTOR_SIZE, 0);
+            assert_eq!(log.1 % SECTOR_SIZE, 0);
+        }
+    }
+
+    #[test]
     fn the_esp32c3_journal_holds_fifteen_whole_segments() {
         // Two sectors are the format header slots of the ring; the rest is
-        // cut into 16 KiB segments of four sectors.
+        // cut into 32 KiB segments of eight sectors.
         let ring = LOG_REGION_SIZE_ESP32C3 - 2 * SECTOR_SIZE;
-        assert_eq!(ring / (4 * SECTOR_SIZE), 15);
-        assert_eq!(15 * 4 * SECTOR_SIZE, 240 * 1024);
+        assert_eq!(ring / (8 * SECTOR_SIZE), 15);
+        assert_eq!(15 * 8 * SECTOR_SIZE, 480 * 1024);
     }
 
     #[test]

@@ -206,18 +206,97 @@ fn parse_level(text: &str) -> Option<LogLevel> {
 ///
 /// Only what `out` returns; a line is at most [`MAX_LINE_LEN`] bytes.
 pub fn write_line(out: &mut impl Write, record: &LogRecord) -> fmt::Result {
+    write_parts(out, record, &record.message, record.truncated)
+}
+
+fn write_parts(
+    out: &mut impl Write,
+    record: &LogRecord,
+    message: &str,
+    truncated: bool,
+) -> fmt::Result {
     write!(out, "{} {} ", record.sequence, record.monotonic_ms)?;
     write_wall(out, record.wall_time)?;
     write!(
         out,
         " {}{} ",
         level_name(record.level),
-        if record.truncated { "*" } else { "" }
+        if truncated { "*" } else { "" }
     )?;
     escape(out, &record.target, true)?;
     out.write_str(": ")?;
-    escape(out, &record.message, false)?;
+    escape(out, message, false)?;
     out.write_char('\n')
+}
+
+// Counts what is written, keeps nothing.
+struct Counter(usize);
+
+impl Write for Counter {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        self.0 += text.len();
+        Ok(())
+    }
+}
+
+/// The size of the line [`write_line`] writes for `record`, with the newline.
+pub fn line_len(record: &LogRecord) -> usize {
+    let mut counter = Counter(0);
+    // The counter never fails.
+    let _ = write_line(&mut counter, record);
+    counter.0
+}
+
+/// Bytes the escaped form of the character takes in a message.
+fn escaped_len(character: char) -> usize {
+    match character {
+        '\\' | '\n' | '\r' | '\t' => 2,
+        control if control.is_control() => 4,
+        other => other.len_utf8(),
+    }
+}
+
+/// The least `max_len` [`write_line_within`] accepts: the longest line without
+/// a message, with the newline.
+pub const MIN_WITHIN_LEN: usize = MAX_LINE_LEN - MAX_MESSAGE_LEN * 4;
+
+/// Writes the line of `record` like [`write_line`], but at most `max_len` bytes
+/// long, and returns its length.
+///
+/// A line that fits is the line of [`write_line`]. A longer one is
+/// **shortened**: the message is cut, whole characters at a time and never in the
+/// middle of an escape sequence, and the level carries the `*` that marks a
+/// cut record, so the line stays valid UTF-8 and [`parse_line`] reads it. The
+/// result depends on the record and `max_len` only.
+///
+/// # Errors
+///
+/// [`fmt::Error`] when `out` fails or `max_len` cannot hold the line without
+/// its message. It never fails for a `max_len` of at least [`MIN_WITHIN_LEN`].
+pub fn write_line_within(
+    out: &mut impl Write,
+    record: &LogRecord,
+    max_len: usize,
+) -> Result<usize, fmt::Error> {
+    let full = line_len(record);
+    if full <= max_len {
+        write_line(out, record)?;
+        return Ok(full);
+    }
+    let mut counter = Counter(0);
+    write_parts(&mut counter, record, "", true)?;
+    let mut room = max_len.checked_sub(counter.0).ok_or(fmt::Error)?;
+    let mut end = 0;
+    for (index, character) in record.message.char_indices() {
+        let size = escaped_len(character);
+        if size > room {
+            break;
+        }
+        room -= size;
+        end = index + character.len_utf8();
+    }
+    write_parts(out, record, &record.message[..end], true)?;
+    Ok(max_len - room)
 }
 
 /// Reads one line written by [`write_line`], without its newline.

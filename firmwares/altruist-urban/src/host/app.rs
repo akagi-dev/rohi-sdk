@@ -231,7 +231,6 @@ fn start(spawner: Spawner, prepared: Prepared) -> Result<(), StartupError> {
     let runtime = ConfigRuntime::new(net::handle(), logging::apply);
     let mut owner = ConfigOwner::open(storage.clone());
     owner.publish_boot(&runtime);
-    logging::set_boot_count();
     crate::tasks::spawn(spawner, "config_task", config_task(owner, runtime));
 
     let mut interfaces = Interfaces::default();

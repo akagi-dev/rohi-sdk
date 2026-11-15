@@ -49,6 +49,7 @@ const _: () = {
     assert!(rohi_service::MAX_RECORD_FIELDS <= limits::MAX_RECORD_FIELDS);
     assert!(rohi_service::MAX_STREAM_FILES <= limits::MAX_STREAM_FILES);
     assert!(rohi_service::MAX_STREAM_CHUNK <= limits::MAX_STREAM_CHUNK);
+    assert!(rohi_service::MAX_TAIL_CHUNK <= limits::MAX_TAIL_CHUNK);
     assert!(rohi_service::MAX_REGISTRY_ENTRIES <= limits::MAX_SERVICES);
     assert!(rohi_service::MAX_REGISTRY_ENTRIES <= limits::MAX_CONFIG_SECTIONS);
 };

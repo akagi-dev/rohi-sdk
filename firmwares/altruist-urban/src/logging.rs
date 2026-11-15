@@ -37,6 +37,14 @@
 //! cannot be generic). This module has the parts every platform shares: the
 //! queue and read sizes, the aliases of the runtime and of the service for the
 //! [`Backends`](rohi_sdk::logging::Backends) of a platform, and the initial configuration.
+//!
+//! The RAM tail is served by the `TailLogs` request, one bounded page per
+//! request. Its **session** identifies a start to a client that follows it. Each
+//! platform sets a fresh random token when it starts the logging task (the
+//! hardware RNG on the ESP, a process-seeded hash on the host). It is
+//! deliberately not the boot counter of the configuration storage: that counter
+//! can fail to be read or written, and a repeated value would let a client take
+//! the records of a new start for those of the old one.
 
 use rohi_sdk::config::Override;
 use rohi_sdk::logging::{Logging, LoggingConfig, LoggingOverrides, LoggingService};
@@ -63,12 +71,14 @@ pub const QUEUE_DEPTH: usize = 128;
 #[cfg(not(feature = "std"))]
 pub const QUEUE_DEPTH: usize = 24;
 
-/// Records the RAM tail of the `logging` service keeps for `logging.tail`.
+/// Records the RAM tail of the `logging` service keeps for the `TailLogs`
+/// request.
 ///
 /// - Consumer: `rohi_sdk::logging::LogSink` keeps this many `LogRecord`s of
 ///   about 200 bytes in a ring, so 8 records are about 1.6 KiB of static RAM.
-///   Nothing is allocated per request: a tail stream holds only a window of
-///   sequences and renders the records into the chunk the client asks for.
+///   Nothing is allocated per request: a page of at most 512 bytes of whole
+///   lines is written straight into the reply, from at most `TAIL_RECORDS`
+///   records copied out one at a time.
 /// - Why: `rohi logs` shows what just happened, not history; the archive in
 ///   flash is `logging.download`. A small ring also keeps the static RAM and
 ///   the main stack of the ESP32-C3 untouched.
@@ -95,15 +105,15 @@ pub type Runtime<K> = Logging<RawMutex, &'static Time, K, QUEUE_DEPTH, TAIL_RECO
 pub type Service<K> =
     LoggingService<'static, RawMutex, &'static Time, K, QUEUE_DEPTH, TAIL_RECORDS>;
 
-/// Retention budget of the chip: the whole `rohi-log` partition, 256 KiB, on the
+/// Retention budget of the chip: the whole `rohi-log` partition, 512 KiB, on the
 /// 4 MB ESP32-C3. The ring keeps two of its 4 KiB sectors for the format
-/// header, so with [`SEGMENT_BYTES`] it retains 15 full segments (240 KiB).
+/// header, so with [`SEGMENT_BYTES`] it retains 15 full segments (480 KiB).
 #[cfg(feature = "esp32c3")]
-pub const RETENTION_BYTES: u32 = 256 * 1024;
+pub const RETENTION_BYTES: u32 = 512 * 1024;
 
-/// Segment size of the chip: 16 KiB, four erase sectors, on the ESP32-C3.
+/// Segment size of the chip: 32 KiB, eight erase sectors, on the ESP32-C3.
 #[cfg(feature = "esp32c3")]
-pub const SEGMENT_BYTES: u32 = 16 * 1024;
+pub const SEGMENT_BYTES: u32 = 32 * 1024;
 
 /// Retention budget of the chip: the 1 MiB `rohi-log` partition of the
 /// ESP32-C6 and the host image.
@@ -177,9 +187,9 @@ mod tests {
 
     #[test]
     fn both_chip_policies_are_valid_for_their_partition() {
-        // ESP32-C3: 256 KiB partition, 16 KiB segments; ESP32-C6 and the host:
+        // ESP32-C3: 512 KiB partition, 32 KiB segments; ESP32-C6 and the host:
         // 1 MiB, 64 KiB segments. Checked on every build, whatever the chip.
-        for (retention_bytes, segment_bytes) in [(256 * 1024, 16 * 1024), (1024 * 1024, 64 * 1024)]
+        for (retention_bytes, segment_bytes) in [(512 * 1024, 32 * 1024), (1024 * 1024, 64 * 1024)]
         {
             let config = LoggingConfig {
                 retention_bytes,

@@ -26,7 +26,7 @@ use rohi_control_proto::control::{
 use rohi_control_proto::{PROTOCOL_VERSION, decode, encode, limits};
 use rohi_service::{
     ActionError, ActionRegistry, ActionResult, ConfigError, ConfigRegistry, MAX_ACTION_ARGS,
-    MAX_MUTATIONS, Mutation, ServiceStatusSummary, StatusError, StatusRegistry, Value,
+    MAX_MUTATIONS, Mutation, ServiceStatusSummary, StatusError, StatusRegistry, TailRequest, Value,
 };
 
 use crate::{AuthorizationPolicy, ControlBackend, LinkSecurity, Privilege};
@@ -263,6 +263,7 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             Call::InvokeAction(request) => isolated(self.invoke(link, privilege, request)).await,
             Call::ReadStream(request) => isolated(self.read_stream(request)).await,
             Call::CloseStream(request) => isolated(self.close_stream(request)).await,
+            Call::TailLogs(request) => self.tail_logs(request),
         }
     }
 
@@ -621,6 +622,41 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
                 }
                 self.action_failure(e, request.service_id)
             }
+        }
+    }
+
+    // One bounded page of text straight into the data field of the reply: no
+    // buffer of its own, no stream and nothing kept for the client.
+    #[inline(never)]
+    fn tail_logs(&self, request: pb::TailLogsRequest) -> Reply {
+        let mut reply = pb::TailLogsResponse::default();
+        if reply.data.resize_default(limits::MAX_TAIL_CHUNK).is_err() {
+            return error(pb::ErrorCode::Internal);
+        }
+        let page = self.backend.actions().tail_logs(
+            request.service_id,
+            TailRequest {
+                session: request.session,
+                after: request.after,
+            },
+            reply.data.as_mut_slice(),
+        );
+        match page {
+            Ok(page) if page.len <= limits::MAX_TAIL_CHUNK => {
+                reply.data.truncate(page.len);
+                reply.session = page.session;
+                reply.cursor = page.cursor;
+                reply.oldest_sequence = page.oldest_sequence;
+                reply.newest_sequence = page.newest_sequence;
+                reply.reset = page.reset;
+                reply.gap = page.gap;
+                Reply::TailLogs(reply)
+            }
+            Ok(page) => {
+                diag::tail_oversized(request.service_id, page.len);
+                error(pb::ErrorCode::Internal)
+            }
+            Err(e) => self.action_failure(e, request.service_id),
         }
     }
 

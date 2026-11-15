@@ -25,7 +25,9 @@ use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, RawMutex};
 use embassy_sync::channel::Channel;
 use log::{Log, Metadata, Record};
 
-use crate::tail::{DEFAULT_TAIL_RECORDS, Overwritten, Page, Rendered, Tail, render};
+use rohi_service::{TailPage, TailRequest};
+
+use crate::tail::{DEFAULT_TAIL_RECORDS, Tail, read_page};
 use crate::{LogClock, LogLevel, LogRecord};
 
 /// Records whose target starts with this are never persisted, so the logging
@@ -35,7 +37,7 @@ pub const INTERNAL_TARGET: &str = "rohi_logging";
 /// The producer side of persistent logging.
 ///
 /// A `LogSink` is a bounded queue of `N` [`LogRecord`]s with a runtime level,
-/// and a RAM tail of the last `T` records for `logging.tail`.
+/// and a RAM tail of the last `T` records for the `TailLogs` request.
 /// A log call filters by level first, then formats into an owned record,
 /// stamps it from the [`LogClock`] and `try_send`s it. It never waits: when
 /// the queue is full the new record is dropped and counted. The logging task
@@ -105,17 +107,18 @@ impl<M: RawMutex, C: LogClock, const N: usize, const T: usize> LogSink<M, C, N, 
         self.queue.len()
     }
 
-    /// The token that identifies this boot to a client of `logging.tail`.
-    /// Never 0. The default is 1, until the firmware calls
+    /// The token that identifies this boot to a client of the tail. Never 0.
+    /// The default is 1, until the firmware calls
     /// [`set_tail_session`](Self::set_tail_session).
     pub fn tail_session(&self) -> u32 {
         self.tail.lock(|tail| tail.borrow().session())
     }
 
-    /// Sets the token that identifies this boot to a client of `logging.tail`:
-    /// a number that differs on every boot, for example the boot counter of the
-    /// `system` service. 0 is stored as 1, because 0 means "no session" in a
-    /// request.
+    /// Sets the token that identifies this boot to a client of the tail: a
+    /// number that differs on every boot. It must not depend on storage that can
+    /// fail, such as a boot counter: a token that repeats lets a client take the
+    /// records of a new boot for those of the old one. 0 is stored as 1, because
+    /// 0 means "no session" in a request.
     pub fn set_tail_session(&self, session: u32) {
         self.tail
             .lock(|tail| tail.borrow_mut().set_session(session));
@@ -126,23 +129,16 @@ impl<M: RawMutex, C: LogClock, const N: usize, const T: usize> LogSink<M, C, N, 
         T
     }
 
-    pub(crate) fn tail_page(&self, session: u64, after: u64, limit: u64) -> Page {
-        self.tail
-            .lock(|tail| tail.borrow().page(session, after, limit))
-    }
-
-    pub(crate) fn tail_render(
-        &self,
-        first: u64,
-        count: u64,
-        skip: u64,
-        out: &mut [u8],
-    ) -> Result<Rendered, Overwritten> {
-        render(
+    /// Writes one page of the tail into `out`, see [`read_page`]. It reads the
+    /// ring and nothing else: no storage, no queue, no wait. The ring is locked
+    /// to take its bounds and then once for every record copied out, never while
+    /// a line is formatted.
+    pub(crate) fn tail_page(&self, request: TailRequest, out: &mut [u8]) -> TailPage {
+        let view = self.tail.lock(|tail| tail.borrow().view());
+        read_page(
+            view,
+            request,
             |sequence| self.tail.lock(|tail| tail.borrow().get(sequence)),
-            first,
-            count,
-            skip,
             out,
         )
     }

@@ -25,10 +25,13 @@
 //! owned [`LogRecord`]s, queues them without ever blocking the caller, writes
 //! them in batches to segments of a [`LogStorage`](storage::LogStorage), and
 //! offers the history through the generic service model: a `logging` config
-//! section ([`LoggingConfig`]), a status, and the actions `tail`, `download` and
-//! `clear` ([`LoggingService`]). There is no logging-specific control protocol:
-//! `download` returns the compressed archive and `tail` the latest records, both
-//! as a [stream](rohi_service::StreamInfo).
+//! section ([`LoggingConfig`]), a status, and the actions `download` and
+//! `clear` ([`LoggingService`]). `download` returns the compressed archive as a
+//! [stream](rohi_service::StreamInfo). The latest records are not an action but
+//! the bounded `TailLogs` request of the control protocol, one reply of at
+//! most [`MAX_TAIL_CHUNK`](rohi_service::MAX_TAIL_CHUNK) bytes that
+//! [`Action::tail_logs`](rohi_service::Action::tail_logs) writes straight into
+//! the response: no stream, nothing kept for the client.
 //!
 //! Two stores, two purposes. The **archive** is the compressed, rotated history
 //! in flash; only `download` reads it. The **RAM tail** is the last few records
@@ -95,7 +98,7 @@
 //!
 //! info!(target: "wifi", ..) ─► LogSink::push ─► RAM tail (last `T` records, overwritten)
 //!                                                     ▲
-//! rohi logs [-f] ─► logging.tail ─► LoggingService ──┘ (a window of sequences; no flash)
+//! rohi logs [-f] ─► TailLogs ─► LoggingService::tail_logs ─┘ (one bounded page; no flash)
 //! ```
 //!
 //! Records of a download are held in sealed segments that the storage will not
@@ -110,7 +113,7 @@
 //! |------|-----------|
 //! | [`LogSink`] | register as the `log` backend (with `CriticalSectionRawMutex`) or push events directly |
 //! | [`Logging`], [`Backends`] | build the runtime over a set of storage backends |
-//! | [`Logging::set_boot_count`], [`tail_arg`], [`tail_result`], [`tail_file_name`], [`parse_tail_file_name`] | give the tail its session; the arguments, results and file names of `logging.tail` |
+//! | [`Logging::set_session`] | give the tail the session of this boot |
 //! | [`LoggingService`], [`status_field`], [`action`], [`issue`] | register the service; ids of its status fields, actions and issues |
 //! | [`LoggingConfig`], [`LoggingOverrides`] | the config section and its persisted overrides |
 //! | [`segment`] | read and write the text and the compressed files |
@@ -123,17 +126,22 @@
 //!   `logging` status reports `dropped_records` and the issue `queue_overflow`.
 //! - **RAM tail:** every record that passes the level and target filters is copied
 //!   into the tail by [`LogSink::push`], in a short critical section, even when the
-//!   queue is full and the archive copy is dropped. `logging.tail` (arguments
-//!   [`tail_arg`]) never touches storage, the batch or the queue: it opens a
-//!   *window* of consecutive tail sequences that holds no text, and every read of
-//!   the stream renders the lines into the caller's chunk, so nothing is
-//!   buffered. A window whose records were overwritten before they are read
-//!   fails with `UnknownStream` and the client asks again. A request with a
-//!   session that is not this boot's, or a cursor beyond the newest record, is
-//!   answered with the latest records in a file named `reset-<session>.log`
-//!   ([`tail_file_name`]); nothing new is a record result ([`tail_result`]) and no
-//!   stream. Tail sequences are not archive sequences, and the tail is not
-//!   persisted: it holds the records of this boot only.
+//!   queue is full and the archive copy is dropped. A `TailLogs` request
+//!   ([`Action::tail_logs`](rohi_service::Action::tail_logs)) never touches
+//!   storage, the batch or the queue and waits for nobody: it writes **one page**
+//!   of at most [`MAX_TAIL_CHUNK`](rohi_service::MAX_TAIL_CHUNK) bytes of whole
+//!   lines, newline terminated, never splitting a line, into the buffer of the
+//!   reply. The reply names the `session` of the boot, the `cursor` (the sequence
+//!   of its last line), the `oldest_sequence` and `newest_sequence` held, a
+//!   `reset` flag (the request carried a session of another boot or a cursor
+//!   beyond the newest line: the page then starts at the oldest line held) and a
+//!   `gap`, the number of lines overwritten between the cursor of the request and
+//!   the page. A client that is caught up gets an empty page. A line whose escaped
+//!   text is longer than a page is shortened (the level carries `*`) so that every
+//!   page makes progress. Tail sequences are not archive sequences, and the tail
+//!   is not persisted: it holds the records of this boot only. The session must
+//!   differ on every boot and must not come from storage that can fail, see
+//!   [`Logging::set_session`].
 //! - **Bounds:** a record keeps at most [`MAX_TARGET_LEN`] bytes of target and
 //!   [`MAX_MESSAGE_LEN`] bytes of message; longer text is cut at a character
 //!   boundary and the record is flagged `truncated`. A batch is at most

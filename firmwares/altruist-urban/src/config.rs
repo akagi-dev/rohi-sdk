@@ -113,7 +113,8 @@ static BOOT_COUNT: AtomicU32 = AtomicU32::new(0);
 /// The configuration owner increments and stores it in
 /// [`ConfigOwner::publish_boot`], once per start, and keeps it across a factory
 /// reset, so no two starts share a value. It is the `boot_count` of the
-/// `system` status and the session of `logging.tail`.
+/// `system` status. It is not the session of the log tail, which must not
+/// depend on storage that can fail (see `crate::logging`).
 pub fn boot_count() -> Option<u32> {
     match BOOT_COUNT.load(Ordering::Relaxed) {
         0 => None,
@@ -122,8 +123,8 @@ pub fn boot_count() -> Option<u32> {
 }
 
 // Counts this start. A counter that cannot be read starts again from 1, which
-// can repeat an earlier value; that costs a client of `logging.tail` one missed
-// restart notice, nothing else.
+// can repeat an earlier value; the log tail does not use it (its session is a
+// fresh token of every start), so nothing but the reported number is affected.
 fn count_boot<S: ConfigStorage>(store: &mut ConfigStore<S>)
 where
     S::Error: fmt::Debug,
