@@ -62,14 +62,13 @@ pub trait KeyAgreement {
 
 impl KeyAgreement for IdentitySigner {
     fn agree(&self, peer: &PublicKey) -> Result<SharedSecret, IdentityError> {
+        let point = CompressedEdwardsY(peer.to_bytes())
+            .decompress()
+            .ok_or(IdentityError::InvalidPublicKey)?;
         let mut hash = Sha512::digest(self.seed());
         let mut scalar = [0u8; 32];
         scalar.copy_from_slice(&hash[..32]);
         hash[..].zeroize();
-
-        let point = CompressedEdwardsY(peer.to_bytes())
-            .decompress()
-            .ok_or(IdentityError::InvalidPublicKey)?;
         // `mul_clamped` applies the X25519 clamping to `scalar`.
         let shared = point.to_montgomery().mul_clamped(scalar).to_bytes();
         scalar.zeroize();
