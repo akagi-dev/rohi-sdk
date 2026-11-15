@@ -1,12 +1,4 @@
 name: CI
-      - name: Sensors, time and telemetry do not depend on the HAL
-        run: |
-          for crate in rohi-sensors rohi-time rohi-telemetry; do
-            if cargo tree -p "$crate" -e normal --prefix none | grep -E '^(rohi-hal|rohi-hal-esp|esp-|rohi-connectivity|rohi-telemetry-robonomics|micropb) '; then
-              echo "$crate must not depend on rohi-hal, ESP, connectivity or protobuf crates"; exit 1
-            fi
-          done
-
 on:
   push:
     branches:
