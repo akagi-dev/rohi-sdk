@@ -243,4 +243,10 @@ fn a_broken_stored_value_fails_validation() {
     let mut bad = set.clone();
     bad.routes[0].generation = bad.generation + 1;
     assert!(bad.validate().is_err());
+    let mut bad = set.clone();
+    bad.routes[0].destinations = bad.routes[0].generation - 1;
+    assert_eq!(bad.validate(), Err(RouteError::RouteNotFound));
+    let mut bad = set;
+    bad.routes[0].profile.id = minicbor::decode(&[0x63, b'B', b'a', b'd']).unwrap();
+    assert_eq!(bad.validate(), Err(RouteError::InvalidId));
 }

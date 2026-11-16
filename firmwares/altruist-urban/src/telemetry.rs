@@ -26,6 +26,7 @@
 use core::fmt;
 
 use log::{info, warn};
+use rohi_sdk::telemetry::ProfileError;
 use rohi_sdk::telemetry::managed::{
     ProfileSet, StoreError, TelemetrySection, TelemetryService, TelemetryState, TelemetryStore,
 };
@@ -52,6 +53,11 @@ impl PrivateBinding for TelemetryBinding {
     fn publish(section: Option<&TelemetrySection>) {
         match section {
             Some(section) => {
+                if let Err(error) = validate_profiles(&section.0) {
+                    warn_invalid_profiles(error);
+                    STATE.publish(&empty_profiles(STATE.generation()));
+                    return;
+                }
                 info!(
                     "Telemetry: {} packet profile(s), generation {}",
                     section.0.profiles.len(),
@@ -63,10 +69,7 @@ impl PrivateBinding for TelemetryBinding {
                 info!("Telemetry: no packet profiles");
                 // The generation continues: a recreated profile is a new
                 // incarnation even after a factory reset of the policy.
-                STATE.publish(&ProfileSet {
-                    generation: STATE.generation(),
-                    ..ProfileSet::default()
-                });
+                STATE.publish(&empty_profiles(STATE.generation()));
             }
         }
     }
@@ -76,6 +79,7 @@ impl PrivateBinding for TelemetryBinding {
             "Telemetry: stored profiles unreadable, nothing is packaged: {}",
             error
         );
+        STATE.publish(&empty_profiles(STATE.generation()));
     }
 }
 
@@ -103,15 +107,40 @@ fn store_error(error: ServiceError) -> StoreError {
     }
 }
 
+fn validate_profiles(profiles: &ProfileSet) -> Result<(), ProfileError> {
+    profiles.validate(&RobonomicsCapabilities)
+}
+
+#[cold]
+#[inline(never)]
+fn warn_invalid_profiles(error: ProfileError) {
+    warn!(
+        target: "telemetry",
+        "Stored profiles are invalid, nothing is packaged (err={:?})",
+        error
+    );
+}
+
+fn empty_profiles(generation: u32) -> ProfileSet {
+    ProfileSet {
+        generation,
+        ..ProfileSet::default()
+    }
+}
+
 impl TelemetryStore for StoredProfiles {
     async fn load(&self) -> Result<ProfileSet, StoreError> {
         match self.0.get::<TelemetrySection>().await {
-            Ok(section) => Ok(section
-                .map(|section| section.0)
-                .unwrap_or_else(|| ProfileSet {
-                    generation: STATE.generation(),
-                    ..ProfileSet::default()
-                })),
+            Ok(Some(section)) => {
+                if let Err(error) = validate_profiles(&section.0) {
+                    warn_invalid_profiles(error);
+                    STATE.publish(&empty_profiles(STATE.generation()));
+                    Err(StoreError::Internal)
+                } else {
+                    Ok(section.0)
+                }
+            }
+            Ok(None) => Ok(empty_profiles(STATE.generation())),
             Err(error) => Err(store_error(error)),
         }
     }
@@ -122,5 +151,57 @@ impl TelemetryStore for StoredProfiles {
             .set(&TelemetrySection(candidate.clone()))
             .await
             .map_err(store_error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rohi_sdk::telemetry::{PacketFormatId, PacketProfileId};
+
+    #[test]
+    fn missing_profiles_keep_the_runtime_generation() {
+        assert_eq!(empty_profiles(42).generation, 42);
+    }
+
+    #[test]
+    fn invalid_persisted_profiles_are_rejected() {
+        let mut profiles = ProfileSet::default();
+        profiles
+            .add_profile("weather", PacketFormatId::Robonomics)
+            .unwrap();
+        profiles.profiles[0].revision = profiles.generation + 1;
+
+        assert_eq!(validate_profiles(&profiles), Err(ProfileError::NotFound));
+    }
+
+    #[test]
+    fn invalid_persisted_selections_are_rejected() {
+        let mut profiles = ProfileSet::default();
+        profiles
+            .add_profile("weather", PacketFormatId::Robonomics)
+            .unwrap();
+        profiles.profiles[0].public.measurements =
+            rohi_sdk::telemetry::Selection::NONE.with(rohi_sdk::telemetry::MeasurementId(250));
+
+        assert_eq!(
+            validate_profiles(&profiles),
+            Err(ProfileError::Selection(
+                rohi_sdk::telemetry::SelectionError::Unsupported(
+                    rohi_sdk::telemetry::MeasurementId(250)
+                )
+            ))
+        );
+    }
+
+    #[test]
+    fn an_absent_section_cannot_reuse_a_profile_incarnation() {
+        let profiles = empty_profiles(9);
+        assert_eq!(profiles.generation, 9);
+        assert!(
+            profiles
+                .get(PacketProfileId::new("weather").unwrap().as_str())
+                .is_none()
+        );
     }
 }

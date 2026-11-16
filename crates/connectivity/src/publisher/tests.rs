@@ -53,12 +53,18 @@ struct World {
     captures: Cell<u32>,
     builds: Cell<u32>,
     fail_build: Cell<Option<BuildFailure>>,
+    routes_on_capture: RefCell<Option<RouteSet>>,
+    routes_on_build: RefCell<Option<RouteSet>>,
+    routes_on_delivery: RefCell<Option<RouteSet>>,
     sent: RefCell<Vec<(String, Vec<u8>)>>,
     // Hosts that answer with a status other than 202.
     answers: RefCell<Vec<(&'static str, u16)>>,
 }
 
-struct Provider<'a>(&'a World);
+struct Provider<'a> {
+    world: &'a World,
+    state: &'a ConnectivityState<NoopRawMutex>,
+}
 
 impl PacketProvider for Provider<'_> {
     type Snapshot = u32;
@@ -66,8 +72,8 @@ impl PacketProvider for Provider<'_> {
     fn resolve(&self, profile: &str) -> Option<ProfileStamp> {
         (profile == "env").then(|| ProfileStamp {
             id: PacketProfileId::new("env").unwrap(),
-            incarnation: if self.0.recreated.get() { 2 } else { 1 },
-            revision: self.0.revision.get(),
+            incarnation: if self.world.recreated.get() { 2 } else { 1 },
+            revision: self.world.revision.get(),
         })
     }
 
@@ -76,12 +82,15 @@ impl PacketProvider for Provider<'_> {
     }
 
     async fn capture(&mut self) -> Result<u32, BuildFailure> {
-        if self.0.recreate_on_capture.get() {
+        if self.world.recreate_on_capture.get() {
             // The profile is deleted and recreated while the capture runs.
-            self.0.recreated.set(true);
+            self.world.recreated.set(true);
         }
-        self.0.captures.set(self.0.captures.get() + 1);
-        Ok(self.0.captures.get())
+        self.world.captures.set(self.world.captures.get() + 1);
+        if let Some(routes) = self.world.routes_on_capture.borrow_mut().take() {
+            self.state.publish(&routes);
+        }
+        Ok(self.world.captures.get())
     }
 
     async fn build(
@@ -90,15 +99,18 @@ impl PacketProvider for Provider<'_> {
         stamp: &ProfileStamp,
         out: &mut [u8],
     ) -> Result<usize, BuildFailure> {
-        if let Some(failure) = self.0.fail_build.get() {
+        if let Some(failure) = self.world.fail_build.get() {
             return Err(failure);
         }
         if !self.is_current(stamp) {
             return Err(BuildFailure::ProfileChanged);
         }
-        self.0.builds.set(self.0.builds.get() + 1);
+        self.world.builds.set(self.world.builds.get() + 1);
         let text = std::format!("packet-{}-{}", stamp.revision, snapshot);
         out[..text.len()].copy_from_slice(text.as_bytes());
+        if let Some(routes) = self.world.routes_on_build.borrow_mut().take() {
+            self.state.publish(&routes);
+        }
         Ok(text.len())
     }
 
@@ -107,7 +119,10 @@ impl PacketProvider for Provider<'_> {
     }
 }
 
-struct Transport<'a>(&'a World);
+struct Transport<'a> {
+    world: &'a World,
+    state: &'a ConnectivityState<NoopRawMutex>,
+}
 
 impl PacketTransport for Transport<'_> {
     async fn deliver(
@@ -115,12 +130,17 @@ impl PacketTransport for Transport<'_> {
         endpoint: Endpoint<'_>,
         packet: &[u8],
     ) -> Result<TransportAck, TransportError> {
-        self.0
+        let routes = { self.world.routes_on_delivery.borrow_mut().take() };
+        if let Some(routes) = routes {
+            self.state.publish(&routes);
+            return core::future::pending().await;
+        }
+        self.world
             .sent
             .borrow_mut()
             .push((endpoint.host.into(), packet.to_vec()));
         let status = self
-            .0
+            .world
             .answers
             .borrow()
             .iter()
@@ -145,7 +165,13 @@ fn publisher<'a, const SLOTS: usize>(
     state: &'a ConnectivityState<NoopRawMutex>,
     clock: &'a Cell<u64>,
 ) -> P<'a, SLOTS> {
-    Publisher::new(state, Provider(world), Transport(world), Never, Clk(clock))
+    Publisher::new(
+        state,
+        Provider { world, state },
+        Transport { world, state },
+        Never,
+        Clk(clock),
+    )
 }
 
 fn hosts(world: &World) -> Vec<String> {
@@ -419,4 +445,69 @@ fn a_profile_recreated_during_the_capture_never_joins_the_execution() {
     );
     assert_eq!(world.builds.get(), 0);
     assert!(world.sent.borrow().is_empty());
+}
+
+#[test]
+fn removing_a_route_during_capture_does_not_publish_or_send_its_packet() {
+    let world = World::default();
+    let state = ConnectivityState::<NoopRawMutex>::new();
+    let clock = Cell::new(0);
+    let mut config = RouteSet::default();
+    config
+        .add_route("a", binding(), "http://a.example")
+        .unwrap();
+    state.publish(&config);
+    world.routes_on_capture.replace(Some(RouteSet::default()));
+    let mut publisher: P<4> = publisher(&world, &state, &clock);
+
+    block_on(publisher.step());
+
+    assert_eq!(world.builds.get(), 0);
+    assert!(world.sent.borrow().is_empty());
+    assert_eq!(publisher.router().pool().in_use(), 0);
+}
+
+#[test]
+fn changing_fallbacks_during_build_does_not_admit_a_stale_packet() {
+    let world = World::default();
+    let state = ConnectivityState::<NoopRawMutex>::new();
+    let clock = Cell::new(0);
+    let mut config = RouteSet::default();
+    config
+        .add_route("a", binding(), "http://a.example")
+        .unwrap();
+    state.publish(&config);
+    config
+        .add_fallback("a", "backup", "http://backup.example")
+        .unwrap();
+    world.routes_on_build.replace(Some(config));
+    let mut publisher: P<4> = publisher(&world, &state, &clock);
+
+    block_on(publisher.step());
+
+    assert_eq!(world.builds.get(), 1);
+    assert!(world.sent.borrow().is_empty());
+    assert_eq!(publisher.router().pool().in_use(), 0);
+}
+
+#[test]
+fn changing_fallbacks_cancels_an_in_flight_delivery() {
+    let world = World::default();
+    let state = ConnectivityState::<NoopRawMutex>::new();
+    let clock = Cell::new(0);
+    let mut config = RouteSet::default();
+    config
+        .add_route("a", binding(), "http://a.example")
+        .unwrap();
+    state.publish(&config);
+    config
+        .add_fallback("a", "backup", "http://backup.example")
+        .unwrap();
+    world.routes_on_delivery.replace(Some(config));
+    let mut publisher: P<4> = publisher(&world, &state, &clock);
+
+    block_on(publisher.step());
+
+    assert!(world.sent.borrow().is_empty());
+    assert_eq!(publisher.router().pool().in_use(), 0);
 }

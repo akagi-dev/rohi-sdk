@@ -24,12 +24,12 @@
 //! All decisions are in [`Router`]; this file only does the waiting and the
 //! I/O. No lock is held across a capture, a build or a transport attempt.
 //!
-//! A delivery attempt is raced against policy changes: when the telemetry
-//! policy changes during an attempt, the attempt is dropped (the transport
-//! contract makes that safe) and queued packets of an older policy are
-//! invalidated before any new send starts.
+//! A delivery attempt is raced against route and policy changes: when either
+//! changes during an attempt, the attempt is dropped (the transport contract
+//! makes that safe) and stale queued packets are invalidated before any new
+//! send starts.
 
-use embassy_futures::select::{Either, Either3, select, select3};
+use embassy_futures::select::{Either3, select3};
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embedded_hal_async::delay::DelayNs;
 use heapless::Vec;
@@ -124,9 +124,13 @@ impl<
         if !due.is_empty() {
             self.publish(&config, &due, now).await;
         }
+        let config = self.state.routes();
+        self.reconcile(&config, self.clock.now());
         self.deliver(&config).await;
 
         let now = self.clock.now();
+        let config = self.state.routes();
+        self.reconcile(&config, now);
         self.state
             .report(self.router.views(&config, now), self.health.clone());
     }
@@ -174,6 +178,9 @@ impl<
         let snapshot = match self.provider.capture().await {
             Ok(snapshot) => snapshot,
             Err(failure) => {
+                if !self.route_snapshot_is_current(config) {
+                    return;
+                }
                 self.health.last_build_failure = Some(failure.code());
                 log_failure("capture failed", failure, self.health.captures);
                 for (index, _) in &context {
@@ -183,17 +190,26 @@ impl<
             }
         };
         self.health.captures = self.health.captures.saturating_add(1);
+        if !self.route_snapshot_is_current(config) {
+            return;
+        }
 
         // One packet per distinct stamp: (stamp, the built packet or the failure).
         let mut built: Vec<(ProfileStamp, Result<PacketHandle, SkipReason>), MAX_ROUTES> =
             Vec::new();
         for (index, stamp) in &context {
+            if !self.route_snapshot_is_current(config) {
+                break;
+            }
             let existing = built.iter().position(|(known, _)| known == stamp);
             let outcome = match existing {
                 Some(position) => built[position].1,
                 None => {
                     let outcome = self.build(&snapshot, stamp).await;
                     let _ = built.push((stamp.clone(), outcome));
+                    if !self.route_snapshot_is_current(config) {
+                        break;
+                    }
                     outcome
                 }
             };
@@ -216,6 +232,10 @@ impl<
                 self.router.pool_mut().release(*handle);
             }
         }
+    }
+
+    fn route_snapshot_is_current(&self, config: &RouteSet) -> bool {
+        self.state.routes() == *config
     }
 
     async fn build(
@@ -252,6 +272,9 @@ impl<
     }
 
     async fn deliver(&mut self, config: &RouteSet) {
+        if !self.route_snapshot_is_current(config) {
+            return;
+        }
         let now = self.clock.now();
         let Some(delivery) = self.router.next_delivery(config, now) else {
             return;
@@ -287,17 +310,27 @@ impl<
         };
 
         let attempt = self.transport.deliver(endpoint, bytes);
-        match select(attempt, provider.changed()).await {
-            Either::First(result) => {
+        match select3(attempt, provider.changed(), self.state.changed()).await {
+            Either3::First(result) => {
                 let now = self.clock.now();
+                if !self.route_snapshot_is_current(config) {
+                    let current = self.state.routes();
+                    self.reconcile(&current, now);
+                    return;
+                }
                 log_delivery(&delivery, &result);
                 self.router.complete(delivery, result, now);
             }
-            Either::Second(()) => {
+            Either3::Second(()) => {
                 // The policy changed during the attempt: it is dropped and
                 // the queues are checked before anything is sent again.
                 log::debug!(target: "connectivity", "Delivery dropped: the policy changed");
                 self.router.invalidate(|stamp| provider.is_current(stamp));
+            }
+            Either3::Third(_) => {
+                log::debug!(target: "connectivity", "Delivery dropped: the routes changed");
+                let current = self.state.routes();
+                self.reconcile(&current, self.clock.now());
             }
         }
     }

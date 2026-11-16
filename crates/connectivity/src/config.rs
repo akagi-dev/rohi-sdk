@@ -382,10 +382,16 @@ impl<const R: usize, const F: usize> Routes<R, F> {
             if !(MIN_INTERVAL_S..=MAX_INTERVAL_S).contains(&route.interval_s) {
                 return Err(RouteError::InvalidInterval);
             }
+            if PacketProfileId::new(route.profile.id.as_str()).is_none() {
+                return Err(RouteError::InvalidId);
+            }
             if route.primary.endpoint().is_none() {
                 return Err(RouteError::InvalidEndpoint);
             }
-            if route.generation > self.generation || route.destinations > self.generation {
+            if route.generation == 0
+                || route.generation > route.destinations
+                || route.destinations > self.generation
+            {
                 return Err(RouteError::RouteNotFound);
             }
             for (position, fallback) in route.fallbacks.iter().enumerate() {

@@ -33,7 +33,7 @@ use embassy_time::Delay;
 use log::{info, warn};
 use rohi_sdk::connectivity::{
     BuildFailure, ConnectivitySection, ConnectivityService, ConnectivityState, ConnectivityStore,
-    HttpTransport, PacketExporter, PacketProvider, Publisher, RouteSet, StoreError,
+    HttpTransport, PacketExporter, PacketProvider, Publisher, RouteError, RouteSet, StoreError,
 };
 use rohi_sdk::net::{IpBackend, NetworkHandle};
 use rohi_sdk::sensors::runtime::MeasurementHandle;
@@ -104,6 +104,11 @@ impl PrivateBinding for ConnectivityBinding {
     fn publish(section: Option<&ConnectivitySection>) {
         match section {
             Some(section) => {
+                if let Err(error) = validate_routes(&section.0) {
+                    warn_invalid_routes(error);
+                    STATE.mark_unreadable();
+                    return;
+                }
                 info!(
                     "Connectivity: {} route(s), generation {}",
                     section.0.routes.len(),
@@ -113,10 +118,7 @@ impl PrivateBinding for ConnectivityBinding {
             }
             None => {
                 info!("Connectivity: no routes");
-                STATE.publish(&RouteSet {
-                    generation: STATE.generation(),
-                    ..RouteSet::default()
-                });
+                STATE.publish(&empty_routes(STATE.generation()));
             }
         }
     }
@@ -127,6 +129,27 @@ impl PrivateBinding for ConnectivityBinding {
             error
         );
         STATE.mark_unreadable();
+    }
+}
+
+fn validate_routes(routes: &RouteSet) -> Result<(), RouteError> {
+    routes.validate()
+}
+
+#[cold]
+#[inline(never)]
+fn warn_invalid_routes(error: RouteError) {
+    warn!(
+        target: "connectivity",
+        "Stored routes are invalid, nothing is sent (err={:?})",
+        error
+    );
+}
+
+fn empty_routes(generation: u32) -> RouteSet {
+    RouteSet {
+        generation,
+        ..RouteSet::default()
     }
 }
 
@@ -144,7 +167,16 @@ fn store_error(error: ServiceError) -> StoreError {
 impl ConnectivityStore for StoredRoutes {
     async fn load(&self) -> Result<RouteSet, StoreError> {
         match self.0.get::<ConnectivitySection>().await {
-            Ok(section) => Ok(section.map(|section| section.0).unwrap_or_default()),
+            Ok(Some(section)) => {
+                if let Err(error) = validate_routes(&section.0) {
+                    warn_invalid_routes(error);
+                    STATE.mark_unreadable();
+                    Err(StoreError::Internal)
+                } else {
+                    Ok(section.0)
+                }
+            }
+            Ok(None) => Ok(empty_routes(STATE.generation())),
             Err(error) => Err(store_error(error)),
         }
     }
@@ -314,4 +346,33 @@ pub async fn run<I: IpBackend>(network: NetworkHandle<'static, I>, packets: Urba
         PACKET_BYTES,
     > = Publisher::new(&STATE, packets, transport, Delay, EmbassyClock);
     publisher.run().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rohi_sdk::telemetry::PacketProfileId;
+
+    #[test]
+    fn missing_routes_keep_the_runtime_generation() {
+        assert_eq!(empty_routes(42).generation, 42);
+    }
+
+    #[test]
+    fn invalid_persisted_routes_are_rejected() {
+        let mut routes = RouteSet::default();
+        routes
+            .add_route(
+                "uplink",
+                rohi_sdk::connectivity::ProfileBinding {
+                    id: PacketProfileId::new("weather").unwrap(),
+                    incarnation: 1,
+                },
+                "http://example.test",
+            )
+            .unwrap();
+        routes.routes[0].interval_s = 0;
+
+        assert_eq!(validate_routes(&routes), Err(RouteError::InvalidInterval));
+    }
 }
