@@ -105,7 +105,7 @@ telemetry-location = ["telemetry", "location", "rohi-telemetry/location"]
 # The Robonomics Connectivity Protocol packet format.
 telemetry-robonomics = ["telemetry", "identity", "dep:rohi-telemetry-robonomics"]
 connectivity = ["telemetry", "net", "time", "dep:rohi-connectivity"]
-# `connectivity.packet_get`, the export of a freshly built packet as a stream (with its packet pool).
+# `connectivity.get_payload`, the export of a freshly built packet as a stream (with its packet pool).
 connectivity-packet-export = ["connectivity", "rohi-connectivity/packet-export"]
 
 # Host (`std`) backends, module `host`: DNS, TCP and UDP over the sockets of the

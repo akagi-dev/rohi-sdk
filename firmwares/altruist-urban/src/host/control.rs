@@ -130,7 +130,7 @@ pub fn controller(
 }
 
 /// Records the control listener, which the launch options may have moved away
-/// from the stored `control_tcp` settings; `None` when it is switched off.
+/// from the stored `control_tcp` settings; `None` when it could not listen (`failed`).
 #[cfg(feature = "std-tcp")]
 pub fn record_tcp(listening: Option<std::net::SocketAddr>) {
     use rohi_sdk::control::{EndpointState, Transport};
@@ -142,12 +142,12 @@ pub fn record_tcp(listening: Option<std::net::SocketAddr>) {
                 std::net::IpAddr::V4(address) => address.octets(),
                 std::net::IpAddr::V6(_) => [0; 4],
             };
-            access.set_running(Transport::Tcp, true, octets, address.port());
+            access.set_listening(Transport::Tcp, octets, address.port());
             access.set_state(Transport::Tcp, EndpointState::Running);
         }
         None => {
-            access.set_running(Transport::Tcp, false, [0; 4], 0);
-            access.set_state(Transport::Tcp, EndpointState::Disabled);
+            access.set_listening(Transport::Tcp, [0; 4], 0);
+            access.set_state(Transport::Tcp, EndpointState::Failed);
         }
     }
 }
@@ -165,6 +165,10 @@ pub async fn tcp_task(acceptor: rohi_sdk::host::TcpAcceptor) {
     let mut control = rohi_sdk::tcp::ControlTcp::with_psk(acceptor, &HUB, crate::control::TcpKey);
     let error = control.run().await;
     log::error!("control: the TCP listener failed: {error}");
+    crate::control::access().set_state(
+        rohi_sdk::control::Transport::Tcp,
+        rohi_sdk::control::EndpointState::Failed,
+    );
 }
 
 /// Serves control requests received over the BLE peripheral.

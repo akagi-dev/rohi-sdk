@@ -17,26 +17,28 @@
 ///////////////////////////////////////////////////////////////////////////////
 use core::cell::RefCell;
 
+use std::vec;
+
 use embassy_futures::block_on;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use rohi_service::{Action, ActionError, Service, Status};
-use rohi_service::{ActionRegistry, Statuses};
+use rohi_service::{ActionRegistry, MAX_FIELD_VALUE_LEN, MAX_FIELDS};
 
 use super::*;
 use crate::catalog::{BMX280_TEMPERATURE, LOCATION, SDS011_PM10, all_cataloged};
 
-// The capacities the tests exercise, more than a device keeps.
-type ProfileSet = TelemetryConfig<3, 2>;
+// A device keeps two slots; three exercise the largest supported schema.
+type ProfileSet = TelemetryConfig<2>;
 
 struct Caps;
 
 impl FormatCapabilities for Caps {
-    fn supported(&self, _: PacketFormatId) -> Selection {
+    fn supported(&self) -> Selection {
         // The format cannot encode the last measurement.
         all_cataloged().without(crate::MeasurementId(17))
     }
 
-    fn accepts_recipient(&self, _: PacketFormatId, recipient: &RecipientAddress) -> bool {
+    fn accepts_recipient(&self, recipient: &RecipientAddress) -> bool {
         recipient.0 != [0; 32]
     }
 }
@@ -49,7 +51,7 @@ struct Memory {
     commits: RefCell<u32>,
 }
 
-impl TelemetryStore<3, 2> for &Memory {
+impl TelemetryStore<2> for &Memory {
     async fn load(&self) -> Result<ProfileSet, StoreError> {
         if *self.unreadable.borrow() {
             return Err(StoreError::Unavailable);
@@ -67,14 +69,10 @@ impl TelemetryStore<3, 2> for &Memory {
     }
 }
 
-type Service_<'a> = TelemetryService<NoopRawMutex, &'a Memory, Caps, 3, 2>;
+type Service_<'a> = TelemetryService<NoopRawMutex, &'a Memory, Caps, 2>;
 
 fn service(memory: &Memory) -> Service_<'_> {
     TelemetryService::new(memory, Caps)
-}
-
-fn text(value: &str) -> Value {
-    Value::text(value).unwrap()
 }
 
 fn bytes(value: &[u8]) -> Value {
@@ -90,35 +88,30 @@ fn call(
     block_on(registry.invoke(Service_::ID, action, args)).map(|done| done.records().to_vec())
 }
 
-fn add(service: &Service_<'_>, id: &str) -> Result<(), ActionError> {
-    call(
-        service,
-        action::PROFILE_ADD,
-        &[(1, text(id)), (2, Value::Enum(1))],
-    )
-    .map(|_| ())
-}
-
-fn set_public(service: &Service_<'_>, id: &str, selection: &Selection) -> Result<(), ActionError> {
+fn set_public(
+    service: &Service_<'_>,
+    index: u64,
+    selection: &Selection,
+) -> Result<(), ActionError> {
     call(
         service,
         action::SET_PUBLIC,
-        &[(1, text(id)), (2, bytes(selection.as_bytes()))],
+        &[(1, Value::U64(index)), (2, bytes(selection.as_bytes()))],
     )
     .map(|_| ())
 }
 
-fn add_private(
+fn set_private(
     service: &Service_<'_>,
-    id: &str,
+    index: u64,
     key: u8,
     selection: &Selection,
 ) -> Result<(), ActionError> {
     call(
         service,
-        action::ADD_PRIVATE,
+        action::SET_PRIVATE,
         &[
-            (1, text(id)),
+            (1, Value::U64(index)),
             (2, bytes(&[key; 32])),
             (3, bytes(selection.as_bytes())),
         ],
@@ -127,67 +120,77 @@ fn add_private(
 }
 
 #[test]
-fn the_service_exposes_exactly_the_eight_actions_with_their_access() {
+fn the_service_exposes_exactly_the_three_actions_with_their_access() {
     let actions: std::vec::Vec<_> = Service_::ACTIONS
         .iter()
-        .map(|a| (a.name, a.access, a.args.len()))
+        .map(|a| {
+            (
+                a.name,
+                a.access,
+                a.args
+                    .iter()
+                    .map(|arg| arg.name)
+                    .collect::<std::vec::Vec<_>>(),
+            )
+        })
         .collect();
     assert_eq!(
         actions,
         [
-            ("profile_add", ActionAccess::Mutate, 2),
-            ("profile_remove", ActionAccess::Mutate, 1),
-            ("set_public", ActionAccess::Mutate, 2),
-            ("add_private", ActionAccess::Mutate, 3),
-            ("remove_private", ActionAccess::Mutate, 2),
-            ("profile_list", ActionAccess::Read, 1),
-            ("profile_recipients", ActionAccess::Read, 2),
-            ("measurements", ActionAccess::Read, 1),
+            (
+                "set_public",
+                ActionAccess::Mutate,
+                vec!["index", "selection"]
+            ),
+            (
+                "set_private",
+                ActionAccess::Mutate,
+                vec!["index", "recipient", "selection"]
+            ),
+            ("measurements", ActionAccess::Read, vec!["offset"]),
         ]
     );
     // The selection fields point at the catalog action of this service.
-    let set_public = &Service_::ACTIONS[2];
-    let selection = set_public.args[1].selection.unwrap();
-    assert_eq!(
-        (
-            selection.size_bytes,
-            selection.catalog_service_id,
-            selection.catalog_action_id
-        ),
-        (32, Service_::ID, action::MEASUREMENTS)
-    );
-    assert_eq!(Service_::ACTIONS[3].args[1].kind, ValueKind::Address);
+    for (action, field) in [(0, 1), (1, 2)] {
+        let selection = Service_::ACTIONS[action].args[field].selection.unwrap();
+        assert_eq!(
+            (
+                selection.size_bytes,
+                selection.catalog_service_id,
+                selection.catalog_action_id
+            ),
+            (32, Service_::ID, action::MEASUREMENTS)
+        );
+    }
+    assert_eq!(Service_::ACTIONS[1].args[1].kind, ValueKind::Address);
     assert_eq!(Service_::NAME, "telemetry");
 }
 
 #[test]
-fn a_profile_is_created_empty_and_listed() {
+fn both_slots_start_empty() {
     let memory = Memory::default();
-    let service = service(&memory);
-    add(&service, "community").unwrap();
-    let list = call(&service, action::PROFILE_LIST, &[(1, Value::U64(0))]).unwrap();
-    assert_eq!(list.len(), 1);
-    let record = &list[0];
-    assert_eq!(record[0].1.as_str(), Some("community"));
-    assert_eq!(record[1].1.as_enum(), Some(1));
-    assert_eq!(record[2].1.as_bytes(), Some(&[0u8; 32][..]));
-    assert_eq!(record[3].1.as_u64(), Some(1));
-    assert!(
-        call(&service, action::PROFILE_LIST, &[(1, Value::U64(1))])
-            .unwrap()
-            .is_empty()
-    );
+    let _service = service(&memory);
+    for index in 0..2 {
+        let profile = memory.stored.borrow().profiles[index];
+        assert!(profile.public.measurements.is_none() && profile.private.is_none());
+    }
+    assert_eq!(*memory.commits.borrow(), 0);
 }
 
 #[test]
 fn set_public_replaces_and_unsupported_bits_are_rejected_without_a_commit() {
     let memory = Memory::default();
     let service = service(&memory);
-    add(&service, "p").unwrap();
-    set_public(&service, "p", &Selection::NONE.with(BMX280_TEMPERATURE)).unwrap();
-    set_public(&service, "p", &Selection::NONE.with(SDS011_PM10)).unwrap();
-    let public = memory.stored.borrow().get("p").unwrap().public.measurements;
+    set_public(&service, 0, &Selection::NONE.with(BMX280_TEMPERATURE)).unwrap();
+    set_public(&service, 0, &Selection::NONE.with(SDS011_PM10)).unwrap();
+    let public = memory.stored.borrow().profiles[0].public.measurements;
     assert!(public.contains(SDS011_PM10) && !public.contains(BMX280_TEMPERATURE));
+    assert!(
+        memory.stored.borrow().profiles[1]
+            .public
+            .measurements
+            .is_none()
+    );
 
     let commits = *memory.commits.borrow();
     // 17 is cataloged but the format cannot encode it; 40 is unknown.
@@ -195,91 +198,92 @@ fn set_public_replaces_and_unsupported_bits_are_rejected_without_a_commit() {
         assert_eq!(
             set_public(
                 &service,
-                "p",
+                0,
                 &Selection::NONE.with(crate::MeasurementId(bit))
             ),
             Err(ActionError::Rejected("unsupported_measurement"))
         );
     }
     assert_eq!(*memory.commits.borrow(), commits);
+}
+
+#[test]
+fn indices_zero_and_one_work_and_two_is_rejected_without_a_commit() {
+    let memory = Memory::default();
+    let service = service(&memory);
+    set_public(&service, 0, &Selection::ALL).unwrap();
+    set_public(&service, 1, &Selection::ALL).unwrap();
+    set_private(&service, 1, 1, &Selection::NONE.with(LOCATION)).unwrap();
+    let commits = *memory.commits.borrow();
+    for index in [2, 3, 255, 256, u64::MAX] {
+        assert_eq!(
+            set_public(&service, index, &Selection::ALL),
+            Err(ActionError::Rejected("invalid_index")),
+            "{index}"
+        );
+        assert_eq!(
+            set_private(&service, index, 1, &Selection::NONE.with(LOCATION)),
+            Err(ActionError::Rejected("invalid_index")),
+            "{index}"
+        );
+    }
+    assert_eq!(*memory.commits.borrow(), commits);
+    // The wrong type of the index is a malformed argument.
     assert_eq!(
-        set_public(&service, "nope", &Selection::ALL),
-        Err(ActionError::Rejected("profile_not_found"))
+        call(
+            &service,
+            action::SET_PUBLIC,
+            &[
+                (1, Value::Bool(true)),
+                (2, bytes(Selection::ALL.as_bytes()))
+            ]
+        ),
+        Err(ActionError::InvalidArgument)
     );
 }
 
 #[test]
-fn private_sections_are_upserted_listed_and_removed() {
+fn set_private_replaces_the_recipient_and_none_removes_the_section() {
     let memory = Memory::default();
     let service = service(&memory);
-    add(&service, "owner").unwrap();
-    add_private(&service, "owner", 1, &Selection::NONE.with(LOCATION)).unwrap();
-    add_private(&service, "owner", 1, &Selection::NONE.with(SDS011_PM10)).unwrap();
-    add_private(&service, "owner", 2, &Selection::NONE.with(LOCATION)).unwrap();
+    set_private(&service, 0, 1, &Selection::NONE.with(LOCATION)).unwrap();
+    set_private(&service, 0, 2, &Selection::NONE.with(SDS011_PM10)).unwrap();
+    let section = memory.stored.borrow().profiles[0].private.unwrap();
+    assert_eq!(section.recipient, RecipientAddress([2; 32]));
+    assert!(section.selection.measurements.contains(SDS011_PM10));
+    assert!(memory.stored.borrow().profiles[1].private.is_none());
+
     assert_eq!(
-        add_private(&service, "owner", 3, &Selection::NONE.with(LOCATION)),
-        Err(ActionError::Rejected("too_many_recipients"))
-    );
-    assert_eq!(
-        add_private(&service, "owner", 4, &Selection::NONE),
-        Err(ActionError::Rejected("empty_selection"))
-    );
-    assert_eq!(
-        call(
-            &service,
-            action::ADD_PRIVATE,
-            &[
-                (1, text("owner")),
-                (2, bytes(&[0; 32])),
-                (3, bytes(Selection::ALL.as_bytes()))
-            ]
-        ),
+        set_private(&service, 0, 0, &Selection::ALL),
         Err(ActionError::Rejected("invalid_recipient"))
     );
-
-    let page = call(
-        &service,
-        action::PROFILE_RECIPIENTS,
-        &[(1, text("owner")), (2, Value::U64(0))],
-    )
-    .unwrap();
-    assert_eq!(page.len(), 2);
-    assert_eq!(page[0][0].1.as_bytes(), Some(&[1u8; 32][..]));
-    let first = Selection::from_slice(page[0][1].1.as_bytes().unwrap()).unwrap();
-    assert!(first.contains(SDS011_PM10) && !first.contains(LOCATION));
-    let tail = call(
-        &service,
-        action::PROFILE_RECIPIENTS,
-        &[(1, text("owner")), (2, Value::U64(1))],
-    )
-    .unwrap();
-    assert_eq!(tail.len(), 1);
-
-    call(
-        &service,
-        action::REMOVE_PRIVATE,
-        &[(1, text("owner")), (2, bytes(&[1; 32]))],
-    )
-    .unwrap();
     assert_eq!(
-        call(
+        set_private(
             &service,
-            action::REMOVE_PRIVATE,
-            &[(1, text("owner")), (2, bytes(&[1; 32]))],
+            0,
+            3,
+            &Selection::NONE.with(crate::MeasurementId(17))
         ),
-        Err(ActionError::Rejected("recipient_not_found"))
+        Err(ActionError::Rejected("unsupported_measurement"))
     );
+    // The private section is untouched by the refusals.
+    assert_eq!(memory.stored.borrow().profiles[0].private.unwrap(), section);
+
+    set_private(&service, 0, 2, &Selection::NONE).unwrap();
+    assert!(memory.stored.borrow().profiles[0].private.is_none());
+    // Removing what is not there is not an error.
+    set_private(&service, 0, 2, &Selection::NONE).unwrap();
 }
 
 #[test]
 fn a_failed_commit_changes_nothing() {
     let memory = Memory::default();
     let service = service(&memory);
-    add(&service, "p").unwrap();
+    set_public(&service, 0, &Selection::NONE.with(BMX280_TEMPERATURE)).unwrap();
     let before = memory.stored.borrow().clone();
     *memory.fail_commit.borrow_mut() = true;
     assert_eq!(
-        set_public(&service, "p", &Selection::NONE.with(SDS011_PM10)),
+        set_public(&service, 0, &Selection::NONE.with(SDS011_PM10)),
         Err(ActionError::Internal)
     );
     assert_eq!(*memory.stored.borrow(), before);
@@ -290,9 +294,8 @@ fn an_unreadable_store_is_an_error_not_an_empty_policy() {
     let memory = Memory::default();
     let service = service(&memory);
     *memory.unreadable.borrow_mut() = true;
-    assert_eq!(add(&service, "p"), Err(ActionError::Unavailable));
     assert_eq!(
-        call(&service, action::PROFILE_LIST, &[(1, Value::U64(0))]),
+        set_public(&service, 0, &Selection::ALL),
         Err(ActionError::Unavailable)
     );
     let summary = block_on(service.summary());
@@ -303,32 +306,36 @@ fn an_unreadable_store_is_an_error_not_an_empty_policy() {
 fn arguments_of_the_wrong_shape_are_invalid() {
     let memory = Memory::default();
     let service = service(&memory);
-    add(&service, "p").unwrap();
     // A selection is exactly 32 bytes; the registry checks it before the action.
     assert_eq!(
         call(
             &service,
             action::SET_PUBLIC,
-            &[(1, text("p")), (2, bytes(&[0xFF; 31]))]
+            &[(1, Value::U64(0)), (2, bytes(&[0xFF; 31]))]
+        ),
+        Err(ActionError::InvalidArgument)
+    );
+    // So is an address, and no argument may be missing.
+    assert_eq!(
+        call(
+            &service,
+            action::SET_PRIVATE,
+            &[
+                (1, Value::U64(0)),
+                (2, bytes(&[1; 31])),
+                (3, bytes(Selection::ALL.as_bytes()))
+            ]
         ),
         Err(ActionError::InvalidArgument)
     );
     assert_eq!(
-        call(
-            &service,
-            action::PROFILE_ADD,
-            &[(1, text("Bad Id")), (2, Value::Enum(1))]
-        ),
-        Err(ActionError::Rejected("invalid_id"))
-    );
-    assert_eq!(
-        call(
-            &service,
-            action::PROFILE_ADD,
-            &[(1, text("x")), (2, Value::Enum(9))]
-        ),
+        call(&service, action::SET_PUBLIC, &[(1, Value::U64(0))]),
         Err(ActionError::InvalidArgument)
     );
+    // The removed Actions are unknown.
+    for old in [4, 5, 6, 7, 8] {
+        assert!(call(&service, old, &[]).is_err());
+    }
 }
 
 #[test]
@@ -362,142 +369,211 @@ fn the_catalog_lists_what_the_format_can_encode_in_pages() {
 fn the_budget_holds_for_the_largest_policy_the_actions_can_build() {
     let memory = Memory::default();
     let service = service(&memory);
-    for id in [
-        "aaaaaaaaaaaaaaaaaaaaaaaa",
-        "bbbbbbbbbbbbbbbbbbbbbbbb",
-        "cccccccccccccccccccccccc",
-    ] {
-        add(&service, id).unwrap();
-        set_public(&service, id, &Selection::NONE.with(SDS011_PM10)).unwrap();
-        for key in [1, 2] {
-            add_private(&service, id, key, &Selection::NONE.with(LOCATION)).unwrap();
-        }
+    for index in 0..2 {
+        set_public(&service, index, &Selection::ALL).unwrap();
+        set_private(&service, index, 1 + index as u8, &Selection::ALL).unwrap();
     }
     assert!(minicbor::len(TelemetrySectionRef(&memory.stored.borrow())) <= MAX_SECTION_PAYLOAD);
+}
+
+struct Collect(std::vec::Vec<(u32, Value)>);
+
+impl StatusWriter for Collect {
+    fn put(&mut self, id: u32, value: Value) -> Result<(), WriteError> {
+        self.0.push((id, value));
+        Ok(())
+    }
+}
+
+fn status(service: &Service_<'_>) -> std::vec::Vec<(u32, Value)> {
+    let mut out = Collect(std::vec::Vec::new());
+    block_on(service.status(&mut out)).unwrap();
+    out.0
+}
+
+fn field(fields: &[(u32, Value)], id: u32) -> Option<&Value> {
+    fields.iter().find(|(f, _)| *f == id).map(|(_, v)| v)
+}
+
+#[test]
+fn the_status_schema_is_flat_unique_and_within_the_limits() {
+    fn check<const N: usize>()
+    where
+        Slots<N>: ProfileSlots,
+    {
+        let schema = <Slots<N> as ProfileSlots>::SCHEMA;
+        assert_eq!(schema.len(), 1 + 5 * N);
+        assert!(schema.len() <= MAX_FIELDS);
+        for (i, a) in schema.iter().enumerate() {
+            assert!(!schema[..i].iter().any(|b| b.id == a.id || b.name == a.name));
+            // Names are wire ABI: `[a-z][a-z0-9_]*` and at most 24 bytes.
+            assert!(a.name.len() <= rohi_service::MAX_NAME_LEN, "{}", a.name);
+            assert!(a.name.starts_with(|c: char| c.is_ascii_lowercase()));
+            assert!(
+                a.name
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+            );
+        }
+    }
+    check::<1>();
+    check::<2>();
+    check::<3>();
+    let names: std::vec::Vec<_> = <Service_ as Status>::STATUS_SCHEMA
+        .iter()
+        .map(|f| f.name)
+        .collect();
     assert_eq!(
-        add(&service, "d"),
-        Err(ActionError::Rejected("too_many_profiles"))
+        names,
+        [
+            "generation",
+            "profile0_public",
+            "profile0_private",
+            "profile0_recipient",
+            "profile0_priv_selection",
+            "profile0_revision",
+            "profile1_public",
+            "profile1_private",
+            "profile1_recipient",
+            "profile1_priv_selection",
+            "profile1_revision",
+        ]
     );
 }
 
 #[test]
-fn status_reports_counts_without_any_policy_content() {
+fn status_reports_each_slot_and_the_recipient_only_when_there_is_one() {
     let memory = Memory::default();
     let service = service(&memory);
-    add(&service, "p").unwrap();
-    let statuses = Statuses::<NoopRawMutex, _>::new((&service,));
-    let _ = statuses;
-    assert_eq!(<Service_ as Status>::STATUS_SCHEMA.len(), 2);
+    let schema = <Service_ as Status>::STATUS_SCHEMA;
+
+    let fresh = status(&service);
+    for (id, value) in &fresh {
+        let descriptor = schema.iter().find(|f| f.id == *id).expect("in the schema");
+        assert!(descriptor.admits(value), "{}", descriptor.name);
+    }
+    assert_eq!(
+        field(&fresh, status_field::profile(0, status_field::PRIVATE)),
+        Some(&Value::Bool(false))
+    );
+    assert!(field(&fresh, status_field::profile(0, status_field::RECIPIENT)).is_none());
+    assert_eq!(
+        field(&fresh, status_field::profile(1, status_field::REVISION)),
+        Some(&Value::U64(0))
+    );
+
+    set_public(&service, 1, &Selection::NONE.with(SDS011_PM10)).unwrap();
+    set_private(&service, 1, 7, &Selection::NONE.with(LOCATION)).unwrap();
+    let fields = status(&service);
+    for (id, value) in &fields {
+        let descriptor = schema.iter().find(|f| f.id == *id).expect("in the schema");
+        assert!(descriptor.admits(value), "{}", descriptor.name);
+        if let Value::Bytes(b) = value {
+            assert!(b.len() <= MAX_FIELD_VALUE_LEN);
+        }
+    }
+    assert_eq!(
+        field(&fields, status_field::profile(1, status_field::PRIVATE)),
+        Some(&Value::Bool(true))
+    );
+    assert_eq!(
+        field(&fields, status_field::profile(1, status_field::RECIPIENT)).and_then(Value::as_bytes),
+        Some(&[7u8; 32][..])
+    );
+    let public = field(&fields, status_field::profile(1, status_field::PUBLIC))
+        .and_then(Value::as_bytes)
+        .and_then(Selection::from_slice)
+        .unwrap();
+    assert!(public.contains(SDS011_PM10));
+    assert_eq!(
+        field(&fields, status_field::profile(1, status_field::REVISION)),
+        Some(&Value::U64(2))
+    );
+    // Slot 0 is untouched.
+    assert_eq!(
+        field(&fields, status_field::profile(0, status_field::REVISION)),
+        Some(&Value::U64(0))
+    );
+    assert!(field(&fields, status_field::profile(0, status_field::RECIPIENT)).is_none());
+    assert_eq!(
+        field(&fields, status_field::GENERATION),
+        Some(&Value::U64(2))
+    );
 }
 
 #[test]
 fn the_runtime_state_follows_commits_and_stamps_go_stale() {
-    let state = TelemetryState::<NoopRawMutex, 3, 2>::new();
-    assert!(state.resolve("p").is_none());
+    let state = TelemetryState::<NoopRawMutex, 2>::new();
+    assert!(state.resolve(2).is_none(), "no slot 2");
     let mut profiles = ProfileSet::default();
-    profiles
-        .add_profile("p", PacketFormatId::Robonomics)
-        .unwrap();
     state.publish(&profiles);
-    let stamp = state.resolve("p").unwrap();
-    assert!(state.is_current(&stamp));
+    let zero = state.resolve(0).unwrap();
+    let one = state.resolve(1).unwrap();
+    assert!(state.is_current(&zero) && state.is_current(&one));
     assert_eq!(block_on(state.changed()), profiles.generation);
 
     profiles
         .set_public(
-            "p",
+            0,
             DataSelection::local(Selection::NONE.with(SDS011_PM10)),
             &Caps,
         )
         .unwrap();
     state.publish(&profiles);
     assert!(
-        !state.is_current(&stamp),
+        !state.is_current(&zero),
         "an edited policy invalidates the old stamp"
     );
+    assert!(state.is_current(&one), "the other slot is untouched");
+    assert!(!state.is_current(&ProfileStamp {
+        profile_index: 5,
+        revision: 0
+    }));
 
-    // Delete and recreate under the same id: never current for the old stamp.
-    let current = state.resolve("p").unwrap();
-    profiles.remove_profile("p").unwrap();
-    profiles
-        .add_profile("p", PacketFormatId::Robonomics)
-        .unwrap();
+    // A reset gives every slot a revision no earlier packet carries.
+    let before = [state.resolve(0).unwrap(), one];
+    profiles.clear();
     state.publish(&profiles);
-    assert!(!state.is_current(&current));
+    assert!(before.iter().all(|stamp| !state.is_current(stamp)));
     assert_eq!(state.generation(), profiles.generation);
+    assert!(state.with_profile(2, |_| ()).is_none());
+    assert!(
+        state
+            .with_profile(0, |profile| profile.public.measurements.is_none())
+            .unwrap()
+    );
 }
 
 #[test]
 fn the_section_round_trips_as_a_config_section() {
     use rohi_config::ConfigSection as _;
-    type Section = TelemetrySection<3, 2>;
+    type Section = TelemetrySection<2>;
     let mut section = Section::default();
     section
         .0
-        .add_profile("p", PacketFormatId::Robonomics)
+        .set_public(0, DataSelection::local(Selection::ALL), &Caps)
         .unwrap();
     let mut buf = [0u8; 256];
-    let len = {
-        let mut cursor = minicbor::encode::write::Cursor::new(&mut buf[..]);
-        minicbor::encode(&section, &mut cursor).unwrap();
-        cursor.position()
-    };
+    let len = rohi_config::encode_to_slice(&section, &mut buf).unwrap();
     let back = Section::decode_versioned(Section::VERSION, &buf[..len]).unwrap();
     assert_eq!(back, section);
     assert!(Section::decode_versioned(Section::VERSION + 1, &buf[..len]).is_err());
+    // The named-profile section of version 1 is not read.
+    assert!(Section::decode_versioned(1, &buf[..len]).is_err());
+    assert_eq!(Section::VERSION, 2);
 }
 
 #[test]
-fn a_section_over_the_capacity_of_the_device_is_refused_not_truncated() {
-    type Big = TelemetrySection<3, 2>;
-    type Device = TelemetrySection<2, 1>;
-    let mut big = Big::default();
-    for id in ["a", "b", "c"] {
-        big.0.add_profile(id, PacketFormatId::Robonomics).unwrap();
-    }
+fn a_section_of_another_capacity_is_refused_not_truncated() {
+    type Big = TelemetrySection<3>;
+    type Device = TelemetrySection<2>;
+    let big = Big::default();
     let mut buf = [0u8; 512];
     let len = rohi_config::encode_to_slice(&big, &mut buf).unwrap();
-    // Three profiles do not fit two slots.
-    assert!(minicbor::decode::<Device>(&buf[..len]).is_err());
-
-    // Two recipients do not fit one.
-    let mut two = Big::default();
-    two.0.add_profile("p", PacketFormatId::Robonomics).unwrap();
-    for (seed, id) in [(1u8, "x"), (2, "y")] {
-        let _ = id;
-        two.0
-            .add_private(
-                "p",
-                RecipientAddress([seed; 32]),
-                crate::DataSelection::local(Selection::NONE.with(LOCATION)),
-                &Caps,
-            )
-            .unwrap();
-    }
-    let len = rohi_config::encode_to_slice(&two, &mut buf).unwrap();
     assert!(minicbor::decode::<Device>(&buf[..len]).is_err());
 
     // The identity of the section does not depend on the capacity.
     use rohi_config::ConfigSection as _;
     assert_eq!(Big::ID, Device::ID);
     assert_eq!(Device::ID.0, 0x7c1e_89f0_a500_7b17);
-}
-
-#[test]
-fn a_device_with_two_profiles_and_one_recipient_refuses_one_more_of_each() {
-    let mut device = TelemetryConfig::<2, 1>::default();
-    device.add_profile("a", PacketFormatId::Robonomics).unwrap();
-    device.add_profile("b", PacketFormatId::Robonomics).unwrap();
-    assert_eq!(
-        device.add_profile("c", PacketFormatId::Robonomics),
-        Err(ProfileError::TooManyProfiles)
-    );
-    let selection = crate::DataSelection::local(Selection::NONE.with(LOCATION));
-    device
-        .add_private("a", RecipientAddress([1; 32]), selection, &Caps)
-        .unwrap();
-    assert_eq!(
-        device.add_private("a", RecipientAddress([2; 32]), selection, &Caps),
-        Err(ProfileError::TooManyRecipients)
-    );
 }

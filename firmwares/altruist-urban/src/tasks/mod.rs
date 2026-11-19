@@ -20,12 +20,16 @@
 //! The platform declares the Embassy tasks (one per sensor, one for the store)
 //! around these pieces, because a task cannot be generic.
 
+use core::cell::Cell;
+
 use embassy_executor::{SpawnError, SpawnToken, Spawner};
+use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use log::error;
 use rohi_sdk::sensors::SensorKind;
 use rohi_sdk::sensors::runtime::{EVENT_QUEUE_CAPACITY, EventBus, Reporter, SensorStates};
 use rohi_sdk::time::Clock;
+use static_cell::StaticCell;
 
 /// The `MeasurementStore` owner.
 pub mod store;
@@ -56,4 +60,43 @@ pub fn reporter<C: Clock>(
     clock: C,
 ) -> Reporter<'static, RawMutex, C, EVENT_QUEUE_CAPACITY> {
     Reporter::new(kind, &EVENTS, clock).with_shared_states(&STATES)
+}
+
+/// A static that is built on first use instead of being initialized at link time.
+///
+/// A static whose initial value has a bit that is not zero (an `Option` of an enum is `None` by a
+/// niche value) lands in `.data`, which is copied from flash and has a tight budget on the chips.
+/// This one is all zeros until [`get`](Self::get) builds the value in place, so it stays in
+/// `.bss`.
+pub struct OnDemand<T: 'static> {
+    cell: StaticCell<T>,
+    built: BlockingMutex<RawMutex, Cell<Option<&'static T>>>,
+}
+
+impl<T> OnDemand<T> {
+    /// Nothing built yet.
+    pub const fn new() -> Self {
+        Self {
+            cell: StaticCell::new(),
+            built: BlockingMutex::new(Cell::new(None)),
+        }
+    }
+
+    /// The value, built by `init` on the first call. `init` runs once, in place.
+    pub fn get(&'static self, init: impl FnOnce() -> T) -> &'static T {
+        self.built.lock(|built| match built.get() {
+            Some(value) => value,
+            None => {
+                let value: &'static T = self.cell.init_with(init);
+                built.set(Some(value));
+                value
+            }
+        })
+    }
+}
+
+impl<T> Default for OnDemand<T> {
+    fn default() -> Self {
+        Self::new()
+    }
 }

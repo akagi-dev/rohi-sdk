@@ -29,7 +29,7 @@ use it without a firmware-specific integration.
 |--------|-------|
 | Protocol | version 1; **still under development** and changing without a version bump: keep client and firmware on the same revision |
 | Transport | BLE on devices and, on Linux, on the [`std` Altruist Urban](../guides/linux-ble.md) (BlueZ); independently, TCP records (`tcp://HOST:PORT`: a 4-byte length and one Protobuf message, no BLE frames) for the [`std` Altruist Urban](../guides/altruist-urban-std.md#control-over-tcp-and-the-rohi-tool) |
-| Security | each transport has an access mode: TCP is `restricted` by default (a handshake with a 32-byte pre-shared key, then authenticated and encrypted records; no forward secrecy), BLE is `open` by default (pairing when set to `restricted`); no TLS, see [Access control](#access-control) |
+| Security | TCP is `restricted` by default (a handshake with a 32-byte pre-shared key, then authenticated and encrypted records; no forward secrecy); **BLE is open** (no pairing, no link encryption) in this build, an accepted insecure state; no TLS, see [Access control](#access-control) |
 | Scope | local control only; telemetry uplink is a separate service |
 
 ## Access control
@@ -39,23 +39,25 @@ reconnect) or `Provision` (initialize protected state: the identity, the TCP pre
 privilege in its descriptor, and the schema shows it. `secret_args` marks sensitive arguments; it does not make an action
 privileged.
 
-Each transport endpoint (`control_tcp`, `control_ble`) has an **access mode**, stored in its own config section and
-reported in its own status:
+The TCP endpoint (`control_tcp`) has an **access mode**, stored in its config section and reported in its status. The BLE
+endpoint (`control_ble`) has none: it is open.
 
-| Request | `open` | `restricted`, TCP | `restricted`, BLE |
-|---------|--------|-------------------|-------------------|
+| Request | TCP `open` | TCP `restricted` | BLE |
+|---------|------------|------------------|-----|
 | Read | allowed | allowed | allowed |
-| Mutate, Provision | allowed | an authenticated and encrypted connection (the handshake with the pre-shared key) | an encrypted (paired) link |
+| Mutate, Provision | allowed | an authenticated and encrypted connection (the handshake with the pre-shared key) | allowed: the link is open, **not** encrypted and **not** authenticated |
 
-The defaults are TCP `restricted` and BLE `open`. The modes are independent: a handshake or a pairing on one transport
-never authorizes anything on the other. A refusal is `PermissionDenied` with a stable reason (`no_psk`,
-`encryption_required`, `pairing_required`) and the service never runs.
+The default is TCP `restricted`. An unencrypted BLE link is never reported as `encrypted` or `authenticated`; the policy
+decides from the properties the transport reports, never from a configuration flag, so a restricted BLE mode can return
+without changing the transports. A refusal is `PermissionDenied` with a stable reason (`no_psk`, `encryption_required`) and
+the service never runs.
 
 **Security belongs to the transport.** The common control layer (`rohi-control`) implements no encryption, no signature and no
 challenge: it only reads what the transport established, as the encrypted and authenticated flags of the link, and nothing in a
-request can change them. An action that carries key material of a transport (`control_psk.set_tcp_psk`) is additionally marked
-`secure_link`: in every access mode it runs only on a link the transport has protected (an encrypted BLE link, or the
-authenticated TCP connection of the current key) and is refused as `encryption_required` or `pairing_required` otherwise.
+request can change them. An action that carries key material of a transport (`control_tcp.reveal_psk`) is additionally marked
+`secure_link`: on TCP it runs only on the authenticated and encrypted connection of the current key and is refused as
+`encryption_required` otherwise. Open BLE counts as allowed for it in this phase: that is the one place where a secret
+reaches an open link, and it is an accepted exception, not a design.
 
 **Secure channel (TCP).** A restricted TCP endpoint serves only clients that complete a handshake with a 32-byte
 pre-shared key (PSK), and every record after it is authenticated and encrypted. Nothing is read or processed before the
@@ -79,16 +81,16 @@ its host stack and gets no framing encryption.
 
 **Limits.** The PSK design has **no forward secrecy**: whoever learns the key later can decrypt a recorded session and
 impersonate the device or a client. There is no TLS, no certificate and no key agreement beyond the PSK. A network attacker can
-still drop or delay traffic. BLE `open` is deliberately insecure for privileged operations: restricting TCP does not secure a device whose BLE
-endpoint is open. Pairing on BLE is Just Works (LE Secure Connections, no bonding): it keeps a passive listener out, it is
-not an authenticated link.
+still drop or delay traffic. BLE is open in this build: anyone in radio range can change the configuration, provision the identity, reset the device and
+run `reveal_psk`; restricting TCP does not secure a device that has BLE control. Telemetry payload encryption is a
+separate, packet-level property and is not affected.
 
-**TCP key.** `control_psk.set_tcp_psk` (Provision, `secure_link`) sets or replaces the key, `clear_tcp_psk` removes it, and a
-factory reset removes it and restores the defaults. Without a key a restricted TCP endpoint serves nobody; it never falls back
-to open or to plaintext. There is no unauthenticated TCP bootstrapping: the first key arrives over an encrypted (paired) BLE
-link, a device whose key is lost is recovered by a factory reset over such a link, and rotation is done over a link the old key
-or BLE protects (the TCP connections of the old key end). The `std` host can also take the key from a file for one run
-(`--control-psk-file`). See [Access and the TCP key](../use/desktop/access.md).
+**TCP key.** The device always generates the key. `control_tcp.reveal_psk` (Provision, `secure_link`) makes a new random key on
+every call, stores it, ends the TCP connections of the old one and returns the new key in its result; no client chooses a key
+and no action reads the current one. A factory reset removes it and restores the defaults. Without a key a restricted TCP
+endpoint serves nobody; it never falls back to open or to plaintext. The first key is therefore fetched over BLE (open, so in
+the clear) or over the connection of an existing key; a device whose key is lost is recovered with `reveal_psk` or a factory
+reset. The `std` host can also take the key from a file for one run (`--control-psk-file`). See [Access and the TCP key](../use/desktop/access.md).
 
 ## One control worker
 

@@ -17,81 +17,57 @@
 ///////////////////////////////////////////////////////////////////////////////
 //! `rohi tcp-key`: the pre-shared key of the TCP control endpoint.
 
-use std::path::Path;
-
-use crate::model::{FieldValue, Value};
-use crate::{ClientTransport, Device, TcpKey, write_tcp_key};
+use crate::model::Value;
+use crate::{ClientTransport, Device, write_tcp_key};
 
 use super::args::TcpKeyAction;
 use super::{CliError, Ctx};
 
-/// The field id of the `psk` argument of `control_psk.set_tcp_psk`.
+/// The field ids of the results of `control_tcp.reveal_psk`.
 const PSK: u32 = 1;
+const FINGERPRINT: u32 = 2;
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// `rohi tcp-key generate FILE`: needs no device.
-pub fn generate(file: &Path, ctx: &mut Ctx) -> Result<(), CliError> {
-    let key = TcpKey::generate()?;
-    write_tcp_key(file, key.as_bytes())?;
-    ctx.io.result(&format!(
-        "Key written to {} (readable by you only).\n\
-         Keep the file secret. Give it to a device over a protected link with \
-         `rohi --psk-file {} tcp-key set`, then connect with `--psk-file {}`.\n",
-        file.display(),
-        file.display(),
-        file.display()
-    ))
-}
-
-/// `rohi tcp-key set` and `rohi tcp-key clear`, run on the device.
+/// `rohi tcp-key reveal FILE`, run on the device: the device generates a new key, which is saved
+/// to `FILE` and never printed.
 pub async fn run<T: ClientTransport>(
     device: &mut Device<T>,
     action: TcpKeyAction,
     ctx: &mut Ctx,
 ) -> Result<(), CliError> {
-    match action {
-        TcpKeyAction::Generate { .. } => Err(CliError::Usage(
-            "this command does not talk to a device".into(),
-        )),
-        TcpKeyAction::Set { new_key } => {
-            let new = new_key.as_deref().map(TcpKey::load).transpose()?;
-            let Some(key) = new.as_ref().or(ctx.tcp_key.as_ref()) else {
-                return Err(CliError::Usage(
-                    "this needs the key: pass --psk-file FILE (or set ROHI_PSK_FILE), or --new-key FILE; \
-                     `rohi tcp-key generate FILE` creates one"
-                        .into(),
-                ));
-            };
-            let records = device
-                .invoke(
-                    "control_psk",
-                    "set_tcp_psk",
-                    &[FieldValue {
-                        field_id: PSK,
-                        value: Value::Bytes(key.as_bytes().to_vec()),
-                    }],
-                )
-                .await?;
-            let fingerprint = records
-                .iter()
-                .flatten()
-                .find_map(|field| match &field.value {
-                    Value::Bytes(bytes) => Some(hex(bytes)),
-                    _ => None,
-                })
-                .unwrap_or_default();
-            ctx.io.result(&format!(
-                "The device now authenticates TCP clients with this key (fingerprint {fingerprint}).\n\
-                 Connected TCP clients are disconnected.\n"
-            ))
-        }
-        TcpKeyAction::Clear => {
-            device.invoke("control_psk", "clear_tcp_psk", &[]).await?;
-            ctx.io
-                .result("The TCP key is removed from the device; a restricted TCP endpoint serves nobody.\n")
-        }
+    let TcpKeyAction::Reveal { file } = action;
+    // The device replaces its key on every call: refuse before the call, not after it.
+    if file.exists() {
+        return Err(CliError::Usage(format!(
+            "{} already exists; remove it or choose another file (the device replaces its key on every call)",
+            file.display()
+        )));
     }
+    let records = device.invoke("control_tcp", "reveal_psk", &[]).await?;
+    let field = |id: u32| {
+        records
+            .iter()
+            .flatten()
+            .find(|field| field.field_id == id)
+            .and_then(|field| match &field.value {
+                Value::Bytes(bytes) => Some(bytes.clone()),
+                _ => None,
+            })
+    };
+    let key: [u8; 32] = field(PSK)
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| CliError::Usage("the device returned no 32-byte key".into()))?;
+    write_tcp_key(&file, &key)?;
+    let fingerprint = field(FINGERPRINT)
+        .map(|bytes| hex(&bytes))
+        .unwrap_or_default();
+    ctx.io.result(&format!(
+        "The device generated a new key (fingerprint {fingerprint}) and saved it to {} (readable by you only).\n\
+         Connected TCP clients of the old key are disconnected. Connect with `--psk-file {}`.\n",
+        file.display(),
+        file.display()
+    ))
 }

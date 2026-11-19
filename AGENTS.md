@@ -11,7 +11,7 @@ ROHI SDK: Rust libraries, firmware and desktop tools for Robonomics Open Hardwar
 cargo test                                     # host: crates/*, tools/* and the portable part of firmwares/altruist-urban (includes doctests)
 cargo test -p altruist-urban --features std,std-tcp,sensor-simulator   # the std platform, incl. end-to-end tests
 cargo test -p rohi-logging --features lz4    # the optional LZ4 log codec (off by default; also `rohi --features lz4 --test logs`)
-cargo test -p rohi-connectivity --no-default-features   # without the `packet_get` export
+cargo test -p rohi-connectivity --no-default-features   # without the `get_payload` export
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all -- --check
 cargo check-esp32c3 && cargo check-esp32c6   # firmware, one chip per invocation
@@ -48,7 +48,7 @@ carries the same attribute.
 
 ## Capacities and transport security
 
-The capacities of the Altruist Urban are compile-time: routes, fallbacks, profiles and recipients are const generics (`firmwares/altruist-urban/src/{connectivity,telemetry}.rs`) that size the storage, the status schema and the persisted sections, and the snapshot holds only what the compiled packet format encodes; a stored value over capacity is refused, never truncated. Security is owned by each transport: `rohi-control` consumes only the encrypted/authenticated flags that a transport sets (never a request field) and implements no cryptography; TCP does its own handshake and AEAD in `rohi-control-tcp::secure` (pre-shared key, no forward secrecy), BLE relies on pairing. An action with `.secure_link()` never runs on an unprotected link. LZ4 is the off-by-default `lz4` feature of `rohi-logging`; the log has no reader for older formats.
+The capacities of the Altruist Urban are compile-time: route and profile slots (two of each, addressed by index) are const generics (`firmwares/altruist-urban/src/{connectivity,telemetry}.rs`) that size the storage, the status schema and the persisted sections, and the snapshot holds only what the compiled packet format encodes; a stored value over capacity is refused, never truncated. Security is owned by each transport: `rohi-control` consumes only the encrypted/authenticated flags that a transport sets (never a request field) and implements no cryptography; TCP does its own handshake and AEAD in `rohi-control-tcp::secure` (pre-shared key, no forward secrecy), BLE control is open (no pairing, no encryption) in the current phase, an accepted insecure state. An action with `.secure_link()` never runs on an unprotected TCP link; the TCP PSK is always device-generated (`control_tcp.reveal_psk`). LZ4 is the off-by-default `lz4` feature of `rohi-logging`; the log has no reader for older formats.
 
 ## Logging
 

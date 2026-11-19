@@ -24,7 +24,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use common::*;
-use rohi::model::{FieldValue, Value};
+use rohi::model::Value;
 use rohi::{Device, Error, TcpKey, TcpLink, write_tcp_key};
 use tempfile::TempDir;
 
@@ -41,18 +41,18 @@ fn key_file(dir: &Path, name: &str, key: &TcpKey) -> std::path::PathBuf {
     path
 }
 
-async fn set_psk(device: &mut Device<TcpLink>, key: &TcpKey) -> Result<(), Error> {
-    device
-        .invoke(
-            "control_psk",
-            "set_tcp_psk",
-            &[FieldValue {
-                field_id: 1,
-                value: Value::Bytes(key.as_bytes().to_vec()),
-            }],
-        )
-        .await
-        .map(|_| ())
+/// Asks the device for a new key; the device generates it.
+async fn reveal_psk(device: &mut Device<TcpLink>) -> Result<TcpKey, Error> {
+    let records = device.invoke("control_tcp", "reveal_psk", &[]).await?;
+    let bytes = records
+        .iter()
+        .flatten()
+        .find_map(|field| match (&field.field_id, &field.value) {
+            (1, Value::Bytes(bytes)) => Some(bytes.clone()),
+            _ => None,
+        })
+        .expect("the result carries the key");
+    Ok(TcpKey::from_bytes(bytes.try_into().expect("32 bytes")).unwrap())
 }
 
 async fn patch_ssid(device: &mut Device<TcpLink>, ssid: &str) -> Result<(), Error> {
@@ -75,21 +75,27 @@ async fn the_endpoints_are_discoverable_with_their_defaults() {
     let sim = Sim::start(&Launch::new());
     let mut device = sim.device().await;
     let sections = device.config_sections().await.unwrap();
-    for name in ["control_tcp", "control_ble"] {
-        assert!(
-            sections.iter().any(|section| section.name == name),
-            "{name}"
-        );
-    }
+    assert!(sections.iter().any(|section| section.name == "control_tcp"));
+    // The BLE endpoint has nothing to configure: no section, no enable flag, no mode.
+    assert!(sections.iter().all(|section| section.name != "control_ble"));
     let tcp = fields(&mut device, "control_tcp").await;
     assert_eq!(tcp.get("state"), Some(&Value::Enum("running".into())));
     assert_eq!(tcp.get("access_mode"), Some(&text("open")));
+    // Only what is in use is reported: no stored-versus-running pairs, no enable flag.
+    for retired in [
+        "enabled",
+        "desired_enabled",
+        "desired_port",
+        "desired_address",
+        "restart_required",
+    ] {
+        assert!(!tcp.contains_key(retired), "{retired}");
+    }
     let ble = fields(&mut device, "control_ble").await;
     assert_eq!(ble.get("access_mode"), Some(&text("open")));
     // There is no key and the status never shows one.
-    let psk = fields(&mut device, "control_psk").await;
-    assert_eq!(psk.get("enrolled"), Some(&Value::Bool(false)));
-    assert!(!psk.contains_key("fingerprint"));
+    assert_eq!(tcp.get("psk_enrolled"), Some(&Value::Bool(false)));
+    assert!(!tcp.contains_key("fingerprint"));
     drop(device);
     sim.stop();
 }
@@ -168,14 +174,14 @@ async fn a_client_with_the_key_is_served_and_everyone_else_is_not() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn the_key_is_never_provisioned_over_an_unauthenticated_link() {
+async fn the_key_is_never_revealed_over_an_unauthenticated_link() {
     // An open endpoint takes every other request in the clear, but not the key.
     let sim = Sim::start(&Launch::new());
     let mut device = sim.device().await;
-    let refused = set_psk(&mut device, &key(5)).await;
+    let refused = reveal_psk(&mut device).await.map(|_| ());
     assert_eq!(reason(refused), "encryption_required", "{}", sim.log());
-    let psk = fields(&mut device, "control_psk").await;
-    assert_eq!(psk.get("enrolled"), Some(&Value::Bool(false)));
+    let tcp = fields(&mut device, "control_tcp").await;
+    assert_eq!(tcp.get("psk_enrolled"), Some(&Value::Bool(false)));
     drop(device);
     sim.stop();
 }
@@ -184,12 +190,12 @@ async fn the_key_is_never_provisioned_over_an_unauthenticated_link() {
 async fn a_key_is_rotated_over_the_secure_channel_and_ends_the_old_connections() {
     let dir = TempDir::new().unwrap();
     let old = key(1);
-    let new = key(2);
     let file = key_file(dir.path(), "old.key", &old);
     let sim = Sim::start(&Launch::new().restricted().psk_file(&file));
 
     let mut device = sim.secure_device(&old).await;
-    set_psk(&mut device, &new).await.unwrap();
+    let new = reveal_psk(&mut device).await.unwrap();
+    assert_ne!(new.as_bytes(), old.as_bytes());
     // The device ended the connection of the old key after the answer.
     assert!(device.info().await.is_err());
     drop(device);
@@ -199,8 +205,8 @@ async fn a_key_is_rotated_over_the_secure_channel_and_ends_the_old_connections()
         TcpLink::connect_secure(&sim.control.to_string(), Duration::from_secs(10), &old).await;
     assert!(matches!(refused, Err(Error::Unauthorized(_))));
     let mut device = sim.secure_device(&new).await;
-    let psk = fields(&mut device, "control_psk").await;
-    assert_eq!(psk.get("enrolled"), Some(&Value::Bool(true)));
+    let tcp = fields(&mut device, "control_tcp").await;
+    assert_eq!(tcp.get("psk_enrolled"), Some(&Value::Bool(true)));
     patch_ssid(&mut device, "rotated").await.unwrap();
     drop(device);
     sim.stop();
@@ -210,7 +216,6 @@ async fn a_key_is_rotated_over_the_secure_channel_and_ends_the_old_connections()
 async fn a_stored_key_survives_a_restart_and_a_factory_reset_removes_it() {
     let dir = TempDir::new().unwrap();
     let storage = dir.path().join("device.flash");
-    let psk = key(3);
     let bootstrap = key_file(dir.path(), "bootstrap.key", &key(9));
 
     // The first run authenticates with a key file, stores another and restricts the endpoint.
@@ -221,7 +226,7 @@ async fn a_stored_key_survives_a_restart_and_a_factory_reset_removes_it() {
             .psk_file(&bootstrap),
     );
     let mut device = sim.secure_device(&key(9)).await;
-    set_psk(&mut device, &psk).await.unwrap();
+    let psk = reveal_psk(&mut device).await.unwrap();
     drop(device);
     let mut device = sim.secure_device(&psk).await;
     device
@@ -238,8 +243,8 @@ async fn a_stored_key_survives_a_restart_and_a_factory_reset_removes_it() {
     // Without a key file, the stored key applies: the device starts restricted and trusts it.
     let sim = Sim::start(&Launch::new().storage(&storage).restricted());
     let mut device = sim.secure_device(&psk).await;
-    let state = fields(&mut device, "control_psk").await;
-    assert_eq!(state.get("enrolled"), Some(&Value::Bool(true)));
+    let state = fields(&mut device, "control_tcp").await;
+    assert_eq!(state.get("psk_enrolled"), Some(&Value::Bool(true)));
     patch_ssid(&mut device, "kept").await.unwrap();
 
     // A factory reset removes the key; the connection of the old key ends with it.
@@ -299,4 +304,36 @@ async fn a_client_that_fails_the_proof_is_counted_and_never_processed() {
     );
     drop(device);
     sim.stop();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_taken_stored_port_fails_the_endpoint_and_nothing_else() {
+    let dir = TempDir::new().unwrap();
+    let storage = dir.path().join("device.flash");
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = taken.local_addr().unwrap().port();
+
+    // The port is stored; it applies at the next start, never at once.
+    let sim = Sim::start(&Launch::new().storage(&storage));
+    let mut device = sim.device().await;
+    device
+        .config_patch("control_tcp", &[set(4, Value::U64(port.into()))], false)
+        .await
+        .unwrap();
+    let tcp = fields(&mut device, "control_tcp").await;
+    assert_ne!(tcp.get("port"), Some(&Value::U64(port.into())));
+    drop(device);
+    assert!(sim.stop().success());
+
+    // The device starts anyway: the endpoint is reported failed, the rest runs.
+    let sim = Sim::start(
+        &Launch::new()
+            .storage(&storage)
+            .stored_port()
+            .arg("--manage-port")
+            .arg("0"),
+    );
+    let log = sim.log();
+    assert!(log.contains("cannot listen"), "{log}");
+    assert!(sim.stop().success());
 }

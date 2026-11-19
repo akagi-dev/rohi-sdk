@@ -95,6 +95,7 @@ const FIRST_FILE: &str = if cfg!(feature = "lz4") {
 const CONFIG: LoggingConfig = LoggingConfig {
     level: rohi_logging::LogLevel::Debug,
     storage: LogStorageKind::Internal,
+    #[cfg(feature = "lz4")]
     compression: rohi_logging::DEFAULT_COMPRESSION,
     retention_bytes: 4096 * 12,
     segment_bytes: 4096,

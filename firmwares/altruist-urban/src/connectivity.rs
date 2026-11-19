@@ -23,7 +23,7 @@
 //! [`UrbanPackets`] builds sealed packets: it captures the local sensors and
 //! the location once, applies a telemetry profile and lets the Robonomics
 //! format encrypt and sign the result with the device identity. The
-//! publisher ([`run`]) and the `packet_get` export use it; the publisher only
+//! publisher ([`run`]) and the `get_payload` export use it; the publisher only
 //! reads snapshots, so whatever the uplink does it can neither delay nor stop
 //! the sensors.
 
@@ -49,30 +49,29 @@ use rohi_sdk::time::{Clock, EmbassyClock};
 use crate::bindings::PrivateBinding;
 use crate::config::{ConfigHandle, ServiceError};
 use crate::identity::StaticSigner;
-use crate::tasks::RawMutex;
+use crate::tasks::{OnDemand, RawMutex};
 use crate::{location, telemetry, time};
 
-/// Routes the device keeps: the storage of the route table, of the runtime and of the status
-/// schema is sized for this many. A stored table with more is refused, not truncated.
+/// Route slots the device keeps, addressed by index `0` and `1` (a route has one endpoint and at
+/// most one fallback): the storage of the route table, of the runtime and of the status schema is
+/// sized for this many. A stored table with another count is refused, not truncated.
 pub const ROUTES: usize = 2;
-/// Fallbacks of a route, besides its primary endpoint.
-pub const FALLBACKS: usize = 1;
 
 /// The routes of the device.
-pub type RouteSet = Routes<ROUTES, FALLBACKS>;
+pub type RouteSet = Routes<ROUTES>;
 
 /// The persisted section of the routes of the device.
-pub type Section = ConnectivitySection<ROUTES, FALLBACKS>;
+pub type Section = ConnectivitySection<ROUTES>;
 
 /// The effective routes and the status of the publisher, for the capacities of the device.
-pub type State = ConnectivityState<RawMutex, ROUTES, FALLBACKS>;
+pub type State = ConnectivityState<RawMutex, ROUTES>;
 
 /// Packets queued per route while the uplink is down. When the outbox is full
 /// new packets are skipped, never queued over old ones.
 pub const OUTBOX_DEPTH: usize = 2;
 /// Sealed packets the pool holds: queued, being sent or being built.
 pub const POOL_SLOTS: usize = 2;
-/// Packet streams `packet_get` keeps open at once.
+/// Packet streams `get_payload` keeps open at once.
 pub const EXPORT_STREAMS: usize = 1;
 /// Size of a sealed packet buffer: the largest envelope of the format.
 pub const PACKET_BYTES: usize = MAX_ENVELOPE_LEN;
@@ -92,11 +91,11 @@ pub type Snapshot = TelemetrySnapshot<SNAPSHOT_OBSERVATIONS, SNAPSHOT_SOURCES>;
 /// Budget of one source during a capture, in milliseconds.
 const SOURCE_TIMEOUT_MS: u32 = 2_000;
 
-static STATE: State = ConnectivityState::new();
+static STATE: OnDemand<State> = OnDemand::new();
 
 /// The effective routes and the runtime status of the publisher.
 pub fn state() -> &'static State {
-    &STATE
+    STATE.get(State::new)
 }
 
 /// Fills a buffer with unpredictable bytes; `false` when no entropy is
@@ -130,19 +129,19 @@ impl PrivateBinding for ConnectivityBinding {
             Some(section) => {
                 if let Err(error) = validate_routes(&section.0) {
                     warn_invalid_routes(error);
-                    STATE.mark_unreadable();
+                    state().mark_unreadable();
                     return;
                 }
                 info!(
                     "Connectivity: {} route(s), generation {}",
-                    section.0.routes.len(),
+                    section.0.count(),
                     section.0.generation
                 );
-                STATE.publish(&section.0);
+                state().publish(&section.0);
             }
             None => {
                 info!("Connectivity: no routes");
-                STATE.publish(&empty_routes(STATE.generation()));
+                state().publish(&empty_routes(state().generation()));
             }
         }
     }
@@ -152,12 +151,22 @@ impl PrivateBinding for ConnectivityBinding {
             "Connectivity: stored routes unreadable, nothing is sent: {}",
             error
         );
-        STATE.mark_unreadable();
+        state().mark_unreadable();
     }
 }
 
 fn validate_routes(routes: &RouteSet) -> Result<(), RouteError> {
-    routes.validate()
+    routes.validate()?;
+    // A route bound to a profile slot this firmware does not have publishes nothing useful.
+    if routes
+        .slots
+        .iter()
+        .flatten()
+        .any(|route| usize::from(route.profile_index) >= telemetry::PROFILES)
+    {
+        return Err(RouteError::InvalidIndex);
+    }
+    Ok(())
 }
 
 #[cold]
@@ -168,6 +177,12 @@ fn warn_invalid_routes(error: RouteError) {
         "Stored routes are invalid, nothing is sent (err={:?})",
         error
     );
+}
+
+#[cold]
+#[inline(never)]
+fn warn_replaced(target: &'static str, error: &dyn fmt::Display) {
+    warn!(target: target, "Stored section not readable, a commit replaces it (err={})", error);
 }
 
 fn empty_routes(generation: u32) -> RouteSet {
@@ -188,19 +203,25 @@ fn store_error(error: ServiceError) -> StoreError {
     }
 }
 
-impl ConnectivityStore<ROUTES, FALLBACKS> for StoredRoutes {
+impl ConnectivityStore<ROUTES> for StoredRoutes {
     async fn load(&self) -> Result<RouteSet, StoreError> {
         match self.0.get::<Section>().await {
             Ok(Some(section)) => {
                 if let Err(error) = validate_routes(&section.0) {
                     warn_invalid_routes(error);
-                    STATE.mark_unreadable();
+                    state().mark_unreadable();
                     Err(StoreError::Internal)
                 } else {
                     Ok(section.0)
                 }
             }
-            Ok(None) => Ok(empty_routes(STATE.generation())),
+            Ok(None) => Ok(empty_routes(state().generation())),
+            // A section of another version or format is not read and not migrated: the next
+            // commit replaces it, so the device is never stuck on it.
+            Err(ServiceError::Section(error)) => {
+                warn_replaced("connectivity", &error);
+                Ok(empty_routes(state().generation()))
+            }
             Err(error) => Err(store_error(error)),
         }
     }
@@ -268,15 +289,13 @@ impl UrbanPackets {
         out: &mut [u8],
     ) -> Result<usize, BuildFailure> {
         let profile = telemetry::state()
-            .with_profile(stamp.id.as_str(), |profile| profile.clone())
-            .filter(|profile| {
-                profile.incarnation == stamp.incarnation && profile.revision == stamp.revision
-            })
+            .with_profile(stamp.profile_index, |profile| *profile)
+            .filter(|profile| profile.revision == stamp.revision)
             .ok_or(BuildFailure::ProfileChanged)?;
         let key = StaticSigner;
         let mut format =
             RobonomicsFormat::new(&key, FnEntropy(self.entropy), time::service(), EmbassyClock);
-        let sections = prepare(snapshot, &profile, &format.supported())
+        let sections = prepare(snapshot, stamp.profile_index, &profile, &format.supported())
             .map_err(|_| BuildFailure::NothingToPackage)?;
         let len = format
             .seal(&sections, out)
@@ -295,8 +314,8 @@ impl UrbanPackets {
 impl PacketProvider for UrbanPackets {
     type Snapshot = Snapshot;
 
-    fn resolve(&self, profile: &str) -> Option<ProfileStamp> {
-        telemetry::state().resolve(profile)
+    fn resolve(&self, profile_index: u8) -> Option<ProfileStamp> {
+        telemetry::state().resolve(profile_index)
     }
 
     fn is_current(&self, stamp: &ProfileStamp) -> bool {
@@ -326,17 +345,17 @@ impl PacketExporter for UrbanPackets {
         EmbassyClock.now().millis
     }
 
-    fn resolve(&self, profile: &str) -> Option<ProfileStamp> {
-        telemetry::state().resolve(profile)
+    fn resolve(&self, profile_index: u8) -> Option<ProfileStamp> {
+        telemetry::state().resolve(profile_index)
     }
 
     async fn export(
         &self,
-        profile: &str,
+        profile_index: u8,
         out: &mut [u8],
     ) -> Result<(ProfileStamp, usize), BuildFailure> {
         let stamp = telemetry::state()
-            .resolve(profile)
+            .resolve(profile_index)
             .ok_or(BuildFailure::ProfileChanged)?;
         let snapshot = self.capture_snapshot().await?;
         let len = self.seal(&snapshot, &stamp, out).await?;
@@ -351,14 +370,13 @@ pub type UrbanConnectivity = ConnectivityService<
     StoredRoutes,
     UrbanPackets,
     ROUTES,
-    FALLBACKS,
     EXPORT_STREAMS,
     PACKET_BYTES,
 >;
 
 /// The service over the routes stored behind `config`.
 pub fn service(config: ConfigHandle, packets: UrbanPackets) -> UrbanConnectivity {
-    ConnectivityService::new(StoredRoutes(config), packets, &STATE)
+    ConnectivityService::new(StoredRoutes(config), packets, state())
 }
 
 /// Runs the publisher; never returns. The platform runs it in its connectivity
@@ -373,18 +391,16 @@ pub async fn run<I: IpBackend>(network: NetworkHandle<'static, I>, packets: Urba
         Delay,
         EmbassyClock,
         ROUTES,
-        FALLBACKS,
         OUTBOX_DEPTH,
         POOL_SLOTS,
         PACKET_BYTES,
-    > = Publisher::new(&STATE, packets, transport, Delay, EmbassyClock);
+    > = Publisher::new(state(), packets, transport, Delay, EmbassyClock);
     publisher.run().await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rohi_sdk::telemetry::PacketProfileId;
 
     #[test]
     fn missing_routes_keep_the_runtime_generation() {
@@ -395,17 +411,22 @@ mod tests {
     fn invalid_persisted_routes_are_rejected() {
         let mut routes = RouteSet::default();
         routes
-            .add_route(
-                "uplink",
-                rohi_sdk::connectivity::ProfileBinding {
-                    id: PacketProfileId::new("weather").unwrap(),
-                    incarnation: 1,
-                },
-                "http://example.test",
-            )
+            .set_endpoint(0, 0, Some("http://example.test"))
             .unwrap();
-        routes.routes[0].interval_s = 0;
+        if let Some(route) = routes.slots[0].as_mut() {
+            route.interval_s = 0;
+        }
 
         assert_eq!(validate_routes(&routes), Err(RouteError::InvalidInterval));
+    }
+
+    #[test]
+    fn a_route_of_a_missing_profile_slot_is_rejected() {
+        let mut routes = RouteSet::default();
+        routes
+            .set_endpoint(1, telemetry::PROFILES as u8, Some("http://example.test"))
+            .unwrap();
+
+        assert_eq!(validate_routes(&routes), Err(RouteError::InvalidIndex));
     }
 }

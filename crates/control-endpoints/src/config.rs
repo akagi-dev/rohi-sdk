@@ -15,7 +15,7 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-//! The persisted `control_tcp` and `control_ble` sections.
+//! The persisted `control_tcp` section.
 
 use core::net::Ipv4Addr;
 
@@ -29,7 +29,7 @@ use rohi_service::{Config, EnumDescriptor, EnumVariant};
 /// Id of the enum of the `access_mode` field.
 const ACCESS_MODE_ENUM: u32 = 1;
 
-/// The enum of the `access_mode` field of both sections.
+/// The enum of the `access_mode` field.
 pub const ACCESS_MODES: &[EnumDescriptor] = &[EnumDescriptor::new(
     ACCESS_MODE_ENUM,
     &[
@@ -97,13 +97,13 @@ impl From<TransportAccessMode> for AccessMode {
 ///
 /// | Field | Id | Default | Meaning |
 /// |-------|----|---------|---------|
-/// | `enabled` | 1 | `true` | whether the platform listens at all |
-/// | `access_mode` | 2 | `restricted` | what a client needs (TCP: the handshake with the pre-shared key; BLE: an encrypted link) |
+/// | `access_mode` | 2 | `restricted` | what a client needs: the handshake with the pre-shared key (`restricted`) or nothing (`open`) |
 /// | `bind_address` | 3 | `127.0.0.1` | IPv4 address of the listener |
 /// | `port` | 4 | `9300` | port of the listener, 0 for any free one |
 ///
 /// Only the platform that has a TCP listener (the `std` platform) acts on it.
-/// A change of `enabled`, `bind_address` or `port` applies at the next start; a
+/// The endpoint always starts with the defaults plus these stored values; a change applies at the next
+/// start (reboot), never partly. A
 /// launch option of the platform overrides the stored value for that run. A
 /// non-loopback address exposes the control port to the network: the platform
 /// refuses it unless the operator explicitly allows remote access.
@@ -112,20 +112,16 @@ impl From<TransportAccessMode> for AccessMode {
 /// use rohi_control_endpoints::ControlTcpConfig;
 ///
 /// let config = ControlTcpConfig::default();
-/// assert!(config.enabled);
 /// assert_eq!(config.port, 9300);
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq, Config)]
 #[config(
     name = "control_tcp",
     overrides = ControlTcpOverrides,
-    version = 1,
+    version = 2,
     enums = ACCESS_MODES
 )]
 pub struct ControlTcpConfig {
-    /// Whether the endpoint listens.
-    #[config(id = 1)]
-    pub enabled: bool,
     /// What privileged requests need.
     #[config(id = 2, with = Variant, enum_id = ACCESS_MODE_ENUM)]
     pub access_mode: AccessMode,
@@ -140,7 +136,6 @@ pub struct ControlTcpConfig {
 impl Default for ControlTcpConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
             access_mode: AccessMode::Restricted,
             bind_address: Ipv4::from(Ipv4Addr::LOCALHOST),
             port: 9300,
@@ -152,65 +147,9 @@ impl ControlTcpConfig {
     /// The runtime view of the section.
     pub fn settings(&self) -> EndpointSettings {
         EndpointSettings {
-            enabled: self.enabled,
             mode: self.access_mode.into(),
             address: Ipv4Addr::from(self.bind_address).octets(),
             port: self.port,
-        }
-    }
-}
-
-/// The effective `control_ble` section: the control endpoint over BLE. The
-/// radio, the name and the advertising stay in the `ble` section.
-///
-/// | Field | Id | Default | Meaning |
-/// |-------|----|---------|---------|
-/// | `enabled` | 1 | `true` | whether the endpoint serves centrals |
-/// | `access_mode` | 2 | `open` | what privileged requests need (an encrypted, paired link) |
-///
-/// `open` is deliberately insecure for privileged operations: anyone in radio
-/// range can change the configuration. Provisioning (the identity, the pre-shared key of the
-/// TCP endpoint) needs an encrypted link even here, but pairing is not restricted in this mode.
-/// Restricting TCP does not secure a device whose BLE endpoint stays open.
-///
-/// ```
-/// use rohi_control_endpoints::{AccessMode, ControlBleConfig};
-///
-/// assert_eq!(ControlBleConfig::default().access_mode, AccessMode::Open);
-/// ```
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Config)]
-#[config(
-    name = "control_ble",
-    overrides = ControlBleOverrides,
-    version = 1,
-    enums = ACCESS_MODES
-)]
-pub struct ControlBleConfig {
-    /// Whether the endpoint serves centrals.
-    #[config(id = 1)]
-    pub enabled: bool,
-    /// What privileged requests need.
-    #[config(id = 2, with = Variant, enum_id = ACCESS_MODE_ENUM)]
-    pub access_mode: AccessMode,
-}
-
-impl Default for ControlBleConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            access_mode: AccessMode::Open,
-        }
-    }
-}
-
-impl ControlBleConfig {
-    /// The runtime view of the section.
-    pub fn settings(&self) -> EndpointSettings {
-        EndpointSettings {
-            enabled: self.enabled,
-            mode: self.access_mode.into(),
-            address: [0; 4],
-            port: 0,
         }
     }
 }
@@ -222,17 +161,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_defaults_are_restricted_tcp_and_open_ble() {
-        let tcp = ControlTcpConfig::default().settings();
-        assert_eq!(tcp, EndpointSettings::TCP);
+    fn the_defaults_are_restricted_loopback() {
         assert_eq!(
-            ControlBleConfig::default().settings(),
-            EndpointSettings::BLE
+            ControlTcpConfig::default().settings(),
+            EndpointSettings::TCP
         );
     }
-
     #[test]
-    fn the_modes_are_stored_independently() {
+    fn the_mode_is_stored_as_an_override() {
         let tcp: ControlTcpConfig = materialize(
             &ControlTcpOverrides::default(),
             &ControlTcpOverrides {
@@ -241,11 +177,6 @@ mod tests {
             },
         );
         assert_eq!(tcp.access_mode, AccessMode::Open);
-        let ble: ControlBleConfig = materialize(
-            &ControlBleOverrides::default(),
-            &ControlBleOverrides::default(),
-        );
-        assert_eq!(ble.access_mode, AccessMode::Open);
         assert_eq!(ControlTcpOverrides::default().is_overridden(2), Some(false));
     }
 

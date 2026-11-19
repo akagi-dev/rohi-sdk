@@ -313,7 +313,7 @@ fn unauthorized_diagnostic(reason: &str) -> Diagnostic {
     match reason {
         "no_psk" => diagnostic
             .hint("no TCP key is provisioned, so a restricted TCP endpoint serves nobody")
-            .hint("provision one over a protected link (the paired BLE link): `rohi --psk-file FILE tcp-key set`"),
+            .hint("make the device generate one: `rohi tcp-key reveal FILE` (over BLE)"),
         "encryption_required" => diagnostic
             .hint("this request needs an encrypted and authenticated link")
             .hint("connect to a restricted TCP endpoint with the key: `--psk-file FILE`"),

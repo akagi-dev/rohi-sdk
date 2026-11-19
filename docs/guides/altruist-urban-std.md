@@ -136,19 +136,20 @@ protected by its access mode (see [Access control](../build/control-protocol.md#
   and every request and response is then authenticated and encrypted. `rohi --psk-file FILE` does it automatically;
 - a restricted endpoint without a key serves nobody (and never falls back to plaintext). Give the process the key with
   `--control-psk-file FILE` (64 hex characters or 32 raw bytes, for that run; it replaces the stored key and is never stored or
-  logged) or provision it over a paired BLE link (`rohi tcp-key set`); `rohi tcp-key generate tcp.key` creates the key file.
+  logged) or let the device generate it: `rohi tcp-key reveal tcp.key` (action `control_tcp reveal_psk`; every call makes a
+  new key, a client never chooses one).
   `--control-open` opens the endpoint for one run instead: plaintext and unauthenticated, for loopback development only, and even
   then the key itself is never accepted over it;
-- the stored `control_tcp` section (`enabled`, `access_mode`, `bind_address`, `port`) is read at start; `--bind` and
-  `--control-port` override the stored address and port for that run, and a port given on the command line also starts
-  the listener when the section switched it off. The access mode applies at once; the other fields apply at the next
-  start and the status shows `restart_required`;
+- the stored `control_tcp` section (`access_mode`, `bind_address`, `port`) is read at start, on top of the defaults (an
+  empty storage is the defaults, there is no `enabled` flag); `--bind` and `--control-port` override the stored address
+  and port for that run. A change applies as a whole at the next start. If the stored or default port is taken the endpoint
+  is `failed` in its status and the rest of the device starts; a port given on the command line that is taken is a startup error;
 - both listeners bind to `127.0.0.1` by default; a non-loopback address, from `--bind` or from the section, is refused
   unless `--unsafe-allow-remote` is given: with the endpoint restricted a remote client still needs the key; with it open
   (`--control-open`) anyone who can reach the port can read and control the device;
-- BLE (BlueZ) is `open` by default; with `control_ble access_mode=restricted` the control characteristic needs an
-  encrypted link and BlueZ asks the central to pair (Just Works; a paired link is reported as encrypted but not
-  authenticated). Restricting TCP does not secure the device while BLE stays open.
+- BLE (BlueZ) is open: no pairing and no link encryption, and the link is never reported as encrypted or authenticated.
+  Anyone in radio range can do everything, including `reveal_psk` and `system factory_reset`; restricting TCP does not
+  secure the device while BLE control runs.
 
 A signature gives no confidentiality; none of this is production-secure.
 
@@ -257,7 +258,7 @@ abandoned request, TCP framing errors, reconnection, readiness and the refusal o
 ## Local edge end-to-end
 
 Identity, time and the telemetry uplink run on the host network. Provisioning a test identity and sending telemetry to a
-local `robins edge` is possible by hand (`rohi action identity provision`, create a telemetry profile and a route:
-`rohi telemetry profile_add env robonomics`, `rohi telemetry set_public env bmx280`,
-`rohi connectivity route_add edge env http://127.0.0.1:PORT`), but an automated end-to-end test against a local edge is **not
+local `robins edge` is possible by hand (`rohi action identity provision`, set a telemetry profile and a route:
+`rohi telemetry set_public 0 bmx280`,
+`rohi connectivity set_endpoint 0 0 http://127.0.0.1:PORT`), but an automated end-to-end test against a local edge is **not
 implemented yet**. There is no TLS yet.

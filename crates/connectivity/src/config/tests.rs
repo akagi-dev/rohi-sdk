@@ -16,319 +16,278 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 use super::*;
+use crate::endpoint::MAX_ENDPOINT_LEN;
 
-// The capacities the tests exercise: more than a device keeps, to cover every edge.
-type RouteSet = crate::Routes<3, 2>;
-
-type Set = RouteSet;
-
-fn binding(id: &str, incarnation: u32) -> ProfileBinding {
-    ProfileBinding {
-        id: PacketProfileId::new(id).unwrap(),
-        incarnation,
-    }
-}
+// More slots than a device keeps, to cover every edge; the firmware uses 2.
+type Set = Routes<3>;
 
 fn set() -> Set {
     Set::default()
 }
 
 #[test]
-fn there_is_no_route_until_one_is_added_and_the_defaults_are_documented() {
+fn there_is_no_route_until_one_is_set_and_the_defaults_are_documented() {
     let mut set = set();
-    assert!(set.routes.is_empty());
-    set.add_route(
-        "community",
-        binding("environment", 3),
-        "http://ingress.example.org",
-    )
-    .unwrap();
-    let route = set.get("community").unwrap();
+    assert_eq!(set.count(), 0);
+    assert!((0..3).all(|index| set.get(index).is_none()));
+    set.set_endpoint(1, 0, Some("http://ingress.example.org"))
+        .unwrap();
+    assert_eq!(set.count(), 1);
+    assert!(set.get(0).is_none() && set.get(2).is_none());
+    let route = set.get(1).unwrap();
+    assert_eq!(route.interval_s, DEFAULT_INTERVAL_S);
     assert_eq!(route.interval_s, 60);
-    assert!(route.fallbacks.is_empty());
-    assert_eq!(route.profile.incarnation, 3);
+    assert_eq!(route.fallback, None);
+    assert_eq!(route.profile_index, 0);
 }
 
 #[test]
-fn ids_endpoints_and_capacity_are_validated() {
+fn indices_are_bounded_by_the_capacity() {
     let mut set = set();
-    let profile = || binding("p", 1);
-    for bad in ["", "Upper", "a b", "abcdefghijklmnopq"] {
-        assert_eq!(
-            set.add_route(bad, profile(), "http://a.example"),
-            Err(RouteError::InvalidId)
-        );
+    for index in [0, 1, 2] {
+        set.set_endpoint(index, 0, Some("http://a.example"))
+            .unwrap();
     }
+    for index in [3, 4, usize::MAX] {
+        let before = set.clone();
+        assert_eq!(
+            set.set_endpoint(index, 0, Some("http://a.example")),
+            Err(RouteError::InvalidIndex)
+        );
+        assert_eq!(
+            set.set_endpoint(index, 0, None),
+            Err(RouteError::InvalidIndex)
+        );
+        assert_eq!(set.set_interval(index, 60), Err(RouteError::InvalidIndex));
+        assert_eq!(
+            set.set_fallback(index, Some("http://b.example")),
+            Err(RouteError::InvalidIndex)
+        );
+        assert_eq!(set, before);
+        assert!(set.get(index).is_none());
+    }
+}
+
+#[test]
+fn endpoints_and_intervals_are_validated() {
+    let mut set = set();
     for bad in [
+        "",
         "https://a.example",
         "http://a.example/x",
         "a.example",
         "http://",
     ] {
         assert_eq!(
-            set.add_route("r", profile(), bad),
+            set.set_endpoint(0, 0, Some(bad)),
             Err(RouteError::InvalidEndpoint),
-            "{bad}"
+            "{bad:?}"
         );
     }
-    set.add_route("a", profile(), "http://a.example").unwrap();
-    assert_eq!(
-        set.add_route("a", profile(), "http://b.example"),
-        Err(RouteError::DuplicateRoute)
-    );
-    set.add_route("b", profile(), "http://a.example").unwrap(); // the same endpoint on another route is fine
-    set.add_route("c", profile(), "http://c.example").unwrap();
-    assert_eq!(
-        set.add_route("d", profile(), "http://d.example"),
-        Err(RouteError::TooManyRoutes)
-    );
-}
-
-#[test]
-fn only_the_interval_changes_in_place_within_its_range() {
-    let mut set = set();
-    set.add_route("a", binding("p", 1), "http://a.example")
-        .unwrap();
-    let before = set.get("a").unwrap().clone();
-    set.set_interval("a", 120).unwrap();
-    let after = set.get("a").unwrap();
-    assert_eq!(after.interval_s, 120);
-    assert_eq!(
-        (
-            &after.id,
-            &after.profile,
-            &after.primary,
-            after.generation,
-            after.destinations
-        ),
-        (
-            &before.id,
-            &before.profile,
-            &before.primary,
-            before.generation,
-            before.destinations
-        ),
-        "an interval edit does not change the identity or the destinations"
-    );
-    for bad in [0, 9, 86_401] {
-        assert_eq!(set.set_interval("a", bad), Err(RouteError::InvalidInterval));
+    assert_eq!(set, Set::EMPTY);
+    set.set_endpoint(0, 0, Some("http://a.example")).unwrap();
+    for bad in [0, MIN_INTERVAL_S - 1, MAX_INTERVAL_S + 1, u32::MAX] {
+        assert_eq!(set.set_interval(0, bad), Err(RouteError::InvalidInterval));
     }
-    set.set_interval("a", 10).unwrap();
-    set.set_interval("a", 86_400).unwrap();
-    assert_eq!(set.set_interval("x", 60), Err(RouteError::RouteNotFound));
+    set.set_interval(0, MIN_INTERVAL_S).unwrap();
+    set.set_interval(0, MAX_INTERVAL_S).unwrap();
+    assert_eq!(set.get(0).unwrap().interval_s, MAX_INTERVAL_S);
+    assert_eq!(
+        set.set_fallback(0, Some("http://a.example/x")),
+        Err(RouteError::InvalidEndpoint)
+    );
 }
 
 #[test]
-fn fallbacks_append_in_priority_order_and_reject_duplicates() {
+fn an_absent_endpoint_deletes_the_route_and_an_empty_slot_stays_empty() {
     let mut set = set();
-    set.add_route("a", binding("p", 1), "http://primary.example")
-        .unwrap();
-    set.add_fallback("a", "one", "http://one.example").unwrap();
-    set.add_fallback("a", "two", "http://two.example:8080")
-        .unwrap();
-    let ids: std::vec::Vec<_> = set
-        .get("a")
-        .unwrap()
-        .fallbacks
-        .iter()
-        .map(|f| f.id.as_str())
-        .collect();
-    assert_eq!(ids, ["one", "two"]);
+    set.set_endpoint(0, 1, Some("http://a.example")).unwrap();
+    set.set_endpoint(1, 0, Some("http://b.example")).unwrap();
+    let generation = set.generation;
+    set.set_endpoint(0, 0, None).unwrap();
+    assert!(set.get(0).is_none());
+    assert_eq!(set.get(1).unwrap().endpoint.as_str(), "http://b.example");
+    assert!(set.generation > generation);
+
+    // Deleting an empty slot is not an error and changes nothing.
+    let before = set.clone();
+    set.set_endpoint(0, 0, None).unwrap();
+    set.set_endpoint(2, 0, None).unwrap();
+    assert_eq!(set, before);
+}
+
+#[test]
+fn set_interval_and_set_fallback_need_an_existing_route() {
+    let mut set = set();
+    assert_eq!(set.set_interval(0, 60), Err(RouteError::RouteNotFound));
     assert_eq!(
-        set.add_fallback("a", "three", "http://three.example"),
-        Err(RouteError::TooManyFallbacks)
-    );
-    set.remove_fallback("a", "one").unwrap();
-    assert_eq!(
-        set.remove_fallback("a", "one"),
-        Err(RouteError::FallbackNotFound)
-    );
-    // Duplicates: the id, and the endpoint of the primary or of another
-    // fallback (host compared without case).
-    assert_eq!(
-        set.add_fallback("a", "two", "http://x.example"),
-        Err(RouteError::DuplicateFallback)
-    );
-    assert_eq!(
-        set.add_fallback("a", "x", "http://PRIMARY.example"),
-        Err(RouteError::DuplicateEndpoint)
-    );
-    assert_eq!(
-        set.add_fallback("a", "x", "http://two.example:8080"),
-        Err(RouteError::DuplicateEndpoint)
-    );
-    assert!(
-        set.add_fallback("a", "x", "http://two.example:8081")
-            .is_ok()
-    );
-    assert_eq!(
-        set.add_fallback("nope", "x", "http://y.example"),
+        set.set_fallback(0, Some("http://b.example")),
         Err(RouteError::RouteNotFound)
     );
+    assert_eq!(set.set_fallback(0, None), Err(RouteError::RouteNotFound));
+    assert_eq!(set, Set::EMPTY);
 }
 
 #[test]
-fn a_destination_edit_marks_the_route_and_a_recreated_route_is_a_new_generation() {
+fn replacing_the_endpoint_or_profile_is_a_new_generation_and_keeps_the_rest() {
     let mut set = set();
-    set.add_route("a", binding("p", 1), "http://a.example")
-        .unwrap();
-    let created = set.get("a").unwrap().clone();
-    set.set_interval("a", 90).unwrap();
-    assert_eq!(set.get("a").unwrap().destinations, created.destinations);
-    set.add_fallback("a", "f", "http://f.example").unwrap();
-    assert!(set.get("a").unwrap().destinations > created.destinations);
+    set.set_endpoint(0, 0, Some("http://a.example")).unwrap();
+    set.set_interval(0, 120).unwrap();
+    set.set_fallback(0, Some("http://f.example")).unwrap();
+    let old = set.get(0).unwrap().clone();
 
-    set.remove_route("a").unwrap();
-    set.add_route("a", binding("p", 1), "http://a.example")
-        .unwrap();
-    let again = set.get("a").unwrap();
-    assert!(
-        again.generation > created.generation,
-        "no old queue or state is inherited"
+    set.set_endpoint(0, 0, Some("http://b.example")).unwrap();
+    let new = set.get(0).unwrap();
+    assert_eq!(new.endpoint.as_str(), "http://b.example");
+    assert_eq!(
+        (new.interval_s, new.fallback.as_ref()),
+        (120, old.fallback.as_ref())
     );
-    assert!(again.fallbacks.is_empty());
-    assert_eq!(again.interval_s, 60);
-}
+    assert!(new.generation > old.generation);
+    assert_eq!(new.destinations, new.generation);
 
-fn round_trip(set: &Set) -> Set {
-    let mut buf = [0u8; 1024];
-    let len = {
-        let mut cursor = minicbor::encode::write::Cursor::new(&mut buf[..]);
-        minicbor::encode(set, &mut cursor).unwrap();
-        cursor.position()
-    };
-    assert_eq!(minicbor::len(set), len);
-    minicbor::decode(&buf[..len]).unwrap()
+    let before = new.generation;
+    set.set_endpoint(0, 1, Some("http://b.example")).unwrap(); // only the profile
+    assert_eq!(set.get(0).unwrap().profile_index, 1);
+    assert!(set.get(0).unwrap().generation > before);
+
+    // The same profile and endpoint again: nothing changes.
+    let same = set.clone();
+    set.set_endpoint(0, 1, Some("http://b.example")).unwrap();
+    assert_eq!(set, same);
 }
 
 #[test]
-fn the_largest_configuration_fits_the_section_budget() {
+fn a_deleted_and_recreated_slot_inherits_nothing() {
     let mut set = set();
-    let long = |n: usize| std::format!("http://{}.example.org:8080", "h".repeat(n));
-    for id in ["aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb", "cccccccccccccccc"] {
-        set.add_route(
-            id,
-            binding("pppppppppppppppppppppppp", u32::MAX),
-            &std::format!("http://{}.example.org:8080", "p".repeat(32)),
-        )
-        .unwrap();
-        for (n, f) in ["f1", "f2"].into_iter().enumerate() {
-            let uri = long(30 + n);
-            assert!(uri.len() <= MAX_ENDPOINT_LEN_FOR_TEST);
-            set.add_fallback(id, f, &uri).unwrap();
-        }
-    }
-    assert_eq!(round_trip(&set), set);
-    assert!(
-        minicbor::len(&set) <= rohi_config::MAX_SECTION_PAYLOAD,
-        "{}",
-        minicbor::len(&set)
-    );
+    set.set_endpoint(1, 0, Some("http://a.example")).unwrap();
+    set.set_interval(1, 300).unwrap();
+    set.set_fallback(1, Some("http://f.example")).unwrap();
+    let old = set.get(1).unwrap().generation;
+    set.set_endpoint(1, 0, None).unwrap();
+    set.set_endpoint(1, 0, Some("http://a.example")).unwrap();
+    let new = set.get(1).unwrap();
+    assert!(new.generation > old);
+    assert_eq!(new.interval_s, DEFAULT_INTERVAL_S);
+    assert_eq!(new.fallback, None);
     assert!(set.validate().is_ok());
 }
 
-const MAX_ENDPOINT_LEN_FOR_TEST: usize = crate::endpoint::MAX_ENDPOINT_LEN;
+#[test]
+fn the_fallback_is_single_replaceable_removable_and_distinct_from_the_primary() {
+    let mut set = set();
+    set.set_endpoint(0, 0, Some("http://a.example:80")).unwrap();
+    assert_eq!(
+        set.set_fallback(0, Some("http://A.example")),
+        Err(RouteError::DuplicateEndpoint),
+        "same host and default port"
+    );
+    set.set_fallback(0, Some("http://f1.example")).unwrap();
+    let generation = set.get(0).unwrap().generation;
+    let destinations = set.get(0).unwrap().destinations;
+    set.set_fallback(0, Some("http://f2.example")).unwrap();
+    let route = set.get(0).unwrap();
+    assert_eq!(
+        route.fallback.as_ref().unwrap().as_str(),
+        "http://f2.example"
+    );
+    assert_eq!(
+        route.generation, generation,
+        "the route itself is unchanged"
+    );
+    assert!(route.destinations > destinations);
+
+    let same = set.clone();
+    set.set_fallback(0, Some("http://f2.example")).unwrap();
+    assert_eq!(set, same);
+
+    set.set_fallback(0, None).unwrap();
+    assert_eq!(set.get(0).unwrap().fallback, None);
+    let same = set.clone();
+    set.set_fallback(0, None).unwrap();
+    assert_eq!(set, same);
+
+    // A new primary equal to the fallback is refused and changes nothing.
+    set.set_fallback(0, Some("http://f1.example")).unwrap();
+    let before = set.clone();
+    assert_eq!(
+        set.set_endpoint(0, 0, Some("http://f1.example")),
+        Err(RouteError::DuplicateEndpoint)
+    );
+    assert_eq!(set, before);
+}
 
 #[test]
-fn a_broken_stored_value_fails_validation() {
+fn changing_one_slot_never_changes_another() {
     let mut set = set();
-    set.add_route("a", binding("p", 1), "http://a.example")
-        .unwrap();
-    set.add_fallback("a", "f", "http://f.example").unwrap();
+    set.set_endpoint(0, 0, Some("http://a.example")).unwrap();
+    set.set_endpoint(1, 1, Some("http://b.example")).unwrap();
+    let slot1 = set.get(1).unwrap().clone();
+    set.set_endpoint(0, 1, Some("http://c.example")).unwrap();
+    set.set_interval(0, 90).unwrap();
+    set.set_fallback(0, Some("http://f.example")).unwrap();
+    set.set_endpoint(0, 0, None).unwrap();
+    assert_eq!(set.get(1), Some(&slot1));
+}
+
+#[test]
+fn validate_rejects_inconsistent_stored_values() {
+    let mut set = set();
+    set.set_endpoint(0, 0, Some("http://a.example")).unwrap();
+    set.set_fallback(0, Some("http://f.example")).unwrap();
     assert!(set.validate().is_ok());
 
     let mut bad = set.clone();
-    bad.routes[0].interval_s = 5;
+    bad.slots[0].as_mut().unwrap().interval_s = 1;
     assert_eq!(bad.validate(), Err(RouteError::InvalidInterval));
+
     let mut bad = set.clone();
-    bad.routes[0].fallbacks[0].endpoint = bad.routes[0].primary.clone();
+    bad.slots[0].as_mut().unwrap().generation = 0;
+    assert_eq!(bad.validate(), Err(RouteError::InconsistentGeneration));
+
+    let mut bad = set.clone();
+    bad.generation = 0;
+    assert_eq!(bad.validate(), Err(RouteError::InconsistentGeneration));
+
+    let mut bad = set.clone();
+    bad.slots[0].as_mut().unwrap().fallback = Some(EndpointUri::new("http://a.example").unwrap());
     assert_eq!(bad.validate(), Err(RouteError::DuplicateEndpoint));
-    let mut bad = set.clone();
-    bad.routes[0].generation = bad.generation + 1;
-    assert!(bad.validate().is_err());
-    let mut bad = set.clone();
-    bad.routes[0].destinations = bad.routes[0].generation - 1;
-    assert_eq!(bad.validate(), Err(RouteError::RouteNotFound));
-    let mut bad = set;
-    bad.routes[0].profile.id = minicbor::decode(&[0x63, b'B', b'a', b'd']).unwrap();
-    assert_eq!(bad.validate(), Err(RouteError::InvalidId));
-}
-
-// What the Altruist Urban compiles: 2 routes of a primary and at most 1 fallback.
-type Device = crate::Routes<2, 1>;
-
-fn encode_set<const R: usize, const F: usize>(set: &crate::Routes<R, F>) -> std::vec::Vec<u8> {
-    let mut buffer = [0u8; 2048];
-    let len = rohi_config::encode_to_slice(set, &mut buffer).unwrap();
-    buffer[..len].to_vec()
 }
 
 #[test]
-fn a_section_over_capacity_is_refused_not_truncated() {
-    let mut big = set();
-    for id in ["a", "b", "c"] {
-        big.add_route(id, binding("p", 1), &std::format!("http://{id}.example"))
-            .unwrap();
-    }
-    // Three routes do not fit two slots.
-    assert!(minicbor::decode::<Device>(&encode_set(&big)).is_err());
-    assert!(minicbor::decode::<crate::ConnectivitySection<2, 1>>(&encode_set(&big)).is_err());
-
-    let mut two = set();
-    two.add_route("a", binding("p", 1), "http://a.example")
-        .unwrap();
-    two.add_fallback("a", "f", "http://f.example").unwrap();
-    two.add_fallback("a", "g", "http://g.example").unwrap();
-    // Two fallbacks do not fit one.
-    assert!(minicbor::decode::<Device>(&encode_set(&two)).is_err());
-
-    // What fits is read back whole.
-    two.remove_fallback("a", "g").unwrap();
-    let back = minicbor::decode::<Device>(&encode_set(&two)).unwrap();
-    assert_eq!(back.routes.len(), 1);
-    assert_eq!(back.routes[0].fallbacks.len(), 1);
-    assert_eq!(back.validate(), Ok(()));
-}
-
-#[test]
-fn a_full_device_refuses_one_more_route_or_fallback() {
-    let mut device = Device::default();
-    device
-        .add_route("a", binding("p", 1), "http://a.example")
-        .unwrap();
-    device
-        .add_route("b", binding("p", 1), "http://b.example")
-        .unwrap();
-    assert_eq!(
-        device.add_route("c", binding("p", 1), "http://c.example"),
-        Err(RouteError::TooManyRoutes)
-    );
-    device.add_fallback("a", "f", "http://f.example").unwrap();
-    assert_eq!(
-        device.add_fallback("a", "g", "http://g.example"),
-        Err(RouteError::TooManyFallbacks)
-    );
-}
-
-#[test]
-fn the_capacity_is_the_storage() {
-    // A section of the Altruist Urban is smaller than one of the test capacities.
-    assert!(
-        core::mem::size_of::<crate::ConnectivitySection<2, 1>>()
-            < core::mem::size_of::<crate::ConnectivitySection<3, 2>>()
-    );
-}
-
-#[test]
-fn the_section_identity_did_not_change_with_the_capacity() {
+fn the_section_round_trips_and_another_capacity_is_refused() {
     use rohi_config::ConfigSection;
+    let mut set = Routes::<2>::default();
+    set.set_endpoint(1, 1, Some("http://a.example")).unwrap();
+    set.set_fallback(1, Some("http://f.example")).unwrap();
+    let section = ConnectivitySection(set);
+    let mut buffer = [0u8; 512];
+    let mut writer = &mut buffer[..];
+    minicbor::encode(&section, &mut writer).unwrap();
+    let written = 512 - writer.len();
+    let bytes = &buffer[..written];
+    assert_eq!(written, minicbor::len(&section));
+    let back: ConnectivitySection<2> = minicbor::decode(bytes).unwrap();
+    assert_eq!(back, section);
+    assert!(minicbor::decode::<ConnectivitySection<1>>(bytes).is_err());
+    assert!(minicbor::decode::<ConnectivitySection<3>>(bytes).is_err());
+    assert_eq!(ConnectivitySection::<2>::VERSION, 2);
+}
 
-    assert_eq!(
-        <crate::ConnectivitySection<2, 1> as ConfigSection>::ID.0,
-        0x4d75_b590_2252_1f7d
-    );
-    assert_eq!(
-        <crate::ConnectivitySection<2, 1> as ConfigSection>::ID,
-        <crate::ConnectivitySection<3, 2> as ConfigSection>::ID
-    );
+#[test]
+fn the_two_slot_device_section_fits_the_budget_with_the_longest_endpoints() {
+    let long = |c: char| {
+        let mut s = std::string::String::from("http://");
+        while s.len() < MAX_ENDPOINT_LEN {
+            s.push(c);
+        }
+        s
+    };
+    let mut set = Routes::<2>::default();
+    for index in 0..2 {
+        set.set_endpoint(index, 1, Some(&long('a'))).unwrap();
+        set.set_fallback(index, Some(&long('b'))).unwrap();
+    }
+    let len = minicbor::len(ConnectivitySection(set));
+    assert!(len <= rohi_config::MAX_SECTION_PAYLOAD, "{len}");
 }

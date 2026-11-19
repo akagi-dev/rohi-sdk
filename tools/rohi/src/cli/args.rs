@@ -162,26 +162,16 @@ pub struct Cli {
 /// What `rohi tcp-key` does.
 #[derive(Subcommand, Debug, Clone)]
 pub enum TcpKeyAction {
-    /// Create a new random key file; the file is readable by you only.
-    Generate {
+    /// Make the device generate a new key and save it to FILE (readable by you only).
+    ///
+    /// Every call replaces the device's key and disconnects the TCP clients of the old one.
+    /// The key is not printed. Over BLE the link is open in this build, so the key travels in
+    /// the clear: only run this where nobody else is in radio range.
+    Reveal {
         /// Where to write the key. An existing file is never replaced.
         #[arg(value_name = "FILE")]
         file: PathBuf,
     },
-    /// Provision the key of `--psk-file` on the device.
-    ///
-    /// Needs a protected link: an encrypted (paired) BLE link, or the TCP
-    /// connection the current key authenticated. Over an unauthenticated TCP
-    /// link the device refuses it. To replace a key over TCP, connect with the
-    /// current key (`--psk-file`) and give the new one with `--new-key`.
-    Set {
-        /// File with the key to provision, when it is not the one of `--psk-file`.
-        #[arg(long, value_name = "FILE")]
-        new_key: Option<PathBuf>,
-    },
-    /// Make the device forget its key: a restricted TCP endpoint then serves
-    /// nobody.
-    Clear,
 }
 
 #[derive(Subcommand)]
@@ -396,26 +386,23 @@ Examples:
         #[arg(short, long)]
         follow: bool,
     },
-    /// Manage the pre-shared key of the TCP control endpoint.
+    /// Get the pre-shared key of the TCP control endpoint.
     ///
     /// A TCP control endpoint is restricted by default: a client must complete a
     /// handshake with one 32-byte pre-shared key, and every request and response
     /// is then authenticated and encrypted. `rohi` uses the key of `--psk-file
     /// FILE` for `tcp://` targets.
     ///
-    /// The key is provisioned over a protected link only, for example the paired
-    /// BLE link: `rohi --psk-file tcp.key tcp-key set`. There is no forward
-    /// secrecy: whoever learns the key can read a recorded session.
+    /// The device generates the key; a client never chooses it. `rohi tcp-key reveal FILE`
+    /// asks the device for a new one and saves it. There is no forward secrecy: whoever
+    /// learns the key can read a recorded session.
     #[command(
         name = "tcp-key",
         subcommand,
         after_help = "\
 Examples:
-  rohi tcp-key generate tcp.key
-  rohi --psk-file tcp.key tcp-key set
-  rohi --psk-file tcp.key --device tcp://127.0.0.1:9300 status
-  rohi --psk-file old.key --device tcp://127.0.0.1:9300 tcp-key set --new-key new.key
-  rohi tcp-key clear"
+  rohi tcp-key reveal tcp.key
+  rohi --psk-file tcp.key --device tcp://127.0.0.1:9300 status"
     )]
     TcpKey(TcpKeyAction),
     /// `rohi SERVICE [ACTION [ARG]...]`: a service of the device, see

@@ -35,28 +35,28 @@ use rohi_sdk::telemetry_robonomics::RobonomicsCapabilities;
 
 use crate::bindings::PrivateBinding;
 use crate::config::{ConfigHandle, ServiceError};
-use crate::tasks::RawMutex;
+use crate::tasks::{OnDemand, RawMutex};
 
-/// Packet profiles of the device: the storage of the policy, of the runtime state and of the
-/// stored section is sized for this many. A stored section with more is refused, not truncated.
+/// Packet profile slots of the device, addressed by index `0` and `1`: the storage of the policy,
+/// of the runtime state and of the stored section is sized for this many. A stored section with
+/// another count is refused, not truncated. Each profile has one public selection and at most one
+/// private recipient; Robonomics is the only compiled packet format.
 pub const PROFILES: usize = 2;
-/// Private recipients of a profile; Robonomics is the only compiled packet format.
-pub const RECIPIENTS: usize = 1;
 
 /// The packet profiles of the device.
-pub type ProfileSet = TelemetryConfig<PROFILES, RECIPIENTS>;
+pub type ProfileSet = TelemetryConfig<PROFILES>;
 
 /// The persisted section of the packet profiles of the device.
-pub type Section = TelemetrySection<PROFILES, RECIPIENTS>;
+pub type Section = TelemetrySection<PROFILES>;
 
 /// The effective packet profiles, for the capacities of the device.
-pub type State = TelemetryState<RawMutex, PROFILES, RECIPIENTS>;
+pub type State = TelemetryState<RawMutex, PROFILES>;
 
-static STATE: State = TelemetryState::new();
+static STATE: OnDemand<State> = OnDemand::new();
 
 /// The effective packet profiles, with the change signal consumers wait on.
 pub fn state() -> &'static State {
-    &STATE
+    STATE.get(State::new)
 }
 
 /// The stored telemetry profiles: published to [`state`] when committed,
@@ -71,7 +71,7 @@ impl PrivateBinding for TelemetryBinding {
             Some(section) => {
                 if let Err(error) = validate_profiles(&section.0) {
                     warn_invalid_profiles(error);
-                    STATE.publish(&empty_profiles(STATE.generation()));
+                    state().publish(&empty_profiles(state().generation()));
                     return;
                 }
                 info!(
@@ -79,13 +79,13 @@ impl PrivateBinding for TelemetryBinding {
                     section.0.profiles.len(),
                     section.0.generation
                 );
-                STATE.publish(&section.0);
+                state().publish(&section.0);
             }
             None => {
                 info!("Telemetry: no packet profiles");
                 // The generation continues: a recreated profile is a new
                 // incarnation even after a factory reset of the policy.
-                STATE.publish(&empty_profiles(STATE.generation()));
+                state().publish(&empty_profiles(state().generation()));
             }
         }
     }
@@ -95,7 +95,7 @@ impl PrivateBinding for TelemetryBinding {
             "Telemetry: stored profiles unreadable, nothing is packaged: {}",
             error
         );
-        STATE.publish(&empty_profiles(STATE.generation()));
+        state().publish(&empty_profiles(state().generation()));
     }
 }
 
@@ -110,7 +110,7 @@ pub const fn store(config: ConfigHandle) -> StoredProfiles {
 
 /// The `telemetry` service as the firmware composes it.
 pub type UrbanTelemetry =
-    TelemetryService<RawMutex, StoredProfiles, RobonomicsCapabilities, PROFILES, RECIPIENTS>;
+    TelemetryService<RawMutex, StoredProfiles, RobonomicsCapabilities, PROFILES>;
 
 /// The service over the profiles stored behind `config`.
 pub const fn service(config: ConfigHandle) -> UrbanTelemetry {
@@ -138,6 +138,12 @@ fn warn_invalid_profiles(error: ProfileError) {
     );
 }
 
+#[cold]
+#[inline(never)]
+fn warn_replaced(target: &'static str, error: &dyn fmt::Display) {
+    warn!(target: target, "Stored section not readable, a commit replaces it (err={})", error);
+}
+
 fn empty_profiles(generation: u32) -> ProfileSet {
     ProfileSet {
         generation,
@@ -145,19 +151,25 @@ fn empty_profiles(generation: u32) -> ProfileSet {
     }
 }
 
-impl TelemetryStore<PROFILES, RECIPIENTS> for StoredProfiles {
+impl TelemetryStore<PROFILES> for StoredProfiles {
     async fn load(&self) -> Result<ProfileSet, StoreError> {
         match self.0.get::<Section>().await {
             Ok(Some(section)) => {
                 if let Err(error) = validate_profiles(&section.0) {
                     warn_invalid_profiles(error);
-                    STATE.publish(&empty_profiles(STATE.generation()));
+                    state().publish(&empty_profiles(state().generation()));
                     Err(StoreError::Internal)
                 } else {
                     Ok(section.0)
                 }
             }
-            Ok(None) => Ok(empty_profiles(STATE.generation())),
+            Ok(None) => Ok(empty_profiles(state().generation())),
+            // A section of another version or format is not read and not migrated: the next
+            // commit replaces it, so the device is never stuck on it.
+            Err(ServiceError::Section(error)) => {
+                warn_replaced("telemetry", &error);
+                Ok(empty_profiles(state().generation()))
+            }
             Err(error) => Err(store_error(error)),
         }
     }
@@ -174,7 +186,7 @@ impl TelemetryStore<PROFILES, RECIPIENTS> for StoredProfiles {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rohi_sdk::telemetry::{PacketFormatId, PacketProfileId};
+    use rohi_sdk::telemetry::{DataSelection, MeasurementId, RecipientAddress, Selection};
 
     #[test]
     fn missing_profiles_keep_the_runtime_generation() {
@@ -184,22 +196,18 @@ mod tests {
     #[test]
     fn invalid_persisted_profiles_are_rejected() {
         let mut profiles = ProfileSet::default();
-        profiles
-            .add_profile("weather", PacketFormatId::Robonomics)
-            .unwrap();
         profiles.profiles[0].revision = profiles.generation + 1;
 
-        assert_eq!(validate_profiles(&profiles), Err(ProfileError::NotFound));
+        assert_eq!(
+            validate_profiles(&profiles),
+            Err(ProfileError::InconsistentGeneration)
+        );
     }
 
     #[test]
     fn invalid_persisted_selections_are_rejected() {
         let mut profiles = ProfileSet::default();
-        profiles
-            .add_profile("weather", PacketFormatId::Robonomics)
-            .unwrap();
-        profiles.profiles[0].public.measurements =
-            rohi_sdk::telemetry::Selection::NONE.with(rohi_sdk::telemetry::MeasurementId(250));
+        profiles.profiles[0].public.measurements = Selection::NONE.with(MeasurementId(250));
 
         assert_eq!(
             validate_profiles(&profiles),
@@ -212,13 +220,15 @@ mod tests {
     }
 
     #[test]
-    fn an_absent_section_cannot_reuse_a_profile_incarnation() {
+    fn an_absent_section_discloses_nothing_and_keeps_the_generation() {
         let profiles = empty_profiles(9);
         assert_eq!(profiles.generation, 9);
-        assert!(
-            profiles
-                .get(PacketProfileId::new("weather").unwrap().as_str())
-                .is_none()
-        );
+        for index in 0..PROFILES as u8 {
+            let profile = profiles.get(index).unwrap();
+            assert_eq!(profile.public, DataSelection::NONE);
+            assert!(profile.private.is_none());
+        }
+        assert!(profiles.get(PROFILES as u8).is_none());
+        let _ = RecipientAddress([1; 32]);
     }
 }

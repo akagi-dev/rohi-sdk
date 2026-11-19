@@ -23,13 +23,13 @@
 //!                                                              |
 //!                                             UrbanDevice (this module)
 //!                          config sections: wifi, network, ble, connectivity, location, time, logging,
-//!                                           control_tcp, control_ble
+//!                                           control_tcp
 //!                          status: wifi, network, ble, connectivity, location, time,
 //!                                  sensors, identity, logging, system,
-//!                                  control_tcp, control_ble, control_psk
+//!                                  control_tcp, control_ble
 //!                          actions: wifi, identity, logging (read, download, clear),
 //!                                   system (reboot, factory_reset),
-//!                                   control_psk (set_tcp_psk, clear_tcp_psk)
+//!                                   control_tcp (reveal_psk)
 //! ```
 //!
 //! The registries only talk to runtime handles; they never own a store, a flash
@@ -54,8 +54,7 @@ use embassy_time::Delay;
 use rohi_sdk::control::{ControlAccess, Device, DeviceInfo};
 use rohi_sdk::crash::Report;
 use rohi_sdk::endpoints::{
-    ControlBleService, ControlPskService, ControlTcpService, PSK_LEN, PskStore, PskStoreError,
-    TcpPskSection,
+    ControlBleService, ControlTcpService, PSK_LEN, PskStore, PskStoreError, TcpPskSection,
 };
 use rohi_sdk::identity::{Identity, IdentityService, IdentityStore, IdentityStoreError, PublicKey};
 use rohi_sdk::location::LocationService;
@@ -138,10 +137,6 @@ impl PskStore for StoredPsk {
         let section = TcpPskSection::new(*key);
         self.0.set(&section).await.map_err(psk_error)
     }
-
-    async fn erase(&self) -> Result<(), PskStoreError> {
-        self.0.remove::<TcpPskSection>().await.map_err(psk_error)
-    }
 }
 
 fn psk_error(error: ConfigError) -> PskStoreError {
@@ -192,9 +187,8 @@ type UrbanLocation = LocationService<'static, RawMutex>;
 type UrbanSensors = SensorsService<'static, RawMutex>;
 type UrbanIdentity = IdentityService<StoredIdentity>;
 type UrbanSystem = SystemService<UrbanSystemPlatform>;
-type UrbanControlTcp = ControlTcpService<'static>;
+type UrbanControlTcp = ControlTcpService<'static, StoredPsk>;
 type UrbanControlBle = ControlBleService<'static>;
-type UrbanControlPsk = ControlPskService<'static, StoredPsk>;
 type UrbanTelemetry = telemetry::UrbanTelemetry;
 
 /// What the `system` service needs from the Altruist Urban: the deferred reboot
@@ -252,7 +246,6 @@ pub struct UrbanServices<I: 'static, B, L> {
     system: UrbanSystem,
     control_tcp: UrbanControlTcp,
     control_ble: UrbanControlBle,
-    control_psk: UrbanControlPsk,
 }
 
 /// The services that report status. The `time` service is the time runtime
@@ -271,7 +264,6 @@ pub type UrbanStatusServices<I, B, L> = (
     &'static UrbanSystem,
     &'static UrbanControlTcp,
     &'static UrbanControlBle,
-    &'static UrbanControlPsk,
 );
 
 /// The status registry of the device.
@@ -285,7 +277,7 @@ pub type UrbanActions<I, L> = (
     &'static UrbanConnectivity,
     &'static L,
     &'static UrbanSystem,
-    &'static UrbanControlPsk,
+    &'static UrbanControlTcp,
 );
 
 /// The control backend of the Altruist Urban over the IP backend `I` and the
@@ -381,9 +373,8 @@ where
             reboot: reboot_fn,
             boot_report,
         }),
-        control_tcp: ControlTcpService::new(&ACCESS),
+        control_tcp: ControlTcpService::new(&ACCESS, StoredPsk(config)),
         control_ble: ControlBleService::new(&ACCESS),
-        control_psk: ControlPskService::new(&ACCESS, StoredPsk(config)),
     });
     Device::new(
         info,
@@ -403,7 +394,6 @@ where
             &services.system,
             &services.control_tcp,
             &services.control_ble,
-            &services.control_psk,
         )),
         (
             &services.wifi,
@@ -412,7 +402,7 @@ where
             &services.connectivity,
             &services.logging,
             &services.system,
-            &services.control_psk,
+            &services.control_tcp,
         ),
     )
 }
@@ -435,12 +425,8 @@ pub const BLE_CONFIG: rohi_sdk::net::BleConfig = rohi_sdk::net::BleConfig {
 
 /// [`BLE_CONFIG`] with the name of the `ble` section as the configuration
 /// owner published it at boot: the defaults, the firmware overrides and the
-/// stored overrides, and with pairing when `control_ble` is restricted. Both are
-/// read once, when the peripheral starts.
+/// stored overrides. Read once, when the peripheral starts. BLE control runs without
+/// pairing and without link encryption in this build.
 pub fn ble_config() -> rohi_sdk::net::BleConfig {
-    let restricted = access().mode(rohi_sdk::control::Transport::Ble)
-        == rohi_sdk::control::TransportAccessMode::Restricted;
-    BLE_CONFIG
-        .with_settings(&crate::bindings::ble_settings())
-        .with_pairing(restricted)
+    BLE_CONFIG.with_settings(&crate::bindings::ble_settings())
 }

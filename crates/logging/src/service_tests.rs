@@ -150,6 +150,7 @@ fn file_text(data: &[u8]) -> std::string::String {
 const CONFIG: LoggingConfig = LoggingConfig {
     level: LogLevel::Info,
     storage: LogStorageKind::Internal,
+    #[cfg(feature = "lz4")]
     compression: crate::DEFAULT_COMPRESSION,
     retention_bytes: 4096 * 6,
     segment_bytes: 4096,
@@ -462,6 +463,7 @@ fn a_full_queue_drops_new_records_and_says_so() {
 fn segments_rotate_and_retention_drops_the_oldest() {
     let rig = Rig::new();
     let logging = rig.logging(LoggingConfig {
+        #[cfg(feature = "lz4")]
         compression: Compression::None,
         ..CONFIG
     });
@@ -566,6 +568,7 @@ fn download_seals_pins_and_lists_the_files() {
 fn a_download_keeps_its_segments_while_rotation_cannot_evict_them() {
     let rig = Rig::new();
     let logging = rig.logging(LoggingConfig {
+        #[cfg(feature = "lz4")]
         compression: Compression::None,
         ..CONFIG
     });
@@ -835,6 +838,7 @@ fn switching_the_backend_does_not_migrate_the_history() {
 fn a_codec_or_size_change_applies_to_new_segments_only() {
     let rig = Rig::new();
     let logging = rig.logging(LoggingConfig {
+        #[cfg(feature = "lz4")]
         compression: Compression::None,
         ..CONFIG
     });
@@ -1050,6 +1054,7 @@ impl embedded_hal_async::delay::DelayNs for Recording {
 fn a_pinned_full_ring_stalls_the_task_instead_of_spinning() {
     let rig = Rig::new();
     let logging = rig.logging(LoggingConfig {
+        #[cfg(feature = "lz4")]
         compression: Compression::None,
         ..CONFIG
     });
@@ -1820,6 +1825,7 @@ fn more_records_than_one_batch_holds_are_refused_whole() {
 fn a_download_that_pins_the_ring_defers_the_records_without_writing_them() {
     let rig = Rig::new();
     let config = LoggingConfig {
+        #[cfg(feature = "lz4")]
         compression: Compression::None,
         ..CONFIG
     };
@@ -2284,6 +2290,7 @@ fn the_tail_survives_a_reboot_only_as_a_new_session() {
 const C3_CONFIG: LoggingConfig = LoggingConfig {
     retention_bytes: 128 * 1024,
     segment_bytes: 8 * 1024,
+    #[cfg(feature = "lz4")]
     compression: Compression::None,
     flush_interval_ms: 1_000,
     ..CONFIG

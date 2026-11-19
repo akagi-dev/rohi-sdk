@@ -204,14 +204,14 @@ async fn factory_reset_repairs_a_corrupted_configuration_storage() {
     );
 
     factory_reset(&mut device).await;
-    // The reset restores the defaults of the endpoint too: the launch option that
-    // opened it for this run no longer holds, TCP is restricted again.
-    assert!(
-        device
-            .config_patch("wifi", &[set(wifi::SSID, text("denied"))], false)
-            .await
-            .is_err()
-    );
+    // The reset restores the stored defaults of the endpoint, which apply at the next start,
+    // never partly: this run keeps the endpoint it was started with (open by the launch option).
+    device
+        .config_patch("wifi", &[set(wifi::SSID, text("denied"))], false)
+        .await
+        .unwrap();
+    let tcp = fields(&mut device, "control_tcp").await;
+    assert_eq!(tcp.get("access_mode"), Some(&text("open")));
     drop(device);
     assert!(sim.stop().success());
 

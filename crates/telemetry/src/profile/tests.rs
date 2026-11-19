@@ -21,16 +21,16 @@ use crate::catalog::{BMX280_TEMPERATURE, LOCATION, SDS011_PM10, all_cataloged};
 struct Caps;
 
 impl FormatCapabilities for Caps {
-    fn supported(&self, _: PacketFormatId) -> Selection {
+    fn supported(&self) -> Selection {
         all_cataloged()
     }
 
-    fn accepts_recipient(&self, _: PacketFormatId, recipient: &RecipientAddress) -> bool {
+    fn accepts_recipient(&self, recipient: &RecipientAddress) -> bool {
         recipient.0 != [0; 32]
     }
 }
 
-type Config = TelemetryConfig<3, 2>;
+type Config = TelemetryConfig<2>;
 
 fn key(byte: u8) -> RecipientAddress {
     RecipientAddress([byte; 32])
@@ -45,150 +45,152 @@ fn config() -> Config {
 }
 
 #[test]
-fn a_new_config_has_no_profile_and_a_new_profile_discloses_nothing() {
-    let mut config = config();
-    assert!(config.profiles.is_empty());
-    config
-        .add_profile("community", PacketFormatId::Robonomics)
-        .unwrap();
-    let profile = config.get("community").unwrap();
-    assert!(profile.public.measurements.is_none());
-    assert!(profile.private.is_empty());
+fn a_new_config_has_two_empty_slots_that_disclose_nothing() {
+    let config = config();
+    assert_eq!(config.profiles.len(), 2);
+    assert_eq!(config.generation, 0);
+    for index in 0..2 {
+        let profile = config.get(index).unwrap();
+        assert!(profile.public.measurements.is_none());
+        assert!(profile.private.is_none());
+        assert_eq!(profile.revision, 0);
+    }
+    assert!(config.validate(&Caps).is_ok());
 }
 
 #[test]
-fn ids_are_validated_and_unique_and_the_table_is_bounded() {
+fn the_slot_index_is_bounded_and_a_refused_index_changes_nothing() {
     let mut config = config();
-    for bad in ["", "Upper", "has space", "a.b", "abcdefghijklmnopqrstuvwxy"] {
+    let before = config.clone();
+    for index in [2, 3, u8::MAX] {
+        assert!(config.get(index).is_none());
         assert_eq!(
-            config.add_profile(bad, PacketFormatId::Robonomics),
-            Err(ProfileError::InvalidId),
-            "{bad}"
+            config.set_public(index, only(SDS011_PM10), &Caps),
+            Err(ProfileError::InvalidIndex)
+        );
+        assert_eq!(
+            config.set_private(index, key(1), only(LOCATION), &Caps),
+            Err(ProfileError::InvalidIndex)
         );
     }
-    config.add_profile("a", PacketFormatId::Robonomics).unwrap();
-    assert_eq!(
-        config.add_profile("a", PacketFormatId::Robonomics),
-        Err(ProfileError::Duplicate)
-    );
-    config.add_profile("b", PacketFormatId::Robonomics).unwrap();
-    config.add_profile("c", PacketFormatId::Robonomics).unwrap();
-    assert_eq!(
-        config.add_profile("d", PacketFormatId::Robonomics),
-        Err(ProfileError::TooManyProfiles)
-    );
+    assert_eq!(config, before, "not even the generation moved");
+    // Both boundary slots work.
+    config.set_public(0, only(SDS011_PM10), &Caps).unwrap();
+    config.set_public(1, only(SDS011_PM10), &Caps).unwrap();
 }
 
 #[test]
-fn set_public_replaces_and_rejects_unsupported_bits() {
+fn set_public_replaces_rejects_unsupported_bits_and_leaves_the_other_slot_alone() {
     let mut config = config();
-    config.add_profile("p", PacketFormatId::Robonomics).unwrap();
     config
-        .set_public("p", only(BMX280_TEMPERATURE), &Caps)
+        .set_public(0, only(BMX280_TEMPERATURE), &Caps)
         .unwrap();
-    config.set_public("p", only(SDS011_PM10), &Caps).unwrap();
-    let public = config.get("p").unwrap().public.measurements;
+    let other = *config.get(1).unwrap();
+    config.set_public(0, only(SDS011_PM10), &Caps).unwrap();
+    let public = config.get(0).unwrap().public.measurements;
     assert!(public.contains(SDS011_PM10) && !public.contains(BMX280_TEMPERATURE));
+    assert_eq!(*config.get(1).unwrap(), other, "slot 1 is not touched");
 
     let before = config.clone();
     assert_eq!(
-        config.set_public("p", only(crate::MeasurementId(18)), &Caps),
+        config.set_public(0, only(crate::MeasurementId(18)), &Caps),
         Err(ProfileError::Selection(SelectionError::Unsupported(
             crate::MeasurementId(18)
         )))
     );
-    assert_eq!(
-        config, before,
-        "a refused edit changes nothing, not even the generation"
-    );
-    assert_eq!(
-        config.set_public("x", DataSelection::NONE, &Caps),
-        Err(ProfileError::NotFound)
-    );
+    assert_eq!(config, before);
 }
 
 #[test]
-fn add_private_upserts_and_remove_private_removes() {
+fn set_private_replaces_the_only_recipient_and_none_removes_it() {
     let mut config = config();
     config
-        .add_profile("owner", PacketFormatId::Robonomics)
+        .set_private(1, key(1), only(LOCATION), &Caps)
         .unwrap();
+    // A second recipient replaces the first: there is only one.
     config
-        .add_private("owner", key(1), only(LOCATION), &Caps)
+        .set_private(1, key(2), only(SDS011_PM10), &Caps)
         .unwrap();
-    config
-        .add_private("owner", key(2), only(SDS011_PM10), &Caps)
-        .unwrap();
-    // Replace, never union.
-    config
-        .add_private("owner", key(1), only(BMX280_TEMPERATURE), &Caps)
-        .unwrap();
-    let profile = config.get("owner").unwrap();
-    assert_eq!(profile.private.len(), 2);
-    let selection = profile.private[0].selection.measurements;
-    assert!(selection.contains(BMX280_TEMPERATURE) && !selection.contains(LOCATION));
+    let section = config.get(1).unwrap().private.unwrap();
+    assert_eq!(section.recipient, key(2));
+    assert!(section.selection.measurements.contains(SDS011_PM10));
+    assert!(!section.selection.measurements.contains(LOCATION));
+    assert!(config.get(0).unwrap().private.is_none());
 
-    assert_eq!(
-        config.add_private("owner", key(3), only(LOCATION), &Caps),
-        Err(ProfileError::TooManyRecipients)
-    );
-    // Replacing an existing recipient is allowed when the table is full.
+    let revision = config.get(1).unwrap().revision;
+    // `none` removes it; the recipient is not looked at.
     config
-        .add_private("owner", key(2), only(LOCATION), &Caps)
+        .set_private(1, RecipientAddress([0; 32]), DataSelection::NONE, &Caps)
         .unwrap();
-
-    config.remove_private("owner", &key(1)).unwrap();
-    assert_eq!(config.get("owner").unwrap().private.len(), 1);
-    assert_eq!(
-        config.remove_private("owner", &key(1)),
-        Err(ProfileError::RecipientNotFound)
-    );
+    let profile = config.get(1).unwrap();
+    assert!(profile.private.is_none());
+    assert!(profile.revision > revision);
+    assert!(config.validate(&Caps).is_ok());
 }
 
 #[test]
-fn an_empty_private_selection_and_a_bad_key_are_refused() {
+fn a_bad_key_or_unsupported_private_bit_is_refused() {
     let mut config = config();
-    config
-        .add_profile("owner", PacketFormatId::Robonomics)
-        .unwrap();
+    let before = config.clone();
     assert_eq!(
-        config.add_private("owner", key(1), DataSelection::NONE, &Caps),
-        Err(ProfileError::EmptyPrivateSelection)
-    );
-    assert_eq!(
-        config.add_private("owner", RecipientAddress([0; 32]), only(LOCATION), &Caps),
+        config.set_private(0, RecipientAddress([0; 32]), only(LOCATION), &Caps),
         Err(ProfileError::InvalidRecipient)
     );
+    assert_eq!(
+        config.set_private(0, key(1), only(crate::MeasurementId(40)), &Caps),
+        Err(ProfileError::Selection(SelectionError::Unsupported(
+            crate::MeasurementId(40)
+        )))
+    );
+    assert_eq!(config, before);
 }
 
 #[test]
 fn location_is_never_public_by_default() {
     let mut config = config();
-    config.add_profile("p", PacketFormatId::Robonomics).unwrap();
     config
-        .set_public("p", DataSelection::local(Selection::ALL), &Caps)
+        .set_public(0, DataSelection::local(Selection::ALL), &Caps)
         .unwrap();
-    let public = config.get("p").unwrap().public.measurements;
+    let public = config.get(0).unwrap().public.measurements;
     assert!(public.is_all());
     assert!(!public.resolve(&all_cataloged()).contains(LOCATION));
 }
 
 #[test]
-fn revisions_and_incarnations_never_repeat() {
+fn revisions_never_repeat_and_only_the_edited_slot_changes() {
     let mut config = config();
-    config.add_profile("p", PacketFormatId::Robonomics).unwrap();
-    let first = config.get("p").unwrap().clone();
-    config.set_public("p", only(SDS011_PM10), &Caps).unwrap();
-    let edited = config.get("p").unwrap().clone();
-    assert_eq!(edited.incarnation, first.incarnation);
-    assert!(edited.revision > first.revision);
+    config.set_public(0, only(SDS011_PM10), &Caps).unwrap();
+    let first = config.get(0).unwrap().revision;
+    config.set_public(0, only(SDS011_PM10), &Caps).unwrap();
+    let second = config.get(0).unwrap().revision;
+    assert!(second > first, "even an identical edit is a new revision");
+    assert_eq!(config.get(1).unwrap().revision, 0);
+    config
+        .set_private(1, key(1), only(LOCATION), &Caps)
+        .unwrap();
+    assert!(config.get(1).unwrap().revision > second);
+    assert_eq!(config.get(0).unwrap().revision, second);
+}
 
-    config.remove_profile("p").unwrap();
-    config.add_profile("p", PacketFormatId::Robonomics).unwrap();
-    let recreated = config.get("p").unwrap();
-    assert!(recreated.incarnation > edited.revision);
-    assert_ne!(recreated.incarnation, first.incarnation);
-    assert!(recreated.public.measurements.is_none());
+#[test]
+fn clear_empties_every_slot_and_gives_every_slot_a_new_revision() {
+    let mut config = config();
+    config.set_public(0, only(SDS011_PM10), &Caps).unwrap();
+    config
+        .set_private(1, key(1), only(LOCATION), &Caps)
+        .unwrap();
+    let revisions = [
+        config.get(0).unwrap().revision,
+        config.get(1).unwrap().revision,
+    ];
+    config.clear();
+    for (index, old) in revisions.into_iter().enumerate() {
+        let profile = config.get(index as u8).unwrap();
+        assert!(profile.public.measurements.is_none() && profile.private.is_none());
+        assert!(profile.revision > old, "a reset invalidates old packets");
+        assert!(profile.revision <= config.generation);
+    }
+    assert!(config.validate(&Caps).is_ok());
 }
 
 fn round_trip(config: &Config) -> Config {
@@ -204,25 +206,20 @@ fn round_trip(config: &Config) -> Config {
 
 #[test]
 fn the_config_round_trips_and_a_full_one_fits_the_section_budget() {
+    assert_eq!(round_trip(&config()), config());
     let mut config = config();
-    for id in [
-        "aaaaaaaaaaaaaaaaaaaaaaaa",
-        "bbbbbbbbbbbbbbbbbbbbbbbb",
-        "cccccccccccccccccccccccc",
-    ] {
-        config.add_profile(id, PacketFormatId::Robonomics).unwrap();
+    for index in 0..2 {
         config
-            .set_public(
-                id,
-                DataSelection::local(Selection::NONE.with(SDS011_PM10)),
+            .set_public(index, DataSelection::local(Selection::ALL), &Caps)
+            .unwrap();
+        config
+            .set_private(
+                index,
+                key(index + 1),
+                DataSelection::local(Selection::ALL),
                 &Caps,
             )
             .unwrap();
-        for byte in [1, 2] {
-            config
-                .add_private(id, key(byte), only(LOCATION), &Caps)
-                .unwrap();
-        }
     }
     assert_eq!(round_trip(&config), config);
     // The persistent section payload is limited to 1024 bytes.
@@ -233,57 +230,50 @@ fn the_config_round_trips_and_a_full_one_fits_the_section_budget() {
 #[test]
 fn a_decoded_config_with_a_broken_policy_fails_validation() {
     let mut config = config();
-    config.add_profile("p", PacketFormatId::Robonomics).unwrap();
     config
-        .add_private("p", key(1), only(LOCATION), &Caps)
+        .set_private(0, key(1), only(LOCATION), &Caps)
         .unwrap();
 
-    let mut broken = config.clone();
-    broken.profiles[0].private[0].selection = DataSelection::NONE;
+    let mut empty_private = config.clone();
+    if let Some(section) = &mut empty_private.profiles[0].private {
+        section.selection = DataSelection::NONE;
+    }
     assert_eq!(
-        broken.validate(&Caps),
+        empty_private.validate(&Caps),
         Err(ProfileError::EmptyPrivateSelection)
     );
 
     let mut future = config.clone();
-    future.profiles[0].revision = future.generation + 1;
-    assert!(future.validate(&Caps).is_err());
-
-    let mut duplicate = config.clone();
-    let copy = duplicate.profiles[0].clone();
-    duplicate.profiles.push(copy).unwrap();
-    assert_eq!(duplicate.validate(&Caps), Err(ProfileError::Duplicate));
-}
-
-#[test]
-fn a_profile_with_zero_generations_fails_validation() {
-    let mut config = config();
-    config.add_profile("p", PacketFormatId::Robonomics).unwrap();
-
-    let mut zero_incarnation = config.clone();
-    zero_incarnation.profiles[0].incarnation = 0;
+    future.profiles[1].revision = future.generation + 1;
     assert_eq!(
-        zero_incarnation.validate(&Caps),
-        Err(ProfileError::NotFound)
+        future.validate(&Caps),
+        Err(ProfileError::InconsistentGeneration)
     );
 
-    let mut zero_revision = config;
-    zero_revision.profiles[0].revision = 0;
-    assert_eq!(zero_revision.validate(&Caps), Err(ProfileError::NotFound));
-    assert!(Config::default().validate(&Caps).is_ok());
+    let mut bad_key = config.clone();
+    bad_key.profiles[0].private = Some(PrivateSectionPolicy {
+        recipient: RecipientAddress([0; 32]),
+        selection: only(LOCATION),
+    });
+    assert_eq!(bad_key.validate(&Caps), Err(ProfileError::InvalidRecipient));
+
+    let mut unsupported = config;
+    unsupported.profiles[1].public = only(crate::MeasurementId(18));
+    assert!(matches!(
+        unsupported.validate(&Caps),
+        Err(ProfileError::Selection(_))
+    ));
 }
 
 #[test]
-fn too_many_elements_do_not_decode() {
-    let mut big = TelemetryConfig::<4, 2>::default();
-    for id in ["a", "b", "c", "d"] {
-        big.add_profile(id, PacketFormatId::Robonomics).unwrap();
-    }
+fn another_number_of_slots_does_not_decode() {
     let mut buf = [0u8; 512];
-    let len = {
-        let mut cursor = minicbor::encode::write::Cursor::new(&mut buf[..]);
-        minicbor::encode(&big, &mut cursor).unwrap();
-        cursor.position()
-    };
-    assert!(minicbor::decode::<Config>(&buf[..len]).is_err());
+    for slots in [1usize, 3] {
+        let len = match slots {
+            1 => rohi_config::encode_to_slice(&TelemetryConfig::<1>::default(), &mut buf),
+            _ => rohi_config::encode_to_slice(&TelemetryConfig::<3>::default(), &mut buf),
+        }
+        .unwrap();
+        assert!(minicbor::decode::<Config>(&buf[..len]).is_err(), "{slots}");
+    }
 }

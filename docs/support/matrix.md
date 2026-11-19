@@ -84,7 +84,7 @@ Limitations of Telemetry (profiles, packets and delivery routes):
 Limitations of BLE control plane:
 
 - One heap measurement exists (Wi-Fi and BLE running, chip not recorded); advertising, coexistence, MTU and 24 h stability are not measured.
-- BLE pairing (LE Secure Connections, Just Works, no bonding) exists only when `control_ble` is restricted, is not verified on a device and is not an authenticated link; BLE is open by default.
+- BLE control runs open in this build: no pairing, no link encryption and no mode to change it (an accepted, temporary insecure state); BLE control without pairing is not verified on a device.
 - Static analysis only (`scripts/memcheck.sh`, CI job Memcheck): 121 816 B main stack; the frames of the control request path (`rohi status`, `config`, `action`) are below 1.8 KB since #63, but the stack peak is not measured on a device and the exception reported for `rohi status logging` and `rohi logs clear --yes` is not shown to be fixed.
 
 Limitations of Persistent configuration store:
@@ -106,12 +106,12 @@ Limitations of Managed control endpoints and transport security:
 
 - BLE is open by default: anyone in radio range can change the configuration, provision the identity and enroll the administrator key; restricting TCP does not secure the device while BLE stays open.
 - A signature authenticates one request; there is no confidentiality and the device is not authenticated to the client (no TLS or Noise).
-- Pairing of a restricted BLE endpoint and the stack high-water mark of the control worker are not measured on a device.
+- The stack high-water mark of the control worker are not measured on a device.
 
 Limitations of System actions:
 
 - The chip reset after the grace period and the formatting of the configuration partition by `system.factory_reset` are not run on a device; the host process stands in for them in the tests.
-- Both actions are Mutate: open to any client in range while `control_ble` is open (the default) and need a paired link or, over TCP, the authenticated and encrypted connection of the pre-shared key once the endpoint is restricted; pairing is not verified on a device.
+- Both actions are Mutate: open to any client in BLE range (the BLE control endpoint is open in this build) and, over TCP, need the authenticated and encrypted connection of the pre-shared key once the endpoint is restricted.
 
 ### Altruist Urban with altruist-firmware (esp32c6)
 
@@ -189,7 +189,7 @@ Limitations of Telemetry (profiles, packets and delivery routes):
 Limitations of BLE control plane:
 
 - One heap measurement exists (Wi-Fi and BLE running, chip not recorded); advertising, coexistence, MTU and 24 h stability are not measured.
-- BLE pairing (LE Secure Connections, Just Works, no bonding) exists only when `control_ble` is restricted, is not verified on a device and is not an authenticated link; BLE is open by default.
+- BLE control runs open in this build: no pairing, no link encryption and no mode to change it (an accepted, temporary insecure state); BLE control without pairing is not verified on a device.
 - Static analysis only (`scripts/memcheck.sh`, CI job Memcheck): 21 976 B main stack; the frames of the control request path (`rohi status`, `config`, `action`) are below 1.8 KB since #63, but the stack peak is not measured on a device and the exception reported for `rohi status logging` and `rohi logs clear --yes` is not shown to be fixed.
 
 Limitations of Persistent configuration store:
@@ -211,12 +211,12 @@ Limitations of Managed control endpoints and transport security:
 
 - BLE is open by default: anyone in radio range can change the configuration, provision the identity and enroll the administrator key; restricting TCP does not secure the device while BLE stays open.
 - A signature authenticates one request; there is no confidentiality and the device is not authenticated to the client (no TLS or Noise).
-- Pairing of a restricted BLE endpoint and the stack high-water mark of the control worker are not measured on a device.
+- The stack high-water mark of the control worker are not measured on a device.
 
 Limitations of System actions:
 
 - The chip reset after the grace period and the formatting of the configuration partition by `system.factory_reset` are not run on a device; the host process stands in for them in the tests.
-- Both actions are Mutate: open to any client in range while `control_ble` is open (the default) and need a paired link or, over TCP, the authenticated and encrypted connection of the pre-shared key once the endpoint is restricted; pairing is not verified on a device.
+- Both actions are Mutate: open to any client in BLE range (the BLE control endpoint is open in this build) and, over TCP, need the authenticated and encrypted connection of the pre-shared key once the endpoint is restricted.
 
 ### Altruist Urban (legacy) with altruist-firmware (esp32c3)
 

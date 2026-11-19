@@ -44,8 +44,8 @@ impl Privilege {
     }
 }
 
-/// The kind of transport a connection belongs to. Every transport has its own
-/// access mode, see [`TransportAccessMode`](crate::TransportAccessMode).
+/// The kind of transport a connection belongs to. TCP has an access mode, BLE is open, see
+/// [`TransportAccessMode`](crate::TransportAccessMode).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Transport {
     /// Not declared: an [`AccessPolicy`](crate::AccessPolicy) treats it as

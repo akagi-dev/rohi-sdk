@@ -23,7 +23,6 @@ use core::cell::{Cell, RefCell};
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embassy_sync::signal::Signal;
-use heapless::Vec;
 
 use crate::config::Routes;
 use crate::router::RouteView;
@@ -45,29 +44,26 @@ pub struct Health {
 /// step ([`publish`](Self::publish)); the publisher reads them, waits for
 /// changes with [`changed`](Self::changed) and reports route views and
 /// health back for the status of the service.
-pub struct ConnectivityState<M: RawMutex, const ROUTES: usize, const FALLBACKS: usize> {
-    routes: BlockingMutex<M, RefCell<Routes<ROUTES, FALLBACKS>>>,
-    views: BlockingMutex<M, RefCell<Vec<RouteView, ROUTES>>>,
+pub struct ConnectivityState<M: RawMutex, const ROUTES: usize> {
+    routes: BlockingMutex<M, RefCell<Routes<ROUTES>>>,
+    views: BlockingMutex<M, RefCell<[Option<RouteView>; ROUTES]>>,
     health: BlockingMutex<M, RefCell<Health>>,
     unreadable: BlockingMutex<M, Cell<bool>>,
     changed: Signal<M, u32>,
 }
 
-impl<M: RawMutex, const R: usize, const F: usize> Default for ConnectivityState<M, R, F> {
+impl<M: RawMutex, const R: usize> Default for ConnectivityState<M, R> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<M: RawMutex, const R: usize, const F: usize> ConnectivityState<M, R, F> {
-    /// No route: nothing is sent.
+impl<M: RawMutex, const R: usize> ConnectivityState<M, R> {
+    /// No route in any slot: nothing is sent.
     pub const fn new() -> Self {
         Self {
-            routes: BlockingMutex::new(RefCell::new(Routes {
-                generation: 0,
-                routes: Vec::new(),
-            })),
-            views: BlockingMutex::new(RefCell::new(Vec::new())),
+            routes: BlockingMutex::new(RefCell::new(Routes::EMPTY)),
+            views: BlockingMutex::new(RefCell::new([None; R])),
             health: BlockingMutex::new(RefCell::new(Health {
                 last_build_failure: None,
                 captures: 0,
@@ -79,7 +75,7 @@ impl<M: RawMutex, const R: usize, const F: usize> ConnectivityState<M, R, F> {
     }
 
     /// Makes `routes` effective and wakes the publisher.
-    pub fn publish(&self, routes: &Routes<R, F>) {
+    pub fn publish(&self, routes: &Routes<R>) {
         self.unreadable.lock(|flag| flag.set(false));
         let generation = routes.generation;
         self.routes
@@ -99,7 +95,7 @@ impl<M: RawMutex, const R: usize, const F: usize> ConnectivityState<M, R, F> {
         self.routes.lock(|current| {
             *current.borrow_mut() = Routes {
                 generation,
-                routes: Vec::new(),
+                ..Routes::EMPTY
             };
         });
         self.changed.signal(generation);
@@ -116,7 +112,7 @@ impl<M: RawMutex, const R: usize, const F: usize> ConnectivityState<M, R, F> {
     }
 
     /// A copy of the effective routes.
-    pub fn routes(&self) -> Routes<R, F> {
+    pub fn routes(&self) -> Routes<R> {
         self.routes.lock(|routes| routes.borrow().clone())
     }
 
@@ -126,14 +122,14 @@ impl<M: RawMutex, const R: usize, const F: usize> ConnectivityState<M, R, F> {
     }
 
     /// Stores the route views and health of the publisher.
-    pub fn report(&self, views: Vec<RouteView, R>, health: Health) {
+    pub fn report(&self, views: [Option<RouteView>; R], health: Health) {
         self.views.lock(|current| *current.borrow_mut() = views);
         self.health.lock(|current| *current.borrow_mut() = health);
     }
 
-    /// The last reported route views.
-    pub fn views(&self) -> Vec<RouteView, R> {
-        self.views.lock(|views| views.borrow().clone())
+    /// The last reported route views, by slot.
+    pub fn views(&self) -> [Option<RouteView>; R] {
+        self.views.lock(|views| *views.borrow())
     }
 
     /// The last reported health.

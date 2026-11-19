@@ -102,10 +102,12 @@
 //! | `ReadStream`, `CloseStream` | `ActionRegistry` | that of the action that created the stream |
 //! | `TailLogs` | `ActionRegistry` (`Action::tail_logs`) | `Read`; one request, one bounded reply, no stream |
 //!
-//! [`AccessPolicy`] is the policy of a device: it reads the [`TransportAccessMode`] of
-//! the [`Transport`] a request arrived on. `Restricted` TCP wants a connection that completed the
-//! authenticated and encrypted handshake of `rohi-control-tcp`, `Restricted` BLE an encrypted
-//! link; both are properties the *transport* reports in [`LinkSecurity`], which no request field can
+//! [`AccessPolicy`] is the policy of a device: it reads the [`TransportAccessMode`] of the TCP
+//! endpoint. `Restricted` TCP wants a connection that completed the authenticated and encrypted
+//! handshake of `rohi-control-tcp`, a property the *transport* reports in [`LinkSecurity`], which no
+//! request field can change. BLE has no mode: in the current build it is open (no pairing, no link
+//! encryption, and never reported as encrypted or authenticated), so every BLE request is allowed.
+//! This crate implements no encryption, no signature and no challenge.
 //! change. This crate implements no encryption, no signature and no challenge.
 //! The three simple policies are [`OpenPolicy`] (everything),
 //! [`RequireEncryption`] (reads are open, anything else needs an encrypted

@@ -148,7 +148,7 @@ struct Prepared {
     scenario: Scenario,
     storage: FileFlash,
     log_storage: FileLogFlash,
-    /// `None`: the `control_tcp` endpoint is switched off.
+    /// `None`: the `control_tcp` listener could not be bound (reported as `failed`).
     #[cfg(feature = "std-tcp")]
     control: Option<TcpListener>,
     manage: TcpListener,
@@ -227,13 +227,17 @@ fn prepare(args: Args) -> Result<Prepared, StartupError> {
     #[cfg(feature = "std-tcp")]
     let control = {
         let address = args.control_address(Ipv4Addr::from(stored.bind_address));
-        // A port given on the command line also recovers a device whose stored
-        // settings switched the endpoint off.
-        if stored.enabled || args.control_port.is_some() {
-            check_exposure(address, "control", args.unsafe_allow_remote)?;
-            Some(bind(SocketAddr::new(address, _control_port), "control")?)
-        } else {
-            None
+        check_exposure(address, "control", args.unsafe_allow_remote)?;
+        match bind(SocketAddr::new(address, _control_port), "control") {
+            Ok(listener) => Some(listener),
+            // The port was asked for on the command line: the operator wants to know. A
+            // stored or default port that is taken only fails the endpoint, which the status
+            // reports, so the rest of the device still starts.
+            Err(error) if args.control_port.is_some() => return Err(error),
+            Err(error) => {
+                warn!("control: {error}");
+                None
+            }
         }
     };
     let manage = bind(
@@ -376,23 +380,21 @@ fn start(spawner: Spawner, prepared: Prepared) -> Result<(), StartupError> {
     crate::tasks::spawn(spawner, "control_task", control::control_task(controller));
     #[cfg(feature = "std-ble")]
     {
-        if crate::control::access()
-            .stats(rohi_sdk::control::Transport::Ble)
-            .desired
-            .enabled
-        {
-            crate::tasks::spawn(spawner, "ble_task", control::ble_task(ble));
-            crate::control::access().set_state(
-                rohi_sdk::control::Transport::Ble,
-                rohi_sdk::control::EndpointState::Running,
-            );
-        }
+        crate::tasks::spawn(spawner, "ble_task", control::ble_task(ble));
+        crate::control::access().set_state(
+            rohi_sdk::control::Transport::Ble,
+            rohi_sdk::control::EndpointState::Running,
+        );
     }
     #[cfg(feature = "std-tcp")]
     if let Some(control) = control {
-        let acceptor = rohi_sdk::host::TcpAcceptor::new(control)
-            .map_err(|e| platform("control listener", e))?;
-        crate::tasks::spawn(spawner, "tcp_task", control::tcp_task(acceptor));
+        match rohi_sdk::host::TcpAcceptor::new(control) {
+            Ok(acceptor) => crate::tasks::spawn(spawner, "tcp_task", control::tcp_task(acceptor)),
+            Err(error) => {
+                warn!("control: the TCP listener cannot start: {error}");
+                control::record_tcp(None);
+            }
+        }
     }
 
     management::start(spawner, manage, storage.clone(), HOOKS)

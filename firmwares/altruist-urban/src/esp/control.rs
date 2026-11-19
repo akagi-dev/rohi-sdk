@@ -126,14 +126,8 @@ pub fn start(
             let access = crate::control::access();
             crate::tasks::spawn(spawner, "ble_task", ble_task(runner));
             crate::tasks::spawn(spawner, "control_task", control_task(device));
-            // The radio runs whatever the endpoint is set to; a switched-off
-            // endpoint simply serves no central.
-            if access.stats(Transport::Ble).desired.enabled {
-                crate::tasks::spawn(spawner, "control_ble_task", control_ble_task(transport));
-                access.set_state(Transport::Ble, EndpointState::Running);
-            } else {
-                info!("BLE control endpoint is switched off");
-            }
+            crate::tasks::spawn(spawner, "control_ble_task", control_ble_task(transport));
+            access.set_state(Transport::Ble, EndpointState::Running);
             info!(
                 "BLE control started, wireless heap free {} B",
                 wireless.heap().free
@@ -159,9 +153,8 @@ pub async fn control_ble_task(transport: BleTransport) {
 /// Config, Status, Actions and streams for every transport.
 ///
 /// The access policy follows the access mode of each endpoint, see
-/// [`crate::control::access`]: BLE is open by default, so privileged
-/// operations, including identity provisioning and erase, need no pairing
-/// until `control_ble.access_mode` is set to `restricted`.
+/// [`crate::control::access`]: BLE is open (no pairing, no link encryption), so privileged
+/// operations, including identity provisioning, erase and `control_tcp.reveal_psk`, need none.
 #[embassy_executor::task]
 pub async fn control_task(device: EspDevice) {
     let controller = Controller::new(device, AccessPolicy::new(crate::control::access()));

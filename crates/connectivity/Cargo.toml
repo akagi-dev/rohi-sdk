@@ -28,7 +28,7 @@ embedded-nal-async.workspace = true
 log.workspace = true
 
 [features]
-# `packet_get`: a freshly built sealed packet as a stream, with its pool (one slot of `BYTES` per open stream) and
+# `get_payload`: a freshly built sealed packet as a stream, with its pool (one slot of `BYTES` per open stream) and
 # the code that serves and expires it. On by default; the Altruist Urban firmware turns it off with `--no-default-features`
 # of the `packet-export` feature of `altruist-urban` when it needs the flash and RAM, see docs/validation.
 default = ["packet-export"]

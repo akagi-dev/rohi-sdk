@@ -47,6 +47,8 @@ pub struct Launch {
     pub restricted: bool,
     /// A file with the pre-shared key of the TCP endpoint.
     pub psk_file: Option<PathBuf>,
+    /// Do not pass `--control-port`: the stored (or default) `control_tcp` port applies.
+    pub stored_port: bool,
 }
 
 impl Launch {
@@ -77,6 +79,12 @@ impl Launch {
         self
     }
 
+    /// Starts on the stored `control_tcp` port instead of a free one.
+    pub fn stored_port(mut self) -> Self {
+        self.stored_port = true;
+        self
+    }
+
     pub fn arg(mut self, arg: &str) -> Self {
         self.extra.push(arg.to_owned());
         self
@@ -95,8 +103,11 @@ impl Sim {
     /// Starts a device on free ports and waits until it is ready.
     pub fn start(launch: &Launch) -> Self {
         let mut command = Command::new(env!("CARGO_BIN_EXE_altruist-urban"));
+        command.args(["--log-level", "debug"]);
+        if !launch.stored_port {
+            command.args(["--control-port", "0"]);
+        }
         command
-            .args(["--control-port", "0", "--log-level", "debug"])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .stdin(Stdio::null());

@@ -25,9 +25,8 @@ use embassy_futures::block_on;
 use rohi_identity::{IdentityError, MockSigner, Signer};
 use rohi_telemetry::catalog::*;
 use rohi_telemetry::{
-    Capabilities, DataSelection, GeoPoint, ObservationValue, PacketFormat, PacketFormatId,
-    PacketProfile, RecipientAddress, SealError, Selection, SourceId, TelemetryConfig,
-    TelemetrySnapshot, prepare,
+    Capabilities, DataSelection, GeoPoint, ObservationValue, PacketFormat, PacketProfile,
+    RecipientAddress, SealError, Selection, SourceId, TelemetryConfig, TelemetrySnapshot, prepare,
 };
 use rohi_telemetry_robonomics::crypto;
 use rohi_telemetry_robonomics::wire::core_v1::{Message, Message_};
@@ -133,38 +132,37 @@ type Format<'a> = RobonomicsFormat<'a, MockSigner, Rng<'a>, Utc, &'a Mono>;
 
 fn profile(
     format: &Format<'_>,
-    build: impl FnOnce(&mut TelemetryConfig<2, 1>, &Capabilities<'_, Format<'_>>),
-) -> PacketProfile<1> {
+    build: impl FnOnce(&mut TelemetryConfig<2>, &Capabilities<'_, Format<'_>>),
+) -> PacketProfile {
     let caps = Capabilities(format);
-    let mut config = TelemetryConfig::<2, 1>::default();
-    config.add_profile("p", PacketFormatId::Robonomics).unwrap();
+    let mut config = TelemetryConfig::<2>::default();
     build(&mut config, &caps);
-    config.get("p").unwrap().clone()
+    *config.get(0).unwrap()
 }
 
 fn local(ids: &[rohi_telemetry::MeasurementId]) -> DataSelection {
     DataSelection::local(ids.iter().fold(Selection::NONE, |s, id| s.with(*id)))
 }
 
-fn owner_profile(format: &Format<'_>) -> PacketProfile<1> {
+fn owner_profile(format: &Format<'_>) -> PacketProfile {
     profile(format, |config, caps| {
         config
-            .set_public("p", local(&[BMX280_TEMPERATURE, BMX280_HUMIDITY]), caps)
+            .set_public(0, local(&[BMX280_TEMPERATURE, BMX280_HUMIDITY]), caps)
             .unwrap();
         config
-            .add_private("p", address(OWNER), local(&[LOCATION, SDS011_PM10]), caps)
+            .set_private(0, address(OWNER), local(&[LOCATION, SDS011_PM10]), caps)
             .unwrap();
     })
 }
 
-fn city_profile(format: &Format<'_>) -> PacketProfile<1> {
+fn city_profile(format: &Format<'_>) -> PacketProfile {
     profile(format, |config, caps| {
         config
-            .set_public("p", local(&[BMX280_TEMPERATURE, BMX280_HUMIDITY]), caps)
+            .set_public(0, local(&[BMX280_TEMPERATURE, BMX280_HUMIDITY]), caps)
             .unwrap();
         config
-            .add_private(
-                "p",
+            .set_private(
+                0,
                 address(CITY),
                 local(&[LOCATION, MICROPHONE_AVERAGE]),
                 caps,
@@ -197,16 +195,16 @@ impl Fixture {
 
 fn seal(
     fixture: &Fixture,
-    profile: &PacketProfile<1>,
+    profile: &PacketProfile,
     snapshot: &TelemetrySnapshot<16, 8>,
 ) -> Result<std::vec::Vec<u8>, SealError> {
     let mut format = fixture.format();
-    let sections =
-        prepare(snapshot, profile, &format.supported()).map_err(|_| SealError::NothingToPackage)?;
+    let sections = prepare(snapshot, 0, profile, &format.supported())
+        .map_err(|_| SealError::NothingToPackage)?;
     let mut out = [0u8; MAX_ENVELOPE_LEN];
     let packet = block_on(format.seal(&sections, &mut out))?;
     assert_eq!(packet.info().length, packet.bytes().len());
-    assert_eq!(packet.info().profile.id.as_str(), "p");
+    assert_eq!(packet.info().profile.profile_index, 0);
     Ok(packet.bytes().to_vec())
 }
 
@@ -463,7 +461,9 @@ fn a_recipient_key_that_cannot_be_used_fails_the_whole_packet() {
     // A stored profile that nevertheless has such a recipient never degrades
     // to a public packet.
     let mut profile = owner_profile(&format);
-    profile.private[0].recipient = RecipientAddress(weak);
+    if let Some(section) = &mut profile.private {
+        section.recipient = RecipientAddress(weak);
+    }
     assert_eq!(
         seal(&fixture, &profile, &snapshot()),
         Err(SealError::Encryption)
@@ -495,7 +495,7 @@ fn nothing_selected_is_no_packet_and_a_small_buffer_is_refused() {
     let owner = owner_profile(&format);
     let snapshot = snapshot();
     let mut format = fixture.format();
-    let sections = prepare(&snapshot, &owner, &format.supported()).unwrap();
+    let sections = prepare(&snapshot, 0, &owner, &format.supported()).unwrap();
     let mut small = [0u8; 40];
     assert_eq!(
         block_on(format.seal(&sections, &mut small)).unwrap_err(),
@@ -508,17 +508,12 @@ fn unsupported_measurements_cannot_be_selected() {
     let fixture = Fixture::new();
     let format = fixture.format();
     let caps = Capabilities(&format);
-    let mut config = TelemetryConfig::<2, 1>::default();
-    config.add_profile("p", PacketFormatId::Robonomics).unwrap();
-    assert!(config.set_public("p", local(&[SCD4X_CO2]), &caps).is_err());
+    let mut config = TelemetryConfig::<2>::default();
+    assert!(config.set_public(0, local(&[SCD4X_CO2]), &caps).is_err());
+    assert!(config.set_public(0, local(&[ZMOD4510_O3]), &caps).is_err());
     assert!(
         config
-            .set_public("p", local(&[ZMOD4510_O3]), &caps)
-            .is_err()
-    );
-    assert!(
-        config
-            .set_public("p", local(&[BMX280_TEMPERATURE]), &caps)
+            .set_public(0, local(&[BMX280_TEMPERATURE]), &caps)
             .is_ok()
     );
 }
@@ -529,7 +524,7 @@ fn a_location_only_packet_is_supported() {
     let format = fixture.format();
     let profile = profile(&format, |config, caps| {
         config
-            .add_private("p", address(OWNER), local(&[LOCATION]), caps)
+            .set_private(0, address(OWNER), local(&[LOCATION]), caps)
             .unwrap()
     });
     let bytes = seal(&fixture, &profile, &snapshot()).unwrap();
@@ -553,9 +548,9 @@ fn the_largest_supported_profile_fits_the_envelope_limit() {
         MICROPHONE_MAXIMUM,
     ];
     let profile = profile(&format, |config, caps| {
-        config.set_public("p", local(&everything), caps).unwrap();
+        config.set_public(0, local(&everything), caps).unwrap();
         config
-            .add_private("p", address(OWNER), local(&everything), caps)
+            .set_private(0, address(OWNER), local(&everything), caps)
             .unwrap();
     });
     let mut snapshot = TelemetrySnapshot::<16, 8>::new(at(10_000));
@@ -657,7 +652,7 @@ fn the_signature_covers_the_staged_preimage_for_every_message_size() {
     ];
     for ids in sets {
         let profile = profile(&format, |config, caps| {
-            config.set_public("p", local(ids), caps).unwrap();
+            config.set_public(0, local(ids), caps).unwrap();
         });
         let bytes = seal(&fixture, &profile, &snapshot()).unwrap();
         let (envelope, _) = envelope(&bytes);
@@ -683,7 +678,7 @@ fn a_buffer_one_byte_short_is_refused_and_an_exact_one_is_enough() {
     let mut format = fixture.format();
     let profile = owner_profile(&format);
     let snapshot = snapshot();
-    let sections = prepare(&snapshot, &profile, &format.supported()).unwrap();
+    let sections = prepare(&snapshot, 0, &profile, &format.supported()).unwrap();
     let mut big = [0u8; MAX_ENVELOPE_LEN];
     let len = block_on(format.seal(&sections, &mut big))
         .unwrap()

@@ -382,7 +382,7 @@ the ESP, two on the host). Measured with `scripts/memcheck.sh` (static analysis,
 
 The tasks share the one executor stack, so splitting them lowers the depth only because the transport and controller
 poll chains no longer nest. The new `.data` and task RAM come from the second task, the new sections and services and
-the host stack pairing (`trouble-host` `security`); the `.data` of the hub itself is kept at zero (it holds no reference
+the host stack (`trouble-host`); the `.data` of the hub itself is kept at zero (it holds no reference
 until `bind`), so it lands in `.bss`. No saving of stack or RAM is claimed: the stack high-water mark was **not**
 measured on hardware, see [Hardware testing](hardware-testing.md#control-worker-stack-high-water). The budgets of
 `memcheck-budgets.toml` were raised by 700 B (`.data`, ESP32-C3), 1 200 B (`.data`, ESP32-C6) and 1 700 B (task RAM).

@@ -193,9 +193,9 @@ impl<K: DeviceKey, E: Entropy, U: UtcClock, C: Clock> PacketFormat
         recipient_key(recipient).is_some()
     }
 
-    async fn seal<'o, const N: usize, const SRC: usize, const R: usize>(
+    async fn seal<'o, const N: usize, const SRC: usize>(
         &mut self,
-        sections: &PreparedSections<'_, N, SRC, R>,
+        sections: &PreparedSections<'_, N, SRC>,
         out: &'o mut [u8],
     ) -> Result<SignedPacket<'o>, SealError> {
         let timestamp = self.timestamp(sections.captured_at)?;
@@ -205,16 +205,15 @@ impl<K: DeviceKey, E: Entropy, U: UtcClock, C: Clock> PacketFormat
             public: encoder::encode_section(&sections.public).map_err(map_encode)?,
             ..Urban::default()
         };
-        for section in &sections.private {
+        if let Some(section) = &sections.private {
             let sensors = encoder::encode_section(&section.view).map_err(map_encode)?;
-            if sensors.is_empty() {
-                continue;
+            if !sensors.is_empty() {
+                let encrypted = self.encrypt_section(&sender, &section.recipient, sensors)?;
+                urban
+                    .private
+                    .push(encrypted)
+                    .map_err(|_| SealError::TooLarge)?;
             }
-            let encrypted = self.encrypt_section(&sender, &section.recipient, sensors)?;
-            urban
-                .private
-                .push(encrypted)
-                .map_err(|_| SealError::TooLarge)?;
         }
         if urban.public.is_empty() && urban.private.is_empty() {
             return Err(SealError::NothingToPackage);
@@ -234,7 +233,7 @@ impl<K: DeviceKey, E: Entropy, U: UtcClock, C: Clock> PacketFormat
 
         let len = write_envelope(self.key, &message, sender.as_bytes(), &nonce, out)?;
         let info = PacketInfo {
-            profile: sections.profile.clone(),
+            profile: sections.profile,
             format: Self::ID,
             length: len,
             captured_at: sections.captured_at,
@@ -399,13 +398,11 @@ impl<K: DeviceKey, E: Entropy, U: UtcClock, C: Clock> RobonomicsFormat<'_, K, E,
 pub struct RobonomicsCapabilities;
 
 impl rohi_telemetry::FormatCapabilities for RobonomicsCapabilities {
-    fn supported(&self, format: PacketFormatId) -> Selection {
-        match format {
-            PacketFormatId::Robonomics => encoder::supported(),
-        }
+    fn supported(&self) -> Selection {
+        encoder::supported()
     }
 
-    fn accepts_recipient(&self, format: PacketFormatId, recipient: &RecipientAddress) -> bool {
-        format == PacketFormatId::Robonomics && recipient_key(recipient).is_some()
+    fn accepts_recipient(&self, recipient: &RecipientAddress) -> bool {
+        recipient_key(recipient).is_some()
     }
 }

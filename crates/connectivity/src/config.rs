@@ -17,37 +17,40 @@
 ///////////////////////////////////////////////////////////////////////////////
 //! Persistent routing configuration.
 //!
-//! A **route** publishes one telemetry packet profile on its own interval to
-//! a primary HTTP endpoint with an ordered list of fallback endpoints; a
-//! fallback is another way to deliver the *same* packet, never a separate
-//! publisher, profile or interval.
+//! The model is **fixed and index-addressed**: [`Routes`] holds `ROUTES`
+//! route **slots** (Altruist Urban: 2), addressed by their index (`0`, `1`),
+//! each empty or holding one [`Route`]. An index is a stable address: deleting
+//! the route of one slot never moves another. There are no names.
 //!
-//! * The default is **zero routes**: nothing is sent until a route is added
+//! A route publishes one telemetry profile slot (`profile_index`) on its own
+//! interval to a primary HTTP endpoint with **at most one fallback**
+//! endpoint; the fallback is another way to deliver the *same* packet, never a
+//! separate publisher, profile or interval.
+//!
+//! * The default is **no route**: nothing is sent until a route is set
 //!   explicitly, an endpoint is never inferred.
-//! * `id`, `profile` and `primary` of a route are immutable: they change by
-//!   removing and adding the route again, which is a new generation that
-//!   inherits no queue, endpoint state or backoff.
-//! * Only the interval can be edited in place; fallbacks are appended
-//!   (priority is their order) and removed.
+//! * [`set_endpoint`](Routes::set_endpoint) creates a route (interval
+//!   [`DEFAULT_INTERVAL_S`], no fallback), replaces the profile and primary
+//!   endpoint of an existing one (interval and fallback stay) or, when the
+//!   endpoint is absent, deletes it.
+//! * A new or replaced route is a new **generation**: it inherits no queue,
+//!   backoff, counter or packet of whatever the slot held before. Only the
+//!   interval and the fallback can be edited without that.
 //!
 //! The whole configuration is one typed bounded value, kept by the
 //! firmware's configuration owner as the private section
 //! [`ConnectivitySection`] and edited atomically through the Actions of the
 //! `connectivity` service. Every mutation here works on a value, so a
 //! candidate can be validated and published only after a successful commit.
-//! There is no migration: the earlier single-endpoint `connectivity` section
-//! is not read; a stored section that is obsolete or corrupt is reported and
+//! There is no migration: the sections of earlier versions (named routes) are
+//! not read; a stored section that is obsolete or corrupt is reported and
 //! leaves no active route.
 
-use heapless::{String, Vec};
 use minicbor::{CborLen, Decode, Encode};
 use rohi_config::ConfigSection;
-use rohi_telemetry::PacketProfileId;
 
 use crate::endpoint::EndpointUri;
 
-/// Maximum length of a route or fallback id, in bytes.
-pub const ID_LEN: usize = 16;
 /// Shortest allowed publication interval, in seconds.
 pub const MIN_INTERVAL_S: u32 = 10;
 /// Longest allowed publication interval, in seconds.
@@ -55,163 +58,66 @@ pub const MAX_INTERVAL_S: u32 = 24 * 60 * 60;
 /// The interval of a new route, in seconds.
 pub const DEFAULT_INTERVAL_S: u32 = 60;
 
-macro_rules! name {
-    ($(#[$meta:meta])* $name:ident) => {
-        $(#[$meta])*
-        #[derive(Clone, PartialEq, Eq, Hash, Encode, Decode, CborLen)]
-        #[cbor(transparent)]
-        pub struct $name(
-            #[n(0)]
-            #[cbor(
-                encode_with = "rohi_config::cbor::text::encode",
-                decode_with = "rohi_config::cbor::text::decode",
-                cbor_len = "rohi_config::cbor::text::cbor_len"
-            )]
-            String<ID_LEN>,
-        );
-
-        impl $name {
-            /// `None` unless `id` is 1 to [`ID_LEN`] bytes of `a-z`, `0-9`,
-            /// `-` and `_`.
-            pub fn new(id: &str) -> Option<Self> {
-                let valid = !id.is_empty()
-                    && id.bytes().all(|b| {
-                        b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_'
-                    });
-                if !valid {
-                    return None;
-                }
-                String::try_from(id).ok().map(Self)
-            }
-
-            /// The id as text.
-            pub fn as_str(&self) -> &str {
-                &self.0
-            }
-        }
-
-        impl core::fmt::Debug for $name {
-            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                core::fmt::Debug::fmt(self.as_str(), f)
-            }
-        }
-    };
-}
-
-name!(
-    /// The stable text id of a route.
-    RouteId
-);
-name!(
-    /// The id of a fallback, unique within its route.
-    FallbackId
-);
-
-/// The telemetry profile a route publishes, as it was when the route was
-/// created. A deleted and recreated profile has another incarnation and is
-/// never silently picked up by an old route.
-#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode, CborLen)]
-pub struct ProfileBinding {
-    /// The profile id.
-    #[n(0)]
-    pub id: PacketProfileId,
-    /// The incarnation of the profile at binding time.
-    #[n(1)]
-    pub incarnation: u32,
-}
-
-/// One alternative delivery path of a route.
-#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode, CborLen)]
-pub struct Fallback {
-    /// The id, unique within the route.
-    #[n(0)]
-    pub id: FallbackId,
-    /// Where to send the packet.
-    #[n(1)]
-    pub endpoint: EndpointUri,
-}
-
 /// A route.
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode, CborLen)]
-pub struct Route<const FALLBACKS: usize> {
-    /// The id, immutable.
+pub struct Route {
+    /// The telemetry profile slot it publishes.
     #[n(0)]
-    pub id: RouteId,
-    /// The published profile, immutable.
-    #[n(1)]
-    pub profile: ProfileBinding,
+    pub profile_index: u8,
     /// Seconds between publications.
-    #[n(2)]
+    #[n(1)]
     pub interval_s: u32,
-    /// The primary endpoint, immutable.
+    /// The primary endpoint.
+    #[n(2)]
+    pub endpoint: EndpointUri,
+    /// The only fallback, tried after the primary failed.
     #[n(3)]
-    pub primary: EndpointUri,
-    /// The fallbacks in priority order.
+    pub fallback: Option<EndpointUri>,
+    /// The generation at which the route was created or its profile or
+    /// primary endpoint replaced: runtime state of an earlier route of the
+    /// slot is never inherited.
     #[n(4)]
-    #[cbor(
-        encode_with = "rohi_config::cbor::seq::encode",
-        decode_with = "rohi_config::cbor::seq::decode",
-        cbor_len = "rohi_config::cbor::seq::cbor_len"
-    )]
-    pub fallbacks: Vec<Fallback, FALLBACKS>,
-    /// The generation at which the route was created: runtime state of an
-    /// earlier route with the same id is never inherited.
-    #[n(5)]
     pub generation: u32,
-    /// The generation of the last change of the destination set (a fallback
-    /// added or removed): queued packets of an older one are dropped.
-    #[n(6)]
+    /// The generation of the last change of the destination set (a
+    /// replacement or a fallback change): queued packets of an older one are
+    /// dropped.
+    #[n(5)]
     pub destinations: u32,
 }
 
 /// Why a mutation was refused. A refused mutation changes nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RouteError {
-    /// A route or fallback id is not valid.
-    InvalidId,
-    /// A route with this id exists.
-    DuplicateRoute,
-    /// No route with this id.
+    /// The route index is not a slot of this build.
+    InvalidIndex,
+    /// The slot holds no route.
     RouteNotFound,
-    /// The route already has a fallback with this id.
-    DuplicateFallback,
-    /// No such fallback.
-    FallbackNotFound,
     /// The endpoint is already used by this route, as primary or fallback.
     DuplicateEndpoint,
     /// The endpoint is not a valid `http://host[:port]`.
     InvalidEndpoint,
     /// The interval is outside [`MIN_INTERVAL_S`]..=[`MAX_INTERVAL_S`].
     InvalidInterval,
-    /// The route table is full.
-    TooManyRoutes,
-    /// The route has all its fallbacks.
-    TooManyFallbacks,
+    /// A stored value is inconsistent (generations).
+    InconsistentGeneration,
 }
 
-/// All routes.
+/// All route slots.
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode, CborLen)]
-pub struct Routes<const ROUTES: usize, const FALLBACKS: usize> {
+pub struct Routes<const ROUTES: usize> {
     /// Monotonic counter: every successful mutation increments it.
     #[n(0)]
     pub generation: u32,
-    /// The routes, in creation order.
+    /// The slots, by route index. A stored array of another length does not
+    /// decode.
     #[n(1)]
-    #[cbor(
-        encode_with = "rohi_config::cbor::seq::encode",
-        decode_with = "rohi_config::cbor::seq::decode",
-        cbor_len = "rohi_config::cbor::seq::cbor_len"
-    )]
-    pub routes: Vec<Route<FALLBACKS>, ROUTES>,
+    pub slots: [Option<Route>; ROUTES],
 }
 
-impl<const R: usize, const F: usize> Default for Routes<R, F> {
+impl<const R: usize> Default for Routes<R> {
     /// No route: nothing is sent.
     fn default() -> Self {
-        Self {
-            generation: 0,
-            routes: Vec::new(),
-        }
+        Self::EMPTY
     }
 }
 
@@ -222,17 +128,22 @@ fn same_endpoint(a: &EndpointUri, b: &EndpointUri) -> bool {
     }
 }
 
-impl<const R: usize, const F: usize> Routes<R, F> {
-    /// The route `id`.
-    pub fn get(&self, id: &str) -> Option<&Route<F>> {
-        self.routes.iter().find(|route| route.id.as_str() == id)
+impl<const R: usize> Routes<R> {
+    /// No route in any slot.
+    pub const EMPTY: Self = Self {
+        generation: 0,
+        slots: [const { None }; R],
+    };
+
+    /// The route in slot `index`; `None` for an empty slot or an index
+    /// outside the slots.
+    pub fn get(&self, index: usize) -> Option<&Route> {
+        self.slots.get(index)?.as_ref()
     }
 
-    fn index(&self, id: &str) -> Result<usize, RouteError> {
-        self.routes
-            .iter()
-            .position(|route| route.id.as_str() == id)
-            .ok_or(RouteError::RouteNotFound)
+    /// The number of slots that hold a route.
+    pub fn count(&self) -> usize {
+        self.slots.iter().filter(|slot| slot.is_some()).count()
     }
 
     fn bump(&mut self) -> u32 {
@@ -240,173 +151,167 @@ impl<const R: usize, const F: usize> Routes<R, F> {
         self.generation
     }
 
-    /// Adds a route with the default interval and no fallback. The caller
-    /// resolved `profile` against the existing telemetry profiles.
+    fn check(index: usize) -> Result<(), RouteError> {
+        if index < R {
+            Ok(())
+        } else {
+            Err(RouteError::InvalidIndex)
+        }
+    }
+
+    /// Creates, replaces or deletes the route of slot `index`.
+    ///
+    /// * With an `endpoint`, an empty slot gets a route for the telemetry
+    ///   profile slot `profile_index` with [`DEFAULT_INTERVAL_S`] and no
+    ///   fallback. A route that exists keeps its interval and fallback and
+    ///   gets the new profile and primary endpoint, which is a new
+    ///   generation: its queue, backoff and counters are not inherited. The
+    ///   same profile and endpoint again change nothing. The caller checked
+    ///   that `profile_index` names an existing telemetry profile.
+    /// * With **no** endpoint the route is deleted (`profile_index` is not
+    ///   looked at); an empty slot stays empty.
+    ///
+    /// ```
+    /// use rohi_connectivity::{DEFAULT_INTERVAL_S, Routes};
+    ///
+    /// let mut routes = Routes::<2>::default();
+    /// routes.set_endpoint(1, 0, Some("http://ingress.example"))?;
+    /// assert!(routes.get(0).is_none(), "slot 0 stays empty");
+    /// assert_eq!(routes.get(1).map(|r| r.interval_s), Some(DEFAULT_INTERVAL_S));
+    ///
+    /// routes.set_endpoint(1, 0, None)?; // an absent endpoint deletes the route
+    /// assert_eq!(routes.count(), 0);
+    /// # Ok::<(), rohi_connectivity::RouteError>(())
+    /// ```
     ///
     /// # Errors
     ///
     /// [`RouteError`]; the value is unchanged.
-    pub fn add_route(
+    pub fn set_endpoint(
         &mut self,
-        id: &str,
-        profile: ProfileBinding,
-        primary: &str,
+        index: usize,
+        profile_index: u8,
+        endpoint: Option<&str>,
     ) -> Result<(), RouteError> {
-        let id = RouteId::new(id).ok_or(RouteError::InvalidId)?;
-        let primary = EndpointUri::new(primary).ok_or(RouteError::InvalidEndpoint)?;
-        if self.get(id.as_str()).is_some() {
-            return Err(RouteError::DuplicateRoute);
-        }
-        if self.routes.is_full() {
-            return Err(RouteError::TooManyRoutes);
+        Self::check(index)?;
+        let Some(endpoint) = endpoint else {
+            if self.slots[index].is_some() {
+                self.bump();
+                self.slots[index] = None;
+            }
+            return Ok(());
+        };
+        let endpoint = EndpointUri::new(endpoint).ok_or(RouteError::InvalidEndpoint)?;
+        match &self.slots[index] {
+            Some(route) if route.profile_index == profile_index && route.endpoint == endpoint => {
+                return Ok(());
+            }
+            Some(route)
+                if route
+                    .fallback
+                    .as_ref()
+                    .is_some_and(|fallback| same_endpoint(fallback, &endpoint)) =>
+            {
+                return Err(RouteError::DuplicateEndpoint);
+            }
+            _ => {}
         }
         let generation = self.bump();
-        self.routes
-            .push(Route {
-                id,
-                profile,
-                interval_s: DEFAULT_INTERVAL_S,
-                primary,
-                fallbacks: Vec::new(),
-                generation,
-                destinations: generation,
-            })
-            .map_err(|_| RouteError::TooManyRoutes)
-    }
-
-    /// Removes a route with its fallbacks.
-    ///
-    /// # Errors
-    ///
-    /// [`RouteError::RouteNotFound`].
-    pub fn remove_route(&mut self, id: &str) -> Result<(), RouteError> {
-        let index = self.index(id)?;
-        self.routes.remove(index);
-        self.bump();
+        let (interval_s, fallback) = match self.slots[index].take() {
+            Some(route) => (route.interval_s, route.fallback),
+            None => (DEFAULT_INTERVAL_S, None),
+        };
+        self.slots[index] = Some(Route {
+            profile_index,
+            interval_s,
+            endpoint,
+            fallback,
+            generation,
+            destinations: generation,
+        });
         Ok(())
     }
 
-    /// Changes only the publication interval of a route.
+    /// Changes only the publication interval of the route in slot `index`.
     ///
     /// # Errors
     ///
-    /// [`RouteError`].
-    pub fn set_interval(&mut self, id: &str, interval_s: u32) -> Result<(), RouteError> {
+    /// [`RouteError`]; the value is unchanged.
+    pub fn set_interval(&mut self, index: usize, interval_s: u32) -> Result<(), RouteError> {
+        Self::check(index)?;
         if !(MIN_INTERVAL_S..=MAX_INTERVAL_S).contains(&interval_s) {
             return Err(RouteError::InvalidInterval);
         }
-        let index = self.index(id)?;
+        if self.slots[index].is_none() {
+            return Err(RouteError::RouteNotFound);
+        }
         self.bump();
-        self.routes[index].interval_s = interval_s;
+        if let Some(route) = &mut self.slots[index] {
+            route.interval_s = interval_s;
+        }
         Ok(())
     }
 
-    /// Appends a fallback; its position is its priority.
+    /// Sets the only fallback of the route in slot `index`, replacing the
+    /// earlier one; with **no** endpoint the fallback is removed. The same
+    /// fallback again changes nothing.
     ///
     /// # Errors
     ///
     /// [`RouteError`]; the value is unchanged.
-    pub fn add_fallback(
-        &mut self,
-        route: &str,
-        fallback: &str,
-        endpoint: &str,
-    ) -> Result<(), RouteError> {
-        let id = FallbackId::new(fallback).ok_or(RouteError::InvalidId)?;
-        let endpoint = EndpointUri::new(endpoint).ok_or(RouteError::InvalidEndpoint)?;
-        let index = self.index(route)?;
-        let existing = &self.routes[index];
-        if existing.fallbacks.iter().any(|f| f.id == id) {
-            return Err(RouteError::DuplicateFallback);
+    pub fn set_fallback(&mut self, index: usize, endpoint: Option<&str>) -> Result<(), RouteError> {
+        Self::check(index)?;
+        let uri = match endpoint {
+            Some(endpoint) => Some(EndpointUri::new(endpoint).ok_or(RouteError::InvalidEndpoint)?),
+            None => None,
+        };
+        let route = self.slots[index]
+            .as_ref()
+            .ok_or(RouteError::RouteNotFound)?;
+        if route.fallback == uri {
+            return Ok(());
         }
-        if same_endpoint(&existing.primary, &endpoint)
-            || existing
-                .fallbacks
-                .iter()
-                .any(|f| same_endpoint(&f.endpoint, &endpoint))
+        if uri
+            .as_ref()
+            .is_some_and(|fallback| same_endpoint(&route.endpoint, fallback))
         {
             return Err(RouteError::DuplicateEndpoint);
         }
-        if existing.fallbacks.is_full() {
-            return Err(RouteError::TooManyFallbacks);
+        let generation = self.bump();
+        if let Some(route) = &mut self.slots[index] {
+            route.fallback = uri;
+            route.destinations = generation;
         }
-        let generation = self.bump();
-        let route = &mut self.routes[index];
-        route
-            .fallbacks
-            .push(Fallback { id, endpoint })
-            .map_err(|_| RouteError::TooManyFallbacks)?;
-        route.destinations = generation;
         Ok(())
     }
 
-    /// Removes a fallback.
-    ///
-    /// # Errors
-    ///
-    /// [`RouteError`].
-    pub fn remove_fallback(&mut self, route: &str, fallback: &str) -> Result<(), RouteError> {
-        let index = self.index(route)?;
-        let position = self.routes[index]
-            .fallbacks
-            .iter()
-            .position(|f| f.id.as_str() == fallback)
-            .ok_or(RouteError::FallbackNotFound)?;
-        let generation = self.bump();
-        let route = &mut self.routes[index];
-        route.fallbacks.remove(position);
-        route.destinations = generation;
-        Ok(())
-    }
-
-    /// Checks a value decoded from storage: ids valid and unique, endpoints
-    /// valid and distinct within a route, intervals in range, generations
-    /// consistent. A value that fails is never used.
+    /// Checks a value decoded from storage: endpoints valid and distinct
+    /// within a route, intervals in range, generations consistent. A value
+    /// that fails is never used. The telemetry profile of a route is checked
+    /// by the firmware, which knows how many profile slots it has.
     ///
     /// # Errors
     ///
     /// The first [`RouteError`] found.
     pub fn validate(&self) -> Result<(), RouteError> {
-        for (index, route) in self.routes.iter().enumerate() {
-            if RouteId::new(route.id.as_str()).is_none() {
-                return Err(RouteError::InvalidId);
-            }
-            if self.routes[..index].iter().any(|r| r.id == route.id) {
-                return Err(RouteError::DuplicateRoute);
-            }
+        for route in self.slots.iter().flatten() {
             if !(MIN_INTERVAL_S..=MAX_INTERVAL_S).contains(&route.interval_s) {
                 return Err(RouteError::InvalidInterval);
             }
-            if PacketProfileId::new(route.profile.id.as_str()).is_none() {
-                return Err(RouteError::InvalidId);
-            }
-            if route.primary.endpoint().is_none() {
+            if route.endpoint.endpoint().is_none() {
                 return Err(RouteError::InvalidEndpoint);
             }
             if route.generation == 0
                 || route.generation > route.destinations
                 || route.destinations > self.generation
             {
-                return Err(RouteError::RouteNotFound);
+                return Err(RouteError::InconsistentGeneration);
             }
-            for (position, fallback) in route.fallbacks.iter().enumerate() {
-                if FallbackId::new(fallback.id.as_str()).is_none() {
-                    return Err(RouteError::InvalidId);
-                }
-                if fallback.endpoint.endpoint().is_none() {
+            if let Some(fallback) = &route.fallback {
+                if fallback.endpoint().is_none() {
                     return Err(RouteError::InvalidEndpoint);
                 }
-                if route.fallbacks[..position]
-                    .iter()
-                    .any(|f| f.id == fallback.id)
-                {
-                    return Err(RouteError::DuplicateFallback);
-                }
-                if same_endpoint(&route.primary, &fallback.endpoint)
-                    || route.fallbacks[..position]
-                        .iter()
-                        .any(|f| same_endpoint(&f.endpoint, &fallback.endpoint))
-                {
+                if same_endpoint(&route.endpoint, fallback) {
                     return Err(RouteError::DuplicateEndpoint);
                 }
             }
@@ -415,16 +320,16 @@ impl<const R: usize, const F: usize> Routes<R, F> {
     }
 }
 
-/// The persisted section: all routes of a device that keeps up to `ROUTES` routes of up to
-/// `FALLBACKS` fallbacks each. The capacity is the type, so it is also the storage: a
-/// stored section with more routes or fallbacks does not decode and is reported like
-/// any unreadable section, which leaves no active route. Nothing is truncated.
+/// The persisted section: all route slots of a device that keeps `ROUTES` of them (a const
+/// parameter chosen by the firmware; Altruist Urban: 2). The capacity is the type, so it is also
+/// the storage: a stored section of another size does not decode and is reported like any
+/// unreadable section, which leaves no active route. Nothing is truncated.
+///
+/// Version 2 is the indexed-slot model; the named routes of version 1 are not read.
 #[derive(Clone, Debug, PartialEq, Eq, Default, Encode, Decode, CborLen, ConfigSection)]
 #[cbor(transparent)]
-#[config(id = 0x4d75_b590_2252_1f7d, version = 1)]
-pub struct ConnectivitySection<const ROUTES: usize, const FALLBACKS: usize>(
-    #[n(0)] pub Routes<ROUTES, FALLBACKS>,
-);
+#[config(id = 0x4d75_b590_2252_1f7d, version = 2)]
+pub struct ConnectivitySection<const ROUTES: usize>(#[n(0)] pub Routes<ROUTES>);
 
 #[cfg(test)]
 mod tests;

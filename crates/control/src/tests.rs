@@ -1909,9 +1909,8 @@ mod link_security {
     }
 
     #[test]
-    fn restricted_ble_wants_an_encrypted_link() {
+    fn ble_is_open_and_never_reported_as_protected() {
         restricted!(controller, access);
-        // Open by default: a mutation and a provisioning action need nothing.
         assert_eq!(
             error_code(&call(&controller, &BLE, mutate())),
             pb::ErrorCode::NotFound
@@ -1920,20 +1919,15 @@ mod link_security {
             error_code(&call(&controller, &BLE, provision())),
             pb::ErrorCode::PermissionDenied
         );
+        // BLE has no mode to change; the link keeps the properties the transport reported.
         access.set_mode(Transport::Ble, TransportAccessMode::Restricted);
+        assert_eq!(access.mode(Transport::Ble), TransportAccessMode::Open);
         assert_eq!(
-            reason(&call(&controller, &BLE, mutate())),
-            (pb::ErrorCode::PermissionDenied, "pairing_required")
-        );
-        let paired = LinkSecurity {
-            encrypted: true,
-            ..BLE
-        };
-        assert_eq!(
-            error_code(&call(&controller, &paired, mutate())),
+            error_code(&call(&controller, &BLE, mutate())),
             pb::ErrorCode::NotFound
         );
-        // The modes are independent: TCP is as restricted as before.
+        const { assert!(!BLE.encrypted && !BLE.authenticated) };
+        // TCP stays restricted.
         assert_eq!(reason(&call(&controller, &TCP, mutate())).1, "no_psk");
     }
 
@@ -1980,17 +1974,12 @@ mod link_security {
                 }),
             )
         };
-        let paired = LinkSecurity {
-            encrypted: true,
-            ..BLE
-        };
         let encrypted_only = LinkSecurity {
             encrypted: true,
             ..TCP
         };
         for mode in [TransportAccessMode::Open, TransportAccessMode::Restricted] {
             access.set_mode(Transport::Tcp, mode);
-            access.set_mode(Transport::Ble, mode);
             // Never over an unprotected link, whatever the mode says (the open modes allow the
             // plain action, which proves the refusal is the action's own).
             for link in [&TCP, &encrypted_only] {
@@ -2002,17 +1991,13 @@ mod link_security {
                     assert_eq!(why, "encryption_required");
                 }
             }
-            assert_eq!(
-                reason(&invoke(&BLE, 1)),
-                (pb::ErrorCode::PermissionDenied, "pairing_required")
-            );
-            // On a protected link it runs.
+            // On a protected TCP link it runs. Open BLE is the accepted insecure state of this phase.
             assert!(
                 matches!(invoke(&TCP_SECURE, 1), Reply::InvokeAction(_)),
                 "{mode:?}"
             );
             assert!(
-                matches!(invoke(&paired, 1), Reply::InvokeAction(_)),
+                matches!(invoke(&BLE, 1), Reply::InvokeAction(_)),
                 "{mode:?}"
             );
         }

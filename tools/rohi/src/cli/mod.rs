@@ -259,17 +259,7 @@ pub async fn run(cli: Cli, ctx: &mut Ctx) -> Result<(), CliError> {
         return ctx.io.result(&help);
     }
     if let Some(path) = &cli.psk_file {
-        // Only the commands that need the key have to find it usable.
-        match crate::TcpKey::load(path) {
-            Ok(key) => ctx.tcp_key = Some(key),
-            Err(error) if matches!(cli.command, Command::TcpKey(TcpKeyAction::Generate { .. })) => {
-                let _ = error;
-            }
-            Err(error) => return Err(error.into()),
-        }
-    }
-    if let Command::TcpKey(TcpKeyAction::Generate { file }) = &cli.command {
-        return tcp_key::generate(file, ctx);
+        ctx.tcp_key = Some(crate::TcpKey::load(path)?);
     }
 
     match Target::parse(cli.device.as_deref())? {

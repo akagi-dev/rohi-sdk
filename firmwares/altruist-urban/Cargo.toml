@@ -43,7 +43,7 @@ rohi-sdk = { workspace = true, features = [
   "control",
   "ble",
   "endpoints",
-  # `connectivity-packet-export` is the `packet_get` Action and its stream pool; drop it to build without
+  # `connectivity-packet-export` is the `get_payload` Action and its stream pool; drop it to build without
   # (`connectivity` stays), see docs/validation/compact-firmware-report.md for what that saves and loses.
   "connectivity-packet-export",
   "telemetry-sensors",

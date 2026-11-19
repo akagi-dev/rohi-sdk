@@ -125,13 +125,13 @@ following. The table is filled in after each hardware run:
 
 `scripts/memcheck.sh` reports static frames, not the stack depth that a request reaches. Measure it on the device before
 any claim about the shared `control_task`: fill the main stack with a pattern at boot, run each of the paths below over BLE
-(and over a paired link when `control_ble` is restricted), then read how much of the pattern is overwritten.
+(BLE control is open and unencrypted in this build), then read how much of the pattern is overwritten.
 
 - Config read and patch, Status of every service, `rohi status logging`;
-- an expensive action (`rohi connectivity packet_get`), a stream (`rohi logs download`) and its close;
+- an expensive action (`rohi connectivity get_payload 0`), a stream (`rohi logs download`) and its close;
 - `rohi wifi reconnect`;
 - one request while a second central is refused (`Busy`) and a disconnect during a running action.
 
 Record the result and the margin in the [support matrix](../support/overview.md) before the resource budget is lowered. Also
-pair a phone or a Linux adapter with a restricted BLE endpoint and record whether a privileged request succeeds only after the
-link is encrypted: that path is implemented but not verified.
+connect a phone or a Linux adapter to the open BLE endpoint and record that Config, Status and Actions work without pairing:
+that path is implemented but not verified on a device.

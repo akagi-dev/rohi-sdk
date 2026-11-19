@@ -1,35 +1,35 @@
 # Access and the TCP key
 
-A device decides, per transport, what a client may do. Over TCP the answer is simple: a **restricted** endpoint (the default)
-serves only clients that know the device's 32-byte **pre-shared key** (PSK), and everything that client sends and receives is
-authenticated and encrypted. Over BLE a client may read, and changes need a paired (encrypted) link when the endpoint is
-restricted.
+A device decides, per transport, what a client may do. Over TCP a **restricted** endpoint (the default) serves only clients
+that know the device's 32-byte **pre-shared key** (PSK), and everything that client sends and receives is authenticated and
+encrypted. **BLE is open in the current build**: no pairing, no link encryption, and every client in radio range may do
+everything, including changing the configuration, provisioning the identity, resetting the device and asking for the TCP key.
 
-| Transport | Default | `restricted` means |
-|-----------|---------|--------------------|
-| TCP (`control_tcp`) | **restricted** | the client completes the handshake with the PSK; every record is authenticated and encrypted |
-| BLE (`control_ble`) | **open** | the link must be paired (encrypted) before a change |
+| Transport | Default | What it means |
+|-----------|---------|---------------|
+| TCP (`control_tcp`) | **restricted** | the client completes the handshake with the PSK; every record is authenticated and encrypted. `access_mode=open` is plaintext and unauthenticated, for a loopback development run |
+| BLE (`control_ble`) | **open** | no pairing, no encryption, no setting to change it; the status of `control_ble` raises the `open` issue |
 
-`open` is deliberately insecure: on TCP it is plaintext and unauthenticated (for a loopback development run), on BLE anyone in
-radio range can change the configuration. Restricting TCP does not secure a device whose BLE is open. The key itself is never
-accepted over an unprotected link, in any mode. See [Access control](../../build/control-protocol.md#access-control) for the
-protocol, and what it does and does not give: in particular **there is no forward secrecy**, so whoever learns the key later
-can decrypt a recorded session.
+Open BLE is a deliberate, temporary, insecure state. Restricting TCP does not secure a device whose BLE is open. See
+[Access control](../../build/control-protocol.md#access-control) for the protocol, and what it does and does not give: in
+particular **there is no forward secrecy**, so whoever learns the key later can decrypt a recorded session.
 
-## Create a key and give it to the device
+## Get the key from the device
+
+The device generates the key; a client never chooses it.
 
 ```bash
-rohi tcp-key generate tcp.key                                  # a new random key, readable by you only
-rohi -D ble://ALTRUIST-URBAN-A12F --psk-file tcp.key tcp-key set    # over a paired BLE link
+rohi -D ble://ALTRUIST-URBAN-A12F tcp-key reveal tcp.key    # a new random key, saved readable by you only
 ```
 
-The key file holds 64 hex characters; keep it secret and back it up, because a lost key can only be replaced over a paired
-BLE link (or by a factory reset). `rohi` refuses a key file that other users can read, and the key is never a command line
-argument. Setting `ROHI_PSK_FILE` is the same as passing `--psk-file`. The device never shows the key: the status of
-`control_psk` says only whether one is provisioned.
+`tcp-key reveal FILE` runs the action `control_tcp reveal_psk`. **Every call makes a new key**, stores it, ends the TCP
+connections of the old one and returns the new key in the result; there is no action that reads the current key, and no
+way to set a key from a client. `rohi` saves the key to a file (it refuses to replace one) and never prints it. Over BLE the
+key travels in the clear: run it where nobody else is in radio range.
 
-`tcp-key set` needs a protected link. Over an unpaired BLE link or any unauthenticated TCP link the device answers
-`pairing_required` or `encryption_required` and nothing changes.
+The key file holds 64 hex characters; keep it secret. `rohi` refuses a key file that other users can read, and the key is
+never a command line argument. Setting `ROHI_PSK_FILE` is the same as passing `--psk-file`. The status of `control_tcp`
+says only whether a key is provisioned (`psk_enrolled`).
 
 ## Use a restricted endpoint
 
@@ -37,8 +37,7 @@ With the key, `rohi` does the handshake and encrypts every request:
 
 ```bash
 rohi -D tcp://192.168.1.50:9300 --psk-file tcp.key config wifi ssid=ROHI-LAB
-rohi -D tcp://192.168.1.50:9300 --psk-file old.key tcp-key set --new-key new.key   # rotate (see below)
-rohi tcp-key clear                                                # over a paired BLE link: forget the key
+rohi -D tcp://192.168.1.50:9300 --psk-file old.key tcp-key reveal new.key   # rotate (see below)
 ```
 
 Without the key (or with another one) the connection is refused: a restricted endpoint answers nothing in the clear, a device
@@ -46,27 +45,28 @@ that does not know your key cannot complete the handshake and `rohi` does not tr
 
 | Reason | Meaning |
 |--------|---------|
-| `no_psk` | no key is provisioned, so a restricted TCP endpoint serves nobody; provision one over a paired BLE link |
+| `no_psk` | no key is provisioned, so a restricted TCP endpoint serves nobody; get one with `rohi tcp-key reveal FILE` (over BLE) |
 | `encryption_required` | the action needs a protected link; connect to a restricted endpoint with `--psk-file` |
-| `pairing_required` | a restricted BLE endpoint (or a secret) needs a paired link |
 
-**Rotation.** To replace the key, connect with the **current** key (`--psk-file`) and run `rohi tcp-key set --new-key FILE` with the **new** key
-(the key travels inside the encrypted channel), or do it over paired BLE. The device ends the TCP connections that
-used the old key; reconnect with the new one. A TCP session that is interrupted by the change is not a failure of the request.
+**Rotation.** To replace the key, connect with the **current** key (`--psk-file`) and run `rohi tcp-key reveal NEWFILE`, or run it
+over BLE. The device ends the TCP connections that used the old key; reconnect with the new one. A TCP session that is
+interrupted by the change is not a failure of the request.
 
-## Change the modes
+## Settings and status
 
 ```bash
-rohi config control_tcp                      # enabled, access_mode, bind_address, port
-rohi config control_ble access_mode=restricted
-rohi status control_tcp                      # state, sessions, accepted and denied requests, auth_failures, pending changes
+rohi config control_tcp                      # access_mode, bind_address, port
+rohi status control_tcp                      # state, access_mode and port in use, sessions, accepted and denied requests, auth_failures, psk_enrolled
+rohi status control_ble                      # state, sessions, accepted and denied requests
 ```
 
-The access mode applies at once. `enabled`, `bind_address` and `port` of `control_tcp` apply at the next start and the
-status shows `restart_required`. A factory reset restores the defaults and removes the key.
+There is no `enabled` setting: a service that is part of the firmware always starts, with the defaults and your stored
+values on top, and a failure to start shows as `failed` in its status. The settings of `control_tcp` apply as a whole at
+the next start (reboot); a saved setting is never partly applied, and the status shows only what is running. `rohi config`
+tells you when a reboot is needed (`restart_required`). A factory reset restores the defaults and removes the key.
 
 ## Recovery
 
-If the key is lost: over a paired BLE link run `rohi tcp-key set` with a new key, or `rohi system factory_reset` (it also removes
-the configuration and the identity). On the `std` device, `--control-psk-file FILE` gives the process a key for one run
+If the key is lost: run `rohi tcp-key reveal FILE` over BLE, or `rohi system factory_reset` (it also removes the
+configuration and the identity). On the `std` device, `--control-psk-file FILE` gives the process a key for one run
 (it replaces the stored one and is never stored), or `--control-open` opens the endpoint for one run (plaintext, loopback only).

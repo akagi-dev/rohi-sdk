@@ -24,19 +24,22 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 
 use crate::{AuthorizationPolicy, LinkSecurity, Privilege, Transport};
 
-/// What a transport endpoint demands for privileged requests.
+/// What a TCP endpoint demands for privileged requests.
 ///
-/// | Request | `Open` | `Restricted` on TCP | `Restricted` on BLE |
-/// |---------|--------|---------------------|---------------------|
-/// | read | yes | yes (the handshake already proved the client) | yes |
-/// | mutate | yes | an authenticated, encrypted connection (the TCP handshake with the pre-shared key) | an encrypted (paired) link |
-/// | provision | yes | the same as mutate | the same as mutate |
+/// | Request | `Open` | `Restricted` |
+/// |---------|--------|--------------|
+/// | read | yes | yes (the handshake already proved the client) |
+/// | mutate | yes | an authenticated, encrypted connection (the TCP handshake with the pre-shared key) |
+/// | provision | yes | the same as mutate |
 ///
 /// A restricted TCP endpoint does not even read a request before its handshake succeeded, so the
 /// policy never sees an unauthenticated TCP request there. An action that is marked
-/// [`secure_link`](rohi_service::ActionDescriptor::secure_link) (the one that sets the pre-shared key)
+/// [`secure_link`](rohi_service::ActionDescriptor::secure_link) (the one that reveals the pre-shared key)
 /// needs [`protects_secrets`](AuthorizationPolicy::protects_secrets) on top of this in every
-/// mode: an encrypted link on BLE, an authenticated and encrypted connection on TCP.
+/// mode: an authenticated and encrypted connection on TCP.
+///
+/// BLE has no mode: in the current build the BLE endpoint is open, with no pairing and no link
+/// encryption, and a BLE link is never reported as encrypted or authenticated.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransportAccessMode {
     /// Everything is allowed. Deliberately insecure for privileged operations.
@@ -58,7 +61,7 @@ impl TransportAccessMode {
 /// Whether a transport endpoint serves clients.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EndpointState {
-    /// Switched off by configuration or not supported by the build.
+    /// Not started: the build has no such endpoint, or it did not start yet.
     Disabled,
     /// Waiting for a client or serving one.
     Running,
@@ -66,12 +69,10 @@ pub enum EndpointState {
     Failed,
 }
 
-/// What an endpoint is configured to be: the persisted `control_tcp` or
-/// `control_ble` section as the runtime sees it.
+/// What a running endpoint was started with: the persisted `control_tcp` section (or a launch
+/// option of the platform) as the runtime applied it at boot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EndpointSettings {
-    /// The endpoint is switched on.
-    pub enabled: bool,
     /// What privileged requests need.
     pub mode: TransportAccessMode,
     /// The IPv4 address a TCP endpoint listens on; unused for BLE.
@@ -83,7 +84,6 @@ pub struct EndpointSettings {
 impl EndpointSettings {
     /// The defaults of the TCP endpoint: restricted, loopback, port 9300.
     pub const TCP: Self = Self {
-        enabled: true,
         mode: TransportAccessMode::Restricted,
         address: [127, 0, 0, 1],
         port: 9300,
@@ -91,7 +91,6 @@ impl EndpointSettings {
 
     /// The defaults of the BLE endpoint: open.
     pub const BLE: Self = Self {
-        enabled: true,
         mode: TransportAccessMode::Open,
         address: [0; 4],
         port: 0,
@@ -104,10 +103,7 @@ pub struct EndpointStats {
     /// Whether the endpoint serves clients.
     pub state: EndpointState,
     /// What the running endpoint was started with.
-    pub effective: EndpointSettings,
-    /// What the configuration asks for now; it differs from `effective` in
-    /// the fields a change of which needs a restart.
-    pub desired: EndpointSettings,
+    pub settings: EndpointSettings,
     /// Live connections.
     pub sessions: u32,
     /// Requests the policy allowed.
@@ -126,8 +122,7 @@ impl EndpointStats {
     const fn new(settings: EndpointSettings) -> Self {
         Self {
             state: EndpointState::Disabled,
-            effective: settings,
-            desired: settings,
+            settings,
             sessions: 0,
             accepted: 0,
             denied: 0,
@@ -135,18 +130,6 @@ impl EndpointStats {
             errors: 0,
             last_error: 0,
         }
-    }
-
-    /// `true` when the configuration asks for something only a restart
-    /// applies: switching the endpoint on or off, another address or port.
-    /// The access mode applies at once.
-    pub const fn restart_required(&self) -> bool {
-        self.desired.enabled != self.effective.enabled
-            || self.desired.address[0] != self.effective.address[0]
-            || self.desired.address[1] != self.effective.address[1]
-            || self.desired.address[2] != self.effective.address[2]
-            || self.desired.address[3] != self.effective.address[3]
-            || self.desired.port != self.effective.port
     }
 }
 
@@ -180,8 +163,9 @@ struct State {
 /// let access = ControlAccess::new(|_| false);
 /// assert_eq!(access.mode(Transport::Tcp), TransportAccessMode::Restricted);
 /// assert_eq!(access.mode(Transport::Ble), TransportAccessMode::Open);
+/// // BLE has no mode: it is open whatever is asked.
 /// access.set_mode(Transport::Ble, TransportAccessMode::Restricted);
-/// assert_eq!(access.mode(Transport::Ble), TransportAccessMode::Restricted);
+/// assert_eq!(access.mode(Transport::Ble), TransportAccessMode::Open);
 /// ```
 pub struct ControlAccess {
     state: Mutex<CriticalSectionRawMutex, RefCell<State>>,
@@ -209,22 +193,21 @@ impl ControlAccess {
         self.state.lock(|state| f(&mut state.borrow_mut()))
     }
 
-    /// The effective mode of `transport`; an unspecified transport is always
-    /// restricted.
+    /// The mode of `transport`: BLE is always open in this build and an unspecified transport
+    /// is always restricted.
     pub fn mode(&self, transport: Transport) -> TransportAccessMode {
-        match index(transport) {
-            Some(index) => self.with(|state| state.stats[index].effective.mode),
-            None => TransportAccessMode::Restricted,
+        match transport {
+            Transport::Ble => TransportAccessMode::Open,
+            Transport::Tcp => self.with(|state| state.stats[TCP].settings.mode),
+            Transport::Unspecified => TransportAccessMode::Restricted,
         }
     }
 
-    /// Applies the mode to the requests that follow.
+    /// Applies the mode of the TCP endpoint to the requests that follow. The BLE endpoint has
+    /// no mode, so this does nothing for any other transport.
     pub fn set_mode(&self, transport: Transport, mode: TransportAccessMode) {
-        if let Some(index) = index(transport) {
-            self.with(|state| {
-                state.stats[index].effective.mode = mode;
-                state.stats[index].desired.mode = mode;
-            });
+        if transport == Transport::Tcp {
+            self.with(|state| state.stats[TCP].settings.mode = mode);
         }
     }
 
@@ -262,39 +245,24 @@ impl ControlAccess {
         }
     }
 
-    /// Records what `transport` was started with, which is also what it is
-    /// asked for until [`set_desired`](Self::set_desired) says otherwise.
-    pub fn set_effective(&self, transport: Transport, settings: EndpointSettings) {
+    /// Records what `transport` was started with: the settings the platform applied at boot.
+    /// Nothing is applied later; a change of the stored settings takes effect at the next start.
+    pub fn set_settings(&self, transport: Transport, settings: EndpointSettings) {
         if let Some(index) = index(transport) {
             self.with(|state| {
-                state.stats[index].effective = settings;
-                state.stats[index].desired = settings;
+                state.stats[index].settings = settings;
             });
         }
     }
 
-    /// Records the configuration of `transport` and applies its access mode to
-    /// the requests that follow. The other fields apply at the next start, see
-    /// [`EndpointStats::restart_required`].
-    pub fn set_desired(&self, transport: Transport, settings: EndpointSettings) {
+    /// Records what the running endpoint of `transport` really listens on: the platform may
+    /// start it from a launch option and not from the stored settings. The access mode is kept.
+    pub fn set_listening(&self, transport: Transport, address: [u8; 4], port: u16) {
         if let Some(index) = index(transport) {
             self.with(|state| {
-                state.stats[index].desired = settings;
-                state.stats[index].effective.mode = settings.mode;
-            });
-        }
-    }
-
-    /// Records what the running endpoint of `transport` really listens on:
-    /// the platform may start it from a launch option and not from the stored
-    /// settings. The access mode and the stored (desired) settings are kept.
-    pub fn set_running(&self, transport: Transport, enabled: bool, address: [u8; 4], port: u16) {
-        if let Some(index) = index(transport) {
-            self.with(|state| {
-                let effective = &mut state.stats[index].effective;
-                effective.enabled = enabled;
-                effective.address = address;
-                effective.port = port;
+                let settings = &mut state.stats[index].settings;
+                settings.address = address;
+                settings.port = port;
             });
         }
     }
@@ -340,7 +308,7 @@ impl ControlAccess {
 /// transport the request arrived on decides.
 ///
 /// It consumes only what the transport established, never a field of the request: `encrypted`
-/// and `authenticated` are set by the TCP handshake or by BLE pairing. A transport the policy
+/// and `authenticated` are set by the TCP handshake; an open BLE link sets neither. A transport the policy
 /// cannot identify is restricted and, being neither TCP nor BLE, needs an encrypted and
 /// authenticated link.
 ///
@@ -358,9 +326,8 @@ impl ControlAccess {
 /// assert!(!policy.allows(Privilege::Mutate, &tcp));
 /// assert!(policy.allows(Privilege::Mutate, &ble));
 /// // What an action that carries transport keys wants on top of that, in every mode.
-/// assert!(!policy.protects_secrets(&ble));
-/// let paired = LinkSecurity { encrypted: true, ..ble };
-/// assert!(policy.protects_secrets(&paired));
+/// // BLE is open in this build, so it is the one place a secret action may run without encryption.
+/// assert!(policy.protects_secrets(&ble));
 /// let secure = LinkSecurity { encrypted: true, authenticated: true, ..tcp };
 /// assert!(policy.allows(Privilege::Provision, &secure) && policy.protects_secrets(&secure));
 /// assert!(!policy.protects_secrets(&LinkSecurity { encrypted: true, ..tcp }));
@@ -383,13 +350,11 @@ impl<'a> AccessPolicy<'a> {
         if privilege == Privilege::Read {
             return true;
         }
-        match (link.transport, self.0.mode(link.transport)) {
-            (Transport::Tcp, TransportAccessMode::Open) => true,
-            (Transport::Ble, TransportAccessMode::Open) => true,
-            (Transport::Ble, TransportAccessMode::Restricted) => link.encrypted,
-            (Transport::Tcp, TransportAccessMode::Restricted) | (Transport::Unspecified, _) => {
-                link.encrypted && link.authenticated
-            }
+        match link.transport {
+            // Open BLE: the policy hook where a restricted mode can return later.
+            Transport::Ble => true,
+            Transport::Tcp if self.0.mode(Transport::Tcp) == TransportAccessMode::Open => true,
+            Transport::Tcp | Transport::Unspecified => link.encrypted && link.authenticated,
         }
     }
 }
@@ -412,15 +377,15 @@ impl AuthorizationPolicy for AccessPolicy<'_> {
 
     fn protects_secrets(&self, link: &LinkSecurity) -> bool {
         match link.transport {
-            Transport::Ble => link.encrypted,
+            // The accepted insecure state of this phase: an open BLE link carries secrets.
+            Transport::Ble => true,
             Transport::Tcp | Transport::Unspecified => link.encrypted && link.authenticated,
         }
     }
 
     fn denial_reason(&self, _privilege: Privilege, link: &LinkSecurity) -> Option<&'static str> {
         Some(match link.transport {
-            Transport::Ble => "pairing_required",
-            _ if !self.0.tcp_psk_enrolled() => "no_psk",
+            _ if !self.0.tcp_psk_enrolled() && link.transport == Transport::Tcp => "no_psk",
             _ => "encryption_required",
         })
     }

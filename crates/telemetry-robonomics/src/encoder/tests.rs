@@ -17,8 +17,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 use rohi_telemetry::catalog::*;
 use rohi_telemetry::{
-    DataSelection, GeoPoint, ObservationValue, PacketFormatId, Selection, SourceId,
-    TelemetrySnapshot, prepare,
+    DataSelection, GeoPoint, ObservationValue, Selection, SourceId, TelemetrySnapshot, prepare,
 };
 use rohi_time::MonotonicTimestamp;
 
@@ -59,26 +58,21 @@ fn snapshot(with_humidity: bool) -> TelemetrySnapshot<16, 8> {
     snapshot
 }
 
-fn profile(selection: Selection) -> rohi_telemetry::PacketProfile<2> {
+fn profile(selection: Selection) -> rohi_telemetry::PacketProfile {
     struct Caps;
     impl rohi_telemetry::FormatCapabilities for Caps {
-        fn supported(&self, _: PacketFormatId) -> Selection {
+        fn supported(&self) -> Selection {
             rohi_telemetry::catalog::all_cataloged()
         }
-        fn accepts_recipient(
-            &self,
-            _: PacketFormatId,
-            _: &rohi_telemetry::RecipientAddress,
-        ) -> bool {
+        fn accepts_recipient(&self, _: &rohi_telemetry::RecipientAddress) -> bool {
             true
         }
     }
-    let mut config = rohi_telemetry::TelemetryConfig::<3, 2>::default();
-    config.add_profile("p", PacketFormatId::Robonomics).unwrap();
+    let mut config = rohi_telemetry::TelemetryConfig::<2>::default();
     config
-        .set_public("p", DataSelection::local(selection), &Caps)
+        .set_public(0, DataSelection::local(selection), &Caps)
         .unwrap();
-    config.get("p").unwrap().clone()
+    *config.get(0).unwrap()
 }
 
 fn encode_public(
@@ -88,6 +82,7 @@ fn encode_public(
     let profile = profile(selection);
     let sections = prepare(
         snapshot,
+        0,
         &profile,
         &rohi_telemetry::catalog::all_cataloged(),
     )
@@ -178,7 +173,7 @@ fn dynamic_all_excludes_location_and_unsupported_data_is_not_sent_by_accident() 
     let snapshot = snapshot(true);
     // `all` over what the format supports: no location, no SCD4x.
     let profile = profile(Selection::ALL);
-    let sections = prepare(&snapshot, &profile, &supported()).unwrap();
+    let sections = prepare(&snapshot, 0, &profile, &supported()).unwrap();
     let list = encode_section(&sections.public).unwrap();
     assert!(
         list.iter()

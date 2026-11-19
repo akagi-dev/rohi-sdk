@@ -43,7 +43,7 @@ use embassy_sync::blocking_mutex::Mutex;
 use log::{info, warn};
 use rohi_sdk::config::{ConfigSection, HasOverrides, materialize};
 use rohi_sdk::control::Transport;
-use rohi_sdk::endpoints::{ControlBleConfig, ControlTcpConfig, TcpPskSection};
+use rohi_sdk::endpoints::{ControlTcpConfig, TcpPskSection};
 use rohi_sdk::identity::Identity;
 use rohi_sdk::location::LocationConfig;
 use rohi_sdk::logging::LoggingConfig;
@@ -96,14 +96,6 @@ pub trait Binding {
     /// cheap: the owner task calls it in the commit step, with no `.await`
     /// between the commit and the publication.
     fn publish(runtime: &ConfigRuntime, effective: &Self::Config);
-
-    /// The part of a restart-required section that applies at once. Called
-    /// instead of [`publish`](Self::publish) for a commit or a factory reset of
-    /// such a section, which is otherwise only persisted. Synchronous and cheap
-    /// like `publish`; the default does nothing.
-    fn publish_live(runtime: &ConfigRuntime, effective: &Self::Config) {
-        let _ = (runtime, effective);
-    }
 }
 
 /// A persisted section the firmware keeps for itself: not a [`Config`],
@@ -231,9 +223,9 @@ impl Binding for BleBinding {
     }
 }
 
-/// `control_tcp`: the TCP control endpoint. The access mode applies at once; the
-/// listener (switched on or off, address, port) is the platform's and is
-/// started once, so those fields wait for a restart.
+/// `control_tcp`: the TCP control endpoint. The whole section is published once, at boot, and
+/// applies as one: a later commit only persists it and takes effect after a reboot, so a
+/// saved setting is never partly applied.
 pub struct ControlTcpBinding;
 
 impl Binding for ControlTcpBinding {
@@ -241,28 +233,7 @@ impl Binding for ControlTcpBinding {
     const RESTART_REQUIRED: bool = true;
 
     fn publish(_: &ConfigRuntime, effective: &ControlTcpConfig) {
-        control::access().set_effective(Transport::Tcp, effective.settings());
-    }
-
-    fn publish_live(_: &ConfigRuntime, effective: &ControlTcpConfig) {
-        control::access().set_desired(Transport::Tcp, effective.settings());
-    }
-}
-
-/// `control_ble`: the BLE control endpoint. The access mode applies at once;
-/// whether the endpoint is served is decided when the peripheral starts.
-pub struct ControlBleBinding;
-
-impl Binding for ControlBleBinding {
-    type Config = ControlBleConfig;
-    const RESTART_REQUIRED: bool = true;
-
-    fn publish(_: &ConfigRuntime, effective: &ControlBleConfig) {
-        control::access().set_effective(Transport::Ble, effective.settings());
-    }
-
-    fn publish_live(_: &ConfigRuntime, effective: &ControlBleConfig) {
-        control::access().set_desired(Transport::Ble, effective.settings());
+        control::access().set_settings(Transport::Tcp, effective.settings());
     }
 }
 
