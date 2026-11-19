@@ -26,11 +26,11 @@ use std::io::{self, Write};
 use std::rc::Rc;
 
 use clap::CommandFactory;
+use common::ConnectivityConfig;
 use common::*;
 use rohi::cli::{Cli, CliError, Ctx, Io, PartialApply, execute};
 use rohi::{Device, Error};
 use rohi_config::Override;
-use rohi_connectivity::ConnectivityConfig;
 use rohi_control::{Controller, OpenPolicy};
 use rohi_control_ble::ControlBle;
 use rohi_net::WifiPassword;

@@ -21,6 +21,9 @@ use zeroize::Zeroize;
 /// Maximum length of a string or bytes [`Value`], in bytes.
 pub const MAX_VALUE_LEN: usize = 64;
 
+/// Length of a [`ValueKind::Address`], in bytes: a raw public key.
+pub const ADDRESS_LEN: usize = 32;
+
 /// Primitive type of a [`Value`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ValueKind {
@@ -38,6 +41,20 @@ pub enum ValueKind {
     Bytes,
     /// One of the variants of the enum the field descriptor refers to.
     Enum,
+    /// A raw [`ADDRESS_LEN`]-byte public key, carried as [`Value::Bytes`].
+    /// Clients accept hexadecimal or SS58 text and send the raw bytes.
+    Address,
+}
+
+impl ValueKind {
+    /// Whether `value` is a valid value of this kind. An address is a bytes
+    /// value of exactly [`ADDRESS_LEN`] bytes.
+    pub fn admits(self, value: &Value) -> bool {
+        match (self, value) {
+            (Self::Address, Value::Bytes(bytes)) => bytes.len() == ADDRESS_LEN,
+            _ => value.kind() == self,
+        }
+    }
 }
 
 /// A generic typed value, the common currency of config and status.
@@ -186,4 +203,20 @@ pub enum FieldError {
     /// The field is a write-only secret: its value is never read, only
     /// whether it is set.
     Secret,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_address_is_exactly_one_key_of_bytes() {
+        let key = Value::bytes(&[7; ADDRESS_LEN]).unwrap();
+        assert!(ValueKind::Address.admits(&key));
+        assert!(ValueKind::Bytes.admits(&key));
+        assert!(!ValueKind::Address.admits(&Value::bytes(&[7; ADDRESS_LEN - 1]).unwrap()));
+        assert!(!ValueKind::Address.admits(&Value::bytes(&[7; ADDRESS_LEN + 1]).unwrap()));
+        assert!(!ValueKind::Address.admits(&Value::U64(1)));
+        assert!(!ValueKind::Bytes.admits(&Value::U64(1)));
+    }
 }

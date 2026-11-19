@@ -15,195 +15,364 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-//! Telemetry uplink: signed `connectivity-protocol` frames over HTTP.
+//! Telemetry delivery of the device: routes, the packet builder and the
+//! publisher task.
 //!
-//! The service runs in its own task and only reads measurement snapshots, so
-//! Wi-Fi, DNS, TCP, server, time or authorization failures never reach the
-//! sensors. Configuration is `ConnectivityConfig::default()`, the build-time
-//! [`firmware_overrides`] (`ROHI_CONNECTIVITY_ENDPOINT`, an
-//! `http://host[:port]` URI, `ROHI_CONNECTIVITY_NODE_ID`,
-//! `ROHI_CONNECTIVITY_INTERVAL_S`; without an endpoint nothing is enabled) and the overrides of the persistent
-//! `ConnectivityConfig` section.
-//!
-//! The task is always running once the network is up and follows the
-//! configuration: every commit or removal of the section is published by the
-//! configuration owner task (see [`publish`]) and the service is stopped,
-//! rebuilt and restarted with the new values, or left stopped when the new
-//! configuration is disabled or invalid. Frames still queued in the outbox of
-//! the replaced service are dropped.
+//! The routes are one private section kept by the configuration owner (see
+//! [`crate::config`]); a commit publishes them to [`state`] in the same step.
+//! [`UrbanPackets`] builds sealed packets: it captures the local sensors and
+//! the location once, applies a telemetry profile and lets the Robonomics
+//! format encrypt and sign the result with the device identity. The
+//! publisher ([`run`]) and the `packet_get` export use it; the publisher only
+//! reads snapshots, so whatever the uplink does it can neither delay nor stop
+//! the sensors.
 
-use core::cell::RefCell;
-use core::convert::Infallible;
+use core::fmt;
 
-use embassy_futures::select::{Either, select};
-use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
-use embassy_sync::signal::Signal;
 use embassy_time::Delay;
 use log::{info, warn};
-use rohi_sdk::config::Override;
 use rohi_sdk::connectivity::{
-    ConnectivityConfig, ConnectivityOverrides, ConnectivityService, ConnectivityShared,
-    ConnectivityStatus, EndpointUri, HttpTransport, NonceSource, ServiceConfig,
+    BuildFailure, ConnectivitySection, ConnectivityService, ConnectivityState, ConnectivityStore,
+    HttpTransport, PacketExporter, PacketProvider, Publisher, RouteError, RouteSet, StoreError,
 };
-use rohi_sdk::hal::runtime::{EmbassyClock, MeasurementHandle};
 use rohi_sdk::net::{IpBackend, NetworkHandle};
+use rohi_sdk::sensors::runtime::MeasurementHandle;
+use rohi_sdk::telemetry::adapters::{LocationTelemetrySource, SensorsTelemetrySource};
+use rohi_sdk::telemetry::{
+    PacketFormat, ProfileStamp, SealError, TelemetrySnapshot, capture, prepare,
+};
+use rohi_sdk::telemetry_robonomics::wire::limits::MAX_ENVELOPE_LEN;
+use rohi_sdk::telemetry_robonomics::{Entropy, EntropyError, RobonomicsFormat};
+use rohi_sdk::time::{Clock, EmbassyClock};
 
+use crate::bindings::PrivateBinding;
+use crate::config::{ConfigHandle, ServiceError};
 use crate::identity::StaticSigner;
 use crate::tasks::RawMutex;
-use crate::{location, time};
+use crate::{location, telemetry, time};
 
-/// Frames the telemetry outbox holds while the uplink is down. Each frame is
-/// up to `rohi_connectivity_proto::limits::MAX_ENVELOPE_LEN` bytes; when the
-/// outbox is full new frames are skipped, never queued over old ones.
-pub const CONNECTIVITY_OUTBOX_DEPTH: usize = 4;
+/// Packets queued per route while the uplink is down. When the outbox is full
+/// new packets are skipped, never queued over old ones.
+pub const OUTBOX_DEPTH: usize = 2;
+/// Sealed packets the pool holds: queued, being sent or being built.
+pub const POOL_SLOTS: usize = 2;
+/// Packet streams `packet_get` keeps open at once.
+pub const EXPORT_STREAMS: usize = 1;
+/// Size of a sealed packet buffer: the largest envelope of the format.
+pub const PACKET_BYTES: usize = MAX_ENVELOPE_LEN;
+/// Observations a capture holds: one slot for every measurement of the
+/// catalog, so every sensor and the location fit together. A smaller snapshot
+/// would discard the whole dataset of a source (a capture is atomic per
+/// source), so this is never a tuning knob below the catalog size.
+pub const SNAPSHOT_OBSERVATIONS: usize = rohi_sdk::telemetry::CATALOG.len();
+/// Budget of one source during a capture, in milliseconds.
+const SOURCE_TIMEOUT_MS: u32 = 2_000;
 
-static SHARED: ConnectivityShared<RawMutex> = ConnectivityShared::new();
+static STATE: ConnectivityState<RawMutex> = ConnectivityState::new();
 
-/// The latest effective configuration, see [`publish`].
-static UPDATES: Signal<RawMutex, ConnectivityConfig> = Signal::new();
-
-/// Hands the effective `ConnectivityConfig` (the defaults, the
-/// [`firmware_overrides`] and the committed user overrides) to the running task.
-/// Synchronous, so the configuration owner can call it in the commit step;
-/// only the latest value matters.
-pub fn publish(config: ConnectivityConfig) {
-    UPDATES.signal(config);
+/// The effective routes and the runtime status of the publisher.
+pub fn state() -> &'static ConnectivityState<RawMutex> {
+    &STATE
 }
 
-/// Status published by the telemetry service.
-pub fn shared() -> &'static ConnectivityShared<RawMutex> {
-    &SHARED
-}
+/// Fills a buffer with unpredictable bytes; `false` when no entropy is
+/// available. A true random source on hardware, a seeded one for a
+/// reproducible simulation. It must never repeat a value: it feeds the nonces
+/// of encrypted sections.
+pub type EntropyFn = fn(&mut [u8]) -> bool;
 
-/// The configuration the telemetry service currently runs; `None` while it is
-/// disabled or the configuration is invalid.
-pub fn effective_config() -> Option<ConnectivityConfig> {
-    EFFECTIVE.lock(|cell| cell.borrow().clone())
-}
+#[derive(Clone, Copy)]
+struct FnEntropy(EntropyFn);
 
-static EFFECTIVE: BlockingMutex<RawMutex, RefCell<Option<ConnectivityConfig>>> =
-    BlockingMutex::new(RefCell::new(None));
-
-/// Diagnostics of the telemetry service.
-pub fn status() -> ConnectivityStatus {
-    SHARED.status()
-}
-
-fn env_number<T: core::str::FromStr>(value: Option<&str>) -> Option<T> {
-    value.and_then(|value| value.parse().ok())
-}
-
-/// Policy compiled into the firmware: nothing is enabled unless a valid endpoint
-/// (`http://host[:port]`) is set, and the other variables are ignored without
-/// one. It is the firmware
-/// layer under the overrides of the user.
-pub fn firmware_overrides() -> ConnectivityOverrides {
-    let mut out = ConnectivityOverrides::default();
-    let Some(endpoint) = option_env!("ROHI_CONNECTIVITY_ENDPOINT").and_then(EndpointUri::new)
-    else {
-        return out;
-    };
-    out.endpoint = Override::Value(Some(endpoint));
-    if let Some(node_id) = env_number(option_env!("ROHI_CONNECTIVITY_NODE_ID")) {
-        out.node_id = Override::Value(node_id);
-    }
-    if let Some(interval) = env_number(option_env!("ROHI_CONNECTIVITY_INTERVAL_S")) {
-        out.interval_s = Override::Value(interval);
-    }
-    out
-}
-
-/// `None` when `loaded` is disabled (it has no endpoint) or invalid.
-fn effective(loaded: ConnectivityConfig) -> Option<ConnectivityConfig> {
-    if !loaded.is_enabled() {
-        info!("Connectivity: disabled");
-        return None;
-    }
-    match loaded.validate() {
-        Ok(()) => Some(loaded),
-        Err(error) => {
-            warn!("Connectivity: {}, telemetry disabled", error);
-            None
+impl Entropy for FnEntropy {
+    fn fill(&mut self, dst: &mut [u8]) -> Result<(), EntropyError> {
+        if (self.0)(dst) {
+            Ok(())
+        } else {
+            Err(EntropyError)
         }
     }
 }
 
-/// Runs the service for `config` until the task is cancelled.
-async fn serve<I: IpBackend, N: NonceSource>(
-    network: NetworkHandle<'static, I>,
-    measurements: MeasurementHandle<'static, RawMutex>,
-    nonce: N,
-    config: &ConnectivityConfig,
-) -> Infallible {
-    let Some(endpoint) = config.endpoint() else {
-        // `effective` only hands over a valid, enabled configuration.
-        return core::future::pending().await;
-    };
-    info!(
-        "Connectivity: {}:{} every {} s",
-        endpoint.host, endpoint.port, config.interval_s
-    );
-    let signer = StaticSigner;
-    let transport = HttpTransport::new(network, endpoint, Delay);
-    let mut service: ConnectivityService<
-        '_,
-        RawMutex,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        CONNECTIVITY_OUTBOX_DEPTH,
-    > = ConnectivityService::new(
-        ServiceConfig::new(config.node_id, config.interval_ms()),
-        &SHARED,
-        measurements,
-        location::shared(),
-        EmbassyClock,
-        time::service(),
-        &signer,
-        nonce,
-        transport,
-        Delay,
-    );
-    service.run().await
+/// The stored routes: published to [`state`] when committed, removed or loaded
+/// at boot.
+pub struct ConnectivityBinding;
+
+impl PrivateBinding for ConnectivityBinding {
+    type Section = ConnectivitySection;
+
+    fn publish(section: Option<&ConnectivitySection>) {
+        match section {
+            Some(section) => {
+                if let Err(error) = validate_routes(&section.0) {
+                    warn_invalid_routes(error);
+                    STATE.mark_unreadable();
+                    return;
+                }
+                info!(
+                    "Connectivity: {} route(s), generation {}",
+                    section.0.routes.len(),
+                    section.0.generation
+                );
+                STATE.publish(&section.0);
+            }
+            None => {
+                info!("Connectivity: no routes");
+                STATE.publish(&empty_routes(STATE.generation()));
+            }
+        }
+    }
+
+    fn unreadable(error: &dyn fmt::Display) {
+        warn!(
+            "Connectivity: stored routes unreadable, nothing is sent: {}",
+            error
+        );
+        STATE.mark_unreadable();
+    }
 }
 
-/// Runs the telemetry service while it is enabled and restarts it with every
-/// published configuration; never returns. The platform runs it in its
-/// telemetry task. It reads snapshots only: it can neither delay nor stop the
-/// sensors, whatever the uplink does.
-///
-/// `nonce` produces the frame nonces: a true random source on hardware, a
-/// seeded one for a reproducible simulation.
-pub async fn run<I: IpBackend, N: NonceSource + Clone>(
-    network: NetworkHandle<'static, I>,
-    measurements: MeasurementHandle<'static, RawMutex>,
-    nonce: N,
-) -> ! {
-    // The configuration owner publishes the effective configuration at boot,
-    // before this task runs, like after every commit.
-    let mut current = effective(UPDATES.wait().await);
-    loop {
-        EFFECTIVE.lock(|cell| *cell.borrow_mut() = current.clone());
-        let published = match &current {
-            Some(config) => {
-                match select(
-                    serve(network, measurements, nonce.clone(), config),
-                    UPDATES.wait(),
-                )
-                .await
-                {
-                    Either::First(never) => match never {},
-                    Either::Second(published) => published,
+fn validate_routes(routes: &RouteSet) -> Result<(), RouteError> {
+    routes.validate()
+}
+
+#[cold]
+#[inline(never)]
+fn warn_invalid_routes(error: RouteError) {
+    warn!(
+        target: "connectivity",
+        "Stored routes are invalid, nothing is sent (err={:?})",
+        error
+    );
+}
+
+fn empty_routes(generation: u32) -> RouteSet {
+    RouteSet {
+        generation,
+        ..RouteSet::default()
+    }
+}
+
+/// [`ConnectivityStore`] over the configuration owner task.
+#[derive(Clone, Copy)]
+pub struct StoredRoutes(ConfigHandle);
+
+fn store_error(error: ServiceError) -> StoreError {
+    match error {
+        ServiceError::Unavailable(_) => StoreError::Unavailable,
+        _ => StoreError::Internal,
+    }
+}
+
+impl ConnectivityStore for StoredRoutes {
+    async fn load(&self) -> Result<RouteSet, StoreError> {
+        match self.0.get::<ConnectivitySection>().await {
+            Ok(Some(section)) => {
+                if let Err(error) = validate_routes(&section.0) {
+                    warn_invalid_routes(error);
+                    STATE.mark_unreadable();
+                    Err(StoreError::Internal)
+                } else {
+                    Ok(section.0)
                 }
             }
-            None => UPDATES.wait().await,
-        };
-        info!("Connectivity: configuration changed");
-        SHARED.reset();
-        current = effective(published);
+            Ok(None) => Ok(empty_routes(STATE.generation())),
+            Err(error) => Err(store_error(error)),
+        }
+    }
+
+    async fn commit(&self, candidate: &RouteSet) -> Result<(), StoreError> {
+        // The owner task commits and publishes in one step.
+        self.0
+            .set(&ConnectivitySection(candidate.clone()))
+            .await
+            .map_err(store_error)
+    }
+}
+
+/// Builds sealed packets of the telemetry profiles of the device.
+#[derive(Clone, Copy)]
+pub struct UrbanPackets {
+    measurements: MeasurementHandle<'static, RawMutex>,
+    entropy: EntropyFn,
+}
+
+/// The packet builder over `measurements`, with `entropy` for the nonces.
+pub const fn packets(
+    measurements: MeasurementHandle<'static, RawMutex>,
+    entropy: EntropyFn,
+) -> UrbanPackets {
+    UrbanPackets {
+        measurements,
+        entropy,
+    }
+}
+
+fn map_seal(error: SealError) -> BuildFailure {
+    match error {
+        SealError::NothingToPackage => BuildFailure::NothingToPackage,
+        SealError::TimeUnavailable => BuildFailure::TimeUnavailable,
+        SealError::IdentityUnavailable => BuildFailure::IdentityUnavailable,
+        SealError::EntropyUnavailable => BuildFailure::EntropyUnavailable,
+        SealError::BufferTooSmall | SealError::TooLarge => BuildFailure::TooLarge,
+        SealError::Unsupported(_) | SealError::Encryption | SealError::Signing => {
+            BuildFailure::Failed
+        }
+    }
+}
+
+impl UrbanPackets {
+    async fn capture_snapshot(
+        &self,
+    ) -> Result<TelemetrySnapshot<SNAPSHOT_OBSERVATIONS>, BuildFailure> {
+        let mut sources = (
+            SensorsTelemetrySource::new(self.measurements),
+            LocationTelemetrySource::new(location::shared(), || EmbassyClock.now()),
+        );
+        Ok(capture(&mut sources, &EmbassyClock, &mut Delay, SOURCE_TIMEOUT_MS).await)
+    }
+
+    async fn seal(
+        &self,
+        snapshot: &TelemetrySnapshot<SNAPSHOT_OBSERVATIONS>,
+        stamp: &ProfileStamp,
+        out: &mut [u8],
+    ) -> Result<usize, BuildFailure> {
+        let profile = telemetry::state()
+            .with_profile(stamp.id.as_str(), |profile| profile.clone())
+            .filter(|profile| {
+                profile.incarnation == stamp.incarnation && profile.revision == stamp.revision
+            })
+            .ok_or(BuildFailure::ProfileChanged)?;
+        let key = StaticSigner;
+        let mut format =
+            RobonomicsFormat::new(&key, FnEntropy(self.entropy), time::service(), EmbassyClock);
+        let sections = prepare(snapshot, &profile, &format.supported())
+            .map_err(|_| BuildFailure::NothingToPackage)?;
+        let len = format
+            .seal(&sections, out)
+            .await
+            .map_err(map_seal)?
+            .info()
+            .length;
+        // A policy edit that completed while sealing revokes the packet.
+        if !telemetry::state().is_current(stamp) {
+            return Err(BuildFailure::ProfileChanged);
+        }
+        Ok(len)
+    }
+}
+
+impl PacketProvider for UrbanPackets {
+    type Snapshot = TelemetrySnapshot<SNAPSHOT_OBSERVATIONS>;
+
+    fn resolve(&self, profile: &str) -> Option<ProfileStamp> {
+        telemetry::state().resolve(profile)
+    }
+
+    fn is_current(&self, stamp: &ProfileStamp) -> bool {
+        telemetry::state().is_current(stamp)
+    }
+
+    async fn capture(&mut self) -> Result<Self::Snapshot, BuildFailure> {
+        self.capture_snapshot().await
+    }
+
+    async fn build(
+        &mut self,
+        snapshot: &Self::Snapshot,
+        stamp: &ProfileStamp,
+        out: &mut [u8],
+    ) -> Result<usize, BuildFailure> {
+        self.seal(snapshot, stamp, out).await
+    }
+
+    async fn changed(&self) {
+        telemetry::state().changed().await;
+    }
+}
+
+impl PacketExporter for UrbanPackets {
+    fn now_ms(&self) -> u64 {
+        EmbassyClock.now().millis
+    }
+
+    fn resolve(&self, profile: &str) -> Option<ProfileStamp> {
+        telemetry::state().resolve(profile)
+    }
+
+    async fn export(
+        &self,
+        profile: &str,
+        out: &mut [u8],
+    ) -> Result<(ProfileStamp, usize), BuildFailure> {
+        let stamp = telemetry::state()
+            .resolve(profile)
+            .ok_or(BuildFailure::ProfileChanged)?;
+        let snapshot = self.capture_snapshot().await?;
+        let len = self.seal(&snapshot, &stamp, out).await?;
+        Ok((stamp, len))
+    }
+}
+
+/// The `connectivity` service as the firmware composes it.
+pub type UrbanConnectivity = ConnectivityService<
+    'static,
+    RawMutex,
+    StoredRoutes,
+    UrbanPackets,
+    EXPORT_STREAMS,
+    PACKET_BYTES,
+>;
+
+/// The service over the routes stored behind `config`.
+pub fn service(config: ConfigHandle, packets: UrbanPackets) -> UrbanConnectivity {
+    ConnectivityService::new(StoredRoutes(config), packets, &STATE)
+}
+
+/// Runs the publisher; never returns. The platform runs it in its connectivity
+/// task. It reads snapshots only.
+pub async fn run<I: IpBackend>(network: NetworkHandle<'static, I>, packets: UrbanPackets) -> ! {
+    let transport = HttpTransport::new(network, Delay);
+    let mut publisher: Publisher<
+        '_,
+        RawMutex,
+        UrbanPackets,
+        _,
+        Delay,
+        EmbassyClock,
+        OUTBOX_DEPTH,
+        POOL_SLOTS,
+        PACKET_BYTES,
+    > = Publisher::new(&STATE, packets, transport, Delay, EmbassyClock);
+    publisher.run().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rohi_sdk::telemetry::PacketProfileId;
+
+    #[test]
+    fn missing_routes_keep_the_runtime_generation() {
+        assert_eq!(empty_routes(42).generation, 42);
+    }
+
+    #[test]
+    fn invalid_persisted_routes_are_rejected() {
+        let mut routes = RouteSet::default();
+        routes
+            .add_route(
+                "uplink",
+                rohi_sdk::connectivity::ProfileBinding {
+                    id: PacketProfileId::new("weather").unwrap(),
+                    incarnation: 1,
+                },
+                "http://example.test",
+            )
+            .unwrap();
+        routes.routes[0].interval_s = 0;
+
+        assert_eq!(validate_routes(&routes), Err(RouteError::InvalidInterval));
     }
 }

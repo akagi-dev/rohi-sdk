@@ -323,6 +323,9 @@ pub fn config_sections(paint: Paint, sections: &[SectionInfo]) -> String {
 /// The type of a field as help shows it: `u64 ms`, `string, secret`, ...
 fn field_type(field: &FieldDescriptor) -> String {
     let mut text = field.kind.to_string();
+    if field.selection.is_some() {
+        text = "bitset: names, all or none".to_owned();
+    }
     if !field.variants.is_empty() {
         text = format!("{text} ({})", field.variants.join("|"));
     }

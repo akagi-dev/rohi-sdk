@@ -138,6 +138,7 @@
 //! The owners of these APIs document the same semantics on the items
 //! themselves: [`rohi-net`](../../rohi_net/index.html),
 //! [`rohi-hal`](../../rohi_hal/index.html),
+//! [`rohi-sensors`](../../rohi_sensors/index.html),
 //! [`rohi-control-ble`](../../rohi_control_ble/index.html),
 //! [`rohi-time`](../../rohi_time/index.html),
 //! [`rohi-time-ntp`](../../rohi_time_ntp/index.html) and

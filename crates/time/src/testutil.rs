@@ -21,9 +21,9 @@
 use core::cell::Cell;
 use std::rc::Rc;
 
+use crate::Clock;
+use crate::MonotonicTimestamp;
 use embedded_hal_async::delay::DelayNs;
-use rohi_hal::MonotonicTimestamp;
-use rohi_hal::runtime::Clock;
 
 /// Monotonic clock moved by the test; clones share the time.
 #[derive(Clone, Default)]

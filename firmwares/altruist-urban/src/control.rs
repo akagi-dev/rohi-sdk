@@ -44,13 +44,12 @@
 //! the static storage of the services are the platform's.
 
 use embassy_time::Delay;
-use rohi_sdk::connectivity::ConnectivityStatusService;
 use rohi_sdk::control::{Device, DeviceInfo};
 use rohi_sdk::crash::Report;
-use rohi_sdk::hal::SensorsService;
 use rohi_sdk::identity::{Identity, IdentityService, IdentityStore, IdentityStoreError, PublicKey};
 use rohi_sdk::location::LocationService;
 use rohi_sdk::net::{BleProbe, BleService, IpBackend, NetworkHandle, NetworkService, WifiService};
+use rohi_sdk::sensors::SensorsService;
 use rohi_sdk::service::{
     Action, ActionRegistry, ConfigError as RegistryError, ConfigRegistry, FactoryReset, Startup,
     Status, StatusSet, Statuses,
@@ -65,7 +64,7 @@ use crate::config::{
 use crate::identity::IdentityHandle;
 use crate::tasks::RawMutex;
 use crate::tasks::store;
-use crate::{connectivity, location, net, time};
+use crate::{connectivity, location, net, telemetry, time};
 
 /// The identity section behind the configuration owner task.
 pub struct StoredIdentity(IdentityHandle);
@@ -102,11 +101,12 @@ static SECTIONS: StaticCell<ConfigSections> = StaticCell::new();
 type UrbanWifi<I> = Startup<WifiService<'static, RawMutex, Delay, net::Probe<I>>>;
 type UrbanNetwork<I> = Startup<NetworkService<'static, RawMutex, net::Probe<I>>>;
 type UrbanBle<B> = BleService<B>;
-type UrbanConnectivity = Startup<ConnectivityStatusService<'static, RawMutex>>;
+type UrbanConnectivity = connectivity::UrbanConnectivity;
 type UrbanLocation = LocationService<'static, RawMutex>;
 type UrbanSensors = SensorsService<'static, RawMutex>;
 type UrbanIdentity = IdentityService<StoredIdentity>;
 type UrbanSystem = SystemService<UrbanSystemPlatform>;
+type UrbanTelemetry = telemetry::UrbanTelemetry;
 
 /// What the `system` service needs from the Altruist Urban: the deferred reboot
 /// of the platform and the storage-aware factory reset of the configuration.
@@ -158,6 +158,7 @@ pub struct UrbanServices<I: 'static, B, L> {
     location: UrbanLocation,
     sensors: UrbanSensors,
     identity: UrbanIdentity,
+    telemetry: UrbanTelemetry,
     logging: L,
     system: UrbanSystem,
 }
@@ -173,6 +174,7 @@ pub type UrbanStatusServices<I, B, L> = (
     &'static time::Time,
     &'static UrbanSensors,
     &'static UrbanIdentity,
+    &'static UrbanTelemetry,
     &'static L,
     &'static UrbanSystem,
 );
@@ -184,6 +186,8 @@ pub type UrbanStatuses<I, B, L> = Statuses<RawMutex, UrbanStatusServices<I, B, L
 pub type UrbanActions<I, L> = (
     &'static UrbanWifi<I>,
     &'static UrbanIdentity,
+    &'static UrbanTelemetry,
+    &'static UrbanConnectivity,
     &'static L,
     &'static UrbanSystem,
 );
@@ -219,6 +223,8 @@ pub struct Platform<I: 'static, B: 'static, L: 'static> {
     /// Schedules the reset of the device for `system.reboot`, see
     /// [`crate::reboot`].
     pub reboot: fn(),
+    /// Entropy for the nonces of encrypted telemetry sections.
+    pub entropy: connectivity::EntropyFn,
     /// Why the device started and what its last panic was, for the `system`
     /// status; `None` on a platform that keeps no crash record.
     pub boot_report: fn() -> Option<Report>,
@@ -249,6 +255,7 @@ where
         ble,
         logging,
         reboot: reboot_fn,
+        entropy,
         boot_report,
     } = platform;
     let network_failed = network.is_none();
@@ -264,17 +271,14 @@ where
             network_failed,
         ),
         ble: BleService(ble),
-        connectivity: Startup::new(
-            ConnectivityStatusService::new(
-                connectivity::shared(),
-                connectivity::effective_config,
-                location::shared(),
-            ),
-            network_failed,
+        connectivity: connectivity::service(
+            config,
+            connectivity::packets(store::handle(), entropy),
         ),
         location: LocationService(location::shared()),
         sensors: SensorsService(store::handle()),
         identity: IdentityService(StoredIdentity(identity)),
+        telemetry: telemetry::service(config),
         logging,
         system: SystemService(UrbanSystemPlatform {
             config: storage_config,
@@ -295,12 +299,15 @@ where
             time::service(),
             &services.sensors,
             &services.identity,
+            &services.telemetry,
             &services.logging,
             &services.system,
         )),
         (
             &services.wifi,
             &services.identity,
+            &services.telemetry,
+            &services.connectivity,
             &services.logging,
             &services.system,
         ),

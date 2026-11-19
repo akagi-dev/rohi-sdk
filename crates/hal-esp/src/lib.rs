@@ -104,9 +104,8 @@
 //!    v
 //! rohi-hal-esp  -- board::altruist_urban::{Hardware, AltruistUrban, Runtime}
 //!    |           -- I2sMicrophone  (implements rohi_hal::sensors::noise::AudioSource)
-//!    |           -- EmbassyClock   (implements rohi_hal::runtime::Clock)
 //!    v
-//! rohi-hal  (drivers, Runner, MeasurementStore)      esp-hal / embassy-time
+//! rohi-hal  (drivers, Runner)      esp-hal / embassy-time (rohi-time::EmbassyClock)
 //! ```
 //!
 //! | Item | Role |
@@ -115,7 +114,6 @@
 //! | `board::altruist_urban::Runtime` | The peripherals the board does not use (timer group 0 and software interrupt of `esp-rtos`, Wi-Fi, Bluetooth, flash), for the runtime, the radios and the configuration store |
 //! | `I2sMicrophone` | I²S microphone [`AudioSource`](rohi_hal::sensors::noise::AudioSource) of the noise driver |
 //! | `MicrophoneError` | Error of the microphone |
-//! | `EmbassyClock` | [`Clock`](rohi_hal::runtime::Clock) backed by `embassy-time`: time since boot |
 //!
 //! The firmware passes the remaining peripherals of `Runtime` on to the other
 //! platform crates: `runtime.wifi` and `runtime.bt` to the network backend
@@ -127,7 +125,6 @@
 //! * `board::altruist_urban`: `Hardware::split`, `AltruistUrban::new`,
 //!   `AltruistUrban`, `Runtime`, `Error`, `SDS011_BAUD_RATE`; the pin tables.
 //! * `I2sMicrophone` and `MicrophoneError`: audio source.
-//! * `EmbassyClock`: monotonic clock.
 //! * The portable side of each item: [`rohi_hal::sensors`], [`rohi_hal::runtime`].
 //!
 //! The items are plain code font here because they only exist with a chip
@@ -168,5 +165,3 @@ pub mod board;
 
 #[cfg(any(feature = "esp32c3", feature = "esp32c6"))]
 pub use audio::{Error as MicrophoneError, I2sMicrophone};
-#[cfg(any(feature = "esp32c3", feature = "esp32c6"))]
-pub use rohi_hal::runtime::EmbassyClock;

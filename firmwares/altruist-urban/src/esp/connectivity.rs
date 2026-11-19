@@ -21,30 +21,25 @@
 
 use embassy_executor::Spawner;
 use esp_hal::rng::Rng;
-use rohi_sdk::connectivity::{NONCE_LEN, NonceError, NonceSource};
-use rohi_sdk::hal::runtime::MeasurementHandle;
+
 use rohi_sdk::net::NetworkHandle;
+use rohi_sdk::sensors::runtime::MeasurementHandle;
 
 use super::resources::Ip;
 use crate::connectivity;
 use crate::tasks::RawMutex;
 
-/// Nonces from the hardware RNG.
+/// Entropy from the hardware RNG.
 ///
 /// The RNG is a true random source while the radio runs, which is whenever
-/// telemetry can be delivered; nonces only have to be unique for replay
-/// protection, which holds in either mode.
-#[derive(Clone, Copy)]
-pub struct EspNonce;
-
-impl NonceSource for EspNonce {
-    fn fill_nonce(&mut self, dst: &mut [u8; NONCE_LEN]) -> Result<(), NonceError> {
-        Rng::new().read(dst);
-        Ok(())
-    }
+/// telemetry can be delivered; nonces only have to be unique, which holds in
+/// either mode.
+pub fn esp_entropy(dst: &mut [u8]) -> bool {
+    Rng::new().read(dst);
+    true
 }
 
-/// Starts the telemetry task, see [`connectivity::run`]. It reads snapshots
+/// Starts the connectivity task, see [`connectivity::run`]. It reads snapshots
 /// only: it can neither delay nor stop the sensors, whatever the uplink does.
 pub fn start(
     spawner: Spawner,
@@ -58,11 +53,11 @@ pub fn start(
     );
 }
 
-/// Runs the telemetry service while it is enabled.
+/// Runs the publisher.
 #[embassy_executor::task]
 pub async fn connectivity_task(
     network: NetworkHandle<'static, Ip>,
     measurements: MeasurementHandle<'static, RawMutex>,
 ) {
-    connectivity::run(network, measurements, EspNonce).await
+    connectivity::run(network, connectivity::packets(measurements, esp_entropy)).await
 }

@@ -108,9 +108,9 @@ source = "crates/time-ntp"
 [[capability]]
 id = "telemetry"
 kind = "service"
-name = "Telemetry (connectivity)"
-provides = "signed measurement envelopes sent to a connectivity provider"
-source = "crates/connectivity"
+name = "Telemetry (profiles, packets and delivery routes)"
+provides = "signed packets with public and encrypted sections built from per-profile selections, delivered per route to HTTP endpoints with ordered fallbacks"
+source = "crates/telemetry"
 
 [[capability]]
 id = "ble-control"
@@ -352,8 +352,8 @@ reference = "crates/time-ntp/src/tests.rs"
 [[evidence]]
 id = "test-connectivity"
 kind = "test"
-title = "rohi-connectivity tests"
-reference = "crates/connectivity/tests"
+title = "rohi-connectivity router and publisher tests"
+reference = "crates/connectivity/src/router/tests.rs"
 
 [[evidence]]
 id = "test-control-ble"

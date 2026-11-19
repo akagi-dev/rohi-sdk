@@ -23,8 +23,9 @@
 use embassy_executor::{SpawnError, SpawnToken, Spawner};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use log::error;
-use rohi_sdk::hal::SensorKind;
-use rohi_sdk::hal::runtime::{Clock, EVENT_QUEUE_CAPACITY, EventBus, Reporter, SensorStates};
+use rohi_sdk::sensors::SensorKind;
+use rohi_sdk::sensors::runtime::{EVENT_QUEUE_CAPACITY, EventBus, Reporter, SensorStates};
+use rohi_sdk::time::Clock;
 
 /// The `MeasurementStore` owner.
 pub mod store;

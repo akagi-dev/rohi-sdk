@@ -298,7 +298,7 @@ fn a_panic_is_reported_with_its_record_and_that_the_log_does_not_have_it_yet() {
     assert_eq!(fields[&status_field::LAST_CRASH_LOGGED], Value::Bool(false));
     assert_eq!(
         fields[&status_field::LAST_CRASH_AT],
-        Value::text("es/hal/src/sensors/bmx280.rs:212").unwrap()
+        Value::text("crates/hal/src/sensors/bmx280.rs:212").unwrap()
     );
     assert_eq!(codes(&status), [issue::CRASHED, issue::CRASH_NOT_LOGGED]);
 }
@@ -309,12 +309,12 @@ fn a_status_text_is_cut_to_the_field_limit_at_a_character_boundary() {
     let Value::String(text) = &fields[&status_field::LAST_CRASH] else {
         panic!("not text");
     };
-    assert!(text.len() <= 32);
+    assert!(text.len() <= rohi_service::MAX_FIELD_VALUE_LEN);
     assert!(text.chars().all(|ch| ch == 'é'));
     let Value::String(at) = &fields[&status_field::LAST_CRASH_AT] else {
         panic!("not text");
     };
-    assert!(at.len() <= 32 && at.ends_with(":212"));
+    assert!(at.len() <= rohi_service::MAX_FIELD_VALUE_LEN && at.ends_with(":212"));
 }
 
 #[test]

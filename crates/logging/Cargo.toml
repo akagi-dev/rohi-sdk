@@ -13,7 +13,6 @@ description = "Robonomics Open Hardware persistent logging: a non-blocking log s
 maintenance = { status = "actively-developed" }
 
 [dependencies]
-rohi-hal.workspace = true
 rohi-config.workspace = true
 rohi-service.workspace = true
 rohi-time.workspace = true

@@ -35,8 +35,8 @@ use core::time::Duration;
 
 use embedded_hal_async::delay::DelayNs;
 use embedded_nal_async::AddrType;
-use rohi_hal::runtime::with_timeout;
 use rohi_net::{IpBackend, NetError, NetworkHandle, UdpSocket};
+use rohi_time::with_timeout;
 use rohi_time::{TimeSample, TimeSource, TimeSourceKind, UnixTime};
 use sntpc::{NtpContext, NtpResult, NtpTimestampGenerator, NtpUdpSocket};
 

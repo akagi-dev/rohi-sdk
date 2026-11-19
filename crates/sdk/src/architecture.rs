@@ -28,7 +28,7 @@
 //!                                      │ composes
 //!           ┌──────────────────────┬──────────────────────────┬──────────────────────────────┐
 //!  portable │ sensors              │ configuration, services  │ networking, time, control    │
-//!  crates   │ rohi-hal             │ rohi-config              │ rohi-net                     │
+//!  crates   │ rohi-sensors, -hal   │ rohi-config              │ rohi-net                     │
 //!           │   drivers, Runner,   │   ConfigStore,           │   WifiManager, WifiHandle,   │
 //!           │   MeasurementStore,  │   ConfigSection          │   NetworkHandle, IpBackend,  │
 //!           │   MeasurementHandle  │ rohi-service             │   BleTransport               │
@@ -59,7 +59,7 @@
 //!
 //! ```text
 //!                         portable ROHI SDK
-//!             (rohi-hal, -config, -net, -control, ... and the
+//!             (rohi-sensors, -hal, -config, -net, -control, ... and the
 //!              portable part of `altruist-urban`)
 //!                                │
 //!                   ┌────────────┴─────────────┐
@@ -120,7 +120,7 @@
 //! owner. Other components read measurements on demand through a
 //! `MeasurementHandle`, a bounded snapshot request to that owner. The control
 //! plane reads them through the `SensorsService` of
-//! [`rohi-hal`](../../rohi_hal/index.html), the telemetry service through its
+//! [`rohi-sensors`](../../rohi_sensors/index.html), the telemetry service through its
 //! snapshot source:
 //!
 //! ```text

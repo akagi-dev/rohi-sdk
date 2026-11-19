@@ -20,7 +20,7 @@
 
 use crate::cli::Ctx;
 use crate::cli::diagnostic::CliError;
-use crate::model::{FieldDescriptor, Value, ValueKind};
+use crate::model::{CatalogEntry, FieldDescriptor, Value, ValueKind};
 
 fn usage(message: String) -> CliError {
     CliError::Usage(message)
@@ -62,6 +62,73 @@ fn hex_bytes(text: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
+/// Length of an address, in bytes.
+const ADDRESS_LEN: usize = 32;
+
+/// The 32 bytes of an address given as hexadecimal, with or without `0x`, or
+/// as an SS58 address.
+fn address(text: &str) -> Option<Vec<u8>> {
+    use sp_core::crypto::Ss58Codec as _;
+    let hex = text.strip_prefix("0x").unwrap_or(text);
+    if hex.len() == 2 * ADDRESS_LEN {
+        return hex_bytes(hex);
+    }
+    sp_core::ed25519::Public::from_ss58check(text)
+        .ok()
+        .map(|key| key.0.to_vec())
+}
+
+/// The bytes of a bitset of `size` bytes from `text`: `all`, `none`, or
+/// comma-separated catalog names. A name that is the prefix of dotted names
+/// selects all of them (`bmx280` is every `bmx280.*`). The bytes in hex are
+/// accepted too.
+pub fn selection(
+    field: &FieldDescriptor,
+    text: &str,
+    size: usize,
+    catalog: &[CatalogEntry],
+) -> Result<Value, CliError> {
+    let bad = |why: String| usage(format!("{}: {why}", field.name));
+    let text = text.trim();
+    match text {
+        "all" => return Ok(Value::Bytes(vec![0xFF; size])),
+        "none" => return Ok(Value::Bytes(vec![0; size])),
+        _ => {}
+    }
+    if text.len() == 2 * size
+        && !catalog.iter().any(|entry| entry.name == text)
+        && let Some(bytes) = hex_bytes(text)
+    {
+        return Ok(Value::Bytes(bytes));
+    }
+    let mut bytes = vec![0u8; size];
+    for name in text.split(',').map(str::trim) {
+        let prefix = format!("{name}.");
+        let mut found = false;
+        for entry in catalog
+            .iter()
+            .filter(|entry| entry.name == name || entry.name.starts_with(&prefix))
+        {
+            let index = usize::try_from(entry.bit)
+                .ok()
+                .filter(|bit| *bit < 8 * size);
+            let Some(index) = index else {
+                return Err(bad(format!("`{}` does not fit the bitset", entry.name)));
+            };
+            bytes[index / 8] |= 1 << (index % 8);
+            found = true;
+        }
+        if !found {
+            let names: Vec<&str> = catalog.iter().map(|entry| entry.name.as_str()).collect();
+            return Err(bad(format!(
+                "unknown `{name}`; expected all, none or some of: {}",
+                names.join(", ")
+            )));
+        }
+    }
+    Ok(Value::Bytes(bytes))
+}
+
 /// Parses `text` as the kind of `field`.
 pub fn parse(field: &FieldDescriptor, text: &str) -> Result<Value, CliError> {
     parse_inner(field, text, true)
@@ -96,6 +163,9 @@ fn parse_inner(field: &FieldDescriptor, text: &str, echo: bool) -> Result<Value,
         ValueKind::Bytes => hex_bytes(text)
             .map(Value::Bytes)
             .ok_or_else(|| bad("hex bytes")),
+        ValueKind::Address => address(text)
+            .map(Value::Bytes)
+            .ok_or_else(|| bad("an address: 32 bytes of hex or an SS58 address")),
         ValueKind::Enum => {
             if field.variants.iter().any(|variant| variant == text) {
                 Ok(Value::Enum(text.to_owned()))
@@ -134,6 +204,9 @@ pub fn from_json(field: &FieldDescriptor, json: &serde_json::Value) -> Result<Va
         (ValueKind::Bytes, Json::String(text)) => hex_bytes(text)
             .map(Value::Bytes)
             .ok_or_else(|| bad("hex bytes")),
+        (ValueKind::Address, Json::String(text)) => address(text)
+            .map(Value::Bytes)
+            .ok_or_else(|| bad("an address: 32 bytes of hex or an SS58 address")),
         (ValueKind::Enum, Json::String(text)) if field.variants.contains(text) => {
             Ok(Value::Enum(text.clone()))
         }
@@ -144,6 +217,7 @@ pub fn from_json(field: &FieldDescriptor, json: &serde_json::Value) -> Result<Va
         (ValueKind::F32, _) => Err(bad("a number")),
         (ValueKind::String, _) => Err(bad("a string")),
         (ValueKind::Bytes, _) => Err(bad("hex bytes in a string")),
+        (ValueKind::Address, _) => Err(bad("an address in a string")),
         (ValueKind::Unrecognized, _) => Err(bad("a value of a type this rohi does not know")),
     }
 }
@@ -184,7 +258,62 @@ mod tests {
             unit: String::new(),
             variants: vec!["a".into(), "b".into()],
             variant_values: vec![0, 1],
+            selection: None,
         }
+    }
+
+    #[test]
+    fn an_address_is_hex_with_or_without_the_prefix_or_ss58() {
+        let key = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
+        let expected = Value::Bytes(hex_bytes(key).unwrap());
+        assert_eq!(parse(&field(ValueKind::Address), key).unwrap(), expected);
+        assert_eq!(
+            parse(&field(ValueKind::Address), &format!("0x{key}")).unwrap(),
+            expected
+        );
+        let ss58 =
+            crate::ss58(&rohi_identity::PublicKey::from_slice(&hex_bytes(key).unwrap()).unwrap());
+        assert_eq!(parse(&field(ValueKind::Address), &ss58).unwrap(), expected);
+        assert!(parse(&field(ValueKind::Address), "0xabcd").is_err());
+        assert!(parse(&field(ValueKind::Address), "not an address").is_err());
+    }
+
+    fn catalog() -> Vec<CatalogEntry> {
+        [
+            (0, "location"),
+            (1, "bmx280.temperature"),
+            (2, "bmx280.humidity"),
+            (7, "sds011.pm2_5"),
+            (9, "microphone.average"),
+        ]
+        .into_iter()
+        .map(|(bit, name)| CatalogEntry {
+            bit,
+            name: name.into(),
+        })
+        .collect()
+    }
+
+    #[test]
+    fn a_selection_is_names_a_sensor_prefix_all_or_none() {
+        let f = field(ValueKind::Bytes);
+        let bits = |text: &str| selection(&f, text, 32, &catalog()).unwrap();
+        let mask = |bits: &[usize]| {
+            let mut bytes = vec![0u8; 32];
+            for bit in bits {
+                bytes[bit / 8] |= 1 << (bit % 8);
+            }
+            Value::Bytes(bytes)
+        };
+        assert_eq!(bits("none"), Value::Bytes(vec![0; 32]));
+        assert_eq!(bits("all"), Value::Bytes(vec![0xFF; 32]));
+        assert_eq!(bits("location"), mask(&[0]));
+        assert_eq!(bits("bmx280,sds011.pm2_5"), mask(&[1, 2, 7]));
+        assert_eq!(bits("bmx280.humidity, microphone.average"), mask(&[2, 9]));
+        assert_eq!(bits(&"ff".repeat(32)), Value::Bytes(vec![0xFF; 32]));
+        assert!(selection(&f, "bmx", 32, &catalog()).is_err());
+        assert!(selection(&f, "location,,bmx280", 32, &catalog()).is_err());
+        assert!(selection(&f, "microphone", 1, &catalog()).is_err());
     }
 
     #[test]

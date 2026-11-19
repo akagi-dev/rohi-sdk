@@ -19,13 +19,11 @@ use core::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use embassy_futures::{block_on, join::join, yield_now};
 use embedded_hal_async::delay::DelayNs;
-use rohi_identity::MockSigner;
 use rohi_net::NetworkHandle;
 use rohi_net::testing::FakeIp;
 
 use super::*;
-use crate::tests::{CountingNonce, NoDelay};
-use crate::{Disposition, EnvelopeBuilder, EnvelopeFrame};
+use crate::Disposition;
 
 const SERVER: IpAddr = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7));
 const HOST: &str = "ingress.test";
@@ -41,12 +39,15 @@ impl DelayNs for NeverDelay {
     }
 }
 
-fn frame() -> EnvelopeFrame {
-    let signer = MockSigner::default();
-    let mut nonce = CountingNonce::default();
-    EnvelopeBuilder::new(&signer, &mut nonce)
-        .sign(&[0x0a, 0x04, 0x08, 0x07, 0x10, 0x01])
-        .unwrap()
+fn frame() -> std::vec::Vec<u8> {
+    std::vec![0x0a, 0x04, 0x08, 0x07, 0x10, 0x01]
+}
+
+/// A timeout that fires at once.
+struct NoDelay;
+
+impl DelayNs for NoDelay {
+    async fn delay_ns(&mut self, _ns: u32) {}
 }
 
 fn ip() -> Ip {
@@ -81,13 +82,13 @@ fn exchange(
 ) -> (Result<TransportAck, TransportError>, std::vec::Vec<u8>) {
     let frame = frame();
     let head = request_head(endpoint, frame.len()).unwrap();
-    let mut transport = HttpTransport::new(NetworkHandle::new(ip), endpoint, NeverDelay);
+    let mut transport = HttpTransport::new(NetworkHandle::new(ip), NeverDelay);
     let (result, received) = block_on(join(
-        transport.send(&frame),
+        transport.deliver(endpoint, &frame),
         server(ip, endpoint.port, head.len() + frame.len(), response),
     ));
     let mut expected = std::vec::Vec::from(head.as_bytes());
-    expected.extend_from_slice(frame.as_bytes());
+    expected.extend_from_slice(&frame);
     assert_eq!(received, expected, "head and the exact frame bytes");
     (result, received)
 }
@@ -131,11 +132,11 @@ fn server_statuses_become_classified_errors() {
     for (status, disposition) in [
         (
             b"HTTP/1.1 503 Service Unavailable\r\n\r\n".as_slice(),
-            Disposition::Retry,
+            Disposition::Transient,
         ),
         (
             b"HTTP/1.1 429 Too Many Requests\r\n\r\n",
-            Disposition::Retry,
+            Disposition::Transient,
         ),
         (
             b"HTTP/1.1 401 Unauthorized\r\n\r\n",
@@ -166,8 +167,8 @@ fn an_ip_literal_needs_no_dns() {
 }
 
 fn send_with<D: DelayNs>(ip: &Ip, delay: D) -> Result<TransportAck, TransportError> {
-    let mut transport = HttpTransport::new(NetworkHandle::new(ip), endpoint(80), delay);
-    block_on(transport.send(&frame()))
+    let mut transport = HttpTransport::new(NetworkHandle::new(ip), delay);
+    block_on(transport.deliver(endpoint(80), &frame()))
 }
 
 #[test]
@@ -199,7 +200,7 @@ fn network_and_connection_failures_are_retryable() {
         TransportError::Connect,
         TransportError::Timeout,
     ] {
-        assert_eq!(error.disposition(), Disposition::Retry);
+        assert_eq!(error.disposition(), Disposition::Transient);
     }
 }
 
@@ -209,9 +210,9 @@ fn closing_before_a_response_is_a_retryable_io_error() {
     let frame = frame();
     let endpoint = endpoint(80);
     let head = request_head(endpoint, frame.len()).unwrap();
-    let mut transport = HttpTransport::new(NetworkHandle::new(&ip), endpoint, NeverDelay);
+    let mut transport = HttpTransport::new(NetworkHandle::new(&ip), NeverDelay);
     let (result, _) = block_on(join(
-        transport.send(&frame),
+        transport.deliver(endpoint, &frame),
         server(&ip, 80, head.len() + frame.len(), b""),
     ));
     assert_eq!(result, Err(TransportError::Io));

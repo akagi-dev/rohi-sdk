@@ -125,6 +125,15 @@
 //! at most [`MAX_VALUE_LEN`](crate::MAX_VALUE_LEN). An action has at most one
 //! enum ([`MAX_SERVICE_ENUMS`](crate::MAX_SERVICE_ENUMS)).
 //!
+//! # Addresses and bitsets
+//!
+//! A [`ValueKind::Address`](crate::ValueKind::Address) argument is a raw 32-byte public key (a `Bytes`
+//! value of exactly [`ADDRESS_LEN`](crate::ADDRESS_LEN) bytes). A `Bytes`
+//! argument declared with [`FieldDescriptor::with_selection`] is a bitset over
+//! a catalog, at most [`MAX_SELECTIONS`](crate::MAX_SELECTIONS) per action:
+//! see [`SelectionDescriptor`](crate::SelectionDescriptor). The control plane
+//! checks the exact length before the action runs; names are for clients.
+//!
 //! # Streams
 //!
 //! A result that does not fit the bounded records (a log history, a bundle) is
@@ -500,7 +509,7 @@ impl RecordCollector {
             .iter()
             .find(|field| field.id == id)
             .ok_or(WriteError::UnknownField)?;
-        if field.kind != value.kind() || !enum_ok(self.enums, field, &value) {
+        if !field.admits(&value) || !enum_ok(self.enums, field, &value) {
             return Err(WriteError::WrongKind);
         }
         if self.records.is_empty() {
@@ -542,7 +551,7 @@ pub(crate) fn check_args(
             log_bad_args(action.name, "missing or repeated argument", field.id);
             return Err(ActionError::InvalidArgument);
         };
-        if value.kind() != field.kind || !enum_ok(action.enums, field, value) {
+        if !field.admits(value) || !enum_ok(action.enums, field, value) {
             log_bad_args(action.name, "wrong kind or enum variant", field.id);
             return Err(ActionError::InvalidArgument);
         }

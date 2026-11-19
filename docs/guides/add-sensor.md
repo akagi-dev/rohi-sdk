@@ -1,11 +1,11 @@
 # Add a sensor
 
-A sensor is a **driver** in `rohi-hal` run by a generic runner; the board crate supplies the bus and the firmware spawns
+A sensor is a **driver** in `rohi-hal` run by a generic runner that publishes `rohi-sensors` observations; the board crate supplies the bus and the firmware spawns
 one task. Drivers know nothing about networks or serialization. The contracts (driver trait, runner, observations,
-freshness) are in the [`rohi-hal` rustdoc](https://docs.rs/rohi-hal) and the
+freshness) are in the [`rohi-sensors` rustdoc](https://docs.rs/rohi-sensors), the [`rohi-hal` rustdoc](https://docs.rs/rohi-hal) and the
 [sensor drivers](https://docs.rs/rohi-hal/latest/rohi_hal/sensors/index.html).
 
-1. **Model the observation** in `rohi-hal`: add the sensor kind and its typed measurement with its units, grouped by the
+1. **Model the observation** in `rohi-sensors`: add the sensor kind and its typed measurement with its units, grouped by the
    physical sensor (never merge readings of different sensors), and give it a freshness policy that outlasts its worst
    healthy cadence.
 2. **Write the driver** in `crates/hal/src/sensors/<name>.rs` against the driver trait: probe and configure, read the
@@ -17,7 +17,7 @@ freshness) are in the [`rohi-hal` rustdoc](https://docs.rs/rohi-hal) and the
 5. **Spawn a task** in `firmwares/altruist-urban/src/esp/sensors.rs` and start it in `src/bin/firmware.rs` with the other sensor
    tasks.
 6. **Expose it** to the control plane if it should be visible: add its measurements and issue codes to the `sensors`
-   service (`crates/hal/src/sensors_service.rs`). The protocol and the `rohi` tool need no change; see
+   service (`crates/sensors/src/managed.rs`). The protocol and the `rohi` tool need no change; see
    [Add a service](add-service.md).
 7. **Add a hardware example** in `examples/src/bin/` if useful and record the validation in
    [Hardware testing](../validation/hardware-testing.md). Update the

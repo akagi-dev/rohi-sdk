@@ -18,7 +18,7 @@
 //! [`UnixTime`], the wall-clock timestamp type.
 //!
 //! It is a distinct type from
-//! [`MonotonicTimestamp`](rohi_hal::MonotonicTimestamp), see the
+//! [`MonotonicTimestamp`](crate::MonotonicTimestamp), see the
 //! [crate documentation](crate) for when to use which.
 
 use core::time::Duration;
@@ -27,7 +27,7 @@ use core::time::Duration;
 /// (1970-01-01T00:00:00Z, UTC, leap seconds ignored).
 ///
 /// This is a different type from
-/// [`MonotonicTimestamp`](rohi_hal::MonotonicTimestamp) on purpose: the two
+/// [`MonotonicTimestamp`](crate::MonotonicTimestamp) on purpose: the two
 /// can never be confused or compared by accident.
 ///
 /// ```

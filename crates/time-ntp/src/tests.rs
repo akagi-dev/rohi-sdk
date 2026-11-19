@@ -29,10 +29,10 @@ use embassy_futures::join::join;
 use embassy_futures::{block_on, poll_once};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embedded_hal_async::delay::DelayNs;
-use rohi_hal::MonotonicTimestamp;
-use rohi_hal::runtime::Clock;
 use rohi_net::NetworkHandle;
 use rohi_net::testing::FakeIp;
+use rohi_time::Clock;
+use rohi_time::MonotonicTimestamp;
 use rohi_time::{
     SyncFailure, SyncSchedule, Synchronizer, TimeConfig, TimeService, TimeSource, TimeSyncState,
     UnixTime, sync_once,

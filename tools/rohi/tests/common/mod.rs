@@ -31,7 +31,8 @@ use std::rc::Rc;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use rohi::{ClientTransport, Device, Error};
 use rohi_config::{Text, Variant};
-use rohi_connectivity::{ConnectivityConfig, ConnectivityOverrides};
+pub mod sample;
+
 use rohi_control::{ControlBackend, Controller, Device as BackendDevice, DeviceInfo, OpenPolicy};
 use rohi_control_ble::ControlBle;
 use rohi_identity::{Identity, IdentityService, IdentityStore, IdentityStoreError, PublicKey};
@@ -46,6 +47,7 @@ use rohi_service::{
     Status, StatusWriter, Statuses, StoreError, Unit, Value, ValueKind, WriteError,
 };
 use rohi_system::{SystemError, SystemPlatform, SystemService};
+pub use sample::{ConnectivityConfig, ConnectivityOverrides};
 use tokio::sync::mpsc;
 
 // ---------------------------------------------------------------------------

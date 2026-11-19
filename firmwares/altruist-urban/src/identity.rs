@@ -44,7 +44,10 @@ use core::cell::RefCell;
 
 use embassy_sync::blocking_mutex::Mutex;
 use log::info;
-use rohi_sdk::identity::{Identity, IdentityError, IdentitySigner, PublicKey, Signature, Signer};
+use rohi_sdk::identity::{
+    Identity, IdentityError, IdentitySigner, KeyAgreement, PublicKey, SharedSecret, Signature,
+    Signer,
+};
 
 use crate::config::{ConfigHandle, ServiceError};
 use crate::tasks::RawMutex;
@@ -183,20 +186,28 @@ impl IdentityHandle {
 #[derive(Clone, Copy, Default)]
 pub struct StaticSigner;
 
-impl rohi_sdk::connectivity::FrameSigner for StaticSigner {
-    fn sensor_id(&self) -> Result<PublicKey, rohi_sdk::connectivity::SignError> {
+impl StaticSigner {
+    fn signer(&self) -> Result<IdentitySigner, IdentityError> {
+        match STATE.lock(|state| state.borrow().clone()) {
+            IdentityState::Provisioned(signer) => Ok(signer),
+            _ => Err(IdentityError::NotProvisioned),
+        }
+    }
+}
+
+impl rohi_sdk::telemetry_robonomics::DeviceKey for StaticSigner {
+    fn public_key(&self) -> Result<PublicKey, IdentityError> {
         STATE.lock(|state| match &*state.borrow() {
-            IdentityState::Provisioned(signer) => Ok(signer.public_key()),
-            _ => Err(rohi_sdk::connectivity::SignError::NotProvisioned),
+            IdentityState::Provisioned(signer) => Ok(Signer::public_key(signer)),
+            _ => Err(IdentityError::NotProvisioned),
         })
     }
 
-    fn sign_payload(&self, message: &[u8]) -> Result<Signature, rohi_sdk::connectivity::SignError> {
-        match STATE.lock(|state| state.borrow().clone()) {
-            IdentityState::Provisioned(signer) => {
-                Signer::sign(&signer, message).map_err(Into::into)
-            }
-            _ => Err(rohi_sdk::connectivity::SignError::NotProvisioned),
-        }
+    fn sign(&self, message: &[u8]) -> Result<Signature, IdentityError> {
+        Signer::sign(&self.signer()?, message)
+    }
+
+    fn agree(&self, peer: &PublicKey) -> Result<SharedSecret, IdentityError> {
+        KeyAgreement::agree(&self.signer()?, peer)
     }
 }

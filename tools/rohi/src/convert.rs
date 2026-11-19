@@ -144,11 +144,33 @@ fn unit_symbol(unit: pb::Unit) -> &'static str {
 
 /// A field with the variants of its enum taken from `enums`.
 pub(crate) fn field(field: &pb::FieldDescriptor, enums: &[pb::EnumDescriptor]) -> FieldDescriptor {
-    let table = enums.iter().find(|table| table.id == field.enum_id);
+    action_field(field, enums, &[])
+}
+
+/// A field of an action, which can also be a bitset over a catalog of
+/// `selections`.
+pub(crate) fn action_field(
+    field: &pb::FieldDescriptor,
+    enums: &[pb::EnumDescriptor],
+    selections: &[pb::SelectionDescriptor],
+) -> FieldDescriptor {
+    // For a bytes field `enum_id` refers to `selections`, never to `enums`.
+    let kind = ValueKind::from_proto(field.kind);
+    let table = (kind == ValueKind::Enum)
+        .then(|| enums.iter().find(|table| table.id == field.enum_id))
+        .flatten();
+    let selection = (kind == ValueKind::Bytes)
+        .then(|| selections.iter().find(|s| u32::from(s.id) == field.enum_id))
+        .flatten()
+        .map(|s| Selection {
+            size_bytes: s.size_bytes,
+            catalog_service_id: s.catalog_service_id,
+            catalog_action_id: s.catalog_action_id,
+        });
     FieldDescriptor {
         id: field.id,
         name: field.name.as_str().to_owned(),
-        kind: ValueKind::from_proto(field.kind),
+        kind,
         unit: unit_symbol(field.unit).to_owned(),
         variants: table
             .map(|table| {
@@ -162,6 +184,7 @@ pub(crate) fn field(field: &pb::FieldDescriptor, enums: &[pb::EnumDescriptor]) -
         variant_values: table
             .map(|table| table.variants.iter().map(|variant| variant.value).collect())
             .unwrap_or_default(),
+        selection,
     }
 }
 

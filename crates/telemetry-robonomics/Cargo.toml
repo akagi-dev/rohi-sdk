@@ -1,0 +1,41 @@
+[package]
+name = "rohi-telemetry-robonomics"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Robonomics Open Hardware telemetry format: the Robonomics Connectivity Protocol (vendored schema, bounded bindings), recipient encryption and signed envelopes"
+build = "build.rs"
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[dependencies]
+micropb = { workspace = true, features = ["container-heapless-0-9"] }
+heapless.workspace = true
+rohi-telemetry.workspace = true
+rohi-identity.workspace = true
+rohi-time.workspace = true
+embassy-sync.workspace = true
+curve25519-dalek.workspace = true
+sha2.workspace = true
+hkdf.workspace = true
+chacha20poly1305.workspace = true
+libm.workspace = true
+zeroize.workspace = true
+
+[build-dependencies]
+micropb-gen.workspace = true
+
+[dev-dependencies]
+embassy-futures.workspace = true
+rohi-identity = { workspace = true, features = ["mock"] }
+x25519-dalek = { version = "2.0.1", default-features = false, features = ["static_secrets"] }
+ed25519-zebra.workspace = true
+chacha20poly1305 = { workspace = true, features = ["alloc"] }
+hkdf.workspace = true
+sha2.workspace = true
+curve25519-dalek.workspace = true

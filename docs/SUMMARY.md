@@ -36,6 +36,7 @@
   - [Add a ConfigSection](guides/add-config-section.md)
   - [Add or support a board](guides/add-board.md)
   - [Use IP networking](guides/use-network.md)
+  - [Telemetry profiles and delivery routes](guides/telemetry.md)
   - [Add a service](guides/add-service.md)
   - [Add a control operation or an action](guides/add-control-operation.md)
   - [Run Altruist Urban on std](guides/altruist-urban-std.md)

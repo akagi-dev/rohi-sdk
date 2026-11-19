@@ -93,10 +93,12 @@ use rohi_sdk::service::{
 };
 
 use crate::bindings::{
-    Binding, BleBinding, ConfigRuntime, ConnectivityBinding, IdentityBinding, LocationBinding,
-    LoggingBinding, NetworkBinding, PrivateBinding, TimeBinding, WifiBinding,
+    Binding, BleBinding, ConfigRuntime, IdentityBinding, LocationBinding, LoggingBinding,
+    NetworkBinding, PrivateBinding, TimeBinding, WifiBinding,
 };
+use crate::connectivity::ConnectivityBinding;
 use crate::tasks::RawMutex;
+use crate::telemetry::TelemetryBinding;
 
 /// The section that keeps the boot counter: four little-endian bytes. It is no
 /// configuration of a service: nothing registers or shows it, the `system`
@@ -933,6 +935,6 @@ fn effective<C: HasOverrides + Default>(
 }
 
 crate::firmware_configs! {
-    managed WifiBinding, NetworkBinding, BleBinding, ConnectivityBinding, LocationBinding, TimeBinding, LoggingBinding;
-    private IdentityBinding
+    managed WifiBinding, NetworkBinding, BleBinding, LocationBinding, TimeBinding, LoggingBinding;
+    private IdentityBinding, TelemetryBinding, ConnectivityBinding
 }

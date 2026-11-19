@@ -300,7 +300,13 @@ async fn invoke<T: ClientTransport>(
                 field.name
             )));
         }
-        let value = values::argument(ctx, field, text).await?;
+        let value = match field.selection {
+            Some(selection) if text != "-" => {
+                let catalog = device.catalog(&selection).await?;
+                values::selection(field, text, selection.size_bytes as usize, &catalog)?
+            }
+            _ => values::argument(ctx, field, text).await?,
+        };
         arguments.0.push(FieldValue {
             field_id: field.id,
             value,

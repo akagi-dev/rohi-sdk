@@ -23,7 +23,7 @@ queues 4 × ~250 B each, TrouBLE host resources, and the task futures. The appli
 the radio drivers use the wireless heap.
 
 
-## Sensor runtime (`rohi-hal`)
+## Sensor runtime (`rohi-sensors`, `rohi-hal`)
 
 `cargo build-esp32c3`, ESP32-C3 (before Wi-Fi/BLE/TLS):
 
@@ -350,7 +350,7 @@ branch in CI (`--base`) rather than with the figure of an older commit.
 The RAM tail is `TAIL_RECORDS` × 200 B inside `LOGGING` (1 600 B on the ESP32-C3, 1 400 B on the ESP32-C6); the 4 096 B of
 `READ` buffers of two streams are gone, and a download slot no longer has the size of a record buffer. `.data` fits the
 budgets by 56 B (ESP32-C3) and 120 B (ESP32-C6): the whole `LOGGING` static is initialized data (it holds a pointer to the clock and the initial
-configuration), so one more record (200 B) would exceed the budget of both chips, which is why the ESP32-C6 keeps 7. The budgets were not raised.
+configuration), so one more record (200 B) would exceed the budget of both chips, which is why the ESP32-C6 keeps 7. The budgets were not raised. After the merge with the telemetry and connectivity rewrite (#58, #59, #66) `.data` measured 30 400 B (ESP32-C3) and 33 740 B (ESP32-C6), so `max_data` was raised to 30 500 and 33 800 B; the other budgets hold.
 What is left of the `invoke_of<LoggingService>` poll is mostly `download` (the pinned file table and the stream
 description). Not measured: the stack high-water mark of the main task during repeated `rohi logs`, which needs a device.
 

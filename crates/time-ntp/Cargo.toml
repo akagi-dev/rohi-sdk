@@ -14,7 +14,6 @@ maintenance = { status = "actively-developed" }
 
 [dependencies]
 rohi-config.workspace = true
-rohi-hal.workspace = true
 rohi-net.workspace = true
 rohi-service.workspace = true
 rohi-time.workspace = true

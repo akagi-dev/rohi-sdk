@@ -18,7 +18,7 @@
 //! Where records get their time.
 
 use embassy_sync::blocking_mutex::raw::RawMutex;
-use rohi_hal::runtime::Clock;
+use rohi_time::Clock;
 use rohi_time::{TimeService, UnixTime};
 
 /// The time a record is stamped with, read at the moment of the event.

@@ -61,7 +61,7 @@ If nothing is printed, the sensor may not be wired as the pin map of your board 
   recovery. Drivers know nothing about networks or serialization: they publish typed `SensorEvent`s (measurements,
   state changes, errors) into a bounded queue; a successful measurement alone marks the sensor `Ready`.
   `print_events_task` prints them. The production firmware has a single task that applies the events to a
-  `MeasurementStore` instead.
+  `MeasurementStore` (`rohi-sensors`) instead.
 
 <div class="warning">
 

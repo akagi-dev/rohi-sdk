@@ -26,11 +26,13 @@ use esp_hal::Async;
 use esp_hal::i2c::master::I2c;
 use esp_hal::uart::Uart;
 use log::info;
+use rohi_sdk::esp::hal::I2sMicrophone;
 use rohi_sdk::esp::hal::board::altruist_urban::AltruistUrban;
-use rohi_sdk::esp::hal::{EmbassyClock, I2sMicrophone};
-use rohi_sdk::hal::SensorKind;
-use rohi_sdk::hal::runtime::{EVENT_QUEUE_CAPACITY, Reporter, Runner, RunnerConfig, TimeoutI2c};
+use rohi_sdk::hal::runtime::{Runner, RunnerConfig, TimeoutI2c};
 use rohi_sdk::hal::sensors::{bmx280, noise, scd4x, sds011};
+use rohi_sdk::sensors::SensorKind;
+use rohi_sdk::sensors::runtime::{EVENT_QUEUE_CAPACITY, Reporter};
+use rohi_sdk::time::EmbassyClock;
 use static_cell::StaticCell;
 
 use crate::tasks::{RawMutex, reporter};

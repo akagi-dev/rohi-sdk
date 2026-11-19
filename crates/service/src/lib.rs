@@ -203,12 +203,13 @@
 //! | files of a stream ([`MAX_STREAM_FILES`]), bytes of a stream chunk ([`MAX_STREAM_CHUNK`]) | 24, 512 |
 //! | bytes of text of a tail page ([`MAX_TAIL_CHUNK`]) | 512 |
 //! | fields per record ([`MAX_RECORD_FIELDS`]) | 4 |
-//! | string or bytes status value or action result ([`MAX_FIELD_VALUE_LEN`]) | 32 bytes |
+//! | string or bytes status value or action result ([`MAX_FIELD_VALUE_LEN`]) | 64 bytes |
 //! | string or bytes config value or action argument ([`MAX_VALUE_LEN`]) | 64 bytes |
 //! | section, service, action, field or issue name ([`MAX_NAME_LEN`]) | 24 bytes |
 //! | enum variant name ([`MAX_VARIANT_NAME_LEN`]) | 16 bytes |
 //! | enums per config section ([`MAX_ENUMS`]) | 3 |
 //! | enums per service or action ([`MAX_SERVICE_ENUMS`]) | 1 |
+//! | bitset arguments per action ([`MAX_SELECTIONS`]) | 2 |
 //! | variants per enum ([`MAX_ENUM_VARIANTS`]) | 9 |
 //! | sections or services in a registry ([`MAX_REGISTRY_ENTRIES`]) | 12 |
 
@@ -233,10 +234,12 @@ pub use config::{
     FactoryReset, Mutation, MutationOp, Patched, RestartRequired, Section, SectionInfo,
     SectionSchema, SectionStore, SectionValues, StoreError,
 };
-pub use field::{Bounds, ConfigField, EnumDescriptor, EnumVariant, FieldDescriptor, Unit};
+pub use field::{
+    Bounds, ConfigField, EnumDescriptor, EnumVariant, FieldDescriptor, SelectionDescriptor, Unit,
+};
 pub use isolated::{Isolated, isolated};
 pub use registry::{ActionRegistry, ServiceIdentity, StatusRegistry, StatusSet, Statuses, Tracker};
-pub use rohi_config::{FieldError, MAX_VALUE_LEN, Value, ValueKind};
+pub use rohi_config::{ADDRESS_LEN, FieldError, MAX_VALUE_LEN, Value, ValueKind};
 pub use rohi_config_derive::Config;
 pub use rohi_service_derive::Service;
 pub use service::{Service, assert_service_name, distinct_ids, service_id, service_name_is_valid};
@@ -249,7 +252,7 @@ pub use status::{
 /// Maximum length of a string or bytes status value or action result, in
 /// bytes; longer values are an error, never cut. Arguments and config values
 /// may be [`MAX_VALUE_LEN`] long.
-pub const MAX_FIELD_VALUE_LEN: usize = 32;
+pub const MAX_FIELD_VALUE_LEN: usize = 64;
 /// Maximum length of a section, service, action, field or issue name, in
 /// bytes. Names are checked when a section or service is built.
 pub const MAX_NAME_LEN: usize = 24;
@@ -263,6 +266,8 @@ pub const MAX_ENUMS: usize = 3;
 /// compact control protocol: every service or action schema response carries
 /// them, and the response buffers are sized for the largest of those.
 pub const MAX_SERVICE_ENUMS: usize = 1;
+/// Maximum number of bitset (selection) arguments of an action.
+pub const MAX_SELECTIONS: usize = 2;
 /// Maximum number of variants of an enum.
 pub const MAX_ENUM_VARIANTS: usize = 9;
 /// Maximum number of status fields of a service.

@@ -332,7 +332,7 @@ impl Collector {
             .iter()
             .find(|field| field.id == id)
             .ok_or(WriteError::UnknownField)?;
-        if field.kind != value.kind() {
+        if !field.admits(&value) {
             return Err(WriteError::WrongKind);
         }
         if !enum_ok(self.enums, field, &value) {

@@ -27,8 +27,9 @@
 use embassy_executor::Spawner;
 use embassy_time::Delay;
 use log::info;
-use rohi_sdk::hal::runtime::{EmbassyClock, Runner};
+use rohi_sdk::hal::runtime::Runner;
 use rohi_sdk::sim::sensors::{Bmx280, Noise, Observe, RUNNER, Scd4x, Sds011, SimDriver};
+use rohi_sdk::time::EmbassyClock;
 
 use crate::tasks;
 

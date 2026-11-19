@@ -25,7 +25,7 @@ on demand.
 ```
 
 The platform changes only what is ESP-specific. The measurement runtime, the configuration store, the Wi-Fi manager, the
-control dispatcher, identity, time and the telemetry uplink are the ones the firmware runs.
+control dispatcher, identity, time and the telemetry profiles, the connectivity routes and the publisher are the ones the firmware runs (a packet needs a synchronized UTC clock, so on the host it is built once NTP has answered).
 
 | On the device | On `std` |
 |---------------|----------|
@@ -245,6 +245,7 @@ abandoned request, TCP framing errors, reconnection, readiness and the refusal o
 ## Local edge end-to-end
 
 Identity, time and the telemetry uplink run on the host network. Provisioning a test identity and sending telemetry to a
-local `robins edge` is possible by hand (`rohi action identity provision`, then
-`rohi config connectivity endpoint=http://127.0.0.1:PORT`), but an automated end-to-end test against a local edge is **not
+local `robins edge` is possible by hand (`rohi action identity provision`, create a telemetry profile and a route:
+`rohi telemetry profile_add env robonomics`, `rohi telemetry set_public env bmx280`,
+`rohi connectivity route_add edge env http://127.0.0.1:PORT`), but an automated end-to-end test against a local edge is **not
 implemented yet**. There is no TLS yet.

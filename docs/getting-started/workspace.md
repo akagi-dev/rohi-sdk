@@ -3,10 +3,11 @@
 ```text
 rohi-sdk/
 ├── crates/
-│   ├── rohi-hal, rohi-hal-esp                 sensors, measurements, runtime / ESP board backend
+│   ├── rohi-sensors                           measurements, sensor state, store, `sensors` service
+│   ├── rohi-hal, rohi-hal-esp                 sensor drivers and runner / ESP board backend
 │   ├── rohi-config, -derive, -esp             configuration store / derive macro / ESP flash backend
 │   ├── rohi-net, rohi-net-esp                 Wi-Fi control plane, IP data plane, BLE transport / ESP backend
-│   ├── rohi-time, rohi-time-ntp               synchronized wall-clock time and its NTP source
+│   ├── rohi-time, rohi-time-ntp               monotonic clock, synchronized wall-clock time and its NTP source
 │   ├── rohi-identity                          device identity: Ed25519 section and signer
 │   ├── rohi-control-proto, -control, -ble     control protocol: schema / dispatcher / BLE binding
 │   ├── rohi-control-tcp                       control protocol over TCP: length-prefixed records

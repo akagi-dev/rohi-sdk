@@ -84,7 +84,7 @@ pub struct Args {
     pub scenario: Option<PathBuf>,
 
     /// Seed of every random sequence of the simulation: sensor jitter and the
-    /// nonces of the telemetry frames. The same scenario, seed and
+    /// nonces of the encrypted telemetry sections and envelopes. The same scenario, seed and
     /// configuration produce the same simulated sequence.
     #[arg(long, value_name = "SEED")]
     pub seed: Option<u64>,
