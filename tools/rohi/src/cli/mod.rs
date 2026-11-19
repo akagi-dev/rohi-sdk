@@ -32,6 +32,7 @@
 //! decodes messages.
 
 mod action;
+mod admin;
 mod args;
 mod config;
 mod diagnostic;
@@ -47,7 +48,7 @@ use std::future::Future;
 use std::process::ExitCode;
 use std::time::Duration;
 
-pub use args::{Cli, ColorChoice, Command, ConfigAction, LogsAction, OutputFormat};
+pub use args::{AdminAction, Cli, ColorChoice, Command, ConfigAction, LogsAction, OutputFormat};
 pub use diagnostic::{CliError, Diagnostic, PartialApply};
 pub use target::{Match, Target, resolve};
 pub use terminal::Io;
@@ -70,6 +71,9 @@ pub struct Ctx {
     pub watch_limit: Option<usize>,
     /// How often `logs --follow` asks for new records.
     pub follow_interval: Duration,
+    /// The administrator key of `--admin-key`, which signs the requests a
+    /// restricted TCP endpoint wants signed.
+    pub admin_key: Option<crate::AdminKey>,
 }
 
 impl Ctx {
@@ -82,6 +86,7 @@ impl Ctx {
             uri: None,
             watch_limit: None,
             follow_interval: Duration::from_secs(1),
+            admin_key: None,
         }
     }
 
@@ -160,6 +165,7 @@ pub async fn execute<T: ClientTransport>(
             lines,
             follow,
         } => logs::run(device, action, lines, follow, ctx).await,
+        Command::Admin(action) => admin::run(device, action, ctx).await,
     }
 }
 
@@ -220,6 +226,9 @@ async fn connect_ble(
 
     let link = BleLink::connect(Some(&chosen.id), wait).await?;
     let mut device = Device::new(link);
+    if let Some(key) = &ctx.admin_key {
+        device.set_admin_key(key);
+    }
     device.set_timeout(Duration::from_secs(cli.timeout));
     Ok(device)
 }
@@ -234,6 +243,9 @@ async fn connect_tcp(
     ctx.uri = Some(format!("tcp://{endpoint}"));
     let link = TcpLink::connect(endpoint, Duration::from_secs(cli.scan_timeout)).await?;
     let mut device = Device::new(link);
+    if let Some(key) = &ctx.admin_key {
+        device.set_admin_key(key);
+    }
     device.set_timeout(Duration::from_secs(cli.timeout));
     Ok(device)
 }
@@ -246,6 +258,21 @@ pub async fn run(cli: Cli, ctx: &mut Ctx) -> Result<(), CliError> {
     }
     if let Some(help) = static_help(&cli.command) {
         return ctx.io.result(&help);
+    }
+    if let Some(path) = &cli.admin_key {
+        // Only the commands that need the key have to find it usable.
+        match crate::AdminKey::load(path) {
+            Ok(key) => ctx.admin_key = Some(key),
+            Err(error) if matches!(cli.command, Command::Admin(AdminAction::Keygen { .. })) => {
+                let _ = error;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    match &cli.command {
+        Command::Admin(AdminAction::Keygen { file }) => return admin::keygen(file, ctx),
+        Command::Admin(AdminAction::PublicKey) => return admin::public_key(ctx),
+        _ => {}
     }
 
     match Target::parse(cli.device.as_deref())? {

@@ -114,7 +114,7 @@
 //!
 //! Both registry traits are implemented for `()` (a device with no services)
 //! and for tuples of up to [`MAX_REGISTRY_ENTRIES`](crate::MAX_REGISTRY_ENTRIES)
-//! (12) services; [`ConfigRegistry`](crate::ConfigRegistry) is the same kind of
+//! (16) services; [`ConfigRegistry`](crate::ConfigRegistry) is the same kind of
 //! tuple over config sections.
 //!
 //! # Bookkeeping
@@ -811,3 +811,7 @@ tuple_registries!(9; A.0, B.1, C.2, D.3, E.4, F.5, G.6, H.7, I.8);
 tuple_registries!(10; A.0, B.1, C.2, D.3, E.4, F.5, G.6, H.7, I.8, J.9);
 tuple_registries!(11; A.0, B.1, C.2, D.3, E.4, F.5, G.6, H.7, I.8, J.9, K.10);
 tuple_registries!(12; A.0, B.1, C.2, D.3, E.4, F.5, G.6, H.7, I.8, J.9, K.10, L.11);
+tuple_registries!(13; A.0, B.1, C.2, D.3, E.4, F.5, G.6, H.7, I.8, J.9, K.10, L.11, Q.12);
+tuple_registries!(14; A.0, B.1, C.2, D.3, E.4, F.5, G.6, H.7, I.8, J.9, K.10, L.11, Q.12, R.13);
+tuple_registries!(15; A.0, B.1, C.2, D.3, E.4, F.5, G.6, H.7, I.8, J.9, K.10, L.11, Q.12, R.13, S.14);
+tuple_registries!(16; A.0, B.1, C.2, D.3, E.4, F.5, G.6, H.7, I.8, J.9, K.10, L.11, Q.12, R.13, S.14, T.15);

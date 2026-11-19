@@ -659,7 +659,8 @@ const REQUEST_BUDGET: usize = 768;
 const RESPONSE_BUDGET: usize = 2200;
 const FIELD_DESCRIPTOR_BUDGET: usize = 56;
 const FIELD_VALUE_BUDGET: usize = 96;
-const SERVICES_STATUS_BUDGET: usize = 832;
+// Sixteen services (twelve before the control endpoints): 1048 bytes measured.
+const SERVICES_STATUS_BUDGET: usize = 1088;
 const SERVICE_STATUS_BUDGET: usize = 1900;
 const CONFIG_SECTION_BUDGET: usize = 1536;
 const PATCH_BUDGET: usize = 768;

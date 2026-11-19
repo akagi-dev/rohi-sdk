@@ -74,6 +74,11 @@ Connection:
           
           [default: 10]
 
+      --admin-key <FILE>
+          File with the administrator key (64 hex characters). A restricted TCP endpoint of a device wants a signature of it on every change; with the key `rohi` signs automatically. Never put the key itself on the command line; create the file with `rohi admin keygen FILE`
+          
+          [env: ROHI_ADMIN_KEY=]
+
       --timeout <SECONDS>
           How long to wait for a device response
           

@@ -18,7 +18,7 @@
 
 //! Command line of `altruist-urban`.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 
 use clap::Parser;
@@ -38,9 +38,12 @@ pub struct Args {
     #[arg(long)]
     pub name: Option<String>,
 
-    /// Address of the control and management listeners. Loopback by default.
-    #[arg(long, default_value = "127.0.0.1", value_name = "ADDRESS")]
-    pub bind: IpAddr,
+    /// Address of the control and management listeners. The control listener
+    /// follows the stored `control_tcp.bind_address` (loopback by default) unless
+    /// this is given; the management listener is on loopback unless this is
+    /// given.
+    #[arg(long, value_name = "ADDRESS")]
+    pub bind: Option<IpAddr>,
 
     /// Allow `--bind` to be a non-loopback address. The control transport and
     /// the management interface have no authentication or encryption: anyone who
@@ -48,10 +51,19 @@ pub struct Args {
     #[arg(long)]
     pub unsafe_allow_remote: bool,
 
-    /// Port of the ROHI control transport over TCP; 0 picks a free port.
+    /// Port of the ROHI control transport over TCP; 0 picks a free port. The
+    /// stored `control_tcp.port` (9300 by default) applies unless this is given.
     #[cfg(feature = "std-tcp")]
-    #[arg(long, default_value_t = 9300, value_name = "PORT")]
-    pub control_port: u16,
+    #[arg(long, value_name = "PORT")]
+    pub control_port: Option<u16>,
+
+    /// Start with the control endpoint over TCP open for this run, whatever the
+    /// stored `control_tcp.access_mode` says: privileged requests then need no
+    /// signature. For development and tests; without it the endpoint is
+    /// restricted by default and wants a signature of the administrator key.
+    #[cfg(feature = "std-tcp")]
+    #[arg(long)]
+    pub control_open: bool,
 
     /// Port of the development-management interface (fault injection and
     /// scenario control); 0 picks a free port. Defaults to the control port
@@ -103,23 +115,36 @@ pub struct Args {
 }
 
 impl Args {
-    /// The control port of the TCP transport.
+    /// The control port of the TCP transport; `stored` is the one of the
+    /// `control_tcp` section.
     #[cfg(feature = "std-tcp")]
-    fn control(&self) -> u16 {
-        self.control_port
+    fn control(&self, stored: u16) -> u16 {
+        self.control_port.unwrap_or(stored)
     }
 
     #[cfg(not(feature = "std-tcp"))]
-    fn control(&self) -> u16 {
+    fn control(&self, _stored: u16) -> u16 {
         0
     }
 
-    /// The control and management ports to bind.
-    pub fn ports(&self) -> (u16, u16) {
+    /// The address of the management listener, and of the control listener when
+    /// `stored` (the `control_tcp.bind_address`) is not asked for.
+    pub fn management_address(&self) -> IpAddr {
+        self.bind.unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST))
+    }
+
+    /// The address of the control listener.
+    pub fn control_address(&self, stored: Ipv4Addr) -> IpAddr {
+        self.bind.unwrap_or(IpAddr::V4(stored))
+    }
+
+    /// The control and management ports to bind; `stored` is the port of the
+    /// `control_tcp` section.
+    pub fn ports(&self, stored: u16) -> (u16, u16) {
         if let Some([control, manage]) = self.reboot_ports.as_deref() {
             return (*control, *manage);
         }
-        let control = self.control();
+        let control = self.control(stored);
         let manage = self.manage_port.unwrap_or(match control {
             0 => 0,
             port => port.wrapping_add(1),

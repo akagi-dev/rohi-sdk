@@ -243,8 +243,9 @@
 //! The control API never returns the password and accepts it write-only (see
 //! [`rohi-control`](../rohi_control/index.html)). The data plane has no TLS: do
 //! not send secrets over [`NetworkHandle`] without a TLS layer on top. The BLE
-//! link properties are reported ([`BleConnectionInfo`]), but the support matrix
-//! records that there is no BLE pairing or encryption yet.
+//! link properties are reported ([`BleConnectionInfo`]); pairing is requested only
+//! with [`BleConfig::pairing`] (Just Works, not an authenticated link) and is not verified on hardware, see the support
+//! matrix.
 //!
 //! **Out of scope.** SoftAP, TLS/HTTP(S), multiple saved networks, WPA
 //! enterprise, IPv6. The ESP backend requests WPA/WPA2 personal security for

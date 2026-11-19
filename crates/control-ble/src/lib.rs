@@ -36,8 +36,10 @@
 //!   of protobuf and bounded at compile time;
 //! * [`ControlBle`]: the loop on the **peripheral** (firmware) side that
 //!   receives chunks from a [`BleTransport`](rohi_net::BleTransport),
-//!   reassembles a request, lets a [`Controller`](rohi_control::Controller)
-//!   answer it and sends the response back in fragments.
+//!   reassembles a request into a slot of the
+//!   [`ControlHub`](rohi_control::ControlHub) and sends the response of the
+//!   one control worker back in fragments. It never calls the
+//!   [`Controller`](rohi_control::Controller) itself.
 //!
 //! The crate is `no_std`, allocation free and contains no platform code. It is
 //! not a BLE client: the host tool `rohi` (`tools/rohi`) is the central; it
@@ -55,7 +57,8 @@
 //! use std::collections::VecDeque;
 //!
 //! use embassy_futures::block_on;
-//! use rohi_control::{Controller, Device, DeviceInfo, OpenPolicy};
+//! use embassy_futures::select::select;
+//! use rohi_control::{ControlAccess, ControlHub, Controller, Device, DeviceInfo, OpenPolicy};
 //! use rohi_control_ble::ControlBle;
 //! use rohi_control_ble::frame::{Fragmenter, Reassembler};
 //! use rohi_control_proto::control::{self as pb, Request_::Request as Call, Response_::Response as Reply};
@@ -109,12 +112,16 @@
 //! let chunks = link.incoming.borrow().len();
 //! assert!(chunks > 1);
 //!
-//! // The firmware: a controller over a device, served over the link.
+//! // The firmware: one controller over a device, served through the hub of the
+//! // control worker; the BLE side only frames.
 //! let info = DeviceInfo { firmware: "demo-0.1.0", board: "demo-board" };
 //! let controller = Controller::new(Device::new(info, || 0, (), (), ()), OpenPolicy);
-//! let mut ble = ControlBle::new(&link, &controller);
+//! let access = ControlAccess::new(|_| false);
+//! let hub = ControlHub::<1>::with_access(&access);
+//! let mut ble = ControlBle::new(&link, &hub);
 //! for _ in 0..chunks {
-//!     block_on(ble.step());
+//!     // On the device the worker is the `control_task`; here both run in turn.
+//!     block_on(select(hub.serve(&controller), ble.step()));
 //! }
 //!
 //! // The central reassembles the notified frames into the response.
@@ -156,10 +163,10 @@
 //!  rohi_control_ble::frame ──► RX write ──► BleTransport (EspBle, rohi-net-esp)
 //!  rohi_control_ble::uuid                        │ recv / send / connection_info
 //!                                                ▼
-//!                                  ControlBle ── frame::Reassembler / Fragmenter
-//!                                                │ request bytes + LinkSecurity
+//!                                  ControlBle ── frame::Assembler / Fragmenter
+//!                                                │ request slot of the ControlHub
 //!                                                ▼
-//!                                  rohi_control::Controller ── registries of rohi-service
+//!                                  control_task: rohi_control::Controller ── registries of rohi-service
 //!  response ◄── TX notifications ◄── frames ◄────┘
 //! ```
 //!
@@ -178,17 +185,19 @@
 //!
 //! * [`ControlBle`] - the serving loop ([`ControlBle::new`],
 //!   [`ControlBle::step`], [`ControlBle::run`]).
-//! * [`frame`] - [`Reassembler`](frame::Reassembler),
+//! * [`frame`] - [`Assembler`](frame::Assembler), [`Reassembler`](frame::Reassembler),
 //!   [`Fragmenter`](frame::Fragmenter), [`Message`](frame::Message),
 //!   [`FrameError`](frame::FrameError) and the constants of the format.
 //! * [`uuid`] - the three GATT UUIDs.
 //!
 //! # Guarantees and Limitations
 //!
-//! * **Bounded memory.** All buffers are inline: a reassembly buffer of
-//!   [`MAX_REQUEST_LEN`](rohi_control_proto::limits::MAX_REQUEST_LEN) bytes, a
-//!   response buffer of [`MAX_RESPONSE_LEN`](rohi_control_proto::limits::MAX_RESPONSE_LEN)
-//!   bytes and one chunk of [`MAX_BLE_PAYLOAD`](rohi_net::MAX_BLE_PAYLOAD) bytes.
+//! * **Bounded memory.** The request and response buffers are the slots of the
+//!   [`ControlHub`](rohi_control::ControlHub) ([`MAX_REQUEST_LEN`](rohi_control_proto::limits::MAX_REQUEST_LEN)
+//!   and [`MAX_RESPONSE_LEN`](rohi_control_proto::limits::MAX_RESPONSE_LEN) bytes
+//!   each, shared with the other transports); the frontend itself holds one chunk of
+//!   [`MAX_BLE_PAYLOAD`](rohi_net::MAX_BLE_PAYLOAD) bytes and the framing state.
+//!   A busy hub answers `Busy` instead of waiting.
 //!   A message is at most 65535 bytes and 255 fragments on the wire format
 //!   level; the reassembler of [`ControlBle`] accepts requests up to the
 //!   request limit.
@@ -224,4 +233,4 @@ pub mod uuid;
 #[cfg(test)]
 mod tests;
 
-pub use service::ControlBle;
+pub use service::{ControlBle, error_kind};

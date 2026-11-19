@@ -200,7 +200,7 @@ fn the_reactor_is_one_thread_that_is_started_once() {
 
 #[test]
 fn the_control_transport_serves_a_client_over_a_host_socket() {
-    use rohi_control::{Controller, Device, DeviceInfo, OpenPolicy};
+    use rohi_control::{ControlAccess, ControlHub, Controller, Device, DeviceInfo, OpenPolicy};
     use rohi_control_proto::control::{
         self as pb, Request_::Request as Call, Response_::Response as Reply,
     };
@@ -233,9 +233,17 @@ fn the_control_transport_serves_a_client_over_a_host_socket() {
         board: "demo-board",
     };
     let controller = Controller::new(Device::new(info, || 0, (), (), ()), OpenPolicy);
-    let mut control = ControlTcp::new(acceptor, &controller);
+    let access = ControlAccess::new(|_| false);
+    let hub = ControlHub::<1>::with_access(&access);
+    let mut control = ControlTcp::new(acceptor, &hub);
     // The client closes its end after the response, which ends the connection.
-    block_on(control.serve_next()).unwrap();
+    match block_on(embassy_futures::select::select(
+        hub.serve(&controller),
+        control.serve_next(),
+    )) {
+        embassy_futures::select::Either::First(never) => never,
+        embassy_futures::select::Either::Second(result) => result.unwrap(),
+    }
     let response = client.join().unwrap();
     assert_eq!(response.request_id, 3);
     assert!(matches!(response.response, Some(Reply::GetInfo(_))));

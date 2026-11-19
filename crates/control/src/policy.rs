@@ -28,7 +28,8 @@ pub enum Privilege {
     Mutate,
     /// Runs an action that needs [`ActionAccess::Provision`] (for example
     /// installing a device identity or formatting the configuration storage).
-    /// A link policy may demand more than for [`Mutate`](Self::Mutate).
+    /// A link policy may demand more than for [`Mutate`](Self::Mutate). The
+    /// owning service decides whether it may be repeated.
     Provision,
 }
 
@@ -43,6 +44,32 @@ impl Privilege {
     }
 }
 
+/// The kind of transport a connection belongs to. Every transport has its own
+/// access mode, see [`TransportAccessMode`](crate::TransportAccessMode).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Transport {
+    /// Not declared: an [`AccessPolicy`](crate::AccessPolicy) treats it as
+    /// restricted and never as open.
+    #[default]
+    Unspecified,
+    /// A BLE central.
+    Ble,
+    /// A TCP client.
+    Tcp,
+}
+
+/// How the request being served was authorized. Set by the
+/// [`Controller`](crate::Controller) alone: a value a transport puts in
+/// [`LinkSecurity::authorization`] is overwritten before any policy runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum RequestAuthorization {
+    /// Nothing proves who sent the request.
+    #[default]
+    Anonymous,
+    /// The request carried a valid signature of the administrator key.
+    VerifiedAdmin,
+}
+
 /// Security properties of the link a request arrived on, as reported by the
 /// transport.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -51,25 +78,41 @@ pub struct LinkSecurity {
     pub encrypted: bool,
     /// The link is encrypted with an authenticated key.
     pub authenticated: bool,
-    /// Identity of the connection, different for every connection of a
-    /// transport (for BLE, the connection epoch). A stream belongs to the
-    /// session that invoked the action and is unknown to every other one.
-    /// A transport that serves a single client may leave it 0.
-    pub session: u32,
+    /// Identity of the connection, different for every live connection of the
+    /// device (a [`ControlHub`](crate::ControlHub) allocates it). A stream
+    /// belongs to the session that invoked the action and is unknown to every
+    /// other one. A transport that serves a single client may leave it 0.
+    pub session: u64,
+    /// The transport of the connection.
+    pub transport: Transport,
+    /// Set by the controller for every request; see [`RequestAuthorization`].
+    pub authorization: RequestAuthorization,
+}
+
+/// The trusted administrator public key and its generation.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct AdminKey {
+    /// The Ed25519 public key.
+    pub key: [u8; 32],
+    /// Changes whenever the key is set or removed, which invalidates every
+    /// challenge issued before.
+    pub epoch: u32,
 }
 
 /// Decides whether a request with the given [`Privilege`] may run on a link.
 ///
 /// The transport only reports link properties; this is the single place
 /// where they become authorization decisions. Secret-carrying actions use
-/// the same mechanism.
+/// the same mechanism. The methods after [`allows`](Self::allows) describe
+/// the signed requests of [`Controller`](crate::Controller); the defaults
+/// accept none.
 ///
 /// ```
 /// use rohi_control::{
 ///     AuthorizationPolicy, LinkSecurity, Privilege, RequireAuthenticated, RequireEncryption,
 /// };
 ///
-/// let encrypted = LinkSecurity { encrypted: true, authenticated: false, session: 0 };
+/// let encrypted = LinkSecurity { encrypted: true, ..Default::default() };
 /// assert!(RequireEncryption.allows(Privilege::Mutate, &encrypted));
 /// assert!(!RequireAuthenticated.allows(Privilege::Mutate, &encrypted));
 /// // Reads are open under both.
@@ -78,6 +121,37 @@ pub struct LinkSecurity {
 pub trait AuthorizationPolicy {
     /// `true` when the operation is allowed.
     fn allows(&self, privilege: Privilege, link: &LinkSecurity) -> bool;
+
+    /// The stable reason sent with `PermissionDenied` for a request
+    /// [`allows`](Self::allows) refused.
+    fn denial_reason(&self, privilege: Privilege, link: &LinkSecurity) -> Option<&'static str> {
+        let _ = (privilege, link);
+        None
+    }
+
+    /// Whether connections like `link` may use `GetAuthChallenge` and
+    /// signed requests.
+    fn accepts_signed(&self, link: &LinkSecurity) -> bool {
+        let _ = link;
+        false
+    }
+
+    /// The trusted administrator key, if one is enrolled.
+    fn admin_key(&self) -> Option<AdminKey> {
+        None
+    }
+
+    /// Fills `nonce` with cryptographically unpredictable bytes; `false` when
+    /// the source is unavailable, which fails every challenge closed.
+    fn fill_nonce(&self, nonce: &mut [u8; 32]) -> bool {
+        let _ = nonce;
+        false
+    }
+
+    /// A signed request of `link` was rejected.
+    fn auth_failed(&self, link: &LinkSecurity) {
+        let _ = link;
+    }
 }
 
 /// Allows everything. Used until a link security policy is configured.

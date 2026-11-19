@@ -58,7 +58,8 @@
 //! IPv4 configuration, the shared location is updated for the telemetry frames
 //! and the `location` service, the telemetry and NTP tasks are signalled and
 //! restart with the new values, the identity updates the signer. A
-//! restart-required section (`ble`) is only published at boot. The same step,
+//! restart-required section (`ble`, `control_tcp`, `control_ble`) is only published at boot,
+//! apart from its [`publish_live`](crate::bindings::Binding::publish_live) part. The same step,
 //! with the same firmware overrides, runs once at boot for every section and
 //! after a factory reset. There is no `.await` between commit and
 //! publication, so a caller that is cancelled while waiting for the response
@@ -93,8 +94,9 @@ use rohi_sdk::service::{
 };
 
 use crate::bindings::{
-    Binding, BleBinding, ConfigRuntime, IdentityBinding, LocationBinding, LoggingBinding,
-    NetworkBinding, PrivateBinding, TimeBinding, WifiBinding,
+    AdminKeyBinding, Binding, BleBinding, ConfigRuntime, ControlBleBinding, ControlTcpBinding,
+    IdentityBinding, LocationBinding, LoggingBinding, NetworkBinding, PrivateBinding, TimeBinding,
+    WifiBinding,
 };
 use crate::connectivity::ConnectivityBinding;
 use crate::tasks::RawMutex;
@@ -838,12 +840,16 @@ const fn ids_are_unique(ids: &[u64]) -> bool {
 /// defaults, the firmware overrides and the user overrides of `blob`, handed to
 /// the consumer of `B`. Synchronous on purpose, see the module documentation.
 ///
-/// A restart-required section is only published at `boot`. At boot an
+/// A restart-required section is only published at `boot`; a later commit
+/// hands the consumer only [`Binding::publish_live`]. At boot an
 /// unusable stored value falls back to the firmware policy: the consumer must
 /// get a value to start with, and the stored section stays untouched for the
 /// user to fix.
 fn publish_managed<B: Binding>(runtime: &ConfigRuntime, blob: Option<&Blob>, boot: bool) {
     if B::RESTART_REQUIRED && !boot {
+        if let Ok(config) = effective::<B::Config>(blob, B::firmware_overrides) {
+            B::publish_live(runtime, &config);
+        }
         return;
     }
     match effective::<B::Config>(blob, B::firmware_overrides) {
@@ -935,6 +941,7 @@ fn effective<C: HasOverrides + Default>(
 }
 
 crate::firmware_configs! {
-    managed WifiBinding, NetworkBinding, BleBinding, LocationBinding, TimeBinding, LoggingBinding;
-    private IdentityBinding, TelemetryBinding, ConnectivityBinding
+    managed WifiBinding, NetworkBinding, BleBinding, LocationBinding, TimeBinding, LoggingBinding,
+        ControlTcpBinding, ControlBleBinding;
+    private IdentityBinding, TelemetryBinding, ConnectivityBinding, AdminKeyBinding
 }

@@ -20,12 +20,22 @@ use core::fmt::Debug;
 
 use embedded_io_async::{Read, Write};
 use log::{debug, info, trace, warn};
-use rohi_control::{AuthorizationPolicy, ControlBackend, Controller, LinkSecurity};
+use rohi_control::{Busy, Connection, ControlHub, Transport};
 use rohi_control_proto::control::{self as pb, Response_::Response as Reply};
-use rohi_control_proto::limits::{MAX_REQUEST_LEN, MAX_RESPONSE_LEN};
+use rohi_control_proto::limits::MAX_REQUEST_LEN;
 use rohi_control_proto::{PROTOCOL_VERSION, encode};
 
 use crate::frame::{HEADER_LEN, decode_header, encode_header};
+
+/// The kinds of error the frontend reports to the endpoint status.
+pub mod error_kind {
+    /// A record header was rejected.
+    pub const FRAME: u8 = 1;
+    /// The connection ended inside a record or I/O failed.
+    pub const IO: u8 = 2;
+    /// The hub had no slot or no session for the request.
+    pub const BUSY: u8 = 3;
+}
 
 /// A source of client connections, usually a listening socket.
 ///
@@ -50,45 +60,38 @@ pub trait Acceptor {
     async fn accept(&mut self) -> Result<Self::Stream, Self::Error>;
 }
 
-/// Binds a [`Controller`] to an [`Acceptor`].
+/// The TCP frontend of the control worker.
 ///
 /// ```text
-/// acceptor.accept -> loop { read record -> Controller::handle -> write record }
+/// acceptor.accept -> loop { read record into a hub slot ==> control_task (Controller)
+///                           write record from the same slot <=====+ }
 /// ```
 ///
-/// One connection and one request in flight at a time, like a BLE central. The
-/// buffers are inline and fixed (about 3 KiB: [`MAX_REQUEST_LEN`] for the
-/// request and [`MAX_RESPONSE_LEN`] for the response, plus its header); place
-/// the value in a `static` or in the future of the control task.
+/// It owns the connection and the record framing and nothing else: it never
+/// calls the [`Controller`](rohi_control::Controller). A request record is read
+/// straight into a request slot of the [`ControlHub`], handed to the one
+/// worker ([`ControlHub::serve`]) and the response record is written from the
+/// same slot, so the frontend holds no message buffers of its own.
 ///
-/// The authorization of requests follows the [`LinkSecurity`] of the link, which
-/// is always unencrypted and unauthenticated: this transport has no pairing or
-/// encryption, see the [crate documentation](crate). Every connection is its
-/// own [`session`](LinkSecurity::session), so it cannot use the streams of
-/// another, and [`Controller::link_lost`] runs when it ends.
-pub struct ControlTcp<'c, A, S, P> {
+/// One connection and one request in flight at a time, like a BLE central.
+/// Every connection is its own [`session`](rohi_control::LinkSecurity::session)
+/// of the hub, unique across every transport, so it cannot use the streams or
+/// the challenge of another; the worker closes only that session's streams
+/// when it ends. The connection is [`Transport::Tcp`], whose access mode
+/// decides what an unsigned request may do; the link itself is always
+/// unencrypted and unauthenticated, see the [crate documentation](crate).
+pub struct ControlTcp<'h, 'a, A, const SLOTS: usize> {
     acceptor: A,
-    controller: &'c Controller<S, P>,
-    sessions: u32,
-    request: [u8; MAX_REQUEST_LEN],
-    response: [u8; HEADER_LEN + MAX_RESPONSE_LEN],
+    hub: &'h ControlHub<'a, SLOTS>,
 }
 
-impl<'c, A, S, P> ControlTcp<'c, A, S, P>
+impl<'h, 'a, A, const SLOTS: usize> ControlTcp<'h, 'a, A, SLOTS>
 where
     A: Acceptor,
-    S: ControlBackend,
-    P: AuthorizationPolicy,
 {
-    /// Serves `controller` to the clients of `acceptor`.
-    pub const fn new(acceptor: A, controller: &'c Controller<S, P>) -> Self {
-        Self {
-            acceptor,
-            controller,
-            sessions: 0,
-            request: [0; MAX_REQUEST_LEN],
-            response: [0; HEADER_LEN + MAX_RESPONSE_LEN],
-        }
+    /// Serves the clients of `acceptor` through `hub`.
+    pub const fn new(acceptor: A, hub: &'h ControlHub<'a, SLOTS>) -> Self {
+        Self { acceptor, hub }
     }
 
     /// The wrapped acceptor.
@@ -128,19 +131,23 @@ where
                 return Err(error);
             }
         };
-        self.sessions = self.sessions.wrapping_add(1);
-        info!(target: "control.tcp", "Client connected (session={})", self.sessions);
-        self.serve(stream).await;
-        self.controller.link_lost();
-        info!(target: "control.tcp", "Client disconnected (session={})", self.sessions);
+        let connection = match self.hub.connect(Transport::Tcp) {
+            Ok(connection) => connection,
+            Err(_) => {
+                warn!(target: "control.tcp", "Too many connections, client refused");
+                self.hub.transport_error(Transport::Tcp, error_kind::BUSY);
+                return Ok(());
+            }
+        };
+        let session = connection.id().get();
+        info!(target: "control.tcp", "Client connected (session={})", session);
+        self.serve(stream, &connection).await;
+        connection.close().await;
+        info!(target: "control.tcp", "Client disconnected (session={})", session);
         Ok(())
     }
 
-    async fn serve(&mut self, mut stream: A::Stream) {
-        let link = LinkSecurity {
-            session: self.sessions,
-            ..LinkSecurity::default()
-        };
+    async fn serve(&self, mut stream: A::Stream, connection: &Connection<'h, 'a, SLOTS>) {
         loop {
             let mut header = [0u8; HEADER_LEN];
             match read_header(&mut stream, &mut header).await {
@@ -150,6 +157,7 @@ where
                     return;
                 }
                 Err(()) => {
+                    self.error(error_kind::IO);
                     debug!(target: "control.tcp", "Connection ended inside a record header");
                     return;
                 }
@@ -160,11 +168,26 @@ where
                     // The length cannot be trusted, so the stream cannot be
                     // resynchronized: answer once and close.
                     warn!(target: "control.tcp", "Record rejected (err={})", error);
-                    self.send_error(&mut stream).await;
+                    self.error(error_kind::FRAME);
+                    send_error(&mut stream, pb::ErrorCode::InvalidArgument).await;
                     return;
                 }
             };
-            if let Err(error) = stream.read_exact(&mut self.request[..len]).await {
+            let mut reservation = match connection.request() {
+                Ok(reservation) => reservation,
+                Err(Busy::Busy | Busy::Closed) => {
+                    warn!(target: "control.tcp", "No request slot, request refused (size_b={})", len);
+                    self.error(error_kind::BUSY);
+                    if !discard(&mut stream, len).await
+                        || !send_error(&mut stream, pb::ErrorCode::Busy).await
+                    {
+                        return;
+                    }
+                    continue;
+                }
+            };
+            if let Err(error) = stream.read_exact(&mut reservation.buffer()[..len]).await {
+                self.error(error_kind::IO);
                 debug!(
                     target: "control.tcp",
                     "Connection ended inside a request (size_b={} err={:?})",
@@ -173,76 +196,93 @@ where
                 return;
             }
             trace!(target: "control.tcp", "Request record received (size_b={})", len);
-            let written = self
-                .controller
-                .handle(
-                    &link,
-                    &self.request[..len],
-                    &mut self.response[HEADER_LEN..],
-                )
-                .await;
-            if written == 0 {
+            let response = reservation.submit(len).await;
+            if response.bytes().is_empty() {
                 warn!(target: "control.tcp", "No response to send, closing the connection");
                 return;
             }
-            if !self.send(&mut stream, written).await {
+            if !self.send(&mut stream, response.bytes()).await {
                 return;
             }
         }
     }
 
-    async fn send_error(&mut self, stream: &mut A::Stream) {
-        let response = pb::Response {
-            protocol_version: PROTOCOL_VERSION,
-            request_id: 0,
-            response: Some(Reply::Error(pb::Error {
-                code: pb::ErrorCode::InvalidArgument,
-                ..Default::default()
-            })),
-        };
-        match encode(&response, &mut self.response[HEADER_LEN..]) {
-            Ok(written) => {
-                self.send(stream, written).await;
-            }
-            Err(error) => {
-                warn!(target: "control.tcp", "Cannot encode the error response (err={:?})", error)
-            }
-        }
+    fn error(&self, kind: u8) {
+        self.hub.transport_error(Transport::Tcp, kind);
     }
 
-    /// Writes the record whose payload is `response[HEADER_LEN..][..written]`.
-    async fn send(&mut self, stream: &mut A::Stream, written: usize) -> bool {
-        let Ok(len) = u32::try_from(written) else {
+    /// Writes one record with `payload`.
+    async fn send(&self, stream: &mut A::Stream, payload: &[u8]) -> bool {
+        let Ok(len) = u32::try_from(payload.len()) else {
             warn!(
                 target: "control.tcp",
                 "Response cannot be framed (size_b={})",
-                written
+                payload.len()
             );
             return false;
         };
-        self.response[..HEADER_LEN].copy_from_slice(&encode_header(len));
         let result = async {
-            stream
-                .write_all(&self.response[..HEADER_LEN + written])
-                .await?;
+            stream.write_all(&encode_header(len)).await?;
+            stream.write_all(payload).await?;
             stream.flush().await
         }
         .await;
         match result {
             Ok(()) => {
-                trace!(target: "control.tcp", "Response record sent (size_b={})", written);
+                trace!(target: "control.tcp", "Response record sent (size_b={})", payload.len());
                 true
             }
             Err(error) => {
+                self.error(error_kind::IO);
                 debug!(
                     target: "control.tcp",
                     "Sending the response failed (size_b={} err={:?})",
-                    written, error
+                    payload.len(), error
                 );
                 false
             }
         }
     }
+}
+
+/// Reads and drops `len` bytes; `false` if the connection ended.
+async fn discard<R: Read>(stream: &mut R, mut len: usize) -> bool {
+    let mut scratch = [0u8; 64];
+    while len > 0 {
+        let take = len.min(scratch.len());
+        if stream.read_exact(&mut scratch[..take]).await.is_err() {
+            return false;
+        }
+        len -= take;
+    }
+    true
+}
+
+/// Answers with a typed error that has no request id.
+async fn send_error<W: Write>(stream: &mut W, code: pb::ErrorCode) -> bool {
+    let response = pb::Response {
+        protocol_version: PROTOCOL_VERSION,
+        request_id: 0,
+        response: Some(Reply::Error(pb::Error {
+            code,
+            ..Default::default()
+        })),
+    };
+    let mut bytes = [0u8; 16];
+    let Ok(written) = encode(&response, &mut bytes) else {
+        warn!(target: "control.tcp", "Cannot encode the error response");
+        return false;
+    };
+    let Ok(len) = u32::try_from(written) else {
+        return false;
+    };
+    let result = async {
+        stream.write_all(&encode_header(len)).await?;
+        stream.write_all(&bytes[..written]).await?;
+        stream.flush().await
+    }
+    .await;
+    result.is_ok()
 }
 
 /// Reads a record header. `Ok(false)` is a clean end of the stream before the

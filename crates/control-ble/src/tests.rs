@@ -22,9 +22,11 @@ use std::vec;
 use std::vec::Vec;
 
 use embassy_futures::block_on;
+use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use rohi_control::{
-    AuthorizationPolicy, Controller, Device, DeviceInfo, OpenPolicy, RequireEncryption,
+    AuthorizationPolicy, ControlAccess, ControlHub, Controller, Device, DeviceInfo, OpenPolicy,
+    RequireEncryption,
 };
 use rohi_control_proto::control::{
     self as pb, Request_::Request as Call, Response_::Response as Reply,
@@ -523,14 +525,27 @@ fn request_bytes(id: u32, call: Call) -> Vec<u8> {
     buf[..len].to_vec()
 }
 
+fn drive<T, P: AuthorizationPolicy>(
+    hub: &ControlHub<'_, 1>,
+    controller: &Controller<Bench<'_>, P>,
+    future: impl core::future::Future<Output = T>,
+) -> T {
+    match block_on(select(hub.serve(controller), future)) {
+        Either::First(never) => never,
+        Either::Second(value) => value,
+    }
+}
+
 fn run<P: AuthorizationPolicy>(
     shared: &Shared,
     controller: &Controller<Bench<'_>, P>,
     steps: usize,
 ) {
-    let mut service = ControlBle::new(shared, controller);
+    let access = ControlAccess::new(|_| false);
+    let hub = ControlHub::<1>::with_access(&access);
+    let mut service = ControlBle::new(shared, &hub);
     for _ in 0..steps {
-        block_on(service.step());
+        drive(&hub, controller, service.step());
     }
 }
 
@@ -726,7 +741,9 @@ fn cancelled_step_abandons_the_request_and_the_next_one_works() {
     let radio = radio(&shared);
     let controller = Controller::new(device(&radio), OpenPolicy);
     *radio.hold_scan.borrow_mut() = true;
-    let mut service = ControlBle::new(&shared, &controller);
+    let access = ControlAccess::new(|_| false);
+    let hub = ControlHub::<1>::with_access(&access);
+    let mut service = ControlBle::new(&shared, &hub);
 
     shared.push_frames(frames(
         1,
@@ -734,7 +751,8 @@ fn cancelled_step_abandons_the_request_and_the_next_one_works() {
         MAX_BLE_PAYLOAD,
     ));
     {
-        // The scan never finishes: the caller gives up and drops the step.
+        // The request is queued but the worker has not started it: the caller
+        // gives up and drops the step.
         let mut step = core::pin::pin!(service.step());
         assert!(embassy_futures::poll_once(step.as_mut()).is_pending());
     }
@@ -748,7 +766,7 @@ fn cancelled_step_abandons_the_request_and_the_next_one_works() {
         &request_bytes(2, Call::GetInfo(pb::GetInfoRequest {})),
         MAX_BLE_PAYLOAD,
     ));
-    block_on(service.step());
+    drive(&hub, &controller, service.step());
     let sent = shared.take_sent();
     assert_eq!(sent.len(), 1);
     let (id, bytes) = response_bytes(&sent);

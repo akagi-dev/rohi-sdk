@@ -185,9 +185,9 @@
 //! <https://docs.rs/rohi-sdk/latest/rohi_sdk/portability/index.html#targets-and-features>).
 //! The BLE peripheral advertises connectable and scannable with the 128-bit
 //! service UUID, puts the name into the scan response and serves one central at
-//! a time; it reports the security level the stack negotiated but the crate
-//! contains no pairing configuration, and the support matrix records that
-//! there is no BLE pairing or encryption yet.
+//! a time; it reports the security level the stack negotiated and, with
+//! `BleConfig::pairing`, asks each central to pair (Just Works, no bonding); the
+//! support matrix records that pairing is not verified on hardware.
 //!
 //! **Cancellation.** The `rohi-net` contracts apply: dropping a pending TCP
 //! `connect` aborts the attempt and frees its slot, dropping a connection or

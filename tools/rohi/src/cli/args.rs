@@ -132,6 +132,19 @@ pub struct Cli {
     )]
     pub scan_timeout: u64,
 
+    /// File with the administrator key (64 hex characters). A restricted TCP
+    /// endpoint of a device wants a signature of it on every change; with the
+    /// key `rohi` signs automatically. Never put the key itself on the command
+    /// line; create the file with `rohi admin keygen FILE`.
+    #[arg(
+        long,
+        global = true,
+        env = "ROHI_ADMIN_KEY",
+        value_name = "FILE",
+        help_heading = CONNECTION
+    )]
+    pub admin_key: Option<PathBuf>,
+
     /// How long to wait for a device response.
     #[arg(
         long,
@@ -144,6 +157,27 @@ pub struct Cli {
 
     #[command(subcommand)]
     pub command: Command,
+}
+
+/// What `rohi admin` does.
+#[derive(Subcommand, Debug, Clone)]
+pub enum AdminAction {
+    /// Create a new administrator key file; the file is readable by you only.
+    Keygen {
+        /// Where to write the key. An existing file is never replaced.
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+    },
+    /// Print the public key of the administrator key.
+    PublicKey,
+    /// Tell the device to trust the administrator key.
+    ///
+    /// Enrolling the first key needs an endpoint that is open (BLE by
+    /// default): until a key is enrolled a restricted TCP endpoint refuses
+    /// every change. Replacing a key over TCP is signed by the current one.
+    Enroll,
+    /// Make the device forget its administrator key.
+    Clear,
 }
 
 #[derive(Subcommand)]
@@ -358,6 +392,24 @@ Examples:
         #[arg(short, long)]
         follow: bool,
     },
+    /// Manage the administrator key of signed requests.
+    ///
+    /// A TCP control endpoint is restricted by default: reads are open, every
+    /// change needs a signature of the one administrator key the device trusts.
+    /// `rohi` signs with the key of `--admin-key FILE`.
+    ///
+    /// A signature authenticates one request to the device. It does not
+    /// encrypt anything and does not prove the device to you.
+    #[command(
+        subcommand,
+        after_help = "\
+Examples:
+  rohi admin keygen admin.key
+  rohi --admin-key admin.key admin public-key
+  rohi --admin-key admin.key admin enroll
+  rohi --admin-key admin.key admin clear"
+    )]
+    Admin(AdminAction),
     /// `rohi SERVICE [ACTION [ARG]...]`: a service of the device, see
     /// `rohi action --help`. The words are as the user typed them.
     #[command(external_subcommand)]

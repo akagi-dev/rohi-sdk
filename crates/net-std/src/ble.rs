@@ -265,12 +265,25 @@ impl Peripheral {
     /// A central is using the link. Starts a new connection unless one is
     /// already tracked.
     fn connected(&self) {
+        self.connected_as(false);
+    }
+
+    /// Like [`connected`](Self::connected); `encrypted` tells that the central
+    /// wrote over an encrypted link, which BlueZ guarantees for a characteristic
+    /// that needs it.
+    fn connected_as(&self, encrypted: bool) {
         let started = self.shared.with(|link| {
-            if matches!(link.state, BleState::Connected(_)) {
+            if let BleState::Connected(info) = link.state {
+                if encrypted && !info.encrypted {
+                    link.state = BleState::Connected(BleConnectionInfo { encrypted, ..info });
+                }
                 return None;
             }
             link.epoch = link.epoch.wrapping_add(1);
-            link.state = BleState::Connected(BleConnectionInfo::default());
+            link.state = BleState::Connected(BleConnectionInfo {
+                encrypted,
+                authenticated: false,
+            });
             link.payload = DEFAULT_BLE_PAYLOAD;
             Some(link.epoch)
         });
@@ -412,13 +425,17 @@ async fn serve(
 
     let write = {
         let peripheral = peripheral.clone();
+        let pairing = config.pairing;
         CharacteristicWrite {
             write: true,
             write_without_response: true,
+            // BlueZ only delivers a write that came over an encrypted link, and
+            // asks the central to pair first.
+            encrypt_write: config.pairing,
             method: CharacteristicWriteMethod::Fun(Box::new(move |value, request| {
                 let peripheral = peripheral.clone();
                 Box::pin(async move {
-                    peripheral.connected();
+                    peripheral.connected_as(pairing);
                     peripheral.mtu(request.mtu);
                     peripheral.received(value).await;
                     Ok(())

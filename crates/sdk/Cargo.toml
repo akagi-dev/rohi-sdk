@@ -59,6 +59,7 @@ rohi-system = { workspace = true, optional = true }
 rohi-control = { workspace = true, optional = true }
 rohi-control-ble = { workspace = true, optional = true }
 rohi-control-tcp = { workspace = true, optional = true }
+rohi-control-endpoints = { workspace = true, optional = true }
 rohi-connectivity = { workspace = true, optional = true }
 rohi-hal-esp = { workspace = true, optional = true }
 rohi-config-esp = { workspace = true, optional = true }
@@ -90,6 +91,8 @@ crash = ["dep:rohi-crash"]
 control = ["service", "dep:rohi-control"]
 ble = ["control", "net", "dep:rohi-control-ble"]
 tcp = ["control", "dep:rohi-control-tcp"]
+# The `control_tcp`, `control_ble` and `control_auth` services and sections.
+endpoints = ["control", "net", "identity", "dep:rohi-control-endpoints"]
 # `time::EmbassyClock`, the monotonic clock over `embassy-time`.
 embassy-time = ["time", "rohi-time/embassy-time"]
 # Source-independent telemetry: observations, catalog, packet profiles, the `telemetry` service.

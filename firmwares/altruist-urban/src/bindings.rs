@@ -42,6 +42,8 @@ use core::marker::PhantomData;
 use embassy_sync::blocking_mutex::Mutex;
 use log::{info, warn};
 use rohi_sdk::config::{ConfigSection, HasOverrides, materialize};
+use rohi_sdk::control::Transport;
+use rohi_sdk::endpoints::{AdminKeySection, ControlBleConfig, ControlTcpConfig};
 use rohi_sdk::identity::Identity;
 use rohi_sdk::location::LocationConfig;
 use rohi_sdk::logging::LoggingConfig;
@@ -51,7 +53,7 @@ use rohi_sdk::service::{Config, SectionStore, StoreError};
 
 use crate::config::{ConfigHandle, ServiceError};
 use crate::tasks::RawMutex;
-use crate::{identity, location, logging, time};
+use crate::{control, identity, location, logging, time};
 
 /// The cheap handles runtime publication needs. Hardware and storage stay
 /// single-owner elsewhere.
@@ -94,6 +96,14 @@ pub trait Binding {
     /// cheap: the owner task calls it in the commit step, with no `.await`
     /// between the commit and the publication.
     fn publish(runtime: &ConfigRuntime, effective: &Self::Config);
+
+    /// The part of a restart-required section that applies at once. Called
+    /// instead of [`publish`](Self::publish) for a commit or a factory reset of
+    /// such a section, which is otherwise only persisted. Synchronous and cheap
+    /// like `publish`; the default does nothing.
+    fn publish_live(runtime: &ConfigRuntime, effective: &Self::Config) {
+        let _ = (runtime, effective);
+    }
 }
 
 /// A persisted section the firmware keeps for itself: not a [`Config`],
@@ -221,6 +231,41 @@ impl Binding for BleBinding {
     }
 }
 
+/// `control_tcp`: the TCP control endpoint. The access mode applies at once; the
+/// listener (switched on or off, address, port) is the platform's and is
+/// started once, so those fields wait for a restart.
+pub struct ControlTcpBinding;
+
+impl Binding for ControlTcpBinding {
+    type Config = ControlTcpConfig;
+    const RESTART_REQUIRED: bool = true;
+
+    fn publish(_: &ConfigRuntime, effective: &ControlTcpConfig) {
+        control::access().set_effective(Transport::Tcp, effective.settings());
+    }
+
+    fn publish_live(_: &ConfigRuntime, effective: &ControlTcpConfig) {
+        control::access().set_desired(Transport::Tcp, effective.settings());
+    }
+}
+
+/// `control_ble`: the BLE control endpoint. The access mode applies at once;
+/// whether the endpoint is served is decided when the peripheral starts.
+pub struct ControlBleBinding;
+
+impl Binding for ControlBleBinding {
+    type Config = ControlBleConfig;
+    const RESTART_REQUIRED: bool = true;
+
+    fn publish(_: &ConfigRuntime, effective: &ControlBleConfig) {
+        control::access().set_effective(Transport::Ble, effective.settings());
+    }
+
+    fn publish_live(_: &ConfigRuntime, effective: &ControlBleConfig) {
+        control::access().set_desired(Transport::Ble, effective.settings());
+    }
+}
+
 /// `location`: the shared location of the telemetry frames and the `location`
 /// service.
 pub struct LocationBinding;
@@ -300,6 +345,37 @@ impl PrivateBinding for IdentityBinding {
     fn unreadable(error: &dyn fmt::Display) {
         warn!(
             "Identity: stored identity unreadable, state unknown: {}",
+            error
+        );
+    }
+}
+
+/// The trusted administrator key of signed requests: published to the access
+/// state when committed, removed or loaded at boot.
+///
+/// A key that cannot be read leaves the state without a key: a restricted TCP
+/// endpoint then refuses every privileged request, it never opens.
+pub struct AdminKeyBinding;
+
+impl PrivateBinding for AdminKeyBinding {
+    type Section = AdminKeySection;
+
+    fn publish(section: Option<&AdminKeySection>) {
+        control::access().set_admin_key(section.map(|section| section.key().to_bytes()));
+        info!(
+            "Administrator key: {}",
+            if section.is_some() {
+                "enrolled"
+            } else {
+                "not enrolled"
+            }
+        );
+    }
+
+    fn unreadable(error: &dyn fmt::Display) {
+        control::access().set_admin_key(None);
+        warn!(
+            "Administrator key: unreadable, restricted endpoints stay closed: {}",
             error
         );
     }

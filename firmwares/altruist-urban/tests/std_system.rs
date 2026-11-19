@@ -204,6 +204,19 @@ async fn factory_reset_repairs_a_corrupted_configuration_storage() {
     );
 
     factory_reset(&mut device).await;
+    // The reset restores the defaults of the endpoint too: the launch option that
+    // opened it for this run no longer holds, TCP is restricted again.
+    assert!(
+        device
+            .config_patch("wifi", &[set(wifi::SSID, text("denied"))], false)
+            .await
+            .is_err()
+    );
+    drop(device);
+    assert!(sim.stop().success());
+
+    let sim = Sim::start(&Launch::new().storage(&storage));
+    let mut device = sim.device().await;
     device
         .config_patch("wifi", &[set(wifi::SSID, text("repaired"))], false)
         .await

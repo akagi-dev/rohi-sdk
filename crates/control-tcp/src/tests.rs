@@ -23,8 +23,9 @@ use std::rc::Rc;
 use std::vec::Vec;
 
 use embassy_futures::block_on;
+use embassy_futures::select::{Either, select};
 use embedded_io_async::{ErrorType, Read, Write};
-use rohi_control::{Controller, Device, DeviceInfo, OpenPolicy};
+use rohi_control::{ControlAccess, ControlHub, Controller, Device, DeviceInfo, OpenPolicy};
 use rohi_control_proto::control::{
     self as pb, Request_::Request as Call, Response_::Response as Reply,
 };
@@ -166,13 +167,39 @@ fn is_error(response: &pb::Response, code: pb::ErrorCode) -> bool {
     matches!(&response.response, Some(Reply::Error(error)) if error.code == code)
 }
 
+/// Runs `future` next to the one control worker.
+fn drive<T, B: rohi_control::ControlBackend>(
+    hub: &ControlHub<'_, 2>,
+    controller: &Controller<B, OpenPolicy>,
+    future: impl core::future::Future<Output = T>,
+) -> T {
+    match block_on(select(hub.serve(controller), future)) {
+        Either::First(never) => never,
+        Either::Second(value) => value,
+    }
+}
+
+/// Lets the worker finish what is queued, such as the end of a session.
+fn settle<B: rohi_control::ControlBackend>(
+    hub: &ControlHub<'_, 2>,
+    controller: &Controller<B, OpenPolicy>,
+) {
+    drive(hub, controller, async {
+        for _ in 0..4 {
+            embassy_futures::yield_now().await;
+        }
+    });
+}
+
 /// Serves the connections in order, then stops.
 fn serve(connections: &[&Connection]) {
     let controller = controller();
+    let access = ControlAccess::new(|_| false);
+    let hub = ControlHub::<2>::with_access(&access);
     let clients = Clients(connections.iter().map(|c| (*c).clone()).collect());
-    let mut control = ControlTcp::new(clients, &controller);
+    let mut control = ControlTcp::new(clients, &hub);
     for _ in connections {
-        block_on(control.serve_next()).unwrap();
+        drive(&hub, &controller, control.serve_next()).unwrap();
     }
 }
 
@@ -317,17 +344,64 @@ fn run_serves_until_the_acceptor_fails() {
     }
 
     let controller = controller();
-    let mut control = ControlTcp::new(Failing(3), &controller);
-    assert_eq!(block_on(control.run()), "listener closed");
+    let access = ControlAccess::new(|_| false);
+    let hub = ControlHub::<2>::with_access(&access);
+    let mut control = ControlTcp::new(Failing(3), &hub);
+    assert_eq!(drive(&hub, &controller, control.run()), "listener closed");
 }
 
 #[test]
-fn the_response_buffer_covers_the_largest_response() {
-    // The header and the payload are written with one `write_all`.
-    assert_eq!(
-        core::mem::size_of::<[u8; HEADER_LEN + MAX_RESPONSE_LEN]>(),
-        HEADER_LEN + MAX_RESPONSE_LEN
+fn a_request_with_no_free_slot_is_answered_busy_and_its_payload_is_skipped() {
+    let controller = controller();
+    let access = ControlAccess::new(|_| false);
+    let hub = ControlHub::<2>::with_access(&access);
+    // Two BLE connections own both slots.
+    let first = hub.connect(rohi_control::Transport::Ble).unwrap();
+    let second = hub.connect(rohi_control::Transport::Ble).unwrap();
+    let held = (first.request().unwrap(), second.request().unwrap());
+    let wire = Connection::new(&[get_info(1), get_info(2)].concat(), 4096);
+    let mut control = ControlTcp::new(Clients([wire.clone()].into()), &hub);
+    drive(&hub, &controller, control.serve_next()).unwrap();
+    let answers = responses(&wire.outgoing());
+    assert_eq!(answers.len(), 2);
+    assert!(
+        answers
+            .iter()
+            .all(|answer| is_error(answer, pb::ErrorCode::Busy))
     );
+    assert_eq!(access.stats(rohi_control::Transport::Tcp).errors, 2);
+    drop(held);
+}
+
+#[test]
+fn a_client_beyond_the_session_limit_is_refused() {
+    let controller = controller();
+    let access = ControlAccess::new(|_| false);
+    let hub = ControlHub::<2>::with_access(&access);
+    let live: Vec<_> = (0..rohi_control::MAX_SESSIONS)
+        .map(|_| hub.connect(rohi_control::Transport::Ble).unwrap())
+        .collect();
+    let wire = Connection::new(&get_info(1), 4096);
+    let mut control = ControlTcp::new(Clients([wire.clone()].into()), &hub);
+    drive(&hub, &controller, control.serve_next()).unwrap();
+    assert!(wire.outgoing().is_empty());
+    drop(live);
+}
+
+#[test]
+fn every_tcp_connection_is_its_own_session_across_transports() {
+    let controller = controller();
+    let access = ControlAccess::new(|_| false);
+    let hub = ControlHub::<2>::with_access(&access);
+    let ble = hub.connect(rohi_control::Transport::Ble).unwrap();
+    let wire = Connection::new(&get_info(1), 4096);
+    let mut control = ControlTcp::new(Clients([wire.clone()].into()), &hub);
+    drive(&hub, &controller, control.serve_next()).unwrap();
+    assert_eq!(responses(&wire.outgoing()).len(), 1);
+    // The BLE connection is untouched by the end of the TCP one.
+    assert_eq!(access.stats(rohi_control::Transport::Ble).sessions, 1);
+    assert_eq!(access.stats(rohi_control::Transport::Tcp).sessions, 0);
+    drop(ble);
 }
 
 use core::cell::Cell;
@@ -339,7 +413,7 @@ use rohi_service::{
 
 #[derive(Service)]
 struct Probe {
-    lost: Cell<u32>,
+    closed: Cell<u32>,
     open: Cell<bool>,
 }
 
@@ -381,12 +455,12 @@ impl Action for Probe {
     }
 
     async fn close_stream(&self, _: u32) -> Result<(), ActionError> {
-        Err(ActionError::UnknownStream)
-    }
-
-    fn link_lost(&self) {
-        self.lost.set(self.lost.get() + 1);
-        self.open.set(false);
+        if self.open.replace(false) {
+            self.closed.set(self.closed.get() + 1);
+            Ok(())
+        } else {
+            Err(ActionError::UnknownStream)
+        }
     }
 }
 
@@ -427,7 +501,7 @@ fn read_stream() -> Vec<u8> {
 #[test]
 fn a_stream_is_released_with_its_connection_and_never_reaches_the_next_client() {
     let probe = Probe {
-        lost: Cell::new(0),
+        closed: Cell::new(0),
         open: Cell::new(false),
     };
     let info = DeviceInfo {
@@ -438,15 +512,22 @@ fn a_stream_is_released_with_its_connection_and_never_reaches_the_next_client() 
     let first = Connection::new(&[export(), read_stream()].concat(), 4096);
     let second = Connection::new(&read_stream(), 4096);
     let clients = Clients([first.clone(), second.clone()].into());
-    let mut control = ControlTcp::new(clients, &controller);
+    let access = ControlAccess::new(|_| false);
+    let hub = ControlHub::<2>::with_access(&access);
+    let mut control = ControlTcp::new(clients, &hub);
 
-    block_on(control.serve_next()).unwrap();
+    drive(&hub, &controller, control.serve_next()).unwrap();
     let answers = responses(&first.outgoing());
     assert!(matches!(answers[0].response, Some(Reply::ActionStream(_))));
     assert!(matches!(answers[1].response, Some(Reply::ReadStream(_))));
-    assert_eq!(probe.lost.get(), 1, "the disconnect releases the streams");
+    settle(&hub, &controller);
+    assert_eq!(
+        probe.closed.get(),
+        1,
+        "the disconnect closes the streams of the session"
+    );
 
-    block_on(control.serve_next()).unwrap();
+    drive(&hub, &controller, control.serve_next()).unwrap();
     assert!(is_error(
         &responses(&second.outgoing())[0],
         pb::ErrorCode::NotFound
@@ -458,7 +539,7 @@ fn a_stream_left_open_cannot_be_read_by_the_next_connection_even_if_it_lives() {
     // A transport that never reports the end of the first connection (the
     // future was dropped) still separates the sessions.
     let probe = Probe {
-        lost: Cell::new(0),
+        closed: Cell::new(0),
         open: Cell::new(false),
     };
     let info = DeviceInfo {
@@ -469,11 +550,13 @@ fn a_stream_left_open_cannot_be_read_by_the_next_connection_even_if_it_lives() {
     let first = Connection::new(&export(), 4096);
     let second = Connection::new(&read_stream(), 4096);
     let clients = Clients([first.clone(), second.clone()].into());
-    let mut control = ControlTcp::new(clients, &controller);
-    block_on(control.serve_next()).unwrap();
+    let access = ControlAccess::new(|_| false);
+    let hub = ControlHub::<2>::with_access(&access);
+    let mut control = ControlTcp::new(clients, &hub);
+    drive(&hub, &controller, control.serve_next()).unwrap();
     // The service still has the stream: pretend it was not told.
     probe.open.set(true);
-    block_on(control.serve_next()).unwrap();
+    drive(&hub, &controller, control.serve_next()).unwrap();
     assert!(is_error(
         &responses(&second.outgoing())[0],
         pb::ErrorCode::NotFound

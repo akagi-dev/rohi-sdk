@@ -1202,5 +1202,9 @@ tuple_config_registry!(9; A.0, B.1, C.2, D.3, E.4, F.5, G.6, H.7, I.8);
 tuple_config_registry!(10; A.0, B.1, C.2, D.3, E.4, F.5, G.6, H.7, I.8, J.9);
 tuple_config_registry!(11; A.0, B.1, C.2, D.3, E.4, F.5, G.6, H.7, I.8, J.9, K.10);
 tuple_config_registry!(12; A.0, B.1, C.2, D.3, E.4, F.5, G.6, H.7, I.8, J.9, K.10, L.11);
+tuple_config_registry!(13; A.0, B.1, C.2, D.3, E.4, F.5, G.6, H.7, I.8, J.9, K.10, L.11, Q.12);
+tuple_config_registry!(14; A.0, B.1, C.2, D.3, E.4, F.5, G.6, H.7, I.8, J.9, K.10, L.11, Q.12, R.13);
+tuple_config_registry!(15; A.0, B.1, C.2, D.3, E.4, F.5, G.6, H.7, I.8, J.9, K.10, L.11, Q.12, R.13, S.14);
+tuple_config_registry!(16; A.0, B.1, C.2, D.3, E.4, F.5, G.6, H.7, I.8, J.9, K.10, L.11, Q.12, R.13, S.14, T.15);
 
-const _: () = assert!(MAX_REGISTRY_ENTRIES == 12);
+const _: () = assert!(MAX_REGISTRY_ENTRIES == 16);

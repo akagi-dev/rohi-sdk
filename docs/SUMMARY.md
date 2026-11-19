@@ -14,6 +14,7 @@
   - [Configuration](use/desktop/configuration.md)
   - [Status & diagnostics](use/desktop/status.md)
   - [Actions](use/desktop/actions.md)
+  - [Access and the administrator key](use/desktop/access.md)
   - [Logging](use/desktop/logs.md)
   - [Automation](use/desktop/automation.md)
 - [Mobile application](use/mobile.md)

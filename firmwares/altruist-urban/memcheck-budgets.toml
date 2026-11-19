@@ -66,10 +66,16 @@ reason = "the sensors status observer is laid out differently after the logging 
 # `max_data` was raised by 200 B (ESP32-C3, 30 300 → 30 500) and 300 B (ESP32-C6, 33 500 → 33 800) when the
 # connectivity rewrite was merged with the persistent logging (#68): `.data` measured 30 400 B and 33 740 B.
 
+# The managed control endpoints (#56): the control worker and the BLE frontend are two tasks (`control_task`
+# 15 128 B, `control_ble_task` 2 784 B on the ESP32-C3), the request slot of the `ControlHub` (3 272 B, `.bss`)
+# replaces the reassembly and response buffers the BLE loop owned, and the new sections, services and the BLE
+# pairing of the host stack (trouble-host `security`) add statics. Measured: `.data` 31 144 B (ESP32-C3) and
+# 34 956 B (ESP32-C6), task pools 45 008 B and 44 984 B. The `control_task` poll frame did not grow (9 456 B).
+# Stack depth and the high-water mark are NOT measured on hardware.
 [chips.esp32c3]
-max_data = 30500
+max_data = 31200
 max_bss = 210800
-max_task_ram = 43400
+max_task_ram = 45100
 min_main_stack = 15800
 max_frame = 13200
 
@@ -78,9 +84,9 @@ control_dispatch = ["rohi_control::controller", "rohi_service::registry"]
 logging = ["rohi_logging::service", "rohi_logging::storage", "rohi_logging::segment"]
 
 [chips.esp32c6]
-max_data = 33800
+max_data = 35000
 max_bss = 214900
-max_task_ram = 43400
+max_task_ram = 45100
 min_main_stack = 115700
 max_frame = 10900
 

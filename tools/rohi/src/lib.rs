@@ -36,6 +36,7 @@
 //! application can use the same library, or implement [`ClientTransport`] for
 //! a different link and keep everything above it.
 
+mod admin;
 mod ble;
 #[cfg(feature = "cli")]
 pub mod cli;
@@ -48,6 +49,7 @@ mod provision;
 mod session;
 mod tcp;
 
+pub use admin::{AdminKey, write_new as write_admin_key};
 pub use ble::{BleLink, DiscoveredDevice, scan, scan_until};
 pub use client::Device;
 pub use error::{Error, Result};

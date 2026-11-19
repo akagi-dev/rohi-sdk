@@ -129,16 +129,26 @@ rustdoc of [`rohi-control-tcp`](https://docs.rs/rohi-control-tcp).
 
 ## Security
 
-TCP control and the management interface are **development transports**: they have no authentication or encryption, and
-the control dispatcher allows everything, including identity provisioning and erase. Therefore:
+TCP control and the management interface are **development transports**: no encryption and no authentication of the
+device. What protects the control endpoint is its access mode (see [Access control](../build/control-protocol.md#access-control)):
 
-- both listeners bind to `127.0.0.1` by default;
-- a non-loopback `--bind` is refused unless `--unsafe-allow-remote` is given, and then anyone who can reach the port
-  controls the device;
-- BLE has no pairing or encryption either, on the device and on `std`; the link is reported as unencrypted and
-  unauthenticated.
+- the `control_tcp` endpoint is **restricted** by default: reads are open, every change needs an Ed25519 signature of the
+  administrator key, which `rohi --admin-key FILE` makes automatically;
+- a restricted endpoint without a key refuses every change. Enroll the first key over an open endpoint: start the process
+  with `--control-open` (open for that run only), run `rohi --admin-key admin.key admin enroll`, then restart without it
+  (or set `control_tcp access_mode=restricted`). `rohi admin keygen admin.key` creates the key file;
+- the stored `control_tcp` section (`enabled`, `access_mode`, `bind_address`, `port`) is read at start; `--bind` and
+  `--control-port` override the stored address and port for that run, and a port given on the command line also starts
+  the listener when the section switched it off. The access mode applies at once; the other fields apply at the next
+  start and the status shows `restart_required`;
+- both listeners bind to `127.0.0.1` by default; a non-loopback address, from `--bind` or from the section, is refused
+  unless `--unsafe-allow-remote` is given, and then anyone who can reach the port can read the device and, with the
+  endpoint open, control it;
+- BLE (BlueZ) is `open` by default; with `control_ble access_mode=restricted` the control characteristic needs an
+  encrypted link and BlueZ asks the central to pair (Just Works; a paired link is reported as encrypted but not
+  authenticated). Restricting TCP does not secure the device while BLE stays open.
 
-None of this is production-secure.
+A signature gives no confidentiality; none of this is production-secure.
 
 ## Storage
 

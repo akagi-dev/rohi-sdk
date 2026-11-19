@@ -30,9 +30,24 @@ const PROTO: &str = "proto/rohi/control/v1/control.proto";
 /// the generated types, so the schema and the Rust constants cannot drift.
 const LIMITS: &[(&str, usize, &str)] = &[
     (
-        "MAX_REQUEST_LEN",
+        "MAX_INNER_REQUEST_LEN",
         768,
-        "Maximum size of an encoded `Request`, in bytes.",
+        "Maximum size of an encoded `Request` that is not signed, in bytes.",
+    ),
+    (
+        "MAX_REQUEST_LEN",
+        896,
+        "Maximum size of an encoded `Request` including the `SignedRequest` wrapper, in bytes.",
+    ),
+    (
+        "MAX_NONCE_LEN",
+        32,
+        "Size of the session nonce of an authorization challenge, in bytes.",
+    ),
+    (
+        "MAX_SIGNATURE_LEN",
+        64,
+        "Size of an Ed25519 signature, in bytes.",
     ),
     (
         "MAX_RESPONSE_LEN",
@@ -106,12 +121,12 @@ const LIMITS: &[(&str, usize, &str)] = &[
     ),
     (
         "MAX_CONFIG_SECTIONS",
-        12,
+        16,
         "Maximum number of config sections a device lists.",
     ),
     (
         "MAX_SERVICES",
-        12,
+        16,
         "Maximum number of services a device lists.",
     ),
     (
@@ -342,6 +357,19 @@ fn main() {
             ".rohi.control.v1.ReadStreamResponse.data",
             "MAX_STREAM_CHUNK",
         ),
+        // Request authorization.
+        (
+            ".rohi.control.v1.GetAuthChallengeResponse.session_nonce",
+            "MAX_NONCE_LEN",
+        ),
+        (
+            ".rohi.control.v1.SignedRequest.request_bytes",
+            "MAX_INNER_REQUEST_LEN",
+        ),
+        (
+            ".rohi.control.v1.SignedRequest.signature",
+            "MAX_SIGNATURE_LEN",
+        ),
         // Log tail.
         (".rohi.control.v1.TailLogsResponse.data", "MAX_TAIL_CHUNK"),
     ];
@@ -368,6 +396,14 @@ fn main() {
     generator.configure(
         ".rohi.control.v1.InvokeActionRequest",
         Config::new().no_debug_impl(true),
+    );
+    generator.configure(
+        ".rohi.control.v1.SignedRequest",
+        Config::new().no_debug_impl(true),
+    );
+    generator.configure(
+        ".rohi.control.v1.Request.signed_request",
+        Config::new().skip(true),
     );
 
     generator

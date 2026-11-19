@@ -87,6 +87,12 @@ impl<T: ClientTransport> Device<T> {
         self.session.set_timeout(timeout);
     }
 
+    /// Signs the requests that a restricted TCP endpoint wants signed with
+    /// `key`, the administrator key the device trusts.
+    pub fn set_admin_key(&mut self, key: &crate::AdminKey) {
+        self.session.set_admin_signer(key.signer());
+    }
+
     /// Releases the transport, for example to close the connection.
     pub fn into_transport(self) -> T {
         self.session.into_transport()

@@ -68,7 +68,7 @@ summary in the detailed status, no pagination):
 | `Response` | 2 616 | 1 824 | 1 900 |
 | `FieldDescriptor` | 352 | 48 | 56 |
 | `FieldValue` | 88 | 56 | 64 |
-| `GetServicesStatusResponse` | 792 | 792 (12 services; 536 for 8) | 832 |
+| `GetServicesStatusResponse` | 792 | 1 048 (16 services; 792 for 12) | 1 088 |
 | `GetServiceStatusResponse` | 1 272 (8 values) | 1 192 (20 values) | 1 280 |
 | `GetConfigSectionResponse` | n/a | 1 504 | 1 536 |
 | `PatchConfigSectionRequest` | n/a | 728 | 768 |
@@ -359,3 +359,26 @@ LZ4 compressor keeps a 2 KiB table and the writer a 2 KiB chunk on the stack), t
 flash sector erase stalls Wi-Fi, BLE and the microphone DMA ring, how long the first format of the 128 (ESP32-C3) or 256 (ESP32-C6) sectors takes, how long
 `rohi logs clear` takes (it has to stay below the 40 s action timeout of the client) and how long recovery spends on the checksums
 of up to 1 MiB of sealed segments at boot (the CRC-32 is computed bit by bit). These need a device.
+
+## Shared control worker and BLE frontend (#56)
+
+BLE and TCP no longer call the `Controller` in their own poll chain. One `control_task` owns the `Controller`; the BLE
+frontend is its own `control_ble_task` and the request and response buffers are the slot of the `ControlHub` (one slot on
+the ESP, two on the host). Measured with `scripts/memcheck.sh` (static analysis, not a runtime high-water mark):
+
+| Metric | Before (reference CI run, PR #69) | After, ESP32-C3 | After, ESP32-C6 |
+|--------|----------------------------------:|----------------:|----------------:|
+| `control_task::POOL` | 17 512 B | 15 128 B | not recorded |
+| `control_ble_task::POOL` | n/a | 2 784 B | not recorded |
+| `ControlHub` slot (`.bss`) | n/a (buffers in the pool) | 3 272 B | not recorded |
+| `control_task` poll frame | 9 504 B | 9 456 B | not recorded |
+| `control_ble_task` poll frame | n/a | 640 B | not recorded |
+| all task pools | 43 040 B | 45 008 B | 44 984 B |
+| `.data` | 30 400 B | 31 144 B | 34 956 B |
+
+The tasks share the one executor stack, so splitting them lowers the depth only because the transport and controller
+poll chains no longer nest. The new `.data` and task RAM come from the second task, the new sections and services and
+the host stack pairing (`trouble-host` `security`); the `.data` of the hub itself is kept at zero (it holds no reference
+until `bind`), so it lands in `.bss`. No saving of stack or RAM is claimed: the stack high-water mark was **not**
+measured on hardware, see [Hardware testing](hardware-testing.md#control-worker-stack-high-water). The budgets of
+`memcheck-budgets.toml` were raised by 700 B (`.data`, ESP32-C3), 1 200 B (`.data`, ESP32-C6) and 1 700 B (task RAM).

@@ -56,6 +56,11 @@ pub enum Error {
     /// The device answered with a typed protocol error.
     #[error("device error: {0}")]
     Device(ErrorCode),
+    /// The device refused a privileged request with a stable reason:
+    /// `auth_required`, `no_admin_key`, `no_challenge`, `bad_signature`,
+    /// `stale_sequence`, `nested`, `not_supported` or `pairing_required`.
+    #[error("permission denied by the device: {0}")]
+    Unauthorized(String),
     /// The action ran and was refused for a stable reason, for example
     /// `already_provisioned`.
     #[error("rejected by the device: {0}")]

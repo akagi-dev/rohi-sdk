@@ -67,8 +67,10 @@ The same steps work with the desktop tool over BLE from another machine or a sec
   adapter-and-mobile-app smoke-test result is available for this change. Keep Linux BLE at software-integration status
   until discovery, connection, Config, Status, Action and reconnection have been exercised on a real adapter and phone,
   and the result and platform limitations are recorded in the [support matrix](../support/overview.md).
-- **No pairing or encryption.** The link is reported as unencrypted and unauthenticated and the control dispatcher
-  allows everything. Do not treat this as production-secure.
+- **Open by default; pairing only when restricted.** `control_ble` is `open` by default: the link is unencrypted and
+  every client in range may change the device. With `control_ble access_mode=restricted` (applied at the next start) the RX
+  characteristic needs encryption, BlueZ asks the central to pair (Just Works, not authenticated) and a paired link is
+  reported as encrypted; the pairing flow is not verified with a real phone. Do not treat this as production-secure.
 - **Connection detection.** BlueZ does not report an ATT connection to a GATT application. A central counts as connected
   when it subscribes to the TX characteristic or writes the RX characteristic, and as disconnected when its notification
   session ends. A central that never subscribes cannot receive responses and is not tracked.

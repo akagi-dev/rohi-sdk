@@ -43,6 +43,8 @@ pub struct Launch {
     pub storage: Option<PathBuf>,
     pub scenario: Option<PathBuf>,
     pub extra: Vec<String>,
+    /// Leave the TCP endpoint restricted, as a device is by default.
+    pub restricted: bool,
 }
 
 impl Launch {
@@ -58,6 +60,12 @@ impl Launch {
 
     pub fn scenario(mut self, path: &Path) -> Self {
         self.scenario = Some(path.to_owned());
+        self
+    }
+
+    /// Leaves the TCP endpoint restricted instead of opening it for the run.
+    pub fn restricted(mut self) -> Self {
+        self.restricted = true;
         self
     }
 
@@ -90,6 +98,9 @@ impl Sim {
         };
         if let Some(scenario) = &launch.scenario {
             command.arg("--scenario").arg(scenario);
+        }
+        if !launch.restricted {
+            command.arg("--control-open");
         }
         command.args(&launch.extra);
         let mut child = command.spawn().expect("the device starts");

@@ -292,6 +292,7 @@ fn device_diagnostic(error: &Error) -> Diagnostic {
                 _ => diagnostic,
             }
         }
+        Error::Unauthorized(reason) => unauthorized_diagnostic(reason),
         Error::Rejected(reason) => {
             let diagnostic = Diagnostic::new(format!("the device rejected the action: {reason}"));
             match reason.as_str() {
@@ -304,6 +305,27 @@ fn device_diagnostic(error: &Error) -> Diagnostic {
             }
         }
         other => Diagnostic::new(other.to_string()),
+    }
+}
+
+fn unauthorized_diagnostic(reason: &str) -> Diagnostic {
+    let diagnostic = Diagnostic::new(format!("the device refused the request: {reason}"));
+    match reason {
+        "auth_required" => diagnostic
+            .hint("this endpoint is restricted: changes must be signed by the administrator key")
+            .hint("pass --admin-key FILE (create one with `rohi admin keygen FILE`)"),
+        "no_admin_key" => diagnostic
+            .hint("no administrator key is enrolled, so a restricted TCP endpoint refuses every change")
+            .hint("enroll one over an open endpoint (BLE by default, or start the std device with --control-open): `rohi --admin-key FILE admin enroll`"),
+        "no_challenge" => diagnostic.hint("the key was replaced or removed on the device; try again"),
+        "bad_signature" => diagnostic
+            .hint("the device trusts another key than the one in --admin-key")
+            .hint("after too many bad signatures a connection is refused until it is reopened"),
+        "stale_sequence" => diagnostic.hint("a request was replayed or reordered; reconnect and try again"),
+        "pairing_required" => diagnostic
+            .hint("this BLE endpoint is restricted: pair with the device first (an encrypted link)"),
+        "not_supported" => diagnostic.hint("this transport takes no signed requests"),
+        _ => diagnostic,
     }
 }
 

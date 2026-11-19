@@ -49,8 +49,9 @@
 //! use std::rc::Rc;
 //!
 //! use embassy_futures::block_on;
+//! use embassy_futures::select::{Either, select};
 //! use embedded_io_async::{ErrorType, Read, Write};
-//! use rohi_control::{Controller, Device, DeviceInfo, OpenPolicy};
+//! use rohi_control::{ControlAccess, ControlHub, Controller, Device, DeviceInfo, OpenPolicy};
 //! use rohi_control_proto::control::{self as pb, Request_::Request as Call, Response_::Response as Reply};
 //! use rohi_control_proto::{PROTOCOL_VERSION, decode, encode};
 //! use rohi_control_tcp::frame::{HEADER_LEN, decode_header, encode_header};
@@ -118,11 +119,18 @@
 //! let connection = Connection::default();
 //! connection.0.borrow_mut().incoming = incoming;
 //!
-//! // The device: a controller over a device, served to the client.
+//! // The device: one controller over a device, served through the hub of the
+//! // control worker; the TCP side only frames.
 //! let info = DeviceInfo { firmware: "demo-0.1.0", board: "demo-board" };
 //! let controller = Controller::new(Device::new(info, || 0, (), (), ()), OpenPolicy);
-//! let mut control = ControlTcp::new(OneClient(Some(connection.clone())), &controller);
-//! let error = block_on(control.run());
+//! let access = ControlAccess::new(|_| false);
+//! let hub = ControlHub::<1>::with_access(&access);
+//! let mut control = ControlTcp::new(OneClient(Some(connection.clone())), &hub);
+//! // On the device the worker is the `control_task`; here both run in turn.
+//! let error = match block_on(select(hub.serve(&controller), control.run())) {
+//!     Either::First(never) => never,
+//!     Either::Second(error) => error,
+//! };
 //! assert_eq!(error, "no more clients");
 //!
 //! // The client reads the response record.
@@ -142,8 +150,8 @@
 //! |---------|---------|
 //! | Record | A 4-byte little-endian length and one Protobuf message ([`frame`]) |
 //! | [`Acceptor`] | Yields the next client connection as an `embedded-io-async` stream |
-//! | [`ControlTcp`] | Accepts a client, then reads a request record, lets the [`Controller`](rohi_control::Controller) answer, writes the response record |
-//! | Link security | Always the default (unencrypted, unauthenticated) one |
+//! | [`ControlTcp`] | Accepts a client, reads a request record into a slot of the [`ControlHub`](rohi_control::ControlHub), writes the response record of the one control worker |
+//! | Link security | Always the default (unencrypted, unauthenticated) one; the access mode of the TCP endpoint decides what an unsigned request may do |
 //!
 //! **Connections.** One client is served at a time. While it is connected, the
 //! next one waits in the backlog of the platform listener. A client that
@@ -165,16 +173,16 @@
 //!                                                │ embedded-io-async stream
 //!                                                ▼
 //!                                  ControlTcp ── frame
-//!                                                │ request bytes + LinkSecurity
+//!                                                │ request slot of the ControlHub
 //!                                                ▼
-//!                                  rohi_control::Controller ── registries of rohi-service
+//!                                  control_task: rohi_control::Controller ── registries of rohi-service
 //!  response record ◄── TCP ◄── ControlTcp ◄──────┘
 //! ```
 //!
 //! * The listener is not here: `rohi-net-std` implements [`Acceptor`] over host
 //!   sockets. The wiring in the firmware is the `std` platform of
 //!   `firmwares/altruist-urban`.
-//! * BLE and TCP are independent transports of the same controller; a device
+//! * BLE and TCP are independent frontends of the same control worker; a device
 //!   may serve both with two tasks over one backend.
 //! * The message schema is [`rohi_control_proto`].
 //!
@@ -188,7 +196,9 @@
 //!
 //! # Guarantees and Limitations
 //!
-//! * **Bounded memory.** All buffers are inline. The length of a record is
+//! * **Bounded memory.** The message buffers are the slots of the
+//!   [`ControlHub`](rohi_control::ControlHub), shared with the other transports;
+//!   this crate has none of its own. The length of a record is
 //!   checked against
 //!   [`MAX_REQUEST_LEN`](rohi_control_proto::limits::MAX_REQUEST_LEN) before
 //!   its payload is read, so an oversized request is never buffered.
@@ -202,11 +212,15 @@
 //! * **Cancellation.** Dropping [`ControlTcp::run`] or [`ControlTcp::serve_next`]
 //!   closes the current connection and abandons the request being handled; what
 //!   a service already committed stays committed.
-//! * **No security.** The transport has no encryption, authentication or
-//!   pairing, and [`OpenPolicy`](rohi_control::OpenPolicy) allows everything,
-//!   including identity provisioning and erase. A platform must bind its
+//! * **No transport security.** The transport has no encryption, no
+//!   authentication of the device and no pairing. What protects privileged
+//!   requests is the access mode of the TCP endpoint: `Restricted` (the
+//!   default of the firmware) wants an Ed25519 signature of the administrator
+//!   key on each of them, see [`rohi_control`]; `Open` allows everything,
+//!   including identity provisioning and erase. A signature gives neither
+//!   confidentiality nor protection of the responses. A platform must bind its
 //!   listener to the loopback address unless the developer explicitly asks for
-//!   more. It is a development transport, not a production-secure one.
+//!   more.
 //! * **Evidence.** The records and the serving loop are covered by host tests
 //!   with scripted in-memory connections (`cargo test -p rohi-control-tcp`) and
 //!   the example above. End-to-end use with host sockets and the `rohi` tool is
@@ -221,4 +235,4 @@ mod service;
 #[cfg(test)]
 mod tests;
 
-pub use service::{Acceptor, ControlTcp};
+pub use service::{Acceptor, ControlTcp, error_kind};

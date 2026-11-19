@@ -23,9 +23,11 @@ use rohi_control_ble::frame::{Fragmenter, Reassembler};
 use rohi_control_proto::control::{
     self as pb, Request_::Request as Call, Response_::Response as Reply,
 };
-use rohi_control_proto::limits::{MAX_REQUEST_LEN, MAX_RESPONSE_LEN};
+use rohi_control_proto::limits::{MAX_INNER_REQUEST_LEN, MAX_REQUEST_LEN, MAX_RESPONSE_LEN};
 use rohi_control_proto::{PROTOCOL_VERSION, decode, encode};
+use rohi_identity::{IdentitySigner, Signer};
 use tokio::time::timeout;
+use zeroize::Zeroize;
 
 use crate::error::{Error, Result};
 use crate::model::ErrorCode;
@@ -69,14 +71,37 @@ pub trait ClientTransport {
     async fn recv(&mut self) -> Result<Vec<u8>>;
 }
 
+/// The domain separator of the signed preimage, see `control.proto`.
+const AUTH_DOMAIN: &[u8] = b"rohi-control-auth-v1";
+
+/// The administrator key of a session and the challenge of its connection.
+struct Admin {
+    signer: IdentitySigner,
+    nonce: Option<[u8; 32]>,
+    sequence: u64,
+}
+
+impl Drop for Admin {
+    fn drop(&mut self) {
+        self.nonce.zeroize();
+    }
+}
+
 /// One connection to a device: frames requests, matches responses.
 ///
 /// One request at a time, as the device allows only one in flight.
+///
+/// With an administrator key ([`set_admin_signer`](Self::set_admin_signer)) a
+/// request that a restricted TCP endpoint refuses as unsigned
+/// (`auth_required`) is sent again as a signed request: the first attempt was
+/// refused before it ran, so nothing runs twice. The answer to a signed
+/// request that is lost is never retried, because the outcome is unknown.
 pub struct Session<T> {
     transport: T,
     next_request: u32,
     next_message: u8,
     timeout: Duration,
+    admin: Option<Admin>,
 }
 
 impl<T: ClientTransport> Session<T> {
@@ -87,7 +112,18 @@ impl<T: ClientTransport> Session<T> {
             next_request: 1,
             next_message: 0,
             timeout: DEFAULT_TIMEOUT,
+            admin: None,
         }
+    }
+
+    /// Signs the requests that the device wants signed with `signer`, the
+    /// administrator key the device trusts.
+    pub fn set_admin_signer(&mut self, signer: IdentitySigner) {
+        self.admin = Some(Admin {
+            signer,
+            nonce: None,
+            sequence: 0,
+        });
     }
 
     /// Changes the response timeout of following calls.
@@ -110,17 +146,19 @@ impl<T: ClientTransport> Session<T> {
     /// A typed error response of the device becomes [`Error::Device`].
     pub async fn call(&mut self, call: Call) -> Result<Reply> {
         let limit = self.timeout;
-        timeout(limit, self.exchange(call))
+        timeout(limit, self.call_unbounded(call))
             .await
             .map_err(|_| Error::Timeout)?
     }
 
-    async fn exchange(&mut self, call: Call) -> Result<Reply> {
-        let request_id = self.next_request;
+    fn take_request_id(&mut self) -> u32 {
+        let id = self.next_request;
         self.next_request = self.next_request.wrapping_add(1).max(1);
-        let message_id = self.next_message;
-        self.next_message = self.next_message.wrapping_add(1);
+        id
+    }
 
+    async fn call_unbounded(&mut self, call: Call) -> Result<Reply> {
+        let request_id = self.take_request_id();
         let mut wire = [0u8; MAX_REQUEST_LEN];
         let len = encode(
             &pb::Request {
@@ -130,11 +168,118 @@ impl<T: ClientTransport> Session<T> {
             },
             &mut wire,
         )?;
+        let first = self.exchange(request_id, &wire[..len]).await;
+        let signed = self.admin.is_some()
+            && matches!(&first, Err(Error::Unauthorized(reason)) if reason == "auth_required");
+        let result = if signed {
+            self.call_signed(request_id, &wire[..len]).await
+        } else {
+            first
+        };
+        wire.fill(0);
+        result
+    }
+
+    // The refused request again, signed. A challenge that the device no longer
+    // knows (a key rotation, a lost session) is asked for once more: that
+    // refusal came before the request ran.
+    async fn call_signed(&mut self, request_id: u32, inner: &[u8]) -> Result<Reply> {
+        if inner.len() > MAX_INNER_REQUEST_LEN {
+            return Err(Error::TooLarge);
+        }
+        let mut attempt = 0;
+        loop {
+            let nonce = match self.admin.as_ref().and_then(|admin| admin.nonce) {
+                Some(nonce) => nonce,
+                None => self.challenge().await?,
+            };
+            let Some(admin) = self.admin.as_mut() else {
+                return Err(Error::Unauthorized("no_admin_key".into()));
+            };
+            admin.sequence += 1;
+            let sequence = admin.sequence;
+            let mut preimage = Vec::with_capacity(AUTH_DOMAIN.len() + 40 + inner.len());
+            preimage.extend_from_slice(AUTH_DOMAIN);
+            preimage.extend_from_slice(&nonce);
+            preimage.extend_from_slice(&sequence.to_le_bytes());
+            preimage.extend_from_slice(inner);
+            let signature = admin
+                .signer
+                .sign(&preimage)
+                .map_err(|_| Error::InvalidInput("the administrator key cannot sign".into()))?;
+            preimage.zeroize();
+            let mut signed = pb::SignedRequest {
+                sequence,
+                ..Default::default()
+            };
+            signed
+                .request_bytes
+                .extend_from_slice(inner)
+                .map_err(|_| Error::TooLarge)?;
+            signed
+                .signature
+                .extend_from_slice(signature.as_bytes())
+                .map_err(|_| Error::TooLarge)?;
+            let mut envelope = pb::SignedEnvelope {
+                protocol_version: PROTOCOL_VERSION,
+                request_id,
+                ..Default::default()
+            };
+            envelope.set_signed_request(signed);
+            let mut wire = [0u8; MAX_REQUEST_LEN];
+            let len = encode(&envelope, &mut wire)?;
+            let result = self.exchange(request_id, &wire[..len]).await;
+            wire.fill(0);
+            match result {
+                Err(Error::Unauthorized(reason)) if reason == "no_challenge" && attempt == 0 => {
+                    attempt += 1;
+                    if let Some(admin) = self.admin.as_mut() {
+                        admin.nonce = None;
+                    }
+                }
+                other => return other,
+            }
+        }
+    }
+
+    // Asks for a fresh nonce for this connection; the sequence starts again.
+    async fn challenge(&mut self) -> Result<[u8; 32]> {
+        let request_id = self.take_request_id();
+        let mut wire = [0u8; 16];
+        let len = encode(
+            &pb::Request {
+                protocol_version: PROTOCOL_VERSION,
+                request_id,
+                request: Some(Call::GetAuthChallenge(pb::GetAuthChallengeRequest {})),
+            },
+            &mut wire,
+        )?;
+        let Reply::GetAuthChallenge(challenge) = self.exchange(request_id, &wire[..len]).await?
+        else {
+            return Err(Error::Protocol("unexpected answer to a challenge".into()));
+        };
+        if !challenge.admin_key_enrolled {
+            return Err(Error::Unauthorized("no_admin_key".into()));
+        }
+        let nonce: [u8; 32] = challenge
+            .session_nonce
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::Protocol("the challenge is not 32 bytes".into()))?;
+        if let Some(admin) = self.admin.as_mut() {
+            admin.nonce = Some(nonce);
+            admin.sequence = 0;
+        }
+        Ok(nonce)
+    }
+
+    // One request and its answer, on the wire.
+    async fn exchange(&mut self, request_id: u32, wire: &[u8]) -> Result<Reply> {
+        let message_id = self.next_message;
+        self.next_message = self.next_message.wrapping_add(1);
 
         if self.transport.framing() == Framing::Messages {
-            let sent = self.transport.send(&wire[..len]).await;
-            wire.fill(0);
-            sent?;
+            self.transport.send(wire).await?;
             loop {
                 let bytes = self.transport.recv().await?;
                 if let Some(result) = answer(&bytes, request_id)? {
@@ -144,12 +289,11 @@ impl<T: ClientTransport> Session<T> {
         }
 
         let max_payload = self.transport.max_payload();
-        let mut fragments = Fragmenter::new(message_id, &wire[..len], max_payload)?;
+        let mut fragments = Fragmenter::new(message_id, wire, max_payload)?;
         let mut chunk = vec![0u8; max_payload];
         while let Some(len) = fragments.next_frame(&mut chunk) {
             self.transport.send(&chunk[..len]).await?;
         }
-        wire.fill(0);
 
         let mut response = Reassembler::<MAX_RESPONSE_LEN>::new();
         loop {
@@ -187,6 +331,9 @@ fn answer(bytes: &[u8], request_id: u32) -> Result<Option<Result<Reply>>> {
         Some(Reply::Error(error)) => Err(match error.reason() {
             Some(reason) if error.code == pb::ErrorCode::Rejected => {
                 Error::Rejected(reason.as_str().to_owned())
+            }
+            Some(reason) if error.code == pb::ErrorCode::PermissionDenied => {
+                Error::Unauthorized(reason.as_str().to_owned())
             }
             _ => Error::Device(ErrorCode::from_proto(error.code)),
         }),

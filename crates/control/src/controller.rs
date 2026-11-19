@@ -29,9 +29,11 @@ use rohi_service::{
     MAX_MUTATIONS, Mutation, ServiceStatusSummary, StatusError, StatusRegistry, TailRequest, Value,
 };
 
-use crate::{AuthorizationPolicy, ControlBackend, LinkSecurity, Privilege};
+use crate::{AuthorizationPolicy, ControlBackend, LinkSecurity, Privilege, RequestAuthorization};
 use crate::{diag, mapping};
+use rohi_identity::{PublicKey, Signature};
 use rohi_service::isolated;
+use zeroize::Zeroize;
 
 /// The most streams the controller tracks at once, over all services.
 pub const MAX_OPEN_STREAMS: usize = 16;
@@ -42,8 +44,47 @@ pub const MAX_OPEN_STREAMS: usize = 16;
 struct OwnedStream {
     service: u32,
     stream: u32,
-    session: u32,
+    session: u64,
     privilege: Privilege,
+}
+
+/// The most connections that can hold a challenge at once.
+pub const MAX_AUTH_SESSIONS: usize = 4;
+
+/// Signed requests of one connection that fail before it is refused without
+/// even checking a signature.
+const MAX_AUTH_FAILURES: u8 = 8;
+
+const AUTH_DOMAIN: &[u8] = b"rohi-control-auth-v1";
+
+// The signed preimage: domain, nonce, sequence, inner request.
+const PREIMAGE_LEN: usize = AUTH_DOMAIN.len() + 32 + 8 + limits::MAX_INNER_REQUEST_LEN;
+
+/// The challenge state of one connection. RAM only.
+struct SessionAuth {
+    session: u64,
+    nonce: [u8; 32],
+    epoch: u32,
+    last: Option<u64>,
+    failures: u8,
+}
+
+impl Drop for SessionAuth {
+    fn drop(&mut self) {
+        self.nonce.zeroize();
+    }
+}
+
+/// What the signed envelope of a request came to.
+// Both payloads are a message that the caller moves straight on.
+#[allow(clippy::large_enum_variant)]
+enum Unsigned {
+    /// The bytes are no signed request.
+    NotSigned,
+    /// The request was refused or malformed: this is the answer.
+    Reply(Reply),
+    /// The verified inner request.
+    Call(Call),
 }
 
 /// Dispatches control requests to a [`ControlBackend`], gated by an
@@ -51,14 +92,15 @@ struct OwnedStream {
 ///
 /// It owns the backend and the policy. The only state it keeps between
 /// requests is who owns each open stream (see
-/// [`LinkSecurity::session`]), so one controller serves every connection; the
-/// per-connection part is the [`LinkSecurity`] passed to
-/// [`handle`](Self::handle). See the [crate documentation](crate) for the
-/// operations, privileges and errors.
+/// [`LinkSecurity::session`]) and the challenge of each connection that asked
+/// for one, so one controller serves every connection; the per-connection
+/// part is the [`LinkSecurity`] passed to [`handle`](Self::handle). See the
+/// [crate documentation](crate) for the operations, privileges and errors.
 pub struct Controller<B, P> {
     backend: B,
     policy: P,
     streams: Mutex<CriticalSectionRawMutex, RefCell<Vec<OwnedStream, MAX_OPEN_STREAMS>>>,
+    auth: Mutex<CriticalSectionRawMutex, RefCell<Vec<SessionAuth, MAX_AUTH_SESSIONS>>>,
 }
 
 impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
@@ -68,6 +110,7 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             backend,
             policy,
             streams: Mutex::new(RefCell::new(Vec::new())),
+            auth: Mutex::new(RefCell::new(Vec::new())),
         }
     }
 
@@ -76,9 +119,10 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
         &self.backend
     }
 
-    /// The control link was lost or replaced: services release the streams
-    /// the previous client left open and the controller forgets who owned
-    /// them.
+    /// Every control link was lost or replaced: services release the streams
+    /// the previous clients left open, and the controller forgets who owned
+    /// them and every challenge. Prefer [`session_closed`](Self::session_closed)
+    /// when one of several connections ends.
     pub fn link_lost(&self) {
         let released = self.streams.lock(|streams| {
             let mut streams = streams.borrow_mut();
@@ -86,8 +130,31 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             streams.clear();
             count
         });
+        self.auth.lock(|auth| auth.borrow_mut().clear());
         diag::link_lost(released);
         self.backend.actions().link_lost();
+    }
+
+    /// The connection `session` ended: its challenge is forgotten and only
+    /// its own streams are closed in their services. Streams and challenges
+    /// of other sessions are untouched.
+    pub async fn session_closed(&self, session: u64) {
+        self.auth
+            .lock(|auth| auth.borrow_mut().retain(|entry| entry.session != session));
+        let mut owned: Vec<(u32, u32), MAX_OPEN_STREAMS> = Vec::new();
+        self.streams.lock(|streams| {
+            streams.borrow_mut().retain(|stream| {
+                if stream.session != session {
+                    return true;
+                }
+                let _ = owned.push((stream.service, stream.stream));
+                false
+            });
+        });
+        for (service, stream) in owned.iter().copied() {
+            let result = self.backend.actions().close_stream(service, stream).await;
+            diag::session_stream_closed(session, service, stream, result);
+        }
     }
 
     /// Handles one encoded request received on a link with the given
@@ -132,6 +199,12 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
     }
 
     async fn dispatch(&self, link: &LinkSecurity, bytes: &[u8]) -> (u32, Reply) {
+        // Only this controller decides who proved what.
+        let anonymous = LinkSecurity {
+            authorization: RequestAuthorization::Anonymous,
+            ..*link
+        };
+        let link = &anonymous;
         if bytes.len() > limits::MAX_REQUEST_LEN {
             diag::request_too_long(bytes.len());
             return (0, error(pb::ErrorCode::InvalidArgument));
@@ -148,10 +221,26 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             diag::unsupported_version(id, request.protocol_version);
             return (id, error(pb::ErrorCode::NotSupported));
         }
-        let Some(call) = request.request else {
-            diag::empty_request(id);
-            return (id, error(pb::ErrorCode::NotSupported));
-        };
+        match request.request {
+            Some(call) => self.dispatch_call(link, id, call).await,
+            None => match isolated(self.unsign(link, id, bytes)).await {
+                Unsigned::Call(call) => {
+                    let verified = LinkSecurity {
+                        authorization: RequestAuthorization::VerifiedAdmin,
+                        ..*link
+                    };
+                    self.dispatch_call(&verified, id, call).await
+                }
+                Unsigned::Reply(reply) => (id, reply),
+                Unsigned::NotSigned => {
+                    diag::empty_request(id);
+                    (id, error(pb::ErrorCode::NotSupported))
+                }
+            },
+        }
+    }
+
+    async fn dispatch_call(&self, link: &LinkSecurity, id: u32, call: Call) -> (u32, Reply) {
         diag::request(id, &call);
 
         let privilege = match &call {
@@ -188,9 +277,163 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
         };
         if !self.policy.allows(privilege, link) {
             diag::denied(id, &call, privilege, link);
-            return (id, error(pb::ErrorCode::PermissionDenied));
+            return (id, self.refusal(privilege, link));
         }
         (id, self.execute(link, privilege, call).await)
+    }
+
+    fn refusal(&self, privilege: Privilege, link: &LinkSecurity) -> Reply {
+        match self.policy.denial_reason(privilege, link) {
+            Some(reason) => denied(reason),
+            None => error(pb::ErrorCode::PermissionDenied),
+        }
+    }
+
+    // The request bytes were not a plain request: unwraps and verifies a
+    // signed one. The replay state advances before the inner request runs.
+    async fn unsign(&self, link: &LinkSecurity, id: u32, bytes: &[u8]) -> Unsigned {
+        let Ok(envelope) = decode::<pb::SignedEnvelope>(bytes) else {
+            return Unsigned::NotSigned;
+        };
+        let Some(signed) = envelope.signed_request() else {
+            return Unsigned::NotSigned;
+        };
+        if !self.policy.accepts_signed(link) {
+            diag::auth_refused(id, link, "not_supported");
+            return Unsigned::Reply(denied("not_supported"));
+        }
+        if let Err(reason) = self.verify(link, signed) {
+            self.policy.auth_failed(link);
+            diag::auth_refused(id, link, reason);
+            return Unsigned::Reply(denied(reason));
+        }
+        let inner = match decode::<pb::Request>(&signed.request_bytes) {
+            Ok(inner) => inner,
+            Err(e) => {
+                diag::decode_failed(signed.request_bytes.len(), e);
+                return Unsigned::Reply(error(pb::ErrorCode::InvalidArgument));
+            }
+        };
+        if inner.request_id != id || inner.protocol_version != PROTOCOL_VERSION {
+            return Unsigned::Reply(error(pb::ErrorCode::InvalidArgument));
+        }
+        match inner.request {
+            Some(Call::GetAuthChallenge(_)) => Unsigned::Reply(denied("nested")),
+            Some(call) => Unsigned::Call(call),
+            None if decode::<pb::SignedEnvelope>(&signed.request_bytes)
+                .is_ok_and(|nested| nested.signed_request().is_some()) =>
+            {
+                Unsigned::Reply(denied("nested"))
+            }
+            None => Unsigned::Reply(error(pb::ErrorCode::NotSupported)),
+        }
+    }
+
+    // Checks the challenge, the sequence and the signature, in that order,
+    // and records the sequence on success.
+    #[inline(never)]
+    fn verify(&self, link: &LinkSecurity, signed: &pb::SignedRequest) -> Result<(), &'static str> {
+        let Some(admin) = self.policy.admin_key() else {
+            return Err("no_admin_key");
+        };
+        let state = self.auth.lock(|auth| {
+            auth.borrow()
+                .iter()
+                .find(|entry| entry.session == link.session)
+                .map(|entry| (entry.nonce, entry.epoch, entry.last, entry.failures))
+        });
+        let Some((mut nonce, epoch, last, failures)) = state else {
+            return Err("no_challenge");
+        };
+        let result = (|| {
+            if epoch != admin.epoch {
+                return Err("no_challenge");
+            }
+            if failures >= MAX_AUTH_FAILURES {
+                return Err("bad_signature");
+            }
+            if last.is_some_and(|last| signed.sequence <= last) {
+                return Err("stale_sequence");
+            }
+            let signature = Signature::from_slice(&signed.signature).ok_or("bad_signature")?;
+            let key = PublicKey::from_slice(&admin.key).ok_or("bad_signature")?;
+            let mut preimage: Vec<u8, PREIMAGE_LEN> = Vec::new();
+            let built = preimage.extend_from_slice(AUTH_DOMAIN).is_ok()
+                && preimage.extend_from_slice(&nonce).is_ok()
+                && preimage
+                    .extend_from_slice(&signed.sequence.to_le_bytes())
+                    .is_ok()
+                && preimage.extend_from_slice(&signed.request_bytes).is_ok();
+            let verified = built && key.verify(&preimage, &signature).is_ok();
+            preimage.as_mut_slice().zeroize();
+            if verified {
+                Ok(())
+            } else {
+                Err("bad_signature")
+            }
+        })();
+        nonce.zeroize();
+        self.auth.lock(|auth| {
+            if let Some(entry) = auth
+                .borrow_mut()
+                .iter_mut()
+                .find(|entry| entry.session == link.session)
+            {
+                match result {
+                    Ok(()) => {
+                        entry.last = Some(signed.sequence);
+                        entry.failures = 0;
+                    }
+                    Err("bad_signature") => entry.failures = entry.failures.saturating_add(1),
+                    Err(_) => {}
+                }
+            }
+        });
+        result
+    }
+
+    #[inline(never)]
+    fn get_auth_challenge(&self, link: &LinkSecurity) -> Reply {
+        if !self.policy.accepts_signed(link) {
+            return error(pb::ErrorCode::NotSupported);
+        }
+        let mut nonce = [0u8; 32];
+        if !self.policy.fill_nonce(&mut nonce) {
+            diag::challenge_unavailable(link);
+            nonce.zeroize();
+            return error(pb::ErrorCode::Unavailable);
+        }
+        let admin = self.policy.admin_key();
+        let mut entry = SessionAuth {
+            session: link.session,
+            nonce,
+            epoch: admin.map_or(0, |admin| admin.epoch),
+            last: None,
+            failures: 0,
+        };
+        nonce.zeroize();
+        self.auth.lock(|auth| {
+            let mut auth = auth.borrow_mut();
+            if let Some(old) = auth.iter_mut().find(|old| old.session == link.session) {
+                entry.failures = old.failures;
+                *old = entry;
+                return;
+            }
+            if auth.is_full() {
+                auth.remove(0);
+            }
+            let _ = auth.push(entry);
+        });
+        let mut reply = pb::GetAuthChallengeResponse {
+            admin_key_enrolled: admin.is_some(),
+            ..Default::default()
+        };
+        self.auth.lock(|auth| {
+            if let Some(entry) = auth.borrow().iter().find(|e| e.session == link.session) {
+                let _ = reply.session_nonce.extend_from_slice(&entry.nonce);
+            }
+        });
+        Reply::GetAuthChallenge(reply)
     }
 
     // The privilege a stream was created with, when `link` is the session
@@ -264,6 +507,7 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             Call::ReadStream(request) => isolated(self.read_stream(request)).await,
             Call::CloseStream(request) => isolated(self.close_stream(request)).await,
             Call::TailLogs(request) => self.tail_logs(request),
+            Call::GetAuthChallenge(_) => self.get_auth_challenge(link),
         }
     }
 
@@ -749,6 +993,15 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             }
         }
     }
+}
+
+fn denied(reason: &'static str) -> Reply {
+    let mut out = pb::Error {
+        code: pb::ErrorCode::PermissionDenied,
+        ..Default::default()
+    };
+    out.set_reason(mapping::text(reason));
+    Reply::Error(out)
 }
 
 fn error(code: pb::ErrorCode) -> Reply {

@@ -32,7 +32,9 @@ use common::link;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use rohi::Device;
 use rohi::cli::{Cli, CliError, Ctx, Io, execute};
-use rohi_control::{Controller, Device as BackendDevice, DeviceInfo, OpenPolicy};
+use rohi_control::{
+    ControlAccess, ControlHub, Controller, Device as BackendDevice, DeviceInfo, OpenPolicy,
+};
 use rohi_control_ble::ControlBle;
 use rohi_logging::segment::SegmentDecoder;
 use rohi_logging::storage::{RamMedium, RingStorage};
@@ -226,11 +228,14 @@ async fn run_with(
     ctx.watch_limit = polls;
 
     let (client, device) = link(244);
+    let access = ControlAccess::new(|_| false);
+    let hub = ControlHub::<2>::with_access(&access);
     let controller = Controller::new(backend(bench), OpenPolicy);
-    let mut server = ControlBle::new(device, &controller);
+    let mut server = ControlBle::new(device, &hub);
     let command = cli.command;
     let result = tokio::select! {
         () = async { server.run().await } => unreachable!(),
+        never = hub.serve(&controller) => never,
         result = async {
             let mut device = Device::new(client);
             let background = async {
@@ -453,10 +458,13 @@ async fn the_tail_is_served_in_pages_of_at_most_512_bytes_and_continued_by_its_c
     let bench = Bench::new();
     bench.log(1, 40);
     let (client, device) = link(244);
+    let access = ControlAccess::new(|_| false);
+    let hub = ControlHub::<2>::with_access(&access);
     let controller = Controller::new(backend(&bench), OpenPolicy);
-    let mut server = ControlBle::new(device, &controller);
+    let mut server = ControlBle::new(device, &hub);
     let pages = tokio::select! {
         () = async { server.run().await } => unreachable!(),
+        never = hub.serve(&controller) => never,
         pages = async {
             let mut device = Device::new(client);
             let mut pages = Vec::new();

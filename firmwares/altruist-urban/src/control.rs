@@ -22,11 +22,14 @@
 //! control link (BLE on the ESP; BLE and/or TCP on `std`) -> rohi-control
 //!                                                              |
 //!                                             UrbanDevice (this module)
-//!                          config sections: wifi, network, ble, connectivity, location, time, logging
+//!                          config sections: wifi, network, ble, connectivity, location, time, logging,
+//!                                           control_tcp, control_ble
 //!                          status: wifi, network, ble, connectivity, location, time,
-//!                                  sensors, identity, logging, system
+//!                                  sensors, identity, logging, system,
+//!                                  control_tcp, control_ble, control_auth
 //!                          actions: wifi, identity, logging (read, download, clear),
-//!                                   system (reboot, factory_reset)
+//!                                   system (reboot, factory_reset),
+//!                                   control_auth (set_admin_key, clear_admin_key)
 //! ```
 //!
 //! The registries only talk to runtime handles; they never own a store, a flash
@@ -43,9 +46,17 @@
 //! `logging` service `L` of the platform; the link, its task, the log storage and
 //! the static storage of the services are the platform's.
 
+use core::cell::Cell;
+
+use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::Delay;
-use rohi_sdk::control::{Device, DeviceInfo};
+use rohi_sdk::control::{ControlAccess, Device, DeviceInfo};
 use rohi_sdk::crash::Report;
+use rohi_sdk::endpoints::{
+    AdminKeySection, AdminKeyStore, AdminKeyStoreError, ControlAuthService, ControlBleService,
+    ControlTcpService,
+};
 use rohi_sdk::identity::{Identity, IdentityService, IdentityStore, IdentityStoreError, PublicKey};
 use rohi_sdk::location::LocationService;
 use rohi_sdk::net::{BleProbe, BleService, IpBackend, NetworkHandle, NetworkService, WifiService};
@@ -90,6 +101,60 @@ fn identity_error(error: ConfigError) -> IdentityStoreError {
     }
 }
 
+/// The access state of the control plane: the mode of every transport, the
+/// administrator key and the counters of the endpoints. The configuration owner
+/// publishes into it, the control worker reads it, and the endpoint services
+/// report it.
+pub static ACCESS: ControlAccess = ControlAccess::new(access_entropy);
+
+/// The random source of the authorization challenges, set by the platform
+/// before the control plane starts. Without one every challenge fails closed.
+type EntropySource = fn(&mut [u8]) -> bool;
+
+static ENTROPY: BlockingMutex<CriticalSectionRawMutex, Cell<Option<EntropySource>>> =
+    BlockingMutex::new(Cell::new(None));
+
+fn access_entropy(dst: &mut [u8]) -> bool {
+    ENTROPY.lock(Cell::get).is_some_and(|source| source(dst))
+}
+
+/// The access state of the control plane, see [`ACCESS`].
+pub fn access() -> &'static ControlAccess {
+    &ACCESS
+}
+
+/// Sets the cryptographic random source of the authorization challenges. It
+/// must return `false` rather than weak bytes.
+pub fn set_access_entropy(source: fn(&mut [u8]) -> bool) {
+    ENTROPY.lock(|cell| cell.set(Some(source)));
+}
+
+/// The administrator key section behind the configuration owner task.
+pub struct StoredAdminKey(ConfigHandle);
+
+impl AdminKeyStore for StoredAdminKey {
+    async fn store(&self, key: PublicKey) -> Result<(), AdminKeyStoreError> {
+        self.0
+            .set(&AdminKeySection::new(key))
+            .await
+            .map_err(admin_key_error)
+    }
+
+    async fn erase(&self) -> Result<(), AdminKeyStoreError> {
+        self.0
+            .remove::<AdminKeySection>()
+            .await
+            .map_err(admin_key_error)
+    }
+}
+
+fn admin_key_error(error: ConfigError) -> AdminKeyStoreError {
+    match error {
+        ConfigError::Unavailable(_) => AdminKeyStoreError::Unavailable,
+        _ => AdminKeyStoreError::Internal,
+    }
+}
+
 /// The config sections of the device plus the factory reset of the storage
 /// behind them.
 pub type UrbanConfig = StorageConfig<ConfigSections>;
@@ -106,6 +171,9 @@ type UrbanLocation = LocationService<'static, RawMutex>;
 type UrbanSensors = SensorsService<'static, RawMutex>;
 type UrbanIdentity = IdentityService<StoredIdentity>;
 type UrbanSystem = SystemService<UrbanSystemPlatform>;
+type UrbanControlTcp = ControlTcpService<'static>;
+type UrbanControlBle = ControlBleService<'static>;
+type UrbanControlAuth = ControlAuthService<'static, StoredAdminKey>;
 type UrbanTelemetry = telemetry::UrbanTelemetry;
 
 /// What the `system` service needs from the Altruist Urban: the deferred reboot
@@ -161,6 +229,9 @@ pub struct UrbanServices<I: 'static, B, L> {
     telemetry: UrbanTelemetry,
     logging: L,
     system: UrbanSystem,
+    control_tcp: UrbanControlTcp,
+    control_ble: UrbanControlBle,
+    control_auth: UrbanControlAuth,
 }
 
 /// The services that report status. The `time` service is the time runtime
@@ -177,6 +248,9 @@ pub type UrbanStatusServices<I, B, L> = (
     &'static UrbanTelemetry,
     &'static L,
     &'static UrbanSystem,
+    &'static UrbanControlTcp,
+    &'static UrbanControlBle,
+    &'static UrbanControlAuth,
 );
 
 /// The status registry of the device.
@@ -190,6 +264,7 @@ pub type UrbanActions<I, L> = (
     &'static UrbanConnectivity,
     &'static L,
     &'static UrbanSystem,
+    &'static UrbanControlAuth,
 );
 
 /// The control backend of the Altruist Urban over the IP backend `I` and the
@@ -285,6 +360,9 @@ where
             reboot: reboot_fn,
             boot_report,
         }),
+        control_tcp: ControlTcpService::new(&ACCESS),
+        control_ble: ControlBleService::new(&ACCESS),
+        control_auth: ControlAuthService::new(&ACCESS, StoredAdminKey(config)),
     });
     Device::new(
         info,
@@ -302,6 +380,9 @@ where
             &services.telemetry,
             &services.logging,
             &services.system,
+            &services.control_tcp,
+            &services.control_ble,
+            &services.control_auth,
         )),
         (
             &services.wifi,
@@ -310,6 +391,7 @@ where
             &services.connectivity,
             &services.logging,
             &services.system,
+            &services.control_auth,
         ),
     )
 }
@@ -326,12 +408,18 @@ pub const GATT: rohi_sdk::net::BleGattSpec = rohi_sdk::net::BleGattSpec {
 pub const BLE_CONFIG: rohi_sdk::net::BleConfig = rohi_sdk::net::BleConfig {
     name_prefix: "ALTRUIST-URBAN",
     name: None,
+    pairing: false,
     gatt: GATT,
 };
 
 /// [`BLE_CONFIG`] with the name of the `ble` section as the configuration
 /// owner published it at boot: the defaults, the firmware overrides and the
-/// stored overrides. The name is read once, when the peripheral starts.
+/// stored overrides, and with pairing when `control_ble` is restricted. Both are
+/// read once, when the peripheral starts.
 pub fn ble_config() -> rohi_sdk::net::BleConfig {
-    BLE_CONFIG.with_settings(&crate::bindings::ble_settings())
+    let restricted = access().mode(rohi_sdk::control::Transport::Ble)
+        == rohi_sdk::control::TransportAccessMode::Restricted;
+    BLE_CONFIG
+        .with_settings(&crate::bindings::ble_settings())
+        .with_pairing(restricted)
 }

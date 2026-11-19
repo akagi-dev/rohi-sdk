@@ -33,7 +33,10 @@ use rohi::{ClientTransport, Device, Error};
 use rohi_config::{Text, Variant};
 pub mod sample;
 
-use rohi_control::{ControlBackend, Controller, Device as BackendDevice, DeviceInfo, OpenPolicy};
+use rohi_control::{
+    ControlAccess, ControlBackend, ControlHub, Controller, Device as BackendDevice, DeviceInfo,
+    OpenPolicy,
+};
 use rohi_control_ble::ControlBle;
 use rohi_identity::{Identity, IdentityService, IdentityStore, IdentityStoreError, PublicKey};
 use rohi_location::LocationConfig;
@@ -611,10 +614,13 @@ where
     Fut: std::future::Future<Output = ()>,
 {
     let (client, device) = link(payload);
+    let access = ControlAccess::new(|_| false);
+    let hub = ControlHub::<1>::with_access(&access);
     let controller = Controller::new(backend(bench), OpenPolicy);
-    let mut server = ControlBle::new(device, &controller);
+    let mut server = ControlBle::new(device, &hub);
     tokio::select! {
         () = async { server.run().await } => unreachable!(),
+        never = hub.serve(&controller) => never,
         () = script(Device::new(client)) => {}
     }
 }

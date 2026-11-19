@@ -72,7 +72,7 @@
 //! let Some(Reply::Error(error)) = denied.response else { panic!() };
 //! assert_eq!(error.code, pb::ErrorCode::PermissionDenied);
 //!
-//! let encrypted = LinkSecurity { encrypted: true, authenticated: false, session: 0 };
+//! let encrypted = LinkSecurity { encrypted: true, ..Default::default() };
 //! let unknown = ask(reset(), &encrypted);
 //! let Some(Reply::Error(error)) = unknown.response else { panic!() };
 //! assert_eq!(error.code, pb::ErrorCode::NotFound);
@@ -86,6 +86,8 @@
 //! | [`ControlBackend`] | what the firmware provides: [`DeviceInfo`], uptime, the config, status and action registries, device health |
 //! | [`Device`] | a [`ControlBackend`] built from its parts (the usual way to make one) |
 //! | [`AuthorizationPolicy`] | maps a [`Privilege`] and the [`LinkSecurity`] of the transport to allow/deny |
+//! | [`ControlHub`] | the bounded mailbox between the transport frontends and the one worker that owns the [`Controller`] |
+//! | [`ControlAccess`], [`AccessPolicy`] | the access mode of each transport, the administrator key and the endpoint counters; the policy that enforces them |
 //!
 //! ## Operations and privileges
 //!
@@ -100,7 +102,11 @@
 //! | `ReadStream`, `CloseStream` | `ActionRegistry` | that of the action that created the stream |
 //! | `TailLogs` | `ActionRegistry` (`Action::tail_logs`) | `Read`; one request, one bounded reply, no stream |
 //!
-//! The three built-in policies are [`OpenPolicy`] (everything),
+//! [`AccessPolicy`] is the policy of a device: it reads the [`TransportAccessMode`] of
+//! the [`Transport`] a request arrived on. `Restricted` TCP wants a valid signature of
+//! the administrator key ([`RequestAuthorization::VerifiedAdmin`], decided by the
+//! controller and never taken from a transport), `Restricted` BLE an encrypted link.
+//! The three simple policies are [`OpenPolicy`] (everything),
 //! [`RequireEncryption`] (reads are open, anything else needs an encrypted
 //! link) and [`RequireAuthenticated`] (anything but reads needs an encrypted
 //! and authenticated link). They treat `Provision` like `Mutate`; a custom
@@ -114,10 +120,26 @@
 //! and carries that action's privilege. `ReadStream` and `CloseStream` from
 //! another session are answered `NotFound`, as if the stream did not exist,
 //! and the policy is applied with the privilege of the creating action.
-//! [`Controller::link_lost`] forgets every owner and makes the services
-//! release their streams. A transport must give each connection its own
-//! `session` (BLE uses the connection epoch) and call `link_lost` when a
-//! connection ends; a transport that never has two clients may keep 0.
+//! [`Controller::session_closed`] closes only the streams of one session and
+//! forgets its challenge; [`Controller::link_lost`] is the same for every session.
+//! A [`ControlHub`] gives each connection a session that is unique across
+//! transports and ends it with the connection; a caller that uses
+//! [`Controller::handle`] directly gives each connection its own `session`.
+//!
+//! ## Signed requests
+//!
+//! A client of an endpoint that [accepts them](AuthorizationPolicy::accepts_signed) asks for
+//! `GetAuthChallenge` (a fresh 32-byte nonce for its session) and wraps a privileged request
+//! in a `SignedRequest`: an Ed25519 signature over
+//! `"rohi-control-auth-v1" || nonce || sequence_le_u64 || request_bytes`, strictly increasing
+//! sequence, the inner request carrying the id of the wrapper. The controller checks, in this
+//! order, the key and the challenge, the sequence, the signature, the inner request (a signed
+//! or challenge request inside is refused), advances the sequence and only then dispatches the
+//! request with [`RequestAuthorization::VerifiedAdmin`]. Every refusal is `PermissionDenied`
+//! with a reason (`no_admin_key`, `no_challenge`, `stale_sequence`, `bad_signature`, `nested`,
+//! `not_supported`); a connection that fails repeatedly is refused without more checks. A
+//! signature protects one request: no confidentiality, no authentication of the device, and
+//! `LinkSecurity::authenticated` is never set by it.
 //!
 //! ## Errors on the wire
 //!
@@ -168,6 +190,10 @@
 //!
 //! # Guarantees and Limitations
 //!
+//! * **One worker, one request at a time.** With a [`ControlHub`] every transport hands its
+//!   requests to the single task that runs [`ControlHub::serve`], so Config, Status, Actions
+//!   and streams of all transports are serialized: a long action delays the requests of the
+//!   other connections. A connection has one request in flight and a full hub answers `Busy`.
 //! * **One response per request, no allocation.** The request and the response
 //!   are caller-owned slices; the dispatcher keeps no state between requests
 //!   except the owners of the open streams ([`MAX_OPEN_STREAMS`]).
@@ -194,25 +220,34 @@
 //! * **Authorization is only as strong as the link.** The policy trusts the
 //!   [`LinkSecurity`] the transport reports; the transport is responsible for
 //!   it being true.
-//! * **Not here.** Pairing, encryption, framing and fragmentation (see
+//! * **Not here.** Pairing, encryption (the transports request and report them), framing and fragmentation (see
 //!   [`rohi-control-ble`](../rohi_control_ble/index.html)), and any device
 //!   logic.
 
 #[cfg(test)]
 extern crate std;
 
+mod access;
 mod backend;
 mod controller;
 mod diag;
+mod hub;
 mod mapping;
 mod policy;
 
 #[cfg(test)]
+mod hub_tests;
+#[cfg(test)]
 mod tests;
 
+pub use access::{
+    AccessPolicy, ControlAccess, EndpointSettings, EndpointState, EndpointStats,
+    TransportAccessMode,
+};
 pub use backend::{ControlBackend, Device, DeviceInfo};
-pub use controller::{Controller, MAX_OPEN_STREAMS};
+pub use controller::{Controller, MAX_AUTH_SESSIONS, MAX_OPEN_STREAMS};
+pub use hub::{Busy, Connection, ControlHub, MAX_SESSIONS, Reservation, Response, SessionId};
 pub use policy::{
-    AuthorizationPolicy, LinkSecurity, OpenPolicy, Privilege, RequireAuthenticated,
-    RequireEncryption,
+    AdminKey, AuthorizationPolicy, LinkSecurity, OpenPolicy, Privilege, RequestAuthorization,
+    RequireAuthenticated, RequireEncryption, Transport,
 };

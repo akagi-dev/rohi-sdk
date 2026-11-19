@@ -55,6 +55,10 @@ message Request {
     ReadStreamRequest read_stream = 23;
     CloseStreamRequest close_stream = 24;
     TailLogsRequest tail_logs = 25;
+    // Request authorization, see "Request authorization" below. Not generated in
+    // the Rust `Request`: use `SignedEnvelope`.
+    GetAuthChallengeRequest get_auth_challenge = 26;
+    SignedRequest signed_request = 27;
   }
 }
 
@@ -84,6 +88,7 @@ message Response {
     // instead of `invoke_action`, never both.
     StreamInfo action_stream = 25;
     TailLogsResponse tail_logs = 26;
+    GetAuthChallengeResponse get_auth_challenge = 27;
   }
 }
 
@@ -111,6 +116,15 @@ enum ErrorCode {
   ERROR_CODE_REJECTED = 8;
 }
 
+// A `PERMISSION_DENIED` error may carry one of these stable reasons:
+//   auth_required   a privileged request on a restricted endpoint was unsigned
+//   no_admin_key    the endpoint is restricted and no administrator key is enrolled
+//   no_challenge    a signed request without a challenge of this connection
+//   bad_signature   the signature or its framing is invalid
+//   stale_sequence  the sequence is not greater than the last accepted one
+//   nested          a signed request carried a signed or challenge request
+//   not_supported   signed requests are not accepted on this transport
+//   pairing_required a privileged request on a restricted BLE endpoint needs an encrypted link
 message Error {
   ErrorCode code = 1;
   // Stable machine-readable reason, set with `ERROR_CODE_REJECTED`.
@@ -693,4 +707,52 @@ message TailLogsResponse {
   // the device had already overwritten; 0 when there is no gap.
   uint64 gap = 6;
   bytes data = 7;
+}
+
+// ---------------------------------------------------------------------------
+// Request authorization (restricted TCP endpoints)
+// ---------------------------------------------------------------------------
+//
+// A privileged request (mutate or provision) on a restricted TCP endpoint is
+// wrapped in a `SignedRequest`. The signature is Ed25519 by the one trusted
+// administrator key over the preimage
+//
+//   "rohi-control-auth-v1" || session_nonce[32] || sequence_le_u64[8] || request_bytes
+//
+// where `session_nonce` is the one returned by `GetAuthChallenge` on the same
+// connection and `request_bytes` are the exact bytes of one encoded `Request`
+// (never itself a `SignedRequest` or a `GetAuthChallenge`). The inner request
+// must carry the `request_id` of the outer one. The response is the ordinary
+// response to the inner request, with that id. A signature protects one
+// request. It gives neither confidentiality nor authentication of the device.
+
+// Asks for a fresh nonce for this connection. Invalidates the previous nonce
+// and sequence of the connection.
+message GetAuthChallengeRequest {}
+
+message GetAuthChallengeResponse {
+  // 32 unpredictable bytes, valid for this connection until the next challenge.
+  bytes session_nonce = 1;
+  // `false` when no administrator key is enrolled: signing cannot succeed.
+  bool admin_key_enrolled = 2;
+}
+
+message SignedRequest {
+  // Strictly greater than the last accepted sequence of the connection.
+  uint64 sequence = 1;
+  // Exactly one encoded `Request`.
+  bytes request_bytes = 2;
+  // Ed25519 signature, 64 bytes.
+  bytes signature = 3;
+}
+
+// The same bytes as a `Request` whose oneof is `signed_request`. Device and
+// client code generated from this schema keep the signed wrapper out of the
+// in-memory `Request` (its `signed_request` field is not generated there), so a
+// plain `Request` stays small; a signed request is built and parsed as this
+// message. On the wire the two are indistinguishable.
+message SignedEnvelope {
+  uint32 protocol_version = 1;
+  uint32 request_id = 2;
+  SignedRequest signed_request = 27;
 }
