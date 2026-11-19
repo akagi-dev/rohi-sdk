@@ -46,6 +46,11 @@ max_growth = 768
 reason = "the log task poll now writes the boot records of the previous crash (Backends::boot_record)"
 
 [[regression.approved_frame_growth]]
+symbol = "altruist_urban::esp::control::__ble_task_task"
+max_growth = 2300
+reason = "accepted frame growth for the BLE control task"
+
+[[regression.approved_frame_growth]]
 symbol = "rust_begin_unwind"
 max_growth = 640
 reason = "the panic handler now stores the crash in the retained slot (rohi_crash_esp::on_panic)"
