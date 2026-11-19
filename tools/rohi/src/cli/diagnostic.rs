@@ -311,20 +311,14 @@ fn device_diagnostic(error: &Error) -> Diagnostic {
 fn unauthorized_diagnostic(reason: &str) -> Diagnostic {
     let diagnostic = Diagnostic::new(format!("the device refused the request: {reason}"));
     match reason {
-        "auth_required" => diagnostic
-            .hint("this endpoint is restricted: changes must be signed by the administrator key")
-            .hint("pass --admin-key FILE (create one with `rohi admin keygen FILE`)"),
-        "no_admin_key" => diagnostic
-            .hint("no administrator key is enrolled, so a restricted TCP endpoint refuses every change")
-            .hint("enroll one over an open endpoint (BLE by default, or start the std device with --control-open): `rohi --admin-key FILE admin enroll`"),
-        "no_challenge" => diagnostic.hint("the key was replaced or removed on the device; try again"),
-        "bad_signature" => diagnostic
-            .hint("the device trusts another key than the one in --admin-key")
-            .hint("after too many bad signatures a connection is refused until it is reopened"),
-        "stale_sequence" => diagnostic.hint("a request was replayed or reordered; reconnect and try again"),
+        "no_psk" => diagnostic
+            .hint("no TCP key is provisioned, so a restricted TCP endpoint serves nobody")
+            .hint("provision one over a protected link (the paired BLE link): `rohi --psk-file FILE tcp-key set`"),
+        "encryption_required" => diagnostic
+            .hint("this request needs an encrypted and authenticated link")
+            .hint("connect to a restricted TCP endpoint with the key: `--psk-file FILE`"),
         "pairing_required" => diagnostic
-            .hint("this BLE endpoint is restricted: pair with the device first (an encrypted link)"),
-        "not_supported" => diagnostic.hint("this transport takes no signed requests"),
+            .hint("this BLE endpoint is restricted or the request carries a secret: pair with the device first (an encrypted link)"),
         _ => diagnostic,
     }
 }

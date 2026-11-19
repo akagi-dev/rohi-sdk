@@ -94,8 +94,8 @@ use rohi_sdk::service::{
 };
 
 use crate::bindings::{
-    AdminKeyBinding, Binding, BleBinding, ConfigRuntime, ControlBleBinding, ControlTcpBinding,
-    IdentityBinding, LocationBinding, LoggingBinding, NetworkBinding, PrivateBinding, TimeBinding,
+    Binding, BleBinding, ConfigRuntime, ControlBleBinding, ControlTcpBinding, IdentityBinding,
+    LocationBinding, LoggingBinding, NetworkBinding, PrivateBinding, TcpPskBinding, TimeBinding,
     WifiBinding,
 };
 use crate::connectivity::ConnectivityBinding;
@@ -943,5 +943,5 @@ fn effective<C: HasOverrides + Default>(
 crate::firmware_configs! {
     managed WifiBinding, NetworkBinding, BleBinding, LocationBinding, TimeBinding, LoggingBinding,
         ControlTcpBinding, ControlBleBinding;
-    private IdentityBinding, TelemetryBinding, ConnectivityBinding, AdminKeyBinding
+    private IdentityBinding, TelemetryBinding, ConnectivityBinding, TcpPskBinding
 }

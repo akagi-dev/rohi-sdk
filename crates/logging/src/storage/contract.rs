@@ -28,7 +28,7 @@ use embassy_futures::block_on;
 use rohi_time::UnixTime;
 
 use super::*;
-use crate::segment::{Batch, MAX_CHUNK_LEN, SegmentDecoder, payload_suffix};
+use crate::segment::{Batch, SegmentDecoder, payload_suffix, scratch};
 use crate::{LogLevel, LogRecord};
 
 /// How a backend is created and restarted for the contract.
@@ -116,9 +116,9 @@ impl Writer {
         if self.batch.is_empty() {
             return Ok(());
         }
-        let mut chunk = [0u8; MAX_CHUNK_LEN];
-        let len = self.batch.encode(self.codec, &mut chunk).unwrap();
-        if storage.open_capacity() < len {
+        let mut scratch = scratch();
+        let chunk = self.batch.encode(self.codec, &mut scratch).unwrap();
+        if storage.open_capacity() < chunk.len() {
             block_on(storage.seal())?;
             block_on(storage.begin_segment(self.codec, self.limits))?;
         }
@@ -128,7 +128,7 @@ impl Writer {
             last_sequence: self.batch.last_sequence(),
             raw_len: self.batch.len() as u32,
         };
-        block_on(storage.append(&chunk[..len], meta))?;
+        block_on(storage.append(chunk, meta))?;
         self.durable = meta.last_sequence;
         self.batch.clear();
         Ok(())
@@ -188,7 +188,7 @@ pub(crate) fn assert_contiguous(records: &[LogRecord]) {
 
 pub(crate) fn appended_records_read_back<H: Harness>() {
     let mut storage = H::create();
-    for codec in [Compression::None, Compression::Lz4] {
+    for &codec in crate::TEST_CODECS {
         block_on(storage.clear()).unwrap();
         let mut writer = Writer::new(1, codec, LIMITS);
         writer.push_many(&mut storage, 60).unwrap();
@@ -209,7 +209,7 @@ pub(crate) fn appended_records_read_back<H: Harness>() {
 
 pub(crate) fn reading_past_the_end_returns_nothing<H: Harness>() {
     let mut storage = H::create();
-    let mut writer = Writer::new(1, Compression::Lz4, LIMITS);
+    let mut writer = Writer::new(1, crate::DEFAULT_COMPRESSION, LIMITS);
     writer.push_many(&mut storage, 10).unwrap();
     writer.flush(&mut storage).unwrap();
     block_on(storage.seal()).unwrap();
@@ -229,7 +229,7 @@ pub(crate) fn reading_past_the_end_returns_nothing<H: Harness>() {
     );
     // The file ends with the end mark of the frame.
     let file = read_file(&mut storage, &info, 7);
-    assert!(file.ends_with(payload_suffix(Compression::Lz4)));
+    assert!(file.ends_with(payload_suffix(crate::DEFAULT_COMPRESSION)));
     // A read straddling the stored bytes and the end mark.
     let mut tail = [0u8; 8];
     let n = block_on(storage.read(info.id, info.file_len - 6, &mut tail)).unwrap();
@@ -240,7 +240,7 @@ pub(crate) fn segments_rotate_and_stay_contiguous<H: Harness>() {
     let mut storage = H::create();
     let mut writer = Writer::new(
         1,
-        Compression::Lz4,
+        crate::DEFAULT_COMPRESSION,
         Limits {
             segment_bytes: 4096,
             retention_bytes: H::CAPACITY,
@@ -263,7 +263,7 @@ pub(crate) fn segments_rotate_and_stay_contiguous<H: Harness>() {
 
 pub(crate) fn retention_drops_the_oldest_segments<H: Harness>() {
     let mut storage = H::create();
-    let mut writer = Writer::new(1, Compression::Lz4, LIMITS);
+    let mut writer = Writer::new(1, crate::DEFAULT_COMPRESSION, LIMITS);
     let mut oldest = 0;
     for _ in 0..40 {
         writer.push_many(&mut storage, 100).unwrap();
@@ -287,7 +287,7 @@ pub(crate) fn retention_drops_the_oldest_segments<H: Harness>() {
 
 pub(crate) fn a_pinned_segment_is_kept_and_blocks_eviction<H: Harness>() {
     let mut storage = H::create();
-    let mut writer = Writer::new(1, Compression::Lz4, LIMITS);
+    let mut writer = Writer::new(1, crate::DEFAULT_COMPRESSION, LIMITS);
     writer.push_many(&mut storage, 300).unwrap();
     writer.flush(&mut storage).unwrap();
     let oldest = block_on(storage.segments()).unwrap()[0];
@@ -315,7 +315,7 @@ pub(crate) fn a_pinned_segment_is_kept_and_blocks_eviction<H: Harness>() {
     writer.flush(&mut storage).unwrap_or(());
     // Room again: the oldest is dropped.
     block_on(storage.seal()).unwrap();
-    block_on(storage.begin_segment(Compression::Lz4, LIMITS)).unwrap();
+    block_on(storage.begin_segment(crate::DEFAULT_COMPRESSION, LIMITS)).unwrap();
     let after = block_on(storage.segments()).unwrap();
     assert_ne!(after[0].id, oldest.id);
 }
@@ -339,7 +339,7 @@ pub(crate) fn pins_count<H: Harness>() {
 
 pub(crate) fn clear_removes_everything_and_the_storage_keeps_working<H: Harness>() {
     let mut storage = H::create();
-    let mut writer = Writer::new(1, Compression::Lz4, LIMITS);
+    let mut writer = Writer::new(1, crate::DEFAULT_COMPRESSION, LIMITS);
     writer.push_many(&mut storage, 300).unwrap();
     writer.flush(&mut storage).unwrap();
     block_on(storage.clear()).unwrap();
@@ -350,7 +350,7 @@ pub(crate) fn clear_removes_everything_and_the_storage_keeps_working<H: Harness>
     assert_eq!(storage.open_capacity(), 0);
     assert!(block_on(storage.segments()).unwrap().is_empty());
 
-    let mut writer = Writer::new(301, Compression::Lz4, LIMITS);
+    let mut writer = Writer::new(301, crate::DEFAULT_COMPRESSION, LIMITS);
     writer.push_many(&mut storage, 50).unwrap();
     writer.flush(&mut storage).unwrap();
     let records = all_records(&mut storage);
@@ -371,7 +371,7 @@ pub(crate) fn stats_report_space<H: Harness>() {
     assert!(initial.capacity_bytes > 0 && initial.capacity_bytes <= H::CAPACITY);
     assert_eq!(initial.free_bytes, initial.capacity_bytes);
 
-    let mut writer = Writer::new(1, Compression::Lz4, LIMITS);
+    let mut writer = Writer::new(1, crate::DEFAULT_COMPRESSION, LIMITS);
     writer.push_many(&mut storage, 5).unwrap();
     writer.flush(&mut storage).unwrap();
     let stats = block_on(storage.stats()).unwrap();
@@ -401,14 +401,14 @@ pub(crate) fn every_segment_keeps_its_own_codec<H: Harness>() {
     writer.flush(&mut storage).unwrap();
     // A codec change applies to the next segment only.
     block_on(storage.seal()).unwrap();
-    writer.codec = Compression::Lz4;
-    block_on(storage.begin_segment(Compression::Lz4, LIMITS)).unwrap();
+    writer.codec = crate::DEFAULT_COMPRESSION;
+    block_on(storage.begin_segment(crate::DEFAULT_COMPRESSION, LIMITS)).unwrap();
     writer.push_many(&mut storage, 30).unwrap();
     writer.flush(&mut storage).unwrap();
     let infos = block_on(storage.segments()).unwrap();
     assert_eq!(
         infos.iter().map(|i| i.codec).collect::<Vec<_>>(),
-        [Compression::None, Compression::Lz4]
+        [Compression::None, crate::DEFAULT_COMPRESSION]
     );
     let records = all_records(&mut storage);
     assert_eq!(records.len(), 60);
@@ -430,7 +430,7 @@ pub(crate) fn empty_and_oversized_appends_are_handled<H: Harness>() {
     assert_eq!(block_on(storage.seal()), Ok(()));
 
     // A segment without records is not kept.
-    block_on(storage.begin_segment(Compression::Lz4, LIMITS)).unwrap();
+    block_on(storage.begin_segment(crate::DEFAULT_COMPRESSION, LIMITS)).unwrap();
     assert!(storage.open_capacity() > 0);
     block_on(storage.seal()).unwrap();
     assert!(block_on(storage.segments()).unwrap().is_empty());
@@ -447,7 +447,7 @@ pub(crate) fn empty_and_oversized_appends_are_handled<H: Harness>() {
     // Limits the medium cannot meet.
     assert_eq!(
         block_on(storage.begin_segment(
-            Compression::Lz4,
+            crate::DEFAULT_COMPRESSION,
             Limits {
                 segment_bytes: 4096,
                 retention_bytes: 100
@@ -457,7 +457,7 @@ pub(crate) fn empty_and_oversized_appends_are_handled<H: Harness>() {
     );
     assert_eq!(
         block_on(storage.begin_segment(
-            Compression::Lz4,
+            crate::DEFAULT_COMPRESSION,
             Limits {
                 segment_bytes: H::CAPACITY * 2,
                 retention_bytes: H::CAPACITY * 2
@@ -469,7 +469,7 @@ pub(crate) fn empty_and_oversized_appends_are_handled<H: Harness>() {
 
 pub(crate) fn the_history_survives_a_restart<H: Harness>() {
     let mut storage = H::create();
-    let mut writer = Writer::new(1, Compression::Lz4, LIMITS);
+    let mut writer = Writer::new(1, crate::DEFAULT_COMPRESSION, LIMITS);
     writer.push_many(&mut storage, 500).unwrap();
     writer.flush(&mut storage).unwrap();
     let before = all_records(&mut storage);
@@ -490,7 +490,7 @@ pub(crate) fn the_history_survives_a_restart<H: Harness>() {
     );
 
     // Writing goes on in a new segment, and the sequence goes on.
-    let mut writer = Writer::new(501, Compression::Lz4, LIMITS);
+    let mut writer = Writer::new(501, crate::DEFAULT_COMPRESSION, LIMITS);
     writer.push_many(&mut storage, 50).unwrap();
     writer.flush(&mut storage).unwrap();
     let records = all_records(&mut storage);

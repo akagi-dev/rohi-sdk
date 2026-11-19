@@ -85,8 +85,8 @@ mod sensors_source {
         rohi_sensors::PulseCount
     );
 
-    fn put<T: AsNumber, const N: usize>(
-        writer: &mut SourceWriter<'_, N>,
+    fn put<T: AsNumber, const N: usize, const SRC: usize>(
+        writer: &mut SourceWriter<'_, N, SRC>,
         id: MeasurementId,
         measurement: &Measurement<T>,
     ) {
@@ -104,9 +104,9 @@ mod sensors_source {
             self.id
         }
 
-        async fn collect<const N: usize>(
+        async fn collect<const N: usize, const SRC: usize>(
             &mut self,
-            writer: &mut SourceWriter<'_, N>,
+            writer: &mut SourceWriter<'_, N, SRC>,
         ) -> Result<(), SourceError> {
             let snapshot = self
                 .handle
@@ -186,9 +186,9 @@ mod location_source {
             SourceId::LOCATION
         }
 
-        async fn collect<const N: usize>(
+        async fn collect<const N: usize, const SRC: usize>(
             &mut self,
-            writer: &mut SourceWriter<'_, N>,
+            writer: &mut SourceWriter<'_, N, SRC>,
         ) -> Result<(), SourceError> {
             let location = self.location.location().ok_or(SourceError::Unavailable)?;
             let point = GeoPoint {
@@ -236,11 +236,14 @@ mod tests {
         }
     }
 
-    fn collect(store: &MeasurementStore, now: u64) -> TelemetrySnapshot<16> {
+    fn collect(store: &MeasurementStore, now: u64) -> TelemetrySnapshot<16, 8> {
         collect_n(store, now)
     }
 
-    fn collect_n<const N: usize>(store: &MeasurementStore, now: u64) -> TelemetrySnapshot<N> {
+    fn collect_n<const N: usize, const SRC: usize>(
+        store: &MeasurementStore,
+        now: u64,
+    ) -> TelemetrySnapshot<N, SRC> {
         let service = MeasurementService::<NoopRawMutex>::new();
         let mut source = SensorsTelemetrySource::new(service.handle());
         let mut snapshot = TelemetrySnapshot::new(MonotonicTimestamp::from_millis(now));
@@ -312,7 +315,7 @@ mod tests {
         // sensors only must be possible, and a snapshot sized by the catalog
         // never overflows.
         let snapshot =
-            collect_n::<{ crate::catalog::CATALOG.len() }>(&every_sensor_active(), 2_000);
+            collect_n::<{ crate::catalog::CATALOG.len() }, 8>(&every_sensor_active(), 2_000);
         assert_eq!(
             snapshot.observations.len(),
             crate::catalog::CATALOG.len() - 1
@@ -331,10 +334,56 @@ mod tests {
     }
 
     #[test]
+    fn a_snapshot_sized_for_the_packaged_measurements_keeps_a_source_that_reports_more() {
+        use crate::catalog::*;
+        // What a packet format can encode: 7 of the 17 sensor measurements, and the location.
+        let packaged = [
+            LOCATION,
+            BMX280_TEMPERATURE,
+            BMX280_HUMIDITY,
+            BMX280_PRESSURE,
+            SDS011_PM2_5,
+            SDS011_PM10,
+            MICROPHONE_AVERAGE,
+            MICROPHONE_MAXIMUM,
+        ];
+        let accepted = packaged
+            .iter()
+            .fold(crate::Selection::NONE, |selection, id| selection.with(*id));
+        let store = every_sensor_active();
+        let service = MeasurementService::<NoopRawMutex>::new();
+        let mut source = SensorsTelemetrySource::new(service.handle());
+        let mut snapshot =
+            TelemetrySnapshot::<8, 2>::accepting(MonotonicTimestamp::from_millis(2_000), accepted);
+        let serve = async {
+            service
+                .accept()
+                .await
+                .respond(store.snapshot(Clk(2_000).now()));
+        };
+        block_on(join(
+            collect_one(&mut source, &mut NeverDelay, 100, &mut snapshot),
+            serve,
+        ));
+        let report = snapshot.diagnostics.of(SourceId::LOCAL).unwrap();
+        assert_eq!(
+            report.outcome,
+            crate::snapshot::SourceOutcome::Collected,
+            "{report:?}"
+        );
+        assert_eq!(
+            snapshot.observations.len(),
+            packaged.len() - 1,
+            "every packaged sensor measurement"
+        );
+        assert!(snapshot.diagnostics.is_clean());
+    }
+
+    #[test]
     fn a_snapshot_that_is_too_small_is_reported_as_a_discarded_source() {
         // The failure mode the capacity must prevent: all 17 values do not fit
         // 16 slots, so the whole source is discarded and says why.
-        let snapshot = collect_n::<16>(&every_sensor_active(), 2_000);
+        let snapshot = collect_n::<16, 8>(&every_sensor_active(), 2_000);
         assert!(snapshot.observations.is_empty());
         assert_eq!(
             snapshot.diagnostics.of(SourceId::LOCAL).unwrap().outcome,

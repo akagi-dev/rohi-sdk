@@ -68,22 +68,18 @@ use crate::profile::{
 use crate::section::ProfileStamp;
 use crate::selection::{DataSelection, Selection};
 
-/// Profiles the device keeps. A budget goal, checked by tests against the
-/// section limit; raise it only with measurements on both chips.
-pub const MAX_PROFILES: usize = 3;
-/// Private recipients per profile, see [`MAX_PROFILES`].
-pub const MAX_RECIPIENTS: usize = 2;
-
-/// The effective packet profiles of the device.
-pub type ProfileSet = TelemetryConfig<MAX_PROFILES, MAX_RECIPIENTS>;
-
-/// The persisted section: all packet profiles. Bumping `version` is a storage
-/// ABI change and an unreadable or obsolete section is never defaulted to
-/// publishing anything.
+/// The persisted section: all packet profiles of a device that keeps up to `PROFILES`
+/// profiles of up to `RECIPIENTS` private recipients each (a const parameter chosen by the
+/// firmware; Altruist Urban: 2 and 1). The capacity is the type, so it is also the storage and
+/// a stored section over capacity does not decode: it is refused, never truncated. Bumping
+/// `version` is a storage ABI change and an unreadable or obsolete section is never defaulted
+/// to publishing anything.
 #[derive(Clone, Debug, PartialEq, Eq, Default, Encode, Decode, CborLen, ConfigSection)]
 #[cbor(transparent)]
-#[config(version = 1)]
-pub struct TelemetrySection(#[n(0)] pub ProfileSet);
+#[config(id = 0x7c1e_89f0_a500_7b17, version = 1)]
+pub struct TelemetrySection<const PROFILES: usize, const RECIPIENTS: usize>(
+    #[n(0)] pub TelemetryConfig<PROFILES, RECIPIENTS>,
+);
 
 /// Ids of the Actions of the `telemetry` service.
 pub mod action {
@@ -187,20 +183,23 @@ impl From<StoreError> for ActionError {
 /// atomically and publishes it to the runtime (see [`TelemetryState`]), or
 /// fails and changes nothing.
 #[allow(async_fn_in_trait)]
-pub trait TelemetryStore {
+pub trait TelemetryStore<const PROFILES: usize, const RECIPIENTS: usize> {
     /// The committed profiles; no profile when none were stored.
     ///
     /// # Errors
     ///
     /// [`StoreError`]; an unreadable section is an error, not an empty set.
-    async fn load(&self) -> Result<ProfileSet, StoreError>;
+    async fn load(&self) -> Result<TelemetryConfig<PROFILES, RECIPIENTS>, StoreError>;
 
     /// Atomically persists `candidate` and publishes it.
     ///
     /// # Errors
     ///
     /// [`StoreError`]; nothing changed.
-    async fn commit(&self, candidate: &ProfileSet) -> Result<(), StoreError>;
+    async fn commit(
+        &self,
+        candidate: &TelemetryConfig<PROFILES, RECIPIENTS>,
+    ) -> Result<(), StoreError>;
 }
 
 /// The effective profiles as the runtime sees them, with a change signal.
@@ -209,18 +208,18 @@ pub trait TelemetryStore {
 /// builder, connectivity) resolve profiles to a [`ProfileStamp`], check that a
 /// stamp is still current before they start work, and wait for changes to
 /// invalidate queued packets. Nothing here is held across I/O.
-pub struct TelemetryState<M: RawMutex> {
-    effective: BlockingMutex<M, RefCell<ProfileSet>>,
+pub struct TelemetryState<M: RawMutex, const PROFILES: usize, const RECIPIENTS: usize> {
+    effective: BlockingMutex<M, RefCell<TelemetryConfig<PROFILES, RECIPIENTS>>>,
     changed: Signal<M, u32>,
 }
 
-impl<M: RawMutex> Default for TelemetryState<M> {
+impl<M: RawMutex, const P: usize, const R: usize> Default for TelemetryState<M, P, R> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<M: RawMutex> TelemetryState<M> {
+impl<M: RawMutex, const P: usize, const R: usize> TelemetryState<M, P, R> {
     /// No profile: nothing is packaged.
     pub const fn new() -> Self {
         Self {
@@ -235,7 +234,7 @@ impl<M: RawMutex> TelemetryState<M> {
     /// Makes `profiles` the effective policy and wakes the waiter. Called
     /// synchronously in the commit step, so no packet can be admitted under
     /// the old policy after the commit completed.
-    pub fn publish(&self, profiles: &ProfileSet) {
+    pub fn publish(&self, profiles: &TelemetryConfig<P, R>) {
         let generation = profiles.generation;
         self.effective
             .lock(|effective| *effective.borrow_mut() = profiles.clone());
@@ -268,7 +267,7 @@ impl<M: RawMutex> TelemetryState<M> {
     pub fn with_profile<T>(
         &self,
         id: &str,
-        f: impl FnOnce(&crate::profile::PacketProfile<MAX_RECIPIENTS>) -> T,
+        f: impl FnOnce(&crate::profile::PacketProfile<R>) -> T,
     ) -> Option<T> {
         self.effective
             .lock(|effective| effective.borrow().get(id).map(f))
@@ -282,19 +281,23 @@ impl<M: RawMutex> TelemetryState<M> {
 
 /// The `telemetry` service over a [`TelemetryStore`] and the capabilities of
 /// the packet formats compiled in.
-pub struct TelemetryService<M: RawMutex, S, C> {
+pub struct TelemetryService<M: RawMutex, S, C, const PROFILES: usize, const RECIPIENTS: usize> {
     store: S,
     caps: C,
     // Serializes read-modify-write: no lost updates between Actions.
     edit: Mutex<M, ()>,
 }
 
-impl<M: RawMutex, S, C> Service for TelemetryService<M, S, C> {
+impl<M: RawMutex, S, C, const P: usize, const R: usize> Service
+    for TelemetryService<M, S, C, P, R>
+{
     const ID: u32 = SERVICE_ID;
     const NAME: &'static str = "telemetry";
 }
 
-impl<M: RawMutex, S: TelemetryStore, C: FormatCapabilities> TelemetryService<M, S, C> {
+impl<M: RawMutex, S: TelemetryStore<P, R>, C: FormatCapabilities, const P: usize, const R: usize>
+    TelemetryService<M, S, C, P, R>
+{
     /// A service over `store`; `caps` says what the formats can encode.
     pub const fn new(store: S, caps: C) -> Self {
         Self {
@@ -306,7 +309,7 @@ impl<M: RawMutex, S: TelemetryStore, C: FormatCapabilities> TelemetryService<M, 
 
     async fn edit(
         &self,
-        change: impl FnOnce(&mut ProfileSet, &C) -> Result<(), ProfileError>,
+        change: impl FnOnce(&mut TelemetryConfig<P, R>, &C) -> Result<(), ProfileError>,
     ) -> Result<(), ActionError> {
         let _guard = self.edit.lock().await;
         let mut candidate = self.store.load().await?;
@@ -320,9 +323,9 @@ impl<M: RawMutex, S: TelemetryStore, C: FormatCapabilities> TelemetryService<M, 
 }
 
 /// Borrowed encoding of the section for the size check.
-struct TelemetrySectionRef<'a>(&'a ProfileSet);
+struct TelemetrySectionRef<'a, const P: usize, const R: usize>(&'a TelemetryConfig<P, R>);
 
-impl<C> Encode<C> for TelemetrySectionRef<'_> {
+impl<C, const P: usize, const R: usize> Encode<C> for TelemetrySectionRef<'_, P, R> {
     fn encode<W: minicbor::encode::Write>(
         &self,
         e: &mut minicbor::Encoder<W>,
@@ -332,7 +335,7 @@ impl<C> Encode<C> for TelemetrySectionRef<'_> {
     }
 }
 
-impl<C> CborLen<C> for TelemetrySectionRef<'_> {
+impl<C, const P: usize, const R: usize> CborLen<C> for TelemetrySectionRef<'_, P, R> {
     fn cbor_len(&self, ctx: &mut C) -> usize {
         self.0.cbor_len(ctx)
     }
@@ -407,7 +410,9 @@ const fn selection_field(id: u32, name: &'static str) -> FieldDescriptor {
     )
 }
 
-impl<M: RawMutex, S: TelemetryStore, C: FormatCapabilities> Status for TelemetryService<M, S, C> {
+impl<M: RawMutex, S: TelemetryStore<P, R>, C: FormatCapabilities, const P: usize, const R: usize>
+    Status for TelemetryService<M, S, C, P, R>
+{
     const VERSION: u16 = 1;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
         FieldDescriptor::new(status_field::PROFILES, "profiles", ValueKind::U64),
@@ -444,7 +449,9 @@ impl<M: RawMutex, S: TelemetryStore, C: FormatCapabilities> Status for Telemetry
     }
 }
 
-impl<M: RawMutex, S: TelemetryStore, C: FormatCapabilities> Action for TelemetryService<M, S, C> {
+impl<M: RawMutex, S: TelemetryStore<P, R>, C: FormatCapabilities, const P: usize, const R: usize>
+    Action for TelemetryService<M, S, C, P, R>
+{
     const ACTIONS: &'static [ActionDescriptor] = &[
         ActionDescriptor::new(action::PROFILE_ADD, "profile_add", ActionAccess::Mutate)
             .args(&[

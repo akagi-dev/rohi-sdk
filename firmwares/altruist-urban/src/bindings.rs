@@ -43,7 +43,7 @@ use embassy_sync::blocking_mutex::Mutex;
 use log::{info, warn};
 use rohi_sdk::config::{ConfigSection, HasOverrides, materialize};
 use rohi_sdk::control::Transport;
-use rohi_sdk::endpoints::{AdminKeySection, ControlBleConfig, ControlTcpConfig};
+use rohi_sdk::endpoints::{ControlBleConfig, ControlTcpConfig, TcpPskSection};
 use rohi_sdk::identity::Identity;
 use rohi_sdk::location::LocationConfig;
 use rohi_sdk::logging::LoggingConfig;
@@ -350,32 +350,37 @@ impl PrivateBinding for IdentityBinding {
     }
 }
 
-/// The trusted administrator key of signed requests: published to the access
-/// state when committed, removed or loaded at boot.
+/// The pre-shared key of the TCP endpoint: recorded in the access state (that there is one, and
+/// that it changed) and, on the host platform, handed to the TCP frontend, when committed, removed
+/// or loaded at boot. The key is never logged.
 ///
-/// A key that cannot be read leaves the state without a key: a restricted TCP
-/// endpoint then refuses every privileged request, it never opens.
-pub struct AdminKeyBinding;
+/// A key that cannot be read leaves the state without a key: a restricted TCP endpoint then
+/// serves nobody, it never opens and never falls back to plaintext.
+pub struct TcpPskBinding;
 
-impl PrivateBinding for AdminKeyBinding {
-    type Section = AdminKeySection;
+impl PrivateBinding for TcpPskBinding {
+    type Section = TcpPskSection;
 
-    fn publish(section: Option<&AdminKeySection>) {
-        control::access().set_admin_key(section.map(|section| section.key().to_bytes()));
+    fn publish(section: Option<&TcpPskSection>) {
+        #[cfg(feature = "std-tcp")]
+        control::set_tcp_key(section.map(|section| *section.key()));
+        control::access().set_tcp_psk(section.is_some());
         info!(
-            "Administrator key: {}",
+            "TCP key: {}",
             if section.is_some() {
-                "enrolled"
+                "provisioned"
             } else {
-                "not enrolled"
+                "not provisioned"
             }
         );
     }
 
     fn unreadable(error: &dyn fmt::Display) {
-        control::access().set_admin_key(None);
+        #[cfg(feature = "std-tcp")]
+        control::set_tcp_key(None);
+        control::access().set_tcp_psk(false);
         warn!(
-            "Administrator key: unreadable, restricted endpoints stay closed: {}",
+            "TCP key: unreadable, a restricted endpoint serves nobody: {}",
             error
         );
     }
@@ -426,6 +431,7 @@ macro_rules! firmware_configs {
         /// `boot`: the first publication of a start, which also covers
         /// restart-required sections and falls back to the firmware policy
         /// when the stored value is unusable.
+        #[inline(never)]
         fn publish_section(
             runtime: &ConfigRuntime,
             id: SectionId,
@@ -450,6 +456,7 @@ macro_rules! firmware_configs {
         /// consumer starts from the same effective value a commit would give.
         /// `None`: the store is unavailable, so the firmware policy applies and
         /// private sections stay unknown.
+        #[inline(never)]
         fn publish_boot<S: ConfigStorage>(
             store: Option<&mut ConfigStore<S>>,
             runtime: &ConfigRuntime,
@@ -468,6 +475,7 @@ macro_rules! firmware_configs {
         }
 
         /// Publishes the state after a factory reset: nothing is stored.
+        #[inline(never)]
         fn publish_factory_reset(runtime: &ConfigRuntime) {
             $(publish_managed::<$managed>(runtime, None, false);)+
             $(publish_private::<$private>(None);)+

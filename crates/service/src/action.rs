@@ -215,6 +215,10 @@ pub struct ActionDescriptor {
     /// Whether the arguments contain secrets: they are never logged and are
     /// overwritten after the call.
     pub secret_args: bool,
+    /// Whether the action runs only on a link its transport has secured (encrypted,
+    /// and on TCP authenticated), whatever the access mode of the endpoint: it carries
+    /// key material of the transport itself and must never travel in the clear.
+    pub secure_link: bool,
     /// Whether the action returns a stream instead of records, see
     /// [`ActionOutput::stream`].
     pub stream: bool,
@@ -231,6 +235,7 @@ impl ActionDescriptor {
             enums: &[],
             access,
             secret_args: false,
+            secure_link: false,
             stream: false,
         }
     }
@@ -266,6 +271,13 @@ impl ActionDescriptor {
     /// after the call. The [`access`](Self::access) is declared separately.
     pub const fn secret(mut self) -> Self {
         self.secret_args = true;
+        self
+    }
+
+    /// Marks the action as one that runs only on a secured link, see
+    /// [`secure_link`](Self::secure_link). The access level is declared separately.
+    pub const fn secure_link(mut self) -> Self {
+        self.secure_link = true;
         self
     }
 }

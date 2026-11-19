@@ -89,7 +89,7 @@
 //!     StaticSource::new(SourceId(10), &weather),
 //!     StaticSource::new(SourceId(11), &dust),
 //! );
-//! let snapshot: TelemetrySnapshot<8> =
+//! let snapshot: TelemetrySnapshot<8, 8> =
 //!     block_on(capture(&mut sources, &Uptime(Cell::new(1_000)), &mut NoDelay, 100));
 //!
 //! let mut config = TelemetryConfig::<3, 2>::default();
@@ -175,4 +175,6 @@ pub use snapshot::{
     CollectionDiagnostics, SourceFailure, SourceOutcome, SourceReport, SourceWriter,
     TelemetrySnapshot, WriteError,
 };
-pub use source::{SourceError, SourceSet, StaticSource, TelemetrySource, capture, collect_one};
+pub use source::{
+    SourceError, SourceSet, StaticSource, TelemetrySource, capture, capture_accepting, collect_one,
+};

@@ -16,45 +16,43 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 //! The managed control endpoints of the std platform end to end: the access
-//! modes of the TCP endpoint, the administrator key, and signed requests.
+//! modes of the TCP endpoint, the pre-shared key and the secure channel.
 
 mod common;
 
+use std::path::Path;
+use std::time::Duration;
+
 use common::*;
 use rohi::model::{FieldValue, Value};
-use rohi::{AdminKey, Device, Error, TcpLink};
+use rohi::{Device, Error, TcpKey, TcpLink, write_tcp_key};
 use tempfile::TempDir;
 
 const ACCESS_MODE: u32 = 2;
 const SSID: u32 = wifi::SSID;
 
-fn key(seed: u8) -> AdminKey {
-    AdminKey::from_seed(&[seed; 32]).unwrap()
+fn key(seed: u8) -> TcpKey {
+    TcpKey::from_bytes([seed; 32]).unwrap()
 }
 
-async fn enroll(device: &mut Device<TcpLink>, key: &AdminKey) {
+fn key_file(dir: &Path, name: &str, key: &TcpKey) -> std::path::PathBuf {
+    let path = dir.join(name);
+    write_tcp_key(&path, key.as_bytes()).unwrap();
+    path
+}
+
+async fn set_psk(device: &mut Device<TcpLink>, key: &TcpKey) -> Result<(), Error> {
     device
         .invoke(
-            "control_auth",
-            "set_admin_key",
+            "control_psk",
+            "set_tcp_psk",
             &[FieldValue {
                 field_id: 1,
-                value: Value::Bytes(key.public_key().to_bytes().to_vec()),
+                value: Value::Bytes(key.as_bytes().to_vec()),
             }],
         )
         .await
-        .unwrap();
-}
-
-async fn restrict(device: &mut Device<TcpLink>) {
-    device
-        .config_patch(
-            "control_tcp",
-            &[set(ACCESS_MODE, Value::Enum("restricted".into()))],
-            false,
-        )
-        .await
-        .unwrap();
+        .map(|_| ())
 }
 
 async fn patch_ssid(device: &mut Device<TcpLink>, ssid: &str) -> Result<(), Error> {
@@ -73,7 +71,8 @@ fn reason(result: Result<(), Error>) -> String {
 
 #[tokio::test(flavor = "current_thread")]
 async fn the_endpoints_are_discoverable_with_their_defaults() {
-    let sim = Sim::start(&Launch::new().restricted());
+    // Open for the run: a plaintext client can look at what the device offers.
+    let sim = Sim::start(&Launch::new());
     let mut device = sim.device().await;
     let sections = device.config_sections().await.unwrap();
     for name in ["control_tcp", "control_ble"] {
@@ -83,125 +82,220 @@ async fn the_endpoints_are_discoverable_with_their_defaults() {
         );
     }
     let tcp = fields(&mut device, "control_tcp").await;
-    assert_eq!(tcp.get("access_mode"), Some(&text("restricted")));
     assert_eq!(tcp.get("state"), Some(&Value::Enum("running".into())));
-    assert_eq!(tcp.get("sessions"), Some(&Value::U64(1)));
+    assert_eq!(tcp.get("access_mode"), Some(&text("open")));
     let ble = fields(&mut device, "control_ble").await;
     assert_eq!(ble.get("access_mode"), Some(&text("open")));
-    let auth = fields(&mut device, "control_auth").await;
-    assert_eq!(auth.get("enrolled"), Some(&Value::Bool(false)));
+    // There is no key and the status never shows one.
+    let psk = fields(&mut device, "control_psk").await;
+    assert_eq!(psk.get("enrolled"), Some(&Value::Bool(false)));
+    assert!(psk.get("fingerprint").is_none());
     drop(device);
     sim.stop();
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn a_restricted_endpoint_without_a_key_refuses_every_change_but_serves_reads() {
+async fn a_restricted_endpoint_without_a_key_serves_nobody() {
     let sim = Sim::start(&Launch::new().restricted());
-    let mut device = sim.device().await;
-    device.info().await.unwrap();
-    assert_eq!(
-        reason(patch_ssid(&mut device, "nope").await),
-        "no_admin_key"
-    );
-    // A client with a key cannot enroll it either: nothing is trusted yet.
-    device.set_admin_key(&key(1));
-    assert_eq!(
-        reason(patch_ssid(&mut device, "nope").await),
-        "no_admin_key"
-    );
+    // A plaintext client gets no answer in the clear.
+    let mut plain = sim.device().await;
+    assert!(plain.info().await.is_err(), "{}", sim.log());
+    drop(plain);
+    // A client with a key cannot authenticate to a device that has none.
+    let result =
+        TcpLink::connect_secure(&sim.control.to_string(), Duration::from_secs(10), &key(1)).await;
+    let link = match result {
+        Ok(link) => link,
+        Err(_) => {
+            sim.stop();
+            return;
+        }
+    };
+    let mut device = Device::new(link);
+    device.set_timeout(Duration::from_secs(5));
+    assert!(device.info().await.is_err());
     drop(device);
+    let log = sim.log();
+    assert!(log.contains("No pre-shared key"), "{log}");
     sim.stop();
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn a_signed_request_is_accepted_and_others_are_refused() {
-    // Open for the run, so that the key can be enrolled the way a BLE
-    // central would.
-    let sim = Sim::start(&Launch::new());
-    let mut device = sim.device().await;
-    let admin = key(1);
-    enroll(&mut device, &admin).await;
-    restrict(&mut device).await;
-    let auth = fields(&mut device, "control_auth").await;
-    assert_eq!(auth.get("enrolled"), Some(&Value::Bool(true)));
+async fn a_client_with_the_key_is_served_and_everyone_else_is_not() {
+    let dir = TempDir::new().unwrap();
+    let psk = key(7);
+    let file = key_file(dir.path(), "tcp.key", &psk);
+    let sim = Sim::start(&Launch::new().restricted().psk_file(&file));
 
-    // Reads stay unsigned.
+    // Authenticated: reads, changes and what they read back.
+    let mut device = sim.secure_device(&psk).await;
     device.info().await.unwrap();
-    // A change without a key is refused before it runs.
-    assert_eq!(
-        reason(patch_ssid(&mut device, "unsigned").await),
-        "auth_required"
-    );
-    // Another key is refused, too.
-    device.set_admin_key(&key(2));
-    assert_eq!(
-        reason(patch_ssid(&mut device, "stranger").await),
-        "bad_signature"
-    );
-    drop(device);
-
-    // A fresh connection signs with the right key, repeatedly.
-    let mut device = sim.device().await;
-    device.set_admin_key(&admin);
     patch_ssid(&mut device, "first").await.unwrap();
-    patch_ssid(&mut device, "second").await.unwrap();
     assert_eq!(
         config_text(&mut device, "wifi", SSID).await.as_deref(),
-        Some("second")
+        Some("first")
     );
     let tcp = fields(&mut device, "control_tcp").await;
-    assert!(matches!(tcp.get("denied"), Some(Value::U64(n)) if *n >= 2));
+    assert_eq!(tcp.get("access_mode"), Some(&text("restricted")));
+    drop(device);
+
+    // Another key: the device proves nothing to it, and it never gets a request through.
+    let stranger =
+        TcpLink::connect_secure(&sim.control.to_string(), Duration::from_secs(10), &key(8)).await;
+    assert!(
+        matches!(stranger, Err(Error::Unauthorized(_))),
+        "a device is not trusted that cannot prove the key"
+    );
+
+    // No key at all: plaintext records are not served.
+    let mut plain = sim.device().await;
+    assert!(plain.info().await.is_err());
+    drop(plain);
+
+    // The refusals are visible in the counters and the authenticated client is unaffected.
+    let mut device = sim.secure_device(&psk).await;
+    let tcp = fields(&mut device, "control_tcp").await;
+    assert!(
+        matches!(tcp.get("errors"), Some(Value::U64(n)) if *n >= 1),
+        "{tcp:?}"
+    );
+    assert_eq!(
+        config_text(&mut device, "wifi", SSID).await.as_deref(),
+        Some("first")
+    );
     drop(device);
     sim.stop();
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn the_key_and_the_mode_survive_a_restart_and_a_reset_removes_them() {
+async fn the_key_is_never_provisioned_over_an_unauthenticated_link() {
+    // An open endpoint takes every other request in the clear, but not the key.
+    let sim = Sim::start(&Launch::new());
+    let mut device = sim.device().await;
+    let refused = set_psk(&mut device, &key(5)).await;
+    assert_eq!(reason(refused), "encryption_required", "{}", sim.log());
+    let psk = fields(&mut device, "control_psk").await;
+    assert_eq!(psk.get("enrolled"), Some(&Value::Bool(false)));
+    drop(device);
+    sim.stop();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_key_is_rotated_over_the_secure_channel_and_ends_the_old_connections() {
+    let dir = TempDir::new().unwrap();
+    let old = key(1);
+    let new = key(2);
+    let file = key_file(dir.path(), "old.key", &old);
+    let sim = Sim::start(&Launch::new().restricted().psk_file(&file));
+
+    let mut device = sim.secure_device(&old).await;
+    set_psk(&mut device, &new).await.unwrap();
+    // The device ended the connection of the old key after the answer.
+    assert!(device.info().await.is_err());
+    drop(device);
+
+    // The old key is refused from now on; the new one is served.
+    let refused =
+        TcpLink::connect_secure(&sim.control.to_string(), Duration::from_secs(10), &old).await;
+    assert!(matches!(refused, Err(Error::Unauthorized(_))));
+    let mut device = sim.secure_device(&new).await;
+    let psk = fields(&mut device, "control_psk").await;
+    assert_eq!(psk.get("enrolled"), Some(&Value::Bool(true)));
+    patch_ssid(&mut device, "rotated").await.unwrap();
+    drop(device);
+    sim.stop();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_stored_key_survives_a_restart_and_a_factory_reset_removes_it() {
     let dir = TempDir::new().unwrap();
     let storage = dir.path().join("device.flash");
-    let admin = key(3);
+    let psk = key(3);
+    let bootstrap = key_file(dir.path(), "bootstrap.key", &key(9));
 
-    let sim = Sim::start(&Launch::new().storage(&storage));
-    let mut device = sim.device().await;
-    enroll(&mut device, &admin).await;
-    restrict(&mut device).await;
+    // The first run authenticates with a key file, stores another and restricts the endpoint.
+    let sim = Sim::start(
+        &Launch::new()
+            .storage(&storage)
+            .restricted()
+            .psk_file(&bootstrap),
+    );
+    let mut device = sim.secure_device(&key(9)).await;
+    set_psk(&mut device, &psk).await.unwrap();
+    drop(device);
+    let mut device = sim.secure_device(&psk).await;
+    device
+        .config_patch(
+            "control_tcp",
+            &[set(ACCESS_MODE, Value::Enum("restricted".into()))],
+            false,
+        )
+        .await
+        .unwrap();
     drop(device);
     assert!(sim.stop().success());
 
-    // The device starts restricted, as stored, and still trusts the key.
+    // Without a key file, the stored key applies: the device starts restricted and trusts it.
     let sim = Sim::start(&Launch::new().storage(&storage).restricted());
-    let mut device = sim.device().await;
-    assert_eq!(
-        reason(patch_ssid(&mut device, "unsigned").await),
-        "auth_required"
-    );
-    device.set_admin_key(&admin);
+    let mut device = sim.secure_device(&psk).await;
+    let state = fields(&mut device, "control_psk").await;
+    assert_eq!(state.get("enrolled"), Some(&Value::Bool(true)));
     patch_ssid(&mut device, "kept").await.unwrap();
 
-    // The key can be replaced only with a signature of the current one;
-    // afterwards the old key no longer signs.
-    let successor = key(4);
-    enroll(&mut device, &successor).await;
-    drop(device);
-    let mut device = sim.device().await;
-    device.set_admin_key(&admin);
-    assert_eq!(
-        reason(patch_ssid(&mut device, "old").await),
-        "bad_signature"
-    );
-    drop(device);
-    let mut device = sim.device().await;
-    device.set_admin_key(&successor);
-    // A factory reset restores the defaults: no key, restricted.
+    // A factory reset removes the key; the connection of the old key ends with it.
     device.invoke("system", "factory_reset", &[]).await.unwrap();
-    let auth = fields(&mut device, "control_auth").await;
-    assert_eq!(auth.get("enrolled"), Some(&Value::Bool(false)));
     drop(device);
-    let mut device = sim.device().await;
-    device.set_admin_key(&successor);
-    assert_eq!(
-        reason(patch_ssid(&mut device, "after").await),
-        "no_admin_key"
+    let refused =
+        TcpLink::connect_secure(&sim.control.to_string(), Duration::from_secs(10), &psk).await;
+    let log = sim.log();
+    match refused {
+        Err(_) => {}
+        Ok(link) => {
+            let mut device = Device::new(link);
+            device.set_timeout(Duration::from_secs(5));
+            assert!(device.info().await.is_err(), "{log}");
+        }
+    }
+    sim.stop();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_client_that_fails_the_proof_is_counted_and_never_processed() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let dir = TempDir::new().unwrap();
+    let psk = key(7);
+    let file = key_file(dir.path(), "tcp.key", &psk);
+    let sim = Sim::start(&Launch::new().restricted().psk_file(&file));
+
+    // A client that sends a well-formed hello and a final message that proves nothing, followed by
+    // a request in the clear: the device ends the connection and answers nothing.
+    let mut stream = tokio::net::TcpStream::connect(sim.control).await.unwrap();
+    let mut hello = [0u8; 37];
+    hello[..4].copy_from_slice(b"ROHI");
+    hello[4] = 1;
+    hello[5..].fill(0x66);
+    stream.write_all(&hello).await.unwrap();
+    let mut server_hello = [0u8; 69];
+    stream.read_exact(&mut server_hello).await.unwrap();
+    stream.write_all(&[0u8; 32]).await.unwrap();
+    stream
+        .write_all(&[4, 0, 0, 0, 0x08, 1, 0x10, 1])
+        .await
+        .unwrap();
+    let mut rest = Vec::new();
+    let read = tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut rest)).await;
+    assert!(matches!(read, Ok(Ok(0))), "{read:?}");
+    assert!(
+        rest.is_empty(),
+        "nothing is answered to a client that did not authenticate"
+    );
+
+    let mut device = sim.secure_device(&psk).await;
+    let tcp = fields(&mut device, "control_tcp").await;
+    assert!(
+        matches!(tcp.get("auth_failures"), Some(Value::U64(n)) if *n >= 1),
+        "{tcp:?}"
     );
     drop(device);
     sim.stop();

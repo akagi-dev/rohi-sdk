@@ -25,6 +25,9 @@ use embedded_hal_async::delay::DelayNs;
 use rohi_telemetry::PacketProfileId;
 
 use super::*;
+
+// The capacities the tests exercise: more than a device keeps, to cover every edge.
+type RouteSet = crate::Routes<3, 2>;
 use crate::config::ProfileBinding;
 use crate::endpoint::Endpoint;
 use crate::transport::{TransportAck, TransportError};
@@ -63,7 +66,7 @@ struct World {
 
 struct Provider<'a> {
     world: &'a World,
-    state: &'a ConnectivityState<NoopRawMutex>,
+    state: &'a ConnectivityState<NoopRawMutex, 3, 2>,
 }
 
 impl PacketProvider for Provider<'_> {
@@ -121,7 +124,7 @@ impl PacketProvider for Provider<'_> {
 
 struct Transport<'a> {
     world: &'a World,
-    state: &'a ConnectivityState<NoopRawMutex>,
+    state: &'a ConnectivityState<NoopRawMutex, 3, 2>,
 }
 
 impl PacketTransport for Transport<'_> {
@@ -151,7 +154,7 @@ impl PacketTransport for Transport<'_> {
 }
 
 type P<'a, const SLOTS: usize> =
-    Publisher<'a, NoopRawMutex, Provider<'a>, Transport<'a>, Never, Clk<'a>, 2, SLOTS, 32>;
+    Publisher<'a, NoopRawMutex, Provider<'a>, Transport<'a>, Never, Clk<'a>, 3, 2, 2, SLOTS, 32>;
 
 fn binding() -> ProfileBinding {
     ProfileBinding {
@@ -162,7 +165,7 @@ fn binding() -> ProfileBinding {
 
 fn publisher<'a, const SLOTS: usize>(
     world: &'a World,
-    state: &'a ConnectivityState<NoopRawMutex>,
+    state: &'a ConnectivityState<NoopRawMutex, 3, 2>,
     clock: &'a Cell<u64>,
 ) -> P<'a, SLOTS> {
     Publisher::new(
@@ -186,7 +189,7 @@ fn hosts(world: &World) -> Vec<String> {
 #[test]
 fn routes_due_together_share_one_capture_and_one_sealed_packet() {
     let world = World::default();
-    let state = ConnectivityState::<NoopRawMutex>::new();
+    let state = ConnectivityState::<NoopRawMutex, 3, 2>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
     config
@@ -219,7 +222,7 @@ fn routes_due_together_share_one_capture_and_one_sealed_packet() {
 #[test]
 fn each_route_keeps_its_own_cadence() {
     let world = World::default();
-    let state = ConnectivityState::<NoopRawMutex>::new();
+    let state = ConnectivityState::<NoopRawMutex, 3, 2>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
     config
@@ -255,7 +258,7 @@ fn each_route_keeps_its_own_cadence() {
 fn a_failing_primary_hands_the_same_bytes_to_the_fallback() {
     let world = World::default();
     world.answers.borrow_mut().push(("primary.example", 503));
-    let state = ConnectivityState::<NoopRawMutex>::new();
+    let state = ConnectivityState::<NoopRawMutex, 3, 2>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
     config
@@ -282,7 +285,7 @@ fn a_failing_primary_hands_the_same_bytes_to_the_fallback() {
 fn a_policy_change_invalidates_queued_packets_before_anything_is_sent() {
     let world = World::default();
     world.answers.borrow_mut().push(("a.example", 503));
-    let state = ConnectivityState::<NoopRawMutex>::new();
+    let state = ConnectivityState::<NoopRawMutex, 3, 2>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
     config
@@ -312,7 +315,7 @@ fn a_policy_change_invalidates_queued_packets_before_anything_is_sent() {
 fn a_production_failure_is_a_diagnostic_not_a_transport_error_and_does_not_stop_the_cadence() {
     let world = World::default();
     world.fail_build.set(Some(BuildFailure::TimeUnavailable));
-    let state = ConnectivityState::<NoopRawMutex>::new();
+    let state = ConnectivityState::<NoopRawMutex, 3, 2>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
     config
@@ -340,7 +343,7 @@ fn an_exhausted_pool_is_counted_and_other_work_continues() {
     // Always fail the transport so packets stay queued and hold their slot.
     world.answers.borrow_mut().push(("a.example", 503));
     world.answers.borrow_mut().push(("b.example", 503));
-    let state = ConnectivityState::<NoopRawMutex>::new();
+    let state = ConnectivityState::<NoopRawMutex, 3, 2>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
     config
@@ -368,7 +371,7 @@ fn an_exhausted_pool_is_counted_and_other_work_continues() {
 #[test]
 fn no_route_means_nothing_is_captured_or_sent() {
     let world = World::default();
-    let state = ConnectivityState::<NoopRawMutex>::new();
+    let state = ConnectivityState::<NoopRawMutex, 3, 2>::new();
     let clock = Cell::new(0);
     let mut publisher: P<4> = publisher(&world, &state, &clock);
     block_on(publisher.step());
@@ -379,7 +382,7 @@ fn no_route_means_nothing_is_captured_or_sent() {
 fn removing_a_route_stops_its_deliveries_and_frees_its_packets() {
     let world = World::default();
     world.answers.borrow_mut().push(("a.example", 503));
-    let state = ConnectivityState::<NoopRawMutex>::new();
+    let state = ConnectivityState::<NoopRawMutex, 3, 2>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
     config
@@ -400,7 +403,7 @@ fn removing_a_route_stops_its_deliveries_and_frees_its_packets() {
 #[test]
 fn an_unreadable_store_leaves_no_active_route() {
     let world = World::default();
-    let state = ConnectivityState::<NoopRawMutex>::new();
+    let state = ConnectivityState::<NoopRawMutex, 3, 2>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
     config
@@ -419,7 +422,7 @@ fn an_unreadable_store_leaves_no_active_route() {
 fn a_profile_recreated_during_the_capture_never_joins_the_execution() {
     let world = World::default();
     world.recreate_on_capture.set(true);
-    let state = ConnectivityState::<NoopRawMutex>::new();
+    let state = ConnectivityState::<NoopRawMutex, 3, 2>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
     config
@@ -450,7 +453,7 @@ fn a_profile_recreated_during_the_capture_never_joins_the_execution() {
 #[test]
 fn removing_a_route_during_capture_does_not_publish_or_send_its_packet() {
     let world = World::default();
-    let state = ConnectivityState::<NoopRawMutex>::new();
+    let state = ConnectivityState::<NoopRawMutex, 3, 2>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
     config
@@ -470,7 +473,7 @@ fn removing_a_route_during_capture_does_not_publish_or_send_its_packet() {
 #[test]
 fn changing_fallbacks_during_build_does_not_admit_a_stale_packet() {
     let world = World::default();
-    let state = ConnectivityState::<NoopRawMutex>::new();
+    let state = ConnectivityState::<NoopRawMutex, 3, 2>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
     config
@@ -493,7 +496,7 @@ fn changing_fallbacks_during_build_does_not_admit_a_stale_packet() {
 #[test]
 fn changing_fallbacks_cancels_an_in_flight_delivery() {
     let world = World::default();
-    let state = ConnectivityState::<NoopRawMutex>::new();
+    let state = ConnectivityState::<NoopRawMutex, 3, 2>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
     config

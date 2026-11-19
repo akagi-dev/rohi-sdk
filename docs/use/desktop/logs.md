@@ -72,8 +72,8 @@ The tail needs no flash: it answers while the archive is being written, is fault
 |-------|---------|
 | `level` | `off`, `error`, `warn`, `info` or `debug`. The default is `warn` in a release build and `info` in a development build. Only the persistent log is affected, not the serial console |
 | `storage` | an enum: `internal` (0, flash; a file on the host) or `sd` (1). `sd` is selectable but this firmware has no card: the service then reports `storage_unavailable` and does **not** fall back to flash |
-| `compression` | an enum: `none` (0) or `lz4` (1), for **new** segments only; old segments keep their form |
-| `retention_bytes`, `segment_bytes` | the budget of the history and the size at which a file is closed; the oldest files are dropped when the budget is used. The chip sets the defaults, and a value you set stays in force: on the ESP32-C3 the `rohi-log` partition is 512 KiB, so the default is 512 KiB in 32 KiB segments (the partition is not the journal: two 4 KiB sectors hold the format header, so 15 full segments, 480 KiB, are retained); on the ESP32-C6 and the host it is 1 MiB in 64 KiB segments, below the limit of 24 segments. A value you set is kept as it is, and one that is only valid next to the former 8 KiB segment (a budget below 128 KiB) makes the section invalid until you also set `segment_bytes` or remove it |
+| `compression` | an enum for **new** segments only; old segments keep their form. A default firmware has one value, `none` (0, plain text). `lz4` (1) exists only in a firmware built with the `lz4` feature; a firmware without it does not list it and rejects it |
+| `retention_bytes`, `segment_bytes` | the budget of the history and the size at which a file is closed; the oldest files are dropped when the budget is used. The chip sets the defaults, and a value you set stays in force: on the ESP32-C3 the `rohi-log` partition is 128 KiB, so the default is 128 KiB in 8 KiB segments (the partition is not the journal: two 4 KiB sectors hold the format header, so 15 full segments, 120 KiB, are retained, of which about 98 to 116 KiB are text lines); on the ESP32-C6 and the host it is 1 MiB in 64 KiB segments, below the limit of 24 segments. A value you set is kept as it is, and one that is only valid next to the former 8 KiB segment (a budget below 128 KiB) makes the section invalid until you also set `segment_bytes` or remove it |
 | `flush_interval` | the longest a record waits in RAM before it is written |
 
 Records are written in small batches and files are compressed one batch at a time, so a power loss costs at most the
@@ -91,12 +91,18 @@ affected.
 
 ## Download
 
-`rohi logs download` saves the retained files exactly as the device keeps them, oldest first: `rohi1.log.lz4`,
-`rohi2.log.lz4`, ... (`.log` for segments written with `compression=none`). They are standard LZ4 files of UTF-8 text:
+`rohi logs download` saves the retained files exactly as the device keeps them, oldest first: `rohi1.log`,
+`rohi2.log`, ... They are plain UTF-8 text. A firmware built with the `lz4` feature writes `rohi1.log.lz4`, ... instead,
+standard LZ4 files:
 
 ```bash
-lz4 -d rohi1.log.lz4            # or: lz4 -dc rohi*.log.lz4 | less
+less rohi*.log
+lz4 -dc rohi*.log.lz4 | less     # firmware built with `lz4`
 ```
+
+A log written by an older format (before LZ4 became optional) is not read: the first start of a new firmware
+reinitializes the `rohi-log` partition, and only that partition (configuration, application and NVS are never touched).
+The old archive is discarded.
 
 The device closes the file being written, starts a new one for the records that come next, and holds the retained files
 until the download ends, so records logged meanwhile are not part of it. `rohi` does not overwrite existing files unless you pass
@@ -120,7 +126,7 @@ archive. It does not touch the records the device keeps in RAM:
 The log region carries a *format header* in its last two sectors. A region without a valid one (a new device, a partition table that
 moved the region over other data, an interrupted format) is erased once, sector by sector, and then the header is written; a region with a valid
 header is never erased by a start, whatever else happens to be damaged in it. Only the `rohi-log` partition is formatted. The region
-moved to the end of the flash (the last 512 KiB on the ESP32-C3, the last 1 MiB, grown from 256 KiB, on the ESP32-C6): the old history is **not** migrated and the first start of the new firmware formats the new region
+moved (on the ESP32-C3 it is now 128 KiB at `0x20000`, right after the configuration region; on the ESP32-C6 it is the last 1 MiB): the old history is **not** migrated and the first start of the new firmware formats the new region
 (see the [firmware README](https://github.com/akagi-dev/rohi-sdk/blob/master/firmwares/altruist-urban/README.md)). Records logged while it runs wait in a bounded queue.
 
 ## Secrets

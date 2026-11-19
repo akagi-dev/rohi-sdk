@@ -234,6 +234,11 @@ fn the_control_transport_serves_a_client_over_a_host_socket() {
     };
     let controller = Controller::new(Device::new(info, || 0, (), (), ()), OpenPolicy);
     let access = ControlAccess::new(|_| false);
+    // Plaintext records of a development endpoint; a restricted one wants the secure handshake.
+    access.set_mode(
+        rohi_control::Transport::Tcp,
+        rohi_control::TransportAccessMode::Open,
+    );
     let hub = ControlHub::<1>::with_access(&access);
     let mut control = ControlTcp::new(acceptor, &hub);
     // The client closes its end after the response, which ends the connection.

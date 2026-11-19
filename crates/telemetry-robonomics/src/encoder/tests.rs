@@ -30,7 +30,7 @@ fn at(ms: u64) -> MonotonicTimestamp {
     MonotonicTimestamp::from_millis(ms)
 }
 
-fn snapshot(with_humidity: bool) -> TelemetrySnapshot<16> {
+fn snapshot(with_humidity: bool) -> TelemetrySnapshot<16, 8> {
     let mut snapshot = TelemetrySnapshot::new(at(10));
     let mut writer = snapshot.writer(SourceId::LOCAL);
     writer.number(BMX280_TEMPERATURE, 21.456, at(1)).unwrap();
@@ -82,7 +82,7 @@ fn profile(selection: Selection) -> rohi_telemetry::PacketProfile<2> {
 }
 
 fn encode_public(
-    snapshot: &TelemetrySnapshot<16>,
+    snapshot: &TelemetrySnapshot<16, 8>,
     selection: Selection,
 ) -> Result<Sensors, EncodeError> {
     let profile = profile(selection);
@@ -204,7 +204,7 @@ fn out_of_range_values_are_omitted() {
 #[test]
 fn an_invalid_humidity_is_left_out_of_the_packet_not_published_as_a_valid_one() {
     for faulty in [-5.0f32, 120.0] {
-        let mut snapshot = TelemetrySnapshot::<16>::new(at(10));
+        let mut snapshot = TelemetrySnapshot::<16, 8>::new(at(10));
         let mut writer = snapshot.writer(SourceId::LOCAL);
         writer.number(BMX280_TEMPERATURE, 21.0, at(1)).unwrap();
         writer.number(BMX280_HUMIDITY, faulty, at(1)).unwrap();

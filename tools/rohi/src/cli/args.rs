@@ -132,18 +132,18 @@ pub struct Cli {
     )]
     pub scan_timeout: u64,
 
-    /// File with the administrator key (64 hex characters). A restricted TCP
-    /// endpoint of a device wants a signature of it on every change; with the
-    /// key `rohi` signs automatically. Never put the key itself on the command
-    /// line; create the file with `rohi admin keygen FILE`.
+    /// File with the pre-shared key of a TCP endpoint (64 hex characters). A
+    /// restricted endpoint serves only clients that complete a handshake with
+    /// it, and `rohi` then encrypts every request. Never put the key itself on
+    /// the command line; create the file with `rohi tcp-key generate FILE`.
     #[arg(
         long,
         global = true,
-        env = "ROHI_ADMIN_KEY",
+        env = "ROHI_PSK_FILE",
         value_name = "FILE",
         help_heading = CONNECTION
     )]
-    pub admin_key: Option<PathBuf>,
+    pub psk_file: Option<PathBuf>,
 
     /// How long to wait for a device response.
     #[arg(
@@ -159,24 +159,28 @@ pub struct Cli {
     pub command: Command,
 }
 
-/// What `rohi admin` does.
+/// What `rohi tcp-key` does.
 #[derive(Subcommand, Debug, Clone)]
-pub enum AdminAction {
-    /// Create a new administrator key file; the file is readable by you only.
-    Keygen {
+pub enum TcpKeyAction {
+    /// Create a new random key file; the file is readable by you only.
+    Generate {
         /// Where to write the key. An existing file is never replaced.
         #[arg(value_name = "FILE")]
         file: PathBuf,
     },
-    /// Print the public key of the administrator key.
-    PublicKey,
-    /// Tell the device to trust the administrator key.
+    /// Provision the key of `--psk-file` on the device.
     ///
-    /// Enrolling the first key needs an endpoint that is open (BLE by
-    /// default): until a key is enrolled a restricted TCP endpoint refuses
-    /// every change. Replacing a key over TCP is signed by the current one.
-    Enroll,
-    /// Make the device forget its administrator key.
+    /// Needs a protected link: an encrypted (paired) BLE link, or the TCP
+    /// connection the current key authenticated. Over an unauthenticated TCP
+    /// link the device refuses it. To replace a key over TCP, connect with the
+    /// current key (`--psk-file`) and give the new one with `--new-key`.
+    Set {
+        /// File with the key to provision, when it is not the one of `--psk-file`.
+        #[arg(long, value_name = "FILE")]
+        new_key: Option<PathBuf>,
+    },
+    /// Make the device forget its key: a restricted TCP endpoint then serves
+    /// nobody.
     Clear,
 }
 
@@ -392,24 +396,28 @@ Examples:
         #[arg(short, long)]
         follow: bool,
     },
-    /// Manage the administrator key of signed requests.
+    /// Manage the pre-shared key of the TCP control endpoint.
     ///
-    /// A TCP control endpoint is restricted by default: reads are open, every
-    /// change needs a signature of the one administrator key the device trusts.
-    /// `rohi` signs with the key of `--admin-key FILE`.
+    /// A TCP control endpoint is restricted by default: a client must complete a
+    /// handshake with one 32-byte pre-shared key, and every request and response
+    /// is then authenticated and encrypted. `rohi` uses the key of `--psk-file
+    /// FILE` for `tcp://` targets.
     ///
-    /// A signature authenticates one request to the device. It does not
-    /// encrypt anything and does not prove the device to you.
+    /// The key is provisioned over a protected link only, for example the paired
+    /// BLE link: `rohi --psk-file tcp.key tcp-key set`. There is no forward
+    /// secrecy: whoever learns the key can read a recorded session.
     #[command(
+        name = "tcp-key",
         subcommand,
         after_help = "\
 Examples:
-  rohi admin keygen admin.key
-  rohi --admin-key admin.key admin public-key
-  rohi --admin-key admin.key admin enroll
-  rohi --admin-key admin.key admin clear"
+  rohi tcp-key generate tcp.key
+  rohi --psk-file tcp.key tcp-key set
+  rohi --psk-file tcp.key --device tcp://127.0.0.1:9300 status
+  rohi --psk-file old.key --device tcp://127.0.0.1:9300 tcp-key set --new-key new.key
+  rohi tcp-key clear"
     )]
-    Admin(AdminAction),
+    TcpKey(TcpKeyAction),
     /// `rohi SERVICE [ACTION [ARG]...]`: a service of the device, see
     /// `rohi action --help`. The words are as the user typed them.
     #[command(external_subcommand)]
@@ -520,9 +528,9 @@ pub enum LogsAction {
     #[command(
         about = "Save the retained log files of the device",
         long_about = "Save every retained log file of the active storage of the device.\n\n\
-            The files are the compressed segments as the device keeps them\n\
-            (`rohi1.log.lz4`, ...; `.log` for plain segments), oldest first, and are\n\
-            written unchanged: `lz4 -d rohi1.log.lz4` shows the text. Records logged\n\
+            The files are the segments as the device keeps them: plain text\n\
+            (`rohi1.log`, ...) or, on a firmware built with LZ4, `rohi1.log.lz4`\n\
+            (`lz4 -d` shows the text). Oldest first, written unchanged. Records logged\n\
             while the download runs are not part of it. A file that already exists is\n\
             not replaced unless --force is given.",
         after_help = "\

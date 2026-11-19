@@ -104,14 +104,34 @@ pub fn encrypt(
     if plaintext.len() > MAX_PRIVATE_PLAINTEXT_LEN {
         return Err(CryptoError::TooLarge);
     }
+    out[..plaintext.len()].copy_from_slice(plaintext);
+    encrypt_in_place(agreement, recipient, nonce, plaintext.len(), out)
+}
+
+/// Like [`encrypt`], for a plaintext already in `buffer[..plaintext_len]`: it is
+/// encrypted where it is and the tag is appended, so a section needs one buffer, not
+/// two. Returns the length of the ciphertext with its tag.
+///
+/// # Errors
+///
+/// [`CryptoError`]; the buffer is zeroized on a cipher failure.
+pub fn encrypt_in_place(
+    agreement: &impl KeyAgreement,
+    recipient: &PublicKey,
+    nonce: &[u8; NONCE_XCHACHA_LEN],
+    plaintext_len: usize,
+    out: &mut [u8; MAX_CIPHERTEXT_LEN],
+) -> Result<usize, CryptoError> {
+    if plaintext_len > MAX_PRIVATE_PLAINTEXT_LEN {
+        return Err(CryptoError::TooLarge);
+    }
     let mut key = key_for(agreement, recipient)?;
     let cipher = XChaCha20Poly1305::new(&key);
     key.zeroize();
-    out[..plaintext.len()].copy_from_slice(plaintext);
     let tag = match cipher.encrypt_in_place_detached(
         &XNonce::from(*nonce),
         &[],
-        &mut out[..plaintext.len()],
+        &mut out[..plaintext_len],
     ) {
         Ok(tag) => tag,
         Err(_) => {
@@ -119,8 +139,8 @@ pub fn encrypt(
             return Err(CryptoError::Cipher);
         }
     };
-    out[plaintext.len()..plaintext.len() + TAG_LEN].copy_from_slice(&tag);
-    Ok(plaintext.len() + TAG_LEN)
+    out[plaintext_len..plaintext_len + TAG_LEN].copy_from_slice(&tag);
+    Ok(plaintext_len + TAG_LEN)
 }
 
 /// Decrypts a section the way a recipient does; used by the tests and by host

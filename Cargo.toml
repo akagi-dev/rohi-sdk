@@ -37,7 +37,7 @@ rohi-service = { path = "crates/service" }
 rohi-service-derive = { path = "crates/service-derive" }
 rohi-control-proto = { path = "crates/control-proto" }
 rohi-telemetry-robonomics = { path = "crates/telemetry-robonomics" }
-rohi-connectivity = { path = "crates/connectivity" }
+rohi-connectivity = { path = "crates/connectivity", default-features = false }
 rohi-control = { path = "crates/control" }
 rohi-control-endpoints = { path = "crates/control-endpoints" }
 rohi-control-ble = { path = "crates/control-ble" }

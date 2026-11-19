@@ -18,9 +18,12 @@
 use rohi_telemetry::PacketProfileId;
 
 use super::*;
+
+// The capacities the tests exercise: more than a device keeps, to cover every edge.
+type RouteSet = crate::Routes<3, 2>;
 use crate::config::ProfileBinding;
 
-type R = Router<2, 4, 16>;
+type R = Router<3, 2, 2, 4, 16>;
 
 fn t(ms: u64) -> MonotonicTimestamp {
     MonotonicTimestamp::from_millis(ms)

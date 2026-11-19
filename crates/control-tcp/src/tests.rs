@@ -124,6 +124,16 @@ impl Acceptor for Clients {
     }
 }
 
+// The records of these tests are plaintext: the endpoint is open.
+fn plain_access() -> ControlAccess {
+    let access = ControlAccess::new(|_| false);
+    access.set_mode(
+        rohi_control::Transport::Tcp,
+        rohi_control::TransportAccessMode::Open,
+    );
+    access
+}
+
 type Demo = Controller<Device<(), (), ()>, OpenPolicy>;
 
 fn controller() -> Demo {
@@ -194,7 +204,7 @@ fn settle<B: rohi_control::ControlBackend>(
 /// Serves the connections in order, then stops.
 fn serve(connections: &[&Connection]) {
     let controller = controller();
-    let access = ControlAccess::new(|_| false);
+    let access = plain_access();
     let hub = ControlHub::<2>::with_access(&access);
     let clients = Clients(connections.iter().map(|c| (*c).clone()).collect());
     let mut control = ControlTcp::new(clients, &hub);
@@ -344,7 +354,7 @@ fn run_serves_until_the_acceptor_fails() {
     }
 
     let controller = controller();
-    let access = ControlAccess::new(|_| false);
+    let access = plain_access();
     let hub = ControlHub::<2>::with_access(&access);
     let mut control = ControlTcp::new(Failing(3), &hub);
     assert_eq!(drive(&hub, &controller, control.run()), "listener closed");
@@ -353,7 +363,7 @@ fn run_serves_until_the_acceptor_fails() {
 #[test]
 fn a_request_with_no_free_slot_is_answered_busy_and_its_payload_is_skipped() {
     let controller = controller();
-    let access = ControlAccess::new(|_| false);
+    let access = plain_access();
     let hub = ControlHub::<2>::with_access(&access);
     // Two BLE connections own both slots.
     let first = hub.connect(rohi_control::Transport::Ble).unwrap();
@@ -376,7 +386,7 @@ fn a_request_with_no_free_slot_is_answered_busy_and_its_payload_is_skipped() {
 #[test]
 fn a_client_beyond_the_session_limit_is_refused() {
     let controller = controller();
-    let access = ControlAccess::new(|_| false);
+    let access = plain_access();
     let hub = ControlHub::<2>::with_access(&access);
     let live: Vec<_> = (0..rohi_control::MAX_SESSIONS)
         .map(|_| hub.connect(rohi_control::Transport::Ble).unwrap())
@@ -391,7 +401,7 @@ fn a_client_beyond_the_session_limit_is_refused() {
 #[test]
 fn every_tcp_connection_is_its_own_session_across_transports() {
     let controller = controller();
-    let access = ControlAccess::new(|_| false);
+    let access = plain_access();
     let hub = ControlHub::<2>::with_access(&access);
     let ble = hub.connect(rohi_control::Transport::Ble).unwrap();
     let wire = Connection::new(&get_info(1), 4096);
@@ -512,7 +522,7 @@ fn a_stream_is_released_with_its_connection_and_never_reaches_the_next_client() 
     let first = Connection::new(&[export(), read_stream()].concat(), 4096);
     let second = Connection::new(&read_stream(), 4096);
     let clients = Clients([first.clone(), second.clone()].into());
-    let access = ControlAccess::new(|_| false);
+    let access = plain_access();
     let hub = ControlHub::<2>::with_access(&access);
     let mut control = ControlTcp::new(clients, &hub);
 
@@ -550,7 +560,7 @@ fn a_stream_left_open_cannot_be_read_by_the_next_connection_even_if_it_lives() {
     let first = Connection::new(&export(), 4096);
     let second = Connection::new(&read_stream(), 4096);
     let clients = Clients([first.clone(), second.clone()].into());
-    let access = ControlAccess::new(|_| false);
+    let access = plain_access();
     let hub = ControlHub::<2>::with_access(&access);
     let mut control = ControlTcp::new(clients, &hub);
     drive(&hub, &controller, control.serve_next()).unwrap();
@@ -561,4 +571,473 @@ fn a_stream_left_open_cannot_be_read_by_the_next_connection_even_if_it_lives() {
         &responses(&second.outgoing())[0],
         pb::ErrorCode::NotFound
     ));
+}
+
+// ---------------------------------------------------------------------------
+// The secure channel: restricted endpoints
+// ---------------------------------------------------------------------------
+
+mod secure_endpoint {
+    use core::cell::Cell;
+
+    use rohi_control::{AccessPolicy, Transport};
+
+    use super::*;
+    use crate::PskSource;
+    use crate::error_kind;
+    use crate::secure::{
+        CLIENT_FINISH_LEN, CLIENT_HELLO_LEN, Channel, ClientHandshake, NONCE_LEN, PSK_LEN,
+        RECORD_HEADER_LEN, SERVER_HELLO_LEN, TAG_LEN,
+    };
+
+    const KEY: [u8; PSK_LEN] = [0x5a; PSK_LEN];
+
+    struct Key(Cell<Option<[u8; PSK_LEN]>>);
+
+    impl PskSource for &Key {
+        fn psk(&self) -> Option<[u8; PSK_LEN]> {
+            self.0.get()
+        }
+    }
+
+    fn entropy(out: &mut [u8]) -> bool {
+        out.fill(0x22);
+        true
+    }
+
+    fn restricted_access() -> ControlAccess {
+        let access = ControlAccess::new(entropy);
+        access.set_tcp_psk(true);
+        access
+    }
+
+    // A device whose access policy is the real one, to see what the link reaches.
+    type Secured<'a> = Controller<Device<(), (), ()>, AccessPolicy<'a>>;
+
+    fn secured(access: &ControlAccess) -> Secured<'_> {
+        let info = DeviceInfo {
+            firmware: "demo-0.1.0",
+            board: "demo-board",
+        };
+        Controller::new(
+            Device::new(info, || 0, (), (), ()),
+            AccessPolicy::new(access),
+        )
+    }
+
+    // What the client of a scripted connection sends, and the channel to read what comes back.
+    struct Script {
+        bytes: Vec<u8>,
+        channel: Channel,
+        server_hello: Option<[u8; SERVER_HELLO_LEN]>,
+    }
+
+    impl Script {
+        // The device nonce of these tests is what `entropy` fills: 0x22.
+        fn start(key: &[u8; PSK_LEN]) -> Self {
+            let (client, hello) = ClientHandshake::start(key, &[0x11; NONCE_LEN]);
+            // The answer of the device is computable here: it only depends on the key and the nonces.
+            let (_, server_hello) =
+                crate::secure::ServerHandshake::respond(key, &hello, &[0x22; NONCE_LEN]).unwrap();
+            let (channel, finish) = match client.on_server_hello(&server_hello) {
+                Ok(done) => done,
+                Err(_) => panic!("the test client knows its own key"),
+            };
+            let mut bytes = hello.to_vec();
+            bytes.extend_from_slice(&finish);
+            Self {
+                bytes,
+                channel,
+                server_hello: Some(server_hello),
+            }
+        }
+
+        // The hello with the key of the client, and a proof that cannot verify.
+        fn with_another_key() -> Self {
+            let mut script = Self::start(&[0x77; PSK_LEN]);
+            script.server_hello = None;
+            script
+        }
+
+        fn seal(&mut self, payload: &[u8]) -> Vec<u8> {
+            let mut data = payload.to_vec();
+            let (header, tag) = self.channel.seal(&mut data).unwrap();
+            [header.as_slice(), &data, &tag].concat()
+        }
+
+        fn send(&mut self, payload: &[u8]) {
+            let record = self.seal(payload);
+            self.bytes.extend_from_slice(&record);
+        }
+
+        fn request(&mut self, call: Call, id: u32) {
+            let request = pb::Request {
+                protocol_version: PROTOCOL_VERSION,
+                request_id: id,
+                request: Some(call),
+            };
+            let mut bytes = [0u8; 64];
+            let len = encode(&request, &mut bytes).unwrap();
+            self.send(&bytes[..len]);
+        }
+
+        // The responses the device wrote after its hello.
+        fn responses(&mut self, written: &[u8]) -> Vec<pb::Response> {
+            let mut rest = &written[SERVER_HELLO_LEN.min(written.len())..];
+            let mut out = Vec::new();
+            while !rest.is_empty() {
+                let header: [u8; RECORD_HEADER_LEN] = rest[..RECORD_HEADER_LEN].try_into().unwrap();
+                let len = self.channel.open_header(header, MAX_RESPONSE_LEN).unwrap();
+                let mut data = rest[RECORD_HEADER_LEN..RECORD_HEADER_LEN + len].to_vec();
+                let tag: [u8; TAG_LEN] = rest
+                    [RECORD_HEADER_LEN + len..RECORD_HEADER_LEN + len + TAG_LEN]
+                    .try_into()
+                    .unwrap();
+                self.channel.open(header, &mut data, &tag).unwrap();
+                out.push(decode(&data).unwrap());
+                rest = &rest[RECORD_HEADER_LEN + len + TAG_LEN..];
+            }
+            out
+        }
+    }
+
+    // Serves one scripted connection to its end on a restricted endpoint with `key`.
+    fn serve_one(access: &ControlAccess, key: &Key, bytes: &[u8]) -> Connection {
+        let controller = secured(access);
+        let hub = ControlHub::<2>::with_access(access);
+        let wire = Connection::new(bytes, 4096);
+        let mut control = ControlTcp::with_psk(Clients([wire.clone()].into()), &hub, key);
+        drive_secured(&hub, &controller, control.serve_next()).unwrap();
+        wire
+    }
+
+    fn drive_secured<T>(
+        hub: &ControlHub<'_, 2>,
+        controller: &Secured<'_>,
+        future: impl core::future::Future<Output = T>,
+    ) -> T {
+        match block_on(select(hub.serve(controller), future)) {
+            Either::First(never) => never,
+            Either::Second(value) => value,
+        }
+    }
+
+    fn info(id: u32) -> Call {
+        let _ = id;
+        Call::GetInfo(pb::GetInfoRequest {})
+    }
+
+    fn reset() -> Call {
+        // A mutation: it reaches a registry (and is answered NotFound there) only on a secured link.
+        Call::ResetConfigSection(pb::ResetConfigSectionRequest::default())
+    }
+
+    #[test]
+    fn an_authenticated_client_is_served_over_encrypted_records() {
+        let access = restricted_access();
+        let key = Key(Cell::new(Some(KEY)));
+        let mut script = Script::start(&KEY);
+        script.request(info(1), 1);
+        script.request(info(2), 2);
+        let wire = serve_one(&access, &key, &script.bytes);
+        let written = wire.outgoing();
+        // The hello of the device, then the encrypted answers: no plaintext header anywhere.
+        assert_eq!(&written[..5], b"ROHI\x01");
+        assert_eq!(&written[..SERVER_HELLO_LEN], script.server_hello.unwrap());
+        let answers = script.responses(&written);
+        assert_eq!(answers.len(), 2);
+        assert_eq!(answers[0].request_id, 1);
+        let Some(Reply::GetInfo(info)) = &answers[1].response else {
+            panic!("{answers:?}")
+        };
+        assert_eq!(info.board.as_str(), "demo-board");
+        assert!(
+            !written.windows(10).any(|window| window == b"demo-board"),
+            "the response is not in the clear"
+        );
+        assert_eq!(access.stats(Transport::Tcp).auth_failures, 0);
+    }
+
+    #[test]
+    fn the_handshake_makes_the_link_encrypted_and_authenticated_for_the_policy() {
+        let access = restricted_access();
+        let key = Key(Cell::new(Some(KEY)));
+        let mut script = Script::start(&KEY);
+        script.request(reset(), 7);
+        let wire = serve_one(&access, &key, &script.bytes);
+        let answers = script.responses(&wire.outgoing());
+        // Allowed (and then NotFound: the demo device has no such section), not PermissionDenied.
+        assert!(
+            is_error(&answers[0], pb::ErrorCode::NotFound),
+            "{answers:?}"
+        );
+        let stats = access.stats(Transport::Tcp);
+        assert_eq!((stats.accepted, stats.denied), (1, 0));
+    }
+
+    #[test]
+    fn a_client_with_another_key_gets_nothing_and_nothing_is_processed() {
+        let access = restricted_access();
+        let key = Key(Cell::new(Some(KEY)));
+        let mut script = Script::with_another_key();
+        script.request(reset(), 1);
+        let wire = serve_one(&access, &key, &script.bytes);
+        // The device answered the hello (it does not reveal what it knows about the key), then
+        // read the client proof, found it wrong and ended the connection.
+        let written = wire.outgoing();
+        assert_eq!(written.len(), SERVER_HELLO_LEN);
+        let stats = access.stats(Transport::Tcp);
+        assert_eq!((stats.accepted, stats.denied), (0, 0));
+        assert_eq!(stats.auth_failures, 1);
+        assert_eq!(stats.last_error, error_kind::AUTH);
+    }
+
+    #[test]
+    fn plaintext_records_are_never_served_on_a_restricted_endpoint() {
+        let access = restricted_access();
+        let key = Key(Cell::new(Some(KEY)));
+        // The framing of the open mode, and a handshake that is not one.
+        for bytes in [
+            get_info(1),
+            [get_info(1), get_info(2)].concat(),
+            std::vec![0u8; CLIENT_HELLO_LEN + CLIENT_FINISH_LEN],
+        ] {
+            let wire = serve_one(&access, &key, &bytes);
+            assert!(
+                wire.outgoing().is_empty(),
+                "nothing is answered in the clear"
+            );
+        }
+        assert_eq!(access.stats(Transport::Tcp).accepted, 0);
+    }
+
+    #[test]
+    fn without_a_key_a_restricted_endpoint_serves_nobody() {
+        let access = ControlAccess::new(entropy);
+        let key = Key(Cell::new(None));
+        let mut script = Script::start(&KEY);
+        script.request(info(1), 1);
+        let wire = serve_one(&access, &key, &script.bytes);
+        assert!(wire.outgoing().is_empty());
+        assert_eq!(access.stats(Transport::Tcp).last_error, error_kind::NO_PSK);
+    }
+
+    #[test]
+    fn without_a_random_source_the_client_is_refused() {
+        let access = ControlAccess::new(|_| false);
+        access.set_tcp_psk(true);
+        let key = Key(Cell::new(Some(KEY)));
+        let script = Script::start(&KEY);
+        let wire = serve_one(&access, &key, &script.bytes);
+        assert!(wire.outgoing().is_empty());
+        assert_eq!(access.stats(Transport::Tcp).last_error, error_kind::NO_PSK);
+    }
+
+    #[test]
+    fn a_tampered_record_ends_the_connection_without_a_response() {
+        let access = restricted_access();
+        let key = Key(Cell::new(Some(KEY)));
+        for index in 0..(RECORD_HEADER_LEN + 5 + TAG_LEN) {
+            let mut script = Script::start(&KEY);
+            let good = script.bytes.len();
+            script.request(info(1), 1);
+            script.request(info(2), 2);
+            let mut bytes = script.bytes.clone();
+            bytes[good + index] ^= 0x01;
+            let wire = serve_one(&access, &key, &bytes);
+            assert_eq!(wire.outgoing().len(), SERVER_HELLO_LEN, "byte {index}");
+        }
+        assert_eq!(access.stats(Transport::Tcp).accepted, 0);
+    }
+
+    #[test]
+    fn a_replayed_dropped_or_reordered_record_ends_the_connection() {
+        let access = restricted_access();
+        let key = Key(Cell::new(Some(KEY)));
+        let mut script = Script::start(&KEY);
+        let handshake = script.bytes.clone();
+        let first = script.seal(&[0x08, 0x01]);
+        let second = script.seal(&[0x08, 0x02]);
+        let third = script.seal(&[0x08, 0x03]);
+        // Replay: the first record twice. The first is processed (a request that is not a Request
+        // is answered with an error), the repetition ends the connection.
+        for sequence in [
+            [first.clone(), first.clone()].concat(),
+            [second.clone()].concat(),
+            [first.clone(), third.clone()].concat(),
+            [first.clone(), third.clone(), second.clone()].concat(),
+        ] {
+            let bytes = [handshake.clone(), sequence].concat();
+            let wire = serve_one(&access, &key, &bytes);
+            let mut decoder = Script {
+                bytes: Vec::new(),
+                channel: Script::start(&KEY).channel,
+                server_hello: None,
+            };
+            let answered = decoder.responses(&wire.outgoing());
+            assert!(answered.len() <= 1, "{answered:?}");
+        }
+    }
+
+    #[test]
+    fn a_connection_that_ends_inside_a_record_gets_no_response() {
+        let access = restricted_access();
+        let key = Key(Cell::new(Some(KEY)));
+        let mut script = Script::start(&KEY);
+        script.request(info(1), 1);
+        for cut in [
+            1,
+            RECORD_HEADER_LEN,
+            RECORD_HEADER_LEN + 3,
+            script.bytes.len() - 1,
+        ] {
+            let wire = serve_one(
+                &access,
+                &key,
+                &script.bytes[..script.bytes.len() - cut.min(script.bytes.len())],
+            );
+            let _ = wire;
+        }
+        let truncated = &script.bytes[..script.bytes.len() - 1];
+        let wire = serve_one(&access, &key, truncated);
+        assert_eq!(wire.outgoing().len(), SERVER_HELLO_LEN);
+    }
+
+    #[test]
+    fn a_record_over_the_request_limit_ends_the_connection_in_silence() {
+        let access = restricted_access();
+        let key = Key(Cell::new(Some(KEY)));
+        let script = Script::start(&KEY);
+        let mut bytes = script.bytes.clone();
+        // A header that claims more than a request can be: the data is never read.
+        let len = (MAX_REQUEST_LEN + 1) as u16;
+        bytes.extend_from_slice(&[1, (len >> 8) as u8, len as u8]);
+        bytes.extend_from_slice(&std::vec![0u8; MAX_REQUEST_LEN + 1 + TAG_LEN]);
+        let wire = serve_one(&access, &key, &bytes);
+        assert_eq!(wire.outgoing().len(), SERVER_HELLO_LEN);
+        assert_eq!(access.stats(Transport::Tcp).last_error, error_kind::FRAME);
+    }
+
+    #[test]
+    fn a_new_key_ends_the_connections_of_the_old_one() {
+        let access = restricted_access();
+        let key = Key(Cell::new(Some(KEY)));
+        let mut script = Script::start(&KEY);
+        script.request(info(1), 1);
+        script.request(info(2), 2);
+        // A stream that provisions another key once the first answer was written.
+        struct Rotating<'a> {
+            inner: Connection,
+            access: &'a ControlAccess,
+        }
+        impl ErrorType for Rotating<'_> {
+            type Error = Reset;
+        }
+        impl Read for Rotating<'_> {
+            async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Reset> {
+                // The second record is requested after the first answer went out.
+                if self.inner.outgoing().len() > SERVER_HELLO_LEN {
+                    self.access.set_tcp_psk(true);
+                }
+                self.inner.read(buf).await
+            }
+        }
+        impl Write for Rotating<'_> {
+            async fn write(&mut self, buf: &[u8]) -> Result<usize, Reset> {
+                self.inner.write(buf).await
+            }
+            async fn flush(&mut self) -> Result<(), Reset> {
+                Ok(())
+            }
+        }
+        struct One<'a>(Option<Rotating<'a>>);
+        impl<'a> Acceptor for One<'a> {
+            type Stream = Rotating<'a>;
+            type Error = Infallible;
+            async fn accept(&mut self) -> Result<Rotating<'a>, Infallible> {
+                match self.0.take() {
+                    Some(stream) => Ok(stream),
+                    None => core::future::pending().await,
+                }
+            }
+        }
+        let wire = Connection::new(&script.bytes, 4096);
+        let controller = secured(&access);
+        let hub = ControlHub::<2>::with_access(&access);
+        let mut control = ControlTcp::with_psk(
+            One(Some(Rotating {
+                inner: wire.clone(),
+                access: &access,
+            })),
+            &hub,
+            &key,
+        );
+        drive_secured(&hub, &controller, control.serve_next()).unwrap();
+        // Only the first request was answered.
+        assert_eq!(script.responses(&wire.outgoing()).len(), 1);
+    }
+
+    #[test]
+    fn cancelling_the_serving_future_closes_the_session_and_leaves_nothing_behind() {
+        let access = restricted_access();
+        let key = Key(Cell::new(Some(KEY)));
+        let script = Script::start(&KEY);
+        // A client that connects, authenticates and then says nothing.
+        struct Silent(Connection);
+        impl ErrorType for Silent {
+            type Error = Reset;
+        }
+        impl Read for Silent {
+            async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Reset> {
+                if self.0.0.borrow().incoming.is_empty() {
+                    core::future::pending::<()>().await;
+                }
+                self.0.read(buf).await
+            }
+        }
+        impl Write for Silent {
+            async fn write(&mut self, buf: &[u8]) -> Result<usize, Reset> {
+                self.0.write(buf).await
+            }
+            async fn flush(&mut self) -> Result<(), Reset> {
+                Ok(())
+            }
+        }
+        struct One(Option<Silent>);
+        impl Acceptor for One {
+            type Stream = Silent;
+            type Error = Infallible;
+            async fn accept(&mut self) -> Result<Silent, Infallible> {
+                match self.0.take() {
+                    Some(stream) => Ok(stream),
+                    None => core::future::pending().await,
+                }
+            }
+        }
+        let controller = secured(&access);
+        let hub = ControlHub::<2>::with_access(&access);
+        let mut control = ControlTcp::with_psk(
+            One(Some(Silent(Connection::new(&script.bytes, 4096)))),
+            &hub,
+            &key,
+        );
+        // The future never completes; stop it after the worker had time to see the connection.
+        let mut cancelled = false;
+        drive_secured(&hub, &controller, async {
+            let serving = control.serve_next();
+            let waiting = async {
+                for _ in 0..16 {
+                    embassy_futures::yield_now().await;
+                }
+            };
+            if let Either::Second(()) = select(serving, waiting).await {
+                cancelled = true;
+            }
+            for _ in 0..8 {
+                embassy_futures::yield_now().await;
+            }
+        });
+        assert!(cancelled);
+        assert_eq!(access.stats(Transport::Tcp).sessions, 0);
+    }
 }

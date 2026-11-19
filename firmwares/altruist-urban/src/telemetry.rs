@@ -27,8 +27,9 @@ use core::fmt;
 
 use log::{info, warn};
 use rohi_sdk::telemetry::ProfileError;
+use rohi_sdk::telemetry::TelemetryConfig;
 use rohi_sdk::telemetry::managed::{
-    ProfileSet, StoreError, TelemetrySection, TelemetryService, TelemetryState, TelemetryStore,
+    StoreError, TelemetrySection, TelemetryService, TelemetryState, TelemetryStore,
 };
 use rohi_sdk::telemetry_robonomics::RobonomicsCapabilities;
 
@@ -36,10 +37,25 @@ use crate::bindings::PrivateBinding;
 use crate::config::{ConfigHandle, ServiceError};
 use crate::tasks::RawMutex;
 
-static STATE: TelemetryState<RawMutex> = TelemetryState::new();
+/// Packet profiles of the device: the storage of the policy, of the runtime state and of the
+/// stored section is sized for this many. A stored section with more is refused, not truncated.
+pub const PROFILES: usize = 2;
+/// Private recipients of a profile; Robonomics is the only compiled packet format.
+pub const RECIPIENTS: usize = 1;
+
+/// The packet profiles of the device.
+pub type ProfileSet = TelemetryConfig<PROFILES, RECIPIENTS>;
+
+/// The persisted section of the packet profiles of the device.
+pub type Section = TelemetrySection<PROFILES, RECIPIENTS>;
+
+/// The effective packet profiles, for the capacities of the device.
+pub type State = TelemetryState<RawMutex, PROFILES, RECIPIENTS>;
+
+static STATE: State = TelemetryState::new();
 
 /// The effective packet profiles, with the change signal consumers wait on.
-pub fn state() -> &'static TelemetryState<RawMutex> {
+pub fn state() -> &'static State {
     &STATE
 }
 
@@ -48,9 +64,9 @@ pub fn state() -> &'static TelemetryState<RawMutex> {
 pub struct TelemetryBinding;
 
 impl PrivateBinding for TelemetryBinding {
-    type Section = TelemetrySection;
+    type Section = Section;
 
-    fn publish(section: Option<&TelemetrySection>) {
+    fn publish(section: Option<&Section>) {
         match section {
             Some(section) => {
                 if let Err(error) = validate_profiles(&section.0) {
@@ -93,7 +109,8 @@ pub const fn store(config: ConfigHandle) -> StoredProfiles {
 }
 
 /// The `telemetry` service as the firmware composes it.
-pub type UrbanTelemetry = TelemetryService<RawMutex, StoredProfiles, RobonomicsCapabilities>;
+pub type UrbanTelemetry =
+    TelemetryService<RawMutex, StoredProfiles, RobonomicsCapabilities, PROFILES, RECIPIENTS>;
 
 /// The service over the profiles stored behind `config`.
 pub const fn service(config: ConfigHandle) -> UrbanTelemetry {
@@ -128,9 +145,9 @@ fn empty_profiles(generation: u32) -> ProfileSet {
     }
 }
 
-impl TelemetryStore for StoredProfiles {
+impl TelemetryStore<PROFILES, RECIPIENTS> for StoredProfiles {
     async fn load(&self) -> Result<ProfileSet, StoreError> {
-        match self.0.get::<TelemetrySection>().await {
+        match self.0.get::<Section>().await {
             Ok(Some(section)) => {
                 if let Err(error) = validate_profiles(&section.0) {
                     warn_invalid_profiles(error);

@@ -24,10 +24,127 @@ use crate::wire::device_v1::{Urban, UrbanSensor, UrbanSensor_};
 use crate::wire::sensor_v1::{BME280, BME280_, Temperature};
 use crate::wire::{DecodeError, EncodeError, decode, encode, limits, signing_preimage};
 
+fn varint(value: usize) -> usize {
+    match value {
+        0..=0x7f => 1,
+        0x80..=0x3fff => 2,
+        _ => 3,
+    }
+}
+
 #[test]
-fn worst_case_sizes_fit_the_limits() {
-    assert!(Message::MAX_SIZE.unwrap() <= limits::MAX_MESSAGE_LEN);
-    assert!(SignedEnvelope::MAX_SIZE.unwrap() <= limits::MAX_ENVELOPE_LEN);
+fn the_limits_are_the_worst_case_of_the_compiled_capabilities() {
+    use crate::wire::crypto_v1::Encrypted;
+    use crate::wire::sensor_v1::{BME280, GPS, ICS43434, SDS011};
+
+    // The measurements the encoder supports are the sensors of a section.
+    assert_eq!(
+        crate::encoder::supported().bits().count(),
+        limits::MAX_SENSORS_PER_MESSAGE
+    );
+    // One entry of a list of `UrbanSensor`: the entry's tag and length, the tag and length of
+    // the oneof, and the sensor message at its largest.
+    let entry = |sensor: usize| 2 + 2 + sensor;
+    let sensors = entry(GPS::MAX_SIZE.unwrap())
+        + 3 * entry(BME280::MAX_SIZE.unwrap())
+        + 2 * entry(SDS011::MAX_SIZE.unwrap())
+        + 2 * entry(ICS43434::MAX_SIZE.unwrap());
+    assert_eq!(sensors, limits::MAX_PRIVATE_PLAINTEXT_LEN);
+    assert_eq!(limits::MAX_PRIVATE_SECTIONS, 1);
+
+    // `crypto.v1.Encrypted` as `format.rs` writes it: version 1, "xchacha20", the sender key, the
+    // 24-byte nonce and the ciphertext with its tag.
+    let ciphertext = limits::MAX_PRIVATE_PLAINTEXT_LEN + 16;
+    let encrypted = 2
+        + (2 + 9)
+        + (2 + 32)
+        + (2 + limits::NONCE_XCHACHA_LEN)
+        + (1 + varint(ciphertext) + ciphertext);
+    assert_eq!(encrypted, limits::MAX_ENCRYPTED_LEN);
+    assert!(Encrypted::MAX_SIZE.unwrap() >= encrypted);
+
+    let urban = sensors + limits::MAX_PRIVATE_SECTIONS * (1 + varint(encrypted) + encrypted);
+    let message = (2 + Meta::MAX_SIZE.unwrap()) + (1 + varint(urban) + urban);
+    assert_eq!(message, limits::MAX_MESSAGE_LEN);
+    let envelope = (2 + limits::ED25519_KEY_LEN)
+        + (2 + limits::NONCE_LEN)
+        + (1 + varint(message) + message)
+        + (2 + limits::ED25519_SIGNATURE_LEN);
+    assert_eq!(envelope, limits::MAX_ENVELOPE_LEN);
+
+    // The schema alone allows more (a list of eight GPS entries); the compiled capabilities do not.
+    assert!(Message::MAX_SIZE.unwrap() >= limits::MAX_MESSAGE_LEN);
+}
+
+#[test]
+fn the_largest_message_of_the_compiled_capabilities_is_exactly_the_limit() {
+    use crate::wire::device_v1::UrbanSensor_::Sensor;
+    use crate::wire::sensor_v1::{
+        GPS, Humidity, ICS43434, ICS43434_, NoiseLevel, PM10, PM25, Pressure, SDS011, SDS011_,
+    };
+
+    let sensor = |sensor| UrbanSensor {
+        sensor: Some(sensor),
+    };
+    let bme = |measurement| {
+        sensor(Sensor::Bme280(BME280 {
+            measurement: Some(measurement),
+        }))
+    };
+    let mut urban = Urban::default();
+    for entry in [
+        sensor(Sensor::Gps(GPS {
+            lat: -179.999_999_999_9,
+            lon: -179.999_999_999_9,
+            height_m: -8_848.123_456_789,
+        })),
+        bme(BME280_::Measurement::Temperature(Temperature {
+            centi_celsius: i32::MIN,
+        })),
+        bme(BME280_::Measurement::Humidity(Humidity {
+            centi_percent: u32::MAX,
+        })),
+        bme(BME280_::Measurement::Pressure(Pressure {
+            deci_pascal: u32::MAX,
+        })),
+        sensor(Sensor::Sds011(SDS011 {
+            measurement: Some(SDS011_::Measurement::Pm25(PM25 {
+                deci_ug_m3: u32::MAX,
+            })),
+        })),
+        sensor(Sensor::Sds011(SDS011 {
+            measurement: Some(SDS011_::Measurement::Pm10(PM10 {
+                deci_ug_m3: u32::MAX,
+            })),
+        })),
+        sensor(Sensor::Ics43434(ICS43434 {
+            measurement: Some(ICS43434_::Measurement::NoiseAvg(NoiseLevel {
+                db: u32::MAX,
+            })),
+        })),
+        sensor(Sensor::Ics43434(ICS43434 {
+            measurement: Some(ICS43434_::Measurement::NoiseMax(NoiseLevel {
+                db: u32::MAX,
+            })),
+        })),
+    ] {
+        urban.public.push(entry).unwrap();
+    }
+    let section = crate::wire::device_v1::EncryptedUrban {
+        sensors: urban.public.clone(),
+    };
+    assert_eq!(section.compute_size(), limits::MAX_PRIVATE_PLAINTEXT_LEN);
+
+    let mut private = heapless::Vec::<u8, { limits::MAX_ENCRYPTED_LEN }>::new();
+    private.resize_default(limits::MAX_ENCRYPTED_LEN).unwrap();
+    urban.private.push(private).unwrap();
+    let mut message = Message::default();
+    message.set_metadata(Meta {
+        node_id: u64::MAX,
+        timestamp: u64::MAX,
+    });
+    message.payload = Some(Message_::Payload::Urban(urban));
+    assert_eq!(message.compute_size(), limits::MAX_MESSAGE_LEN);
 }
 
 fn message() -> Message {

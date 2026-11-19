@@ -49,12 +49,10 @@ use heapless::{Deque, Vec};
 use rohi_telemetry::ProfileStamp;
 use rohi_time::{Backoff, MonotonicTimestamp};
 
-use crate::config::{MAX_FALLBACKS, MAX_ROUTES, RouteId, RouteSet};
+use crate::config::{RouteId, Routes};
 use crate::pool::{PacketHandle, PacketPool};
 use crate::transport::{Disposition, TransportAck, TransportError};
 
-/// Number of delivery paths of a route: the primary and its fallbacks.
-pub const MAX_PATHS: usize = 1 + MAX_FALLBACKS;
 /// First cooldown of a path after a transient failure, in milliseconds.
 pub const BACKOFF_INITIAL_MS: u32 = 5_000;
 /// Longest cooldown after repeated transient failures, in milliseconds.
@@ -143,14 +141,57 @@ impl Path {
     }
 }
 
-struct Runtime<const DEPTH: usize> {
+// The delivery paths of one route: the primary and `F` fallbacks, in priority order.
+#[derive(Clone, Copy)]
+struct Paths<const F: usize> {
+    primary: Path,
+    fallbacks: [Path; F],
+}
+
+impl<const F: usize> Paths<F> {
+    const fn new() -> Self {
+        Self {
+            primary: Path::new(),
+            fallbacks: [Path::new(); F],
+        }
+    }
+
+    // The first `count` paths (at most the primary and all fallbacks).
+    fn first(&self, count: usize) -> impl Iterator<Item = &Path> {
+        core::iter::once(&self.primary)
+            .chain(self.fallbacks.iter())
+            .take(count)
+    }
+}
+
+impl<const F: usize> core::ops::Index<usize> for Paths<F> {
+    type Output = Path;
+
+    fn index(&self, index: usize) -> &Path {
+        match index {
+            0 => &self.primary,
+            n => &self.fallbacks[n - 1],
+        }
+    }
+}
+
+impl<const F: usize> core::ops::IndexMut<usize> for Paths<F> {
+    fn index_mut(&mut self, index: usize) -> &mut Path {
+        match index {
+            0 => &mut self.primary,
+            n => &mut self.fallbacks[n - 1],
+        }
+    }
+}
+
+struct Runtime<const DEPTH: usize, const F: usize> {
     id: RouteId,
     generation: u32,
     destinations: u32,
     interval_s: u32,
     next_publish_at: MonotonicTimestamp,
     outbox: Deque<PacketHandle, DEPTH>,
-    paths: [Path; MAX_PATHS],
+    paths: Paths<F>,
     counters: RouteCounters,
     profile_ok: bool,
     failed_before_delivery: bool,
@@ -171,25 +212,34 @@ pub struct RouteView {
     pub active_path: Option<usize>,
 }
 
-/// The state of all routes over a pool of `SLOTS` packets of `BYTES` bytes
-/// with outboxes of `DEPTH` packets.
-pub struct Router<const DEPTH: usize, const SLOTS: usize, const BYTES: usize> {
+/// The state of up to `ROUTES` routes of up to `FALLBACKS` fallbacks each, over a
+/// pool of `SLOTS` packets of `BYTES` bytes with outboxes of `DEPTH` packets. The
+/// capacities are the storage: there is no unused room for a third route.
+pub struct Router<
+    const ROUTES: usize,
+    const FALLBACKS: usize,
+    const DEPTH: usize,
+    const SLOTS: usize,
+    const BYTES: usize,
+> {
     pool: PacketPool<SLOTS, BYTES>,
-    routes: Vec<Runtime<DEPTH>, MAX_ROUTES>,
+    routes: Vec<Runtime<DEPTH, FALLBACKS>, ROUTES>,
     // Where the next delivery search starts: it moves past a route after every
     // attempt, so a busy route cannot starve the others.
     cursor: usize,
 }
 
-impl<const DEPTH: usize, const SLOTS: usize, const BYTES: usize> Default
-    for Router<DEPTH, SLOTS, BYTES>
+impl<const R: usize, const F: usize, const DEPTH: usize, const SLOTS: usize, const BYTES: usize>
+    Default for Router<R, F, DEPTH, SLOTS, BYTES>
 {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<const DEPTH: usize, const SLOTS: usize, const BYTES: usize> Router<DEPTH, SLOTS, BYTES> {
+impl<const R: usize, const F: usize, const DEPTH: usize, const SLOTS: usize, const BYTES: usize>
+    Router<R, F, DEPTH, SLOTS, BYTES>
+{
     /// No route.
     pub const fn new() -> Self {
         Self {
@@ -209,7 +259,7 @@ impl<const DEPTH: usize, const SLOTS: usize, const BYTES: usize> Router<DEPTH, S
         &self.pool
     }
 
-    fn drop_queue(pool: &mut PacketPool<SLOTS, BYTES>, runtime: &mut Runtime<DEPTH>) -> u32 {
+    fn drop_queue(pool: &mut PacketPool<SLOTS, BYTES>, runtime: &mut Runtime<DEPTH, F>) -> u32 {
         let mut dropped = 0;
         while let Some(handle) = runtime.outbox.pop_front() {
             pool.release(handle);
@@ -226,7 +276,7 @@ impl<const DEPTH: usize, const SLOTS: usize, const BYTES: usize> Router<DEPTH, S
     /// `resolve` gives the current incarnation of a profile.
     pub fn sync(
         &mut self,
-        config: &RouteSet,
+        config: &Routes<R, F>,
         resolve: impl Fn(&str) -> Option<u32>,
         now: MonotonicTimestamp,
     ) {
@@ -252,7 +302,7 @@ impl<const DEPTH: usize, const SLOTS: usize, const BYTES: usize> Router<DEPTH, S
             {
                 if runtime.destinations != route.destinations {
                     runtime.counters.invalidated += Self::drop_queue(&mut self.pool, runtime);
-                    runtime.paths = [Path::new(); MAX_PATHS];
+                    runtime.paths = Paths::new();
                     runtime.destinations = route.destinations;
                 }
                 if runtime.interval_s != route.interval_s {
@@ -272,7 +322,7 @@ impl<const DEPTH: usize, const SLOTS: usize, const BYTES: usize> Router<DEPTH, S
                     // A new route publishes as soon as it is enabled.
                     next_publish_at: now,
                     outbox: Deque::new(),
-                    paths: [Path::new(); MAX_PATHS],
+                    paths: Paths::new(),
                     counters: RouteCounters::default(),
                     profile_ok: ok,
                     failed_before_delivery: false,
@@ -282,7 +332,7 @@ impl<const DEPTH: usize, const SLOTS: usize, const BYTES: usize> Router<DEPTH, S
     }
 
     /// The routes due for a publication at `now`.
-    pub fn due(&self, now: MonotonicTimestamp) -> Vec<usize, MAX_ROUTES> {
+    pub fn due(&self, now: MonotonicTimestamp) -> Vec<usize, R> {
         self.routes
             .iter()
             .enumerate()
@@ -329,7 +379,11 @@ impl<const DEPTH: usize, const SLOTS: usize, const BYTES: usize> Router<DEPTH, S
     /// The next delivery attempt: the head packet of a route with the
     /// highest-priority path that is not cooling down. `endpoints` is the
     /// number of paths the route has (1 + its fallbacks).
-    pub fn next_delivery(&self, config: &RouteSet, now: MonotonicTimestamp) -> Option<Delivery> {
+    pub fn next_delivery(
+        &self,
+        config: &Routes<R, F>,
+        now: MonotonicTimestamp,
+    ) -> Option<Delivery> {
         let count = self.routes.len();
         for offset in 0..count {
             let index = (self.cursor + offset) % count;
@@ -342,7 +396,7 @@ impl<const DEPTH: usize, const SLOTS: usize, const BYTES: usize> Router<DEPTH, S
             };
             let paths = 1 + route.fallbacks.len();
             if let Some(path) =
-                (0..paths.min(MAX_PATHS)).find(|p| runtime.paths[*p].blocked_until <= now)
+                (0..paths.min(F + 1)).find(|p| runtime.paths[*p].blocked_until <= now)
             {
                 return Some(Delivery {
                     route: index,
@@ -443,7 +497,7 @@ impl<const DEPTH: usize, const SLOTS: usize, const BYTES: usize> Router<DEPTH, S
 
     /// The earliest moment something becomes due: a publication, or a cooling
     /// path of a route with queued packets. `None` when nothing is scheduled.
-    pub fn next_wakeup(&self, config: &RouteSet) -> Option<MonotonicTimestamp> {
+    pub fn next_wakeup(&self, config: &Routes<R, F>) -> Option<MonotonicTimestamp> {
         let mut earliest: Option<MonotonicTimestamp> = None;
         let mut consider = |at: MonotonicTimestamp| {
             earliest = Some(earliest.map_or(at, |current| current.min(at)));
@@ -456,8 +510,8 @@ impl<const DEPTH: usize, const SLOTS: usize, const BYTES: usize> Router<DEPTH, S
                 let paths = config
                     .get(runtime.id.as_str())
                     .map_or(1, |route| 1 + route.fallbacks.len())
-                    .min(MAX_PATHS);
-                if let Some(at) = runtime.paths[..paths].iter().map(|p| p.blocked_until).min() {
+                    .min(F + 1);
+                if let Some(at) = runtime.paths.first(paths).map(|p| p.blocked_until).min() {
                     consider(at);
                 }
             }
@@ -466,14 +520,14 @@ impl<const DEPTH: usize, const SLOTS: usize, const BYTES: usize> Router<DEPTH, S
     }
 
     /// The state of every route, in configuration order of creation.
-    pub fn views(&self, config: &RouteSet, now: MonotonicTimestamp) -> Vec<RouteView, MAX_ROUTES> {
+    pub fn views(&self, config: &Routes<R, F>, now: MonotonicTimestamp) -> Vec<RouteView, R> {
         self.routes
             .iter()
             .map(|runtime| {
                 let paths = config
                     .get(runtime.id.as_str())
                     .map_or(1, |route| 1 + route.fallbacks.len())
-                    .min(MAX_PATHS);
+                    .min(F + 1);
                 let active = (0..paths).find(|p| runtime.paths[*p].blocked_until <= now);
                 let state = if !runtime.profile_ok {
                     RouteState::ProfileMissing

@@ -17,6 +17,9 @@
 ///////////////////////////////////////////////////////////////////////////////
 use super::*;
 
+// The capacities the tests exercise: more than a device keeps, to cover every edge.
+type RouteSet = crate::Routes<3, 2>;
+
 type Set = RouteSet;
 
 fn binding(id: &str, incarnation: u32) -> ProfileBinding {
@@ -249,4 +252,83 @@ fn a_broken_stored_value_fails_validation() {
     let mut bad = set;
     bad.routes[0].profile.id = minicbor::decode(&[0x63, b'B', b'a', b'd']).unwrap();
     assert_eq!(bad.validate(), Err(RouteError::InvalidId));
+}
+
+// What the Altruist Urban compiles: 2 routes of a primary and at most 1 fallback.
+type Device = crate::Routes<2, 1>;
+
+fn encode_set<const R: usize, const F: usize>(set: &crate::Routes<R, F>) -> std::vec::Vec<u8> {
+    let mut buffer = [0u8; 2048];
+    let len = rohi_config::encode_to_slice(set, &mut buffer).unwrap();
+    buffer[..len].to_vec()
+}
+
+#[test]
+fn a_section_over_capacity_is_refused_not_truncated() {
+    let mut big = set();
+    for id in ["a", "b", "c"] {
+        big.add_route(id, binding("p", 1), &std::format!("http://{id}.example"))
+            .unwrap();
+    }
+    // Three routes do not fit two slots.
+    assert!(minicbor::decode::<Device>(&encode_set(&big)).is_err());
+    assert!(minicbor::decode::<crate::ConnectivitySection<2, 1>>(&encode_set(&big)).is_err());
+
+    let mut two = set();
+    two.add_route("a", binding("p", 1), "http://a.example")
+        .unwrap();
+    two.add_fallback("a", "f", "http://f.example").unwrap();
+    two.add_fallback("a", "g", "http://g.example").unwrap();
+    // Two fallbacks do not fit one.
+    assert!(minicbor::decode::<Device>(&encode_set(&two)).is_err());
+
+    // What fits is read back whole.
+    two.remove_fallback("a", "g").unwrap();
+    let back = minicbor::decode::<Device>(&encode_set(&two)).unwrap();
+    assert_eq!(back.routes.len(), 1);
+    assert_eq!(back.routes[0].fallbacks.len(), 1);
+    assert_eq!(back.validate(), Ok(()));
+}
+
+#[test]
+fn a_full_device_refuses_one_more_route_or_fallback() {
+    let mut device = Device::default();
+    device
+        .add_route("a", binding("p", 1), "http://a.example")
+        .unwrap();
+    device
+        .add_route("b", binding("p", 1), "http://b.example")
+        .unwrap();
+    assert_eq!(
+        device.add_route("c", binding("p", 1), "http://c.example"),
+        Err(RouteError::TooManyRoutes)
+    );
+    device.add_fallback("a", "f", "http://f.example").unwrap();
+    assert_eq!(
+        device.add_fallback("a", "g", "http://g.example"),
+        Err(RouteError::TooManyFallbacks)
+    );
+}
+
+#[test]
+fn the_capacity_is_the_storage() {
+    // A section of the Altruist Urban is smaller than one of the test capacities.
+    assert!(
+        core::mem::size_of::<crate::ConnectivitySection<2, 1>>()
+            < core::mem::size_of::<crate::ConnectivitySection<3, 2>>()
+    );
+}
+
+#[test]
+fn the_section_identity_did_not_change_with_the_capacity() {
+    use rohi_config::ConfigSection;
+
+    assert_eq!(
+        <crate::ConnectivitySection<2, 1> as ConfigSection>::ID.0,
+        0x4d75_b590_2252_1f7d
+    );
+    assert_eq!(
+        <crate::ConnectivitySection<2, 1> as ConfigSection>::ID,
+        <crate::ConnectivitySection<3, 2> as ConfigSection>::ID
+    );
 }

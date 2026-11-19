@@ -30,8 +30,9 @@
 //! ```
 //!
 //! Each transport has its own access mode ([`crate::control::access`]): TCP is
-//! restricted by default and wants a signature of the administrator key on
-//! every privileged request, BLE is open. TCP is bound to the loopback address
+//! restricted by default and serves only clients that complete the handshake with the
+//! pre-shared key (authenticated, encrypted records), BLE is open (provisioning needs an
+//! encrypted link). TCP is bound to the loopback address
 //! unless the developer asks otherwise, see
 //! [`Args::unsafe_allow_remote`](super::args::Args::unsafe_allow_remote).
 
@@ -161,7 +162,7 @@ pub async fn control_task(controller: &'static HostController) {
 #[cfg(feature = "std-tcp")]
 #[embassy_executor::task]
 pub async fn tcp_task(acceptor: rohi_sdk::host::TcpAcceptor) {
-    let mut control = rohi_sdk::tcp::ControlTcp::new(acceptor, &HUB);
+    let mut control = rohi_sdk::tcp::ControlTcp::with_psk(acceptor, &HUB, crate::control::TcpKey);
     let error = control.run().await;
     log::error!("control: the TCP listener failed: {error}");
 }

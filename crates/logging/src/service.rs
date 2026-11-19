@@ -36,7 +36,7 @@ use rohi_service::{
     ValueKind, WriteError,
 };
 
-use crate::segment::{Batch, MAX_CHUNK_LEN, file_name};
+use crate::segment::{Batch, MAX_CHUNK_LEN, file_name, scratch};
 use crate::storage::{
     ChunkMeta, Limits, LogStorage, MAX_SEGMENTS, Recovery, SegmentId, StorageError, StorageStats,
 };
@@ -747,13 +747,13 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize>
             segment_bytes: config.segment_bytes,
             retention_bytes: config.retention_bytes,
         };
-        let mut chunk = [0u8; MAX_CHUNK_LEN];
+        let mut scratch = scratch();
         for attempt in 0..2 {
             let codec = inner.open_codec.unwrap_or(config.compression);
-            let Ok(len) = inner.batch.encode(codec, &mut chunk) else {
+            let Some(chunk) = inner.batch.encode(codec, &mut scratch).ok() else {
                 break;
             };
-            if inner.open_codec.is_none() || storage.open_capacity() < len {
+            if inner.open_codec.is_none() || storage.open_capacity() < chunk.len() {
                 if attempt == 1 && inner.open_codec.is_some() {
                     break;
                 }
@@ -782,7 +782,7 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize>
                 last_sequence: inner.batch.last_sequence(),
                 raw_len: inner.batch.len() as u32,
             };
-            match storage.append(&chunk[..len], meta).await {
+            match storage.append(chunk, meta).await {
                 Ok(()) => {
                     inner.batch.clear();
                     if storage.open_capacity() < MAX_CHUNK_LEN {

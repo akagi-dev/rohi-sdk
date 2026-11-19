@@ -111,7 +111,6 @@
 //! | actions | `ListActions` (20, paged by `offset`: a page holds at most `MAX_ACTIONS` and `total` is the count of the device), `GetActionSchema` (21), `InvokeAction` (22) |
 //! | stream | `ReadStream` (23), `CloseStream` (24); the files of a stream come as `action_stream` (25), the answer of `InvokeAction` |
 //! | log tail | `TailLogs` (25), answered by `tail_logs` (26): one cursor paged page of text of at most [`limits::MAX_TAIL_CHUNK`] bytes, no stream |
-//! | request authorization | `GetAuthChallenge` (26), answered by `get_auth_challenge` (27); `SignedRequest` (27) wraps one privileged request with an Ed25519 signature. The signed wrapper is not a field of [`control::Request`] in Rust: build and parse it as [`control::SignedEnvelope`], which has the same wire layout. A refusal is `PermissionDenied` with a stable `reason` |
 //!
 //! **Schemas drive clients.** The protocol knows no device module. A device
 //! publishes descriptors (`FieldDescriptor`, `ConfigFieldDescriptor`,
@@ -199,8 +198,7 @@
 //!
 //! | Constant | Value | Bounds |
 //! |----------|-------|--------|
-//! | [`limits::MAX_REQUEST_LEN`] | 896 | encoded `Request`, including the signed wrapper |
-//! | [`limits::MAX_INNER_REQUEST_LEN`] | 768 | encoded `Request` that is signed or not (the inner bytes of a `SignedRequest`) |
+//! | [`limits::MAX_REQUEST_LEN`] | 768 | encoded `Request` |
 //! | [`limits::MAX_RESPONSE_LEN`] | 2048 | encoded `Response` |
 //! | [`limits::MAX_TEXT_LEN`] | 32 | firmware and board strings |
 //! | [`limits::MAX_NAME_LEN`] | 24 | section, service, action, field, issue names |

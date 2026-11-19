@@ -81,10 +81,21 @@ const TAIL: usize = 16;
 type Runtime = Logging<NoopRawMutex, &'static Clock, Ram, 512, TAIL>;
 type Service = LoggingService<'static, NoopRawMutex, &'static Clock, Ram, 512, TAIL>;
 
+/// The suffix of the files a device of this build downloads.
+#[cfg(feature = "lz4")]
+const FILE_EXTENSION: &str = ".log.lz4";
+#[cfg(not(feature = "lz4"))]
+const FILE_EXTENSION: &str = ".log";
+const FIRST_FILE: &str = if cfg!(feature = "lz4") {
+    "rohi1.log.lz4"
+} else {
+    "rohi1.log"
+};
+
 const CONFIG: LoggingConfig = LoggingConfig {
     level: rohi_logging::LogLevel::Debug,
     storage: LogStorageKind::Internal,
-    compression: Compression::Lz4,
+    compression: rohi_logging::DEFAULT_COMPRESSION,
     retention_bytes: 4096 * 12,
     segment_bytes: 4096,
     flush_interval_ms: 1_000,
@@ -273,17 +284,28 @@ fn files_in(dir: &Path) -> Vec<String> {
         .unwrap()
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
         .collect();
-    names.sort();
+    // By the number in `rohi<N>.log`: the order of a download, past nine files too.
+    names.sort_by_key(|name| {
+        let digits: String = name
+            .chars()
+            .skip(4)
+            .take_while(char::is_ascii_digit)
+            .collect();
+        (digits.parse::<u64>().unwrap_or(0), name.clone())
+    });
     names
 }
 
 /// The records of a downloaded file, each file decoded on its own.
 fn decode(path: &Path) -> Vec<u64> {
+    #[cfg(feature = "lz4")]
     let codec = if path.extension().is_some_and(|ext| ext == "lz4") {
         Compression::Lz4
     } else {
         Compression::None
     };
+    #[cfg(not(feature = "lz4"))]
+    let codec = Compression::None;
     let bytes = std::fs::read(path).unwrap();
     let mut decoder = SegmentDecoder::new(codec);
     let mut sequences = Vec::new();
@@ -716,7 +738,7 @@ async fn download_writes_every_retained_file_unchanged_to_the_directory() {
     let names = files_in(&dir);
     assert!(names.len() >= 2, "{names:?}");
     for (index, name) in names.iter().enumerate() {
-        assert_eq!(name, &format!("rohi{}.log.lz4", index + 1).as_str());
+        assert_eq!(name, &format!("rohi{}{FILE_EXTENSION}", index + 1).as_str());
     }
     // Each file decodes on its own; together they are the retained history.
     let mut sequences = Vec::new();
@@ -730,7 +752,7 @@ async fn download_writes_every_retained_file_unchanged_to_the_directory() {
     }
     assert_eq!(*sequences.last().unwrap(), 400);
     assert!(outcome.stdout.contains(&format!("{} file(s)", names.len())));
-    assert!(outcome.stderr.contains("rohi1.log.lz4"));
+    assert!(outcome.stderr.contains(FIRST_FILE));
     // Nothing partial is left behind.
     assert!(names.iter().all(|name| !name.ends_with(".part")));
     let _ = std::fs::remove_dir_all(&dir);
@@ -777,18 +799,18 @@ async fn a_download_does_not_replace_files_unless_forced_and_always_closes_its_s
     let args = ["logs", "download", "-d", dir.to_str().unwrap()];
 
     run(&bench, &args).await.ok();
-    let first = std::fs::read(dir.join("rohi1.log.lz4")).unwrap();
+    let first = std::fs::read(dir.join(FIRST_FILE)).unwrap();
 
     // The files are there: refused before anything is written.
     let again = run(&bench, &args).await;
     match again.result {
         Err(CliError::Usage(ref message)) => {
-            assert!(message.contains("rohi1.log.lz4"), "{message}");
+            assert!(message.contains(FIRST_FILE), "{message}");
             assert!(message.contains("--force"));
         }
         ref other => panic!("{other:?}"),
     }
-    assert_eq!(std::fs::read(dir.join("rohi1.log.lz4")).unwrap(), first);
+    assert_eq!(std::fs::read(dir.join(FIRST_FILE)).unwrap(), first);
 
     // Forced, three times over: the device allows two open streams, so a
     // stream that was not closed would make this fail.

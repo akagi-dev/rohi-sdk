@@ -113,9 +113,9 @@ pub trait PacketFormat {
     /// # Errors
     ///
     /// [`SealError`].
-    async fn seal<'o, const N: usize, const R: usize>(
+    async fn seal<'o, const N: usize, const SRC: usize, const R: usize>(
         &mut self,
-        sections: &PreparedSections<'_, N, R>,
+        sections: &PreparedSections<'_, N, SRC, R>,
         out: &'o mut [u8],
     ) -> Result<SignedPacket<'o>, SealError>;
 }

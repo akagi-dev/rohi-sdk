@@ -22,16 +22,21 @@ use core::cell::RefCell;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 
-use crate::{
-    AdminKey, AuthorizationPolicy, LinkSecurity, Privilege, RequestAuthorization, Transport,
-};
+use crate::{AuthorizationPolicy, LinkSecurity, Privilege, Transport};
 
 /// What a transport endpoint demands for privileged requests.
 ///
 /// | Request | `Open` | `Restricted` on TCP | `Restricted` on BLE |
 /// |---------|--------|---------------------|---------------------|
-/// | read | unsigned | unsigned | unsigned |
-/// | mutate, provision | unsigned | a valid administrator signature | an encrypted (paired) link |
+/// | read | yes | yes (the handshake already proved the client) | yes |
+/// | mutate | yes | an authenticated, encrypted connection (the TCP handshake with the pre-shared key) | an encrypted (paired) link |
+/// | provision | yes | the same as mutate | the same as mutate |
+///
+/// A restricted TCP endpoint does not even read a request before its handshake succeeded, so the
+/// policy never sees an unauthenticated TCP request there. An action that is marked
+/// [`secure_link`](rohi_service::ActionDescriptor::secure_link) (the one that sets the pre-shared key)
+/// needs [`protects_secrets`](AuthorizationPolicy::protects_secrets) on top of this in every
+/// mode: an encrypted link on BLE, an authenticated and encrypted connection on TCP.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransportAccessMode {
     /// Everything is allowed. Deliberately insecure for privileged operations.
@@ -109,7 +114,7 @@ pub struct EndpointStats {
     pub accepted: u32,
     /// Requests the policy refused.
     pub denied: u32,
-    /// Signed requests rejected (bad signature, replay, no challenge).
+    /// Connections that did not authenticate (a TCP handshake that failed).
     pub auth_failures: u32,
     /// Framing, reassembly or I/O errors of the transport.
     pub errors: u32,
@@ -158,15 +163,15 @@ fn index(transport: Transport) -> Option<usize> {
 
 struct State {
     stats: [EndpointStats; 2],
-    admin: Option<[u8; 32]>,
-    epoch: u32,
+    psk_enrolled: bool,
+    psk_epoch: u32,
 }
 
 /// The access state shared by the [`Controller`](crate::Controller) (through
 /// [`AccessPolicy`]), the transports and the endpoint services: the mode of
-/// every transport, the trusted administrator key and the counters.
+/// every transport, whether a pre-shared key of the TCP endpoint is provisioned and the counters.
 ///
-/// Defaults: TCP `Restricted`, BLE `Open`, no administrator key. Nothing here
+/// Defaults: TCP `Restricted`, BLE `Open`, no pre-shared key. Nothing here
 /// touches storage: the owners of the configuration publish into it.
 ///
 /// ```
@@ -193,8 +198,8 @@ impl ControlAccess {
                     EndpointStats::new(EndpointSettings::TCP),
                     EndpointStats::new(EndpointSettings::BLE),
                 ],
-                admin: None,
-                epoch: 0,
+                psk_enrolled: false,
+                psk_epoch: 0,
             })),
             entropy,
         }
@@ -223,23 +228,30 @@ impl ControlAccess {
         }
     }
 
-    /// The trusted administrator key.
-    pub fn admin_key(&self) -> Option<AdminKey> {
-        self.with(|state| {
-            state.admin.map(|key| AdminKey {
-                key,
-                epoch: state.epoch,
-            })
-        })
+    /// Whether a pre-shared key for the TCP endpoint is provisioned. The key itself never
+    /// enters this state: it is held by the platform and read by `rohi-control-tcp` only.
+    pub fn tcp_psk_enrolled(&self) -> bool {
+        self.with(|state| state.psk_enrolled)
     }
 
-    /// Replaces or removes the trusted key. Every challenge issued before is
-    /// void from here on.
-    pub fn set_admin_key(&self, key: Option<[u8; 32]>) {
+    /// The generation of the pre-shared key: it changes every time the key is set or removed, so
+    /// a TCP connection that was authenticated with an older key can be told to end.
+    pub fn tcp_psk_epoch(&self) -> u32 {
+        self.with(|state| state.psk_epoch)
+    }
+
+    /// Records that the pre-shared key was set (`true`), replaced or removed (`false`).
+    pub fn set_tcp_psk(&self, enrolled: bool) {
         self.with(|state| {
-            state.admin = key;
-            state.epoch = state.epoch.wrapping_add(1);
+            state.psk_enrolled = enrolled;
+            state.psk_epoch = state.psk_epoch.wrapping_add(1);
         });
+    }
+
+    /// Fills `dst` with unpredictable bytes from the random source the platform gave this state.
+    /// `false` when it has none, which makes a TCP handshake fail closed.
+    pub fn fill_random(&self, dst: &mut [u8]) -> bool {
+        (self.entropy)(dst)
     }
 
     /// The counters of `transport`.
@@ -327,13 +339,14 @@ impl ControlAccess {
 /// The [`AuthorizationPolicy`] of a [`ControlAccess`]: the mode of the
 /// transport the request arrived on decides.
 ///
-/// A transport the policy cannot identify is restricted and, being neither
-/// TCP nor BLE, never satisfies it by the link alone.
+/// It consumes only what the transport established, never a field of the request: `encrypted`
+/// and `authenticated` are set by the TCP handshake or by BLE pairing. A transport the policy
+/// cannot identify is restricted and, being neither TCP nor BLE, needs an encrypted and
+/// authenticated link.
 ///
 /// ```
 /// use rohi_control::{
-///     AccessPolicy, AuthorizationPolicy, ControlAccess, LinkSecurity, Privilege,
-///     RequestAuthorization, Transport,
+///     AccessPolicy, AuthorizationPolicy, ControlAccess, LinkSecurity, Privilege, Transport,
 /// };
 ///
 /// let access = ControlAccess::new(|_| false);
@@ -344,8 +357,13 @@ impl ControlAccess {
 /// assert!(policy.allows(Privilege::Read, &tcp));
 /// assert!(!policy.allows(Privilege::Mutate, &tcp));
 /// assert!(policy.allows(Privilege::Mutate, &ble));
-/// let signed = LinkSecurity { authorization: RequestAuthorization::VerifiedAdmin, ..tcp };
-/// assert!(policy.allows(Privilege::Provision, &signed));
+/// // What an action that carries transport keys wants on top of that, in every mode.
+/// assert!(!policy.protects_secrets(&ble));
+/// let paired = LinkSecurity { encrypted: true, ..ble };
+/// assert!(policy.protects_secrets(&paired));
+/// let secure = LinkSecurity { encrypted: true, authenticated: true, ..tcp };
+/// assert!(policy.allows(Privilege::Provision, &secure) && policy.protects_secrets(&secure));
+/// assert!(!policy.protects_secrets(&LinkSecurity { encrypted: true, ..tcp }));
 /// ```
 #[derive(Clone, Copy)]
 pub struct AccessPolicy<'a>(&'a ControlAccess);
@@ -366,13 +384,11 @@ impl<'a> AccessPolicy<'a> {
             return true;
         }
         match (link.transport, self.0.mode(link.transport)) {
-            (Transport::Tcp | Transport::Ble, TransportAccessMode::Open) => true,
-            (Transport::Tcp, TransportAccessMode::Restricted) => {
-                link.authorization == RequestAuthorization::VerifiedAdmin
-            }
+            (Transport::Tcp, TransportAccessMode::Open) => true,
+            (Transport::Ble, TransportAccessMode::Open) => true,
             (Transport::Ble, TransportAccessMode::Restricted) => link.encrypted,
-            (Transport::Unspecified, _) => {
-                link.authorization == RequestAuthorization::VerifiedAdmin || link.encrypted
+            (Transport::Tcp, TransportAccessMode::Restricted) | (Transport::Unspecified, _) => {
+                link.encrypted && link.authenticated
             }
         }
     }
@@ -394,29 +410,27 @@ impl AuthorizationPolicy for AccessPolicy<'_> {
         allowed
     }
 
+    fn protects_secrets(&self, link: &LinkSecurity) -> bool {
+        match link.transport {
+            Transport::Ble => link.encrypted,
+            Transport::Tcp | Transport::Unspecified => link.encrypted && link.authenticated,
+        }
+    }
+
     fn denial_reason(&self, _privilege: Privilege, link: &LinkSecurity) -> Option<&'static str> {
         Some(match link.transport {
             Transport::Ble => "pairing_required",
-            _ if self.0.admin_key().is_none() => "no_admin_key",
-            _ => "auth_required",
+            _ if !self.0.tcp_psk_enrolled() => "no_psk",
+            _ => "encryption_required",
         })
     }
+}
 
-    fn accepts_signed(&self, link: &LinkSecurity) -> bool {
-        link.transport == Transport::Tcp
-    }
-
-    fn admin_key(&self) -> Option<AdminKey> {
-        self.0.admin_key()
-    }
-
-    fn fill_nonce(&self, nonce: &mut [u8; 32]) -> bool {
-        (self.0.entropy)(nonce)
-    }
-
-    fn auth_failed(&self, link: &LinkSecurity) {
-        if let Some(index) = index(link.transport) {
-            self.0.with(|state| {
+impl ControlAccess {
+    /// A client of `transport` failed to authenticate (a TCP handshake that did not verify).
+    pub fn auth_failed(&self, transport: Transport) {
+        if let Some(index) = index(transport) {
+            self.with(|state| {
                 state.stats[index].auth_failures =
                     state.stats[index].auth_failures.saturating_add(1)
             });

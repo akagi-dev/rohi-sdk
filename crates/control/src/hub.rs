@@ -29,8 +29,7 @@ use rohi_control_proto::limits::{MAX_REQUEST_LEN, MAX_RESPONSE_LEN};
 use zeroize::Zeroize;
 
 use crate::{
-    AuthorizationPolicy, ControlAccess, ControlBackend, Controller, LinkSecurity,
-    RequestAuthorization, Transport,
+    AuthorizationPolicy, ControlAccess, ControlBackend, Controller, LinkSecurity, Transport,
 };
 
 /// The most connections that are live at once, over every transport.
@@ -375,7 +374,6 @@ impl<'a, const SLOTS: usize> ControlHub<'a, SLOTS> {
                     authenticated: entry.authenticated,
                     session: entry.id,
                     transport: entry.transport,
-                    authorization: RequestAuthorization::Anonymous,
                 })
         })
     }
@@ -577,6 +575,13 @@ impl<const SLOTS: usize> Response<'_, '_, SLOTS> {
     /// The encoded response; empty if not even an error fit.
     pub fn bytes(&self) -> &[u8] {
         &self.data.response[..self.len.min(MAX_RESPONSE_LEN)]
+    }
+
+    /// The encoded response, writable: a transport that encrypts a response does it where it
+    /// is. The slot is wiped when the response is dropped.
+    pub fn bytes_mut(&mut self) -> &mut [u8] {
+        let len = self.len.min(MAX_RESPONSE_LEN);
+        &mut self.data.response[..len]
     }
 }
 

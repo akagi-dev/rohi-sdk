@@ -55,8 +55,10 @@ measurements. `all` never includes the position: `location` must be named. Names
   byte-identical bytes. Delivery is at-least-once, so the ingress deduplicates by the signed envelope.
 * **Honest dating.** A packet is dated at its capture; without a synchronized UTC clock, an identity or entropy the
   packet is refused, never faked. The state of the last attempt is in `rohi status connectivity`.
-* **Limits.** 3 profiles with 2 recipients each, 3 routes with 2 fallbacks each, endpoints up to 64 bytes, all within the
-  1 KiB persistent section of each service. What the Robonomics format cannot encode (the SCD4x, for example) is not in
+* **Limits.** 2 profiles with 1 private recipient each and 2 routes with 1 fallback each: these are compile-time
+  capacities of the Altruist Urban firmware (the storage is sized for them, a stored table over capacity is refused, not
+  truncated, and the `connectivity` status schema has exactly two route slots). Endpoints are up to 64 bytes, all within
+  the 1 KiB persistent section of each service. What the Robonomics format cannot encode (the SCD4x, for example) is not in
   the catalog and is rejected, never published under another name.
 
 Reference: [`rohi-telemetry`](https://docs.rs/rohi-telemetry),

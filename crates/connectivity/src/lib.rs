@@ -37,7 +37,7 @@
 //! # Routes
 //!
 //! A [`Route`] publishes one profile on its own interval to a primary
-//! endpoint, with up to [`MAX_FALLBACKS`] ordered fallbacks. A fallback is
+//! endpoint, with up to `FALLBACKS` ordered fallbacks (a const parameter). A fallback is
 //! another way to deliver the *same* packet: it has no profile, interval or
 //! outbox of its own. The default is **no route**; `id`, `profile` and
 //! `primary` never change in place (remove and add again for a new
@@ -70,10 +70,13 @@
 //!
 //! # Limits
 //!
-//! `no_std`, allocation-free. [`MAX_ROUTES`] routes of up to
-//! [`MAX_FALLBACKS`] fallbacks and a 1 KiB persistent section; the capacity of
-//! the pool, the outboxes and the buffers are const parameters chosen by the
-//! firmware and measured with `scripts/memcheck.sh`. The transport is plain
+//! `no_std`, allocation-free. The number of routes (`ROUTES`), of fallbacks per route
+//! (`FALLBACKS`), the capacity of the pool, the outboxes and the buffers are const
+//! parameters chosen by the firmware (Altruist Urban: 2 routes of up to 1 fallback) and
+//! measured with `scripts/memcheck.sh`; they size the storage of [`Routes`],
+//! [`ConnectivityState`], [`Router`], [`Publisher`] and the status schema of
+//! [`ConnectivityService`]. A persisted section over capacity is refused, not truncated.
+//! The persistent section is 1 KiB at most. The transport is plain
 //! HTTP (`http://host[:port]`, 64 bytes at most).
 
 #[cfg(test)]
@@ -91,12 +94,12 @@ pub mod state;
 pub mod transport;
 
 pub use config::{
-    ConnectivitySection, DEFAULT_INTERVAL_S, Fallback, FallbackId, MAX_FALLBACKS, MAX_INTERVAL_S,
-    MAX_ROUTES, MIN_INTERVAL_S, ProfileBinding, Route, RouteError, RouteId, RouteSet, Routes,
+    ConnectivitySection, DEFAULT_INTERVAL_S, Fallback, FallbackId, MAX_INTERVAL_S, MIN_INTERVAL_S,
+    ProfileBinding, Route, RouteError, RouteId, Routes,
 };
 pub use endpoint::{DEFAULT_PORT, Endpoint, EndpointUri, MAX_ENDPOINT_LEN};
 pub use http::HttpTransport;
-pub use managed::{ConnectivityService, ConnectivityStore, StoreError};
+pub use managed::{ConnectivityService, ConnectivityStore, RouteSlots, Slots, StoreError};
 pub use pool::{PacketHandle, PacketPool};
 pub use provider::{BuildFailure, PacketExporter, PacketProvider};
 pub use publisher::Publisher;

@@ -27,6 +27,9 @@ use rohi_service::{ActionRegistry, ActionResult};
 use rohi_telemetry::{PacketProfileId, ProfileStamp};
 
 use super::*;
+
+// The capacities the tests exercise: more than a device keeps, to cover every edge.
+type RouteSet = crate::Routes<3, 2>;
 use crate::provider::BuildFailure;
 
 #[derive(Default)]
@@ -37,7 +40,7 @@ struct Memory {
     commits: RefCell<u32>,
 }
 
-impl ConnectivityStore for &Memory {
+impl ConnectivityStore<3, 2> for &Memory {
     async fn load(&self) -> Result<RouteSet, StoreError> {
         if *self.unreadable.borrow() {
             return Err(StoreError::Unavailable);
@@ -100,7 +103,7 @@ struct Fixture {
     fail: RefCell<Option<BuildFailure>>,
     builds: RefCell<u32>,
     now: RefCell<u64>,
-    state: ConnectivityState<NoopRawMutex>,
+    state: ConnectivityState<NoopRawMutex, 3, 2>,
 }
 
 impl Fixture {
@@ -125,7 +128,8 @@ impl Fixture {
     }
 }
 
-type Svc<'a, 'e> = ConnectivityService<'a, NoopRawMutex, &'a Memory, &'e Exporter<'e>, 2, 1024>;
+type Svc<'a, 'e> =
+    ConnectivityService<'a, NoopRawMutex, &'a Memory, &'e Exporter<'e>, 3, 2, 2, 1024>;
 
 fn text(value: &str) -> Value {
     Value::text(value).unwrap()
@@ -174,9 +178,12 @@ fn the_eight_actions_have_the_documented_arguments_and_access() {
             ("fallback_remove", ActionAccess::Mutate, 2, false),
             ("route_list", ActionAccess::Read, 1, false),
             ("fallback_list", ActionAccess::Read, 2, false),
+            #[cfg(feature = "packet-export")]
             ("packet_get", ActionAccess::Read, 1, true),
         ]
     );
+    #[cfg(not(feature = "packet-export"))]
+    assert!(Svc::ACTIONS.iter().all(|a| a.name != "packet_get"));
     // No route_status and no profile editing: health is a Status.
     assert!(Svc::ACTIONS.iter().all(|a| a.name != "route_status"));
     assert_eq!(Svc::NAME, "connectivity");
@@ -351,7 +358,7 @@ fn status_has_static_route_slots_and_no_content() {
     let exporter = fixture.exporter();
     let service = Svc::new(&fixture.memory, &exporter, &fixture.state);
     // The schema is valid: 3 slots of 6 fields and 2 aggregates.
-    assert_eq!(<Svc as Status>::STATUS_SCHEMA.len(), 20);
+    assert_eq!(<Svc as Status>::STATUS_SCHEMA.len(), 20); // 3 route slots
     assert!(<Svc as Status>::STATUS_SCHEMA.len() <= rohi_service::MAX_FIELDS);
     let summary = block_on(service.summary());
     assert_eq!(
@@ -363,6 +370,7 @@ fn status_has_static_route_slots_and_no_content() {
     assert_eq!(block_on(service.summary()).state, ServiceState::Failed);
 }
 
+#[cfg(feature = "packet-export")]
 fn packet(service: &Svc<'_, '_>, profile: &str) -> Result<(u32, u64), ActionError> {
     match call(service, action::PACKET_GET, &[(1, text(profile))])? {
         ActionResult::Stream(info) => {
@@ -374,6 +382,7 @@ fn packet(service: &Svc<'_, '_>, profile: &str) -> Result<(u32, u64), ActionErro
     }
 }
 
+#[cfg(feature = "packet-export")]
 fn read(service: &Svc<'_, '_>, stream: u32, offset: u64) -> Result<(Vec<u8>, bool), ActionError> {
     let mut buf = [0u8; 512];
     let registry = (service,);
@@ -381,6 +390,7 @@ fn read(service: &Svc<'_, '_>, stream: u32, offset: u64) -> Result<(Vec<u8>, boo
     Ok((buf[..chunk.len].to_vec(), chunk.eof))
 }
 
+#[cfg(feature = "packet-export")]
 #[test]
 fn packet_get_streams_one_immutable_packet_without_any_route() {
     let fixture = Fixture::new();
@@ -412,6 +422,7 @@ fn packet_get_streams_one_immutable_packet_without_any_route() {
     assert_eq!(service.open_streams(), 0);
 }
 
+#[cfg(feature = "packet-export")]
 #[test]
 fn concurrent_streams_are_bounded_and_never_overwrite_each_other() {
     let fixture = Fixture::new();
@@ -435,6 +446,7 @@ fn concurrent_streams_are_bounded_and_never_overwrite_each_other() {
     assert_eq!(service.open_streams(), 0);
 }
 
+#[cfg(feature = "packet-export")]
 #[test]
 fn a_stream_is_not_served_after_its_policy_changed_and_failures_are_stable_codes() {
     let fixture = Fixture::new();
@@ -465,6 +477,7 @@ fn a_stream_is_not_served_after_its_policy_changed_and_failures_are_stable_codes
     assert_eq!(service.open_streams(), 0);
 }
 
+#[cfg(feature = "packet-export")]
 #[test]
 fn an_abandoned_stream_expires_and_makes_room() {
     let fixture = Fixture::new();
@@ -485,16 +498,17 @@ fn an_abandoned_stream_expires_and_makes_room() {
     assert!(packet(&service, "env").is_ok());
 }
 
+#[cfg(feature = "packet-export")]
 #[test]
 fn an_expired_stream_does_not_block_a_new_packet_get() {
     let fixture = Fixture::new();
     let exporter = fixture.exporter();
     // One slot only: the abandoned stream holds all of the capacity.
-    let service: ConnectivityService<'_, NoopRawMutex, &Memory, &Exporter<'_>, 1, 1024> =
+    let service: ConnectivityService<'_, NoopRawMutex, &Memory, &Exporter<'_>, 3, 2, 1, 1024> =
         ConnectivityService::new(&fixture.memory, &exporter, &fixture.state);
     let registry = (&service,);
     let open =
-        |service: &ConnectivityService<'_, NoopRawMutex, &Memory, &Exporter<'_>, 1, 1024>| {
+        |service: &ConnectivityService<'_, NoopRawMutex, &Memory, &Exporter<'_>, 3, 2, 1, 1024>| {
             block_on((service,).invoke(Svc::ID, action::PACKET_GET, &[(1, text("env"))]))
         };
     assert!(open(&service).is_ok());
@@ -549,4 +563,86 @@ fn failing_deliveries_degrade_the_health_even_when_packets_are_built() {
     let mut issues = heapless::Vec::new();
     block_on(service.issues(&mut issues));
     assert!(issues.iter().any(|i| i.code == issue::DELIVERY_FAILING));
+}
+
+mod static_schema {
+    use rohi_service::{FieldDescriptor, ValueKind};
+
+    use crate::managed::{RouteSlots, Slots, status_field};
+
+    fn names<const N: usize>() -> std::vec::Vec<&'static str>
+    where
+        Slots<N>: RouteSlots,
+    {
+        <Slots<N> as RouteSlots>::SCHEMA
+            .iter()
+            .map(|f| f.name)
+            .collect()
+    }
+
+    #[test]
+    fn the_schema_has_the_fields_of_the_selected_route_count_only() {
+        assert_eq!(<Slots<1> as RouteSlots>::SCHEMA.len(), 2 + 6);
+        assert_eq!(<Slots<2> as RouteSlots>::SCHEMA.len(), 2 + 2 * 6);
+        assert_eq!(<Slots<3> as RouteSlots>::SCHEMA.len(), 2 + 3 * 6);
+        let two = names::<2>();
+        assert_eq!(&two[..2], ["active_routes", "total_queue_depth"]);
+        assert!(two.contains(&"route1.active_path"));
+        assert!(!two.contains(&"route2.id"));
+    }
+
+    #[test]
+    fn ids_names_and_kinds_are_stable() {
+        let schema = <Slots<2> as RouteSlots>::SCHEMA;
+        let find =
+            |name: &str| -> FieldDescriptor { *schema.iter().find(|f| f.name == name).unwrap() };
+        assert_eq!(find("active_routes").id, status_field::ACTIVE_ROUTES);
+        assert_eq!(find("route0.id").id, 10);
+        assert_eq!(find("route0.id").kind, ValueKind::String);
+        assert_eq!(find("route0.state").id, 11);
+        assert_eq!(find("route0.state").kind, ValueKind::Enum);
+        assert_eq!(find("route1.queue_depth").id, 22);
+        assert_eq!(find("route1.active_path").id, 25);
+        assert_eq!(find("route1.delivered").kind, ValueKind::U64);
+        // Ids are unique.
+        let mut ids: std::vec::Vec<u32> = schema.iter().map(|f| f.id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), schema.len());
+    }
+
+    #[test]
+    fn the_service_of_two_routes_exposes_exactly_that_schema() {
+        use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+        use rohi_service::Status;
+
+        use crate::managed::ConnectivityService;
+
+        struct Never;
+        impl crate::ConnectivityStore<2, 1> for Never {
+            async fn load(&self) -> Result<crate::Routes<2, 1>, crate::StoreError> {
+                Err(crate::StoreError::Unavailable)
+            }
+            async fn commit(&self, _: &crate::Routes<2, 1>) -> Result<(), crate::StoreError> {
+                Err(crate::StoreError::Unavailable)
+            }
+        }
+        impl crate::PacketExporter for Never {
+            fn now_ms(&self) -> u64 {
+                0
+            }
+            fn resolve(&self, _: &str) -> Option<rohi_telemetry::ProfileStamp> {
+                None
+            }
+            async fn export(
+                &self,
+                _: &str,
+                _: &mut [u8],
+            ) -> Result<(rohi_telemetry::ProfileStamp, usize), crate::BuildFailure> {
+                Err(crate::BuildFailure::ProfileChanged)
+            }
+        }
+        type Svc<'a> = ConnectivityService<'a, NoopRawMutex, Never, Never, 2, 1, 1, 64>;
+        assert_eq!(<Svc<'_> as Status>::STATUS_SCHEMA.len(), 14);
+    }
 }

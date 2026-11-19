@@ -16,6 +16,7 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 
+#[cfg(feature = "lz4")]
 use std::io::Read;
 use std::vec::Vec;
 
@@ -69,9 +70,8 @@ fn batches(records: &[LogRecord]) -> Vec<Batch> {
 fn payload(batches: &[Batch], codec: Compression) -> Vec<u8> {
     let mut payload = payload_prefix(codec).to_vec();
     for batch in batches {
-        let mut chunk = [0u8; MAX_CHUNK_LEN];
-        let len = batch.encode(codec, &mut chunk).unwrap();
-        payload.extend_from_slice(&chunk[..len]);
+        let mut scratch = scratch();
+        payload.extend_from_slice(batch.encode(codec, &mut scratch).unwrap());
     }
     payload.extend_from_slice(payload_suffix(codec));
     payload
@@ -107,7 +107,7 @@ fn crc32_matches_the_check_value() {
 #[test]
 fn a_header_round_trips_and_detects_damage() {
     let header = SegmentHeader {
-        codec: Compression::Lz4,
+        codec: crate::DEFAULT_COMPRESSION,
         first_sequence: 17,
         last_sequence: u64::MAX - 1,
         records: 1_234,
@@ -117,7 +117,7 @@ fn a_header_round_trips_and_detects_damage() {
     };
     let bytes = header.encode();
     assert_eq!(bytes.len(), HEADER_LEN);
-    assert_eq!(&bytes[..5], b"RLG1\x01");
+    assert_eq!(&bytes[..5], b"RLG1\x02");
     assert_eq!(SegmentHeader::decode(&bytes), Ok(header));
 
     for bit in 0..HEADER_LEN * 8 {
@@ -134,17 +134,28 @@ fn a_header_round_trips_and_detects_damage() {
         Err(HeaderError::Magic)
     );
     assert_eq!(SegmentHeader::decode(&[]), Err(HeaderError::Truncated));
-    let mut future = bytes;
-    future[4] = 2;
-    assert_eq!(SegmentHeader::decode(&future), Err(HeaderError::Version));
+    // The version before LZ4 became optional is not read, and neither is a later one.
+    for version in [1, 3] {
+        let mut other = bytes;
+        other[4] = version;
+        assert_eq!(SegmentHeader::decode(&other), Err(HeaderError::Version));
+    }
 }
 
 #[test]
 fn files_are_named_by_position_and_codec() {
-    assert_eq!(file_name(1, Compression::Lz4).as_str(), "rohi1.log.lz4");
     assert_eq!(file_name(12, Compression::None).as_str(), "rohi12.log");
+    #[cfg(feature = "lz4")]
+    {
+        assert_eq!(file_name(1, Compression::Lz4).as_str(), "rohi1.log.lz4");
+        assert_eq!(
+            file_name(u32::MAX, Compression::Lz4).len(),
+            header::MAX_FILE_NAME_LEN
+        );
+    }
+    #[cfg(not(feature = "lz4"))]
     assert_eq!(
-        file_name(u32::MAX, Compression::Lz4).len(),
+        file_name(u32::MAX, Compression::None).len(),
         header::MAX_FILE_NAME_LEN
     );
 }
@@ -180,7 +191,7 @@ fn both_codecs_read_back_what_was_written() {
     let written = records(100, 300);
     let batches = batches(&written);
     assert!(batches.len() > 3);
-    for codec in [Compression::None, Compression::Lz4] {
+    for &codec in crate::TEST_CODECS {
         let payload = payload(&batches, codec);
         // Whole, byte by byte and in odd pieces: the same records.
         for piece in [payload.len(), 1, 7, 100, 4_096] {
@@ -194,18 +205,20 @@ fn both_codecs_read_back_what_was_written() {
     }
 }
 
+#[cfg(feature = "lz4")]
 #[test]
 fn compression_shrinks_a_log() {
     let batches = batches(&records(1, 300));
     let plain = payload(&batches, Compression::None).len();
-    let packed = payload(&batches, Compression::Lz4).len();
+    let packed = payload(&batches, crate::DEFAULT_COMPRESSION).len();
     assert!(packed * 2 < plain, "{packed} vs {plain}");
 }
 
+#[cfg(feature = "lz4")]
 #[test]
 fn a_downloaded_lz4_segment_is_a_standard_text_file() {
     let written = records(1, 150);
-    let file = payload(&batches(&written), Compression::Lz4);
+    let file = payload(&batches(&written), crate::DEFAULT_COMPRESSION);
     let mut text = std::string::String::new();
     lz4_flex::frame::FrameDecoder::new(file.as_slice())
         .read_to_string(&mut text)
@@ -221,7 +234,7 @@ fn a_downloaded_lz4_segment_is_a_standard_text_file() {
 fn a_segment_cut_anywhere_yields_a_prefix_and_never_panics() {
     let written = records(1, 120);
     let batches = batches(&written);
-    for codec in [Compression::None, Compression::Lz4] {
+    for &codec in crate::TEST_CODECS {
         let payload = payload(&batches, codec);
         let mut last = 0;
         for cut in 0..=payload.len() {
@@ -240,21 +253,23 @@ fn a_segment_cut_anywhere_yields_a_prefix_and_never_panics() {
     }
 }
 
+#[cfg(feature = "lz4")]
 #[test]
 fn a_damaged_block_stops_the_segment_at_the_block_before() {
     let written = records(1, 200);
     let batches = batches(&written);
-    let payload = payload(&batches, Compression::Lz4);
+    let payload = payload(&batches, crate::DEFAULT_COMPRESSION);
     let first = batches[0].records() as usize;
 
     // Flip one bit inside the second block.
-    let mut first_chunk = [0u8; MAX_CHUNK_LEN];
+    let mut first_chunk = scratch();
     let first_len = batches[0]
-        .encode(Compression::Lz4, &mut first_chunk)
-        .unwrap();
+        .encode(crate::DEFAULT_COMPRESSION, &mut first_chunk)
+        .unwrap()
+        .len();
     let mut damaged = payload.clone();
     damaged[lz4::FRAME_HEADER_LEN + first_len + 6] ^= 0x04;
-    let (read, result, decoder) = decode(Compression::Lz4, &damaged, 64);
+    let (read, result, decoder) = decode(crate::DEFAULT_COMPRESSION, &damaged, 64);
     assert_eq!(result, Err(DecodeError::Corrupt));
     assert_eq!(read, written[..first]);
     assert!(!decoder.is_complete());
@@ -264,7 +279,7 @@ fn a_damaged_block_stops_the_segment_at_the_block_before() {
     // A wrong frame header is refused at once.
     let mut foreign = payload;
     foreign[0] ^= 1;
-    let (read, result, _) = decode(Compression::Lz4, &foreign, 64);
+    let (read, result, _) = decode(crate::DEFAULT_COMPRESSION, &foreign, 64);
     assert_eq!((read.len(), result), (0, Err(DecodeError::Corrupt)));
 }
 

@@ -297,6 +297,16 @@ fn start(spawner: Spawner, prepared: Prepared) -> Result<(), StartupError> {
     let mut owner = ConfigOwner::open(storage.clone());
     owner.publish_boot(&runtime);
     #[cfg(feature = "std-tcp")]
+    if let Some(path) = &args.control_psk_file {
+        let key = super::args::read_psk_file(path).map_err(|e| platform("control key file", e))?;
+        crate::control::set_tcp_key(Some(key));
+        crate::control::access().set_tcp_psk(true);
+        info!(
+            "The TCP control key of this run comes from {} (it replaces the stored one)",
+            path.display()
+        );
+    }
+    #[cfg(feature = "std-tcp")]
     if args.control_open {
         warn!(
             "The TCP control endpoint is open for this run (--control-open): privileged requests need no signature"

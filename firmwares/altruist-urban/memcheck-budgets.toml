@@ -72,23 +72,29 @@ reason = "the sensors status observer is laid out differently after the logging 
 # pairing of the host stack (trouble-host `security`) add statics. Measured: `.data` 31 144 B (ESP32-C3) and
 # 34 956 B (ESP32-C6), task pools 45 008 B and 44 984 B. The `control_task` poll frame did not grow (9 456 B).
 # Stack depth and the high-water mark are NOT measured on hardware.
+# Lowered with the compact firmware change (#73): optional LZ4, a smaller log batch, compile-time route and
+# telemetry capacities, a tighter packet bound and no signed control. Measured on the ESP32-C3: `.data` 30 056 B,
+# `.bss` 193 912 B, task pools 41 136 B, largest frame 12 256 B, main stack 32 672 B (before: 31 144, 199 264,
+# 45 008, 13 120, 26 232). Limits only go down: see docs/validation/compact-firmware-report.md.
 [chips.esp32c3]
-max_data = 31200
-max_bss = 210800
-max_task_ram = 45100
-min_main_stack = 15800
-max_frame = 13200
+max_data = 30100
+max_bss = 194000
+max_task_ram = 41200
+min_main_stack = 32600
+max_frame = 12300
 
 [chips.esp32c3.focus]
 control_dispatch = ["rohi_control::controller", "rohi_service::registry"]
 logging = ["rohi_logging::service", "rohi_logging::storage", "rohi_logging::segment"]
 
+# ESP32-C6, same change: `.data` 33 884 B, `.bss` 198 016 B, task pools 41 112 B, largest frame 8 400 B, main stack
+# 131 960 B (before: 34 956, 203 376, 44 984, 9 744, 125 528).
 [chips.esp32c6]
-max_data = 35000
-max_bss = 214900
-max_task_ram = 45100
-min_main_stack = 115700
-max_frame = 10900
+max_data = 33900
+max_bss = 198100
+max_task_ram = 41200
+min_main_stack = 131900
+max_frame = 8500
 
 [chips.esp32c6.focus]
 control_dispatch = ["rohi_control::controller", "rohi_service::registry"]

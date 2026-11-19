@@ -142,11 +142,14 @@ async fn download_gives_decodable_files_and_clear_empties_the_log() {
     let mut sequences = Vec::new();
     for file in &stream.files {
         assert!(file.name.starts_with("rohi"), "{}", file.name);
+        #[cfg(feature = "lz4")]
         let codec = if file.name.ends_with(".lz4") {
             Compression::Lz4
         } else {
             Compression::None
         };
+        #[cfg(not(feature = "lz4"))]
+        let codec = Compression::None;
         let data = read_file(&mut device, &stream, file.id).await;
         assert_eq!(data.len() as u64, file.size_bytes);
         let mut decoder = SegmentDecoder::new(codec);

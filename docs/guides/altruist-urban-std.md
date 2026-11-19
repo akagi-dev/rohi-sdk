@@ -129,21 +129,23 @@ rustdoc of [`rohi-control-tcp`](https://docs.rs/rohi-control-tcp).
 
 ## Security
 
-TCP control and the management interface are **development transports**: no encryption and no authentication of the
-device. What protects the control endpoint is its access mode (see [Access control](../build/control-protocol.md#access-control)):
+The management interface is a **development transport** with no encryption and no authentication. The control endpoint is
+protected by its access mode (see [Access control](../build/control-protocol.md#access-control)):
 
-- the `control_tcp` endpoint is **restricted** by default: reads are open, every change needs an Ed25519 signature of the
-  administrator key, which `rohi --admin-key FILE` makes automatically;
-- a restricted endpoint without a key refuses every change. Enroll the first key over an open endpoint: start the process
-  with `--control-open` (open for that run only), run `rohi --admin-key admin.key admin enroll`, then restart without it
-  (or set `control_tcp access_mode=restricted`). `rohi admin keygen admin.key` creates the key file;
+- the `control_tcp` endpoint is **restricted** by default: a client must complete a handshake with the 32-byte pre-shared key,
+  and every request and response is then authenticated and encrypted. `rohi --psk-file FILE` does it automatically;
+- a restricted endpoint without a key serves nobody (and never falls back to plaintext). Give the process the key with
+  `--control-psk-file FILE` (64 hex characters or 32 raw bytes, for that run; it replaces the stored key and is never stored or
+  logged) or provision it over a paired BLE link (`rohi tcp-key set`); `rohi tcp-key generate tcp.key` creates the key file.
+  `--control-open` opens the endpoint for one run instead: plaintext and unauthenticated, for loopback development only, and even
+  then the key itself is never accepted over it;
 - the stored `control_tcp` section (`enabled`, `access_mode`, `bind_address`, `port`) is read at start; `--bind` and
   `--control-port` override the stored address and port for that run, and a port given on the command line also starts
   the listener when the section switched it off. The access mode applies at once; the other fields apply at the next
   start and the status shows `restart_required`;
 - both listeners bind to `127.0.0.1` by default; a non-loopback address, from `--bind` or from the section, is refused
-  unless `--unsafe-allow-remote` is given, and then anyone who can reach the port can read the device and, with the
-  endpoint open, control it;
+  unless `--unsafe-allow-remote` is given: with the endpoint restricted a remote client still needs the key; with it open
+  (`--control-open`) anyone who can reach the port can read and control the device;
 - BLE (BlueZ) is `open` by default; with `control_ble access_mode=restricted` the control characteristic needs an
   encrypted link and BlueZ asks the central to pair (Just Works; a paired link is reported as encrypted but not
   authenticated). Restricting TCP does not secure the device while BLE stays open.

@@ -36,7 +36,10 @@ fn the_defaults_are_valid_and_conservative() {
     let read = |id| config.read_field(id).unwrap();
     assert_eq!(read(LEVEL), Some(Value::Enum(2)));
     assert_eq!(read(STORAGE), Some(Value::Enum(0)));
-    assert_eq!(read(COMPRESSION), Some(Value::Enum(1)));
+    assert_eq!(
+        read(COMPRESSION),
+        Some(Value::Enum(crate::DEFAULT_COMPRESSION.variant()))
+    );
     assert_eq!(read(RETENTION), Some(Value::U64(1024 * 1024)));
     assert_eq!(read(SEGMENT), Some(Value::U64(64 * 1024)));
     assert_eq!(read(FLUSH), Some(Value::U64(10_000)));
@@ -323,7 +326,10 @@ fn the_three_enums_are_discoverable_and_match_the_types() {
             .collect()
     };
     assert_eq!(names(STORAGE_ENUM), [(0, "internal"), (1, "sd")]);
+    #[cfg(feature = "lz4")]
     assert_eq!(names(COMPRESSION_ENUM), [(0, "none"), (1, "lz4")]);
+    #[cfg(not(feature = "lz4"))]
+    assert_eq!(names(COMPRESSION_ENUM), [(0, "none")]);
     for (value, name) in names(STORAGE_ENUM) {
         let kind = LogStorageKind::from_variant(value).unwrap();
         assert_eq!((kind.variant(), kind.name()), (value, name));
@@ -356,4 +362,23 @@ fn overrides_persisted_before_the_enums_still_decode() {
     let mut buffer = [0u8; 64];
     let used = rohi_config::encode_to_slice(&decoded, &mut buffer).unwrap();
     assert_eq!(&buffer[..used], stored);
+}
+
+#[cfg(not(feature = "lz4"))]
+#[test]
+fn lz4_is_not_a_choice_without_the_feature() {
+    use crate::Compression;
+
+    assert_eq!(Compression::from_variant(1), None);
+    assert_eq!(Compression::default(), Compression::None);
+    let mut config = LoggingConfig::default();
+    assert_eq!(
+        config.set_field(COMPRESSION, Value::Enum(1)),
+        Err(FieldError::OutOfRange)
+    );
+    assert_eq!(config.compression, Compression::None);
+    // A stored `1` does not decode either.
+    let mut encoder = minicbor::Encoder::new(std::vec::Vec::new());
+    encoder.u8(1).unwrap();
+    assert!(minicbor::decode::<Compression>(encoder.writer()).is_err());
 }

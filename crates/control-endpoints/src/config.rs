@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! The persisted `control_tcp` and `control_ble` sections.
 
 use core::net::Ipv4Addr;
@@ -97,7 +98,7 @@ impl From<TransportAccessMode> for AccessMode {
 /// | Field | Id | Default | Meaning |
 /// |-------|----|---------|---------|
 /// | `enabled` | 1 | `true` | whether the platform listens at all |
-/// | `access_mode` | 2 | `restricted` | what privileged requests need (signed requests) |
+/// | `access_mode` | 2 | `restricted` | what a client needs (TCP: the handshake with the pre-shared key; BLE: an encrypted link) |
 /// | `bind_address` | 3 | `127.0.0.1` | IPv4 address of the listener |
 /// | `port` | 4 | `9300` | port of the listener, 0 for any free one |
 ///
@@ -168,9 +169,9 @@ impl ControlTcpConfig {
 /// | `access_mode` | 2 | `open` | what privileged requests need (an encrypted, paired link) |
 ///
 /// `open` is deliberately insecure for privileged operations: anyone in radio
-/// range can change the configuration, provision the identity and enroll the
-/// administrator key. Restricting TCP does not secure a device whose BLE
-/// endpoint stays open.
+/// range can change the configuration. Provisioning (the identity, the pre-shared key of the
+/// TCP endpoint) needs an encrypted link even here, but pairing is not restricted in this mode.
+/// Restricting TCP does not secure a device whose BLE endpoint stays open.
 ///
 /// ```
 /// use rohi_control_endpoints::{AccessMode, ControlBleConfig};

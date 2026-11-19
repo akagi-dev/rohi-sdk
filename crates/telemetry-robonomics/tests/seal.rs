@@ -97,7 +97,7 @@ fn at(ms: u64) -> MonotonicTimestamp {
     MonotonicTimestamp::from_millis(ms)
 }
 
-fn snapshot() -> TelemetrySnapshot<16> {
+fn snapshot() -> TelemetrySnapshot<16, 8> {
     let mut snapshot = TelemetrySnapshot::new(at(10_000));
     let mut writer = snapshot.writer(SourceId::LOCAL);
     writer.number(BMX280_TEMPERATURE, 21.5, at(9_000)).unwrap();
@@ -133,10 +133,10 @@ type Format<'a> = RobonomicsFormat<'a, MockSigner, Rng<'a>, Utc, &'a Mono>;
 
 fn profile(
     format: &Format<'_>,
-    build: impl FnOnce(&mut TelemetryConfig<3, 2>, &Capabilities<'_, Format<'_>>),
-) -> PacketProfile<2> {
+    build: impl FnOnce(&mut TelemetryConfig<2, 1>, &Capabilities<'_, Format<'_>>),
+) -> PacketProfile<1> {
     let caps = Capabilities(format);
-    let mut config = TelemetryConfig::<3, 2>::default();
+    let mut config = TelemetryConfig::<2, 1>::default();
     config.add_profile("p", PacketFormatId::Robonomics).unwrap();
     build(&mut config, &caps);
     config.get("p").unwrap().clone()
@@ -146,13 +146,21 @@ fn local(ids: &[rohi_telemetry::MeasurementId]) -> DataSelection {
     DataSelection::local(ids.iter().fold(Selection::NONE, |s, id| s.with(*id)))
 }
 
-fn owner_profile(format: &Format<'_>) -> PacketProfile<2> {
+fn owner_profile(format: &Format<'_>) -> PacketProfile<1> {
     profile(format, |config, caps| {
         config
             .set_public("p", local(&[BMX280_TEMPERATURE, BMX280_HUMIDITY]), caps)
             .unwrap();
         config
             .add_private("p", address(OWNER), local(&[LOCATION, SDS011_PM10]), caps)
+            .unwrap();
+    })
+}
+
+fn city_profile(format: &Format<'_>) -> PacketProfile<1> {
+    profile(format, |config, caps| {
+        config
+            .set_public("p", local(&[BMX280_TEMPERATURE, BMX280_HUMIDITY]), caps)
             .unwrap();
         config
             .add_private(
@@ -189,8 +197,8 @@ impl Fixture {
 
 fn seal(
     fixture: &Fixture,
-    profile: &PacketProfile<2>,
-    snapshot: &TelemetrySnapshot<16>,
+    profile: &PacketProfile<1>,
+    snapshot: &TelemetrySnapshot<16, 8>,
 ) -> Result<std::vec::Vec<u8>, SealError> {
     let mut format = fixture.format();
     let sections =
@@ -253,10 +261,12 @@ fn the_public_section_is_plaintext_and_the_private_ones_are_not() {
     let format = fixture.format();
     let profile = owner_profile(&format);
     let bytes = seal(&fixture, &profile, &snapshot()).unwrap();
+    // A typical packet: two public measurements and a private section of two.
+    std::eprintln!("typical packet: {} bytes", bytes.len());
     let (_, message) = envelope(&bytes);
     let urban = urban(&message);
     assert_eq!(urban.public.len(), 2, "temperature and humidity");
-    assert_eq!(urban.private.len(), 2);
+    assert_eq!(urban.private.len(), 1);
 
     // Neither the position nor the noise level appears in the clear.
     let lat = 52.52f64.to_le_bytes();
@@ -292,11 +302,13 @@ fn open(
 
 #[test]
 fn each_recipient_decrypts_only_its_own_section() {
+    // One private recipient per profile: two profiles, two packets.
     let fixture = Fixture::new();
     let format = fixture.format();
-    let profile = owner_profile(&format);
-    let bytes = seal(&fixture, &profile, &snapshot()).unwrap();
+    let bytes = seal(&fixture, &owner_profile(&format), &snapshot()).unwrap();
     let (_, message) = envelope(&bytes);
+    let bytes = seal(&fixture, &city_profile(&format), &snapshot()).unwrap();
+    let (_, city_message) = envelope(&bytes);
 
     let owner = open(&message, 0, &key(OWNER)).unwrap();
     assert_eq!(owner.sensors.len(), 2, "location and PM10");
@@ -306,7 +318,7 @@ fn each_recipient_decrypts_only_its_own_section() {
             .iter()
             .any(|s| matches!(s.sensor, Some(UrbanSensor_::Sensor::Gps(_))))
     );
-    let city = open(&message, 1, &key(CITY)).unwrap();
+    let city = open(&city_message, 0, &key(CITY)).unwrap();
     assert_eq!(city.sensors.len(), 2, "location and noise");
 
     // The wrong recipient, and the wrong section, fail authentication.
@@ -315,7 +327,7 @@ fn each_recipient_decrypts_only_its_own_section() {
         crypto::CryptoError::Cipher
     );
     assert_eq!(
-        open(&message, 1, &key(OWNER)).unwrap_err(),
+        open(&city_message, 0, &key(OWNER)).unwrap_err(),
         crypto::CryptoError::Cipher
     );
     assert_eq!(
@@ -406,7 +418,7 @@ fn nonces_never_repeat() {
     let (b, bm) = envelope(&second);
     assert_ne!(a.nonce, b.nonce);
     let nonce = |m: &Message, i| decode::<Encrypted>(&urban_private(m, i)).unwrap().nonce;
-    let all = [nonce(&am, 0), nonce(&am, 1), nonce(&bm, 0), nonce(&bm, 1)];
+    let all = [nonce(&am, 0), nonce(&bm, 0)];
     for (index, nonce) in all.iter().enumerate() {
         assert!(all[..index].iter().all(|other| other != nonce));
     }
@@ -496,7 +508,7 @@ fn unsupported_measurements_cannot_be_selected() {
     let fixture = Fixture::new();
     let format = fixture.format();
     let caps = Capabilities(&format);
-    let mut config = TelemetryConfig::<3, 2>::default();
+    let mut config = TelemetryConfig::<2, 1>::default();
     config.add_profile("p", PacketFormatId::Robonomics).unwrap();
     assert!(config.set_public("p", local(&[SCD4X_CO2]), &caps).is_err());
     assert!(
@@ -545,11 +557,8 @@ fn the_largest_supported_profile_fits_the_envelope_limit() {
         config
             .add_private("p", address(OWNER), local(&everything), caps)
             .unwrap();
-        config
-            .add_private("p", address(CITY), local(&everything), caps)
-            .unwrap();
     });
-    let mut snapshot = TelemetrySnapshot::<16>::new(at(10_000));
+    let mut snapshot = TelemetrySnapshot::<16, 8>::new(at(10_000));
     let mut writer = snapshot.writer(SourceId::LOCAL);
     for (id, value) in [
         (BMX280_TEMPERATURE, -20_000.0f32),
@@ -579,9 +588,13 @@ fn the_largest_supported_profile_fits_the_envelope_limit() {
     let bytes = seal(&fixture, &profile, &snapshot).unwrap();
     assert!(bytes.len() <= MAX_ENVELOPE_LEN, "{}", bytes.len());
     let (_, message) = envelope(&bytes);
-    assert_eq!(urban(&message).private.len(), 2);
-    assert_eq!(open(&message, 1, &key(CITY)).unwrap().sensors.len(), 8);
-    std::eprintln!("largest packet: {} bytes", bytes.len());
+    assert_eq!(urban(&message).private.len(), 1);
+    assert_eq!(open(&message, 0, &key(OWNER)).unwrap().sensors.len(), 8);
+    std::eprintln!(
+        "largest packet: {} bytes, message {}",
+        bytes.len(),
+        envelope(&bytes).0.message.len()
+    );
 }
 
 #[test]
@@ -592,4 +605,95 @@ fn a_replayed_nonce_is_not_possible_with_fresh_entropy_after_a_failure() {
     let good = seal(&fixture, &profile, &snapshot()).unwrap();
     let again = seal(&fixture, &profile, &snapshot()).unwrap();
     assert_ne!(good, again);
+}
+
+#[test]
+fn the_envelope_written_in_place_is_byte_identical_to_the_generated_encoding() {
+    use rohi_telemetry_robonomics::wire::encode;
+
+    let fixture = Fixture::new();
+    let format = fixture.format();
+    for profile in [owner_profile(&format), city_profile(&format)] {
+        let bytes = seal(&fixture, &profile, &snapshot()).unwrap();
+        let (decoded, message) = envelope(&bytes);
+
+        // The envelope, the message and the private section are what the generated types encode.
+        let mut again = [0u8; MAX_ENVELOPE_LEN];
+        let len = encode(&decoded, &mut again).unwrap();
+        assert_eq!(&again[..len], bytes.as_slice());
+        let mut message_bytes = [0u8; 1024];
+        let len = encode(&message, &mut message_bytes).unwrap();
+        assert_eq!(&message_bytes[..len], decoded.message.as_slice());
+        let private = &urban(&message).private[0];
+        let encrypted: Encrypted = decode(private).unwrap();
+        let mut section = [0u8; 512];
+        let len = encode(&encrypted, &mut section).unwrap();
+        assert_eq!(&section[..len], private.as_slice());
+    }
+}
+
+#[test]
+fn the_signature_covers_the_staged_preimage_for_every_message_size() {
+    // The message length changes the length of the field headers: check sizes around the
+    // one-byte and two-byte length boundaries by changing what the public section holds.
+    let fixture = Fixture::new();
+    let format = fixture.format();
+    let sets: [&[rohi_telemetry::MeasurementId]; 4] = [
+        &[BMX280_HUMIDITY],
+        &[BMX280_HUMIDITY, SDS011_PM10],
+        &[
+            BMX280_TEMPERATURE,
+            BMX280_HUMIDITY,
+            SDS011_PM10,
+            MICROPHONE_AVERAGE,
+        ],
+        &[
+            LOCATION,
+            BMX280_TEMPERATURE,
+            BMX280_HUMIDITY,
+            SDS011_PM10,
+            MICROPHONE_AVERAGE,
+        ],
+    ];
+    for ids in sets {
+        let profile = profile(&format, |config, caps| {
+            config.set_public("p", local(ids), caps).unwrap();
+        });
+        let bytes = seal(&fixture, &profile, &snapshot()).unwrap();
+        let (envelope, _) = envelope(&bytes);
+        let verification =
+            ed25519_zebra::VerificationKey::try_from(envelope.sensor_id.as_slice()).unwrap();
+        let signature =
+            ed25519_zebra::Signature::from_bytes(envelope.signature.as_slice().try_into().unwrap());
+        let mut preimage = [0u8; 1024];
+        let len = signing_preimage(
+            &envelope.sensor_id,
+            &envelope.nonce,
+            &envelope.message,
+            &mut preimage,
+        )
+        .unwrap();
+        verification.verify(&signature, &preimage[..len]).unwrap();
+    }
+}
+
+#[test]
+fn a_buffer_one_byte_short_is_refused_and_an_exact_one_is_enough() {
+    let fixture = Fixture::new();
+    let mut format = fixture.format();
+    let profile = owner_profile(&format);
+    let snapshot = snapshot();
+    let sections = prepare(&snapshot, &profile, &format.supported()).unwrap();
+    let mut big = [0u8; MAX_ENVELOPE_LEN];
+    let len = block_on(format.seal(&sections, &mut big))
+        .unwrap()
+        .bytes()
+        .len();
+    let mut exact = std::vec![0u8; len];
+    assert!(block_on(format.seal(&sections, &mut exact)).is_ok());
+    let mut short = std::vec![0u8; len - 1];
+    assert_eq!(
+        block_on(format.seal(&sections, &mut short)).err(),
+        Some(SealError::BufferTooSmall)
+    );
 }

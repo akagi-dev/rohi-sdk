@@ -87,7 +87,7 @@
 //! | [`Device`] | a [`ControlBackend`] built from its parts (the usual way to make one) |
 //! | [`AuthorizationPolicy`] | maps a [`Privilege`] and the [`LinkSecurity`] of the transport to allow/deny |
 //! | [`ControlHub`] | the bounded mailbox between the transport frontends and the one worker that owns the [`Controller`] |
-//! | [`ControlAccess`], [`AccessPolicy`] | the access mode of each transport, the administrator key and the endpoint counters; the policy that enforces them |
+//! | [`ControlAccess`], [`AccessPolicy`] | the access mode of each transport, whether a TCP pre-shared key is provisioned and the endpoint counters; the policy that enforces them |
 //!
 //! ## Operations and privileges
 //!
@@ -103,9 +103,10 @@
 //! | `TailLogs` | `ActionRegistry` (`Action::tail_logs`) | `Read`; one request, one bounded reply, no stream |
 //!
 //! [`AccessPolicy`] is the policy of a device: it reads the [`TransportAccessMode`] of
-//! the [`Transport`] a request arrived on. `Restricted` TCP wants a valid signature of
-//! the administrator key ([`RequestAuthorization::VerifiedAdmin`], decided by the
-//! controller and never taken from a transport), `Restricted` BLE an encrypted link.
+//! the [`Transport`] a request arrived on. `Restricted` TCP wants a connection that completed the
+//! authenticated and encrypted handshake of `rohi-control-tcp`, `Restricted` BLE an encrypted
+//! link; both are properties the *transport* reports in [`LinkSecurity`], which no request field can
+//! change. This crate implements no encryption, no signature and no challenge.
 //! The three simple policies are [`OpenPolicy`] (everything),
 //! [`RequireEncryption`] (reads are open, anything else needs an encrypted
 //! link) and [`RequireAuthenticated`] (anything but reads needs an encrypted
@@ -120,26 +121,11 @@
 //! and carries that action's privilege. `ReadStream` and `CloseStream` from
 //! another session are answered `NotFound`, as if the stream did not exist,
 //! and the policy is applied with the privilege of the creating action.
-//! [`Controller::session_closed`] closes only the streams of one session and
-//! forgets its challenge; [`Controller::link_lost`] is the same for every session.
+//! [`Controller::session_closed`] closes only the streams of one session;
+//! [`Controller::link_lost`] is the same for every session.
 //! A [`ControlHub`] gives each connection a session that is unique across
 //! transports and ends it with the connection; a caller that uses
 //! [`Controller::handle`] directly gives each connection its own `session`.
-//!
-//! ## Signed requests
-//!
-//! A client of an endpoint that [accepts them](AuthorizationPolicy::accepts_signed) asks for
-//! `GetAuthChallenge` (a fresh 32-byte nonce for its session) and wraps a privileged request
-//! in a `SignedRequest`: an Ed25519 signature over
-//! `"rohi-control-auth-v1" || nonce || sequence_le_u64 || request_bytes`, strictly increasing
-//! sequence, the inner request carrying the id of the wrapper. The controller checks, in this
-//! order, the key and the challenge, the sequence, the signature, the inner request (a signed
-//! or challenge request inside is refused), advances the sequence and only then dispatches the
-//! request with [`RequestAuthorization::VerifiedAdmin`]. Every refusal is `PermissionDenied`
-//! with a reason (`no_admin_key`, `no_challenge`, `stale_sequence`, `bad_signature`, `nested`,
-//! `not_supported`); a connection that fails repeatedly is refused without more checks. A
-//! signature protects one request: no confidentiality, no authentication of the device, and
-//! `LinkSecurity::authenticated` is never set by it.
 //!
 //! ## Errors on the wire
 //!
@@ -245,9 +231,9 @@ pub use access::{
     TransportAccessMode,
 };
 pub use backend::{ControlBackend, Device, DeviceInfo};
-pub use controller::{Controller, MAX_AUTH_SESSIONS, MAX_OPEN_STREAMS};
+pub use controller::{Controller, MAX_OPEN_STREAMS};
 pub use hub::{Busy, Connection, ControlHub, MAX_SESSIONS, Reservation, Response, SessionId};
 pub use policy::{
-    AdminKey, AuthorizationPolicy, LinkSecurity, OpenPolicy, Privilege, RequestAuthorization,
-    RequireAuthenticated, RequireEncryption, Transport,
+    AuthorizationPolicy, LinkSecurity, OpenPolicy, Privilege, RequireAuthenticated,
+    RequireEncryption, Transport,
 };

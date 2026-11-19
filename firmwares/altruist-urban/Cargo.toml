@@ -43,7 +43,9 @@ rohi-sdk = { workspace = true, features = [
   "control",
   "ble",
   "endpoints",
-  "connectivity",
+  # `connectivity-packet-export` is the `packet_get` Action and its stream pool; drop it to build without
+  # (`connectivity` stays), see docs/validation/compact-firmware-report.md for what that saves and loses.
+  "connectivity-packet-export",
   "telemetry-sensors",
   "telemetry-location",
   "telemetry-robonomics",
@@ -62,6 +64,7 @@ clap = { workspace = true, optional = true }
 env_logger = { workspace = true, optional = true }
 ctrlc = { workspace = true, optional = true }
 critical-section = { workspace = true, optional = true }
+zeroize = { workspace = true, optional = true }
 
 # ESP platform, only with a chip feature.
 esp-hal = { workspace = true, optional = true }
@@ -87,7 +90,10 @@ std = [
   "dep:env_logger",
   "dep:ctrlc",
   "dep:critical-section",
+  "dep:zeroize",
 ]
+# LZ4 compressed log segments (`.log.lz4`). Off by default: plain-text segments, no codec in the image.
+lz4 = ["rohi-sdk/logging-lz4"]
 # ROHI control over TCP (development transport, loopback by default).
 std-tcp = ["std"]
 # ROHI control over a BlueZ BLE peripheral (Linux).

@@ -17,8 +17,8 @@
 ///////////////////////////////////////////////////////////////////////////////
 #![no_std]
 
-//! The ROHI control protocol over TCP: length-prefixed Protobuf records and the
-//! serving loop of the device.
+//! The ROHI control protocol over TCP: a handshake with a pre-shared key, authenticated and
+//! encrypted Protobuf records, and the serving loop of the device.
 //!
 //! # Overview
 //!
@@ -29,8 +29,9 @@
 //! authorization policy and the same registries as over BLE
 //! (`rohi-control-ble`). Only the carrier differs, and TCP needs none of the BLE
 //! machinery: a TCP stream is ordered and reliable, so there is no
-//! fragmentation, no message id and no MTU. A message is a record with a 4-byte
-//! length ([`frame`]).
+//! fragmentation, no message id and no MTU. A message is a record: with a 4-byte
+//! length ([`frame`], plaintext, for an open development endpoint) or, on a restricted endpoint,
+//! an authenticated and encrypted record of the channel in [`secure`].
 //!
 //! The crate is `no_std` and allocation free and contains no socket code. The
 //! listening socket is an [`Acceptor`] supplied by a platform crate
@@ -51,7 +52,10 @@
 //! use embassy_futures::block_on;
 //! use embassy_futures::select::{Either, select};
 //! use embedded_io_async::{ErrorType, Read, Write};
-//! use rohi_control::{ControlAccess, ControlHub, Controller, Device, DeviceInfo, OpenPolicy};
+//! use rohi_control::{
+//!     ControlAccess, ControlHub, Controller, Device, DeviceInfo, OpenPolicy, Transport,
+//!     TransportAccessMode,
+//! };
 //! use rohi_control_proto::control::{self as pb, Request_::Request as Call, Response_::Response as Reply};
 //! use rohi_control_proto::{PROTOCOL_VERSION, decode, encode};
 //! use rohi_control_tcp::frame::{HEADER_LEN, decode_header, encode_header};
@@ -124,6 +128,9 @@
 //! let info = DeviceInfo { firmware: "demo-0.1.0", board: "demo-board" };
 //! let controller = Controller::new(Device::new(info, || 0, (), (), ()), OpenPolicy);
 //! let access = ControlAccess::new(|_| false);
+//! // Plaintext records, for a loopback demonstration; the default (`Restricted`) wants the
+//! // handshake of [`secure`] with a pre-shared key.
+//! access.set_mode(Transport::Tcp, TransportAccessMode::Open);
 //! let hub = ControlHub::<1>::with_access(&access);
 //! let mut control = ControlTcp::new(OneClient(Some(connection.clone())), &hub);
 //! // On the device the worker is the `control_task`; here both run in turn.
@@ -148,10 +155,11 @@
 //!
 //! | Concept | Meaning |
 //! |---------|---------|
-//! | Record | A 4-byte little-endian length and one Protobuf message ([`frame`]) |
+//! | Record | One Protobuf message: behind a 4-byte little-endian length ([`frame`], open endpoint) or sealed with XChaCha20-Poly1305 ([`secure`], restricted endpoint) |
+//! | Secure channel | A handshake with a 32-byte pre-shared key (HKDF-SHA256, random nonces, mutual proofs bound to the transcript), directional keys and per-record counters, see [`secure`] |
 //! | [`Acceptor`] | Yields the next client connection as an `embedded-io-async` stream |
 //! | [`ControlTcp`] | Accepts a client, reads a request record into a slot of the [`ControlHub`](rohi_control::ControlHub), writes the response record of the one control worker |
-//! | Link security | Always the default (unencrypted, unauthenticated) one; the access mode of the TCP endpoint decides what an unsigned request may do |
+//! | Link security | Set by this crate after the handshake (encrypted and authenticated); a plaintext connection of an open endpoint keeps the default (neither) |
 //!
 //! **Connections.** One client is served at a time. While it is connected, the
 //! next one waits in the backlog of the platform listener. A client that
@@ -212,15 +220,19 @@
 //! * **Cancellation.** Dropping [`ControlTcp::run`] or [`ControlTcp::serve_next`]
 //!   closes the current connection and abandons the request being handled; what
 //!   a service already committed stays committed.
-//! * **No transport security.** The transport has no encryption, no
-//!   authentication of the device and no pairing. What protects privileged
-//!   requests is the access mode of the TCP endpoint: `Restricted` (the
-//!   default of the firmware) wants an Ed25519 signature of the administrator
-//!   key on each of them, see [`rohi_control`]; `Open` allows everything,
-//!   including identity provisioning and erase. A signature gives neither
-//!   confidentiality nor protection of the responses. A platform must bind its
-//!   listener to the loopback address unless the developer explicitly asks for
-//!   more.
+//! * **Transport security is owned here.** On a restricted endpoint (the default) nothing is
+//!   read, decrypted or processed before the handshake with the pre-shared key succeeded; the
+//!   records are authenticated and encrypted with XChaCha20-Poly1305 under keys of the direction;
+//!   malformed, replayed, reordered, truncated and tampered records, a counter that is used up and
+//!   a key that was replaced end the connection with nothing written in plaintext, and there is
+//!   never a fallback to plaintext. The key is never sent or logged and the keys derived from it
+//!   are wiped on drop. There is **no forward secrecy** (whoever learns the key can decrypt a
+//!   recorded session), no certificate or TLS, and the key is provisioned through a protected
+//!   link only (see `rohi-control-endpoints`). An `Open` endpoint is plaintext and
+//!   unauthenticated: a platform must bind it to the loopback address unless the developer
+//!   explicitly asks for more. A client that stalls inside the handshake holds the one
+//!   connection until the platform closes the stream: a platform that needs a deadline wraps
+//!   [`ControlTcp::serve_next`] in a timeout.
 //! * **Evidence.** The records and the serving loop are covered by host tests
 //!   with scripted in-memory connections (`cargo test -p rohi-control-tcp`) and
 //!   the example above. End-to-end use with host sockets and the `rohi` tool is
@@ -230,9 +242,10 @@
 extern crate std;
 
 pub mod frame;
+pub mod secure;
 mod service;
 
 #[cfg(test)]
 mod tests;
 
-pub use service::{Acceptor, ControlTcp, error_kind};
+pub use service::{Acceptor, ControlTcp, PskSource, error_kind};

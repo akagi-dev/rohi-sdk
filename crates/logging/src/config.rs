@@ -43,6 +43,13 @@ pub const DEFAULT_SEGMENT_BYTES: u32 = 64 * 1024;
 /// Default flush interval: 10 s.
 pub const DEFAULT_FLUSH_INTERVAL_MS: u32 = 10_000;
 
+/// Codec of new segments by default: LZ4 with the `lz4` feature, plain text otherwise.
+#[cfg(feature = "lz4")]
+pub const DEFAULT_COMPRESSION: Compression = Compression::Lz4;
+/// Codec of new segments by default: LZ4 with the `lz4` feature, plain text otherwise.
+#[cfg(not(feature = "lz4"))]
+pub const DEFAULT_COMPRESSION: Compression = Compression::None;
+
 /// Persistent level of a production build.
 pub const PRODUCTION_LEVEL: LogLevel = LogLevel::Warn;
 /// Persistent level of a development or test build.
@@ -71,10 +78,15 @@ const STORAGE_VARIANTS: EnumDescriptor = EnumDescriptor::new(
     &[EnumVariant::new(0, "internal"), EnumVariant::new(1, "sd")],
 );
 
-const COMPRESSION_VARIANTS: EnumDescriptor = EnumDescriptor::new(
-    COMPRESSION_ENUM,
-    &[EnumVariant::new(0, "none"), EnumVariant::new(1, "lz4")],
-);
+#[cfg(feature = "lz4")]
+const COMPRESSION_VALUES: &[EnumVariant] =
+    &[EnumVariant::new(0, "none"), EnumVariant::new(1, "lz4")];
+
+#[cfg(not(feature = "lz4"))]
+const COMPRESSION_VALUES: &[EnumVariant] = &[EnumVariant::new(0, "none")];
+
+const COMPRESSION_VARIANTS: EnumDescriptor =
+    EnumDescriptor::new(COMPRESSION_ENUM, COMPRESSION_VALUES);
 
 /// The enum of the `level` field, which the `logging` service status shares.
 pub const LEVELS: &[EnumDescriptor] = &[LEVEL_VARIANTS];
@@ -135,13 +147,19 @@ impl VariantValue for LogStorageKind {
 }
 
 /// How new segments are compressed.
+///
+/// Without the `lz4` feature there is one choice, plain text: the codec is not
+/// compiled in, `Lz4` does not exist, the schema does not list it and a
+/// stored or requested value `1` is rejected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Encode, Decode, CborLen)]
 #[cbor(index_only)]
 pub enum Compression {
     /// Plain text segments (`.log`).
+    #[cfg_attr(not(feature = "lz4"), default)]
     #[n(0)]
     None,
-    /// LZ4 frames (`.log.lz4`).
+    /// LZ4 frames (`.log.lz4`); only with the `lz4` feature.
+    #[cfg(feature = "lz4")]
     #[default]
     #[n(1)]
     Lz4,
@@ -152,6 +170,7 @@ impl Compression {
     pub const fn name(self) -> &'static str {
         match self {
             Self::None => "none",
+            #[cfg(feature = "lz4")]
             Self::Lz4 => "lz4",
         }
     }
@@ -161,6 +180,7 @@ impl VariantValue for Compression {
     fn variant(&self) -> u32 {
         match self {
             Self::None => 0,
+            #[cfg(feature = "lz4")]
             Self::Lz4 => 1,
         }
     }
@@ -168,6 +188,7 @@ impl VariantValue for Compression {
     fn from_variant(variant: u32) -> Option<Self> {
         match variant {
             0 => Some(Self::None),
+            #[cfg(feature = "lz4")]
             1 => Some(Self::Lz4),
             _ => None,
         }
@@ -213,7 +234,7 @@ impl VariantValue for Compression {
 ///
 /// let config = LoggingConfig::default();
 /// assert_eq!(config.level, LogLevel::Warn);
-/// assert_eq!(config.compression, Compression::Lz4);
+/// assert_eq!(config.compression, Compression::default());
 /// assert!(config.validate().is_ok());
 ///
 /// let one_segment = LoggingConfig { retention_bytes: config.segment_bytes, ..config };
@@ -270,7 +291,7 @@ impl LoggingConfig {
     pub const DEFAULT: Self = Self {
         level: PRODUCTION_LEVEL,
         storage: LogStorageKind::Internal,
-        compression: Compression::Lz4,
+        compression: DEFAULT_COMPRESSION,
         retention_bytes: DEFAULT_RETENTION_BYTES,
         segment_bytes: DEFAULT_SEGMENT_BYTES,
         flush_interval_ms: DEFAULT_FLUSH_INTERVAL_MS,

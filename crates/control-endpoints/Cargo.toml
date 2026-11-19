@@ -7,7 +7,7 @@ edition.workspace = true
 homepage.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Robonomics Open Hardware managed control endpoints: control_tcp and control_ble config and status, and the administrator key of signed requests"
+description = "Robonomics Open Hardware managed control endpoints: control_tcp and control_ble config and status, and the pre-shared key of the TCP endpoint"
 
 [badges]
 maintenance = { status = "actively-developed" }
@@ -15,13 +15,13 @@ maintenance = { status = "actively-developed" }
 [dependencies]
 rohi-config.workspace = true
 rohi-control.workspace = true
-rohi-identity.workspace = true
 rohi-net.workspace = true
 rohi-service.workspace = true
 heapless.workspace = true
 log.workspace = true
 minicbor.workspace = true
 sha2.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 embassy-futures.workspace = true

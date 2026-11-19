@@ -281,10 +281,10 @@ fn the_command_tree_has_no_module_specific_commands() {
         .get_subcommands()
         .map(|command| command.get_name().to_owned())
         .collect();
-    // `admin` manages the key of signed requests on the host; it names no module.
+    // `tcp-key` manages the pre-shared key of the TCP endpoint on the host; it names no module.
     assert_eq!(
         names,
-        ["scan", "status", "config", "action", "logs", "admin"]
+        ["scan", "status", "config", "action", "logs", "tcp-key"]
     );
     // Any other word is a service of the device, resolved when connected.
     for service in ["wifi", "connectivity", "backup", "sensors", "time", "info"] {

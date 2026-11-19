@@ -25,6 +25,9 @@ use rohi_service::{ActionRegistry, Statuses};
 use super::*;
 use crate::catalog::{BMX280_TEMPERATURE, LOCATION, SDS011_PM10, all_cataloged};
 
+// The capacities the tests exercise, more than a device keeps.
+type ProfileSet = TelemetryConfig<3, 2>;
+
 struct Caps;
 
 impl FormatCapabilities for Caps {
@@ -46,7 +49,7 @@ struct Memory {
     commits: RefCell<u32>,
 }
 
-impl TelemetryStore for &Memory {
+impl TelemetryStore<3, 2> for &Memory {
     async fn load(&self) -> Result<ProfileSet, StoreError> {
         if *self.unreadable.borrow() {
             return Err(StoreError::Unavailable);
@@ -64,7 +67,7 @@ impl TelemetryStore for &Memory {
     }
 }
 
-type Service_<'a> = TelemetryService<NoopRawMutex, &'a Memory, Caps>;
+type Service_<'a> = TelemetryService<NoopRawMutex, &'a Memory, Caps, 3, 2>;
 
 fn service(memory: &Memory) -> Service_<'_> {
     TelemetryService::new(memory, Caps)
@@ -389,7 +392,7 @@ fn status_reports_counts_without_any_policy_content() {
 
 #[test]
 fn the_runtime_state_follows_commits_and_stamps_go_stale() {
-    let state = TelemetryState::<NoopRawMutex>::new();
+    let state = TelemetryState::<NoopRawMutex, 3, 2>::new();
     assert!(state.resolve("p").is_none());
     let mut profiles = ProfileSet::default();
     profiles
@@ -427,7 +430,8 @@ fn the_runtime_state_follows_commits_and_stamps_go_stale() {
 #[test]
 fn the_section_round_trips_as_a_config_section() {
     use rohi_config::ConfigSection as _;
-    let mut section = TelemetrySection::default();
+    type Section = TelemetrySection<3, 2>;
+    let mut section = Section::default();
     section
         .0
         .add_profile("p", PacketFormatId::Robonomics)
@@ -438,9 +442,62 @@ fn the_section_round_trips_as_a_config_section() {
         minicbor::encode(&section, &mut cursor).unwrap();
         cursor.position()
     };
-    let back = TelemetrySection::decode_versioned(TelemetrySection::VERSION, &buf[..len]).unwrap();
+    let back = Section::decode_versioned(Section::VERSION, &buf[..len]).unwrap();
     assert_eq!(back, section);
-    assert!(
-        TelemetrySection::decode_versioned(TelemetrySection::VERSION + 1, &buf[..len]).is_err()
+    assert!(Section::decode_versioned(Section::VERSION + 1, &buf[..len]).is_err());
+}
+
+#[test]
+fn a_section_over_the_capacity_of_the_device_is_refused_not_truncated() {
+    type Big = TelemetrySection<3, 2>;
+    type Device = TelemetrySection<2, 1>;
+    let mut big = Big::default();
+    for id in ["a", "b", "c"] {
+        big.0.add_profile(id, PacketFormatId::Robonomics).unwrap();
+    }
+    let mut buf = [0u8; 512];
+    let len = rohi_config::encode_to_slice(&big, &mut buf).unwrap();
+    // Three profiles do not fit two slots.
+    assert!(minicbor::decode::<Device>(&buf[..len]).is_err());
+
+    // Two recipients do not fit one.
+    let mut two = Big::default();
+    two.0.add_profile("p", PacketFormatId::Robonomics).unwrap();
+    for (seed, id) in [(1u8, "x"), (2, "y")] {
+        let _ = id;
+        two.0
+            .add_private(
+                "p",
+                RecipientAddress([seed; 32]),
+                crate::DataSelection::local(Selection::NONE.with(LOCATION)),
+                &Caps,
+            )
+            .unwrap();
+    }
+    let len = rohi_config::encode_to_slice(&two, &mut buf).unwrap();
+    assert!(minicbor::decode::<Device>(&buf[..len]).is_err());
+
+    // The identity of the section does not depend on the capacity.
+    use rohi_config::ConfigSection as _;
+    assert_eq!(Big::ID, Device::ID);
+    assert_eq!(Device::ID.0, 0x7c1e_89f0_a500_7b17);
+}
+
+#[test]
+fn a_device_with_two_profiles_and_one_recipient_refuses_one_more_of_each() {
+    let mut device = TelemetryConfig::<2, 1>::default();
+    device.add_profile("a", PacketFormatId::Robonomics).unwrap();
+    device.add_profile("b", PacketFormatId::Robonomics).unwrap();
+    assert_eq!(
+        device.add_profile("c", PacketFormatId::Robonomics),
+        Err(ProfileError::TooManyProfiles)
+    );
+    let selection = crate::DataSelection::local(Selection::NONE.with(LOCATION));
+    device
+        .add_private("a", RecipientAddress([1; 32]), selection, &Caps)
+        .unwrap();
+    assert_eq!(
+        device.add_private("a", RecipientAddress([2; 32]), selection, &Caps),
+        Err(ProfileError::TooManyRecipients)
     );
 }

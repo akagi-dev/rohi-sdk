@@ -32,10 +32,12 @@ use rohi_service::{
 };
 use rohi_time::UnixTime;
 
-use crate::storage::{LogStorage, MAX_SEGMENTS, Medium, RamMedium, RingStorage};
+#[cfg(feature = "lz4")]
+use crate::storage::MAX_SEGMENTS;
+use crate::storage::{LogStorage, Medium, RamMedium, RingStorage};
 use crate::*;
 
-const SECTORS: usize = 16;
+const SECTORS: usize = 32;
 
 #[derive(Clone)]
 struct Shared(Rc<RefCell<RamMedium<SECTORS>>>, Rc<Cell<u32>>);
@@ -124,10 +126,31 @@ impl Backends for Test {
     }
 }
 
+/// The name suffix of a downloaded file of the codec of the build.
+#[cfg(feature = "lz4")]
+const FILE_EXTENSION: &str = ".log.lz4";
+#[cfg(not(feature = "lz4"))]
+const FILE_EXTENSION: &str = ".log";
+
+/// The text of a downloaded file: LZ4 frames are decoded with the reference implementation.
+fn file_text(data: &[u8]) -> std::string::String {
+    #[cfg(feature = "lz4")]
+    {
+        let mut text = std::string::String::new();
+        std::io::Read::read_to_string(&mut lz4_flex::frame::FrameDecoder::new(data), &mut text)
+            .unwrap();
+        text
+    }
+    #[cfg(not(feature = "lz4"))]
+    {
+        std::string::String::from_utf8(data.to_vec()).unwrap()
+    }
+}
+
 const CONFIG: LoggingConfig = LoggingConfig {
     level: LogLevel::Info,
     storage: LogStorageKind::Internal,
-    compression: Compression::Lz4,
+    compression: crate::DEFAULT_COMPRESSION,
     retention_bytes: 4096 * 6,
     segment_bytes: 4096,
     flush_interval_ms: 1_000,
@@ -344,7 +367,7 @@ fn the_service_starts_then_reports_ok_and_the_space() {
     );
     assert_eq!(
         field(&logging, status_field::COMPRESSION),
-        Some(Value::text("lz4").unwrap())
+        Some(Value::text(crate::DEFAULT_COMPRESSION.name()).unwrap())
     );
     assert_eq!(number(&logging, status_field::OLDEST_SEQUENCE), None);
 
@@ -486,7 +509,12 @@ fn the_history_and_the_sequence_survive_a_restart() {
 #[test]
 fn download_seals_pins_and_lists_the_files() {
     let rig = Rig::new();
-    let logging = rig.logging(CONFIG);
+    // Room for the history of the download and for new records next to it, which plain
+    // text (a bigger history than a compressed one) needs more of.
+    let logging = rig.logging(LoggingConfig {
+        retention_bytes: 4096 * 12,
+        ..CONFIG
+    });
     let mut next = 1;
     for _ in 0..30 {
         log_many(&logging, 6, next);
@@ -501,7 +529,7 @@ fn download_seals_pins_and_lists_the_files() {
         .collect();
     assert!(names.len() >= 2);
     for (index, name) in names.iter().enumerate() {
-        assert_eq!(name, &std::format!("rohi{}.log.lz4", index + 1));
+        assert_eq!(name, &std::format!("rohi{}{FILE_EXTENSION}", index + 1));
         assert_eq!(info.files[index].id, index as u32 + 1);
     }
     assert_eq!(logging.pins(), names.len());
@@ -512,13 +540,7 @@ fn download_seals_pins_and_lists_the_files() {
     for file in &info.files {
         let data = read_all(&logging, &info, file.id);
         assert_eq!(data.len() as u64, file.size_bytes);
-        let mut text = std::string::String::new();
-        std::io::Read::read_to_string(
-            &mut lz4_flex::frame::FrameDecoder::new(data.as_slice()),
-            &mut text,
-        )
-        .unwrap();
-        records.extend(parse(text.as_bytes()));
+        records.extend(parse(file_text(&data).as_bytes()));
     }
     assert_eq!(records.first().unwrap().sequence, 1);
     assert_eq!(records.last().unwrap().sequence, 180);
@@ -808,6 +830,7 @@ fn switching_the_backend_does_not_migrate_the_history() {
     assert_eq!(back.last().unwrap().message.as_str(), "last on internal");
 }
 
+#[cfg(feature = "lz4")]
 #[test]
 fn a_codec_or_size_change_applies_to_new_segments_only() {
     let rig = Rig::new();
@@ -1065,6 +1088,7 @@ fn a_pinned_full_ring_stalls_the_task_instead_of_spinning() {
     assert!(embassy_futures::poll_once(task.as_mut()).is_pending());
 }
 
+#[cfg(feature = "lz4")]
 fn write_history(rig: &Rig, logging: &TestLogging<'_>, batches: u64) -> u64 {
     let mut next = 1;
     for _ in 0..batches {
@@ -1075,6 +1099,7 @@ fn write_history(rig: &Rig, logging: &TestLogging<'_>, batches: u64) -> u64 {
     next - 1
 }
 
+#[cfg(feature = "lz4")]
 #[test]
 fn a_damaged_segment_does_not_touch_the_tail() {
     let rig = Rig::new();
@@ -1190,6 +1215,7 @@ fn clearing_twice_gives_two_new_histories() {
     assert!(first < second && second < third);
 }
 
+#[cfg(feature = "lz4")]
 #[test]
 fn a_payload_damaged_while_the_device_was_off_is_dropped_and_reported() {
     let rig = Rig::new();
@@ -1800,7 +1826,7 @@ fn a_download_that_pins_the_ring_defers_the_records_without_writing_them() {
     {
         let logging = rig.logging(config);
         let mut next = 1;
-        for _ in 0..30 {
+        for _ in 0..60 {
             log_many(&logging, 6, next);
             next += 6;
             settle(&rig, &logging);
@@ -2249,4 +2275,101 @@ fn the_tail_survives_a_reboot_only_as_a_new_session() {
     let (page, records) = tail_page(&logging, session, 3, MAX_TAIL_CHUNK);
     assert!(records.is_empty());
     assert_eq!((page.session, page.reset), (12, true));
+}
+
+// What the ESP32-C3 log keeps: a 128 KiB partition, two format header sectors,
+// 8 KiB segments, plain text. The numbers are measured on the emulated medium
+// (`cargo test -p rohi-logging retention -- --nocapture` prints them); they
+// depend on the flush pattern because a batch is the unit of a write.
+const C3_CONFIG: LoggingConfig = LoggingConfig {
+    retention_bytes: 128 * 1024,
+    segment_bytes: 8 * 1024,
+    compression: Compression::None,
+    flush_interval_ms: 1_000,
+    ..CONFIG
+};
+
+// A message that makes a whole persisted line `line_len` bytes long.
+fn message_for(line_len: usize, logging: &TestLogging<'_>) -> std::string::String {
+    assert!(log(logging, "x"));
+    let record = logging.sink().try_recv().unwrap();
+    let mut line = std::string::String::new();
+    crate::segment::text::write_line(&mut line, &record).unwrap();
+    // The line ends with a newline and holds one character of message.
+    "x".repeat(line_len - (line.len() - 1))
+}
+
+struct Retained {
+    records: usize,
+    payload: usize,
+    segments: usize,
+}
+
+fn retained(logging: &TestLogging<'_>) -> Retained {
+    let records = logging.archive(0, u64::MAX).expect("the archive decodes");
+    let payload = records
+        .iter()
+        .map(|record| {
+            let mut line = std::string::String::new();
+            crate::segment::text::write_line(&mut line, record).unwrap();
+            line.len()
+        })
+        .sum();
+    Retained {
+        records: records.len(),
+        payload,
+        segments: number(logging, status_field::SEGMENTS).unwrap() as usize,
+    }
+}
+
+fn fill_c3(line_len: usize, flush_every: u64) -> (Rig, Retained) {
+    let rig = Rig::new();
+    let logging = rig.logging(C3_CONFIG);
+    let message = message_for(line_len, &logging);
+    let mut written = 0u64;
+    // Three times what the ring holds.
+    while written * line_len as u64 / 128 / 1024 < 3 {
+        for _ in 0..flush_every {
+            assert!(log(&logging, &message));
+            written += 1;
+        }
+        settle(&rig, &logging);
+    }
+    let kept = retained(&logging);
+    (rig, kept)
+}
+
+#[test]
+fn the_esp32c3_log_retention_is_measured() {
+    std::println!("line_len flush_every segments records payload_bytes (of 122880 in 15 segments)");
+    for line_len in [80usize, 100, 120, 160] {
+        for flush_every in [1u64, 6, 20, 64] {
+            let (rig, kept) = fill_c3(line_len, flush_every);
+            std::println!(
+                "{line_len:>8} {flush_every:>11} {:>8} {:>7} {:>13}",
+                kept.segments,
+                kept.records,
+                kept.payload
+            );
+            // The ring holds 15 segments of 8 KiB; a segment seals once a batch of
+            // up to 1 KiB would not fit. Whatever the flush pattern, at least
+            // 95 KiB of the 120 KiB are kept as text (98 KiB at the least, measured).
+            assert!(
+                kept.payload > 95 * 1024,
+                "{line_len} {flush_every}: {}",
+                kept.payload
+            );
+            assert!(
+                kept.segments >= 13,
+                "{line_len} {flush_every}: {}",
+                kept.segments
+            );
+
+            // A reboot keeps what was there.
+            let again = rig.logging(C3_CONFIG);
+            step(&rig, &again);
+            let after = retained(&again);
+            assert_eq!(after.records, kept.records, "{line_len} {flush_every}");
+        }
+    }
 }

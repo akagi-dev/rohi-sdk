@@ -19,6 +19,7 @@
 use embassy_futures::block_on;
 
 use super::contract::*;
+use super::ring::{FORMAT_VERSION, START_VERSION};
 use super::*;
 
 const SECTORS: usize = 16;
@@ -77,7 +78,7 @@ fn write_until_power_loss(
 #[test]
 fn a_power_loss_at_any_write_loses_at_most_the_open_batch() {
     let budgets = (0..400).chain((400..80_000).step_by(373));
-    for codec in [Compression::Lz4, Compression::None] {
+    for &codec in crate::TEST_CODECS {
         for budget in budgets.clone() {
             let mut storage = fresh();
             storage.medium().fail_after(budget);
@@ -110,7 +111,7 @@ fn a_power_loss_at_any_write_loses_at_most_the_open_batch() {
 #[test]
 fn a_torn_seal_is_recovered_by_reading_the_segment() {
     let mut storage = fresh();
-    let mut writer = Writer::new(1, Compression::Lz4, LIMITS);
+    let mut writer = Writer::new(1, crate::DEFAULT_COMPRESSION, LIMITS);
     writer.push_many(&mut storage, 80).unwrap();
     writer.flush(&mut storage).unwrap();
     let expected = all_records(&mut storage);
@@ -172,7 +173,7 @@ fn foreign_content_does_not_stop_the_log() {
     let recovery = block_on(storage.recover()).unwrap();
     assert_eq!((recovery.segments, recovery.newest_sequence), (0, None));
 
-    let mut writer = Writer::new(1, Compression::Lz4, LIMITS);
+    let mut writer = Writer::new(1, crate::DEFAULT_COMPRESSION, LIMITS);
     writer.push_many(&mut storage, 120).unwrap();
     writer.flush(&mut storage).unwrap();
     let records = all_records(&mut storage);
@@ -195,8 +196,8 @@ fn segments_of_different_sizes_share_the_ring() {
             segment_bytes,
             retention_bytes: 4096 * 12,
         };
-        let mut writer = Writer::new(next, Compression::Lz4, limits);
-        block_on(storage.begin_segment(Compression::Lz4, limits)).unwrap();
+        let mut writer = Writer::new(next, crate::DEFAULT_COMPRESSION, limits);
+        block_on(storage.begin_segment(crate::DEFAULT_COMPRESSION, limits)).unwrap();
         writer
             .push_many(&mut storage, 100 + index as u64 % 7 * 30)
             .unwrap();
@@ -215,7 +216,7 @@ fn segments_of_different_sizes_share_the_ring() {
 #[test]
 fn flash_wear_is_spread_over_the_whole_region() {
     let mut storage = fresh();
-    let mut writer = Writer::new(1, Compression::Lz4, LIMITS);
+    let mut writer = Writer::new(1, crate::DEFAULT_COMPRESSION, LIMITS);
     for _ in 0..60 {
         writer.push_many(&mut storage, 100).unwrap();
     }
@@ -302,7 +303,7 @@ fn a_recovery_keeps_the_pins_of_downloads() {
 
 #[test]
 fn a_sealed_segment_with_a_damaged_payload_is_dropped_and_reported() {
-    for codec in [Compression::None, Compression::Lz4] {
+    for &codec in crate::TEST_CODECS {
         let mut storage = fresh();
         let mut writer = Writer::new(1, codec, LIMITS);
         let count = if codec == Compression::None { 300 } else { 900 };
@@ -347,7 +348,7 @@ fn generation(storage: &mut RingStorage<RamMedium<SECTORS>>) -> u32 {
 fn the_generation_changes_with_the_history_and_survives_reboots() {
     let mut storage = fresh();
     assert_eq!(generation(&mut storage), 1);
-    let mut writer = Writer::new(1, Compression::Lz4, LIMITS);
+    let mut writer = Writer::new(1, crate::DEFAULT_COMPRESSION, LIMITS);
     writer.push_many(&mut storage, 100).unwrap();
     writer.flush(&mut storage).unwrap();
     let mut storage = restart(storage);
@@ -361,7 +362,7 @@ fn the_generation_changes_with_the_history_and_survives_reboots() {
     let mut storage = restart(storage);
     assert_eq!(generation(&mut storage), 2);
 
-    let mut writer = Writer::new(1, Compression::Lz4, LIMITS);
+    let mut writer = Writer::new(1, crate::DEFAULT_COMPRESSION, LIMITS);
     writer.push_many(&mut storage, 100).unwrap();
     writer.flush(&mut storage).unwrap();
     assert_eq!(generation(&mut storage), 2);
@@ -397,7 +398,7 @@ fn a_history_lost_to_damage_gets_a_new_generation() {
 const RING: usize = SECTORS - 2;
 
 fn write_history(storage: &mut RingStorage<RamMedium<SECTORS>>, records: u64) {
-    let mut writer = Writer::new(1, Compression::Lz4, LIMITS);
+    let mut writer = Writer::new(1, crate::DEFAULT_COMPRESSION, LIMITS);
     writer.push_many(storage, records).unwrap();
     writer.flush(storage).unwrap();
 }
@@ -577,25 +578,74 @@ fn a_medium_that_is_too_small_is_refused() {
 
 #[test]
 fn the_esp32c3_partition_retains_fifteen_whole_segments() {
-    // 128 sectors (512 KiB): two format header sectors and a ring of 126, cut
-    // into 32 KiB segments of eight sectors.
-    let mut medium = std::boxed::Box::new(RamMedium::<128>::new());
-    medium.erase(0, 128).unwrap();
+    // 32 sectors (128 KiB): two format header sectors and a ring of 30, cut
+    // into 8 KiB segments of two sectors.
+    let mut medium = std::boxed::Box::new(RamMedium::<32>::new());
+    medium.erase(0, 32).unwrap();
     let mut storage = RingStorage::new(*medium);
     block_on(storage.recover()).unwrap();
     let limits = Limits {
-        segment_bytes: 32 * 1024,
-        retention_bytes: 512 * 1024,
+        segment_bytes: 8 * 1024,
+        retention_bytes: 128 * 1024,
     };
     let mut writer = Writer::new(1, Compression::None, limits);
     let mut most_sealed = 0;
     for _ in 0..400 {
         writer.push_many(&mut storage, 100).unwrap();
         let stats = block_on(storage.stats()).unwrap();
-        assert!(stats.used_bytes <= 126 * 4096, "{stats:?}");
-        assert_eq!(stats.capacity_bytes, 126 * 4096, "{stats:?}");
+        assert!(stats.used_bytes <= 30 * 4096, "{stats:?}");
+        assert_eq!(stats.capacity_bytes, 30 * 4096, "{stats:?}");
         most_sealed = most_sealed.max(stats.segments);
     }
     assert!(most_sealed >= 15, "{most_sealed}");
     assert_contiguous(&all_records(&mut storage));
+}
+
+// A medium that a build of the previous formats left: a healthy history whose
+// format header and start records carry the versions before `START_VERSION` and
+// `FORMAT_VERSION`.
+fn medium_of_an_older_format(headers: bool, starts: bool) -> RamMedium<SECTORS> {
+    let mut storage = fresh();
+    write_history(&mut storage, 600);
+    let mut medium = storage.into_medium();
+    let ring = RING as u32 * 4096;
+    if headers {
+        for slot in 0..2 {
+            *medium.raw(ring + slot * 4096 + 4) = FORMAT_VERSION - 1;
+        }
+    }
+    if starts {
+        for sector in 0..RING as u32 {
+            if medium.raw(sector * 4096) == &mut b'R' {
+                *medium.raw(sector * 4096 + 4) = START_VERSION - 1;
+            }
+        }
+    }
+    medium
+}
+
+#[test]
+fn a_history_of_an_older_format_is_reinitialized_not_read() {
+    // Whichever version is old, the history is gone and the ring is usable; the
+    // start records alone are not read either.
+    for (headers, starts) in [(true, true), (true, false), (false, true)] {
+        let mut storage = RingStorage::new(medium_of_an_older_format(headers, starts));
+        let recovery = block_on(storage.recover()).unwrap();
+        assert_eq!(recovery.formatted, headers, "{headers} {starts}");
+        assert_eq!((recovery.segments, recovery.newest_sequence), (0, None));
+        assert_empty_and_usable(storage);
+    }
+}
+
+#[test]
+fn a_reinitialization_cut_anywhere_is_finished_by_the_next_start() {
+    let erases = RING + 3;
+    for erase_budget in 0..=erases {
+        let mut medium = medium_of_an_older_format(true, true);
+        medium.fail_erase_after(erase_budget);
+        let mut storage = RingStorage::new(medium);
+        assert_eq!(block_on(storage.recover()).is_err(), erase_budget < erases);
+        let storage = restart(storage);
+        assert_empty_and_usable(restart(storage));
+    }
 }

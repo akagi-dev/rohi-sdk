@@ -20,7 +20,9 @@
 
 use heapless::Vec;
 
+#[cfg(feature = "lz4")]
 use super::batch::{MAX_BATCH_BYTES, MAX_CHUNK_LEN};
+#[cfg(feature = "lz4")]
 use super::lz4::{self, FRAME_HEADER_LEN};
 use super::text::{MAX_LINE_LEN, parse_line};
 use crate::{Compression, LogRecord};
@@ -51,9 +53,12 @@ pub struct DecodeSummary {
 /// what follows a power loss or a bit flip is never guessed).
 pub struct SegmentDecoder {
     codec: Compression,
+    #[cfg(feature = "lz4")]
     header_done: bool,
+    #[cfg(feature = "lz4")]
     ended: bool,
     failed: bool,
+    #[cfg(feature = "lz4")]
     pending: Vec<u8, { MAX_CHUNK_LEN + 4 }>,
     line: Vec<u8, MAX_LINE_LEN>,
     discarding: bool,
@@ -65,9 +70,12 @@ impl SegmentDecoder {
     pub const fn new(codec: Compression) -> Self {
         Self {
             codec,
+            #[cfg(feature = "lz4")]
             header_done: false,
+            #[cfg(feature = "lz4")]
             ended: false,
             failed: false,
+            #[cfg(feature = "lz4")]
             pending: Vec::new(),
             line: Vec::new(),
             discarding: false,
@@ -88,6 +96,7 @@ impl SegmentDecoder {
     /// is torn or is damaged.
     pub fn is_complete(&self) -> bool {
         match self.codec {
+            #[cfg(feature = "lz4")]
             Compression::Lz4 => self.ended && !self.failed,
             Compression::None => self.line.is_empty() && !self.discarding && !self.failed,
         }
@@ -103,16 +112,26 @@ impl SegmentDecoder {
     #[inline(never)]
     pub fn push(
         &mut self,
-        mut bytes: &[u8],
+        bytes: &[u8],
         on_record: &mut impl FnMut(LogRecord),
     ) -> Result<(), DecodeError> {
         if self.failed {
             return Err(DecodeError::Corrupt);
         }
-        if self.codec == Compression::None {
-            self.lines(bytes, on_record);
-            return Ok(());
+        #[cfg(feature = "lz4")]
+        if self.codec == Compression::Lz4 {
+            return self.push_lz4(bytes, on_record);
         }
+        self.lines(bytes, on_record);
+        Ok(())
+    }
+
+    #[cfg(feature = "lz4")]
+    fn push_lz4(
+        &mut self,
+        mut bytes: &[u8],
+        on_record: &mut impl FnMut(LogRecord),
+    ) -> Result<(), DecodeError> {
         while !bytes.is_empty() && !self.ended {
             let room = self.pending.capacity() - self.pending.len();
             if room == 0 {
@@ -127,6 +146,7 @@ impl SegmentDecoder {
         Ok(())
     }
 
+    #[cfg(feature = "lz4")]
     #[inline(never)]
     fn blocks(&mut self, on_record: &mut impl FnMut(LogRecord)) -> Result<(), DecodeError> {
         if !self.header_done {
@@ -199,6 +219,7 @@ impl SegmentDecoder {
     }
 }
 
+#[cfg(feature = "lz4")]
 fn drain<const N: usize>(bytes: &mut Vec<u8, N>, count: usize) {
     let remaining = bytes.len() - count;
     bytes.copy_within(count.., 0);

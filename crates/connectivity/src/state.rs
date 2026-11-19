@@ -25,7 +25,7 @@ use embassy_sync::blocking_mutex::raw::RawMutex;
 use embassy_sync::signal::Signal;
 use heapless::Vec;
 
-use crate::config::{MAX_ROUTES, RouteSet};
+use crate::config::Routes;
 use crate::router::RouteView;
 
 /// What the publisher reports about the last time it looked.
@@ -45,25 +45,25 @@ pub struct Health {
 /// step ([`publish`](Self::publish)); the publisher reads them, waits for
 /// changes with [`changed`](Self::changed) and reports route views and
 /// health back for the status of the service.
-pub struct ConnectivityState<M: RawMutex> {
-    routes: BlockingMutex<M, RefCell<RouteSet>>,
-    views: BlockingMutex<M, RefCell<Vec<RouteView, MAX_ROUTES>>>,
+pub struct ConnectivityState<M: RawMutex, const ROUTES: usize, const FALLBACKS: usize> {
+    routes: BlockingMutex<M, RefCell<Routes<ROUTES, FALLBACKS>>>,
+    views: BlockingMutex<M, RefCell<Vec<RouteView, ROUTES>>>,
     health: BlockingMutex<M, RefCell<Health>>,
     unreadable: BlockingMutex<M, Cell<bool>>,
     changed: Signal<M, u32>,
 }
 
-impl<M: RawMutex> Default for ConnectivityState<M> {
+impl<M: RawMutex, const R: usize, const F: usize> Default for ConnectivityState<M, R, F> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<M: RawMutex> ConnectivityState<M> {
+impl<M: RawMutex, const R: usize, const F: usize> ConnectivityState<M, R, F> {
     /// No route: nothing is sent.
     pub const fn new() -> Self {
         Self {
-            routes: BlockingMutex::new(RefCell::new(RouteSet {
+            routes: BlockingMutex::new(RefCell::new(Routes {
                 generation: 0,
                 routes: Vec::new(),
             })),
@@ -79,7 +79,7 @@ impl<M: RawMutex> ConnectivityState<M> {
     }
 
     /// Makes `routes` effective and wakes the publisher.
-    pub fn publish(&self, routes: &RouteSet) {
+    pub fn publish(&self, routes: &Routes<R, F>) {
         self.unreadable.lock(|flag| flag.set(false));
         let generation = routes.generation;
         self.routes
@@ -97,7 +97,7 @@ impl<M: RawMutex> ConnectivityState<M> {
     fn publish_empty(&self) {
         let generation = self.generation();
         self.routes.lock(|current| {
-            *current.borrow_mut() = RouteSet {
+            *current.borrow_mut() = Routes {
                 generation,
                 routes: Vec::new(),
             };
@@ -116,7 +116,7 @@ impl<M: RawMutex> ConnectivityState<M> {
     }
 
     /// A copy of the effective routes.
-    pub fn routes(&self) -> RouteSet {
+    pub fn routes(&self) -> Routes<R, F> {
         self.routes.lock(|routes| routes.borrow().clone())
     }
 
@@ -126,13 +126,13 @@ impl<M: RawMutex> ConnectivityState<M> {
     }
 
     /// Stores the route views and health of the publisher.
-    pub fn report(&self, views: Vec<RouteView, MAX_ROUTES>, health: Health) {
+    pub fn report(&self, views: Vec<RouteView, R>, health: Health) {
         self.views.lock(|current| *current.borrow_mut() = views);
         self.health.lock(|current| *current.borrow_mut() = health);
     }
 
     /// The last reported route views.
-    pub fn views(&self) -> Vec<RouteView, MAX_ROUTES> {
+    pub fn views(&self) -> Vec<RouteView, R> {
         self.views.lock(|views| views.borrow().clone())
     }
 

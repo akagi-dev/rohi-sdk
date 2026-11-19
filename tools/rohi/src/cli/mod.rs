@@ -32,7 +32,6 @@
 //! decodes messages.
 
 mod action;
-mod admin;
 mod args;
 mod config;
 mod diagnostic;
@@ -41,6 +40,7 @@ mod logs;
 mod positional;
 mod status;
 mod target;
+mod tcp_key;
 mod terminal;
 mod values;
 
@@ -48,7 +48,7 @@ use std::future::Future;
 use std::process::ExitCode;
 use std::time::Duration;
 
-pub use args::{AdminAction, Cli, ColorChoice, Command, ConfigAction, LogsAction, OutputFormat};
+pub use args::{Cli, ColorChoice, Command, ConfigAction, LogsAction, OutputFormat, TcpKeyAction};
 pub use diagnostic::{CliError, Diagnostic, PartialApply};
 pub use target::{Match, Target, resolve};
 pub use terminal::Io;
@@ -71,9 +71,8 @@ pub struct Ctx {
     pub watch_limit: Option<usize>,
     /// How often `logs --follow` asks for new records.
     pub follow_interval: Duration,
-    /// The administrator key of `--admin-key`, which signs the requests a
-    /// restricted TCP endpoint wants signed.
-    pub admin_key: Option<crate::AdminKey>,
+    /// The pre-shared key of `--psk-file`, which a restricted TCP endpoint wants.
+    pub tcp_key: Option<crate::TcpKey>,
 }
 
 impl Ctx {
@@ -86,7 +85,7 @@ impl Ctx {
             uri: None,
             watch_limit: None,
             follow_interval: Duration::from_secs(1),
-            admin_key: None,
+            tcp_key: None,
         }
     }
 
@@ -165,7 +164,7 @@ pub async fn execute<T: ClientTransport>(
             lines,
             follow,
         } => logs::run(device, action, lines, follow, ctx).await,
-        Command::Admin(action) => admin::run(device, action, ctx).await,
+        Command::TcpKey(action) => tcp_key::run(device, action, ctx).await,
     }
 }
 
@@ -226,9 +225,6 @@ async fn connect_ble(
 
     let link = BleLink::connect(Some(&chosen.id), wait).await?;
     let mut device = Device::new(link);
-    if let Some(key) = &ctx.admin_key {
-        device.set_admin_key(key);
-    }
     device.set_timeout(Duration::from_secs(cli.timeout));
     Ok(device)
 }
@@ -241,11 +237,14 @@ async fn connect_tcp(
     ctx: &mut Ctx,
 ) -> Result<Device<TcpLink>, CliError> {
     ctx.uri = Some(format!("tcp://{endpoint}"));
-    let link = TcpLink::connect(endpoint, Duration::from_secs(cli.scan_timeout)).await?;
+    let wait = Duration::from_secs(cli.scan_timeout);
+    // With a key the endpoint is restricted: the handshake comes first. Without one the records
+    // are plaintext, which only an open (development) endpoint serves.
+    let link = match &ctx.tcp_key {
+        Some(key) => TcpLink::connect_secure(endpoint, wait, key).await?,
+        None => TcpLink::connect(endpoint, wait).await?,
+    };
     let mut device = Device::new(link);
-    if let Some(key) = &ctx.admin_key {
-        device.set_admin_key(key);
-    }
     device.set_timeout(Duration::from_secs(cli.timeout));
     Ok(device)
 }
@@ -259,20 +258,18 @@ pub async fn run(cli: Cli, ctx: &mut Ctx) -> Result<(), CliError> {
     if let Some(help) = static_help(&cli.command) {
         return ctx.io.result(&help);
     }
-    if let Some(path) = &cli.admin_key {
+    if let Some(path) = &cli.psk_file {
         // Only the commands that need the key have to find it usable.
-        match crate::AdminKey::load(path) {
-            Ok(key) => ctx.admin_key = Some(key),
-            Err(error) if matches!(cli.command, Command::Admin(AdminAction::Keygen { .. })) => {
+        match crate::TcpKey::load(path) {
+            Ok(key) => ctx.tcp_key = Some(key),
+            Err(error) if matches!(cli.command, Command::TcpKey(TcpKeyAction::Generate { .. })) => {
                 let _ = error;
             }
             Err(error) => return Err(error.into()),
         }
     }
-    match &cli.command {
-        Command::Admin(AdminAction::Keygen { file }) => return admin::keygen(file, ctx),
-        Command::Admin(AdminAction::PublicKey) => return admin::public_key(ctx),
-        _ => {}
+    if let Command::TcpKey(TcpKeyAction::Generate { file }) = &cli.command {
+        return tcp_key::generate(file, ctx);
     }
 
     match Target::parse(cli.device.as_deref())? {

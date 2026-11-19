@@ -14,10 +14,11 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 #![no_std]
 
 //! Managed control endpoints: the `control_tcp` and `control_ble` config and
-//! status, and the administrator key of signed requests.
+//! status, and the pre-shared key of the TCP endpoint.
 //!
 //! # Overview
 //!
@@ -31,12 +32,12 @@
 //! | [`ControlTcpConfig`] | config section `control_tcp` | `enabled`, `access_mode`, `bind_address`, `port` of the TCP endpoint |
 //! | [`ControlBleConfig`] | config section `control_ble` | `enabled`, `access_mode` of the BLE endpoint |
 //! | [`ControlTcpService`], [`ControlBleService`] | status services `control_tcp`, `control_ble` | lifecycle, access mode, connections, counters, pending changes |
-//! | [`ControlAuthService`] | status and action service `control_auth` | the trusted administrator key: `set_admin_key`, `clear_admin_key` |
-//! | [`AdminKeySection`] | private persisted section | the administrator public key, never shown by a config request |
+//! | [`ControlPskService`] | status and action service `control_psk` | the pre-shared key of the TCP endpoint: `set_tcp_psk`, `clear_tcp_psk` |
+//! | [`TcpPskSection`] | private persisted section | the pre-shared key, never shown by a request, a status or a log |
 //!
 //! The crate knows no platform: the state lives in a
 //! [`ControlAccess`](rohi_control::ControlAccess) that the firmware publishes
-//! into, and the key is stored through [`AdminKeyStore`]. It is `no_std` and
+//! into, and the key is stored through [`PskStore`]. It is `no_std` and
 //! does not allocate.
 //!
 //! # Quick Example
@@ -56,44 +57,45 @@
 //!
 //! # Core Concepts
 //!
-//! **Access mode.** `open` allows every request; `restricted` lets reads
-//! through and wants proof for mutations and provisioning: an Ed25519
-//! signature of the administrator key on TCP, an encrypted (paired) link on
-//! BLE. The mode of one endpoint never authorizes a request on the other. The
+//! **Access mode.** `open` allows every request; `restricted` wants a secure link: on TCP
+//! the authenticated and encrypted connection of the handshake with the pre-shared key (the
+//! endpoint serves no other client), on BLE an encrypted (paired) link for mutations and
+//! provisioning. The mode of one endpoint never authorizes a request on the other. The
 //! mode applies at once; the other fields apply at the next start, which the
 //! status reports as `restart_required`, so that a change can never cut the
 //! endpoint it arrives on before its response is delivered.
 //!
-//! **Administrator key.** One trusted 32-byte Ed25519 public key. It is
-//! enrolled by the `provision`-level action `control_auth.set_admin_key`, which
-//! is open on an open endpoint and signed on a restricted one, and it never
-//! leaves the device: only a fingerprint is in the status. Without a key a
-//! restricted TCP endpoint refuses every privileged request; it never falls
-//! back to open.
+//! **Pre-shared key.** One 32-byte secret shared with the clients. It is set by the
+//! `provision`-level action `control_psk.set_tcp_psk` over a protected link only (an
+//! encrypted BLE link, or the TCP connection the current key established): there is no
+//! unauthenticated TCP bootstrapping. It never leaves the device: it is in no response, no status
+//! and no log; only the action result shows a fingerprint. Without a key a restricted TCP
+//! endpoint serves no client; it never falls back to open or to plaintext. Setting or removing
+//! the key ends the TCP connections of the old one.
 //!
 //! # Guarantees and Limitations
 //!
-//! * A signature authenticates one request to the device. It gives no
-//!   confidentiality and does not authenticate the device to the client.
-//! * Enrolling the first key over an open endpoint exposes the device to anyone
-//!   who can reach that endpoint until it is enrolled.
-//! * A factory reset removes the key and restores the defaults; recovery of a
-//!   device whose key is lost is a factory reset over an endpoint that is open
-//!   or paired, or physical access.
+//! * The key is not derived from a password and not rotated automatically: provision a random
+//!   32-byte value and replace it through a protected link when needed.
+//! * The TCP transport uses the key for authentication and for session keys, see
+//!   `rohi-control-tcp`; it has **no forward secrecy**: whoever learns the key later can decrypt
+//!   a recorded session.
+//! * A factory reset removes the key and restores the defaults; recovery of a device whose key
+//!   is lost is a factory reset over a paired BLE link, or physical access.
 
 #[cfg(test)]
 extern crate std;
 
-mod auth;
 mod config;
+mod psk;
 mod service;
 
-pub use auth::{
-    AdminKeySection, AdminKeyStore, AdminKeyStoreError, ControlAuthService, auth_action,
-    auth_field, fingerprint,
-};
 pub use config::{
     ACCESS_MODES, AccessMode, ControlBleConfig, ControlBleOverrides, ControlTcpConfig,
     ControlTcpOverrides,
+};
+pub use psk::{
+    ControlPskService, PSK_LEN, PskStore, PskStoreError, TcpPskSection, fingerprint, psk_action,
+    psk_field,
 };
 pub use service::{ControlBleService, ControlTcpService, endpoint_field};

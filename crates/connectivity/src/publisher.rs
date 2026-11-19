@@ -36,7 +36,7 @@ use heapless::Vec;
 use rohi_telemetry::ProfileStamp;
 use rohi_time::{Clock, MonotonicTimestamp};
 
-use crate::config::{MAX_ROUTES, RouteSet};
+use crate::config::Routes;
 use crate::pool::PacketHandle;
 use crate::provider::{BuildFailure, PacketProvider};
 use crate::router::{Admit, Delivery, Router, SkipReason};
@@ -51,16 +51,18 @@ pub struct Publisher<
     T: PacketTransport,
     D: DelayNs,
     C: Clock,
+    const ROUTES: usize,
+    const FALLBACKS: usize,
     const DEPTH: usize,
     const SLOTS: usize,
     const BYTES: usize,
 > {
-    state: &'a ConnectivityState<M>,
+    state: &'a ConnectivityState<M, ROUTES, FALLBACKS>,
     provider: P,
     transport: T,
     delay: D,
     clock: C,
-    router: Router<DEPTH, SLOTS, BYTES>,
+    router: Router<ROUTES, FALLBACKS, DEPTH, SLOTS, BYTES>,
     health: Health,
 }
 
@@ -71,14 +73,16 @@ impl<
     T: PacketTransport,
     D: DelayNs,
     C: Clock,
+    const R: usize,
+    const F: usize,
     const DEPTH: usize,
     const SLOTS: usize,
     const BYTES: usize,
-> Publisher<'a, M, P, T, D, C, DEPTH, SLOTS, BYTES>
+> Publisher<'a, M, P, T, D, C, R, F, DEPTH, SLOTS, BYTES>
 {
     /// A publisher over the effective routes in `state`.
     pub const fn new(
-        state: &'a ConnectivityState<M>,
+        state: &'a ConnectivityState<M, R, F>,
         provider: P,
         transport: T,
         delay: D,
@@ -100,7 +104,7 @@ impl<
     }
 
     /// The router, for inspection.
-    pub fn router(&self) -> &Router<DEPTH, SLOTS, BYTES> {
+    pub fn router(&self) -> &Router<R, F, DEPTH, SLOTS, BYTES> {
         &self.router
     }
 
@@ -135,7 +139,7 @@ impl<
             .report(self.router.views(&config, now), self.health.clone());
     }
 
-    fn reconcile(&mut self, config: &RouteSet, now: MonotonicTimestamp) {
+    fn reconcile(&mut self, config: &Routes<R, F>, now: MonotonicTimestamp) {
         let provider = &self.provider;
         self.router.sync(
             config,
@@ -145,13 +149,13 @@ impl<
         self.router.invalidate(|stamp| provider.is_current(stamp));
     }
 
-    async fn publish(&mut self, config: &RouteSet, due: &[usize], now: MonotonicTimestamp) {
+    async fn publish(&mut self, config: &Routes<R, F>, due: &[usize], now: MonotonicTimestamp) {
         // The publication context is fixed before anything is awaited: each due
         // route with the stamp of the profile it is bound to. A profile that
         // changes during the capture or the build never joins this execution;
         // the build refuses a stamp that is no longer current and the change
         // takes effect in the next one.
-        let mut context: Vec<(usize, ProfileStamp), MAX_ROUTES> = Vec::new();
+        let mut context: Vec<(usize, ProfileStamp), R> = Vec::new();
         for index in due {
             let resolved = self
                 .router
@@ -195,8 +199,7 @@ impl<
         }
 
         // One packet per distinct stamp: (stamp, the built packet or the failure).
-        let mut built: Vec<(ProfileStamp, Result<PacketHandle, SkipReason>), MAX_ROUTES> =
-            Vec::new();
+        let mut built: Vec<(ProfileStamp, Result<PacketHandle, SkipReason>), R> = Vec::new();
         for (index, stamp) in &context {
             if !self.route_snapshot_is_current(config) {
                 break;
@@ -234,7 +237,7 @@ impl<
         }
     }
 
-    fn route_snapshot_is_current(&self, config: &RouteSet) -> bool {
+    fn route_snapshot_is_current(&self, config: &Routes<R, F>) -> bool {
         self.state.routes() == *config
     }
 
@@ -271,7 +274,7 @@ impl<
         }
     }
 
-    async fn deliver(&mut self, config: &RouteSet) {
+    async fn deliver(&mut self, config: &Routes<R, F>) {
         if !self.route_snapshot_is_current(config) {
             return;
         }

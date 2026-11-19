@@ -46,7 +46,9 @@
 //! An SD backend is **not** implemented; the [`Backends`] trait is where it
 //! would plug in.
 //!
-//! The crate is `no_std`, does not allocate and has no Cargo features.
+//! The crate is `no_std` and does not allocate. One Cargo feature, `lz4` (off by default), adds the LZ4 codec: without
+//! it the encoder, the decoder, the frame parser, its checksums and the recovery branches for LZ4 segments are not
+//! compiled, the `compression` setting has the single value `none` and its schema does not list `lz4`.
 //!
 //! # Quick Example
 //!
@@ -83,7 +85,7 @@
 //! | [`Logging`] | the runtime: queue, storage, status and open streams; its [`run`](Logging::run) is the logging task |
 //! | [`LoggingService`] | the `logging` status and actions |
 //! | [`LoggingConfig`] | the `logging` config section (`level`, `storage`, `compression`, `retention_bytes`, `segment_bytes`, `flush_interval`) |
-//! | [`segment`] | the persistent form: line text, one LZ4 block per batch, a checksummed header per segment |
+//! | [`segment`] | the persistent form: line text (one LZ4 block per batch with the `lz4` feature), a checksummed header per segment |
 //! | [`storage`] | the [`LogStorage`](storage::LogStorage) contract and its backends |
 //!
 //! # Architecture and Integration
@@ -154,9 +156,11 @@
 //!   Verified on an emulated NOR flash; not verified on hardware.
 //! - **No migration, no fallback:** switching `storage` leaves the old history
 //!   where it is; an unavailable backend is reported, not replaced by another.
-//! - **Persistent format:** the segment header (`RLG1`, version 1), the ring start
-//!   record (`RLS1`, version 1) and the config section (`LoggingConfig`, version 1)
-//!   are stored ABI; changing them needs a version.
+//! - **Persistent format:** the segment header (`RLG1`, version 2), the ring start
+//!   record (`RLS1`, version 3), the format header (`RLH1`, version 2) and the config section
+//!   (`LoggingConfig`, version 1) are stored ABI; changing them needs a version. A history of
+//!   another version is **not read and not migrated**: [`recover`](storage::LogStorage::recover)
+//!   reinitializes the medium it was given (and nothing else), see [`storage::RingStorage`].
 //! - **Secrets:** persisted text is externally retrievable. Never log secrets.
 //! - **Cancellation:** [`Logging::run`] is meant to run for the life of the device;
 //!   storage calls are not cancel safe in the middle of a write.
@@ -192,3 +196,9 @@ pub use record::{LogRecord, MAX_MESSAGE_LEN, MAX_TARGET_LEN};
 pub use service::*;
 pub use sink::{INTERNAL_TARGET, LogSink};
 pub use tail::DEFAULT_TAIL_RECORDS;
+
+/// Every codec this build can write: what a test that covers all of them loops over.
+#[cfg(all(test, feature = "lz4"))]
+pub(crate) const TEST_CODECS: &[Compression] = &[Compression::None, Compression::Lz4];
+#[cfg(all(test, not(feature = "lz4")))]
+pub(crate) const TEST_CODECS: &[Compression] = &[Compression::None];

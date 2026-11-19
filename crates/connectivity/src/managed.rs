@@ -57,26 +57,31 @@
 //!
 //! # Status
 //!
-//! Static slots, not a dynamic tree: for each of [`MAX_ROUTES`] route slots
+//! Static slots, not a dynamic tree: for each of the `ROUTES` route slots of the build (1 to 3 are supported, see [`Slots`])
 //! the fields `route<i>.id`, `.state`, `.queue_depth`, `.delivered`,
 //! `.retries` and `.active_path` (`0` none, `1` the primary, `n + 1` the
 //! fallback `n`), plus `active_routes` and `total_queue_depth`. Packet
 //! contents and keys never appear in status or logs.
 
+#[cfg(feature = "packet-export")]
 use core::cell::RefCell;
 
+#[cfg(feature = "packet-export")]
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embassy_sync::mutex::Mutex;
 use heapless::Vec;
 use rohi_service::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, EnumDescriptor, EnumVariant,
-    FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES, MAX_RECORDS,
-    MAX_STREAM_CHUNK, Service, ServiceHealth, ServiceState, ServiceSummary, Status, StatusWriter,
-    StreamChunk, StreamFile, StreamInfo, Value, ValueKind, WriteError,
+    FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES, MAX_RECORDS, Service,
+    ServiceHealth, ServiceState, ServiceSummary, Status, StatusWriter, Value, ValueKind,
+    WriteError,
 };
+#[cfg(feature = "packet-export")]
+use rohi_service::{MAX_STREAM_CHUNK, StreamChunk, StreamFile, StreamInfo};
 
-use crate::config::{MAX_ROUTES, ProfileBinding, RouteError, RouteSet};
+use crate::config::{ProfileBinding, RouteError, Routes};
+#[cfg(feature = "packet-export")]
 use crate::pool::{PacketHandle, PacketPool};
 use crate::provider::PacketExporter;
 use crate::router::RouteState;
@@ -195,22 +200,23 @@ impl From<StoreError> for ActionError {
 /// atomically and publishes it to [`ConnectivityState`], or fails and changes
 /// nothing.
 #[allow(async_fn_in_trait)]
-pub trait ConnectivityStore {
+pub trait ConnectivityStore<const ROUTES: usize, const FALLBACKS: usize> {
     /// The committed routes; none when nothing was stored.
     ///
     /// # Errors
     ///
     /// [`StoreError`]; an unreadable section is an error, not an empty set.
-    async fn load(&self) -> Result<RouteSet, StoreError>;
+    async fn load(&self) -> Result<Routes<ROUTES, FALLBACKS>, StoreError>;
 
     /// Atomically persists `candidate` and publishes it.
     ///
     /// # Errors
     ///
     /// [`StoreError`]; nothing changed.
-    async fn commit(&self, candidate: &RouteSet) -> Result<(), StoreError>;
+    async fn commit(&self, candidate: &Routes<ROUTES, FALLBACKS>) -> Result<(), StoreError>;
 }
 
+#[cfg(feature = "packet-export")]
 struct Export {
     id: u32,
     handle: PacketHandle,
@@ -219,8 +225,10 @@ struct Export {
 
 /// How long an exported packet is kept when the client neither reads to the
 /// end and closes nor loses the link, in milliseconds.
+#[cfg(feature = "packet-export")]
 pub const EXPORT_TTL_MS: u64 = 60_000;
 
+#[cfg(feature = "packet-export")]
 struct Exports<const N: usize, const BYTES: usize> {
     pool: PacketPool<N, BYTES>,
     open: Vec<Export, N>,
@@ -230,33 +238,52 @@ struct Exports<const N: usize, const BYTES: usize> {
 /// The `connectivity` service over a [`ConnectivityStore`] and a
 /// [`PacketExporter`], with room for `EXPORTS` open packet streams of up to
 /// `BYTES` bytes.
-pub struct ConnectivityService<'a, M: RawMutex, S, X, const EXPORTS: usize, const BYTES: usize> {
+pub struct ConnectivityService<
+    'a,
+    M: RawMutex,
+    S,
+    X,
+    const ROUTES: usize,
+    const FALLBACKS: usize,
+    const EXPORTS: usize,
+    const BYTES: usize,
+> {
     store: S,
     exporter: X,
-    state: &'a ConnectivityState<M>,
+    state: &'a ConnectivityState<M, ROUTES, FALLBACKS>,
     // Serializes read-modify-write: no lost updates between Actions.
     edit: Mutex<M, ()>,
+    #[cfg(feature = "packet-export")]
     exports: BlockingMutex<M, RefCell<Exports<EXPORTS, BYTES>>>,
 }
 
-impl<M: RawMutex, S, X, const E: usize, const B: usize> Service
-    for ConnectivityService<'_, M, S, X, E, B>
+impl<M: RawMutex, S, X, const R: usize, const F: usize, const E: usize, const B: usize> Service
+    for ConnectivityService<'_, M, S, X, R, F, E, B>
 {
     const ID: u32 = SERVICE_ID;
     const NAME: &'static str = "connectivity";
 }
 
-impl<'a, M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const B: usize>
-    ConnectivityService<'a, M, S, X, E, B>
+impl<
+    'a,
+    M: RawMutex,
+    S: ConnectivityStore<R, F>,
+    X: PacketExporter,
+    const R: usize,
+    const F: usize,
+    const E: usize,
+    const B: usize,
+> ConnectivityService<'a, M, S, X, R, F, E, B>
 {
     /// A service over `store`, building exports with `exporter` and reporting
     /// the runtime state of `state`.
-    pub const fn new(store: S, exporter: X, state: &'a ConnectivityState<M>) -> Self {
+    pub const fn new(store: S, exporter: X, state: &'a ConnectivityState<M, R, F>) -> Self {
         Self {
             store,
             exporter,
             state,
             edit: Mutex::new(()),
+            #[cfg(feature = "packet-export")]
             exports: BlockingMutex::new(RefCell::new(Exports {
                 pool: PacketPool::new(),
                 open: Vec::new(),
@@ -267,7 +294,7 @@ impl<'a, M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, c
 
     async fn edit(
         &self,
-        change: impl FnOnce(&mut RouteSet) -> Result<(), RouteError>,
+        change: impl FnOnce(&mut Routes<R, F>) -> Result<(), RouteError>,
     ) -> Result<(), ActionError> {
         let _guard = self.edit.lock().await;
         let mut candidate = self.store.load().await?;
@@ -280,11 +307,13 @@ impl<'a, M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, c
     }
 
     /// The number of open packet streams.
+    #[cfg(feature = "packet-export")]
     pub fn open_streams(&self) -> usize {
         self.exports.lock(|exports| exports.borrow().open.len())
     }
 
     /// Releases the streams that outlived [`EXPORT_TTL_MS`].
+    #[cfg(feature = "packet-export")]
     fn expire(&self) {
         let now = self.exporter.now_ms();
         self.exports.lock(|exports| {
@@ -301,6 +330,7 @@ impl<'a, M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, c
         });
     }
 
+    #[cfg(feature = "packet-export")]
     fn release(&self, stream: u32) -> bool {
         self.exports.lock(|exports| {
             let mut exports = exports.borrow_mut();
@@ -316,9 +346,9 @@ impl<'a, M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, c
     }
 }
 
-struct SectionRef<'a>(&'a RouteSet);
+struct SectionRef<'a, const R: usize, const F: usize>(&'a Routes<R, F>);
 
-impl<C> minicbor::Encode<C> for SectionRef<'_> {
+impl<C, const R: usize, const F: usize> minicbor::Encode<C> for SectionRef<'_, R, F> {
     fn encode<W: minicbor::encode::Write>(
         &self,
         e: &mut minicbor::Encoder<W>,
@@ -328,7 +358,7 @@ impl<C> minicbor::Encode<C> for SectionRef<'_> {
     }
 }
 
-impl<C> minicbor::CborLen<C> for SectionRef<'_> {
+impl<C, const R: usize, const F: usize> minicbor::CborLen<C> for SectionRef<'_, R, F> {
     fn cbor_len(&self, ctx: &mut C) -> usize {
         minicbor::CborLen::cbor_len(self.0, ctx)
     }
@@ -385,73 +415,78 @@ const STATES: &[EnumDescriptor] = &[EnumDescriptor::new(
     ],
 )];
 
-const fn slot_fields(slot: usize) -> [FieldDescriptor; 6] {
-    const NAMES: [[&str; 6]; MAX_ROUTES] = [
-        [
-            "route0.id",
-            "route0.state",
-            "route0.queue_depth",
-            "route0.delivered",
-            "route0.retries",
-            "route0.active_path",
-        ],
-        [
-            "route1.id",
-            "route1.state",
-            "route1.queue_depth",
-            "route1.delivered",
-            "route1.retries",
-            "route1.active_path",
-        ],
-        [
-            "route2.id",
-            "route2.state",
-            "route2.queue_depth",
-            "route2.delivered",
-            "route2.retries",
-            "route2.active_path",
-        ],
-    ];
-    [
-        FieldDescriptor::new(
-            status_field::route(slot, 0),
-            NAMES[slot][0],
-            ValueKind::String,
-        ),
-        FieldDescriptor::new(
-            status_field::route(slot, 1),
-            NAMES[slot][1],
-            ValueKind::Enum,
-        )
-        .with_enum(STATE_ENUM),
-        FieldDescriptor::new(status_field::route(slot, 2), NAMES[slot][2], ValueKind::U64),
-        FieldDescriptor::new(status_field::route(slot, 3), NAMES[slot][3], ValueKind::U64),
-        FieldDescriptor::new(status_field::route(slot, 4), NAMES[slot][4], ValueKind::U64),
-        FieldDescriptor::new(status_field::route(slot, 5), NAMES[slot][5], ValueKind::U64),
-    ]
+// The status schema is written out for the route count of the build: the six fields of
+// every route slot follow the two aggregates, with stable ids and names, as a literal
+// slice like the schema of any other service. There is nothing to build or register at
+// run time.
+macro_rules! status_schema {
+    ($($slot:literal),+) => {
+        &[
+            FieldDescriptor::new(status_field::ACTIVE_ROUTES, "active_routes", ValueKind::U64),
+            FieldDescriptor::new(
+                status_field::TOTAL_QUEUE_DEPTH,
+                "total_queue_depth",
+                ValueKind::U64,
+            ),
+            $(
+                FieldDescriptor::new(
+                    status_field::route($slot, 0),
+                    concat!("route", $slot, ".id"),
+                    ValueKind::String,
+                ),
+                FieldDescriptor::new(
+                    status_field::route($slot, 1),
+                    concat!("route", $slot, ".state"),
+                    ValueKind::Enum,
+                )
+                .with_enum(STATE_ENUM),
+                FieldDescriptor::new(
+                    status_field::route($slot, 2),
+                    concat!("route", $slot, ".queue_depth"),
+                    ValueKind::U64,
+                ),
+                FieldDescriptor::new(
+                    status_field::route($slot, 3),
+                    concat!("route", $slot, ".delivered"),
+                    ValueKind::U64,
+                ),
+                FieldDescriptor::new(
+                    status_field::route($slot, 4),
+                    concat!("route", $slot, ".retries"),
+                    ValueKind::U64,
+                ),
+                FieldDescriptor::new(
+                    status_field::route($slot, 5),
+                    concat!("route", $slot, ".active_path"),
+                    ValueKind::U64,
+                ),
+            )+
+        ]
+    };
 }
 
-const STATUS_FIELDS: [FieldDescriptor; 20] = {
-    let aggregate = [
-        FieldDescriptor::new(status_field::ACTIVE_ROUTES, "active_routes", ValueKind::U64),
-        FieldDescriptor::new(
-            status_field::TOTAL_QUEUE_DEPTH,
-            "total_queue_depth",
-            ValueKind::U64,
-        ),
-    ];
-    let (a, b, c) = (slot_fields(0), slot_fields(1), slot_fields(2));
-    let mut all = [aggregate[0]; 20];
-    all[1] = aggregate[1];
-    let mut i = 0;
-    while i < 6 {
-        all[2 + i] = a[i];
-        all[8 + i] = b[i];
-        all[14 + i] = c[i];
-        i += 1;
-    }
-    all
-};
+/// The route count of a build, as a type: the status schema of a service with `N` route
+/// slots. [`RouteSlots`] is implemented for 1, 2 and 3 slots; any other count does not
+/// compile, so no schema exists for a count the build does not use.
+pub struct Slots<const N: usize>;
+
+/// The static status schema of [`Slots`] of one size.
+pub trait RouteSlots {
+    /// The aggregate fields and six fields per route slot.
+    const SCHEMA: &'static [FieldDescriptor];
+}
+
+impl RouteSlots for Slots<1> {
+    const SCHEMA: &'static [FieldDescriptor] = status_schema!(0);
+}
+
+impl RouteSlots for Slots<2> {
+    const SCHEMA: &'static [FieldDescriptor] = status_schema!(0, 1);
+}
+
+impl RouteSlots for Slots<3> {
+    const SCHEMA: &'static [FieldDescriptor] = status_schema!(0, 1, 2);
+}
 
 fn state_number(state: RouteState) -> u32 {
     match state {
@@ -462,11 +497,20 @@ fn state_number(state: RouteState) -> u32 {
     }
 }
 
-impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const B: usize> Status
-    for ConnectivityService<'_, M, S, X, E, B>
+impl<
+    M: RawMutex,
+    S: ConnectivityStore<R, F>,
+    X: PacketExporter,
+    const R: usize,
+    const F: usize,
+    const E: usize,
+    const B: usize,
+> Status for ConnectivityService<'_, M, S, X, R, F, E, B>
+where
+    Slots<R>: RouteSlots,
 {
     const VERSION: u16 = 1;
-    const STATUS_SCHEMA: &'static [FieldDescriptor] = &STATUS_FIELDS;
+    const STATUS_SCHEMA: &'static [FieldDescriptor] = <Slots<R> as RouteSlots>::SCHEMA;
     const ENUMS: &'static [EnumDescriptor] = STATES;
     const ISSUES: &'static [IssueDescriptor] = &[
         IssueDescriptor::new(issue::STORAGE_UNAVAILABLE, "storage_unavailable"),
@@ -538,7 +582,7 @@ impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const
         let total: usize = views.iter().map(|v| v.queue_depth).sum();
         out.u64(status_field::ACTIVE_ROUTES, active as u64)?;
         out.u64(status_field::TOTAL_QUEUE_DEPTH, total as u64)?;
-        for (slot, view) in views.iter().enumerate().take(MAX_ROUTES) {
+        for (slot, view) in views.iter().enumerate().take(R) {
             out.text(status_field::route(slot, 0), view.id.as_str())?;
             out.variant(status_field::route(slot, 1), state_number(view.state))?;
             out.u64(status_field::route(slot, 2), view.queue_depth as u64)?;
@@ -559,8 +603,15 @@ impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const
     }
 }
 
-impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const B: usize> Action
-    for ConnectivityService<'_, M, S, X, E, B>
+impl<
+    M: RawMutex,
+    S: ConnectivityStore<R, F>,
+    X: PacketExporter,
+    const R: usize,
+    const F: usize,
+    const E: usize,
+    const B: usize,
+> Action for ConnectivityService<'_, M, S, X, R, F, E, B>
 {
     const ACTIONS: &'static [ActionDescriptor] = &[
         ActionDescriptor::new(action::ROUTE_ADD, "route_add", ActionAccess::Mutate).args(&[
@@ -626,6 +677,7 @@ impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const
                     ValueKind::U64,
                 ),
             ]),
+        #[cfg(feature = "packet-export")]
         ActionDescriptor::new(action::PACKET_GET, "packet_get", ActionAccess::Read)
             .args(&[FieldDescriptor::new(
                 action_field::PACKET_PROFILE,
@@ -719,6 +771,7 @@ impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const
                 }
                 Ok(())
             }
+            #[cfg(feature = "packet-export")]
             action::PACKET_GET => {
                 let profile = text(args, action_field::PACKET_PROFILE)?;
                 // An abandoned stream must not keep its slot past its lifetime.
@@ -790,6 +843,7 @@ impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const
         }
     }
 
+    #[cfg(feature = "packet-export")]
     async fn read_stream(
         &self,
         stream: u32,
@@ -846,6 +900,7 @@ impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const
         }
     }
 
+    #[cfg(feature = "packet-export")]
     async fn close_stream(&self, stream: u32) -> Result<(), ActionError> {
         if self.release(stream) {
             Ok(())
@@ -854,6 +909,7 @@ impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const
         }
     }
 
+    #[cfg(feature = "packet-export")]
     fn link_lost(&self) {
         self.exports.lock(|exports| {
             let mut exports = exports.borrow_mut();

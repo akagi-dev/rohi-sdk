@@ -21,8 +21,10 @@
 //!
 //! - [`BleLink`] / [`scan`]: BLE central built on `btleplug`, finds devices
 //!   exposing the ROHI Control Service and moves chunks;
-//! - [`TcpLink`]: length-prefixed Protobuf records over a TCP socket
-//!   ([`rohi_control_tcp::frame`]), for a device that serves the control
+//! - [`TcpLink`]: Protobuf records over a TCP socket, plaintext behind a length
+//!   ([`rohi_control_tcp::frame`]) for an open development endpoint or authenticated and
+//!   encrypted after a handshake with a pre-shared key ([`TcpKey`],
+//!   [`rohi_control_tcp::secure`]), for a device that serves the control
 //!   protocol over TCP such as the `std` Altruist Urban;
 //! - [`Session`]: on a chunked link frames requests with
 //!   [`rohi_control_ble::frame`]; matches responses by request id, enforces
@@ -36,7 +38,6 @@
 //! application can use the same library, or implement [`ClientTransport`] for
 //! a different link and keep everything above it.
 
-mod admin;
 mod ble;
 #[cfg(feature = "cli")]
 pub mod cli;
@@ -46,10 +47,10 @@ mod error;
 pub mod format;
 pub mod model;
 mod provision;
+mod psk;
 mod session;
 mod tcp;
 
-pub use admin::{AdminKey, write_new as write_admin_key};
 pub use ble::{BleLink, DiscoveredDevice, scan, scan_until};
 pub use client::Device;
 pub use error::{Error, Result};
@@ -58,6 +59,7 @@ pub use provision::DerivedIdentity;
 pub use provision::derive_identity;
 #[cfg(feature = "provision")]
 pub use provision::ss58;
+pub use psk::{TcpKey, write_new as write_tcp_key};
 pub use rohi_identity::PublicKey;
 pub use session::{ClientTransport, DEFAULT_TIMEOUT, Framing, Session};
 pub use tcp::TcpLink;

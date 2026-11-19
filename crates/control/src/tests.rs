@@ -216,7 +216,6 @@ const PLAIN: LinkSecurity = LinkSecurity {
     authenticated: false,
     session: 0,
     transport: Transport::Unspecified,
-    authorization: RequestAuthorization::Anonymous,
 };
 
 fn text<const N: usize>(value: &str) -> String<N> {
@@ -902,14 +901,12 @@ fn the_policy_gates_writes_and_privileged_actions() {
         authenticated: false,
         session: 0,
         transport: Transport::Unspecified,
-        authorization: RequestAuthorization::Anonymous,
     };
     let strong = LinkSecurity {
         encrypted: true,
         authenticated: true,
         session: 0,
         transport: Transport::Unspecified,
-        authorization: RequestAuthorization::Anonymous,
     };
 
     let write = || Call::PatchConfigSection(patch(1, &[mutation(3, string_value("a.io"))]));
@@ -1481,7 +1478,6 @@ const OTHER: LinkSecurity = LinkSecurity {
     authenticated: false,
     session: 2,
     transport: Transport::Unspecified,
-    authorization: RequestAuthorization::Anonymous,
 };
 
 fn export(action: u32) -> Call {
@@ -1538,7 +1534,6 @@ fn a_stream_needs_the_privilege_of_the_action_that_created_it() {
         authenticated: false,
         session: 1,
         transport: Transport::Unspecified,
-        authorization: RequestAuthorization::Anonymous,
     };
     assert_eq!(
         error_code(&call(&controller, &PLAIN, export(3))),
@@ -1805,9 +1800,8 @@ fn closing_a_session_releases_only_its_streams() {
     );
 }
 
-mod signed {
-    use rohi_identity::{Identity, IdentitySigner, Signer};
-
+// What the access policy takes from a link: only what the transport established.
+mod link_security {
     use super::*;
 
     const TCP: LinkSecurity = LinkSecurity {
@@ -1815,33 +1809,22 @@ mod signed {
         authenticated: false,
         session: 11,
         transport: Transport::Tcp,
-        authorization: RequestAuthorization::Anonymous,
     };
     const BLE: LinkSecurity = LinkSecurity {
         session: 12,
         transport: Transport::Ble,
         ..TCP
     };
-
-    fn identity(seed: u8) -> Identity {
-        Identity::from_secret(&[seed; 32]).unwrap()
-    }
+    // A TCP connection that completed the handshake of `rohi-control-tcp`.
+    const TCP_SECURE: LinkSecurity = LinkSecurity {
+        encrypted: true,
+        authenticated: true,
+        ..TCP
+    };
 
     fn entropy(out: &mut [u8]) -> bool {
         out.fill(0xA5);
         true
-    }
-
-    fn no_entropy(_: &mut [u8]) -> bool {
-        false
-    }
-
-    fn access(admin: Option<&Identity>) -> ControlAccess {
-        let access = ControlAccess::new(entropy);
-        if let Some(admin) = admin {
-            access.set_admin_key(Some(*admin.public_key().as_bytes()));
-        }
-        access
     }
 
     // A mutation that reaches the registry and is answered NotFound there.
@@ -1849,85 +1832,13 @@ mod signed {
         Call::ResetConfigSection(pb::ResetConfigSectionRequest::default())
     }
 
-    fn encode_request(call: Call) -> std::vec::Vec<u8> {
-        let request = pb::Request {
-            protocol_version: PROTOCOL_VERSION,
-            request_id: 42,
-            request: Some(call),
-        };
-        let mut wire = [0u8; limits::MAX_REQUEST_LEN];
-        let len = encode(&request, &mut wire).unwrap();
-        wire[..len].to_vec()
-    }
-
-    fn challenge<P: AuthorizationPolicy>(
-        controller: &Controller<impl ControlBackend, P>,
-        link: &LinkSecurity,
-    ) -> Reply {
-        call(
-            controller,
-            link,
-            Call::GetAuthChallenge(pb::GetAuthChallengeRequest {}),
-        )
-    }
-
-    fn nonce_of<P: AuthorizationPolicy>(
-        controller: &Controller<impl ControlBackend, P>,
-        link: &LinkSecurity,
-    ) -> [u8; 32] {
-        let Reply::GetAuthChallenge(reply) = challenge(controller, link) else {
-            panic!("no challenge")
-        };
-        reply.session_nonce.as_slice().try_into().unwrap()
-    }
-
-    fn sign(signer: &IdentitySigner, nonce: &[u8; 32], sequence: u64, inner: &[u8]) -> [u8; 64] {
-        let mut preimage = std::vec::Vec::new();
-        preimage.extend_from_slice(b"rohi-control-auth-v1");
-        preimage.extend_from_slice(nonce);
-        preimage.extend_from_slice(&sequence.to_le_bytes());
-        preimage.extend_from_slice(inner);
-        let signature = signer.sign(&preimage).unwrap();
-        *signature.as_bytes()
-    }
-
-    fn send<P: AuthorizationPolicy>(
-        controller: &Controller<impl ControlBackend, P>,
-        link: &LinkSecurity,
-        sequence: u64,
-        inner: &[u8],
-        signature: &[u8; 64],
-    ) -> Reply {
-        let mut signed = pb::SignedRequest {
-            sequence,
+    // The provisioning action (with a secret argument) of the test radio.
+    fn provision() -> Call {
+        Call::InvokeAction(pb::InvokeActionRequest {
+            service_id: RADIO,
+            action_id: 3,
             ..Default::default()
-        };
-        signed.request_bytes.extend_from_slice(inner).unwrap();
-        signed.signature.extend_from_slice(signature).unwrap();
-        let mut envelope = pb::SignedEnvelope {
-            protocol_version: PROTOCOL_VERSION,
-            request_id: 42,
-            ..Default::default()
-        };
-        envelope.set_signed_request(signed);
-        let mut wire = [0u8; limits::MAX_REQUEST_LEN];
-        let len = encode(&envelope, &mut wire).unwrap();
-        let mut out = [0u8; limits::MAX_RESPONSE_LEN];
-        let n = block_on(controller.handle(link, &wire[..len], &mut out));
-        decode::<pb::Response>(&out[..n]).unwrap().response.unwrap()
-    }
-
-    fn signed_call<P: AuthorizationPolicy>(
-        controller: &Controller<impl ControlBackend, P>,
-        link: &LinkSecurity,
-        signer: &IdentitySigner,
-        nonce: &[u8; 32],
-        sequence: u64,
-        call: Call,
-    ) -> Reply {
-        let inner = encode_request(call);
-        let signature = sign(signer, nonce, sequence, &inner);
-        send(controller, link, sequence, &inner, &signature)
+        })
     }
 
     fn reason(reply: &Reply) -> (pb::ErrorCode, &str) {
@@ -1938,8 +1849,8 @@ mod signed {
     }
 
     macro_rules! restricted {
-        ($controller:ident, $access:ident, $admin:expr) => {
-            let $access = access($admin);
+        ($controller:ident, $access:ident) => {
+            let $access = ControlAccess::new(entropy);
             let memory = Memory::default();
             let radio = radio();
             let $controller = Controller::new(device(&memory, &radio), AccessPolicy::new(&$access));
@@ -1947,199 +1858,68 @@ mod signed {
     }
 
     #[test]
-    fn reads_need_no_signature_and_privileged_requests_do_on_restricted_tcp() {
-        let admin = identity(1);
-        restricted!(controller, access, Some(&admin));
+    fn reads_are_open_and_privileged_requests_need_a_secured_link_on_restricted_tcp() {
+        restricted!(controller, access);
         assert!(matches!(
             call(&controller, &TCP, Call::GetInfo(pb::GetInfoRequest {})),
             Reply::GetInfo(_)
         ));
-        let denied = call(&controller, &TCP, mutate());
-        assert_eq!(
-            reason(&denied),
-            (pb::ErrorCode::PermissionDenied, "auth_required")
-        );
-        let stats = access.stats(Transport::Tcp);
-        assert_eq!((stats.accepted, stats.denied), (1, 1));
-    }
-
-    #[test]
-    fn a_restricted_endpoint_without_an_admin_key_stays_closed() {
-        restricted!(controller, access, None);
+        // No key is provisioned: the reason says so.
         assert_eq!(
             reason(&call(&controller, &TCP, mutate())),
-            (pb::ErrorCode::PermissionDenied, "no_admin_key")
+            (pb::ErrorCode::PermissionDenied, "no_psk")
         );
-        let Reply::GetAuthChallenge(reply) = challenge(&controller, &TCP) else {
-            panic!()
+        access.set_tcp_psk(true);
+        assert_eq!(
+            reason(&call(&controller, &TCP, mutate())),
+            (pb::ErrorCode::PermissionDenied, "encryption_required")
+        );
+        // Encrypted alone is not enough on TCP: the client must be authenticated too.
+        let unauthenticated = LinkSecurity {
+            encrypted: true,
+            ..TCP
         };
-        assert!(!reply.admin_key_enrolled);
-        let signer = identity(1).signer();
-        let reply = signed_call(&controller, &TCP, &signer, &[0xA5; 32], 1, mutate());
-        assert_eq!(reason(&reply).1, "no_admin_key");
-    }
-
-    #[test]
-    fn a_valid_signature_authorizes_exactly_one_request() {
-        let admin = identity(1);
-        let signer = admin.signer();
-        restricted!(controller, access, Some(&admin));
-        let nonce = nonce_of(&controller, &TCP);
-        let reply = signed_call(&controller, &TCP, &signer, &nonce, 1, mutate());
-        // It reached the registry, which has no such section.
-        assert_eq!(error_code(&reply), pb::ErrorCode::NotFound);
-        // The same sequence, an older one and the same bytes again are replays.
-        let inner = encode_request(mutate());
-        let signature = sign(&signer, &nonce, 1, &inner);
         assert_eq!(
-            reason(&send(&controller, &TCP, 1, &inner, &signature)).1,
-            "stale_sequence"
+            reason(&call(&controller, &unauthenticated, mutate())).1,
+            "encryption_required"
         );
-        let reply = signed_call(&controller, &TCP, &signer, &nonce, 5, mutate());
-        assert_eq!(error_code(&reply), pb::ErrorCode::NotFound);
-        let reply = signed_call(&controller, &TCP, &signer, &nonce, 3, mutate());
-        assert_eq!(reason(&reply).1, "stale_sequence");
-        // The next request on the connection is unsigned again.
         assert_eq!(
-            reason(&call(&controller, &TCP, mutate())).1,
-            "auth_required"
-        );
-    }
-
-    #[test]
-    fn a_signature_does_not_cover_other_bytes_keys_or_connections() {
-        let admin = identity(1);
-        let signer = admin.signer();
-        restricted!(controller, access, Some(&admin));
-        let nonce = nonce_of(&controller, &TCP);
-        let inner = encode_request(mutate());
-        let signature = sign(&signer, &nonce, 1, &inner);
-        // Altered request.
-        let other = encode_request(Call::GetInfo(pb::GetInfoRequest {}));
-        assert_eq!(
-            reason(&send(&controller, &TCP, 1, &other, &signature)).1,
-            "bad_signature"
-        );
-        // Altered sequence.
-        assert_eq!(
-            reason(&send(&controller, &TCP, 2, &inner, &signature)).1,
-            "bad_signature"
-        );
-        // Another key.
-        let stranger = identity(2).signer();
-        let reply = signed_call(&controller, &TCP, &stranger, &nonce, 3, mutate());
-        assert_eq!(reason(&reply).1, "bad_signature");
-        // A bad length.
-        assert_eq!(
-            reason(&send(&controller, &TCP, 4, &inner, &[0; 64])).1,
-            "bad_signature"
-        );
-        // Another connection never asked for a challenge.
-        let second = LinkSecurity { session: 99, ..TCP };
-        assert_eq!(
-            reason(&send(&controller, &second, 1, &inner, &signature)).1,
-            "no_challenge"
-        );
-        // Another connection with its own challenge has another nonce space:
-        // the nonce of the first one is no good there.
-        let second_nonce = nonce_of(&controller, &second);
-        let reply = signed_call(&controller, &second, &signer, &nonce, 1, mutate());
-        // Same constant test entropy, so the nonces coincide: this one is fine.
-        assert_eq!(second_nonce, nonce);
-        assert_eq!(error_code(&reply), pb::ErrorCode::NotFound);
-        // The honest request still works on the first connection.
-        let reply = send(&controller, &TCP, 1, &inner, &signature);
-        assert_eq!(error_code(&reply), pb::ErrorCode::NotFound);
-    }
-
-    #[test]
-    fn a_new_challenge_or_a_new_key_voids_the_old_signatures() {
-        let admin = identity(1);
-        let signer = admin.signer();
-        restricted!(controller, access, Some(&admin));
-        let nonce = nonce_of(&controller, &TCP);
-        let inner = encode_request(mutate());
-        let signature = sign(&signer, &nonce, 1, &inner);
-        // Re-issuing the challenge resets the sequence of the connection.
-        let again = nonce_of(&controller, &TCP);
-        assert_eq!(
-            error_code(&send(&controller, &TCP, 1, &inner, &signature)),
+            error_code(&call(&controller, &TCP_SECURE, mutate())),
             pb::ErrorCode::NotFound
         );
-        let _ = again;
-        // Rotating the key voids every outstanding challenge.
-        let successor = identity(3);
-        access.set_admin_key(Some(*successor.public_key().as_bytes()));
-        let signature = sign(&signer, &nonce, 2, &inner);
-        assert_eq!(
-            reason(&send(&controller, &TCP, 2, &inner, &signature)).1,
-            "no_challenge"
-        );
-        let nonce = nonce_of(&controller, &TCP);
-        let reply = signed_call(&controller, &TCP, &successor.signer(), &nonce, 1, mutate());
-        assert_eq!(error_code(&reply), pb::ErrorCode::NotFound);
-        let reply = signed_call(&controller, &TCP, &signer, &nonce, 2, mutate());
-        assert_eq!(reason(&reply).1, "bad_signature");
+        let stats = access.stats(Transport::Tcp);
+        assert_eq!((stats.accepted, stats.denied), (2, 3));
     }
 
     #[test]
-    fn signed_requests_cannot_be_nested_and_must_agree_on_the_id() {
-        let admin = identity(1);
-        let signer = admin.signer();
-        restricted!(controller, access, Some(&admin));
-        let nonce = nonce_of(&controller, &TCP);
-        let challenge = Call::GetAuthChallenge(pb::GetAuthChallengeRequest {});
-        let reply = signed_call(&controller, &TCP, &signer, &nonce, 1, challenge);
-        assert_eq!(reason(&reply).1, "nested");
-        // A signed request inside a signed request.
-        let inner = encode_request(mutate());
-        let signature = sign(&signer, &nonce, 9, &inner);
-        let mut nested = pb::SignedRequest {
-            sequence: 9,
-            ..Default::default()
-        };
-        nested.request_bytes.extend_from_slice(&inner).unwrap();
-        nested.signature.extend_from_slice(&signature).unwrap();
-        let mut envelope = pb::SignedEnvelope {
-            protocol_version: PROTOCOL_VERSION,
-            request_id: 42,
-            ..Default::default()
-        };
-        envelope.set_signed_request(nested);
-        let mut wire = [0u8; limits::MAX_REQUEST_LEN];
-        let len = encode(&envelope, &mut wire).unwrap();
-        let signature = sign(&signer, &nonce, 10, &wire[..len]);
-        let reply = send(&controller, &TCP, 10, &wire[..len], &signature);
-        assert_eq!(reason(&reply).1, "nested");
-        // The inner request carries another id.
-        let request = pb::Request {
-            protocol_version: PROTOCOL_VERSION,
-            request_id: 7,
-            request: Some(mutate()),
-        };
-        let mut wire = [0u8; limits::MAX_REQUEST_LEN];
-        let len = encode(&request, &mut wire).unwrap();
-        let signature = sign(&signer, &nonce, 11, &wire[..len]);
-        let reply = send(&controller, &TCP, 11, &wire[..len], &signature);
-        assert_eq!(error_code(&reply), pb::ErrorCode::InvalidArgument);
+    fn the_psk_state_is_a_flag_and_a_generation_never_a_key() {
+        let access = ControlAccess::new(entropy);
+        assert!(!access.tcp_psk_enrolled());
+        let before = access.tcp_psk_epoch();
+        access.set_tcp_psk(true);
+        assert!(access.tcp_psk_enrolled());
+        assert_ne!(access.tcp_psk_epoch(), before);
+        let before = access.tcp_psk_epoch();
+        access.set_tcp_psk(false);
+        assert!(!access.tcp_psk_enrolled());
+        assert_ne!(access.tcp_psk_epoch(), before);
+        let mut random = [0u8; 4];
+        assert!(access.fill_random(&mut random));
+        assert_eq!(random, [0xA5; 4]);
     }
 
     #[test]
-    fn ble_never_takes_signatures_and_restricted_ble_wants_an_encrypted_link() {
-        let admin = identity(1);
-        let signer = admin.signer();
-        restricted!(controller, access, Some(&admin));
-        // Open by default.
+    fn restricted_ble_wants_an_encrypted_link() {
+        restricted!(controller, access);
+        // Open by default: a mutation and a provisioning action need nothing.
         assert_eq!(
             error_code(&call(&controller, &BLE, mutate())),
             pb::ErrorCode::NotFound
         );
-        assert_eq!(
-            error_code(&challenge(&controller, &BLE)),
-            pb::ErrorCode::NotSupported
+        assert_ne!(
+            error_code(&call(&controller, &BLE, provision())),
+            pb::ErrorCode::PermissionDenied
         );
-        let reply = signed_call(&controller, &BLE, &signer, &[0xA5; 32], 1, mutate());
-        assert_eq!(reason(&reply).1, "not_supported");
         access.set_mode(Transport::Ble, TransportAccessMode::Restricted);
         assert_eq!(
             reason(&call(&controller, &BLE, mutate())),
@@ -2154,29 +1934,96 @@ mod signed {
             pb::ErrorCode::NotFound
         );
         // The modes are independent: TCP is as restricted as before.
-        assert_eq!(
-            reason(&call(&controller, &TCP, mutate())).1,
-            "auth_required"
-        );
+        assert_eq!(reason(&call(&controller, &TCP, mutate())).1, "no_psk");
+    }
+
+    // A service with one action that carries the key material of a transport.
+    struct Keys;
+
+    impl Service for Keys {
+        const ID: u32 = rohi_service::service_id("keys");
+        const NAME: &'static str = "keys";
+    }
+
+    impl Action for Keys {
+        const ACTIONS: &'static [ActionDescriptor] = &[
+            ActionDescriptor::new(1, "set_key", ActionAccess::Provision)
+                .secret()
+                .secure_link(),
+            ActionDescriptor::new(2, "plain", ActionAccess::Provision),
+        ];
+
+        async fn invoke(
+            &self,
+            _: u32,
+            _: &[(u32, Value)],
+            _: &mut impl ActionOutput,
+        ) -> Result<(), ActionError> {
+            Ok(())
+        }
     }
 
     #[test]
-    fn a_link_cannot_claim_to_be_verified() {
-        let admin = identity(1);
-        restricted!(controller, access, Some(&admin));
-        let claimed = LinkSecurity {
-            authorization: RequestAuthorization::VerifiedAdmin,
+    fn a_secure_link_action_needs_a_protected_link_in_every_mode() {
+        let access = ControlAccess::new(entropy);
+        let keys = Keys;
+        let device = Device::new(INFO, uptime, (), (), (&keys,));
+        let controller = Controller::new(device, AccessPolicy::new(&access));
+        let invoke = |link: &LinkSecurity, action: u32| {
+            call(
+                &controller,
+                link,
+                Call::InvokeAction(pb::InvokeActionRequest {
+                    service_id: Keys::ID,
+                    action_id: action,
+                    args: Vec::new(),
+                }),
+            )
+        };
+        let paired = LinkSecurity {
+            encrypted: true,
+            ..BLE
+        };
+        let encrypted_only = LinkSecurity {
+            encrypted: true,
             ..TCP
         };
-        assert_eq!(
-            reason(&call(&controller, &claimed, mutate())).1,
-            "auth_required"
-        );
+        for mode in [TransportAccessMode::Open, TransportAccessMode::Restricted] {
+            access.set_mode(Transport::Tcp, mode);
+            access.set_mode(Transport::Ble, mode);
+            // Never over an unprotected link, whatever the mode says (the open modes allow the
+            // plain action, which proves the refusal is the action's own).
+            for link in [&TCP, &encrypted_only] {
+                let reply = invoke(link, 1);
+                let (code, why) = reason(&reply);
+                assert_eq!(code, pb::ErrorCode::PermissionDenied, "{mode:?} {link:?}");
+                if mode == TransportAccessMode::Open {
+                    // The mode allows it; the action does not.
+                    assert_eq!(why, "encryption_required");
+                }
+            }
+            assert_eq!(
+                reason(&invoke(&BLE, 1)),
+                (pb::ErrorCode::PermissionDenied, "pairing_required")
+            );
+            // On a protected link it runs.
+            assert!(
+                matches!(invoke(&TCP_SECURE, 1), Reply::InvokeAction(_)),
+                "{mode:?}"
+            );
+            assert!(
+                matches!(invoke(&paired, 1), Reply::InvokeAction(_)),
+                "{mode:?}"
+            );
+        }
+        // An action that is not marked is as open as its mode.
+        access.set_mode(Transport::Tcp, TransportAccessMode::Open);
+        assert!(matches!(invoke(&TCP, 2), Reply::InvokeAction(_)));
     }
 
     #[test]
-    fn the_tcp_endpoint_can_be_opened() {
-        restricted!(controller, access, None);
+    fn an_open_tcp_endpoint_allows_privileged_requests() {
+        restricted!(controller, access);
         access.set_mode(Transport::Tcp, TransportAccessMode::Open);
         assert_eq!(
             error_code(&call(&controller, &TCP, mutate())),
@@ -2185,52 +2032,31 @@ mod signed {
     }
 
     #[test]
-    fn without_a_random_source_there_is_no_challenge() {
-        let access = ControlAccess::new(no_entropy);
-        let memory = Memory::default();
-        let radio = radio();
-        let controller = Controller::new(device(&memory, &radio), AccessPolicy::new(&access));
-        assert_eq!(
-            error_code(&challenge(&controller, &TCP)),
-            pb::ErrorCode::Unavailable
-        );
-    }
-
-    #[test]
-    fn repeated_failures_stop_the_signature_checks_of_a_connection() {
-        let admin = identity(1);
-        let signer = admin.signer();
-        restricted!(controller, access, Some(&admin));
-        let nonce = nonce_of(&controller, &TCP);
-        let inner = encode_request(mutate());
-        for sequence in 1..=8 {
-            assert_eq!(
-                reason(&send(&controller, &TCP, sequence, &inner, &[1; 64])).1,
-                "bad_signature"
-            );
+    fn nothing_in_a_request_can_raise_the_security_of_a_link() {
+        restricted!(controller, access);
+        access.set_tcp_psk(true);
+        // Bytes that look like some other wrapper are not a request at all: refused as such,
+        // and a plain mutation stays refused on the same link.
+        let mut wire = [0u8; 16];
+        let request = pb::Request {
+            protocol_version: PROTOCOL_VERSION,
+            request_id: 5,
+            request: Some(mutate()),
+        };
+        let len = encode(&request, &mut wire).unwrap();
+        let mut out = [0u8; limits::MAX_RESPONSE_LEN];
+        for bytes in [
+            &wire[..len],
+            &[0xDA, 0x01, 0x04, 0x0A, 0x02, 0x08, 0x01][..],
+        ] {
+            let n = block_on(controller.handle(&TCP, bytes, &mut out));
+            let reply = decode::<pb::Response>(&out[..n]).unwrap().response.unwrap();
+            assert!(matches!(
+                error_code(&reply),
+                pb::ErrorCode::PermissionDenied
+                    | pb::ErrorCode::NotSupported
+                    | pb::ErrorCode::InvalidArgument
+            ));
         }
-        // A valid signature no longer helps on this connection, not even after
-        // a fresh challenge.
-        let nonce2 = nonce_of(&controller, &TCP);
-        assert_eq!(nonce, nonce2);
-        let reply = signed_call(&controller, &TCP, &signer, &nonce2, 20, mutate());
-        assert_eq!(reason(&reply).1, "bad_signature");
-        assert_eq!(access.stats(Transport::Tcp).auth_failures, 9);
-        // Another connection is not affected.
-        let second = LinkSecurity { session: 13, ..TCP };
-        let nonce3 = nonce_of(&controller, &second);
-        let reply = signed_call(&controller, &second, &signer, &nonce3, 1, mutate());
-        assert_eq!(error_code(&reply), pb::ErrorCode::NotFound);
-    }
-
-    #[test]
-    fn closing_a_session_forgets_its_challenge() {
-        let admin = identity(1);
-        let signer = admin.signer();
-        restricted!(controller, access, Some(&admin));
-        let nonce = nonce_of(&controller, &TCP);
-        block_on(controller.session_closed(TCP.session));
-        let reply = signed_call(&controller, &TCP, &signer, &nonce, 1, mutate());
-        assert_eq!(reason(&reply).1, "no_challenge");
     }
 }

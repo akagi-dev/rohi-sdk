@@ -74,10 +74,10 @@ Connection:
           
           [default: 10]
 
-      --admin-key <FILE>
-          File with the administrator key (64 hex characters). A restricted TCP endpoint of a device wants a signature of it on every change; with the key `rohi` signs automatically. Never put the key itself on the command line; create the file with `rohi admin keygen FILE`
+      --psk-file <FILE>
+          File with the pre-shared key of a TCP endpoint (64 hex characters). A restricted endpoint serves only clients that complete a handshake with it, and `rohi` then encrypts every request. Never put the key itself on the command line; create the file with `rohi tcp-key generate FILE`
           
-          [env: ROHI_ADMIN_KEY=]
+          [env: ROHI_PSK_FILE=]
 
       --timeout <SECONDS>
           How long to wait for a device response

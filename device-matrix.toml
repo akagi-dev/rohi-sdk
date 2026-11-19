@@ -122,8 +122,8 @@ source = "crates/control-ble"
 [[capability]]
 id = "control-access"
 kind = "service"
-name = "Managed control endpoints and request authorization"
-provides = "the `control_tcp` and `control_ble` sections and services (access mode per transport), the `control_auth` administrator key, Ed25519 signed requests over TCP and BLE pairing in restricted mode"
+name = "Managed control endpoints and transport security"
+provides = "the `control_tcp` and `control_ble` sections and services (access mode per transport), the `control_psk` pre-shared key, the TCP handshake and XChaCha20-Poly1305 records of a restricted endpoint (no forward secrecy) and BLE pairing in restricted mode"
 source = "crates/control-endpoints"
 
 [[capability]]
@@ -144,7 +144,7 @@ source = "crates/identity"
 id = "logging"
 kind = "service"
 name = "Persistent logging"
-provides = "the `log` facade persisted to a bounded, rotated, LZ4-compressed ring in internal flash, shown from a RAM tail, followed, downloaded and cleared with `rohi logs`"
+provides = "the `log` facade persisted to a bounded, rotated ring of plain-text segments (optionally LZ4-compressed, feature `lz4`) in internal flash, shown from a RAM tail, followed, downloaded and cleared with `rohi logs`"
 source = "crates/logging"
 
 [[capability]]
@@ -287,13 +287,13 @@ reference = "crates/control-ble"
 [[evidence]]
 id = "src-control-endpoints"
 kind = "source"
-title = "rohi-control-endpoints, rohi-control (hub, access policy, signed requests)"
+title = "rohi-control-endpoints, rohi-control-tcp (secure channel), rohi-control (hub, access policy)"
 reference = "crates/control-endpoints"
 
 [[evidence]]
 id = "test-std-control"
 kind = "test"
-title = "altruist-urban host process: access modes, administrator key and signed requests over TCP"
+title = "altruist-urban host process: access modes, pre-shared key and the secure channel over TCP"
 reference = "firmwares/altruist-urban/tests/std_control.rs"
 
 [[evidence]]
@@ -1223,7 +1223,7 @@ target_build = "ci-built"
 hardware_verification = "not-verified"
 limitations = [
   "The chip reset after the grace period and the formatting of the configuration partition by `system.factory_reset` are not run on a device; the host process stands in for them in the tests.",
-  "Both actions are Mutate: open to any client in range while `control_ble` is open (the default) and need a paired link or, over TCP, a signed request once the endpoint is restricted; pairing is not verified on a device.",
+  "Both actions are Mutate: open to any client in range while `control_ble` is open (the default) and need a paired link or, over TCP, the authenticated and encrypted connection of the pre-shared key once the endpoint is restricted; pairing is not verified on a device.",
 ]
 evidence = [
   "src-system",
@@ -1248,7 +1248,7 @@ target_build = "ci-built"
 hardware_verification = "not-verified"
 limitations = [
   "The chip reset after the grace period and the formatting of the configuration partition by `system.factory_reset` are not run on a device; the host process stands in for them in the tests.",
-  "Both actions are Mutate: open to any client in range while `control_ble` is open (the default) and need a paired link or, over TCP, a signed request once the endpoint is restricted; pairing is not verified on a device.",
+  "Both actions are Mutate: open to any client in range while `control_ble` is open (the default) and need a paired link or, over TCP, the authenticated and encrypted connection of the pre-shared key once the endpoint is restricted; pairing is not verified on a device.",
 ]
 evidence = [
   "src-system",

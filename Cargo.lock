@@ -89,6 +89,7 @@ dependencies = [
  "static_cell",
  "tempfile",
  "tokio",
+ "zeroize",
 ]
 
 [[package]]
@@ -4172,7 +4173,6 @@ dependencies = [
  "minicbor",
  "rohi-config",
  "rohi-control-proto",
- "rohi-identity",
  "rohi-service",
  "zeroize",
 ]
@@ -4203,10 +4203,10 @@ dependencies = [
  "minicbor",
  "rohi-config",
  "rohi-control",
- "rohi-identity",
  "rohi-net",
  "rohi-service",
  "sha2 0.10.9",
+ "zeroize",
 ]
 
 [[package]]
@@ -4222,14 +4222,18 @@ dependencies = [
 name = "rohi-control-tcp"
 version = "0.7.0"
 dependencies = [
+ "chacha20poly1305",
  "critical-section",
  "embassy-futures",
  "embedded-io-async 0.7.0",
  "heapless 0.9.3",
+ "hkdf",
  "log",
  "rohi-control",
  "rohi-control-proto",
  "rohi-service",
+ "sha2 0.10.9",
+ "zeroize",
 ]
 
 [[package]]

@@ -58,18 +58,6 @@ pub enum Transport {
     Tcp,
 }
 
-/// How the request being served was authorized. Set by the
-/// [`Controller`](crate::Controller) alone: a value a transport puts in
-/// [`LinkSecurity::authorization`] is overwritten before any policy runs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum RequestAuthorization {
-    /// Nothing proves who sent the request.
-    #[default]
-    Anonymous,
-    /// The request carried a valid signature of the administrator key.
-    VerifiedAdmin,
-}
-
 /// Security properties of the link a request arrived on, as reported by the
 /// transport.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -85,27 +73,15 @@ pub struct LinkSecurity {
     pub session: u64,
     /// The transport of the connection.
     pub transport: Transport,
-    /// Set by the controller for every request; see [`RequestAuthorization`].
-    pub authorization: RequestAuthorization,
-}
-
-/// The trusted administrator public key and its generation.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct AdminKey {
-    /// The Ed25519 public key.
-    pub key: [u8; 32],
-    /// Changes whenever the key is set or removed, which invalidates every
-    /// challenge issued before.
-    pub epoch: u32,
 }
 
 /// Decides whether a request with the given [`Privilege`] may run on a link.
 ///
 /// The transport only reports link properties; this is the single place
-/// where they become authorization decisions. Secret-carrying actions use
-/// the same mechanism. The methods after [`allows`](Self::allows) describe
-/// the signed requests of [`Controller`](crate::Controller); the defaults
-/// accept none.
+/// where they become authorization decisions. The properties are the ones a
+/// trusted transport established (an encrypted BLE link, a TCP connection that completed
+/// its handshake): nothing in a request can raise them. Secret-carrying actions use the
+/// same mechanism.
 ///
 /// ```
 /// use rohi_control::{
@@ -129,28 +105,12 @@ pub trait AuthorizationPolicy {
         None
     }
 
-    /// Whether connections like `link` may use `GetAuthChallenge` and
-    /// signed requests.
-    fn accepts_signed(&self, link: &LinkSecurity) -> bool {
-        let _ = link;
-        false
-    }
-
-    /// The trusted administrator key, if one is enrolled.
-    fn admin_key(&self) -> Option<AdminKey> {
-        None
-    }
-
-    /// Fills `nonce` with cryptographically unpredictable bytes; `false` when
-    /// the source is unavailable, which fails every challenge closed.
-    fn fill_nonce(&self, nonce: &mut [u8; 32]) -> bool {
-        let _ = nonce;
-        false
-    }
-
-    /// A signed request of `link` was rejected.
-    fn auth_failed(&self, link: &LinkSecurity) {
-        let _ = link;
+    /// Whether `link` is protected well enough for an action that is marked
+    /// [`secure_link`](rohi_service::ActionDescriptor::secure_link): it carries key material of
+    /// a transport and is refused in every access mode on a link that is not. The default asks
+    /// for an encrypted link.
+    fn protects_secrets(&self, link: &LinkSecurity) -> bool {
+        link.encrypted
     }
 }
 
@@ -160,6 +120,10 @@ pub struct OpenPolicy;
 
 impl AuthorizationPolicy for OpenPolicy {
     fn allows(&self, _privilege: Privilege, _link: &LinkSecurity) -> bool {
+        true
+    }
+
+    fn protects_secrets(&self, _link: &LinkSecurity) -> bool {
         true
     }
 }

@@ -14,6 +14,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
 //! The `control_tcp` and `control_ble` services: the state of the endpoints.
 
 use core::net::Ipv4Addr;
@@ -41,7 +42,7 @@ pub mod endpoint_field {
     pub const ACCEPTED: u32 = 4;
     /// Requests the access policy refused.
     pub const DENIED: u32 = 5;
-    /// Signed requests that were rejected.
+    /// TCP handshakes that did not authenticate.
     pub const AUTH_FAILURES: u32 = 6;
     /// Framing, reassembly and I/O errors.
     pub const ERRORS: u32 = 7;
@@ -138,6 +139,8 @@ fn error_name(kind: u8) -> &'static str {
         1 => "frame",
         2 => "transport",
         3 => "busy",
+        4 => "auth",
+        5 => "no_psk",
         _ => "other",
     }
 }

@@ -62,7 +62,7 @@
 //!   erase stalls the CPU for tens of milliseconds, and the whole region takes
 //!   a few seconds.
 //!
-//! The end mark of an LZ4 payload is never stored: it is appended when the
+//! The end mark of an LZ4 payload (feature `lz4`) is never stored: it is appended when the
 //! file is read, so a torn segment and a sealed one read the same way.
 
 use heapless::Vec;
@@ -73,22 +73,23 @@ use super::{
     StorageError, StorageStats,
 };
 use crate::Compression;
+#[cfg(feature = "lz4")]
+use crate::segment::MAX_CHUNK_LEN;
+#[cfg(feature = "lz4")]
 use crate::segment::lz4::{self, FRAME_HEADER_LEN};
 use crate::segment::text::parse_line;
-use crate::segment::{
-    Crc32, HEADER_LEN, MAX_CHUNK_LEN, SegmentHeader, payload_prefix, payload_suffix,
-};
+use crate::segment::{Crc32, HEADER_LEN, SegmentHeader, payload_prefix, payload_suffix};
 
 const SECTOR: u32 = SECTOR_SIZE as u32;
 const START_LEN: u32 = 20;
 const HEADER_SLOT: u32 = 48;
 const START_MAGIC: [u8; 4] = *b"RLS1";
-const START_VERSION: u8 = 2;
+pub(super) const START_VERSION: u8 = 3;
 // The two format header slots at the end of the medium.
 const HEADER_SECTORS: u32 = 2;
 const FORMAT_LEN: usize = 20;
 const FORMAT_MAGIC: [u8; 4] = *b"RLH1";
-const FORMAT_VERSION: u8 = 1;
+pub(super) const FORMAT_VERSION: u8 = 2;
 // Segments need at least two sectors of the ring to rotate.
 const MIN_RING_SECTORS: u32 = 2;
 
@@ -370,6 +371,7 @@ impl<M: Medium> RingStorage<M> {
     fn write_start(&mut self, segment: &Segment) -> Result<(), Failure<M>> {
         let codec = match segment.codec {
             Compression::None => 0,
+            #[cfg(feature = "lz4")]
             Compression::Lz4 => 1,
         };
         self.write_start_record(
@@ -497,6 +499,7 @@ impl<M: Medium> RingStorage<M> {
         }
         let codec = match start[5] {
             0 => Compression::None,
+            #[cfg(feature = "lz4")]
             1 => Compression::Lz4,
             _ => return Ok(None),
         };
@@ -545,6 +548,7 @@ impl<M: Medium> RingStorage<M> {
         segment.raw_len = 0;
         segment.stored = 0;
         match segment.codec {
+            #[cfg(feature = "lz4")]
             Compression::Lz4 => {
                 let mut prefix = [0u8; FRAME_HEADER_LEN];
                 self.read_into(base, &mut prefix)?;

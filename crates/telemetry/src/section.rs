@@ -41,15 +41,15 @@ pub struct ProfileStamp {
 
 /// The observations of a snapshot that one section of a profile selects.
 #[derive(Clone, Copy, Debug)]
-pub struct SectionView<'s, const N: usize> {
-    snapshot: &'s TelemetrySnapshot<N>,
+pub struct SectionView<'s, const N: usize, const SRC: usize> {
+    snapshot: &'s TelemetrySnapshot<N, SRC>,
     sources: crate::selection::SourceSelection,
     measurements: Selection,
 }
 
-impl<'s, const N: usize> SectionView<'s, N> {
+impl<'s, const N: usize, const SRC: usize> SectionView<'s, N, SRC> {
     fn new(
-        snapshot: &'s TelemetrySnapshot<N>,
+        snapshot: &'s TelemetrySnapshot<N, SRC>,
         selection: &DataSelection,
         available: &Selection,
     ) -> Self {
@@ -72,7 +72,7 @@ impl<'s, const N: usize> SectionView<'s, N> {
 
     /// The snapshot the section selects from. A format may need context the
     /// section does not contain, for example which chip produced a value.
-    pub fn snapshot(&self) -> &'s TelemetrySnapshot<N> {
+    pub fn snapshot(&self) -> &'s TelemetrySnapshot<N, SRC> {
         self.snapshot
     }
 
@@ -84,11 +84,11 @@ impl<'s, const N: usize> SectionView<'s, N> {
 
 /// The section of one recipient, to be encrypted by the format.
 #[derive(Clone, Copy, Debug)]
-pub struct PrivateSectionView<'s, const N: usize> {
+pub struct PrivateSectionView<'s, const N: usize, const SRC: usize> {
     /// Who receives it.
     pub recipient: RecipientAddress,
     /// What it holds, as logical plaintext.
-    pub view: SectionView<'s, N>,
+    pub view: SectionView<'s, N, SRC>,
 }
 
 /// Why no sections could be prepared.
@@ -101,13 +101,13 @@ pub enum PrepareError {
 
 /// The sections of one profile over one snapshot.
 #[derive(Clone, Debug)]
-pub struct PreparedSections<'s, const N: usize, const RECIPIENTS: usize> {
+pub struct PreparedSections<'s, const N: usize, const SRC: usize, const RECIPIENTS: usize> {
     /// The policy these sections were prepared under.
     pub profile: ProfileStamp,
     /// The public section, plaintext in the packet.
-    pub public: SectionView<'s, N>,
+    pub public: SectionView<'s, N, SRC>,
     /// Non-empty private sections, one per recipient.
-    pub private: Vec<PrivateSectionView<'s, N>, RECIPIENTS>,
+    pub private: Vec<PrivateSectionView<'s, N, SRC>, RECIPIENTS>,
     /// When the snapshot was captured.
     pub captured_at: rohi_time::MonotonicTimestamp,
 }
@@ -120,11 +120,11 @@ pub struct PreparedSections<'s, const N: usize, const RECIPIENTS: usize> {
 /// # Errors
 ///
 /// [`PrepareError::NothingToPackage`] when every section is empty.
-pub fn prepare<'s, const N: usize, const R: usize>(
-    snapshot: &'s TelemetrySnapshot<N>,
+pub fn prepare<'s, const N: usize, const SRC: usize, const R: usize>(
+    snapshot: &'s TelemetrySnapshot<N, SRC>,
     profile: &PacketProfile<R>,
     available: &Selection,
-) -> Result<PreparedSections<'s, N, R>, PrepareError> {
+) -> Result<PreparedSections<'s, N, SRC, R>, PrepareError> {
     let public = SectionView::new(snapshot, &profile.public, available);
     let mut private = Vec::new();
     for policy in &profile.private {
@@ -171,7 +171,7 @@ mod tests {
         }
     }
 
-    fn snapshot() -> TelemetrySnapshot<8> {
+    fn snapshot() -> TelemetrySnapshot<8, 8> {
         let at = MonotonicTimestamp::from_millis(5);
         let mut snapshot = TelemetrySnapshot::new(MonotonicTimestamp::from_millis(9));
         let mut writer = snapshot.writer(SourceId(1));
@@ -201,7 +201,9 @@ mod tests {
         config.get("p").unwrap().clone()
     }
 
-    fn names<const N: usize>(view: &SectionView<'_, N>) -> std::vec::Vec<u8> {
+    fn names<const N: usize, const SRC: usize>(
+        view: &SectionView<'_, N, SRC>,
+    ) -> std::vec::Vec<u8> {
         view.observations().map(|o| o.measurement.0).collect()
     }
 
@@ -264,7 +266,7 @@ mod tests {
 
     #[test]
     fn a_missing_selected_measurement_is_omitted_and_location_only_is_a_packet() {
-        let mut snapshot = TelemetrySnapshot::<4>::new(MonotonicTimestamp::from_millis(0));
+        let mut snapshot = TelemetrySnapshot::<4, 8>::new(MonotonicTimestamp::from_millis(0));
         let mut writer = snapshot.writer(SourceId::LOCATION);
         writer
             .write(

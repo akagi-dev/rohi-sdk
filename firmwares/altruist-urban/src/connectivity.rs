@@ -33,14 +33,15 @@ use embassy_time::Delay;
 use log::{info, warn};
 use rohi_sdk::connectivity::{
     BuildFailure, ConnectivitySection, ConnectivityService, ConnectivityState, ConnectivityStore,
-    HttpTransport, PacketExporter, PacketProvider, Publisher, RouteError, RouteSet, StoreError,
+    HttpTransport, PacketExporter, PacketProvider, Publisher, RouteError, Routes, StoreError,
 };
 use rohi_sdk::net::{IpBackend, NetworkHandle};
 use rohi_sdk::sensors::runtime::MeasurementHandle;
 use rohi_sdk::telemetry::adapters::{LocationTelemetrySource, SensorsTelemetrySource};
 use rohi_sdk::telemetry::{
-    PacketFormat, ProfileStamp, SealError, TelemetrySnapshot, capture, prepare,
+    PacketFormat, ProfileStamp, SealError, TelemetrySnapshot, capture_accepting, prepare,
 };
+use rohi_sdk::telemetry_robonomics::encoder::{SUPPORTED_MEASUREMENTS, supported};
 use rohi_sdk::telemetry_robonomics::wire::limits::MAX_ENVELOPE_LEN;
 use rohi_sdk::telemetry_robonomics::{Entropy, EntropyError, RobonomicsFormat};
 use rohi_sdk::time::{Clock, EmbassyClock};
@@ -51,6 +52,21 @@ use crate::identity::StaticSigner;
 use crate::tasks::RawMutex;
 use crate::{location, telemetry, time};
 
+/// Routes the device keeps: the storage of the route table, of the runtime and of the status
+/// schema is sized for this many. A stored table with more is refused, not truncated.
+pub const ROUTES: usize = 2;
+/// Fallbacks of a route, besides its primary endpoint.
+pub const FALLBACKS: usize = 1;
+
+/// The routes of the device.
+pub type RouteSet = Routes<ROUTES, FALLBACKS>;
+
+/// The persisted section of the routes of the device.
+pub type Section = ConnectivitySection<ROUTES, FALLBACKS>;
+
+/// The effective routes and the status of the publisher, for the capacities of the device.
+pub type State = ConnectivityState<RawMutex, ROUTES, FALLBACKS>;
+
 /// Packets queued per route while the uplink is down. When the outbox is full
 /// new packets are skipped, never queued over old ones.
 pub const OUTBOX_DEPTH: usize = 2;
@@ -60,18 +76,26 @@ pub const POOL_SLOTS: usize = 2;
 pub const EXPORT_STREAMS: usize = 1;
 /// Size of a sealed packet buffer: the largest envelope of the format.
 pub const PACKET_BYTES: usize = MAX_ENVELOPE_LEN;
-/// Observations a capture holds: one slot for every measurement of the
-/// catalog, so every sensor and the location fit together. A smaller snapshot
-/// would discard the whole dataset of a source (a capture is atomic per
-/// source), so this is never a tuning knob below the catalog size.
-pub const SNAPSHOT_OBSERVATIONS: usize = rohi_sdk::telemetry::CATALOG.len();
+/// Observations a capture holds: one slot for every measurement the compiled packet format
+/// can encode (the 7 sensor measurements and the location), because the capture stores only
+/// those, see [`capture_accepting`]. A source that also reports a measurement nobody can send
+/// (the SCD4x, the gas sensors) is not discarded for it: the extra is skipped. A smaller
+/// snapshot would discard the whole dataset of a source (a capture is atomic per source), so
+/// this is never a tuning knob below the number of packaged measurements. The local sensors
+/// and their status are not read through the snapshot and are unaffected.
+pub const SNAPSHOT_OBSERVATIONS: usize = SUPPORTED_MEASUREMENTS.len();
+/// Sources of a capture: the sensors and the location. Each has one report in the snapshot.
+pub const SNAPSHOT_SOURCES: usize = 2;
+
+/// The snapshot of the device.
+pub type Snapshot = TelemetrySnapshot<SNAPSHOT_OBSERVATIONS, SNAPSHOT_SOURCES>;
 /// Budget of one source during a capture, in milliseconds.
 const SOURCE_TIMEOUT_MS: u32 = 2_000;
 
-static STATE: ConnectivityState<RawMutex> = ConnectivityState::new();
+static STATE: State = ConnectivityState::new();
 
 /// The effective routes and the runtime status of the publisher.
-pub fn state() -> &'static ConnectivityState<RawMutex> {
+pub fn state() -> &'static State {
     &STATE
 }
 
@@ -99,9 +123,9 @@ impl Entropy for FnEntropy {
 pub struct ConnectivityBinding;
 
 impl PrivateBinding for ConnectivityBinding {
-    type Section = ConnectivitySection;
+    type Section = Section;
 
-    fn publish(section: Option<&ConnectivitySection>) {
+    fn publish(section: Option<&Section>) {
         match section {
             Some(section) => {
                 if let Err(error) = validate_routes(&section.0) {
@@ -164,9 +188,9 @@ fn store_error(error: ServiceError) -> StoreError {
     }
 }
 
-impl ConnectivityStore for StoredRoutes {
+impl ConnectivityStore<ROUTES, FALLBACKS> for StoredRoutes {
     async fn load(&self) -> Result<RouteSet, StoreError> {
-        match self.0.get::<ConnectivitySection>().await {
+        match self.0.get::<Section>().await {
             Ok(Some(section)) => {
                 if let Err(error) = validate_routes(&section.0) {
                     warn_invalid_routes(error);
@@ -222,19 +246,24 @@ fn map_seal(error: SealError) -> BuildFailure {
 }
 
 impl UrbanPackets {
-    async fn capture_snapshot(
-        &self,
-    ) -> Result<TelemetrySnapshot<SNAPSHOT_OBSERVATIONS>, BuildFailure> {
+    async fn capture_snapshot(&self) -> Result<Snapshot, BuildFailure> {
         let mut sources = (
             SensorsTelemetrySource::new(self.measurements),
             LocationTelemetrySource::new(location::shared(), || EmbassyClock.now()),
         );
-        Ok(capture(&mut sources, &EmbassyClock, &mut Delay, SOURCE_TIMEOUT_MS).await)
+        Ok(capture_accepting(
+            &mut sources,
+            &EmbassyClock,
+            &mut Delay,
+            SOURCE_TIMEOUT_MS,
+            supported(),
+        )
+        .await)
     }
 
     async fn seal(
         &self,
-        snapshot: &TelemetrySnapshot<SNAPSHOT_OBSERVATIONS>,
+        snapshot: &Snapshot,
         stamp: &ProfileStamp,
         out: &mut [u8],
     ) -> Result<usize, BuildFailure> {
@@ -264,7 +293,7 @@ impl UrbanPackets {
 }
 
 impl PacketProvider for UrbanPackets {
-    type Snapshot = TelemetrySnapshot<SNAPSHOT_OBSERVATIONS>;
+    type Snapshot = Snapshot;
 
     fn resolve(&self, profile: &str) -> Option<ProfileStamp> {
         telemetry::state().resolve(profile)
@@ -321,6 +350,8 @@ pub type UrbanConnectivity = ConnectivityService<
     RawMutex,
     StoredRoutes,
     UrbanPackets,
+    ROUTES,
+    FALLBACKS,
     EXPORT_STREAMS,
     PACKET_BYTES,
 >;
@@ -341,6 +372,8 @@ pub async fn run<I: IpBackend>(network: NetworkHandle<'static, I>, packets: Urba
         _,
         Delay,
         EmbassyClock,
+        ROUTES,
+        FALLBACKS,
         OUTBOX_DEPTH,
         POOL_SLOTS,
         PACKET_BYTES,

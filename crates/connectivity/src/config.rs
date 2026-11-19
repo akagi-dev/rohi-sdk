@@ -46,11 +46,6 @@ use rohi_telemetry::PacketProfileId;
 
 use crate::endpoint::EndpointUri;
 
-/// Maximum number of routes, a budget goal checked against the 1 KiB section
-/// limit by tests.
-pub const MAX_ROUTES: usize = 3;
-/// Maximum number of fallbacks of a route.
-pub const MAX_FALLBACKS: usize = 2;
 /// Maximum length of a route or fallback id, in bytes.
 pub const ID_LEN: usize = 16;
 /// Shortest allowed publication interval, in seconds.
@@ -420,15 +415,16 @@ impl<const R: usize, const F: usize> Routes<R, F> {
     }
 }
 
-/// The routes this device keeps.
-pub type RouteSet = Routes<MAX_ROUTES, MAX_FALLBACKS>;
-
-/// The persisted section: all routes. A stored section that is obsolete or
-/// unreadable is reported and leaves no active route.
+/// The persisted section: all routes of a device that keeps up to `ROUTES` routes of up to
+/// `FALLBACKS` fallbacks each. The capacity is the type, so it is also the storage: a
+/// stored section with more routes or fallbacks does not decode and is reported like
+/// any unreadable section, which leaves no active route. Nothing is truncated.
 #[derive(Clone, Debug, PartialEq, Eq, Default, Encode, Decode, CborLen, ConfigSection)]
 #[cbor(transparent)]
-#[config(version = 1)]
-pub struct ConnectivitySection(#[n(0)] pub RouteSet);
+#[config(id = 0x4d75_b590_2252_1f7d, version = 1)]
+pub struct ConnectivitySection<const ROUTES: usize, const FALLBACKS: usize>(
+    #[n(0)] pub Routes<ROUTES, FALLBACKS>,
+);
 
 #[cfg(test)]
 mod tests;

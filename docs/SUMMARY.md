@@ -53,6 +53,7 @@
   - [Host testing](validation/host-testing.md)
   - [Hardware testing](validation/hardware-testing.md)
   - [Resource budget](validation/resource-budget.md)
+  - [Compact firmware report](validation/compact-firmware-report.md)
 - [Firmware distribution](verify/distribution.md)
 
 # Contributing

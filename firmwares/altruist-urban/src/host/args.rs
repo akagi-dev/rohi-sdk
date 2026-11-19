@@ -45,9 +45,10 @@ pub struct Args {
     #[arg(long, value_name = "ADDRESS")]
     pub bind: Option<IpAddr>,
 
-    /// Allow `--bind` to be a non-loopback address. The control transport and
-    /// the management interface have no authentication or encryption: anyone who
-    /// can reach them can reconfigure, provision and erase the device.
+    /// Allow `--bind` to be a non-loopback address. The management interface has
+    /// no authentication or encryption, and the control transport has none while
+    /// it is open (`--control-open`): anyone who can reach them can reconfigure,
+    /// provision and erase the device.
     #[arg(long)]
     pub unsafe_allow_remote: bool,
 
@@ -58,12 +59,22 @@ pub struct Args {
     pub control_port: Option<u16>,
 
     /// Start with the control endpoint over TCP open for this run, whatever the
-    /// stored `control_tcp.access_mode` says: privileged requests then need no
-    /// signature. For development and tests; without it the endpoint is
-    /// restricted by default and wants a signature of the administrator key.
+    /// stored `control_tcp.access_mode` says: plaintext, unauthenticated records
+    /// that need no key. For development on a loopback address; without it the
+    /// endpoint is restricted by default: a client must complete the handshake with
+    /// the pre-shared key and every record is encrypted.
     #[cfg(feature = "std-tcp")]
     #[arg(long)]
     pub control_open: bool,
+
+    /// File with the 32-byte pre-shared key of the restricted TCP endpoint, as 64
+    /// hexadecimal characters (whitespace around them is ignored) or as exactly 32
+    /// raw bytes. It replaces the key stored on the device for this run and is
+    /// never stored or logged; keep the file readable by its owner only. Without it
+    /// the key stored on the device (provisioned over a protected link) applies.
+    #[cfg(feature = "std-tcp")]
+    #[arg(long, value_name = "FILE")]
+    pub control_psk_file: Option<PathBuf>,
 
     /// Port of the development-management interface (fault injection and
     /// scenario control); 0 picks a free port. Defaults to the control port
@@ -171,5 +182,68 @@ mod tests {
             args.log_storage(),
             PathBuf::from(".altruist-urban/device.log.flash")
         );
+    }
+}
+
+/// Reads a pre-shared key of the control endpoint from `path`: 64 hexadecimal characters
+/// (surrounding whitespace is ignored) or exactly 32 raw bytes. The file content is wiped from
+/// memory before this returns.
+///
+/// # Errors
+///
+/// The I/O error, or `InvalidData` for any other content. The error never contains the content.
+#[cfg(feature = "std-tcp")]
+pub fn read_psk_file(path: &std::path::Path) -> std::io::Result<[u8; 32]> {
+    use zeroize::Zeroize;
+
+    let mut content = std::fs::read(path)?;
+    let key = parse_psk(&content);
+    content.zeroize();
+    key.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "expected 64 hexadecimal characters or 32 raw bytes of key material",
+        )
+    })
+}
+
+#[cfg(feature = "std-tcp")]
+fn parse_psk(content: &[u8]) -> Option<[u8; 32]> {
+    let mut key = [0u8; 32];
+    if let Ok(raw) = <[u8; 32]>::try_from(content) {
+        key = raw;
+    } else {
+        let text = core::str::from_utf8(content).ok()?.trim();
+        if text.len() != 64 || !text.is_ascii() {
+            return None;
+        }
+        for (byte, pair) in key.iter_mut().zip(text.as_bytes().chunks(2)) {
+            let pair = core::str::from_utf8(pair).ok()?;
+            *byte = u8::from_str_radix(pair, 16).ok()?;
+        }
+    }
+    // A key of zeros is not key material.
+    key.iter().any(|byte| *byte != 0).then_some(key)
+}
+
+#[cfg(all(test, feature = "std-tcp"))]
+mod psk_tests {
+    use super::*;
+
+    #[test]
+    fn a_key_file_is_hex_or_raw_and_never_all_zeros() {
+        let hex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+        let expected = parse_psk(hex.as_bytes()).unwrap();
+        assert_eq!(expected[0], 0x00);
+        assert_eq!(expected[1], 0x11);
+        assert_eq!(expected[31], 0xff);
+        assert_eq!(parse_psk(format!("  {hex}\n").as_bytes()), Some(expected));
+        assert_eq!(parse_psk(&expected), Some(expected));
+        // Wrong length, wrong characters, zeros.
+        assert_eq!(parse_psk(&hex.as_bytes()[..62]), None);
+        assert_eq!(parse_psk(format!("{hex}00").as_bytes()), None);
+        assert_eq!(parse_psk("zz".repeat(32).as_bytes()), None);
+        assert_eq!(parse_psk(&[0u8; 32]), None);
+        assert_eq!(parse_psk("00".repeat(32).as_bytes()), None);
     }
 }

@@ -61,18 +61,18 @@ const LIMITS: &[(&str, usize, &str)] = &[
     ),
     (
         "MAX_SENSORS_PER_MESSAGE",
-        9,
-        "Maximum number of sensor entries in one telemetry message.",
+        8,
+        "Maximum number of sensor entries in one section: one for each of the 8 measurements the encoder supports.",
     ),
     (
         "MAX_PRIVATE_SECTIONS",
-        2,
-        "Maximum number of private (encrypted) sections in one telemetry message.",
+        1,
+        "Maximum number of private (encrypted) sections in one telemetry message: one recipient per profile.",
     ),
     (
         "MAX_PRIVATE_PLAINTEXT_LEN",
-        128,
-        "Maximum size of an encoded `device.v1.EncryptedUrban` before encryption, in bytes.",
+        115,
+        "Maximum size of an encoded `device.v1.EncryptedUrban` before encryption, in bytes: one sensor entry for each supported measurement at the largest size its schema allows.",
     ),
     (
         "NONCE_XCHACHA_LEN",
@@ -81,18 +81,18 @@ const LIMITS: &[(&str, usize, &str)] = &[
     ),
     (
         "MAX_ENCRYPTED_LEN",
-        232,
-        "Maximum size of an encoded `crypto.v1.Encrypted` (one private section), in bytes.",
+        207,
+        "Maximum size of an encoded `crypto.v1.Encrypted` (one private section) as this SDK writes it, in bytes.",
     ),
     (
         "MAX_MESSAGE_LEN",
-        780,
-        "Maximum size of an encoded `core.v1.Message`, in bytes.",
+        352,
+        "Maximum size of an encoded `core.v1.Message`, in bytes: the full public section and one private section.",
     ),
     (
         "MAX_ENVELOPE_LEN",
-        920,
-        "Maximum size of an encoded `crypto.v1.SignedEnvelope`, in bytes.",
+        473,
+        "Maximum size of an encoded `crypto.v1.SignedEnvelope` this SDK produces, in bytes.",
     ),
 ];
 
@@ -154,7 +154,7 @@ fn main() {
             .max_bytes(limit("MAX_ENCRYPTED_LEN")),
     );
     for (path, size) in [
-        (".crypto.v1.Encrypted.algorithm", 16),
+        (".crypto.v1.Encrypted.algorithm", 9),
         (".crypto.v1.Encrypted.from", limit("ED25519_KEY_LEN")),
         (".crypto.v1.Encrypted.nonce", limit("NONCE_XCHACHA_LEN")),
         (

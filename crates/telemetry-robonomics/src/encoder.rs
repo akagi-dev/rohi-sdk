@@ -45,20 +45,24 @@ use crate::wire::sensor_v1::{
 /// The sensors of one section.
 pub type Sensors = Vec<UrbanSensor, MAX_SENSORS_PER_MESSAGE>;
 
-/// The measurements the protocol can encode correctly.
+/// The measurements the protocol can encode correctly: what a packet of this format can hold.
+/// A snapshot that is built for this format stores these and nothing else.
+pub const SUPPORTED_MEASUREMENTS: [MeasurementId; 8] = [
+    LOCATION,
+    BMX280_TEMPERATURE,
+    BMX280_HUMIDITY,
+    BMX280_PRESSURE,
+    SDS011_PM2_5,
+    SDS011_PM10,
+    MICROPHONE_AVERAGE,
+    MICROPHONE_MAXIMUM,
+];
+
+/// The measurements the protocol can encode correctly, as a selection.
 pub fn supported() -> Selection {
-    [
-        LOCATION,
-        BMX280_TEMPERATURE,
-        BMX280_HUMIDITY,
-        BMX280_PRESSURE,
-        SDS011_PM2_5,
-        SDS011_PM10,
-        MICROPHONE_AVERAGE,
-        MICROPHONE_MAXIMUM,
-    ]
-    .into_iter()
-    .fold(Selection::NONE, |selection, id| selection.with(id))
+    SUPPORTED_MEASUREMENTS
+        .into_iter()
+        .fold(Selection::NONE, |selection, id| selection.with(id))
 }
 
 /// Why a section cannot be encoded.
@@ -76,7 +80,9 @@ pub enum EncodeError {
 /// # Errors
 ///
 /// [`EncodeError`]; nothing is returned on error.
-pub fn encode_section<const N: usize>(view: &SectionView<'_, N>) -> Result<Sensors, EncodeError> {
+pub fn encode_section<const N: usize, const SRC: usize>(
+    view: &SectionView<'_, N, SRC>,
+) -> Result<Sensors, EncodeError> {
     let mut sensors = Sensors::new();
     let mut push = |sensor: UrbanSensor_::Sensor| {
         sensors
@@ -93,13 +99,16 @@ pub fn encode_section<const N: usize>(view: &SectionView<'_, N>) -> Result<Senso
     Ok(sensors)
 }
 
-fn has_humidity<const N: usize>(view: &SectionView<'_, N>, source: SourceId) -> bool {
+fn has_humidity<const N: usize, const SRC: usize>(
+    view: &SectionView<'_, N, SRC>,
+    source: SourceId,
+) -> bool {
     view.snapshot().get(source, BMX280_HUMIDITY).is_some()
 }
 
-fn sensor_of<const N: usize>(
+fn sensor_of<const N: usize, const SRC: usize>(
     observation: &Observation,
-    view: &SectionView<'_, N>,
+    view: &SectionView<'_, N, SRC>,
 ) -> Result<Option<UrbanSensor_::Sensor>, EncodeError> {
     let number = |value: &ObservationValue| match value {
         ObservationValue::Number(number) => Some(*number),
