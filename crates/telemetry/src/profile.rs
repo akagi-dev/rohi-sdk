@@ -416,7 +416,11 @@ impl<const P: usize, const R: usize> TelemetryConfig<P, R> {
             if self.profiles[..index].iter().any(|p| p.id == profile.id) {
                 return Err(ProfileError::Duplicate);
             }
-            if profile.incarnation > profile.revision || profile.revision > self.generation {
+            if profile.incarnation == 0
+                || profile.revision == 0
+                || profile.incarnation > profile.revision
+                || profile.revision > self.generation
+            {
                 return Err(ProfileError::NotFound);
             }
             let supported = caps.supported(profile.format);

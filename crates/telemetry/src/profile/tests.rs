@@ -256,6 +256,24 @@ fn a_decoded_config_with_a_broken_policy_fails_validation() {
 }
 
 #[test]
+fn a_profile_with_zero_generations_fails_validation() {
+    let mut config = config();
+    config.add_profile("p", PacketFormatId::Robonomics).unwrap();
+
+    let mut zero_incarnation = config.clone();
+    zero_incarnation.profiles[0].incarnation = 0;
+    assert_eq!(
+        zero_incarnation.validate(&Caps),
+        Err(ProfileError::NotFound)
+    );
+
+    let mut zero_revision = config;
+    zero_revision.profiles[0].revision = 0;
+    assert_eq!(zero_revision.validate(&Caps), Err(ProfileError::NotFound));
+    assert!(Config::default().validate(&Caps).is_ok());
+}
+
+#[test]
 fn too_many_elements_do_not_decode() {
     let mut big = TelemetryConfig::<4, 2>::default();
     for id in ["a", "b", "c", "d"] {

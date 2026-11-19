@@ -55,7 +55,7 @@ use crate::{location, telemetry, time};
 /// new packets are skipped, never queued over old ones.
 pub const OUTBOX_DEPTH: usize = 2;
 /// Sealed packets the pool holds: queued, being sent or being built.
-pub const POOL_SLOTS: usize = 3;
+pub const POOL_SLOTS: usize = 2;
 /// Packet streams `packet_get` keeps open at once.
 pub const EXPORT_STREAMS: usize = 1;
 /// Size of a sealed packet buffer: the largest envelope of the format.
