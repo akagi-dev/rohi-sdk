@@ -89,7 +89,7 @@ async fn the_endpoints_are_discoverable_with_their_defaults() {
     // There is no key and the status never shows one.
     let psk = fields(&mut device, "control_psk").await;
     assert_eq!(psk.get("enrolled"), Some(&Value::Bool(false)));
-    assert!(psk.get("fingerprint").is_none());
+    assert!(!psk.contains_key("fingerprint"));
     drop(device);
     sim.stop();
 }
