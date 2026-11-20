@@ -481,6 +481,8 @@ pub struct ActionInfo {
     pub name: String,
     /// What the link must be allowed to do to invoke the action.
     pub access: ActionAccess,
+    /// Whether the action returns one cursor page instead of records.
+    pub returns_page: bool,
     /// Whether the arguments are secrets; they must be read with `NAME=-`.
     pub secret_args: bool,
 }

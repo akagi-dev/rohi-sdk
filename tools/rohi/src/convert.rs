@@ -301,6 +301,7 @@ pub(crate) fn action_info(info: &pb::ActionInfo) -> ActionInfo {
         id: info.id,
         name: info.name.as_str().to_owned(),
         access: ActionAccess::from_proto(info.access),
+        returns_page: info.returns_page,
         secret_args: info.secret_args,
     }
 }

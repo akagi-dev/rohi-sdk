@@ -339,6 +339,7 @@ impl Action for Example {
                 1,
                 &[EnumVariant::new(0, "slow"), EnumVariant::new(1, "fast")],
             )]),
+        ActionDescriptor::new(6, "page", ActionAccess::Read).page(),
     ];
 
     async fn invoke(

@@ -116,10 +116,25 @@ async fn info_and_discovery() {
                 "example.two",
                 "example.configure",
                 "example.pick",
+                "example.page",
                 "system.reboot",
                 "system.factory_reset"
             ]
         );
+        let actions = device.actions().await.unwrap();
+        let page_action = actions
+            .iter()
+            .find(|action| action.service == "example" && action.name == "page")
+            .unwrap();
+        assert!(page_action.returns_page);
+        assert!(
+            serde_json::to_value(page_action).unwrap()["returns_page"]
+                .as_bool()
+                .unwrap()
+        );
+
+        let schema = device.action_schema("example", "page").await.unwrap();
+        assert!(schema.action.returns_page);
     })
     .await;
 }
