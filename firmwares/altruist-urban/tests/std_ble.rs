@@ -26,7 +26,7 @@ mod common;
 use std::time::Duration;
 
 use common::*;
-use rohi::model::ServiceState;
+use rohi::model::ServiceHealth;
 
 #[tokio::test(flavor = "current_thread")]
 async fn the_ble_service_reports_the_real_state_of_the_peripheral() {
@@ -35,18 +35,18 @@ async fn the_ble_service_reports_the_real_state_of_the_peripheral() {
 
     // The supervisor decides within moments: BlueZ is there and the device
     // advertises, or it is not and the state is an error that is retried.
-    let state = eventually(
+    let health = eventually(
         "the BLE peripheral to settle",
         Duration::from_secs(30),
         async || {
-            let (state, _, _, _) = summary(&mut device, "ble").await;
-            (state != ServiceState::Disabled).then_some(state)
+            let (health, _) = summary(&mut device, "ble").await;
+            (health != ServiceHealth::Unknown).then_some(health)
         },
     )
     .await;
     assert!(
-        matches!(state, ServiceState::Running | ServiceState::Failed),
-        "{state:?}"
+        matches!(health, ServiceHealth::Ok | ServiceHealth::Error),
+        "{health:?}"
     );
 
     // Whatever BLE does, the other transport and the services keep working.

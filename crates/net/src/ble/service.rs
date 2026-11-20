@@ -20,8 +20,8 @@
 use heapless::Vec;
 use rohi_service::{
     EnumDescriptor, EnumVariant, FieldDescriptor, Issue, IssueDescriptor, IssueSeverity,
-    MAX_FIELD_VALUE_LEN, MAX_ISSUES, Service, ServiceHealth, ServiceState, ServiceSummary, Status,
-    StatusWriter, Unit, ValueKind, WriteError,
+    MAX_FIELD_VALUE_LEN, MAX_ISSUES, Service, ServiceHealth, ServiceSummary, Status, StatusWriter,
+    Unit, ValueKind, WriteError,
 };
 
 use super::{BleError, BleName, BleState};
@@ -97,14 +97,14 @@ pub const STATES: &[EnumDescriptor] = &[EnumDescriptor::new(
 /// The BLE peripheral as a `ble` service. It has no actions; it is
 /// configured through the `ble` section.
 ///
-/// Advertising and connected both read as `running`/ready; only a failed
-/// peripheral is `failed` with the error as issue. The encryption fields and
+/// Advertising and connected both read as `ok`; only a failed peripheral is
+/// `error`, with the error as issue. The encryption fields and
 /// `max_payload` are reported while a central is connected.
 ///
 /// ```
 /// use embassy_futures::block_on;
 /// use rohi_net::{BleName, BleProbe, BleService, BleState};
-/// use rohi_service::{ServiceState, Status};
+/// use rohi_service::{ServiceHealth, Status};
 ///
 /// struct Radio;
 ///
@@ -123,8 +123,7 @@ pub const STATES: &[EnumDescriptor] = &[EnumDescriptor::new(
 /// }
 ///
 /// let summary = block_on(BleService(Radio).summary());
-/// assert_eq!(summary.state, ServiceState::Running);
-/// assert!(summary.ready);
+/// assert_eq!(summary.health, ServiceHealth::Ok);
 /// ```
 #[derive(Service)]
 pub struct BleService<P>(pub P);
@@ -153,15 +152,11 @@ impl<P: BleProbe> Status for BleService<P> {
 
     async fn summary(&self) -> ServiceSummary {
         match self.0.state() {
-            BleState::Disabled => {
-                ServiceSummary::new(ServiceState::Disabled, ServiceHealth::Unknown, false)
-            }
+            BleState::Disabled => ServiceSummary::new(ServiceHealth::Unknown),
             BleState::Advertising | BleState::Connected(_) => {
-                ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true)
+                ServiceSummary::new(ServiceHealth::Ok)
             }
-            BleState::Error(_) => {
-                ServiceSummary::new(ServiceState::Failed, ServiceHealth::Error, false)
-            }
+            BleState::Error(_) => ServiceSummary::new(ServiceHealth::Error),
         }
     }
 
@@ -271,13 +266,11 @@ mod tests {
         };
         let service = BleService(&fake);
         let summary = block_on(service.summary());
-        assert_eq!(summary.state, ServiceState::Disabled);
-        assert!(!summary.ready);
+        assert_eq!(summary.health, ServiceHealth::Unknown);
 
         fake.state.set(BleState::Advertising);
         let summary = block_on(service.summary());
-        assert_eq!(summary.state, ServiceState::Running);
-        assert!(summary.ready);
+        assert_eq!(summary.health, ServiceHealth::Ok);
         let mut out = Collect::default();
         block_on(service.status(&mut out)).unwrap();
         assert_eq!(
@@ -310,7 +303,7 @@ mod tests {
             state: Cell::new(BleState::Error(BleError::DriverError)),
         };
         let service = BleService(&fake);
-        assert_eq!(block_on(service.summary()).state, ServiceState::Failed);
+        assert_eq!(block_on(service.summary()).health, ServiceHealth::Error);
         let mut issues = Vec::new();
         block_on(service.issues(&mut issues));
         assert_eq!(issues.len(), 1);

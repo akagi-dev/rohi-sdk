@@ -819,7 +819,6 @@ fn value_debug_never_shows_the_content() {
 
 #[derive(Service)]
 struct Probe {
-    state: RefCell<ServiceState>,
     health: RefCell<ServiceHealth>,
     issue: RefCell<Option<u32>>,
     queue: RefCell<u64>,
@@ -828,7 +827,6 @@ struct Probe {
 impl Probe {
     fn new() -> Self {
         Self {
-            state: RefCell::new(ServiceState::Running),
             health: RefCell::new(ServiceHealth::Ok),
             issue: RefCell::new(None),
             queue: RefCell::new(0),
@@ -854,7 +852,7 @@ impl Status for Probe {
 
     async fn summary(&self) -> ServiceSummary {
         let health = *self.health.borrow();
-        ServiceSummary::new(*self.state.borrow(), health, health == ServiceHealth::Ok)
+        ServiceSummary::new(health)
     }
 
     async fn issues(&self, out: &mut heapless::Vec<Issue, MAX_ISSUES>) {
@@ -898,18 +896,6 @@ fn the_status_revision_follows_observable_changes_only() {
     *probe.issue.borrow_mut() = None;
     *probe.health.borrow_mut() = ServiceHealth::Ok;
     assert_eq!(summary(5_000).revision, 3);
-}
-
-#[test]
-fn state_age_counts_from_the_last_state_change() {
-    let probe = Probe::new();
-    let registry = Statuses::<NoopRawMutex, _>::new((&probe,));
-    let summary = |now| block_on(registry.summary(0, now)).unwrap();
-    assert_eq!(summary(1_000).state_age_ms, 0);
-    assert_eq!(summary(4_000).state_age_ms, 3_000);
-    *probe.state.borrow_mut() = ServiceState::Failed;
-    assert_eq!(summary(5_000).state_age_ms, 0);
-    assert_eq!(summary(6_500).state_age_ms, 1_500);
 }
 
 #[test]
@@ -959,21 +945,13 @@ fn the_writer_checks_the_schema() {
     assert_eq!(writer.fields[0].1.as_str().unwrap().len(), 64);
 }
 
-fn summary(
-    state: ServiceState,
-    health: ServiceHealth,
-    ready: bool,
-    essential: bool,
-) -> ServiceStatusSummary {
+fn summary(health: ServiceHealth, essential: bool) -> ServiceStatusSummary {
     ServiceStatusSummary {
         id: 1,
         name: "s",
         version: 1,
-        state,
         health,
-        ready,
         revision: 1,
-        state_age_ms: 0,
         essential,
     }
 }
@@ -982,33 +960,16 @@ fn summary(
 fn the_default_device_health_policy() {
     use DeviceHealth::*;
     use ServiceHealth as H;
-    use ServiceState as S;
     assert_eq!(default_device_health(&[]), Ok);
+    assert_eq!(default_device_health(&[summary(H::Unknown, true)]), Ok);
+    assert_eq!(default_device_health(&[summary(H::Ok, true)]), Ok);
     assert_eq!(
-        default_device_health(&[summary(S::Disabled, H::Unknown, false, true)]),
-        Ok
-    );
-    assert_eq!(
-        default_device_health(&[summary(S::Running, H::Ok, true, true)]),
-        Ok
-    );
-    assert_eq!(
-        default_device_health(&[summary(S::Running, H::Degraded, false, true)]),
+        default_device_health(&[summary(H::Degraded, true)]),
         Degraded
     );
+    assert_eq!(default_device_health(&[summary(H::Error, true)]), Error);
     assert_eq!(
-        default_device_health(&[summary(S::Running, H::Ok, false, true)]),
-        Degraded
-    );
-    assert_eq!(
-        default_device_health(&[summary(S::Failed, H::Error, false, true)]),
-        Error
-    );
-    assert_eq!(
-        default_device_health(&[
-            summary(S::Failed, H::Error, false, false),
-            summary(S::Running, H::Ok, true, true),
-        ]),
+        default_device_health(&[summary(H::Error, false), summary(H::Ok, true)]),
         Degraded
     );
 }
@@ -1379,15 +1340,11 @@ fn issue_age_follows_the_set_of_active_issues_only() {
     assert_eq!(age(2_000), Some(0));
     let before = revision(2_000);
 
-    // The state, health and readiness change while the same issue stays: a
-    // new revision, but the issue is as old as ever.
-    *probe.state.borrow_mut() = ServiceState::Failed;
+    // The health changes while the same issue stays: a new revision, but the
+    // issue is as old as ever.
     *probe.health.borrow_mut() = ServiceHealth::Error;
     assert_eq!(age(5_000), Some(3_000));
     assert_eq!(revision(5_000), before + 1);
-    // The state age is its own clock.
-    let summary = block_on(registry.summary(0, 6_000));
-    assert_eq!(summary.unwrap().state_age_ms, 1_000);
     assert_eq!(age(6_000), Some(4_000));
 
     // Another issue replaces it: the set changed, so the age starts over.

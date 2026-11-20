@@ -46,8 +46,8 @@ use rohi_net::{WifiConfig, WifiOverrides};
 use rohi_service::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, Config, EnumDescriptor,
     EnumVariant, FIRST_SERVICE_ISSUE, FieldDescriptor, FieldError, Issue, IssueDescriptor,
-    IssueSeverity, Section, SectionStore, Service, ServiceHealth, ServiceState, ServiceSummary,
-    Status, StatusWriter, Statuses, StoreError, Unit, Value, ValueKind, WriteError,
+    IssueSeverity, Section, SectionStore, Service, ServiceHealth, ServiceSummary, Status,
+    StatusWriter, Statuses, StoreError, Unit, Value, ValueKind, WriteError,
 };
 use rohi_system::{SystemError, SystemPlatform, SystemService};
 pub use sample::{ConnectivityConfig, ConnectivityOverrides};
@@ -216,11 +216,11 @@ impl Status for Radio {
 
     async fn summary(&self) -> ServiceSummary {
         if self.degraded.get() {
-            ServiceSummary::new(ServiceState::Running, ServiceHealth::Degraded, false)
+            ServiceSummary::new(ServiceHealth::Degraded)
         } else if self.connected.get() {
-            ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true)
+            ServiceSummary::new(ServiceHealth::Ok)
         } else {
-            ServiceSummary::new(ServiceState::Starting, ServiceHealth::Unknown, false)
+            ServiceSummary::new(ServiceHealth::Unknown)
         }
     }
 

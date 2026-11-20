@@ -27,7 +27,7 @@ use rohi_control::{
 use rohi_service::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, EnumDescriptor, EnumVariant,
     FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES, Service, ServiceHealth,
-    ServiceState, ServiceSummary, Status, StatusWriter, Value, ValueKind, WriteError,
+    ServiceSummary, Status, StatusWriter, Value, ValueKind, WriteError,
 };
 use zeroize::Zeroize;
 
@@ -153,15 +153,9 @@ fn error_name(kind: u8) -> &'static str {
 
 fn summary(stats: &EndpointStats) -> ServiceSummary {
     match stats.state {
-        EndpointState::Disabled => {
-            ServiceSummary::new(ServiceState::Disabled, ServiceHealth::Unknown, false)
-        }
-        EndpointState::Running => {
-            ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true)
-        }
-        EndpointState::Failed => {
-            ServiceSummary::new(ServiceState::Failed, ServiceHealth::Error, false)
-        }
+        EndpointState::Disabled => ServiceSummary::new(ServiceHealth::Unknown),
+        EndpointState::Running => ServiceSummary::new(ServiceHealth::Ok),
+        EndpointState::Failed => ServiceSummary::new(ServiceHealth::Error),
     }
 }
 
@@ -258,7 +252,7 @@ impl Drop for Key {
 /// use embassy_futures::block_on;
 /// use rohi_control::{ControlAccess, EndpointState, Transport};
 /// use rohi_control_endpoints::{ControlTcpService, PSK_LEN, PskStore, PskStoreError};
-/// use rohi_service::{ActionRegistry, ServiceState, Status, service_id};
+/// use rohi_service::{ActionRegistry, ServiceHealth, Status, service_id};
 ///
 /// // The firmware stores the key and publishes it; this one only records that there is one.
 /// struct Memory<'a>(&'a ControlAccess, Cell<[u8; PSK_LEN]>);
@@ -279,7 +273,7 @@ impl Drop for Key {
 /// let access = ControlAccess::new(entropy);
 /// access.set_state(Transport::Tcp, EndpointState::Running);
 /// let service = ControlTcpService::new(&access, Memory(&access, Cell::new([0; PSK_LEN])));
-/// assert_eq!(block_on(service.summary()).state, ServiceState::Running);
+/// assert_eq!(block_on(service.summary()).health, ServiceHealth::Ok);
 /// assert!(!access.tcp_psk_enrolled());
 ///
 /// let registry = (&service,);
@@ -541,7 +535,7 @@ mod tests {
             out.get(endpoint_field::ACCESS_MODE),
             Some(&Value::text("open").unwrap())
         );
-        assert_eq!(block_on(service.summary()).state, ServiceState::Running);
+        assert_eq!(block_on(service.summary()).health, ServiceHealth::Ok);
         let mut issues = Vec::new();
         block_on(service.issues(&mut issues));
         assert_eq!(issues[0].code, issue::OPEN);
@@ -552,7 +546,7 @@ mod tests {
         let access = ControlAccess::new(|_| false);
         access.set_state(Transport::Ble, EndpointState::Failed);
         let service = ControlBleService::new(&access);
-        assert_eq!(block_on(service.summary()).state, ServiceState::Failed);
+        assert_eq!(block_on(service.summary()).health, ServiceHealth::Error);
         let mut issues = Vec::new();
         block_on(service.issues(&mut issues));
         assert_eq!(issues[0].code, issue::FAILED);

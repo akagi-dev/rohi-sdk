@@ -28,8 +28,8 @@ use log::debug;
 use rohi_service::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, EnumDescriptor, EnumVariant,
     FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_FIELD_VALUE_LEN, MAX_ISSUES,
-    Service, ServiceHealth, ServiceState, ServiceSummary, Status, StatusWriter, Unit, Value,
-    ValueKind, WriteError,
+    Service, ServiceHealth, ServiceSummary, Status, StatusWriter, Unit, Value, ValueKind,
+    WriteError,
 };
 
 use crate::{WifiError, WifiHandle, WifiSecurity, WifiState};
@@ -242,20 +242,19 @@ fn action_error(error: WifiError) -> ActionError {
     }
 }
 
-/// How a link state reads as a service state; shared with the `network`
+/// How a link state reads as a service health; shared with the `network`
 /// service, which runs on the same link.
 pub(crate) fn summary_of(state: WifiState) -> ServiceSummary {
     use ServiceHealth as H;
-    use ServiceState as S;
-    let (state, health, ready) = match state {
-        WifiState::NotConfigured => (S::Disabled, H::Unknown, false),
-        WifiState::Idle => (S::Stopped, H::Unknown, false),
-        WifiState::Scanning | WifiState::Connecting => (S::Starting, H::Unknown, false),
-        WifiState::Connected => (S::Running, H::Ok, true),
-        WifiState::Disconnected => (S::Running, H::Degraded, false),
-        WifiState::Error => (S::Failed, H::Error, false),
-    };
-    ServiceSummary::new(state, health, ready)
+    ServiceSummary::new(match state {
+        WifiState::NotConfigured
+        | WifiState::Idle
+        | WifiState::Scanning
+        | WifiState::Connecting => H::Unknown,
+        WifiState::Connected => H::Ok,
+        WifiState::Disconnected => H::Degraded,
+        WifiState::Error => H::Error,
+    })
 }
 
 const fn bytes(descriptor: FieldDescriptor) -> FieldDescriptor {
@@ -275,10 +274,9 @@ const fn bytes(descriptor: FieldDescriptor) -> FieldDescriptor {
 /// | action `scan` | one record per network, strongest first: `ssid`, `rssi`, `channel`, `security` | `rohi action wifi scan` |
 /// | actions `reconnect`, `disconnect` (mutate access) | drop the link and connect again / stay idle | `rohi action wifi reconnect` |
 ///
-/// The service maps [`WifiState`] to lifecycle and health: `NotConfigured` is
-/// `disabled` (not an error), `Idle` is `stopped`, `Scanning` and `Connecting`
-/// are `starting`, `Connected` is `running`/`ok`/ready, `Disconnected` is
-/// `running`/`degraded` (not ready) and `Error` is `failed`/`error`. The last
+/// The service maps [`WifiState`] to health: `NotConfigured` (not an error),
+/// `Idle`, `Scanning` and `Connecting` are `unknown`, `Connected` is `ok`,
+/// `Disconnected` is `degraded` and `Error` is `error`. The last
 /// error is the active issue while the state is `Error` or `Disconnected`
 /// (`authentication_failed`, `network_not_found`, `association_failed`,
 /// `disconnected`, `driver_error`, ...; see [`issue`](mod@issue)); the IP-layer
@@ -297,7 +295,7 @@ const fn bytes(descriptor: FieldDescriptor) -> FieldDescriptor {
 /// use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 /// use embedded_hal_async::delay::DelayNs;
 /// use rohi_net::{WifiService, WifiShared};
-/// use rohi_service::{ServiceState, Status};
+/// use rohi_service::{ServiceHealth, Status};
 ///
 /// #[derive(Clone)]
 /// struct Delay;
@@ -312,8 +310,7 @@ const fn bytes(descriptor: FieldDescriptor) -> FieldDescriptor {
 ///
 /// // Not configured is `disabled`, not an error.
 /// let summary = block_on(service.summary());
-/// assert_eq!(summary.state, ServiceState::Disabled);
-/// assert!(!summary.ready);
+/// assert_eq!(summary.health, ServiceHealth::Unknown);
 /// ```
 #[derive(Service)]
 pub struct WifiService<'a, M: RawMutex, D, P> {
@@ -682,8 +679,7 @@ mod tests {
         let shared = Shared::new();
         let service = WifiService::new(shared.handle(), NoDelay, FULL);
         let summary = block_on(service.summary());
-        assert_eq!(summary.state, rohi_service::ServiceState::Disabled);
-        assert!(!summary.ready);
+        assert_eq!(summary.health, rohi_service::ServiceHealth::Unknown);
         let mut issues = Vec::new();
         block_on(service.issues(&mut issues));
         assert!(issues.is_empty());
@@ -743,8 +739,7 @@ mod tests {
 
         let service = WifiService::new(handle, NoDelay, FULL);
         let summary = block_on(service.summary());
-        assert_eq!(summary.state, rohi_service::ServiceState::Running);
-        assert!(summary.ready);
+        assert_eq!(summary.health, rohi_service::ServiceHealth::Ok);
 
         let mut out = Collect::default();
         block_on(service.status(&mut out)).unwrap();

@@ -340,7 +340,7 @@ async fn dry_runs_restarts_and_reset() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn services_report_state_health_readiness_and_issues() {
+async fn services_report_health_and_issues() {
     let bench = Bench::new();
     with_device(20, &bench, |mut device| async move {
         let all = device.services_status().await.unwrap();
@@ -348,8 +348,7 @@ async fn services_report_state_health_readiness_and_issues() {
         assert_eq!(all.health, DeviceHealth::Ok);
         let radio = &all.services[0];
         assert_eq!(radio.service, "radio");
-        assert_eq!(radio.state, ServiceState::Running);
-        assert!(radio.ready);
+        assert_eq!(radio.health, ServiceHealth::Ok);
         let revision = radio.revision;
 
         let schema = device.service_schema("radio").await.unwrap();
@@ -555,7 +554,7 @@ async fn identity_is_an_ordinary_service_with_actions() {
     let expected = derived.public_key();
     with_device(20, &bench, |mut device| async move {
         let status = device.service_status("identity").await.unwrap();
-        assert_eq!(status.summary.state, ServiceState::Stopped);
+        assert_eq!(status.summary.health, ServiceHealth::Unknown);
         assert_eq!(status.issues[0].code, "not_provisioned");
 
         let schema = device.action_schema("identity", "provision").await.unwrap();
@@ -578,7 +577,7 @@ async fn identity_is_an_ordinary_service_with_actions() {
         );
 
         let status = device.service_status("identity").await.unwrap();
-        assert_eq!(status.summary.state, ServiceState::Running);
+        assert_eq!(status.summary.health, ServiceHealth::Ok);
         // The public key is reported, the secret never is.
         assert!(
             status

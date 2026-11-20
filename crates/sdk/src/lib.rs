@@ -111,7 +111,7 @@
 //! | Sensors | Typed measurements, sensor state, `MeasurementStore`, event bus, the `sensors` service; drivers (BMx280, SCD4x, SDS011, noise) and their runner | [`rohi-sensors`](../rohi_sensors/index.html), [`rohi-hal`](../rohi_hal/index.html), [`rohi-hal-esp`](../rohi_hal_esp/index.html) |
 //! | Configuration | CBOR, A/B-slot, power-fail-safe store of independent typed sections; users persist only their overrides of the firmware defaults | [`rohi-config`](../rohi_config/index.html), [`rohi-config-esp`](../rohi_config_esp/index.html) |
 //! | Networking | Wi-Fi control plane, DNS/TCP/UDP data plane, BLE transport, ESP backend | [`rohi-net`](../rohi_net/index.html), [`rohi-net-esp`](../rohi_net_esp/index.html) |
-//! | Services | Config sections, live status (state, health, issues) and actions of every module, discovered by name | [`rohi-service`](../rohi_service/index.html) |
+//! | Services | Config sections, live status (health, issues) and actions of every module, discovered by name | [`rohi-service`](../rohi_service/index.html) |
 //! | Control | Generic local control protocol over BLE or TCP, `rohi` desktop client | [`rohi-control`](../rohi_control/index.html), [`rohi-control-ble`](../rohi_control_ble/index.html), [`rohi-control-tcp`](../rohi_control_tcp/index.html), [`rohi`](../rohi/index.html) |
 //! | Time | Synchronized wall-clock time and its NTP source | [`rohi-time`](../rohi_time/index.html), [`rohi-time-ntp`](../rohi_time_ntp/index.html) |
 //! | Location | Where the device is (user-configured; no GNSS runtime exists yet), sent in telemetry | [`rohi-location`](../rohi_location/index.html) |

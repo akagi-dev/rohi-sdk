@@ -266,11 +266,8 @@ pub(crate) fn summary(summary: &pb::ServiceStatusSummary) -> ServiceSummary {
         id: summary.service_id,
         service: summary.name.as_str().to_owned(),
         version: summary.version,
-        state: ServiceState::from_proto(summary.state),
         health: ServiceHealth::from_proto(summary.health),
-        ready: summary.ready,
         revision: summary.revision,
-        state_age_ms: u64::from(summary.state_age_ms),
     }
 }
 

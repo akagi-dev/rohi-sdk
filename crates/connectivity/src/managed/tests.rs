@@ -519,12 +519,12 @@ fn status_summary_follows_the_routes() {
     let exporter = fixture.exporter();
     let service = Svc::new(&fixture.memory, &exporter, &fixture.state);
     assert_eq!(
-        block_on(service.summary()).state,
-        ServiceState::Stopped,
+        block_on(service.summary()).health,
+        ServiceHealth::Unknown,
         "no route is a valid state"
     );
     fixture.state.mark_unreadable();
-    assert_eq!(block_on(service.summary()).state, ServiceState::Failed);
+    assert_eq!(block_on(service.summary()).health, ServiceHealth::Error);
 }
 
 #[test]

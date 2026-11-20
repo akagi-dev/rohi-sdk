@@ -75,7 +75,7 @@ use minicbor::{CborLen, Decode, Encode};
 use rohi_config::{ConfigSection, MAX_SECTION_PAYLOAD};
 use rohi_service::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, FieldDescriptor, Issue,
-    IssueDescriptor, IssueSeverity, MAX_ISSUES, MAX_RECORDS, Service, ServiceHealth, ServiceState,
+    IssueDescriptor, IssueSeverity, MAX_ISSUES, MAX_RECORDS, Service, ServiceHealth,
     ServiceSummary, Status, StatusWriter, Value, ValueKind, WriteError,
 };
 
@@ -473,8 +473,8 @@ where
 
     async fn summary(&self) -> ServiceSummary {
         match self.store.load().await {
-            Ok(_) => ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true),
-            Err(_) => ServiceSummary::new(ServiceState::Failed, ServiceHealth::Error, false),
+            Ok(_) => ServiceSummary::new(ServiceHealth::Ok),
+            Err(_) => ServiceSummary::new(ServiceHealth::Error),
         }
     }
 

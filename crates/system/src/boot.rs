@@ -24,8 +24,8 @@ use heapless::Vec;
 use rohi_crash::{Policy, Report, Reset};
 use rohi_service::{
     FIRST_SERVICE_ISSUE, FieldDescriptor, Issue, IssueDescriptor, IssueSeverity,
-    MAX_FIELD_VALUE_LEN, MAX_ISSUES, ServiceHealth, ServiceState, ServiceSummary, Status,
-    StatusWriter, Unit, ValueKind, WriteError,
+    MAX_FIELD_VALUE_LEN, MAX_ISSUES, ServiceHealth, ServiceSummary, Status, StatusWriter, Unit,
+    ValueKind, WriteError,
 };
 
 use crate::{SystemPlatform, SystemService};
@@ -172,7 +172,7 @@ impl<P: SystemPlatform> Status for SystemService<P> {
             Some(report) if in_loop(&report) => ServiceHealth::Degraded,
             _ => ServiceHealth::Ok,
         };
-        ServiceSummary::new(ServiceState::Running, health, true)
+        ServiceSummary::new(health)
     }
 
     async fn issues(&self, out: &mut Vec<Issue, MAX_ISSUES>) {

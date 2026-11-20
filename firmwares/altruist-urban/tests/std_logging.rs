@@ -180,7 +180,7 @@ async fn the_sd_card_is_unavailable_on_the_host_and_never_replaced_by_the_file()
         .await
         .unwrap();
     let issues = eventually("storage_unavailable", WAIT, async || {
-        let (_, _, _, issues) = summary(&mut device, "logging").await;
+        let (_, issues) = summary(&mut device, "logging").await;
         issues
             .contains(&"storage_unavailable".to_owned())
             .then_some(issues)

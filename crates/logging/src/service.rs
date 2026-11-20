@@ -31,9 +31,8 @@ use heapless::Vec;
 use rohi_service::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, EnumDescriptor,
     FIRST_SERVICE_ISSUE, FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES,
-    MAX_STREAM_CHUNK, MAX_TAIL_CHUNK, Service, ServiceHealth, ServiceState, ServiceSummary, Status,
-    StatusWriter, StreamChunk, StreamFile, StreamInfo, TailPage, TailRequest, Unit, Value,
-    ValueKind, WriteError,
+    MAX_STREAM_CHUNK, MAX_TAIL_CHUNK, Service, ServiceHealth, ServiceSummary, Status, StatusWriter,
+    StreamChunk, StreamFile, StreamInfo, TailPage, TailRequest, Unit, Value, ValueKind, WriteError,
 };
 
 use crate::segment::{Batch, MAX_CHUNK_LEN, file_name, scratch};
@@ -1002,15 +1001,13 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize> S
             )
         });
         if !started {
-            ServiceSummary::new(ServiceState::Starting, ServiceHealth::Unknown, false)
+            ServiceSummary::new(ServiceHealth::Unknown)
         } else if unavailable {
-            ServiceSummary::new(ServiceState::Running, ServiceHealth::Error, false)
-        } else if write_failed {
-            ServiceSummary::new(ServiceState::Running, ServiceHealth::Degraded, false)
-        } else if degraded {
-            ServiceSummary::new(ServiceState::Running, ServiceHealth::Degraded, true)
+            ServiceSummary::new(ServiceHealth::Error)
+        } else if write_failed || degraded {
+            ServiceSummary::new(ServiceHealth::Degraded)
         } else {
-            ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true)
+            ServiceSummary::new(ServiceHealth::Ok)
         }
     }
 

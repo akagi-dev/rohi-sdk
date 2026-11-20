@@ -74,12 +74,12 @@ pub mod status_field {
 /// use embassy_futures::block_on;
 /// use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 /// use rohi_net::{NetworkService, WifiShared};
-/// use rohi_service::{ServiceState, Status};
+/// use rohi_service::{ServiceHealth, Status};
 ///
 /// let shared = WifiShared::<NoopRawMutex>::new();
 /// // `()` is a probe without an IP stack: no socket numbers are reported.
 /// let service = NetworkService::new(shared.handle(), ());
-/// assert_eq!(block_on(service.summary()).state, ServiceState::Disabled);
+/// assert_eq!(block_on(service.summary()).health, ServiceHealth::Unknown);
 /// ```
 #[derive(Service)]
 pub struct NetworkService<'a, M: RawMutex, P> {
@@ -159,7 +159,7 @@ mod tests {
 
     use embassy_futures::block_on;
     use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-    use rohi_service::{MAX_FIELDS, ServiceState, Value};
+    use rohi_service::{MAX_FIELDS, ServiceHealth, Value};
 
     use super::*;
     use crate::{
@@ -248,8 +248,7 @@ mod tests {
         let shared = WifiShared::<NoopRawMutex>::new();
         let service = NetworkService::new(shared.handle(), Sockets(Some(USAGE)));
         let summary = block_on(service.summary());
-        assert_eq!(summary.state, ServiceState::Disabled);
-        assert!(!summary.ready);
+        assert_eq!(summary.health, ServiceHealth::Unknown);
         let mut issues = Vec::new();
         block_on(service.issues(&mut issues));
         assert!(issues.is_empty());
@@ -303,8 +302,7 @@ mod tests {
 
         let service = NetworkService::new(handle, ());
         let summary = block_on(service.summary());
-        assert_eq!(summary.state, ServiceState::Running);
-        assert!(summary.ready);
+        assert_eq!(summary.health, ServiceHealth::Ok);
 
         let mut out = Collect::default();
         block_on(service.status(&mut out)).unwrap();

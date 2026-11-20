@@ -31,7 +31,7 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rohi::model::{Mutation, MutationOp, ServiceHealth, ServiceState, Value};
+use rohi::model::{Mutation, MutationOp, ServiceHealth, Value};
 use rohi::{Device, TcpLink};
 
 /// How long a device may take to become ready.
@@ -306,16 +306,11 @@ pub async fn fields(device: &mut Device<TcpLink>, service: &str) -> HashMap<Stri
         .collect()
 }
 
-/// State, health and issue names of `service`.
-pub async fn summary(
-    device: &mut Device<TcpLink>,
-    service: &str,
-) -> (ServiceState, ServiceHealth, bool, Vec<String>) {
+/// Health and issue names of `service`.
+pub async fn summary(device: &mut Device<TcpLink>, service: &str) -> (ServiceHealth, Vec<String>) {
     let status = device.service_status(service).await.unwrap();
     (
-        status.summary.state,
         status.summary.health,
-        status.summary.ready,
         status.issues.into_iter().map(|issue| issue.code).collect(),
     )
 }

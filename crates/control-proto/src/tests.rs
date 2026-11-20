@@ -492,11 +492,8 @@ fn services_summary_with_every_service_fits_the_response_limit() {
                 service_id: u32::MAX,
                 name: text(&"s".repeat(limits::MAX_NAME_LEN)),
                 version: u32::MAX,
-                state: ServiceState::Failed,
                 health: ServiceHealth::Error,
-                ready: true,
                 revision: u32::MAX,
-                state_age_ms: u32::MAX,
             })
             .ok()
             .unwrap();

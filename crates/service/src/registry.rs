@@ -27,7 +27,7 @@
 //! use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 //! use rohi_service::{
 //!     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, ActionRegistry,
-//!     FieldDescriptor, Service, ServiceHealth, ServiceState, ServiceSummary, Status, StatusError,
+//!     FieldDescriptor, Service, ServiceHealth, ServiceSummary, Status, StatusError,
 //!     StatusRegistry, StatusWriter, Statuses, Value, ValueKind, WriteError,
 //! };
 //!
@@ -40,7 +40,7 @@
 //!         &[FieldDescriptor::new(1, "connected", ValueKind::Bool)];
 //!
 //!     async fn summary(&self) -> ServiceSummary {
-//!         ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true)
+//!         ServiceSummary::new(ServiceHealth::Ok)
 //!     }
 //!
 //!     async fn status(&self, out: &mut impl StatusWriter) -> Result<(), WriteError> {
@@ -70,7 +70,7 @@
 //!     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[];
 //!
 //!     async fn summary(&self) -> ServiceSummary {
-//!         ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true)
+//!         ServiceSummary::new(ServiceHealth::Ok)
 //!     }
 //!
 //!     async fn status(&self, _out: &mut impl StatusWriter) -> Result<(), WriteError> {
@@ -121,11 +121,10 @@
 //!
 //! [`Statuses`] keeps one [`Tracker`] per service. It adds what every service
 //! needs without its cooperation: a **status revision** that changes when
-//! state, health, readiness or the active issues change (values that vary all
-//! the time, such as counters or signal strength, deliberately do not bump
-//! it), and the **time in the current state**. Revisions and ages are derived
-//! from what the service reports when a client asks, with the device uptime
-//! given by the caller.
+//! the health or the active issues change (values that vary all the time,
+//! such as counters or signal strength, deliberately do not bump it). The
+//! revision and the age of issues are derived from what the service reports
+//! when a client asks, with the device uptime given by the caller.
 //!
 //! # Ids and names
 //!
@@ -228,14 +227,13 @@ const fn actions_schema_valid<S: Action>() -> bool {
 }
 
 /// The bookkeeping the status registry keeps for one service: the status
-/// revision and the time since the last state change.
+/// revision and the age of issues.
 ///
 /// Revisions and ages are derived from what the service reports, so a service
 /// does not have to cooperate. Observation happens when a client asks, with
 /// the device uptime given by the caller; poll the compact summary regularly
-/// for precise ages. A revision follows the lifecycle state, health,
-/// readiness and the active issues; it does not follow the service-specific
-/// status fields.
+/// for precise ages. A revision follows the health and the active issues; it
+/// does not follow the service-specific status fields.
 pub struct Tracker<M: RawMutex>(TrackCell<M>);
 
 impl<M: RawMutex> Tracker<M> {
@@ -275,11 +273,8 @@ async fn observe<S: Status, M: RawMutex>(
             id: S::ID,
             name: S::NAME,
             version: u32::from(S::VERSION),
-            state: summary.state,
             health: summary.health,
-            ready: summary.ready,
             revision: track.revision,
-            state_age_ms: now_ms.saturating_sub(track.state_since_ms),
             essential: S::ESSENTIAL,
         },
         issues,

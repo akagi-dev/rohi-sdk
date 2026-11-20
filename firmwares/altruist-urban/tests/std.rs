@@ -27,7 +27,7 @@ mod common;
 use std::time::Duration;
 
 use common::*;
-use rohi::model::{ServiceHealth, ServiceState, Value};
+use rohi::model::{ServiceHealth, Value};
 use tempfile::TempDir;
 
 const WAIT: Duration = Duration::from_secs(20);
@@ -115,18 +115,14 @@ async fn a_failing_sensor_is_reported_and_recovers() {
     let mut device = sim.device().await;
 
     eventually("a healthy sensors service", WAIT, async || {
-        let (state, health, ready, issues) = summary(&mut device, "sensors").await;
-        (state == ServiceState::Running
-            && health == ServiceHealth::Ok
-            && ready
-            && issues.is_empty())
-        .then_some(())
+        let (health, issues) = summary(&mut device, "sensors").await;
+        (health == ServiceHealth::Ok && issues.is_empty()).then_some(())
     })
     .await;
 
     sim.manage_ok("fail scd4x read");
     let issues = eventually("the sensor fault", WAIT, async || {
-        let (_, health, _, issues) = summary(&mut device, "sensors").await;
+        let (health, issues) = summary(&mut device, "sensors").await;
         (health == ServiceHealth::Degraded && issues.contains(&"scd4x_fault".to_owned()))
             .then_some(issues)
     })
@@ -135,8 +131,8 @@ async fn a_failing_sensor_is_reported_and_recovers() {
 
     sim.manage_ok("recover scd4x");
     eventually("the sensor to recover", WAIT, async || {
-        let (_, health, ready, issues) = summary(&mut device, "sensors").await;
-        (health == ServiceHealth::Ok && ready && issues.is_empty()).then_some(())
+        let (health, issues) = summary(&mut device, "sensors").await;
+        (health == ServiceHealth::Ok && issues.is_empty()).then_some(())
     })
     .await;
     eventually("valid CO2 again", WAIT, async || {
@@ -234,8 +230,8 @@ async fn wifi_connects_backs_off_and_recovers() {
     let mut device = sim.device().await;
 
     // Not configured: the manager is idle.
-    let (state, _, ready, _) = summary(&mut device, "wifi").await;
-    assert_eq!((state, ready), (ServiceState::Disabled, false));
+    let (health, _) = summary(&mut device, "wifi").await;
+    assert_eq!(health, ServiceHealth::Unknown);
 
     device
         .config_patch(
@@ -251,33 +247,30 @@ async fn wifi_connects_backs_off_and_recovers() {
         .await
         .unwrap();
     eventually("the Wi-Fi link", WAIT, async || {
-        let (state, health, ready, _) = summary(&mut device, "wifi").await;
-        (state == ServiceState::Running && health == ServiceHealth::Ok && ready).then_some(())
+        let (health, _) = summary(&mut device, "wifi").await;
+        (health == ServiceHealth::Ok).then_some(())
     })
     .await;
     eventually("the network to be ready", WAIT, async || {
-        let (state, _, ready, _) = summary(&mut device, "network").await;
-        (state == ServiceState::Running && ready).then_some(())
+        let (health, _) = summary(&mut device, "network").await;
+        (health == ServiceHealth::Ok).then_some(())
     })
     .await;
 
     // The access point disappears: the manager reports it and keeps retrying.
     sim.manage_ok("ap ROHI-LAB down");
     let issues = eventually("the Wi-Fi failure", WAIT, async || {
-        let (_, _, ready, issues) = summary(&mut device, "wifi").await;
-        (!ready && issues.contains(&"network_not_found".to_owned())).then_some(issues)
+        let (health, issues) = summary(&mut device, "wifi").await;
+        (health != ServiceHealth::Ok && issues.contains(&"network_not_found".to_owned()))
+            .then_some(issues)
     })
     .await;
     assert!(!issues.is_empty());
 
     sim.manage_ok("ap ROHI-LAB up");
     eventually("the Wi-Fi to recover", WAIT, async || {
-        let (state, health, ready, issues) = summary(&mut device, "wifi").await;
-        (state == ServiceState::Running
-            && health == ServiceHealth::Ok
-            && ready
-            && issues.is_empty())
-        .then_some(())
+        let (health, issues) = summary(&mut device, "wifi").await;
+        (health == ServiceHealth::Ok && issues.is_empty()).then_some(())
     })
     .await;
 
@@ -285,15 +278,16 @@ async fn wifi_connects_backs_off_and_recovers() {
     sim.manage_ok("wifi fail authentication");
     sim.manage_ok("wifi drop");
     let issues = eventually("an authentication failure", WAIT, async || {
-        let (_, _, ready, issues) = summary(&mut device, "wifi").await;
-        (!ready && issues.contains(&"authentication_failed".to_owned())).then_some(issues)
+        let (health, issues) = summary(&mut device, "wifi").await;
+        (health != ServiceHealth::Ok && issues.contains(&"authentication_failed".to_owned()))
+            .then_some(issues)
     })
     .await;
     assert!(!issues.is_empty());
     sim.manage_ok("wifi recover");
     eventually("recovery after the fault", WAIT, async || {
-        let (_, _, ready, _) = summary(&mut device, "wifi").await;
-        ready.then_some(())
+        let (health, _) = summary(&mut device, "wifi").await;
+        (health == ServiceHealth::Ok).then_some(())
     })
     .await;
     drop(device);

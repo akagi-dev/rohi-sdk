@@ -398,19 +398,8 @@ message ResetConfigSectionResponse {
 // ---------------------------------------------------------------------------
 //
 // Observed runtime state, read-only. The device exposes a registry of
-// services; the protocol knows none of them. State, health and readiness are
-// independent: a running service can be degraded and not ready.
-
-enum ServiceState {
-  SERVICE_STATE_UNSPECIFIED = 0;
-  // Turned off by configuration; not an error.
-  SERVICE_STATE_DISABLED = 1;
-  SERVICE_STATE_STOPPED = 2;
-  SERVICE_STATE_STARTING = 3;
-  SERVICE_STATE_RUNNING = 4;
-  SERVICE_STATE_STOPPING = 5;
-  SERVICE_STATE_FAILED = 6;
-}
+// services; the protocol knows none of them. Health is the one common
+// operational indicator of a service.
 
 enum ServiceHealth {
   SERVICE_HEALTH_UNSPECIFIED = 0;
@@ -447,16 +436,14 @@ message ServiceStatusSummary {
   // Version of the status schema.
   uint32 version = 3;
 
-  ServiceState state = 4;
+  reserved 4, 6, 8;
+  reserved "state", "ready", "state_age_ms";
+
   ServiceHealth health = 5;
-  // Whether the service can currently perform its intended role.
-  bool ready = 6;
-  // Incremented whenever the state, health, readiness or the active issues
-  // change. Service-specific values that vary continuously (counters, ages,
-  // signal strength) do not change it.
+  // Incremented whenever the health or the active issues change.
+  // Service-specific values that vary continuously (counters, ages, signal
+  // strength) do not change it.
   uint32 revision = 7;
-  // Time spent in the current lifecycle state; saturates at the maximum.
-  uint32 state_age_ms = 8;
 }
 
 message GetServicesStatusRequest {}

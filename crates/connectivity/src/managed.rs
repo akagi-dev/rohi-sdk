@@ -102,7 +102,7 @@ use heapless::Vec;
 use rohi_service::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, EnumDescriptor, EnumVariant,
     FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES, Service, ServiceHealth,
-    ServiceState, ServiceSummary, Status, StatusWriter, Unit, Value, ValueKind, WriteError,
+    ServiceSummary, Status, StatusWriter, Unit, Value, ValueKind, WriteError,
 };
 #[cfg(feature = "packet-export")]
 use rohi_service::{MAX_STREAM_CHUNK, StreamChunk, StreamFile, StreamInfo};
@@ -558,11 +558,11 @@ where
 
     async fn summary(&self) -> ServiceSummary {
         if self.state.is_unreadable() {
-            return ServiceSummary::new(ServiceState::Failed, ServiceHealth::Error, false);
+            return ServiceSummary::new(ServiceHealth::Error);
         }
         if self.state.routes().count() == 0 {
             // No route is a valid state: nothing is sent.
-            return ServiceSummary::new(ServiceState::Stopped, ServiceHealth::Unknown, false);
+            return ServiceSummary::new(ServiceHealth::Unknown);
         }
         // Producing packets and delivering them are different things: a route
         // whose every path is failing is degraded even when packets are built.
@@ -578,7 +578,7 @@ where
         } else {
             ServiceHealth::Ok
         };
-        ServiceSummary::new(ServiceState::Running, health, true)
+        ServiceSummary::new(health)
     }
 
     async fn issues(&self, out: &mut Vec<Issue, MAX_ISSUES>) {

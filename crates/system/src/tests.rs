@@ -22,7 +22,7 @@ use embassy_futures::block_on;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use rohi_crash::{Crash, Policy, Report, Reset, Slot};
 use rohi_service::{
-    ActionRegistry, Service, ServiceHealth, ServiceState, Status, StatusRegistry, Statuses, Value,
+    ActionRegistry, Service, ServiceHealth, Status, StatusRegistry, Statuses, Value,
 };
 
 use super::*;
@@ -240,9 +240,8 @@ fn the_status_schema_is_valid_and_the_service_is_not_essential() {
 #[test]
 fn a_platform_without_a_boot_report_has_an_empty_status() {
     let (status, fields) = status_of(None);
-    assert_eq!(status.summary.state, ServiceState::Running);
     assert_eq!(status.summary.health, ServiceHealth::Ok);
-    assert!(status.summary.ready);
+    assert_eq!(status.summary.health, ServiceHealth::Ok);
     assert!(fields.is_empty());
     assert!(status.issues.is_empty());
 }

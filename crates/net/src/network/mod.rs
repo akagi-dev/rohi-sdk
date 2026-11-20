@@ -39,7 +39,7 @@
 //! [`NetworkProbe`] the firmware passes to [`NetworkService`], so this crate
 //! stays free of platform types. The service has no actions: the link is
 //! operated through the `wifi` service. It shares the link state with `wifi`:
-//! `network` is `running` when the link is up and reports `dhcp_failed` as its
+//! `network` is `ok` when the link is up and reports `dhcp_failed` as its
 //! issue ([`issue`]); every other link error is an issue of `wifi`.
 
 mod config;

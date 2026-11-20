@@ -84,18 +84,6 @@ open_enum! {
 }
 
 open_enum! {
-    /// Lifecycle state of a service.
-    ServiceState: pb::ServiceState {
-        Disabled = Disabled => "disabled",
-        Stopped = Stopped => "stopped",
-        Starting = Starting => "starting",
-        Running = Running => "running",
-        Stopping = Stopping => "stopping",
-        Failed = Failed => "failed",
-    }
-}
-
-open_enum! {
     /// Operational quality of a service.
     ServiceHealth: pb::ServiceHealth {
         Unknown = Unknown => "unknown",
@@ -412,16 +400,10 @@ pub struct ServiceSummary {
     pub service: String,
     /// Version of the status schema.
     pub version: u32,
-    /// Lifecycle state.
-    pub state: ServiceState,
     /// Operational quality.
     pub health: ServiceHealth,
-    /// Whether the service can currently do its job.
-    pub ready: bool,
-    /// Changes when state, health, readiness or issues change.
+    /// Changes when health or issues change.
     pub revision: u32,
-    /// Time in the current state.
-    pub state_age_ms: u64,
 }
 
 /// Compact status of the whole device.

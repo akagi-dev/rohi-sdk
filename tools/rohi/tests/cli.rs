@@ -330,10 +330,10 @@ Device:  fake-1.0.0 (bench-esp32c3)
 Uptime:  1m 30s
 Health:  ok
 
-SERVICE   STATE     HEALTH  READY  SINCE
-radio     running   ok      yes    0ms
-identity  stopped   -       no     0ms
-location  disabled  -       no     -
+SERVICE   HEALTH
+radio     ok
+identity  -
+location  -
 "
     );
     assert!(outcome.stderr.is_empty());
@@ -348,7 +348,7 @@ async fn a_service_in_detail_shows_values_units_and_issues() {
     assert!(
         outcome
             .stdout
-            .starts_with("Service:  radio\nState:    running\nHealth:   degraded\nReady:    no\n"),
+            .starts_with("Service:  radio\nHealth:   degraded\n"),
         "{}",
         outcome.stdout
     );
@@ -384,8 +384,8 @@ async fn status_json_is_keyed_by_names_and_carries_no_protocol_types() {
     assert_eq!(json["device"]["firmware"], "fake-1.0.0");
     assert_eq!(json["health"], "ok");
     assert_eq!(json["services"][0]["service"], "radio");
-    assert_eq!(json["services"][0]["state"], "running");
-    assert_eq!(json["services"][0]["ready"], true);
+    assert_eq!(json["services"][0]["health"], "ok");
+    assert!(json["services"][0].get("state").is_none());
 
     let one = run(&bench, &["-o", "json", "status", "radio"]).await;
     let json = one.ok().json();
@@ -474,8 +474,8 @@ async fn color_is_applied_only_when_asked_for_and_never_to_json() {
     let text = &colored.ok().stdout;
     // Health words take their color; padding stays outside of the escapes so
     // the columns line up.
-    assert!(text.contains("\x1b[32mrunning\x1b[0m  "), "{text:?}");
-    assert!(text.contains("\x1b[1mSERVICE\x1b[0m"), "{text:?}");
+    assert!(text.contains("radio     \x1b[32mok\x1b[0m\n"), "{text:?}");
+    assert!(text.contains("\x1b[1mSERVICE\x1b[0m   "), "{text:?}");
     let stripped: String = text
         .split('\x1b')
         .enumerate()
@@ -2278,7 +2278,7 @@ async fn the_location_is_set_with_the_generic_config_and_shows_in_the_status() {
     let bench = Bench::new();
     let outcome = run(&bench, &["status", "location"]).await;
     assert!(
-        outcome.ok().stdout.contains("State:    disabled"),
+        outcome.ok().stdout.contains("Health:   unknown"),
         "{}",
         outcome.stdout
     );
@@ -2310,7 +2310,7 @@ async fn the_location_is_set_with_the_generic_config_and_shows_in_the_status() {
     let outcome = run(&bench, &["status", "location"]).await;
     outcome.ok();
     assert!(
-        outcome.stdout.contains("State:    running"),
+        outcome.stdout.contains("Health:   ok"),
         "{}",
         outcome.stdout
     );
@@ -2406,7 +2406,7 @@ async fn resetting_the_location_makes_the_device_not_know_where_it_is() {
     assert!(bench.location.shared.current().is_none());
     let outcome = run(&bench, &["status", "location"]).await;
     assert!(
-        outcome.ok().stdout.contains("State:    disabled"),
+        outcome.ok().stdout.contains("Health:   unknown"),
         "{}",
         outcome.stdout
     );

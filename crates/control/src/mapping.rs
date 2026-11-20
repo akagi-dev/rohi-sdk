@@ -24,7 +24,7 @@ use rohi_control_proto::limits;
 use rohi_service::{
     ActionAccess, ActionDescriptor, ConfigEntry, ConfigField, DeviceHealth, EntryState,
     EnumDescriptor, FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, Mutation, MutationOp,
-    SectionInfo, ServiceHealth, ServiceState, ServiceStatusSummary, Unit, Value, ValueKind,
+    SectionInfo, ServiceHealth, ServiceStatusSummary, Unit, Value, ValueKind,
 };
 use zeroize::Zeroize;
 
@@ -343,17 +343,6 @@ pub(crate) fn wipe_mutation(mutation: &mut pb::ConfigMutation) {
     }
 }
 
-fn state(state: ServiceState) -> pb::ServiceState {
-    match state {
-        ServiceState::Disabled => pb::ServiceState::Disabled,
-        ServiceState::Stopped => pb::ServiceState::Stopped,
-        ServiceState::Starting => pb::ServiceState::Starting,
-        ServiceState::Running => pb::ServiceState::Running,
-        ServiceState::Stopping => pb::ServiceState::Stopping,
-        ServiceState::Failed => pb::ServiceState::Failed,
-    }
-}
-
 fn health(health: ServiceHealth) -> pb::ServiceHealth {
     match health {
         ServiceHealth::Unknown => pb::ServiceHealth::Unknown,
@@ -381,11 +370,8 @@ pub(crate) fn summary(summary: &ServiceStatusSummary) -> pb::ServiceStatusSummar
         service_id: summary.id,
         name: text(summary.name),
         version: summary.version,
-        state: state(summary.state),
         health: health(summary.health),
-        ready: summary.ready,
         revision: summary.revision,
-        state_age_ms: millis(summary.state_age_ms),
     }
 }
 

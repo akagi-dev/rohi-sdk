@@ -25,9 +25,8 @@ use embassy_futures::block_on;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use rohi_service::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, ActionRegistry,
-    FieldDescriptor, ISSUE_STARTUP_FAILED, Service, ServiceHealth, ServiceState, ServiceSummary,
-    Startup, Status, StatusError, StatusRegistry, StatusWriter, Statuses, Value, ValueKind,
-    WriteError,
+    FieldDescriptor, ISSUE_STARTUP_FAILED, Service, ServiceHealth, ServiceSummary, Startup, Status,
+    StatusError, StatusRegistry, StatusWriter, Statuses, Value, ValueKind, WriteError,
 };
 
 /// Status only.
@@ -42,7 +41,7 @@ impl Status for SensorsService {
         &[FieldDescriptor::new(1, "pm25", ValueKind::U64)];
 
     async fn summary(&self) -> ServiceSummary {
-        ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true)
+        ServiceSummary::new(ServiceHealth::Ok)
     }
 
     async fn status(&self, out: &mut impl StatusWriter) -> Result<(), WriteError> {
@@ -84,7 +83,7 @@ impl Status for WirelessService {
         &[FieldDescriptor::new(1, "scans", ValueKind::U64)];
 
     async fn summary(&self) -> ServiceSummary {
-        ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true)
+        ServiceSummary::new(ServiceHealth::Ok)
     }
 
     async fn status(&self, out: &mut impl StatusWriter) -> Result<(), WriteError> {
@@ -248,8 +247,7 @@ fn a_failed_start_reports_failed_and_refuses_actions() {
     let actions = (&failed,);
 
     let status = block_on(statuses.status(WirelessService::ID, 0)).unwrap();
-    assert_eq!(status.summary.state, ServiceState::Failed);
-    assert!(!status.summary.ready);
+    assert_eq!(status.summary.health, ServiceHealth::Error);
     assert_eq!(status.issues[0].code, ISSUE_STARTUP_FAILED);
     assert!(status.fields.is_empty());
     assert_eq!(
@@ -269,7 +267,7 @@ fn a_started_service_is_forwarded() {
     let statuses = Statuses::<NoopRawMutex, _>::new((&started,));
     assert_eq!(Startup::<WirelessService>::NAME, "wifi");
     let status = block_on(statuses.status(WirelessService::ID, 0)).unwrap();
-    assert_eq!(status.summary.state, ServiceState::Running);
+    assert_eq!(status.summary.health, ServiceHealth::Ok);
 }
 
 #[test]

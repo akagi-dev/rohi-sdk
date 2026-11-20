@@ -12,8 +12,8 @@ the runtime and add the result to the firmware. The contracts are in the
 Give the service a name with `#[derive(Service)]` (its numeric id comes from the name) and implement `Status` over a
 **handle** to the live runtime state, without a duplicated status struct. A good status:
 
-- keeps **state, health and readiness separate**: a disabled service is not an error, a starting one is not ready yet,
-  a working one with reduced capability is degraded;
+- reports one **health**: a disabled service is `unknown`, not an error, a working one with reduced capability is
+  `degraded`; a service-specific state is a status field, not a common one;
 - reports **issues** as currently active problems with a stable numeric code and a severity, never message text or
   history;
 - gives every field a **stable id and unit**; a value that does not exist now is simply not written;

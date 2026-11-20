@@ -27,8 +27,8 @@ use embassy_futures::block_on;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use rohi_service::{
     Action, ActionAccess, ActionError, ActionRegistry, ActionResult, MAX_STREAM_CHUNK,
-    MAX_TAIL_CHUNK, Service, ServiceHealth, ServiceState, Status, StatusRegistry, StatusWriter,
-    Statuses, TailPage, TailRequest, Value, WriteError,
+    MAX_TAIL_CHUNK, Service, ServiceHealth, Status, StatusRegistry, StatusWriter, Statuses,
+    TailPage, TailRequest, Value, WriteError,
 };
 use rohi_time::UnixTime;
 
@@ -308,9 +308,8 @@ fn issues(logging: &TestLogging<'_>) -> Vec<u32> {
     out.iter().map(|issue| issue.code).collect()
 }
 
-fn summary(logging: &TestLogging<'_>) -> (ServiceState, ServiceHealth, bool) {
-    let summary = block_on(logging.service().summary());
-    (summary.state, summary.health, summary.ready)
+fn summary(logging: &TestLogging<'_>) -> ServiceHealth {
+    block_on(logging.service().summary()).health
 }
 
 #[test]
@@ -345,15 +344,9 @@ fn the_service_is_a_normal_service_with_a_valid_schema() {
 fn the_service_starts_then_reports_ok_and_the_space() {
     let rig = Rig::new();
     let logging = rig.logging(CONFIG);
-    assert_eq!(
-        summary(&logging),
-        (ServiceState::Starting, ServiceHealth::Unknown, false)
-    );
+    assert_eq!(summary(&logging), ServiceHealth::Unknown);
     step(&rig, &logging);
-    assert_eq!(
-        summary(&logging),
-        (ServiceState::Running, ServiceHealth::Ok, true)
-    );
+    assert_eq!(summary(&logging), ServiceHealth::Ok);
     assert!(issues(&logging).is_empty());
     assert_eq!(
         number(&logging, status_field::CAPACITY_BYTES),
@@ -735,10 +728,7 @@ fn an_unavailable_backend_is_reported_and_never_replaced_by_another() {
         ..CONFIG
     });
     step(&rig, &logging);
-    assert_eq!(
-        summary(&logging),
-        (ServiceState::Running, ServiceHealth::Error, false)
-    );
+    assert_eq!(summary(&logging), ServiceHealth::Error);
     assert_eq!(issues(&logging), [issue::STORAGE_UNAVAILABLE]);
     assert_eq!(
         field(&logging, status_field::STORAGE),
@@ -779,10 +769,7 @@ fn an_unavailable_backend_is_reported_and_never_replaced_by_another() {
         block_on(logging.step());
     }
     settle(&rig, &logging);
-    assert_eq!(
-        summary(&logging),
-        (ServiceState::Running, ServiceHealth::Ok, true)
-    );
+    assert_eq!(summary(&logging), ServiceHealth::Ok);
     assert!(issues(&logging).is_empty());
     let records = read(&logging, 0, 50);
     assert_eq!(records.len(), 5);
@@ -894,10 +881,7 @@ fn a_failing_medium_degrades_the_service_and_it_recovers() {
     log_many(&logging, 5, 100);
     step(&rig, &logging);
     step(&rig, &logging);
-    assert_eq!(
-        summary(&logging),
-        (ServiceState::Running, ServiceHealth::Degraded, false)
-    );
+    assert_eq!(summary(&logging), ServiceHealth::Degraded);
     assert!(issues(&logging).contains(&issue::WRITE_FAILED));
     assert_eq!(number(&logging, status_field::DROPPED_RECORDS), Some(5));
     // The application is not affected: logging still returns at once.
@@ -910,10 +894,7 @@ fn a_failing_medium_degrades_the_service_and_it_recovers() {
         block_on(logging.step());
     }
     settle(&rig, &logging);
-    assert_eq!(
-        summary(&logging),
-        (ServiceState::Running, ServiceHealth::Ok, true)
-    );
+    assert_eq!(summary(&logging), ServiceHealth::Ok);
     assert!(issues(&logging).is_empty());
     let records = read(&logging, 0, 100);
     assert_eq!(records.first().unwrap().sequence, 1);
@@ -940,7 +921,7 @@ fn damaged_storage_does_not_stop_the_log_and_is_reported() {
     *rig.internal.0.borrow_mut().raw(9) = first ^ 0x01;
     let logging = rig.logging(CONFIG);
     step(&rig, &logging);
-    assert_eq!(summary(&logging).0, ServiceState::Running);
+    assert_ne!(summary(&logging), ServiceHealth::Unknown);
     assert!(number(&logging, status_field::SEGMENTS).unwrap() > 0);
     log(&logging, "after the damage");
     settle(&rig, &logging);
@@ -987,7 +968,7 @@ fn the_task_takes_records_when_they_arrive() {
     let mut task = core::pin::pin!(logging.run(Never));
     // Nothing to do: it opens the backend and waits.
     assert!(embassy_futures::poll_once(task.as_mut()).is_pending());
-    assert_eq!(summary(&logging).0, ServiceState::Running);
+    assert_ne!(summary(&logging), ServiceHealth::Unknown);
 
     log(&logging, "one");
     log(&logging, "two");
@@ -1025,7 +1006,7 @@ fn clear_opens_the_backend_when_the_task_has_not_run_yet() {
     let rig = Rig::new();
     let logging = rig.logging(CONFIG);
     assert!(invoke(&logging, action::CLEAR, &[]).is_ok());
-    assert_eq!(summary(&logging).0, ServiceState::Running);
+    assert_ne!(summary(&logging), ServiceHealth::Unknown);
 }
 
 #[test]
@@ -1238,7 +1219,7 @@ fn a_payload_damaged_while_the_device_was_off_is_dropped_and_reported() {
     let logging = rig.logging(CONFIG);
     step(&rig, &logging);
     assert!(issues(&logging).contains(&issue::STORAGE_CORRUPT));
-    assert_eq!(summary(&logging).1, ServiceHealth::Degraded);
+    assert_eq!(summary(&logging), ServiceHealth::Degraded);
     log(&logging, "still logging");
     settle(&rig, &logging);
     let (history, records) = read_in_history(&logging, 0);

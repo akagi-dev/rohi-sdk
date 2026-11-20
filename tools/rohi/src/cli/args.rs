@@ -179,7 +179,7 @@ Examples:
     /// Show the runtime status of the device and its services.
     ///
     /// Without a service this is one compact request: the device health set by
-    /// the firmware and the state, health and readiness of every service.
+    /// the firmware and the health of every service.
     /// With a service name it shows that service in detail: its
     /// service-specific values and the active issues, each with a stable
     /// code. Services are discovered from the device; `rohi status` lists

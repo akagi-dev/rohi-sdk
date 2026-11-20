@@ -28,8 +28,8 @@ use rohi_control_proto::{PROTOCOL_VERSION, decode, encode, limits};
 use rohi_service::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, Config, EnumDescriptor,
     EnumVariant, FIRST_SERVICE_ISSUE, FieldDescriptor, FieldError, Issue, IssueDescriptor,
-    IssueSeverity, Section, SectionStore, Service, ServiceHealth, ServiceState, ServiceSummary,
-    Status, StatusWriter, Statuses, StoreError, Unit, Value, ValueKind, WriteError,
+    IssueSeverity, Section, SectionStore, Service, ServiceHealth, ServiceSummary, Status,
+    StatusWriter, Statuses, StoreError, Unit, Value, ValueKind, WriteError,
 };
 
 use crate::*;
@@ -118,9 +118,9 @@ impl Status for Radio {
         &[IssueDescriptor::new(FIRST_SERVICE_ISSUE, "link_lost")];
     async fn summary(&self) -> ServiceSummary {
         if *self.degraded.borrow() {
-            ServiceSummary::new(ServiceState::Running, ServiceHealth::Degraded, false)
+            ServiceSummary::new(ServiceHealth::Degraded)
         } else {
-            ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true)
+            ServiceSummary::new(ServiceHealth::Ok)
         }
     }
 
@@ -718,8 +718,7 @@ fn service_status_is_compact_in_the_summary_and_detailed_per_service() {
     assert_eq!(summary.service_id, RADIO);
     assert_eq!(summary.name.as_str(), "radio");
     assert_eq!(summary.version, 1);
-    assert_eq!(summary.state, pb::ServiceState::Running);
-    assert!(summary.ready);
+    assert_eq!(summary.health, pb::ServiceHealth::Ok);
     assert_eq!(summary.revision, 1);
 
     let Reply::GetServiceSchema(schema) = call(
@@ -997,7 +996,7 @@ impl Status for Many {
     };
 
     async fn summary(&self) -> ServiceSummary {
-        ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true)
+        ServiceSummary::new(ServiceHealth::Ok)
     }
 
     async fn status(&self, out: &mut impl StatusWriter) -> Result<(), WriteError> {

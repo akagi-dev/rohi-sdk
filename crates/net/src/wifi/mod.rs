@@ -52,7 +52,7 @@
 //! when the firmware default names a network, `ssid=null` follows the firmware
 //! default again. A change of the `wifi` or `network` section reconnects.
 //! The timings default to the constants of this module. The `wifi` and
-//! `network` services share the link: `network` is `running` when the link is
+//! `network` services share the link: `network` is `ok` when the link is
 //! up and reports `dhcp_failed` as its issue; every other link error is an
 //! issue of `wifi`.
 //!

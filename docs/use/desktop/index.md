@@ -47,9 +47,9 @@ Device:  altruist-urban-0.4.0 (urban-esp32c3)
 Uptime:  2h 14m
 Health:  ok
 
-SERVICE       STATE    HEALTH  READY  SINCE
-network        running  ok      yes    2h 14m
-connectivity  running  ok      yes    34s
+SERVICE       HEALTH
+network       ok
+connectivity  ok
 ...
 ```
 

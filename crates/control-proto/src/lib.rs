@@ -130,8 +130,8 @@
 //! and [`control::InvokeActionRequest`] are written by hand to never show
 //! values.
 //!
-//! **Time and counters.** `state_age_ms` and issue `age_ms` are `u32` and
-//! saturate at the maximum; `uptime_ms` is `u64`.
+//! **Time and counters.** issue `age_ms` is a `u32` and
+//! saturates at the maximum; `uptime_ms` is `u64`.
 //!
 //! # Architecture and Integration
 //!
