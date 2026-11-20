@@ -36,7 +36,7 @@ use rohi_service::{
     ValueKind, WriteError,
 };
 
-use crate::segment::{Batch, MAX_CHUNK_LEN, file_name};
+use crate::segment::{Batch, MAX_CHUNK_LEN, file_name, scratch};
 use crate::storage::{
     ChunkMeta, Limits, LogStorage, MAX_SEGMENTS, Recovery, SegmentId, StorageError, StorageStats,
 };
@@ -139,7 +139,7 @@ fn notice_applied(config: &LoggingConfig) {
         "Config applied (level={} storage={} compression={} retention_b={} segment_b={} flush_ms={})",
         config.level.name(),
         config.storage.name(),
-        config.compression.name(),
+        config.compression().name(),
         config.retention_bytes,
         config.segment_bytes,
         config.flush_interval_ms,
@@ -747,23 +747,23 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize>
             segment_bytes: config.segment_bytes,
             retention_bytes: config.retention_bytes,
         };
-        let mut chunk = [0u8; MAX_CHUNK_LEN];
+        let mut scratch = scratch();
         for attempt in 0..2 {
-            let codec = inner.open_codec.unwrap_or(config.compression);
-            let Ok(len) = inner.batch.encode(codec, &mut chunk) else {
+            let codec = inner.open_codec.unwrap_or(config.compression());
+            let Some(chunk) = inner.batch.encode(codec, &mut scratch).ok() else {
                 break;
             };
-            if inner.open_codec.is_none() || storage.open_capacity() < len {
+            if inner.open_codec.is_none() || storage.open_capacity() < chunk.len() {
                 if attempt == 1 && inner.open_codec.is_some() {
                     break;
                 }
                 let begun = match storage.seal().await {
-                    Ok(()) => storage.begin_segment(config.compression, limits).await,
+                    Ok(()) => storage.begin_segment(config.compression(), limits).await,
                     Err(error) => Err(error),
                 };
                 inner.open_codec = None;
                 match begun {
-                    Ok(_) => inner.open_codec = Some(config.compression),
+                    Ok(_) => inner.open_codec = Some(config.compression()),
                     Err(StorageError::Pinned) => {
                         // A download holds the oldest segment: wait, the batch stays.
                         inner.stalled_until_ms = now + PINNED_RETRY_MS;
@@ -782,7 +782,7 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize>
                 last_sequence: inner.batch.last_sequence(),
                 raw_len: inner.batch.len() as u32,
             };
-            match storage.append(&chunk[..len], meta).await {
+            match storage.append(chunk, meta).await {
                 Ok(()) => {
                     inner.batch.clear();
                     if storage.open_capacity() < MAX_CHUNK_LEN {
@@ -1058,7 +1058,7 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize> S
             status_field::STORAGE,
             active.unwrap_or(config.storage).name(),
         )?;
-        out.text(status_field::COMPRESSION, config.compression.name())?;
+        out.text(status_field::COMPRESSION, config.compression().name())?;
         out.u64(status_field::STORED_RECORDS, stats.records)?;
         out.u64(status_field::SEGMENTS, u64::from(stats.segments))?;
         // The budget is what the configuration allows, within what the backend has.

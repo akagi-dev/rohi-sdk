@@ -22,10 +22,11 @@ use std::vec::Vec;
 use embassy_futures::block_on;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embedded_hal_async::delay::DelayNs;
-use rohi_telemetry::PacketProfileId;
 
 use super::*;
-use crate::config::ProfileBinding;
+
+// The capacities the tests exercise: more than a device keeps, to cover every edge.
+type RouteSet = crate::Routes<3>;
 use crate::endpoint::Endpoint;
 use crate::transport::{TransportAck, TransportError};
 
@@ -47,8 +48,9 @@ impl DelayNs for Never {
 
 #[derive(Default)]
 struct World {
-    recreated: Cell<bool>,
-    recreate_on_capture: Cell<bool>,
+    // The profile slots that are gone.
+    unavailable: Cell<bool>,
+    unavailable_on_capture: Cell<bool>,
     revision: Cell<u32>,
     captures: Cell<u32>,
     builds: Cell<u32>,
@@ -63,28 +65,28 @@ struct World {
 
 struct Provider<'a> {
     world: &'a World,
-    state: &'a ConnectivityState<NoopRawMutex>,
+    state: &'a ConnectivityState<NoopRawMutex, 3>,
 }
 
 impl PacketProvider for Provider<'_> {
     type Snapshot = u32;
 
-    fn resolve(&self, profile: &str) -> Option<ProfileStamp> {
-        (profile == "env").then(|| ProfileStamp {
-            id: PacketProfileId::new("env").unwrap(),
-            incarnation: if self.world.recreated.get() { 2 } else { 1 },
-            revision: self.world.revision.get(),
+    // The device has two profile slots; a slot has its own revision.
+    fn resolve(&self, profile_index: u8) -> Option<ProfileStamp> {
+        (profile_index < 2 && !self.world.unavailable.get()).then(|| ProfileStamp {
+            profile_index,
+            revision: self.world.revision.get() + u32::from(profile_index) * 100,
         })
     }
 
     fn is_current(&self, stamp: &ProfileStamp) -> bool {
-        self.resolve(stamp.id.as_str()).as_ref() == Some(stamp)
+        self.resolve(stamp.profile_index) == Some(*stamp)
     }
 
     async fn capture(&mut self) -> Result<u32, BuildFailure> {
-        if self.world.recreate_on_capture.get() {
-            // The profile is deleted and recreated while the capture runs.
-            self.world.recreated.set(true);
+        if self.world.unavailable_on_capture.get() {
+            // The profile slot disappears while the capture runs.
+            self.world.unavailable.set(true);
         }
         self.world.captures.set(self.world.captures.get() + 1);
         if let Some(routes) = self.world.routes_on_capture.borrow_mut().take() {
@@ -121,7 +123,7 @@ impl PacketProvider for Provider<'_> {
 
 struct Transport<'a> {
     world: &'a World,
-    state: &'a ConnectivityState<NoopRawMutex>,
+    state: &'a ConnectivityState<NoopRawMutex, 3>,
 }
 
 impl PacketTransport for Transport<'_> {
@@ -151,18 +153,11 @@ impl PacketTransport for Transport<'_> {
 }
 
 type P<'a, const SLOTS: usize> =
-    Publisher<'a, NoopRawMutex, Provider<'a>, Transport<'a>, Never, Clk<'a>, 2, SLOTS, 32>;
-
-fn binding() -> ProfileBinding {
-    ProfileBinding {
-        id: PacketProfileId::new("env").unwrap(),
-        incarnation: 1,
-    }
-}
+    Publisher<'a, NoopRawMutex, Provider<'a>, Transport<'a>, Never, Clk<'a>, 3, 2, SLOTS, 32>;
 
 fn publisher<'a, const SLOTS: usize>(
     world: &'a World,
-    state: &'a ConnectivityState<NoopRawMutex>,
+    state: &'a ConnectivityState<NoopRawMutex, 3>,
     clock: &'a Cell<u64>,
 ) -> P<'a, SLOTS> {
     Publisher::new(
@@ -186,15 +181,11 @@ fn hosts(world: &World) -> Vec<String> {
 #[test]
 fn routes_due_together_share_one_capture_and_one_sealed_packet() {
     let world = World::default();
-    let state = ConnectivityState::<NoopRawMutex>::new();
+    let state = ConnectivityState::<NoopRawMutex, 3>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
-    config
-        .add_route("a", binding(), "http://a.example")
-        .unwrap();
-    config
-        .add_route("b", binding(), "http://b.example")
-        .unwrap();
+    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
+    config.set_endpoint(1, 0, Some("http://b.example")).unwrap();
     state.publish(&config);
     let mut publisher: P<4> = publisher(&world, &state, &clock);
 
@@ -213,23 +204,23 @@ fn routes_due_together_share_one_capture_and_one_sealed_packet() {
         0,
         "all references released"
     );
-    assert_eq!(state.views().len(), 2);
+    assert_eq!(state.views().iter().flatten().count(), 2);
 }
 
 #[test]
 fn each_route_keeps_its_own_cadence() {
     let world = World::default();
-    let state = ConnectivityState::<NoopRawMutex>::new();
+    let state = ConnectivityState::<NoopRawMutex, 3>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
     config
-        .add_route("fast", binding(), "http://fast.example")
+        .set_endpoint(0, 0, Some("http://fast.example"))
         .unwrap();
     config
-        .add_route("slow", binding(), "http://slow.example")
+        .set_endpoint(1, 0, Some("http://slow.example"))
         .unwrap();
-    config.set_interval("fast", 30).unwrap();
-    config.set_interval("slow", 300).unwrap();
+    config.set_interval(0, 30).unwrap();
+    config.set_interval(1, 300).unwrap();
     state.publish(&config);
     let mut publisher: P<4> = publisher(&world, &state, &clock);
 
@@ -255,14 +246,14 @@ fn each_route_keeps_its_own_cadence() {
 fn a_failing_primary_hands_the_same_bytes_to_the_fallback() {
     let world = World::default();
     world.answers.borrow_mut().push(("primary.example", 503));
-    let state = ConnectivityState::<NoopRawMutex>::new();
+    let state = ConnectivityState::<NoopRawMutex, 3>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
     config
-        .add_route("a", binding(), "http://primary.example")
+        .set_endpoint(0, 0, Some("http://primary.example"))
         .unwrap();
     config
-        .add_fallback("a", "backup", "http://backup.example")
+        .set_fallback(0, Some("http://backup.example"))
         .unwrap();
     state.publish(&config);
     let mut publisher: P<4> = publisher(&world, &state, &clock);
@@ -273,7 +264,7 @@ fn a_failing_primary_hands_the_same_bytes_to_the_fallback() {
     let sent = world.sent.borrow();
     assert_eq!(sent[0].1, sent[1].1);
     drop(sent);
-    let view = &state.views()[0];
+    let view = state.views()[0].unwrap();
     assert_eq!(view.counters.delivered, 1);
     assert_eq!(view.queue_depth, 0);
 }
@@ -282,17 +273,15 @@ fn a_failing_primary_hands_the_same_bytes_to_the_fallback() {
 fn a_policy_change_invalidates_queued_packets_before_anything_is_sent() {
     let world = World::default();
     world.answers.borrow_mut().push(("a.example", 503));
-    let state = ConnectivityState::<NoopRawMutex>::new();
+    let state = ConnectivityState::<NoopRawMutex, 3>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
-    config
-        .add_route("a", binding(), "http://a.example")
-        .unwrap();
+    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
     state.publish(&config);
     let mut publisher: P<4> = publisher(&world, &state, &clock);
     block_on(publisher.step()); // queued, attempt fails with 503
     assert_eq!(world.sent.borrow().len(), 1);
-    assert_eq!(state.views()[0].queue_depth, 1);
+    assert_eq!(state.views()[0].unwrap().queue_depth, 1);
 
     // The policy of the profile changes: the queued packet must not be sent.
     world.revision.set(1);
@@ -305,26 +294,24 @@ fn a_policy_change_invalidates_queued_packets_before_anything_is_sent() {
         .filter(|(_, bytes)| bytes.starts_with(b"packet-0"))
         .count();
     assert_eq!(sends_of_old, 1, "no new send under the revoked policy");
-    assert_eq!(state.views()[0].counters.invalidated, 1);
+    assert_eq!(state.views()[0].unwrap().counters.invalidated, 1);
 }
 
 #[test]
 fn a_production_failure_is_a_diagnostic_not_a_transport_error_and_does_not_stop_the_cadence() {
     let world = World::default();
     world.fail_build.set(Some(BuildFailure::TimeUnavailable));
-    let state = ConnectivityState::<NoopRawMutex>::new();
+    let state = ConnectivityState::<NoopRawMutex, 3>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
-    config
-        .add_route("a", binding(), "http://a.example")
-        .unwrap();
+    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
     state.publish(&config);
     let mut publisher: P<4> = publisher(&world, &state, &clock);
 
     block_on(publisher.step());
     assert!(world.sent.borrow().is_empty());
     assert_eq!(state.health().last_build_failure, Some("time_unavailable"));
-    assert_eq!(state.views()[0].counters.delivered, 0);
+    assert_eq!(state.views()[0].unwrap().counters.delivered, 0);
 
     // The next publication happens at the interval and succeeds once fixed.
     world.fail_build.set(None);
@@ -340,26 +327,23 @@ fn an_exhausted_pool_is_counted_and_other_work_continues() {
     // Always fail the transport so packets stay queued and hold their slot.
     world.answers.borrow_mut().push(("a.example", 503));
     world.answers.borrow_mut().push(("b.example", 503));
-    let state = ConnectivityState::<NoopRawMutex>::new();
+    let state = ConnectivityState::<NoopRawMutex, 3>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
-    config
-        .add_route("a", binding(), "http://a.example")
-        .unwrap();
+    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
     state.publish(&config);
     let mut publisher: P<1> = publisher(&world, &state, &clock);
     block_on(publisher.step());
     assert_eq!(publisher.router().pool().in_use(), 1);
 
     // A second route needs another packet instant: no slot is free.
-    config
-        .add_route("b", binding(), "http://b.example")
-        .unwrap();
+    config.set_endpoint(1, 0, Some("http://b.example")).unwrap();
     state.publish(&config);
     block_on(publisher.step());
     let exhausted: u32 = state
         .views()
         .iter()
+        .flatten()
         .map(|v| v.counters.pool_exhausted)
         .sum();
     assert!(exhausted >= 1);
@@ -368,7 +352,7 @@ fn an_exhausted_pool_is_counted_and_other_work_continues() {
 #[test]
 fn no_route_means_nothing_is_captured_or_sent() {
     let world = World::default();
-    let state = ConnectivityState::<NoopRawMutex>::new();
+    let state = ConnectivityState::<NoopRawMutex, 3>::new();
     let clock = Cell::new(0);
     let mut publisher: P<4> = publisher(&world, &state, &clock);
     block_on(publisher.step());
@@ -379,17 +363,15 @@ fn no_route_means_nothing_is_captured_or_sent() {
 fn removing_a_route_stops_its_deliveries_and_frees_its_packets() {
     let world = World::default();
     world.answers.borrow_mut().push(("a.example", 503));
-    let state = ConnectivityState::<NoopRawMutex>::new();
+    let state = ConnectivityState::<NoopRawMutex, 3>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
-    config
-        .add_route("a", binding(), "http://a.example")
-        .unwrap();
+    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
     state.publish(&config);
     let mut publisher: P<4> = publisher(&world, &state, &clock);
     block_on(publisher.step());
     assert_eq!(publisher.router().pool().in_use(), 1);
-    config.remove_route("a").unwrap();
+    config.set_endpoint(0, 0, None).unwrap();
     state.publish(&config);
     clock.set(100_000);
     block_on(publisher.step());
@@ -400,47 +382,42 @@ fn removing_a_route_stops_its_deliveries_and_frees_its_packets() {
 #[test]
 fn an_unreadable_store_leaves_no_active_route() {
     let world = World::default();
-    let state = ConnectivityState::<NoopRawMutex>::new();
+    let state = ConnectivityState::<NoopRawMutex, 3>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
-    config
-        .add_route("a", binding(), "http://a.example")
-        .unwrap();
+    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
     state.publish(&config);
     state.mark_unreadable();
     assert!(state.is_unreadable());
-    assert!(state.routes().routes.is_empty());
+    assert!(state.routes().count() == 0);
     let mut publisher: P<4> = publisher(&world, &state, &clock);
     block_on(publisher.step());
     assert!(world.sent.borrow().is_empty());
 }
 
 #[test]
-fn a_profile_recreated_during_the_capture_never_joins_the_execution() {
+fn a_profile_that_disappears_during_the_capture_never_joins_the_execution() {
     let world = World::default();
-    world.recreate_on_capture.set(true);
-    let state = ConnectivityState::<NoopRawMutex>::new();
+    world.unavailable_on_capture.set(true);
+    let state = ConnectivityState::<NoopRawMutex, 3>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
-    config
-        .add_route("a", binding(), "http://a.example")
-        .unwrap();
+    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
     state.publish(&config);
     let mut publisher: P<4> = publisher(&world, &state, &clock);
 
     block_on(publisher.step());
-    // The route is bound to incarnation 1; the capture finished while the
-    // profile already was incarnation 2. Nothing is built or sent for it.
+    // The capture finished while the profile slot was already gone: nothing is
+    // built or sent for it.
     assert_eq!(world.builds.get(), 0);
     assert!(world.sent.borrow().is_empty());
     assert_eq!(publisher.router().pool().in_use(), 0);
 
-    // The next execution sees the new incarnation and suspends the route
-    // instead of rebinding it.
+    // The next execution suspends the route.
     clock.set(60_000);
     block_on(publisher.step());
     assert_eq!(
-        state.views()[0].state,
+        state.views()[0].unwrap().state,
         crate::router::RouteState::ProfileMissing
     );
     assert_eq!(world.builds.get(), 0);
@@ -450,12 +427,10 @@ fn a_profile_recreated_during_the_capture_never_joins_the_execution() {
 #[test]
 fn removing_a_route_during_capture_does_not_publish_or_send_its_packet() {
     let world = World::default();
-    let state = ConnectivityState::<NoopRawMutex>::new();
+    let state = ConnectivityState::<NoopRawMutex, 3>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
-    config
-        .add_route("a", binding(), "http://a.example")
-        .unwrap();
+    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
     state.publish(&config);
     world.routes_on_capture.replace(Some(RouteSet::default()));
     let mut publisher: P<4> = publisher(&world, &state, &clock);
@@ -470,15 +445,13 @@ fn removing_a_route_during_capture_does_not_publish_or_send_its_packet() {
 #[test]
 fn changing_fallbacks_during_build_does_not_admit_a_stale_packet() {
     let world = World::default();
-    let state = ConnectivityState::<NoopRawMutex>::new();
+    let state = ConnectivityState::<NoopRawMutex, 3>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
-    config
-        .add_route("a", binding(), "http://a.example")
-        .unwrap();
+    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
     state.publish(&config);
     config
-        .add_fallback("a", "backup", "http://backup.example")
+        .set_fallback(0, Some("http://backup.example"))
         .unwrap();
     world.routes_on_build.replace(Some(config));
     let mut publisher: P<4> = publisher(&world, &state, &clock);
@@ -493,15 +466,13 @@ fn changing_fallbacks_during_build_does_not_admit_a_stale_packet() {
 #[test]
 fn changing_fallbacks_cancels_an_in_flight_delivery() {
     let world = World::default();
-    let state = ConnectivityState::<NoopRawMutex>::new();
+    let state = ConnectivityState::<NoopRawMutex, 3>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
-    config
-        .add_route("a", binding(), "http://a.example")
-        .unwrap();
+    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
     state.publish(&config);
     config
-        .add_fallback("a", "backup", "http://backup.example")
+        .set_fallback(0, Some("http://backup.example"))
         .unwrap();
     world.routes_on_delivery.replace(Some(config));
     let mut publisher: P<4> = publisher(&world, &state, &clock);
@@ -510,4 +481,101 @@ fn changing_fallbacks_cancels_an_in_flight_delivery() {
 
     assert!(world.sent.borrow().is_empty());
     assert_eq!(publisher.router().pool().in_use(), 0);
+}
+
+#[test]
+fn replacing_the_endpoint_cancels_an_in_flight_delivery_and_sends_nothing_stale() {
+    let world = World::default();
+    let state = ConnectivityState::<NoopRawMutex, 3>::new();
+    let clock = Cell::new(0);
+    let mut config = RouteSet::default();
+    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
+    state.publish(&config);
+    config.set_endpoint(0, 0, Some("http://b.example")).unwrap();
+    world.routes_on_delivery.replace(Some(config));
+    let mut publisher: P<4> = publisher(&world, &state, &clock);
+
+    block_on(publisher.step());
+
+    assert!(world.sent.borrow().is_empty());
+    assert_eq!(publisher.router().pool().in_use(), 0);
+    assert_eq!(publisher.router().queued(), 0);
+}
+
+#[test]
+fn a_deleted_and_recreated_slot_starts_clean() {
+    let world = World::default();
+    world.answers.borrow_mut().push(("a.example", 503));
+    let state = ConnectivityState::<NoopRawMutex, 3>::new();
+    let clock = Cell::new(0);
+    let mut config = RouteSet::default();
+    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
+    state.publish(&config);
+    let mut publisher: P<4> = publisher(&world, &state, &clock);
+    block_on(publisher.step());
+    let old = state.views()[0].unwrap();
+    assert_eq!((old.queue_depth, old.counters.retries), (1, 1));
+
+    // Deleted and recreated with the same endpoint: nothing is inherited.
+    config.set_endpoint(0, 0, None).unwrap();
+    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
+    state.publish(&config);
+    block_on(publisher.step());
+    let new = state.views()[0].unwrap();
+    assert_ne!(new.generation, old.generation);
+    assert_eq!(new.generation, config.get(0).unwrap().generation);
+    assert_eq!(new.counters.retries, 1, "only the attempt of the new route");
+    assert_eq!(new.counters.published, 1);
+    let sent = world.sent.borrow();
+    assert_eq!(sent.len(), 2);
+    assert_ne!(sent[0].1, sent[1].1, "a fresh packet, not the old one");
+}
+
+#[test]
+fn updating_slot_zero_never_changes_slot_one_and_each_profile_slot_has_its_own_packet() {
+    let world = World::default();
+    let state = ConnectivityState::<NoopRawMutex, 3>::new();
+    let clock = Cell::new(0);
+    let mut config = RouteSet::default();
+    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
+    config.set_endpoint(1, 1, Some("http://b.example")).unwrap();
+    state.publish(&config);
+    let mut publisher: P<4> = publisher(&world, &state, &clock);
+
+    block_on(publisher.step());
+    block_on(publisher.step());
+    // Two profile slots: one capture, two builds, two different packets.
+    assert_eq!((world.captures.get(), world.builds.get()), (1, 2));
+    {
+        let sent = world.sent.borrow();
+        assert_eq!(sent[0].1, b"packet-0-1");
+        assert_eq!(sent[1].1, b"packet-100-1");
+    }
+    let before = state.views()[1].unwrap();
+
+    config.set_endpoint(0, 1, Some("http://c.example")).unwrap();
+    config.set_interval(0, 120).unwrap();
+    state.publish(&config);
+    clock.set(1);
+    block_on(publisher.step());
+    assert_eq!(state.views()[1].unwrap(), before);
+}
+
+#[test]
+fn a_profile_slot_that_does_not_exist_suspends_its_route_only() {
+    let world = World::default();
+    let state = ConnectivityState::<NoopRawMutex, 3>::new();
+    let clock = Cell::new(0);
+    let mut config = RouteSet::default();
+    config.set_endpoint(0, 5, Some("http://a.example")).unwrap();
+    config.set_endpoint(1, 0, Some("http://b.example")).unwrap();
+    state.publish(&config);
+    let mut publisher: P<4> = publisher(&world, &state, &clock);
+
+    block_on(publisher.step());
+    assert_eq!(hosts(&world), ["b.example"]);
+    assert_eq!(
+        state.views()[0].unwrap().state,
+        crate::router::RouteState::ProfileMissing
+    );
 }

@@ -113,28 +113,23 @@ pub trait PacketFormat {
     /// # Errors
     ///
     /// [`SealError`].
-    async fn seal<'o, const N: usize, const R: usize>(
+    async fn seal<'o, const N: usize, const SRC: usize>(
         &mut self,
-        sections: &PreparedSections<'_, N, R>,
+        sections: &PreparedSections<'_, N, SRC>,
         out: &'o mut [u8],
     ) -> Result<SignedPacket<'o>, SealError>;
 }
 
-/// [`FormatCapabilities`] from a [`PacketFormat`]: profiles of any other
-/// format have nothing supported.
+/// [`FormatCapabilities`] from a [`PacketFormat`].
 #[derive(Debug)]
 pub struct Capabilities<'a, F>(pub &'a F);
 
 impl<F: PacketFormat> FormatCapabilities for Capabilities<'_, F> {
-    fn supported(&self, format: PacketFormatId) -> Selection {
-        if format == F::ID {
-            self.0.supported()
-        } else {
-            Selection::NONE
-        }
+    fn supported(&self) -> Selection {
+        self.0.supported()
     }
 
-    fn accepts_recipient(&self, format: PacketFormatId, recipient: &RecipientAddress) -> bool {
-        format == F::ID && self.0.accepts_recipient(recipient)
+    fn accepts_recipient(&self, recipient: &RecipientAddress) -> bool {
+        self.0.accepts_recipient(recipient)
     }
 }

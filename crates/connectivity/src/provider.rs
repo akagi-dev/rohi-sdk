@@ -19,7 +19,7 @@
 //! builds sealed packets, and nothing about their content.
 //!
 //! Connectivity never reads observations, keys or protocol messages. It asks
-//! a [`PacketProvider`] to resolve a profile to its current stamp, to capture
+//! a [`PacketProvider`] to resolve a profile slot (`profile_index`) to its current stamp, to capture
 //! once, to build a sealed packet for a stamp into a pool buffer, and whether
 //! a stamp is still the current policy.
 
@@ -28,7 +28,7 @@ use rohi_telemetry::ProfileStamp;
 /// Why a packet could not be produced. None of these is a transport error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BuildFailure {
-    /// The profile policy changed or was removed while building.
+    /// The profile policy changed while building.
     ProfileChanged,
     /// Nothing the profile selects is available.
     NothingToPackage,
@@ -69,10 +69,11 @@ pub trait PacketProvider {
     /// One bounded capture of the sources.
     type Snapshot;
 
-    /// The current stamp of `profile`; `None` if it does not exist.
-    fn resolve(&self, profile: &str) -> Option<ProfileStamp>;
+    /// The current stamp of profile slot `profile_index`; `None` if the
+    /// build has no such slot.
+    fn resolve(&self, profile_index: u8) -> Option<ProfileStamp>;
 
-    /// Whether `stamp` is still the current policy of its profile.
+    /// Whether `stamp` is still the current policy of its profile slot.
     fn is_current(&self, stamp: &ProfileStamp) -> bool;
 
     /// Captures the sources once.
@@ -107,17 +108,19 @@ pub trait PacketExporter {
     /// packets.
     fn now_ms(&self) -> u64;
 
-    /// The current stamp of `profile`; `None` if it does not exist.
-    fn resolve(&self, profile: &str) -> Option<ProfileStamp>;
+    /// The current stamp of profile slot `profile_index`; `None` if the
+    /// build has no such slot.
+    fn resolve(&self, profile_index: u8) -> Option<ProfileStamp>;
 
-    /// Captures, builds and seals a packet for `profile` into `out`.
+    /// Captures, builds and seals a packet for profile slot `profile_index`
+    /// into `out`.
     ///
     /// # Errors
     ///
     /// [`BuildFailure`]; nothing usable is left in `out`.
     async fn export(
         &self,
-        profile: &str,
+        profile_index: u8,
         out: &mut [u8],
     ) -> Result<(ProfileStamp, usize), BuildFailure>;
 }

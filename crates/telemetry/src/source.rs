@@ -62,9 +62,9 @@ pub trait TelemetrySource {
     /// # Errors
     ///
     /// [`SourceError`]; the observations written so far are then discarded.
-    async fn collect<const N: usize>(
+    async fn collect<const N: usize, const SRC: usize>(
         &mut self,
-        writer: &mut SourceWriter<'_, N>,
+        writer: &mut SourceWriter<'_, N, SRC>,
     ) -> Result<(), SourceError>;
 }
 
@@ -74,20 +74,20 @@ pub trait TelemetrySource {
 pub trait SourceSet {
     /// Collects every source in order into `snapshot`, each within
     /// `timeout_ms`.
-    async fn collect_all<Dl: DelayNs, const N: usize>(
+    async fn collect_all<Dl: DelayNs, const N: usize, const SRC: usize>(
         &mut self,
         delay: &mut Dl,
         timeout_ms: u32,
-        snapshot: &mut TelemetrySnapshot<N>,
+        snapshot: &mut TelemetrySnapshot<N, SRC>,
     );
 }
 
 /// Collects one source into `snapshot` within `timeout_ms`, atomically.
-pub async fn collect_one<S: TelemetrySource, D: DelayNs, const N: usize>(
+pub async fn collect_one<S: TelemetrySource, D: DelayNs, const N: usize, const SRC: usize>(
     source: &mut S,
     delay: &mut D,
     timeout_ms: u32,
-    snapshot: &mut TelemetrySnapshot<N>,
+    snapshot: &mut TelemetrySnapshot<N, SRC>,
 ) {
     let id = source.id();
     let mark = snapshot.observations.len();
@@ -106,11 +106,11 @@ pub async fn collect_one<S: TelemetrySource, D: DelayNs, const N: usize>(
 }
 
 impl SourceSet for () {
-    async fn collect_all<D: DelayNs, const N: usize>(
+    async fn collect_all<D: DelayNs, const N: usize, const SRC: usize>(
         &mut self,
         _: &mut D,
         _: u32,
-        _: &mut TelemetrySnapshot<N>,
+        _: &mut TelemetrySnapshot<N, SRC>,
     ) {
     }
 }
@@ -119,11 +119,11 @@ macro_rules! source_set {
     ($($name:ident),+) => {
         impl<$($name: TelemetrySource),+> SourceSet for ($($name,)+) {
             #[allow(non_snake_case)]
-            async fn collect_all<Dl: DelayNs, const N: usize>(
+            async fn collect_all<Dl: DelayNs, const N: usize, const SRC: usize>(
                 &mut self,
                 delay: &mut Dl,
                 timeout_ms: u32,
-                snapshot: &mut TelemetrySnapshot<N>,
+                snapshot: &mut TelemetrySnapshot<N, SRC>,
             ) {
                 let ($($name,)+) = self;
                 $(collect_one($name, delay, timeout_ms, snapshot).await;)+
@@ -145,13 +145,51 @@ source_set!(A, B, C, D, E, F);
 /// `clock` once, every source is bounded by `source_timeout_ms`, a failing or
 /// slow source is reported and skipped, and the others still contribute. The
 /// capture never reads UTC and never blocks other tasks beyond the bound.
-pub async fn capture<S: SourceSet, C: Clock, D: DelayNs, const N: usize>(
+pub async fn capture<S: SourceSet, C: Clock, D: DelayNs, const N: usize, const SRC: usize>(
     sources: &mut S,
     clock: &C,
     delay: &mut D,
     source_timeout_ms: u32,
-) -> TelemetrySnapshot<N> {
-    let mut snapshot = TelemetrySnapshot::new(clock.now());
+) -> TelemetrySnapshot<N, SRC> {
+    capture_into(
+        TelemetrySnapshot::new(clock.now()),
+        sources,
+        delay,
+        source_timeout_ms,
+    )
+    .await
+}
+
+/// Like [`capture`], for a snapshot that stores only the measurements of `accepted`, see
+/// [`TelemetrySnapshot::accepting`].
+pub async fn capture_accepting<
+    S: SourceSet,
+    C: Clock,
+    D: DelayNs,
+    const N: usize,
+    const SRC: usize,
+>(
+    sources: &mut S,
+    clock: &C,
+    delay: &mut D,
+    source_timeout_ms: u32,
+    accepted: crate::Selection,
+) -> TelemetrySnapshot<N, SRC> {
+    capture_into(
+        TelemetrySnapshot::accepting(clock.now(), accepted),
+        sources,
+        delay,
+        source_timeout_ms,
+    )
+    .await
+}
+
+async fn capture_into<S: SourceSet, D: DelayNs, const N: usize, const SRC: usize>(
+    mut snapshot: TelemetrySnapshot<N, SRC>,
+    sources: &mut S,
+    delay: &mut D,
+    source_timeout_ms: u32,
+) -> TelemetrySnapshot<N, SRC> {
     sources
         .collect_all(delay, source_timeout_ms, &mut snapshot)
         .await;
@@ -181,9 +219,9 @@ impl TelemetrySource for StaticSource<'_> {
         self.id
     }
 
-    async fn collect<const N: usize>(
+    async fn collect<const N: usize, const SRC: usize>(
         &mut self,
-        writer: &mut SourceWriter<'_, N>,
+        writer: &mut SourceWriter<'_, N, SRC>,
     ) -> Result<(), SourceError> {
         for (measurement, value, at) in self.values {
             // Refusals are counted by the writer.
@@ -221,9 +259,9 @@ mod tests {
         fn id(&self) -> SourceId {
             SourceId(5)
         }
-        async fn collect<const N: usize>(
+        async fn collect<const N: usize, const SRC: usize>(
             &mut self,
-            writer: &mut SourceWriter<'_, N>,
+            writer: &mut SourceWriter<'_, N, SRC>,
         ) -> Result<(), SourceError> {
             writer
                 .number(SDS011_PM10, 1.0, MonotonicTimestamp::from_millis(1))
@@ -237,9 +275,9 @@ mod tests {
         fn id(&self) -> SourceId {
             SourceId(6)
         }
-        async fn collect<const N: usize>(
+        async fn collect<const N: usize, const SRC: usize>(
             &mut self,
-            writer: &mut SourceWriter<'_, N>,
+            writer: &mut SourceWriter<'_, N, SRC>,
         ) -> Result<(), SourceError> {
             writer
                 .number(SCD4X_CO2, 400.0, MonotonicTimestamp::from_millis(1))
@@ -256,7 +294,7 @@ mod tests {
     fn a_software_source_works_without_hardware() {
         let values = [(BMX280_TEMPERATURE, 21.5, t(100))];
         let mut sources = (StaticSource::new(SourceId(1), &values),);
-        let snapshot: TelemetrySnapshot<4> = block_on(capture(
+        let snapshot: TelemetrySnapshot<4, 8> = block_on(capture(
             &mut sources,
             &Clk(Cell::new(150)),
             &mut NoDelay,
@@ -273,7 +311,7 @@ mod tests {
     fn a_failing_or_hanging_source_does_not_stop_the_others() {
         let values = [(BMX280_TEMPERATURE, 21.5, t(100))];
         let mut sources = (Failing, Hanging, StaticSource::new(SourceId(1), &values));
-        let snapshot: TelemetrySnapshot<8> =
+        let snapshot: TelemetrySnapshot<8, 8> =
             block_on(capture(&mut sources, &Clk(Cell::new(0)), &mut NoDelay, 100));
         assert_eq!(snapshot.observations.len(), 1);
         assert_eq!(snapshot.observations[0].source, SourceId(1));
@@ -295,7 +333,7 @@ mod tests {
     fn one_capture_serves_several_readers() {
         let values = [(BMX280_TEMPERATURE, 1.0, t(1))];
         let mut sources = (StaticSource::new(SourceId(1), &values),);
-        let snapshot: TelemetrySnapshot<4> =
+        let snapshot: TelemetrySnapshot<4, 8> =
             block_on(capture(&mut sources, &Clk(Cell::new(0)), &mut NoDelay, 100));
         let copy = snapshot.clone();
         assert_eq!(snapshot, copy);

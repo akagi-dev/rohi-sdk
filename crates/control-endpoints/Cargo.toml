@@ -1,0 +1,30 @@
+[package]
+name = "rohi-control-endpoints"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Robonomics Open Hardware managed control endpoints: control_tcp and control_ble config and status, and the pre-shared key of the TCP endpoint"
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[dependencies]
+rohi-config.workspace = true
+rohi-control.workspace = true
+rohi-net.workspace = true
+rohi-service.workspace = true
+heapless.workspace = true
+log.workspace = true
+minicbor.workspace = true
+sha2.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+embassy-futures.workspace = true
+critical-section.workspace = true
+minicbor = { workspace = true, features = ["std"] }
+rohi-config = { workspace = true, features = ["std"] }

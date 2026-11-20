@@ -36,7 +36,7 @@ today and those of a firmware that did not exist when the client was built.
 | Other transports | planned |
 | `rohi` desktop client | implemented |
 | Shared mobile application | planned, not implemented: [Mobile application](../use/mobile.md) |
-| BLE pairing and encryption | not implemented yet: anyone in radio range can use the control plane |
+| BLE pairing and encryption | not implemented: BLE control is open, anyone in radio range can use the control plane |
 | Firmware distribution and verification infrastructure | not implemented: [Firmware distribution](../verify/distribution.md) |
 
 See [Current capabilities](current-capabilities.md) for the supported hardware and sensors.

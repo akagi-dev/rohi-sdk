@@ -27,7 +27,7 @@ use crate::Compression;
 /// Size of an encoded [`SegmentHeader`].
 pub const HEADER_LEN: usize = 44;
 /// The segment format version this crate writes and reads.
-pub const FORMAT_VERSION: u8 = 1;
+pub const FORMAT_VERSION: u8 = 2;
 
 const MAGIC: [u8; 4] = *b"RLG1";
 
@@ -101,7 +101,7 @@ pub enum HeaderError {
 /// ```
 ///
 /// All integers are little endian. The payload is the text of the records:
-/// plain, or one LZ4 frame, see [`super::lz4`].
+/// plain, or one LZ4 frame (feature `lz4`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SegmentHeader {
     /// Codec of the payload.
@@ -128,6 +128,7 @@ impl SegmentHeader {
         out[4] = FORMAT_VERSION;
         out[5] = match self.codec {
             Compression::None => 0,
+            #[cfg(feature = "lz4")]
             Compression::Lz4 => 1,
         };
         out[8..16].copy_from_slice(&self.first_sequence.to_le_bytes());
@@ -163,6 +164,7 @@ impl SegmentHeader {
         }
         let codec = match bytes[5] {
             0 => Compression::None,
+            #[cfg(feature = "lz4")]
             1 => Compression::Lz4,
             _ => return Err(HeaderError::Corrupt),
         };
@@ -184,15 +186,20 @@ impl SegmentHeader {
 }
 
 /// The longest file name: `rohi4294967295.log.lz4`.
+#[cfg(feature = "lz4")]
 pub const MAX_FILE_NAME_LEN: usize = 22;
+/// The longest file name: `rohi4294967295.log`.
+#[cfg(not(feature = "lz4"))]
+pub const MAX_FILE_NAME_LEN: usize = 18;
 
 /// The name of the downloaded file of segment number `number`: `rohi<N>.log.lz4`
-/// for LZ4 and `rohi<N>.log` for plain text. The number is the position in the
+/// for LZ4 (feature `lz4`) and `rohi<N>.log` for plain text. The number is the position in the
 /// download, starting at 1, so names are stable and never collide.
 pub fn file_name(number: u32, codec: Compression) -> String<MAX_FILE_NAME_LEN> {
     let mut name = String::new();
     let _ = match codec {
         Compression::None => write!(name, "rohi{number}.log"),
+        #[cfg(feature = "lz4")]
         Compression::Lz4 => write!(name, "rohi{number}.log.lz4"),
     };
     name

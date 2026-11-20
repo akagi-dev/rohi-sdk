@@ -59,6 +59,7 @@ rohi-system = { workspace = true, optional = true }
 rohi-control = { workspace = true, optional = true }
 rohi-control-ble = { workspace = true, optional = true }
 rohi-control-tcp = { workspace = true, optional = true }
+rohi-control-endpoints = { workspace = true, optional = true }
 rohi-connectivity = { workspace = true, optional = true }
 rohi-hal-esp = { workspace = true, optional = true }
 rohi-config-esp = { workspace = true, optional = true }
@@ -84,12 +85,16 @@ ntp = ["time", "net", "dep:rohi-time-ntp"]
 identity = ["service", "dep:rohi-identity"]
 location = ["service", "dep:rohi-location"]
 logging = ["time", "dep:rohi-logging"]
+# LZ4 compressed log segments (`.log.lz4`) in `rohi-logging`; plain-text segments only without it.
+logging-lz4 = ["logging", "rohi-logging/lz4"]
 system = ["service", "crash", "dep:rohi-system"]
 # The record of a panic in reset-retained memory and the crash-loop policy.
 crash = ["dep:rohi-crash"]
 control = ["service", "dep:rohi-control"]
 ble = ["control", "net", "dep:rohi-control-ble"]
 tcp = ["control", "dep:rohi-control-tcp"]
+# The `control_tcp`, `control_ble` and `control_psk` services and sections.
+endpoints = ["control", "net", "identity", "dep:rohi-control-endpoints"]
 # `time::EmbassyClock`, the monotonic clock over `embassy-time`.
 embassy-time = ["time", "rohi-time/embassy-time"]
 # Source-independent telemetry: observations, catalog, packet profiles, the `telemetry` service.
@@ -100,6 +105,8 @@ telemetry-location = ["telemetry", "location", "rohi-telemetry/location"]
 # The Robonomics Connectivity Protocol packet format.
 telemetry-robonomics = ["telemetry", "identity", "dep:rohi-telemetry-robonomics"]
 connectivity = ["telemetry", "net", "time", "dep:rohi-connectivity"]
+# `connectivity.get_payload`, the export of a freshly built packet as a stream (with its packet pool).
+connectivity-packet-export = ["connectivity", "rohi-connectivity/packet-export"]
 
 # Host (`std`) backends, module `host`: DNS, TCP and UDP over the sockets of the
 # operating system and the TCP listener of the control transport.

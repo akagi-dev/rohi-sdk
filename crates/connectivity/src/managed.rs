@@ -15,8 +15,9 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-//! The managed `connectivity` service: route Actions, packet export and
-//! status.
+
+//! The managed `connectivity` service: the four route Actions, payload
+//! export and status.
 //!
 //! The persisted state is one [`ConnectivitySection`](crate::ConnectivitySection), a typed bounded value
 //! kept by the firmware's configuration owner: it is not a generic config
@@ -26,57 +27,88 @@
 //! atomically; the runtime sees it only after the commit. A refused or failed
 //! edit changes nothing.
 //!
+//! # Model
+//!
+//! Routes are **slots addressed by index** (`0`, `1`, ...; Altruist Urban has
+//! two), each empty or holding one route with at most one fallback endpoint.
+//! There are no names; deleting the route of one slot never moves another.
+//! A route publishes a telemetry profile slot (`profile_index`, see the
+//! `telemetry` service).
+//!
 //! # Actions
 //!
 //! | Action | Arguments | Access | Result |
 //! |--------|-----------|--------|--------|
-//! | `route_add` | `route_id`, `profile_id`, `endpoint` | Mutate | |
-//! | `route_remove` | `route_id` | Mutate | |
-//! | `set_interval` | `route_id`, `interval_s` | Mutate | |
-//! | `fallback_add` | `route_id`, `fallback_id`, `endpoint` | Mutate | |
-//! | `fallback_remove` | `route_id`, `fallback_id` | Mutate | |
-//! | `route_list` | `offset` | Read | `route_id`, `profile_id`, `endpoint`, `interval_s` |
-//! | `fallback_list` | `route_id`, `offset` | Read | `fallback_id`, `endpoint`, `priority` |
-//! | `packet_get` | `profile_id` | Read, stream | one file `packet.bin` |
+//! | `set_endpoint` | `index`, `profile_index`, `endpoint` | Mutate | |
+//! | `set_interval` | `index`, `interval_s` | Mutate | |
+//! | `set_fallback` | `index`, `endpoint` | Mutate | |
+//! | `get_payload` | `profile_index` | Read, stream | one file `packet.bin` |
 //!
-//! `route_add` binds the existing profile (see `telemetry.profile_list`) at
-//! its current incarnation, uses the default interval of 60 s and no fallback;
-//! the id, profile and primary endpoint of a route change only by removing and
-//! adding it again. Offsets are zero-based ordinals of the stable order of
-//! creation (routes) or priority (fallbacks); an empty page ends the listing.
-//! `fallback_list` priorities start at 1.
+//! **Absent endpoint.** An Action argument is always present on the wire, so
+//! "no endpoint" is the **empty string** `""`: `set_endpoint(index, _, "")`
+//! deletes the route of the slot and `set_fallback(index, "")` removes its
+//! fallback. (An implementation that omits the argument is read the same way.)
+//! In a positional or named CLI call this is an empty argument, for example
+//! `connectivity set_endpoint 0 0 ""` or `... endpoint=`. Anything else must
+//! be a valid `http://host[:port]` of at most 64 bytes.
 //!
-//! `packet_get` builds a fresh sealed packet for a profile, with no route and
-//! no network, retains it for the lifetime of the stream and serves it
-//! through the standard stream chunks: reading never builds or signs again.
+//! `set_endpoint` creates the route of an empty slot for the telemetry
+//! profile slot `profile_index` (it must exist, else `invalid_profile_index`)
+//! with the default interval of 60 s and no fallback. On a slot that holds a
+//! route it replaces the profile and the primary endpoint and keeps the
+//! interval and the fallback; the replacement is a new generation, so the old
+//! queue, backoff and counters are dropped and no packet of the earlier route
+//! is ever sent to the new endpoint. The same profile and endpoint again
+//! change nothing. Deleting an empty slot succeeds and changes nothing.
+//! `set_interval` changes an existing route only (`route_not_found`
+//! otherwise). `set_fallback` sets the only fallback, replacing any earlier
+//! one; it must differ from the primary (`duplicate_endpoint`). An `index`
+//! that is not a slot of the build is refused with `invalid_index`.
+//!
+//! `get_payload` builds a fresh sealed packet for a profile slot, with no
+//! route and no network, retains it for the lifetime of the stream and serves
+//! it through the standard stream chunks: reading never builds or signs again.
 //! It is an ordinary `Read` action: the packet is public as an *encrypted*
 //! signed packet, a reader gets no key and cannot change a profile. A stream
 //! is released on `close_stream`, after [`EXPORT_TTL_MS`] (60 s), when the control link is lost and when the
 //! policy of its profile changed; the number of open streams is bounded and
-//! more requests are answered with `Busy`.
+//! more requests are answered with `Busy`. It is compiled with the
+//! `packet-export` feature; without it the service has the other three Actions.
 //!
 //! # Status
 //!
-//! Static slots, not a dynamic tree: for each of [`MAX_ROUTES`] route slots
-//! the fields `route<i>.id`, `.state`, `.queue_depth`, `.delivered`,
-//! `.retries` and `.active_path` (`0` none, `1` the primary, `n + 1` the
-//! fallback `n`), plus `active_routes` and `total_queue_depth`. Packet
+//! Static slots, not a dynamic tree. Two aggregates, `active_routes` (routes
+//! with a queue) and `total_queue_depth`, and for each of the `ROUTES` route
+//! slots of the build (1 or 2 are supported, see [`Slots`]) nine fields:
+//! `route<i>.state` (`empty`, `idle`, `delivering`, `backoff` or
+//! `profile_missing`) and, only for a slot that holds a route,
+//! `route<i>.profile` (the profile index), `.endpoint`, `.fallback` (absent
+//! without one), `.interval_s`, `.queue_depth`, `.delivered`, `.retries` and
+//! `.active_path` (`0` none, `1` the primary, `2` the fallback). That is
+//! exactly the limit of 20 status fields for two slots, which is why the
+//! failover count and the other counters are not exposed per route. An empty
+//! slot reports only `state = empty`; a slot whose route was just replaced
+//! reports zero counters until the publisher has looked at it. Packet
 //! contents and keys never appear in status or logs.
 
+#[cfg(feature = "packet-export")]
 use core::cell::RefCell;
 
+#[cfg(feature = "packet-export")]
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embassy_sync::mutex::Mutex;
 use heapless::Vec;
 use rohi_service::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, EnumDescriptor, EnumVariant,
-    FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES, MAX_RECORDS,
-    MAX_STREAM_CHUNK, Service, ServiceHealth, ServiceState, ServiceSummary, Status, StatusWriter,
-    StreamChunk, StreamFile, StreamInfo, Value, ValueKind, WriteError,
+    FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES, Service, ServiceHealth,
+    ServiceState, ServiceSummary, Status, StatusWriter, Unit, Value, ValueKind, WriteError,
 };
+#[cfg(feature = "packet-export")]
+use rohi_service::{MAX_STREAM_CHUNK, StreamChunk, StreamFile, StreamInfo};
 
-use crate::config::{MAX_ROUTES, ProfileBinding, RouteError, RouteSet};
+use crate::config::{RouteError, Routes};
+#[cfg(feature = "packet-export")]
 use crate::pool::{PacketHandle, PacketPool};
 use crate::provider::PacketExporter;
 use crate::router::RouteState;
@@ -86,69 +118,60 @@ pub use rohi_config::MAX_SECTION_PAYLOAD;
 
 /// Ids of the Actions of the `connectivity` service.
 pub mod action {
-    /// Adds a route.
-    pub const ROUTE_ADD: u32 = 1;
-    /// Removes a route.
-    pub const ROUTE_REMOVE: u32 = 2;
+    /// Creates, replaces or (with an absent endpoint) deletes the route of a slot.
+    pub const SET_ENDPOINT: u32 = 1;
     /// Changes the publication interval of a route.
-    pub const SET_INTERVAL: u32 = 3;
-    /// Appends a fallback.
-    pub const FALLBACK_ADD: u32 = 4;
-    /// Removes a fallback.
-    pub const FALLBACK_REMOVE: u32 = 5;
-    /// Pages the routes.
-    pub const ROUTE_LIST: u32 = 6;
-    /// Pages the fallbacks of a route.
-    pub const FALLBACK_LIST: u32 = 7;
+    pub const SET_INTERVAL: u32 = 2;
+    /// Sets or (with an absent endpoint) removes the fallback of a route.
+    pub const SET_FALLBACK: u32 = 3;
     /// Exports a sealed packet as a stream.
-    pub const PACKET_GET: u32 = 8;
+    pub const GET_PAYLOAD: u32 = 4;
 }
 
 /// Field ids of the Actions.
 pub mod action_field {
-    /// Argument: route id (every route Action).
-    pub const ROUTE_ID: u32 = 1;
-    /// Argument of `route_add`: the profile.
-    pub const PROFILE_ID: u32 = 2;
-    /// Argument of `route_add`: the primary endpoint.
+    /// Argument of `set_endpoint`, `set_interval` and `set_fallback`: the route slot.
+    pub const INDEX: u32 = 1;
+    /// Argument of `set_endpoint`: the telemetry profile slot.
+    pub const PROFILE_INDEX: u32 = 2;
+    /// Argument of `set_endpoint`: the primary endpoint, `""` for none.
     pub const ENDPOINT: u32 = 3;
     /// Argument of `set_interval`: seconds.
     pub const INTERVAL_S: u32 = 2;
-    /// Argument of the fallback Actions: the fallback id.
-    pub const FALLBACK_ID: u32 = 2;
-    /// Argument of `fallback_add`: the endpoint.
-    pub const FALLBACK_ENDPOINT: u32 = 3;
-    /// Argument of `route_list`: the offset.
-    pub const OFFSET: u32 = 1;
-    /// Argument of `fallback_list`: the offset (the route takes id 1).
-    pub const FALLBACK_OFFSET: u32 = 2;
-    /// Argument of `packet_get`: the profile.
-    pub const PACKET_PROFILE: u32 = 1;
-    /// Result of `route_list`: route id.
-    pub const LIST_ROUTE: u32 = 1;
-    /// Result of `route_list`: profile id.
-    pub const LIST_PROFILE: u32 = 2;
-    /// Result of `route_list`: primary endpoint.
-    pub const LIST_ENDPOINT: u32 = 3;
-    /// Result of `route_list`: interval in seconds.
-    pub const LIST_INTERVAL: u32 = 4;
-    /// Result of `fallback_list`: fallback id.
-    pub const FALLBACK_LIST_ID: u32 = 1;
-    /// Result of `fallback_list`: endpoint.
-    pub const FALLBACK_LIST_ENDPOINT: u32 = 2;
-    /// Result of `fallback_list`: priority, starting at 1.
-    pub const FALLBACK_LIST_PRIORITY: u32 = 3;
+    /// Argument of `set_fallback`: the fallback endpoint, `""` for none.
+    pub const FALLBACK_ENDPOINT: u32 = 2;
+    /// Argument of `get_payload`: the telemetry profile slot.
+    pub const PAYLOAD_PROFILE_INDEX: u32 = 1;
 }
 
 /// Field ids of the status of the service.
 pub mod status_field {
-    /// Routes with a queue or a publication due.
+    /// Routes with a queue.
     pub const ACTIVE_ROUTES: u32 = 1;
     /// Packets queued over all routes.
     pub const TOTAL_QUEUE_DEPTH: u32 = 2;
 
-    /// The id of field `n` (0 id, 1 state, 2 queue depth, 3 delivered, 4
-    /// retries, 5 active path) of route slot `slot`.
+    /// The telemetry profile index of a route, see [`route`].
+    pub const PROFILE: u32 = 0;
+    /// The primary endpoint, see [`route`].
+    pub const ENDPOINT: u32 = 1;
+    /// The fallback endpoint, absent without one, see [`route`].
+    pub const FALLBACK: u32 = 2;
+    /// The publication interval in seconds, see [`route`].
+    pub const INTERVAL_S: u32 = 3;
+    /// The state of the slot, see [`route`].
+    pub const STATE: u32 = 4;
+    /// Packets queued, see [`route`].
+    pub const QUEUE_DEPTH: u32 = 5;
+    /// Packets delivered, see [`route`].
+    pub const DELIVERED: u32 = 6;
+    /// Failed delivery attempts, see [`route`].
+    pub const RETRIES: u32 = 7;
+    /// The path of the next attempt, see [`route`].
+    pub const ACTIVE_PATH: u32 = 8;
+
+    /// The id of field `n` ([`PROFILE`], [`ENDPOINT`], [`FALLBACK`], [`INTERVAL_S`], [`STATE`],
+    /// [`QUEUE_DEPTH`], [`DELIVERED`], [`RETRIES`] or [`ACTIVE_PATH`]) of route slot `slot`.
     pub const fn route(slot: usize, n: u32) -> u32 {
         10 * (slot as u32 + 1) + n
     }
@@ -160,7 +183,7 @@ pub mod issue {
 
     /// The routes cannot be read from storage; none is active.
     pub const STORAGE_UNAVAILABLE: u32 = FIRST_SERVICE_ISSUE;
-    /// A route's profile is missing or was recreated; the route is suspended.
+    /// The telemetry profile of a route is not available; the route is suspended.
     pub const PROFILE_MISSING: u32 = FIRST_SERVICE_ISSUE + 1;
     /// The last attempt to build a packet failed.
     pub const PACKET_BUILD_FAILED: u32 = FIRST_SERVICE_ISSUE + 2;
@@ -195,22 +218,23 @@ impl From<StoreError> for ActionError {
 /// atomically and publishes it to [`ConnectivityState`], or fails and changes
 /// nothing.
 #[allow(async_fn_in_trait)]
-pub trait ConnectivityStore {
+pub trait ConnectivityStore<const ROUTES: usize> {
     /// The committed routes; none when nothing was stored.
     ///
     /// # Errors
     ///
     /// [`StoreError`]; an unreadable section is an error, not an empty set.
-    async fn load(&self) -> Result<RouteSet, StoreError>;
+    async fn load(&self) -> Result<Routes<ROUTES>, StoreError>;
 
     /// Atomically persists `candidate` and publishes it.
     ///
     /// # Errors
     ///
     /// [`StoreError`]; nothing changed.
-    async fn commit(&self, candidate: &RouteSet) -> Result<(), StoreError>;
+    async fn commit(&self, candidate: &Routes<ROUTES>) -> Result<(), StoreError>;
 }
 
+#[cfg(feature = "packet-export")]
 struct Export {
     id: u32,
     handle: PacketHandle,
@@ -219,8 +243,10 @@ struct Export {
 
 /// How long an exported packet is kept when the client neither reads to the
 /// end and closes nor loses the link, in milliseconds.
+#[cfg(feature = "packet-export")]
 pub const EXPORT_TTL_MS: u64 = 60_000;
 
+#[cfg(feature = "packet-export")]
 struct Exports<const N: usize, const BYTES: usize> {
     pool: PacketPool<N, BYTES>,
     open: Vec<Export, N>,
@@ -230,33 +256,50 @@ struct Exports<const N: usize, const BYTES: usize> {
 /// The `connectivity` service over a [`ConnectivityStore`] and a
 /// [`PacketExporter`], with room for `EXPORTS` open packet streams of up to
 /// `BYTES` bytes.
-pub struct ConnectivityService<'a, M: RawMutex, S, X, const EXPORTS: usize, const BYTES: usize> {
+pub struct ConnectivityService<
+    'a,
+    M: RawMutex,
+    S,
+    X,
+    const ROUTES: usize,
+    const EXPORTS: usize,
+    const BYTES: usize,
+> {
     store: S,
     exporter: X,
-    state: &'a ConnectivityState<M>,
+    state: &'a ConnectivityState<M, ROUTES>,
     // Serializes read-modify-write: no lost updates between Actions.
     edit: Mutex<M, ()>,
+    #[cfg(feature = "packet-export")]
     exports: BlockingMutex<M, RefCell<Exports<EXPORTS, BYTES>>>,
 }
 
-impl<M: RawMutex, S, X, const E: usize, const B: usize> Service
-    for ConnectivityService<'_, M, S, X, E, B>
+impl<M: RawMutex, S, X, const R: usize, const E: usize, const B: usize> Service
+    for ConnectivityService<'_, M, S, X, R, E, B>
 {
     const ID: u32 = SERVICE_ID;
     const NAME: &'static str = "connectivity";
 }
 
-impl<'a, M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const B: usize>
-    ConnectivityService<'a, M, S, X, E, B>
+impl<
+    'a,
+    M: RawMutex,
+    S: ConnectivityStore<R>,
+    X: PacketExporter,
+    const R: usize,
+    const E: usize,
+    const B: usize,
+> ConnectivityService<'a, M, S, X, R, E, B>
 {
     /// A service over `store`, building exports with `exporter` and reporting
     /// the runtime state of `state`.
-    pub const fn new(store: S, exporter: X, state: &'a ConnectivityState<M>) -> Self {
+    pub const fn new(store: S, exporter: X, state: &'a ConnectivityState<M, R>) -> Self {
         Self {
             store,
             exporter,
             state,
             edit: Mutex::new(()),
+            #[cfg(feature = "packet-export")]
             exports: BlockingMutex::new(RefCell::new(Exports {
                 pool: PacketPool::new(),
                 open: Vec::new(),
@@ -267,7 +310,7 @@ impl<'a, M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, c
 
     async fn edit(
         &self,
-        change: impl FnOnce(&mut RouteSet) -> Result<(), RouteError>,
+        change: impl FnOnce(&mut Routes<R>) -> Result<(), RouteError>,
     ) -> Result<(), ActionError> {
         let _guard = self.edit.lock().await;
         let mut candidate = self.store.load().await?;
@@ -280,11 +323,13 @@ impl<'a, M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, c
     }
 
     /// The number of open packet streams.
+    #[cfg(feature = "packet-export")]
     pub fn open_streams(&self) -> usize {
         self.exports.lock(|exports| exports.borrow().open.len())
     }
 
     /// Releases the streams that outlived [`EXPORT_TTL_MS`].
+    #[cfg(feature = "packet-export")]
     fn expire(&self) {
         let now = self.exporter.now_ms();
         self.exports.lock(|exports| {
@@ -301,6 +346,7 @@ impl<'a, M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, c
         });
     }
 
+    #[cfg(feature = "packet-export")]
     fn release(&self, stream: u32) -> bool {
         self.exports.lock(|exports| {
             let mut exports = exports.borrow_mut();
@@ -316,9 +362,9 @@ impl<'a, M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, c
     }
 }
 
-struct SectionRef<'a>(&'a RouteSet);
+struct SectionRef<'a, const R: usize>(&'a Routes<R>);
 
-impl<C> minicbor::Encode<C> for SectionRef<'_> {
+impl<C, const R: usize> minicbor::Encode<C> for SectionRef<'_, R> {
     fn encode<W: minicbor::encode::Write>(
         &self,
         e: &mut minicbor::Encoder<W>,
@@ -328,7 +374,7 @@ impl<C> minicbor::Encode<C> for SectionRef<'_> {
     }
 }
 
-impl<C> minicbor::CborLen<C> for SectionRef<'_> {
+impl<C, const R: usize> minicbor::CborLen<C> for SectionRef<'_, R> {
     fn cbor_len(&self, ctx: &mut C) -> usize {
         minicbor::CborLen::cbor_len(self.0, ctx)
     }
@@ -337,16 +383,12 @@ impl<C> minicbor::CborLen<C> for SectionRef<'_> {
 fn reject(error: RouteError) -> ActionError {
     log::debug!(target: "connectivity", "Route change rejected (err={:?})", error);
     ActionError::Rejected(match error {
-        RouteError::InvalidId => "invalid_id",
-        RouteError::DuplicateRoute => "route_exists",
+        RouteError::InvalidIndex => "invalid_index",
         RouteError::RouteNotFound => "route_not_found",
-        RouteError::DuplicateFallback => "fallback_exists",
-        RouteError::FallbackNotFound => "fallback_not_found",
         RouteError::DuplicateEndpoint => "duplicate_endpoint",
         RouteError::InvalidEndpoint => "invalid_endpoint",
         RouteError::InvalidInterval => "invalid_interval",
-        RouteError::TooManyRoutes => "too_many_routes",
-        RouteError::TooManyFallbacks => "too_many_fallbacks",
+        RouteError::InconsistentGeneration => "inconsistent_generation",
     })
 }
 
@@ -357,116 +399,155 @@ fn arg(args: &[(u32, Value)], id: u32) -> Result<&Value, ActionError> {
         .ok_or(ActionError::InvalidArgument)
 }
 
-fn text(args: &[(u32, Value)], id: u32) -> Result<&str, ActionError> {
-    arg(args, id)?.as_str().ok_or(ActionError::InvalidArgument)
-}
-
-fn offset(args: &[(u32, Value)], id: u32) -> Result<usize, ActionError> {
-    let offset = arg(args, id)?
+// An index that is no slot of any build is a refused index, not a malformed argument.
+fn slot(args: &[(u32, Value)]) -> Result<usize, ActionError> {
+    let index = arg(args, action_field::INDEX)?
         .as_u64()
         .ok_or(ActionError::InvalidArgument)?;
-    usize::try_from(offset).map_err(|_| ActionError::InvalidArgument)
+    usize::try_from(index).map_err(|_| ActionError::Rejected("invalid_index"))
 }
 
-fn write(result: Result<(), WriteError>) -> Result<(), ActionError> {
-    result.map_err(|_| ActionError::Internal)
+fn profile_index(args: &[(u32, Value)], id: u32) -> Result<u8, ActionError> {
+    let index = arg(args, id)?
+        .as_u64()
+        .ok_or(ActionError::InvalidArgument)?;
+    u8::try_from(index).map_err(|_| ActionError::Rejected("invalid_profile_index"))
 }
 
-const ROUTE: FieldDescriptor =
-    FieldDescriptor::new(action_field::ROUTE_ID, "route_id", ValueKind::String);
+// The wire form of an absent endpoint: the empty string. An omitted argument means the same.
+fn optional_endpoint(args: &[(u32, Value)], id: u32) -> Result<Option<&str>, ActionError> {
+    match args.iter().find(|(field, _)| *field == id) {
+        None => Ok(None),
+        Some((_, value)) => match value.as_str().ok_or(ActionError::InvalidArgument)? {
+            "" => Ok(None),
+            endpoint => Ok(Some(endpoint)),
+        },
+    }
+}
+
+const INDEX: FieldDescriptor = FieldDescriptor::new(action_field::INDEX, "index", ValueKind::U64);
 
 const STATES: &[EnumDescriptor] = &[EnumDescriptor::new(
     STATE_ENUM,
     &[
-        EnumVariant::new(0, "idle"),
-        EnumVariant::new(1, "delivering"),
-        EnumVariant::new(2, "backoff"),
-        EnumVariant::new(3, "profile_missing"),
+        EnumVariant::new(0, "empty"),
+        EnumVariant::new(1, "idle"),
+        EnumVariant::new(2, "delivering"),
+        EnumVariant::new(3, "backoff"),
+        EnumVariant::new(4, "profile_missing"),
     ],
 )];
 
-const fn slot_fields(slot: usize) -> [FieldDescriptor; 6] {
-    const NAMES: [[&str; 6]; MAX_ROUTES] = [
-        [
-            "route0.id",
-            "route0.state",
-            "route0.queue_depth",
-            "route0.delivered",
-            "route0.retries",
-            "route0.active_path",
-        ],
-        [
-            "route1.id",
-            "route1.state",
-            "route1.queue_depth",
-            "route1.delivered",
-            "route1.retries",
-            "route1.active_path",
-        ],
-        [
-            "route2.id",
-            "route2.state",
-            "route2.queue_depth",
-            "route2.delivered",
-            "route2.retries",
-            "route2.active_path",
-        ],
-    ];
-    [
-        FieldDescriptor::new(
-            status_field::route(slot, 0),
-            NAMES[slot][0],
-            ValueKind::String,
-        ),
-        FieldDescriptor::new(
-            status_field::route(slot, 1),
-            NAMES[slot][1],
-            ValueKind::Enum,
-        )
-        .with_enum(STATE_ENUM),
-        FieldDescriptor::new(status_field::route(slot, 2), NAMES[slot][2], ValueKind::U64),
-        FieldDescriptor::new(status_field::route(slot, 3), NAMES[slot][3], ValueKind::U64),
-        FieldDescriptor::new(status_field::route(slot, 4), NAMES[slot][4], ValueKind::U64),
-        FieldDescriptor::new(status_field::route(slot, 5), NAMES[slot][5], ValueKind::U64),
-    ]
+// The status schema is written out for the route count of the build: the nine fields of
+// every route slot follow the two aggregates, with stable ids and names, as a literal
+// slice like the schema of any other service. There is nothing to build or register at
+// run time.
+macro_rules! status_schema {
+    ($($slot:literal),+) => {
+        &[
+            FieldDescriptor::new(status_field::ACTIVE_ROUTES, "active_routes", ValueKind::U64),
+            FieldDescriptor::new(
+                status_field::TOTAL_QUEUE_DEPTH,
+                "total_queue_depth",
+                ValueKind::U64,
+            ),
+            $(
+                FieldDescriptor::new(
+                    status_field::route($slot, status_field::STATE),
+                    concat!("route", $slot, "_state"),
+                    ValueKind::Enum,
+                )
+                .with_enum(STATE_ENUM),
+                FieldDescriptor::new(
+                    status_field::route($slot, status_field::PROFILE),
+                    concat!("route", $slot, "_profile"),
+                    ValueKind::U64,
+                ),
+                FieldDescriptor::new(
+                    status_field::route($slot, status_field::ENDPOINT),
+                    concat!("route", $slot, "_endpoint"),
+                    ValueKind::String,
+                ),
+                FieldDescriptor::new(
+                    status_field::route($slot, status_field::FALLBACK),
+                    concat!("route", $slot, "_fallback"),
+                    ValueKind::String,
+                ),
+                FieldDescriptor::new(
+                    status_field::route($slot, status_field::INTERVAL_S),
+                    concat!("route", $slot, "_interval_s"),
+                    ValueKind::U64,
+                )
+                .unit(Unit::S),
+                FieldDescriptor::new(
+                    status_field::route($slot, status_field::QUEUE_DEPTH),
+                    concat!("route", $slot, "_queue_depth"),
+                    ValueKind::U64,
+                ),
+                FieldDescriptor::new(
+                    status_field::route($slot, status_field::DELIVERED),
+                    concat!("route", $slot, "_delivered"),
+                    ValueKind::U64,
+                ),
+                FieldDescriptor::new(
+                    status_field::route($slot, status_field::RETRIES),
+                    concat!("route", $slot, "_retries"),
+                    ValueKind::U64,
+                ),
+                FieldDescriptor::new(
+                    status_field::route($slot, status_field::ACTIVE_PATH),
+                    concat!("route", $slot, "_active_path"),
+                    ValueKind::U64,
+                ),
+            )+
+        ]
+    };
 }
 
-const STATUS_FIELDS: [FieldDescriptor; 20] = {
-    let aggregate = [
-        FieldDescriptor::new(status_field::ACTIVE_ROUTES, "active_routes", ValueKind::U64),
-        FieldDescriptor::new(
-            status_field::TOTAL_QUEUE_DEPTH,
-            "total_queue_depth",
-            ValueKind::U64,
-        ),
-    ];
-    let (a, b, c) = (slot_fields(0), slot_fields(1), slot_fields(2));
-    let mut all = [aggregate[0]; 20];
-    all[1] = aggregate[1];
-    let mut i = 0;
-    while i < 6 {
-        all[2 + i] = a[i];
-        all[8 + i] = b[i];
-        all[14 + i] = c[i];
-        i += 1;
-    }
-    all
-};
+/// The route count of a build, as a type: the status schema of a service with `N` route
+/// slots. [`RouteSlots`] is implemented for 1 and 2 slots (two aggregates and nine fields per
+/// slot: at most 20, the limit of status fields); any other count does not compile, so no schema
+/// exists for a count the build does not use.
+pub struct Slots<const N: usize>;
+
+/// The static status schema of [`Slots`] of one size.
+pub trait RouteSlots {
+    /// The aggregate fields and nine fields per route slot.
+    const SCHEMA: &'static [FieldDescriptor];
+}
+
+impl RouteSlots for Slots<1> {
+    const SCHEMA: &'static [FieldDescriptor] = status_schema!(0);
+}
+
+impl RouteSlots for Slots<2> {
+    const SCHEMA: &'static [FieldDescriptor] = status_schema!(0, 1);
+}
+
+const STATE_EMPTY: u32 = 0;
 
 fn state_number(state: RouteState) -> u32 {
     match state {
-        RouteState::Idle => 0,
-        RouteState::Delivering => 1,
-        RouteState::Backoff => 2,
-        RouteState::ProfileMissing => 3,
+        RouteState::Idle => 1,
+        RouteState::Delivering => 2,
+        RouteState::Backoff => 3,
+        RouteState::ProfileMissing => 4,
     }
 }
 
-impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const B: usize> Status
-    for ConnectivityService<'_, M, S, X, E, B>
+impl<
+    M: RawMutex,
+    S: ConnectivityStore<R>,
+    X: PacketExporter,
+    const R: usize,
+    const E: usize,
+    const B: usize,
+> Status for ConnectivityService<'_, M, S, X, R, E, B>
+where
+    Slots<R>: RouteSlots,
 {
-    const VERSION: u16 = 1;
-    const STATUS_SCHEMA: &'static [FieldDescriptor] = &STATUS_FIELDS;
+    const VERSION: u16 = 2;
+    const STATUS_SCHEMA: &'static [FieldDescriptor] = <Slots<R> as RouteSlots>::SCHEMA;
     const ENUMS: &'static [EnumDescriptor] = STATES;
     const ISSUES: &'static [IssueDescriptor] = &[
         IssueDescriptor::new(issue::STORAGE_UNAVAILABLE, "storage_unavailable"),
@@ -479,8 +560,7 @@ impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const
         if self.state.is_unreadable() {
             return ServiceSummary::new(ServiceState::Failed, ServiceHealth::Error, false);
         }
-        let routes = self.state.routes();
-        if routes.routes.is_empty() {
+        if self.state.routes().count() == 0 {
             // No route is a valid state: nothing is sent.
             return ServiceSummary::new(ServiceState::Stopped, ServiceHealth::Unknown, false);
         }
@@ -490,6 +570,7 @@ impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const
             .state
             .views()
             .iter()
+            .flatten()
             .any(|view| matches!(view.state, RouteState::ProfileMissing | RouteState::Backoff))
             || self.state.health().last_build_failure.is_some();
         let health = if degraded {
@@ -511,10 +592,10 @@ impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const
         if self.state.is_unreadable() {
             push(issue::STORAGE_UNAVAILABLE);
         }
-        if self
-            .state
-            .views()
+        let views = self.state.views();
+        if views
             .iter()
+            .flatten()
             .any(|view| view.state == RouteState::ProfileMissing)
         {
             push(issue::PROFILE_MISSING);
@@ -522,10 +603,9 @@ impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const
         if self.state.health().last_build_failure.is_some() {
             push(issue::PACKET_BUILD_FAILED);
         }
-        if self
-            .state
-            .views()
+        if views
             .iter()
+            .flatten()
             .any(|view| view.state == RouteState::Backoff)
         {
             push(issue::DELIVERY_FAILING);
@@ -533,108 +613,100 @@ impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const
     }
 
     async fn status(&self, out: &mut impl StatusWriter) -> Result<(), WriteError> {
+        let routes = self.state.routes();
         let views = self.state.views();
-        let active = views.iter().filter(|v| v.queue_depth > 0).count();
-        let total: usize = views.iter().map(|v| v.queue_depth).sum();
+        // The runtime of an earlier route of a slot is not this route's.
+        let runtime = |slot: usize| {
+            let route = routes.get(slot)?;
+            views[slot].filter(|view| view.generation == route.generation)
+        };
+        let active = (0..R)
+            .filter(|slot| runtime(*slot).is_some_and(|view| view.queue_depth > 0))
+            .count();
+        let total: usize = (0..R)
+            .filter_map(runtime)
+            .map(|view| view.queue_depth)
+            .sum();
         out.u64(status_field::ACTIVE_ROUTES, active as u64)?;
         out.u64(status_field::TOTAL_QUEUE_DEPTH, total as u64)?;
-        for (slot, view) in views.iter().enumerate().take(MAX_ROUTES) {
-            out.text(status_field::route(slot, 0), view.id.as_str())?;
-            out.variant(status_field::route(slot, 1), state_number(view.state))?;
-            out.u64(status_field::route(slot, 2), view.queue_depth as u64)?;
+        for slot in 0..R {
+            let field = |n| status_field::route(slot, n);
+            let Some(route) = routes.get(slot) else {
+                out.variant(field(status_field::STATE), STATE_EMPTY)?;
+                continue;
+            };
+            let view = runtime(slot);
+            out.variant(
+                field(status_field::STATE),
+                view.map_or(1, |view| state_number(view.state)),
+            )?;
+            out.u64(field(status_field::PROFILE), u64::from(route.profile_index))?;
+            out.text(field(status_field::ENDPOINT), route.endpoint.as_str())?;
+            if let Some(fallback) = &route.fallback {
+                out.text(field(status_field::FALLBACK), fallback.as_str())?;
+            }
+            out.u64(field(status_field::INTERVAL_S), u64::from(route.interval_s))?;
             out.u64(
-                status_field::route(slot, 3),
-                u64::from(view.counters.delivered),
+                field(status_field::QUEUE_DEPTH),
+                view.map_or(0, |view| view.queue_depth as u64),
             )?;
             out.u64(
-                status_field::route(slot, 4),
-                u64::from(view.counters.retries),
+                field(status_field::DELIVERED),
+                view.map_or(0, |view| u64::from(view.counters.delivered)),
             )?;
             out.u64(
-                status_field::route(slot, 5),
-                view.active_path.map_or(0, |path| path as u64 + 1),
+                field(status_field::RETRIES),
+                view.map_or(0, |view| u64::from(view.counters.retries)),
+            )?;
+            out.u64(
+                field(status_field::ACTIVE_PATH),
+                view.and_then(|view| view.active_path)
+                    .map_or(0, |path| path as u64 + 1),
             )?;
         }
         Ok(())
     }
 }
 
-impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const B: usize> Action
-    for ConnectivityService<'_, M, S, X, E, B>
+impl<
+    M: RawMutex,
+    S: ConnectivityStore<R>,
+    X: PacketExporter,
+    const R: usize,
+    const E: usize,
+    const B: usize,
+> Action for ConnectivityService<'_, M, S, X, R, E, B>
 {
     const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new(action::ROUTE_ADD, "route_add", ActionAccess::Mutate).args(&[
-            ROUTE,
-            FieldDescriptor::new(action_field::PROFILE_ID, "profile_id", ValueKind::String),
+        ActionDescriptor::new(action::SET_ENDPOINT, "set_endpoint", ActionAccess::Mutate).args(&[
+            INDEX,
+            FieldDescriptor::new(action_field::PROFILE_INDEX, "profile_index", ValueKind::U64),
             FieldDescriptor::new(action_field::ENDPOINT, "endpoint", ValueKind::String),
         ]),
-        ActionDescriptor::new(action::ROUTE_REMOVE, "route_remove", ActionAccess::Mutate)
-            .args(&[ROUTE]),
         ActionDescriptor::new(action::SET_INTERVAL, "set_interval", ActionAccess::Mutate).args(&[
-            ROUTE,
-            FieldDescriptor::new(action_field::INTERVAL_S, "interval_s", ValueKind::U64),
+            INDEX,
+            FieldDescriptor::new(action_field::INTERVAL_S, "interval_s", ValueKind::U64)
+                .unit(Unit::S),
         ]),
-        ActionDescriptor::new(action::FALLBACK_ADD, "fallback_add", ActionAccess::Mutate).args(&[
-            ROUTE,
-            FieldDescriptor::new(action_field::FALLBACK_ID, "fallback_id", ValueKind::String),
+        ActionDescriptor::new(action::SET_FALLBACK, "set_fallback", ActionAccess::Mutate).args(&[
+            INDEX,
             FieldDescriptor::new(
                 action_field::FALLBACK_ENDPOINT,
                 "endpoint",
                 ValueKind::String,
             ),
         ]),
-        ActionDescriptor::new(
-            action::FALLBACK_REMOVE,
-            "fallback_remove",
-            ActionAccess::Mutate,
-        )
-        .args(&[
-            ROUTE,
-            FieldDescriptor::new(action_field::FALLBACK_ID, "fallback_id", ValueKind::String),
-        ]),
-        ActionDescriptor::new(action::ROUTE_LIST, "route_list", ActionAccess::Read)
+        #[cfg(feature = "packet-export")]
+        ActionDescriptor::new(action::GET_PAYLOAD, "get_payload", ActionAccess::Read)
             .args(&[FieldDescriptor::new(
-                action_field::OFFSET,
-                "offset",
+                action_field::PAYLOAD_PROFILE_INDEX,
+                "profile_index",
                 ValueKind::U64,
-            )])
-            .results(&[
-                FieldDescriptor::new(action_field::LIST_ROUTE, "route_id", ValueKind::String),
-                FieldDescriptor::new(action_field::LIST_PROFILE, "profile_id", ValueKind::String),
-                FieldDescriptor::new(action_field::LIST_ENDPOINT, "endpoint", ValueKind::String),
-                FieldDescriptor::new(action_field::LIST_INTERVAL, "interval_s", ValueKind::U64),
-            ]),
-        ActionDescriptor::new(action::FALLBACK_LIST, "fallback_list", ActionAccess::Read)
-            .args(&[
-                ROUTE,
-                FieldDescriptor::new(action_field::FALLBACK_OFFSET, "offset", ValueKind::U64),
-            ])
-            .results(&[
-                FieldDescriptor::new(
-                    action_field::FALLBACK_LIST_ID,
-                    "fallback_id",
-                    ValueKind::String,
-                ),
-                FieldDescriptor::new(
-                    action_field::FALLBACK_LIST_ENDPOINT,
-                    "endpoint",
-                    ValueKind::String,
-                ),
-                FieldDescriptor::new(
-                    action_field::FALLBACK_LIST_PRIORITY,
-                    "priority",
-                    ValueKind::U64,
-                ),
-            ]),
-        ActionDescriptor::new(action::PACKET_GET, "packet_get", ActionAccess::Read)
-            .args(&[FieldDescriptor::new(
-                action_field::PACKET_PROFILE,
-                "profile_id",
-                ValueKind::String,
             )])
             .stream(),
     ];
 
+    #[cfg_attr(not(feature = "packet-export"), allow(unused_variables))]
     async fn invoke(
         &self,
         action: u32,
@@ -642,91 +714,42 @@ impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const
         out: &mut impl ActionOutput,
     ) -> Result<(), ActionError> {
         match action {
-            action::ROUTE_ADD => {
-                let id = text(args, action_field::ROUTE_ID)?;
-                let profile = text(args, action_field::PROFILE_ID)?;
-                let endpoint = text(args, action_field::ENDPOINT)?;
-                let stamp = self
-                    .exporter
-                    .resolve(profile)
-                    .ok_or(ActionError::Rejected("profile_not_found"))?;
-                let binding = ProfileBinding {
-                    id: stamp.id,
-                    incarnation: stamp.incarnation,
-                };
-                self.edit(|routes| routes.add_route(id, binding, endpoint))
+            action::SET_ENDPOINT => {
+                let index = slot(args)?;
+                let profile = profile_index(args, action_field::PROFILE_INDEX)?;
+                let endpoint = optional_endpoint(args, action_field::ENDPOINT)?;
+                // A route needs a profile to publish; deleting one does not.
+                if endpoint.is_some() && self.exporter.resolve(profile).is_none() {
+                    return Err(ActionError::Rejected("invalid_profile_index"));
+                }
+                self.edit(|routes| routes.set_endpoint(index, profile, endpoint))
                     .await
             }
-            action::ROUTE_REMOVE => {
-                let id = text(args, action_field::ROUTE_ID)?;
-                self.edit(|routes| routes.remove_route(id)).await
-            }
             action::SET_INTERVAL => {
-                let id = text(args, action_field::ROUTE_ID)?;
+                let index = slot(args)?;
                 let seconds = arg(args, action_field::INTERVAL_S)?
                     .as_u64()
                     .ok_or(ActionError::InvalidArgument)?;
                 let seconds = u32::try_from(seconds)
                     .map_err(|_| ActionError::Rejected("invalid_interval"))?;
-                self.edit(|routes| routes.set_interval(id, seconds)).await
-            }
-            action::FALLBACK_ADD => {
-                let route = text(args, action_field::ROUTE_ID)?;
-                let fallback = text(args, action_field::FALLBACK_ID)?;
-                let endpoint = text(args, action_field::FALLBACK_ENDPOINT)?;
-                self.edit(|routes| routes.add_fallback(route, fallback, endpoint))
+                self.edit(|routes| routes.set_interval(index, seconds))
                     .await
             }
-            action::FALLBACK_REMOVE => {
-                let route = text(args, action_field::ROUTE_ID)?;
-                let fallback = text(args, action_field::FALLBACK_ID)?;
-                self.edit(|routes| routes.remove_fallback(route, fallback))
+            action::SET_FALLBACK => {
+                let index = slot(args)?;
+                let endpoint = optional_endpoint(args, action_field::FALLBACK_ENDPOINT)?;
+                self.edit(|routes| routes.set_fallback(index, endpoint))
                     .await
             }
-            action::ROUTE_LIST => {
-                let offset = offset(args, action_field::OFFSET)?;
-                let routes = self.store.load().await?;
-                for route in routes.routes.iter().skip(offset).take(MAX_RECORDS) {
-                    out.next_record().map_err(|_| ActionError::Internal)?;
-                    write(out.text(action_field::LIST_ROUTE, route.id.as_str()))?;
-                    write(out.text(action_field::LIST_PROFILE, route.profile.id.as_str()))?;
-                    write(out.text(action_field::LIST_ENDPOINT, route.primary.as_str()))?;
-                    write(out.u64(action_field::LIST_INTERVAL, u64::from(route.interval_s)))?;
-                }
-                Ok(())
-            }
-            action::FALLBACK_LIST => {
-                let id = text(args, action_field::ROUTE_ID)?;
-                let offset = offset(args, action_field::FALLBACK_OFFSET)?;
-                let routes = self.store.load().await?;
-                let route = routes
-                    .get(id)
-                    .ok_or(ActionError::Rejected("route_not_found"))?;
-                for (index, fallback) in route
-                    .fallbacks
-                    .iter()
-                    .enumerate()
-                    .skip(offset)
-                    .take(MAX_RECORDS)
-                {
-                    out.next_record().map_err(|_| ActionError::Internal)?;
-                    write(out.text(action_field::FALLBACK_LIST_ID, fallback.id.as_str()))?;
-                    write(out.text(
-                        action_field::FALLBACK_LIST_ENDPOINT,
-                        fallback.endpoint.as_str(),
-                    ))?;
-                    write(out.u64(action_field::FALLBACK_LIST_PRIORITY, index as u64 + 1))?;
-                }
-                Ok(())
-            }
-            action::PACKET_GET => {
-                let profile = text(args, action_field::PACKET_PROFILE)?;
+            #[cfg(feature = "packet-export")]
+            action::GET_PAYLOAD => {
+                let profile = profile_index(args, action_field::PAYLOAD_PROFILE_INDEX)?;
                 // An abandoned stream must not keep its slot past its lifetime.
                 self.expire();
                 let stamp = self
                     .exporter
                     .resolve(profile)
-                    .ok_or(ActionError::Rejected("profile_not_found"))?;
+                    .ok_or(ActionError::Rejected("invalid_profile_index"))?;
                 if self.exports.lock(|exports| {
                     let exports = exports.borrow();
                     exports.open.is_full() || exports.pool.in_use() >= E
@@ -790,6 +813,7 @@ impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const
         }
     }
 
+    #[cfg(feature = "packet-export")]
     async fn read_stream(
         &self,
         stream: u32,
@@ -819,7 +843,7 @@ impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const
             };
             // A packet built under a policy that is no longer current is not
             // served any more.
-            if exporter.resolve(stamp.id.as_str()).as_ref() != Some(stamp) {
+            if exporter.resolve(stamp.profile_index).as_ref() != Some(stamp) {
                 return Read::Stale;
             }
             let Ok(offset) = usize::try_from(offset) else {
@@ -846,6 +870,7 @@ impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const
         }
     }
 
+    #[cfg(feature = "packet-export")]
     async fn close_stream(&self, stream: u32) -> Result<(), ActionError> {
         if self.release(stream) {
             Ok(())
@@ -854,6 +879,7 @@ impl<M: RawMutex, S: ConnectivityStore, X: PacketExporter, const E: usize, const
         }
     }
 
+    #[cfg(feature = "packet-export")]
     fn link_lost(&self) {
         self.exports.lock(|exports| {
             let mut exports = exports.borrow_mut();

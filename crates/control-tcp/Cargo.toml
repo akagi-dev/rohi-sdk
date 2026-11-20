@@ -7,7 +7,7 @@ edition.workspace = true
 homepage.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Robonomics Open Hardware control protocol over TCP: length-prefixed Protobuf records and the serving loop"
+description = "Robonomics Open Hardware control protocol over TCP: a pre-shared-key handshake, authenticated encrypted records and the serving loop"
 
 [badges]
 maintenance = { status = "actively-developed" }
@@ -17,6 +17,10 @@ rohi-control-proto.workspace = true
 rohi-control.workspace = true
 embedded-io-async.workspace = true
 log.workspace = true
+sha2.workspace = true
+hkdf.workspace = true
+chacha20poly1305.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 embassy-futures.workspace = true

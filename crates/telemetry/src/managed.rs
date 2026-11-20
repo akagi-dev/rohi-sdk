@@ -15,8 +15,7 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-//! The managed `telemetry` service: profile Actions, the measurement catalog
-//! and status.
+//! The managed `telemetry` service: the three profile Actions and status.
 //!
 //! The persisted state is one [`TelemetrySection`], a typed bounded value
 //! kept by the firmware's configuration owner like the identity: it is not a
@@ -26,24 +25,44 @@
 //! asks the store to commit it atomically; the runtime sees the new value
 //! only after a successful commit. A refused or failed edit changes nothing.
 //!
+//! # Model
+//!
+//! Profiles are **slots addressed by index** (`0`, `1`, ...; Altruist Urban
+//! has two): they are never created or deleted, have no name and no format
+//! (the one compiled in is used). Each slot has a public selection and at most
+//! one private section (one recipient and its selection). Both slots start with
+//! empty selections: the existence of a slot publishes and discloses nothing.
+//!
 //! # Actions
 //!
 //! | Action | Arguments | Access | Result |
 //! |--------|-----------|--------|--------|
-//! | `profile_add` | `profile_id`, `format` | Mutate | |
-//! | `profile_remove` | `profile_id` | Mutate | |
-//! | `set_public` | `profile_id`, `selection` | Mutate | |
-//! | `add_private` | `profile_id`, `recipient`, `selection` | Mutate | |
-//! | `remove_private` | `profile_id`, `recipient` | Mutate | |
-//! | `profile_list` | `offset` | Read | `profile_id`, `format`, `public`, `revision` |
-//! | `profile_recipients` | `profile_id`, `offset` | Read | `recipient`, `selection` |
+//! | `set_public` | `index`, `selection` | Mutate | |
+//! | `set_private` | `index`, `recipient`, `selection` | Mutate | |
 //! | `measurements` | `offset` | Read | `bit_index`, `name` |
 //!
-//! `selection` arguments are 32-byte bitsets over the `measurements`
-//! catalog (a generic selection descriptor), `recipient` is an address.
-//! Offsets are zero-based ordinals; an empty page ends the listing. Mutations
-//! never reveal anything by themselves: a profile is created with an empty
-//! public selection and no private section.
+//! `selection` arguments are 32-byte bitsets over the `measurements` catalog
+//! (a generic selection descriptor), `recipient` is a 32-byte address.
+//! `set_public` replaces the public selection of the slot. `set_private`
+//! makes `recipient` the only recipient of the slot, replacing the earlier
+//! one, with `selection`; **`selection = none` (all zero bytes) removes the
+//! private section** (the recipient is then ignored). An `index` that is not a
+//! slot of the build is refused with `invalid_index`, a selection with a bit
+//! the format cannot encode with `unsupported_measurement` and an unusable
+//! recipient key with `invalid_recipient`. The `measurements` offset is a
+//! zero-based ordinal; an empty page ends the listing. Private sections are
+//! encrypted inside the packet by the packet format, whatever the control
+//! link: the Actions only choose who may read what.
+//!
+//! # Status
+//!
+//! Static slots, not a dynamic tree: `generation`, and for each of the
+//! `PROFILES` slots of the build (1 to 3 are supported, see [`Slots`]) the
+//! fields `profile<i>.public` (bitset), `profile<i>.private` (whether a
+//! private recipient exists), `profile<i>.recipient` (its public key, present
+//! only when `private` is true; a public key is not a secret and fits a status
+//! value), `profile<i>.private_selection` (bitset, all zero without a private
+//! section) and `profile<i>.revision`.
 
 use core::cell::RefCell;
 
@@ -55,84 +74,51 @@ use heapless::Vec;
 use minicbor::{CborLen, Decode, Encode};
 use rohi_config::{ConfigSection, MAX_SECTION_PAYLOAD};
 use rohi_service::{
-    Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, EnumDescriptor, EnumVariant,
-    FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES, MAX_RECORDS, Service,
-    ServiceHealth, ServiceState, ServiceSummary, Status, StatusWriter, Value, ValueKind,
-    WriteError,
+    Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, FieldDescriptor, Issue,
+    IssueDescriptor, IssueSeverity, MAX_ISSUES, MAX_RECORDS, Service, ServiceHealth, ServiceState,
+    ServiceSummary, Status, StatusWriter, Value, ValueKind, WriteError,
 };
 
 use crate::catalog::CATALOG;
-use crate::profile::{
-    FormatCapabilities, PacketFormatId, ProfileError, RecipientAddress, TelemetryConfig,
-};
+use crate::profile::TelemetryConfig;
+use crate::profile::{FormatCapabilities, PacketProfile, ProfileError, RecipientAddress};
 use crate::section::ProfileStamp;
 use crate::selection::{DataSelection, Selection};
 
-/// Profiles the device keeps. A budget goal, checked by tests against the
-/// section limit; raise it only with measurements on both chips.
-pub const MAX_PROFILES: usize = 3;
-/// Private recipients per profile, see [`MAX_PROFILES`].
-pub const MAX_RECIPIENTS: usize = 2;
-
-/// The effective packet profiles of the device.
-pub type ProfileSet = TelemetryConfig<MAX_PROFILES, MAX_RECIPIENTS>;
-
-/// The persisted section: all packet profiles. Bumping `version` is a storage
-/// ABI change and an unreadable or obsolete section is never defaulted to
-/// publishing anything.
+/// The persisted section: all profile slots of a device that keeps `PROFILES` of them
+/// (a const parameter chosen by the firmware; Altruist Urban: 2). The capacity is the type,
+/// so it is also the storage and a stored section of another size does not decode: it is
+/// refused, never truncated. Bumping `version` is a storage ABI change and an unreadable or
+/// obsolete section is never defaulted to publishing anything.
+///
+/// Version 2 is the indexed-slot model; the named profiles of version 1 are not read.
 #[derive(Clone, Debug, PartialEq, Eq, Default, Encode, Decode, CborLen, ConfigSection)]
 #[cbor(transparent)]
-#[config(version = 1)]
-pub struct TelemetrySection(#[n(0)] pub ProfileSet);
+#[config(id = 0x7c1e_89f0_a500_7b17, version = 2)]
+pub struct TelemetrySection<const PROFILES: usize>(#[n(0)] pub TelemetryConfig<PROFILES>);
 
 /// Ids of the Actions of the `telemetry` service.
 pub mod action {
-    /// Creates an empty profile.
-    pub const PROFILE_ADD: u32 = 1;
-    /// Deletes a profile.
-    pub const PROFILE_REMOVE: u32 = 2;
-    /// Replaces the public selection.
-    pub const SET_PUBLIC: u32 = 3;
-    /// Adds or replaces a private section.
-    pub const ADD_PRIVATE: u32 = 4;
-    /// Removes a private section.
-    pub const REMOVE_PRIVATE: u32 = 5;
-    /// Pages the profiles.
-    pub const PROFILE_LIST: u32 = 6;
-    /// Pages the private sections of a profile.
-    pub const PROFILE_RECIPIENTS: u32 = 7;
+    /// Replaces the public selection of a slot.
+    pub const SET_PUBLIC: u32 = 1;
+    /// Sets or removes the private section of a slot.
+    pub const SET_PRIVATE: u32 = 2;
     /// Pages the measurement catalog.
-    pub const MEASUREMENTS: u32 = 8;
+    pub const MEASUREMENTS: u32 = 3;
 }
 
 /// Field ids of the Actions.
 pub mod action_field {
-    /// Argument: profile id.
-    pub const PROFILE_ID: u32 = 1;
-    /// Argument of `profile_add`: the format.
-    pub const FORMAT: u32 = 2;
-    /// Argument of the selection Actions: the bitset.
+    /// Argument of `set_public` and `set_private`: the profile slot.
+    pub const INDEX: u32 = 1;
+    /// Argument of `set_public`: the bitset.
     pub const SELECTION: u32 = 2;
-    /// Argument of the recipient Actions: the address.
+    /// Argument of `set_private`: the recipient address.
     pub const RECIPIENT: u32 = 2;
-    /// Argument of `add_private`: the bitset (the recipient takes id 2).
+    /// Argument of `set_private`: the bitset (the recipient takes id 2).
     pub const PRIVATE_SELECTION: u32 = 3;
-    /// Argument of the paged Actions: the zero-based ordinal of the first record.
+    /// Argument of `measurements`: the zero-based ordinal of the first record.
     pub const OFFSET: u32 = 1;
-    /// Argument of `profile_recipients`: the offset (the profile takes id 1).
-    pub const RECIPIENTS_OFFSET: u32 = 2;
-    /// Result of `profile_list`: profile id.
-    pub const LIST_ID: u32 = 1;
-    /// Result of `profile_list`: format.
-    pub const LIST_FORMAT: u32 = 2;
-    /// Result of `profile_list`: public selection.
-    pub const LIST_PUBLIC: u32 = 3;
-    /// Result of `profile_list`: policy revision.
-    pub const LIST_REVISION: u32 = 4;
-    /// Result of `profile_recipients`: recipient.
-    pub const RECIPIENT_ADDRESS: u32 = 1;
-    /// Result of `profile_recipients`: private selection.
-    pub const RECIPIENT_SELECTION: u32 = 2;
     /// Result of `measurements`: stable bit index.
     pub const BIT_INDEX: u32 = 1;
     /// Result of `measurements`: canonical name.
@@ -141,10 +127,25 @@ pub mod action_field {
 
 /// Field ids of the status of the service.
 pub mod status_field {
-    /// Number of profiles.
-    pub const PROFILES: u32 = 1;
     /// The generation counter of the persisted policy.
-    pub const GENERATION: u32 = 2;
+    pub const GENERATION: u32 = 1;
+
+    /// Public selection of slot `slot`, see [`profile`].
+    pub const PUBLIC: u32 = 0;
+    /// Whether slot `slot` has a private recipient, see [`profile`].
+    pub const PRIVATE: u32 = 1;
+    /// Public key of the private recipient of slot `slot`, see [`profile`].
+    pub const RECIPIENT: u32 = 2;
+    /// Private selection of slot `slot`, see [`profile`].
+    pub const PRIVATE_SELECTION: u32 = 3;
+    /// Policy revision of slot `slot`, see [`profile`].
+    pub const REVISION: u32 = 4;
+
+    /// The id of field `n` ([`PUBLIC`], [`PRIVATE`], [`RECIPIENT`],
+    /// [`PRIVATE_SELECTION`] or [`REVISION`]) of profile slot `slot`.
+    pub const fn profile(slot: usize, n: u32) -> u32 {
+        10 * (slot as u32 + 1) + n
+    }
 }
 
 /// Issue codes of the service.
@@ -156,11 +157,6 @@ pub mod issue {
 }
 
 const SERVICE_ID: u32 = rohi_service::service_id("telemetry");
-const FORMAT_ENUM: u32 = 1;
-const FORMATS: &[EnumDescriptor] = &[EnumDescriptor::new(
-    FORMAT_ENUM,
-    &[EnumVariant::new(1, "robonomics")],
-)];
 
 /// Failure of the persistence behind the profiles.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -187,47 +183,44 @@ impl From<StoreError> for ActionError {
 /// atomically and publishes it to the runtime (see [`TelemetryState`]), or
 /// fails and changes nothing.
 #[allow(async_fn_in_trait)]
-pub trait TelemetryStore {
-    /// The committed profiles; no profile when none were stored.
+pub trait TelemetryStore<const PROFILES: usize> {
+    /// The committed profiles; every slot empty when none were stored.
     ///
     /// # Errors
     ///
     /// [`StoreError`]; an unreadable section is an error, not an empty set.
-    async fn load(&self) -> Result<ProfileSet, StoreError>;
+    async fn load(&self) -> Result<TelemetryConfig<PROFILES>, StoreError>;
 
     /// Atomically persists `candidate` and publishes it.
     ///
     /// # Errors
     ///
     /// [`StoreError`]; nothing changed.
-    async fn commit(&self, candidate: &ProfileSet) -> Result<(), StoreError>;
+    async fn commit(&self, candidate: &TelemetryConfig<PROFILES>) -> Result<(), StoreError>;
 }
 
 /// The effective profiles as the runtime sees them, with a change signal.
 ///
 /// The store publishes here after a successful commit. Consumers (the packet
-/// builder, connectivity) resolve profiles to a [`ProfileStamp`], check that a
-/// stamp is still current before they start work, and wait for changes to
-/// invalidate queued packets. Nothing here is held across I/O.
-pub struct TelemetryState<M: RawMutex> {
-    effective: BlockingMutex<M, RefCell<ProfileSet>>,
+/// builder, connectivity) resolve a `profile_index` to a [`ProfileStamp`],
+/// check that a stamp is still current before they start work, and wait for
+/// changes to invalidate queued packets. Nothing here is held across I/O.
+pub struct TelemetryState<M: RawMutex, const PROFILES: usize> {
+    effective: BlockingMutex<M, RefCell<TelemetryConfig<PROFILES>>>,
     changed: Signal<M, u32>,
 }
 
-impl<M: RawMutex> Default for TelemetryState<M> {
+impl<M: RawMutex, const P: usize> Default for TelemetryState<M, P> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<M: RawMutex> TelemetryState<M> {
-    /// No profile: nothing is packaged.
+impl<M: RawMutex, const P: usize> TelemetryState<M, P> {
+    /// Every slot empty: nothing is packaged.
     pub const fn new() -> Self {
         Self {
-            effective: BlockingMutex::new(RefCell::new(TelemetryConfig {
-                generation: 0,
-                profiles: Vec::new(),
-            })),
+            effective: BlockingMutex::new(RefCell::new(TelemetryConfig::EMPTY)),
             changed: Signal::new(),
         }
     }
@@ -235,7 +228,7 @@ impl<M: RawMutex> TelemetryState<M> {
     /// Makes `profiles` the effective policy and wakes the waiter. Called
     /// synchronously in the commit step, so no packet can be admitted under
     /// the old policy after the commit completed.
-    pub fn publish(&self, profiles: &ProfileSet) {
+    pub fn publish(&self, profiles: &TelemetryConfig<P>) {
         let generation = profiles.generation;
         self.effective
             .lock(|effective| *effective.borrow_mut() = profiles.clone());
@@ -248,30 +241,33 @@ impl<M: RawMutex> TelemetryState<M> {
             .lock(|effective| effective.borrow().generation)
     }
 
-    /// The stamp of profile `id`, `None` if it does not exist.
-    pub fn resolve(&self, id: &str) -> Option<ProfileStamp> {
+    /// The stamp of profile slot `profile_index`, `None` if the build has no
+    /// such slot.
+    pub fn resolve(&self, profile_index: u8) -> Option<ProfileStamp> {
         self.effective.lock(|effective| {
-            effective.borrow().get(id).map(|profile| ProfileStamp {
-                id: profile.id.clone(),
-                incarnation: profile.incarnation,
-                revision: profile.revision,
-            })
+            effective
+                .borrow()
+                .get(profile_index)
+                .map(|profile| ProfileStamp {
+                    profile_index,
+                    revision: profile.revision,
+                })
         })
     }
 
-    /// Whether `stamp` is still the current policy of its profile.
+    /// Whether `stamp` is still the current policy of its slot.
     pub fn is_current(&self, stamp: &ProfileStamp) -> bool {
-        self.resolve(stamp.id.as_str()).as_ref() == Some(stamp)
+        self.resolve(stamp.profile_index).as_ref() == Some(stamp)
     }
 
-    /// Runs `f` on profile `id` of the effective policy.
+    /// Runs `f` on slot `profile_index` of the effective policy.
     pub fn with_profile<T>(
         &self,
-        id: &str,
-        f: impl FnOnce(&crate::profile::PacketProfile<MAX_RECIPIENTS>) -> T,
+        profile_index: u8,
+        f: impl FnOnce(&PacketProfile) -> T,
     ) -> Option<T> {
         self.effective
-            .lock(|effective| effective.borrow().get(id).map(f))
+            .lock(|effective| effective.borrow().get(profile_index).map(f))
     }
 
     /// Waits for the next change of the policy and returns its generation.
@@ -281,21 +277,23 @@ impl<M: RawMutex> TelemetryState<M> {
 }
 
 /// The `telemetry` service over a [`TelemetryStore`] and the capabilities of
-/// the packet formats compiled in.
-pub struct TelemetryService<M: RawMutex, S, C> {
+/// the packet format compiled in.
+pub struct TelemetryService<M: RawMutex, S, C, const PROFILES: usize> {
     store: S,
     caps: C,
     // Serializes read-modify-write: no lost updates between Actions.
     edit: Mutex<M, ()>,
 }
 
-impl<M: RawMutex, S, C> Service for TelemetryService<M, S, C> {
+impl<M: RawMutex, S, C, const P: usize> Service for TelemetryService<M, S, C, P> {
     const ID: u32 = SERVICE_ID;
     const NAME: &'static str = "telemetry";
 }
 
-impl<M: RawMutex, S: TelemetryStore, C: FormatCapabilities> TelemetryService<M, S, C> {
-    /// A service over `store`; `caps` says what the formats can encode.
+impl<M: RawMutex, S: TelemetryStore<P>, C: FormatCapabilities, const P: usize>
+    TelemetryService<M, S, C, P>
+{
+    /// A service over `store`; `caps` says what the format can encode.
     pub const fn new(store: S, caps: C) -> Self {
         Self {
             store,
@@ -306,7 +304,7 @@ impl<M: RawMutex, S: TelemetryStore, C: FormatCapabilities> TelemetryService<M, 
 
     async fn edit(
         &self,
-        change: impl FnOnce(&mut ProfileSet, &C) -> Result<(), ProfileError>,
+        change: impl FnOnce(&mut TelemetryConfig<P>, &C) -> Result<(), ProfileError>,
     ) -> Result<(), ActionError> {
         let _guard = self.edit.lock().await;
         let mut candidate = self.store.load().await?;
@@ -320,9 +318,9 @@ impl<M: RawMutex, S: TelemetryStore, C: FormatCapabilities> TelemetryService<M, 
 }
 
 /// Borrowed encoding of the section for the size check.
-struct TelemetrySectionRef<'a>(&'a ProfileSet);
+struct TelemetrySectionRef<'a, const P: usize>(&'a TelemetryConfig<P>);
 
-impl<C> Encode<C> for TelemetrySectionRef<'_> {
+impl<C, const P: usize> Encode<C> for TelemetrySectionRef<'_, P> {
     fn encode<W: minicbor::encode::Write>(
         &self,
         e: &mut minicbor::Encoder<W>,
@@ -332,7 +330,7 @@ impl<C> Encode<C> for TelemetrySectionRef<'_> {
     }
 }
 
-impl<C> CborLen<C> for TelemetrySectionRef<'_> {
+impl<C, const P: usize> CborLen<C> for TelemetrySectionRef<'_, P> {
     fn cbor_len(&self, ctx: &mut C) -> usize {
         self.0.cbor_len(ctx)
     }
@@ -340,15 +338,11 @@ impl<C> CborLen<C> for TelemetrySectionRef<'_> {
 
 fn reject(error: ProfileError) -> ActionError {
     ActionError::Rejected(match error {
-        ProfileError::InvalidId => "invalid_id",
-        ProfileError::Duplicate => "already_exists",
-        ProfileError::NotFound => "profile_not_found",
-        ProfileError::RecipientNotFound => "recipient_not_found",
+        ProfileError::InvalidIndex => "invalid_index",
         ProfileError::Selection(_) => "unsupported_measurement",
         ProfileError::EmptyPrivateSelection => "empty_selection",
         ProfileError::InvalidRecipient => "invalid_recipient",
-        ProfileError::TooManyProfiles => "too_many_profiles",
-        ProfileError::TooManyRecipients => "too_many_recipients",
+        ProfileError::InconsistentGeneration => "inconsistent_generation",
     })
 }
 
@@ -359,15 +353,19 @@ fn arg(args: &[(u32, Value)], id: u32) -> Result<&Value, ActionError> {
         .ok_or(ActionError::InvalidArgument)
 }
 
-fn text(args: &[(u32, Value)], id: u32) -> Result<&str, ActionError> {
-    arg(args, id)?.as_str().ok_or(ActionError::InvalidArgument)
-}
-
 fn offset(args: &[(u32, Value)], id: u32) -> Result<usize, ActionError> {
     let offset = arg(args, id)?
         .as_u64()
         .ok_or(ActionError::InvalidArgument)?;
     usize::try_from(offset).map_err(|_| ActionError::InvalidArgument)
+}
+
+// A number that is no slot of any build is a refused index, not a malformed argument.
+fn index(args: &[(u32, Value)]) -> Result<u8, ActionError> {
+    let index = arg(args, action_field::INDEX)?
+        .as_u64()
+        .ok_or(ActionError::InvalidArgument)?;
+    u8::try_from(index).map_err(|_| ActionError::Rejected("invalid_index"))
 }
 
 fn selection(args: &[(u32, Value)], id: u32) -> Result<DataSelection, ActionError> {
@@ -388,15 +386,7 @@ fn recipient(args: &[(u32, Value)], id: u32) -> Result<RecipientAddress, ActionE
         .map_err(|_| ActionError::InvalidArgument)
 }
 
-fn format(args: &[(u32, Value)]) -> Result<PacketFormatId, ActionError> {
-    match arg(args, action_field::FORMAT)?.as_enum() {
-        Some(1) => Ok(PacketFormatId::Robonomics),
-        _ => Err(ActionError::InvalidArgument),
-    }
-}
-
-const PROFILE_ID: FieldDescriptor =
-    FieldDescriptor::new(action_field::PROFILE_ID, "profile_id", ValueKind::String);
+const INDEX: FieldDescriptor = FieldDescriptor::new(action_field::INDEX, "index", ValueKind::U64);
 const OFFSET: FieldDescriptor =
     FieldDescriptor::new(action_field::OFFSET, "offset", ValueKind::U64);
 const fn selection_field(id: u32, name: &'static str) -> FieldDescriptor {
@@ -407,12 +397,75 @@ const fn selection_field(id: u32, name: &'static str) -> FieldDescriptor {
     )
 }
 
-impl<M: RawMutex, S: TelemetryStore, C: FormatCapabilities> Status for TelemetryService<M, S, C> {
-    const VERSION: u16 = 1;
-    const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
-        FieldDescriptor::new(status_field::PROFILES, "profiles", ValueKind::U64),
-        FieldDescriptor::new(status_field::GENERATION, "generation", ValueKind::U64),
-    ];
+// The status schema is written out for the slot count of the build: five fields per slot follow
+// the generation, with stable ids and names, as a literal slice like the schema of any other
+// service. There is nothing to build or register at run time.
+macro_rules! status_schema {
+    ($($slot:literal),+) => {
+        &[
+            FieldDescriptor::new(status_field::GENERATION, "generation", ValueKind::U64),
+            $(
+                FieldDescriptor::new(
+                    status_field::profile($slot, status_field::PUBLIC),
+                    concat!("profile", $slot, "_public"),
+                    ValueKind::Bytes,
+                ),
+                FieldDescriptor::new(
+                    status_field::profile($slot, status_field::PRIVATE),
+                    concat!("profile", $slot, "_private"),
+                    ValueKind::Bool,
+                ),
+                FieldDescriptor::new(
+                    status_field::profile($slot, status_field::RECIPIENT),
+                    concat!("profile", $slot, "_recipient"),
+                    ValueKind::Address,
+                ),
+                FieldDescriptor::new(
+                    status_field::profile($slot, status_field::PRIVATE_SELECTION),
+                    concat!("profile", $slot, "_priv_selection"),
+                    ValueKind::Bytes,
+                ),
+                FieldDescriptor::new(
+                    status_field::profile($slot, status_field::REVISION),
+                    concat!("profile", $slot, "_revision"),
+                    ValueKind::U64,
+                ),
+            )+
+        ]
+    };
+}
+
+/// The profile slot count of a build, as a type: the status schema of a service with `N`
+/// slots. [`ProfileSlots`] is implemented for 1, 2 and 3 slots (at most 16 status fields, under
+/// the limit of 20); any other count does not compile, so no schema exists for a count the
+/// build does not use.
+pub struct Slots<const N: usize>;
+
+/// The static status schema of [`Slots`] of one size.
+pub trait ProfileSlots {
+    /// The generation and five fields per profile slot.
+    const SCHEMA: &'static [FieldDescriptor];
+}
+
+impl ProfileSlots for Slots<1> {
+    const SCHEMA: &'static [FieldDescriptor] = status_schema!(0);
+}
+
+impl ProfileSlots for Slots<2> {
+    const SCHEMA: &'static [FieldDescriptor] = status_schema!(0, 1);
+}
+
+impl ProfileSlots for Slots<3> {
+    const SCHEMA: &'static [FieldDescriptor] = status_schema!(0, 1, 2);
+}
+
+impl<M: RawMutex, S: TelemetryStore<P>, C: FormatCapabilities, const P: usize> Status
+    for TelemetryService<M, S, C, P>
+where
+    Slots<P>: ProfileSlots,
+{
+    const VERSION: u16 = 2;
+    const STATUS_SCHEMA: &'static [FieldDescriptor] = <Slots<P> as ProfileSlots>::SCHEMA;
     const ISSUES: &'static [IssueDescriptor] = &[IssueDescriptor::new(
         issue::STORAGE_UNAVAILABLE,
         "storage_unavailable",
@@ -436,77 +489,41 @@ impl<M: RawMutex, S: TelemetryStore, C: FormatCapabilities> Status for Telemetry
     }
 
     async fn status(&self, out: &mut impl StatusWriter) -> Result<(), WriteError> {
-        if let Ok(profiles) = self.store.load().await {
-            out.u64(status_field::PROFILES, profiles.profiles.len() as u64)?;
-            out.u64(status_field::GENERATION, u64::from(profiles.generation))?;
+        let Ok(config) = self.store.load().await else {
+            return Ok(());
+        };
+        out.u64(status_field::GENERATION, u64::from(config.generation))?;
+        for (slot, profile) in config.profiles.iter().enumerate().take(P) {
+            let field = |n| status_field::profile(slot, n);
+            out.bytes(
+                field(status_field::PUBLIC),
+                profile.public.measurements.as_bytes(),
+            )?;
+            out.bool(field(status_field::PRIVATE), profile.private.is_some())?;
+            let (selection, recipient) = match &profile.private {
+                Some(section) => (section.selection.measurements, Some(section.recipient)),
+                None => (Selection::NONE, None),
+            };
+            if let Some(recipient) = recipient {
+                out.bytes(field(status_field::RECIPIENT), &recipient.0)?;
+            }
+            out.bytes(field(status_field::PRIVATE_SELECTION), selection.as_bytes())?;
+            out.u64(field(status_field::REVISION), u64::from(profile.revision))?;
         }
         Ok(())
     }
 }
 
-impl<M: RawMutex, S: TelemetryStore, C: FormatCapabilities> Action for TelemetryService<M, S, C> {
+impl<M: RawMutex, S: TelemetryStore<P>, C: FormatCapabilities, const P: usize> Action
+    for TelemetryService<M, S, C, P>
+{
     const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new(action::PROFILE_ADD, "profile_add", ActionAccess::Mutate)
-            .args(&[
-                PROFILE_ID,
-                FieldDescriptor::new(action_field::FORMAT, "format", ValueKind::Enum)
-                    .with_enum(FORMAT_ENUM),
-            ])
-            .enums(FORMATS),
-        ActionDescriptor::new(
-            action::PROFILE_REMOVE,
-            "profile_remove",
-            ActionAccess::Mutate,
-        )
-        .args(&[PROFILE_ID]),
-        ActionDescriptor::new(action::SET_PUBLIC, "set_public", ActionAccess::Mutate).args(&[
-            PROFILE_ID,
-            selection_field(action_field::SELECTION, "selection"),
-        ]),
-        ActionDescriptor::new(action::ADD_PRIVATE, "add_private", ActionAccess::Mutate).args(&[
-            PROFILE_ID,
+        ActionDescriptor::new(action::SET_PUBLIC, "set_public", ActionAccess::Mutate)
+            .args(&[INDEX, selection_field(action_field::SELECTION, "selection")]),
+        ActionDescriptor::new(action::SET_PRIVATE, "set_private", ActionAccess::Mutate).args(&[
+            INDEX,
             FieldDescriptor::new(action_field::RECIPIENT, "recipient", ValueKind::Address),
             selection_field(action_field::PRIVATE_SELECTION, "selection"),
-        ]),
-        ActionDescriptor::new(
-            action::REMOVE_PRIVATE,
-            "remove_private",
-            ActionAccess::Mutate,
-        )
-        .args(&[
-            PROFILE_ID,
-            FieldDescriptor::new(action_field::RECIPIENT, "recipient", ValueKind::Address),
-        ]),
-        ActionDescriptor::new(action::PROFILE_LIST, "profile_list", ActionAccess::Read)
-            .args(&[OFFSET])
-            .results(&[
-                FieldDescriptor::new(action_field::LIST_ID, "profile_id", ValueKind::String),
-                FieldDescriptor::new(action_field::LIST_FORMAT, "format", ValueKind::Enum)
-                    .with_enum(FORMAT_ENUM),
-                FieldDescriptor::new(action_field::LIST_PUBLIC, "public", ValueKind::Bytes),
-                FieldDescriptor::new(action_field::LIST_REVISION, "revision", ValueKind::U64),
-            ])
-            .enums(FORMATS),
-        ActionDescriptor::new(
-            action::PROFILE_RECIPIENTS,
-            "profile_recipients",
-            ActionAccess::Read,
-        )
-        .args(&[
-            PROFILE_ID,
-            FieldDescriptor::new(action_field::RECIPIENTS_OFFSET, "offset", ValueKind::U64),
-        ])
-        .results(&[
-            FieldDescriptor::new(
-                action_field::RECIPIENT_ADDRESS,
-                "recipient",
-                ValueKind::Address,
-            ),
-            FieldDescriptor::new(
-                action_field::RECIPIENT_SELECTION,
-                "selection",
-                ValueKind::Bytes,
-            ),
         ]),
         ActionDescriptor::new(action::MEASUREMENTS, "measurements", ActionAccess::Read)
             .args(&[OFFSET])
@@ -523,71 +540,23 @@ impl<M: RawMutex, S: TelemetryStore, C: FormatCapabilities> Action for Telemetry
         out: &mut impl ActionOutput,
     ) -> Result<(), ActionError> {
         match action {
-            action::PROFILE_ADD => {
-                let id = text(args, action_field::PROFILE_ID)?;
-                let format = format(args)?;
-                self.edit(|profiles, _| profiles.add_profile(id, format))
-                    .await
-            }
-            action::PROFILE_REMOVE => {
-                let id = text(args, action_field::PROFILE_ID)?;
-                self.edit(|profiles, _| profiles.remove_profile(id)).await
-            }
             action::SET_PUBLIC => {
-                let id = text(args, action_field::PROFILE_ID)?;
+                let index = index(args)?;
                 let selection = selection(args, action_field::SELECTION)?;
-                self.edit(|profiles, caps| profiles.set_public(id, selection, caps))
+                self.edit(|profiles, caps| profiles.set_public(index, selection, caps))
                     .await
             }
-            action::ADD_PRIVATE => {
-                let id = text(args, action_field::PROFILE_ID)?;
+            action::SET_PRIVATE => {
+                let index = index(args)?;
                 let recipient = recipient(args, action_field::RECIPIENT)?;
                 let selection = selection(args, action_field::PRIVATE_SELECTION)?;
-                self.edit(|profiles, caps| profiles.add_private(id, recipient, selection, caps))
+                self.edit(|profiles, caps| profiles.set_private(index, recipient, selection, caps))
                     .await
-            }
-            action::REMOVE_PRIVATE => {
-                let id = text(args, action_field::PROFILE_ID)?;
-                let recipient = recipient(args, action_field::RECIPIENT)?;
-                self.edit(|profiles, _| profiles.remove_private(id, &recipient))
-                    .await
-            }
-            action::PROFILE_LIST => {
-                let offset = offset(args, action_field::OFFSET)?;
-                let profiles = self.store.load().await?;
-                for profile in profiles.profiles.iter().skip(offset).take(MAX_RECORDS) {
-                    out.next_record().map_err(|_| ActionError::Internal)?;
-                    write(out.text(action_field::LIST_ID, profile.id.as_str()))?;
-                    write(out.variant(action_field::LIST_FORMAT, profile.format.number()))?;
-                    write(out.bytes(
-                        action_field::LIST_PUBLIC,
-                        profile.public.measurements.as_bytes(),
-                    ))?;
-                    write(out.u64(action_field::LIST_REVISION, u64::from(profile.revision)))?;
-                }
-                Ok(())
-            }
-            action::PROFILE_RECIPIENTS => {
-                let id = text(args, action_field::PROFILE_ID)?;
-                let offset = offset(args, action_field::RECIPIENTS_OFFSET)?;
-                let profiles = self.store.load().await?;
-                let profile = profiles
-                    .get(id)
-                    .ok_or(ActionError::Rejected("profile_not_found"))?;
-                for section in profile.private.iter().skip(offset).take(MAX_RECORDS) {
-                    out.next_record().map_err(|_| ActionError::Internal)?;
-                    write(out.bytes(action_field::RECIPIENT_ADDRESS, &section.recipient.0))?;
-                    write(out.bytes(
-                        action_field::RECIPIENT_SELECTION,
-                        section.selection.measurements.as_bytes(),
-                    ))?;
-                }
-                Ok(())
             }
             action::MEASUREMENTS => {
                 let offset = offset(args, action_field::OFFSET)?;
-                // The catalog of what the (only) format can encode now.
-                let supported = self.caps.supported(PacketFormatId::Robonomics);
+                // The catalog of what the format can encode now.
+                let supported = self.caps.supported();
                 for entry in CATALOG
                     .iter()
                     .filter(|entry| supported.contains(entry.id))

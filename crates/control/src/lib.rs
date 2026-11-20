@@ -72,7 +72,7 @@
 //! let Some(Reply::Error(error)) = denied.response else { panic!() };
 //! assert_eq!(error.code, pb::ErrorCode::PermissionDenied);
 //!
-//! let encrypted = LinkSecurity { encrypted: true, authenticated: false, session: 0 };
+//! let encrypted = LinkSecurity { encrypted: true, ..Default::default() };
 //! let unknown = ask(reset(), &encrypted);
 //! let Some(Reply::Error(error)) = unknown.response else { panic!() };
 //! assert_eq!(error.code, pb::ErrorCode::NotFound);
@@ -86,6 +86,8 @@
 //! | [`ControlBackend`] | what the firmware provides: [`DeviceInfo`], uptime, the config, status and action registries, device health |
 //! | [`Device`] | a [`ControlBackend`] built from its parts (the usual way to make one) |
 //! | [`AuthorizationPolicy`] | maps a [`Privilege`] and the [`LinkSecurity`] of the transport to allow/deny |
+//! | [`ControlHub`] | the bounded mailbox between the transport frontends and the one worker that owns the [`Controller`] |
+//! | [`ControlAccess`], [`AccessPolicy`] | the access mode of each transport, whether a TCP pre-shared key is provisioned and the endpoint counters; the policy that enforces them |
 //!
 //! ## Operations and privileges
 //!
@@ -100,7 +102,13 @@
 //! | `ReadStream`, `CloseStream` | `ActionRegistry` | that of the action that created the stream |
 //! | `TailLogs` | `ActionRegistry` (`Action::tail_logs`) | `Read`; one request, one bounded reply, no stream |
 //!
-//! The three built-in policies are [`OpenPolicy`] (everything),
+//! [`AccessPolicy`] is the policy of a device: it reads the [`TransportAccessMode`] of the TCP
+//! endpoint. `Restricted` TCP wants a connection that completed the authenticated and encrypted
+//! handshake of `rohi-control-tcp`, a property the *transport* reports in [`LinkSecurity`], which no
+//! request field can change. BLE has no mode: in the current build it is open (no pairing, no link
+//! encryption, and never reported as encrypted or authenticated), so every BLE request is allowed.
+//! This crate implements no encryption, no signature and no challenge.
+//! The three simple policies are [`OpenPolicy`] (everything),
 //! [`RequireEncryption`] (reads are open, anything else needs an encrypted
 //! link) and [`RequireAuthenticated`] (anything but reads needs an encrypted
 //! and authenticated link). They treat `Provision` like `Mutate`; a custom
@@ -114,10 +122,15 @@
 //! and carries that action's privilege. `ReadStream` and `CloseStream` from
 //! another session are answered `NotFound`, as if the stream did not exist,
 //! and the policy is applied with the privilege of the creating action.
-//! [`Controller::link_lost`] forgets every owner and makes the services
-//! release their streams. A transport must give each connection its own
-//! `session` (BLE uses the connection epoch) and call `link_lost` when a
-//! connection ends; a transport that never has two clients may keep 0.
+//! [`Controller::session_closed`] closes only the streams of one session;
+//! [`Controller::link_lost`] is the same for every session.
+//! A [`ControlHub`] gives each connection a session that is unique across
+//! transports and ends it with the connection (the end is recorded in the hub, so the streams
+//! are closed even if the queue of the worker is full or the transport task is cancelled); a
+//! caller that uses [`Controller::handle`] directly gives each connection its own `session`.
+//! A transport that authenticates with a pre-shared key binds its session to the generation of
+//! the key ([`ControlHub::set_epoch`]): the worker does not run a queued request of a session
+//! whose key was replaced meanwhile.
 //!
 //! ## Errors on the wire
 //!
@@ -168,6 +181,10 @@
 //!
 //! # Guarantees and Limitations
 //!
+//! * **One worker, one request at a time.** With a [`ControlHub`] every transport hands its
+//!   requests to the single task that runs [`ControlHub::serve`], so Config, Status, Actions
+//!   and streams of all transports are serialized: a long action delays the requests of the
+//!   other connections. A connection has one request in flight and a full hub answers `Busy`.
 //! * **One response per request, no allocation.** The request and the response
 //!   are caller-owned slices; the dispatcher keeps no state between requests
 //!   except the owners of the open streams ([`MAX_OPEN_STREAMS`]).
@@ -194,25 +211,34 @@
 //! * **Authorization is only as strong as the link.** The policy trusts the
 //!   [`LinkSecurity`] the transport reports; the transport is responsible for
 //!   it being true.
-//! * **Not here.** Pairing, encryption, framing and fragmentation (see
+//! * **Not here.** Pairing, encryption (the transports request and report them), framing and fragmentation (see
 //!   [`rohi-control-ble`](../rohi_control_ble/index.html)), and any device
 //!   logic.
 
 #[cfg(test)]
 extern crate std;
 
+mod access;
 mod backend;
 mod controller;
 mod diag;
+mod hub;
 mod mapping;
 mod policy;
 
 #[cfg(test)]
+mod hub_tests;
+#[cfg(test)]
 mod tests;
 
+pub use access::{
+    AccessPolicy, ControlAccess, EndpointSettings, EndpointState, EndpointStats,
+    TransportAccessMode,
+};
 pub use backend::{ControlBackend, Device, DeviceInfo};
 pub use controller::{Controller, MAX_OPEN_STREAMS};
+pub use hub::{Busy, Connection, ControlHub, MAX_SESSIONS, Reservation, Response, SessionId};
 pub use policy::{
     AuthorizationPolicy, LinkSecurity, OpenPolicy, Privilege, RequireAuthenticated,
-    RequireEncryption,
+    RequireEncryption, Transport,
 };

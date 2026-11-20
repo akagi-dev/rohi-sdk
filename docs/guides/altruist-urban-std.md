@@ -129,16 +129,30 @@ rustdoc of [`rohi-control-tcp`](https://docs.rs/rohi-control-tcp).
 
 ## Security
 
-TCP control and the management interface are **development transports**: they have no authentication or encryption, and
-the control dispatcher allows everything, including identity provisioning and erase. Therefore:
+The management interface is a **development transport** with no encryption and no authentication. The control endpoint is
+protected by its access mode (see [Access control](../build/control-protocol.md#access-control)):
 
-- both listeners bind to `127.0.0.1` by default;
-- a non-loopback `--bind` is refused unless `--unsafe-allow-remote` is given, and then anyone who can reach the port
-  controls the device;
-- BLE has no pairing or encryption either, on the device and on `std`; the link is reported as unencrypted and
-  unauthenticated.
+- the `control_tcp` endpoint is **restricted** by default: a client must complete a handshake with the 32-byte pre-shared key,
+  and every request and response is then authenticated and encrypted. `rohi --psk-file FILE` does it automatically;
+- a restricted endpoint without a key serves nobody (and never falls back to plaintext). Give the process the key with
+  `--control-psk-file FILE` (64 hex characters or 32 raw bytes, for that run; it replaces the stored key and is never stored or
+  logged) or let the device generate it: `rohi control_tcp reveal_psk` (every call makes a
+  new key, a client never chooses one; the generic action output prints the key, see [Access and the TCP
+  key](../use/desktop/access.md)).
+  `--control-open` opens the endpoint for one run instead: plaintext and unauthenticated, for loopback development only, and even
+  then the key itself is never accepted over it;
+- the stored `control_tcp` section (`access_mode`, `bind_address`, `port`) is read at start, on top of the defaults (an
+  empty storage is the defaults, there is no `enabled` flag); `--bind` and `--control-port` override the stored address
+  and port for that run. A change applies as a whole at the next start. If the stored or default port is taken the endpoint
+  is `failed` in its status and the rest of the device starts; a port given on the command line that is taken is a startup error;
+- both listeners bind to `127.0.0.1` by default; a non-loopback address, from `--bind` or from the section, is refused
+  unless `--unsafe-allow-remote` is given: with the endpoint restricted a remote client still needs the key; with it open
+  (`--control-open`) anyone who can reach the port can read and control the device;
+- BLE (BlueZ) is open: no pairing and no link encryption, and the link is never reported as encrypted or authenticated.
+  Anyone in radio range can do everything, including `reveal_psk` and `system factory_reset`; restricting TCP does not
+  secure the device while BLE control runs.
 
-None of this is production-secure.
+A signature gives no confidentiality; none of this is production-secure.
 
 ## Storage
 
@@ -245,7 +259,7 @@ abandoned request, TCP framing errors, reconnection, readiness and the refusal o
 ## Local edge end-to-end
 
 Identity, time and the telemetry uplink run on the host network. Provisioning a test identity and sending telemetry to a
-local `robins edge` is possible by hand (`rohi action identity provision`, create a telemetry profile and a route:
-`rohi telemetry profile_add env robonomics`, `rohi telemetry set_public env bmx280`,
-`rohi connectivity route_add edge env http://127.0.0.1:PORT`), but an automated end-to-end test against a local edge is **not
+local `robins edge` is possible by hand (`rohi action identity provision`, set a telemetry profile and a route:
+`rohi telemetry set_public 0 bmx280`,
+`rohi connectivity set_endpoint 0 0 http://127.0.0.1:PORT`), but an automated end-to-end test against a local edge is **not
 implemented yet**. There is no TLS yet.

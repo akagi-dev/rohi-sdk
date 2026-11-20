@@ -74,8 +74,15 @@ jobs:
           for features in std std,std-tcp std,std-ble std,std-tcp,std-ble std,sensor-simulator std,std-tcp,std-ble,sensor-simulator; do
             cargo check -p altruist-urban --features "$features"
           done
+      - name: Test the optional LZ4 log codec (the default build has none)
+        run: |
+          cargo test -p rohi-logging --features lz4
+          cargo test -p rohi --features lz4 --test logs
+          cargo test -p altruist-urban --features std,std-tcp,sensor-simulator,lz4 --test std_logging
       - name: Test the portable part
         run: cargo test -p altruist-urban
+      - name: Test connectivity without the packet export
+        run: cargo test -p rohi-connectivity --no-default-features
       - name: Test TCP with simulated sensors (unit and end-to-end)
         run: cargo test -p altruist-urban --features std,std-tcp,sensor-simulator
       - name: Test TCP without simulated sensors

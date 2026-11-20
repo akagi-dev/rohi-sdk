@@ -17,8 +17,8 @@
 ///////////////////////////////////////////////////////////////////////////////
 #![no_std]
 
-//! The ROHI control protocol over TCP: length-prefixed Protobuf records and the
-//! serving loop of the device.
+//! The ROHI control protocol over TCP: a handshake with a pre-shared key, authenticated and
+//! encrypted Protobuf records, and the serving loop of the device.
 //!
 //! # Overview
 //!
@@ -29,8 +29,9 @@
 //! authorization policy and the same registries as over BLE
 //! (`rohi-control-ble`). Only the carrier differs, and TCP needs none of the BLE
 //! machinery: a TCP stream is ordered and reliable, so there is no
-//! fragmentation, no message id and no MTU. A message is a record with a 4-byte
-//! length ([`frame`]).
+//! fragmentation, no message id and no MTU. A message is a record: with a 4-byte
+//! length ([`frame`], plaintext, for an open development endpoint) or, on a restricted endpoint,
+//! an authenticated and encrypted record of the channel in [`secure`].
 //!
 //! The crate is `no_std` and allocation free and contains no socket code. The
 //! listening socket is an [`Acceptor`] supplied by a platform crate
@@ -49,12 +50,17 @@
 //! use std::rc::Rc;
 //!
 //! use embassy_futures::block_on;
+//! use embassy_futures::select::{Either, select};
+//! use core::time::Duration;
 //! use embedded_io_async::{ErrorType, Read, Write};
-//! use rohi_control::{Controller, Device, DeviceInfo, OpenPolicy};
+//! use rohi_control::{
+//!     ControlAccess, ControlHub, Controller, Device, DeviceInfo, OpenPolicy, Transport,
+//!     TransportAccessMode,
+//! };
 //! use rohi_control_proto::control::{self as pb, Request_::Request as Call, Response_::Response as Reply};
 //! use rohi_control_proto::{PROTOCOL_VERSION, decode, encode};
 //! use rohi_control_tcp::frame::{HEADER_LEN, decode_header, encode_header};
-//! use rohi_control_tcp::{Acceptor, ControlTcp};
+//! use rohi_control_tcp::{Acceptor, ControlTcp, Timed};
 //!
 //! // A connection: the bytes the client sent and what the device wrote back.
 //! #[derive(Default)]
@@ -93,6 +99,11 @@
 //!     }
 //! }
 //!
+//! // This in-memory client never waits, so there is no time to bound.
+//! impl Timed for Connection {
+//!     fn set_deadline(&mut self, _limit: Option<Duration>) {}
+//! }
+//!
 //! // An acceptor with a single client.
 //! struct OneClient(Option<Connection>);
 //!
@@ -118,11 +129,21 @@
 //! let connection = Connection::default();
 //! connection.0.borrow_mut().incoming = incoming;
 //!
-//! // The device: a controller over a device, served to the client.
+//! // The device: one controller over a device, served through the hub of the
+//! // control worker; the TCP side only frames.
 //! let info = DeviceInfo { firmware: "demo-0.1.0", board: "demo-board" };
 //! let controller = Controller::new(Device::new(info, || 0, (), (), ()), OpenPolicy);
-//! let mut control = ControlTcp::new(OneClient(Some(connection.clone())), &controller);
-//! let error = block_on(control.run());
+//! let access = ControlAccess::new(|_| false);
+//! // Plaintext records, for a loopback demonstration; the default (`Restricted`) wants the
+//! // handshake of [`secure`] with a pre-shared key.
+//! access.set_mode(Transport::Tcp, TransportAccessMode::Open);
+//! let hub = ControlHub::<1>::with_access(&access);
+//! let mut control = ControlTcp::new(OneClient(Some(connection.clone())), &hub);
+//! // On the device the worker is the `control_task`; here both run in turn.
+//! let error = match block_on(select(hub.serve(&controller), control.run())) {
+//!     Either::First(never) => never,
+//!     Either::Second(error) => error,
+//! };
 //! assert_eq!(error, "no more clients");
 //!
 //! // The client reads the response record.
@@ -140,10 +161,12 @@
 //!
 //! | Concept | Meaning |
 //! |---------|---------|
-//! | Record | A 4-byte little-endian length and one Protobuf message ([`frame`]) |
+//! | Record | One Protobuf message: behind a 4-byte little-endian length ([`frame`], open endpoint) or sealed with XChaCha20-Poly1305 ([`secure`], restricted endpoint) |
+//! | Secure channel | A handshake with a 32-byte pre-shared key (HKDF-SHA256, random nonces, mutual proofs bound to the transcript), directional keys and per-record counters, see [`secure`] |
 //! | [`Acceptor`] | Yields the next client connection as an `embedded-io-async` stream |
-//! | [`ControlTcp`] | Accepts a client, then reads a request record, lets the [`Controller`](rohi_control::Controller) answer, writes the response record |
-//! | Link security | Always the default (unencrypted, unauthenticated) one |
+//! | [`Timed`] | A stream that can be given an absolute deadline: the handshake and every record have one |
+//! | [`ControlTcp`] | Accepts a client, reads a request record into a slot of the [`ControlHub`](rohi_control::ControlHub), writes the response record of the one control worker |
+//! | Link security | Set by this crate after the handshake (encrypted and authenticated); a plaintext connection of an open endpoint keeps the default (neither) |
 //!
 //! **Connections.** One client is served at a time. While it is connected, the
 //! next one waits in the backlog of the platform listener. A client that
@@ -165,16 +188,16 @@
 //!                                                │ embedded-io-async stream
 //!                                                ▼
 //!                                  ControlTcp ── frame
-//!                                                │ request bytes + LinkSecurity
+//!                                                │ request slot of the ControlHub
 //!                                                ▼
-//!                                  rohi_control::Controller ── registries of rohi-service
+//!                                  control_task: rohi_control::Controller ── registries of rohi-service
 //!  response record ◄── TCP ◄── ControlTcp ◄──────┘
 //! ```
 //!
 //! * The listener is not here: `rohi-net-std` implements [`Acceptor`] over host
 //!   sockets. The wiring in the firmware is the `std` platform of
 //!   `firmwares/altruist-urban`.
-//! * BLE and TCP are independent transports of the same controller; a device
+//! * BLE and TCP are independent frontends of the same control worker; a device
 //!   may serve both with two tasks over one backend.
 //! * The message schema is [`rohi_control_proto`].
 //!
@@ -184,11 +207,14 @@
 //! |------|-----------|
 //! | [`ControlTcp`] | serve a controller to the clients of an acceptor |
 //! | [`Acceptor`] | provide client connections from a platform |
+//! | [`Timed`] | bound a connection with an absolute deadline ([`HANDSHAKE_TIMEOUT`], [`RECORD_TIMEOUT`]) |
 //! | [`frame`] | encode and check record headers, on either side of the link |
 //!
 //! # Guarantees and Limitations
 //!
-//! * **Bounded memory.** All buffers are inline. The length of a record is
+//! * **Bounded memory.** The message buffers are the slots of the
+//!   [`ControlHub`](rohi_control::ControlHub), shared with the other transports;
+//!   this crate has none of its own. The length of a record is
 //!   checked against
 //!   [`MAX_REQUEST_LEN`](rohi_control_proto::limits::MAX_REQUEST_LEN) before
 //!   its payload is read, so an oversized request is never buffered.
@@ -202,11 +228,24 @@
 //! * **Cancellation.** Dropping [`ControlTcp::run`] or [`ControlTcp::serve_next`]
 //!   closes the current connection and abandons the request being handled; what
 //!   a service already committed stays committed.
-//! * **No security.** The transport has no encryption, authentication or
-//!   pairing, and [`OpenPolicy`](rohi_control::OpenPolicy) allows everything,
-//!   including identity provisioning and erase. A platform must bind its
-//!   listener to the loopback address unless the developer explicitly asks for
-//!   more. It is a development transport, not a production-secure one.
+//! * **Transport security is owned here.** On a restricted endpoint (the default) nothing is
+//!   read, decrypted or processed before the handshake with the pre-shared key succeeded; the
+//!   records are authenticated and encrypted with XChaCha20-Poly1305 under keys of the direction;
+//!   malformed, replayed, reordered, truncated and tampered records, a counter that is used up and
+//!   a key that was replaced (also for a request that was already queued) end the connection with nothing written in plaintext, and there is
+//!   never a fallback to plaintext. The key is never sent or logged and the keys derived from it
+//!   are wiped on drop. There is **no forward secrecy** (whoever learns the key can decrypt a
+//!   recorded session), no certificate or TLS, and the key is provisioned through a protected
+//!   link only (see `rohi-control-endpoints`). An `Open` endpoint is plaintext and
+//!   unauthenticated: a platform must bind it to the loopback address unless the developer
+//!   explicitly asks for more. A client that is slow does not hold the one
+//!   connection: the handshake (from the accepted connection) and every request record (from its
+//!   first byte to its tag) have an **absolute** deadline ([`HANDSHAKE_TIMEOUT`],
+//!   [`RECORD_TIMEOUT`], 10 seconds; [`ControlTcp::with_timeouts`]) that single bytes do not
+//!   extend, and a response must be written within [`RECORD_TIMEOUT`]. The stream enforces it
+//!   ([`Timed::set_deadline`]). A client that is silent before the first byte of a record holds the
+//!   connection until the platform closes the stream: the platform must give its stream an idle
+//!   deadline (`rohi-net-std` ends a connection that sends nothing for 60 seconds).
 //! * **Evidence.** The records and the serving loop are covered by host tests
 //!   with scripted in-memory connections (`cargo test -p rohi-control-tcp`) and
 //!   the example above. End-to-end use with host sockets and the `rohi` tool is
@@ -216,9 +255,12 @@
 extern crate std;
 
 pub mod frame;
+pub mod secure;
 mod service;
 
 #[cfg(test)]
 mod tests;
 
-pub use service::{Acceptor, ControlTcp};
+pub use service::{
+    Acceptor, ControlTcp, HANDSHAKE_TIMEOUT, PskSource, RECORD_TIMEOUT, Timed, error_kind,
+};

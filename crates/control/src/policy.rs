@@ -28,7 +28,8 @@ pub enum Privilege {
     Mutate,
     /// Runs an action that needs [`ActionAccess::Provision`] (for example
     /// installing a device identity or formatting the configuration storage).
-    /// A link policy may demand more than for [`Mutate`](Self::Mutate).
+    /// A link policy may demand more than for [`Mutate`](Self::Mutate). The
+    /// owning service decides whether it may be repeated.
     Provision,
 }
 
@@ -43,6 +44,20 @@ impl Privilege {
     }
 }
 
+/// The kind of transport a connection belongs to. TCP has an access mode, BLE is open, see
+/// [`TransportAccessMode`](crate::TransportAccessMode).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Transport {
+    /// Not declared: an [`AccessPolicy`](crate::AccessPolicy) treats it as
+    /// restricted and never as open.
+    #[default]
+    Unspecified,
+    /// A BLE central.
+    Ble,
+    /// A TCP client.
+    Tcp,
+}
+
 /// Security properties of the link a request arrived on, as reported by the
 /// transport.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -51,25 +66,29 @@ pub struct LinkSecurity {
     pub encrypted: bool,
     /// The link is encrypted with an authenticated key.
     pub authenticated: bool,
-    /// Identity of the connection, different for every connection of a
-    /// transport (for BLE, the connection epoch). A stream belongs to the
-    /// session that invoked the action and is unknown to every other one.
-    /// A transport that serves a single client may leave it 0.
-    pub session: u32,
+    /// Identity of the connection, different for every live connection of the
+    /// device (a [`ControlHub`](crate::ControlHub) allocates it). A stream
+    /// belongs to the session that invoked the action and is unknown to every
+    /// other one. A transport that serves a single client may leave it 0.
+    pub session: u64,
+    /// The transport of the connection.
+    pub transport: Transport,
 }
 
 /// Decides whether a request with the given [`Privilege`] may run on a link.
 ///
 /// The transport only reports link properties; this is the single place
-/// where they become authorization decisions. Secret-carrying actions use
-/// the same mechanism.
+/// where they become authorization decisions. The properties are the ones a
+/// trusted transport established (an encrypted BLE link, a TCP connection that completed
+/// its handshake): nothing in a request can raise them. Secret-carrying actions use the
+/// same mechanism.
 ///
 /// ```
 /// use rohi_control::{
 ///     AuthorizationPolicy, LinkSecurity, Privilege, RequireAuthenticated, RequireEncryption,
 /// };
 ///
-/// let encrypted = LinkSecurity { encrypted: true, authenticated: false, session: 0 };
+/// let encrypted = LinkSecurity { encrypted: true, ..Default::default() };
 /// assert!(RequireEncryption.allows(Privilege::Mutate, &encrypted));
 /// assert!(!RequireAuthenticated.allows(Privilege::Mutate, &encrypted));
 /// // Reads are open under both.
@@ -78,6 +97,21 @@ pub struct LinkSecurity {
 pub trait AuthorizationPolicy {
     /// `true` when the operation is allowed.
     fn allows(&self, privilege: Privilege, link: &LinkSecurity) -> bool;
+
+    /// The stable reason sent with `PermissionDenied` for a request
+    /// [`allows`](Self::allows) refused.
+    fn denial_reason(&self, privilege: Privilege, link: &LinkSecurity) -> Option<&'static str> {
+        let _ = (privilege, link);
+        None
+    }
+
+    /// Whether `link` is protected well enough for an action that is marked
+    /// [`secure_link`](rohi_service::ActionDescriptor::secure_link): it carries key material of
+    /// a transport and is refused in every access mode on a link that is not. The default asks
+    /// for an encrypted link.
+    fn protects_secrets(&self, link: &LinkSecurity) -> bool {
+        link.encrypted
+    }
 }
 
 /// Allows everything. Used until a link security policy is configured.
@@ -86,6 +120,10 @@ pub struct OpenPolicy;
 
 impl AuthorizationPolicy for OpenPolicy {
     fn allows(&self, _privilege: Privilege, _link: &LinkSecurity) -> bool {
+        true
+    }
+
+    fn protects_secrets(&self, _link: &LinkSecurity) -> bool {
         true
     }
 }

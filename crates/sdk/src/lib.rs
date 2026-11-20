@@ -298,6 +298,9 @@ pub use rohi_control as control;
 #[cfg(feature = "ble")]
 #[cfg_attr(docsrs, doc(cfg(feature = "ble")))]
 pub use rohi_control_ble as ble;
+#[cfg(feature = "endpoints")]
+#[cfg_attr(docsrs, doc(cfg(feature = "endpoints")))]
+pub use rohi_control_endpoints as endpoints;
 #[cfg(feature = "tcp")]
 #[cfg_attr(docsrs, doc(cfg(feature = "tcp")))]
 pub use rohi_control_tcp as tcp;

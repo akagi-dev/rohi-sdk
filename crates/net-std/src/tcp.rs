@@ -20,11 +20,13 @@
 //! [`ControlTcp`](rohi_control_tcp::ControlTcp).
 
 use core::net::SocketAddr;
+use core::time::Duration;
 use std::io::ErrorKind;
+use std::time::Instant;
 
 use embedded_io_async::{ErrorType, Read, Write};
 use log::{debug, info, trace, warn};
-use rohi_control_tcp::Acceptor;
+use rohi_control_tcp::{Acceptor, Timed};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -95,7 +97,11 @@ impl Acceptor for TcpAcceptor {
                 Ok((stream, peer)) => {
                     let _ = stream.set_nodelay(true);
                     debug!(target: "control.tcp", "Connection accepted (peer={peer})");
-                    return Ok(TcpConnection { stream, peer });
+                    return Ok(TcpConnection {
+                        stream,
+                        peer,
+                        deadline: None,
+                    });
                 }
                 Err(error)
                     if matches!(
@@ -117,10 +123,49 @@ impl Acceptor for TcpAcceptor {
     }
 }
 
-/// A client connection of a [`TcpAcceptor`]. Dropping it closes the socket.
+/// How long a read waits for the client. The control endpoint serves one client at a
+/// time, so a client that goes silent (or whose key was replaced) must not hold it forever.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// A client connection of a [`TcpAcceptor`]. Dropping it closes the socket. A read that
+/// gets no byte for 60 seconds fails with [`ErrorKind::TimedOut`], and so does any read or write
+/// after the absolute deadline of [`Timed::set_deadline`].
 pub struct TcpConnection {
     stream: TcpStream,
     peer: SocketAddr,
+    deadline: Option<Instant>,
+}
+
+impl TcpConnection {
+    // The time a read or write may still wait, `None` when it may not wait at all.
+    fn remaining(&self, idle: Option<Duration>) -> Option<Duration> {
+        let left = self
+            .deadline
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()));
+        match (left, idle) {
+            (Some(left), Some(idle)) => Some(left.min(idle)),
+            (Some(left), None) => Some(left),
+            (None, idle) => idle,
+        }
+    }
+}
+
+impl Timed for TcpConnection {
+    fn set_deadline(&mut self, limit: Option<Duration>) {
+        self.deadline = limit.and_then(|limit| Instant::now().checked_add(limit));
+    }
+}
+
+async fn bounded<T>(
+    wait: Option<Duration>,
+    operation: impl Future<Output = std::io::Result<T>>,
+) -> std::io::Result<T> {
+    match wait {
+        None => operation.await,
+        Some(wait) => tokio::time::timeout(wait, operation)
+            .await
+            .unwrap_or_else(|_| Err(ErrorKind::TimedOut.into())),
+    }
 }
 
 impl Drop for TcpConnection {
@@ -135,7 +180,10 @@ impl ErrorType for TcpConnection {
 
 impl Read for TcpConnection {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, std::io::Error> {
-        let read = within(self.stream.read(buf)).await.inspect_err(
+        let wait = self.remaining(Some(IDLE_TIMEOUT));
+        let read = within(bounded(wait, self.stream.read(buf)))
+            .await
+            .inspect_err(
             |error| debug!(target: "control.tcp", "Read failed (peer={} err={error})", self.peer),
         )?;
         trace!(target: "control.tcp", "Read from peer (size_b={read} peer={})", self.peer);
@@ -145,16 +193,22 @@ impl Read for TcpConnection {
 
 impl Write for TcpConnection {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, std::io::Error> {
-        let written = within(self.stream.write(buf)).await.inspect_err(
-            |error| debug!(target: "control.tcp", "Write failed (peer={} err={error})", self.peer),
-        )?;
+        let wait = self.remaining(None);
+        let written = within(bounded(wait, self.stream.write(buf)))
+            .await
+            .inspect_err(
+                |error| debug!(target: "control.tcp", "Write failed (peer={} err={error})", self.peer),
+            )?;
         trace!(target: "control.tcp", "Wrote to peer (size_b={written} peer={})", self.peer);
         Ok(written)
     }
 
     async fn flush(&mut self) -> Result<(), std::io::Error> {
-        within(self.stream.flush()).await.inspect_err(
-            |error| debug!(target: "control.tcp", "Flush failed (peer={} err={error})", self.peer),
-        )
+        let wait = self.remaining(None);
+        within(bounded(wait, self.stream.flush()))
+            .await
+            .inspect_err(
+                |error| debug!(target: "control.tcp", "Flush failed (peer={} err={error})", self.peer),
+            )
     }
 }

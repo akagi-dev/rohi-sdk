@@ -16,104 +16,47 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 //! Packet profiles: what a signed packet contains, what is public and which
-//! recipients receive encrypted private sections.
+//! recipient receives an encrypted private section.
+//!
+//! The model is fixed and index-addressed: a [`TelemetryConfig`] holds
+//! `PROFILES` profile **slots** (Altruist Urban: 2), addressed by their
+//! `profile_index` (`0`, `1`, ...), all of them always present. Every slot has
+//! a **public** selection and at most one **private** section (one recipient
+//! and its selection). There is no name, no format choice (the format is the
+//! one compiled into the firmware) and no recipient list. Both selections of
+//! every slot start empty: the existence of a slot publishes and discloses
+//! nothing.
 //!
 //! A profile says nothing about routes, endpoints or schedules. The state is
 //! bounded, typed and persisted as one value ([`TelemetryConfig`]) by the
 //! firmware's configuration owner; every mutation here works on a value, so
 //! the owner can validate a candidate and publish it only after an atomic
-//! commit.
+//! commit. An index outside the slots is refused with
+//! [`ProfileError::InvalidIndex`] and changes nothing.
 //!
-//! # Generations, incarnations and revisions
+//! # Generations and revisions
 //!
 //! The config keeps one persisted, monotonic `generation`. Every successful
-//! mutation increments it. A profile's [`incarnation`](PacketProfile::incarnation)
-//! is the generation at which it was created and its
-//! [`revision`](PacketProfile::revision) the generation of its last edit.
-//! Because the counter never decreases (also across removal and reboot), a
-//! profile removed and recreated under the same text id has a different
-//! incarnation, and a policy edit always has a new revision: neither can be
-//! mistaken for an earlier policy.
+//! mutation increments it, and the
+//! [`revision`](PacketProfile::revision) of the edited slot is the generation
+//! of its last edit (`0` while the slot was never edited). A packet is stamped
+//! with `(profile_index, revision)` ([`ProfileStamp`](crate::ProfileStamp)), so
+//! a policy edit, or [`TelemetryConfig::clear`], always gives the slot a new
+//! revision that no earlier packet carries, while the other slot's packets
+//! stay valid.
 
-use heapless::{String, Vec};
 use minicbor::{CborLen, Decode, Encode};
 
 use crate::selection::{DataSelection, Selection, SelectionError};
 
-/// Maximum length of a profile id, in bytes.
-pub const PROFILE_ID_LEN: usize = 24;
-
-/// A packet format compiled into the firmware.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Encode, Decode, CborLen)]
-#[cbor(index_only)]
+/// The packet format compiled into the firmware.
+///
+/// There is exactly one, so it is never chosen by a client or stored in a
+/// profile; it is reported in [`PacketInfo`](crate::PacketInfo).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PacketFormatId {
     /// The Robonomics Connectivity Protocol, see `rohi-telemetry-robonomics`.
-    #[n(1)]
     Robonomics,
-}
-
-impl PacketFormatId {
-    /// The number of the format on the control wire (the enum value of the
-    /// Actions).
-    pub const fn number(self) -> u32 {
-        match self {
-            Self::Robonomics => 1,
-        }
-    }
-
-    /// The canonical name of the format, as the Actions show it.
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Robonomics => "robonomics",
-        }
-    }
-
-    /// The format with canonical `name`.
-    pub fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "robonomics" => Some(Self::Robonomics),
-            _ => None,
-        }
-    }
-}
-
-/// The stable text id of a profile: 1 to [`PROFILE_ID_LEN`] bytes of
-/// `a-z`, `0-9`, `-` and `_`.
-#[derive(Clone, PartialEq, Eq, Hash, Encode, Decode, CborLen)]
-#[cbor(transparent)]
-pub struct PacketProfileId(
-    #[n(0)]
-    #[cbor(
-        encode_with = "rohi_config::cbor::text::encode",
-        decode_with = "rohi_config::cbor::text::decode",
-        cbor_len = "rohi_config::cbor::text::cbor_len"
-    )]
-    String<PROFILE_ID_LEN>,
-);
-
-impl PacketProfileId {
-    /// `None` unless `id` is a valid profile id.
-    pub fn new(id: &str) -> Option<Self> {
-        let valid = !id.is_empty()
-            && id
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
-        if !valid {
-            return None;
-        }
-        String::try_from(id).ok().map(Self)
-    }
-
-    /// The id as text.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl core::fmt::Debug for PacketProfileId {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::Debug::fmt(self.as_str(), f)
-    }
 }
 
 /// The address of a private-section recipient: a raw 32-byte public key.
@@ -145,7 +88,8 @@ impl<'b, C> Decode<'b, C> for RecipientAddress {
     }
 }
 
-/// One private section: what one recipient receives encrypted.
+/// The private section of a profile: what its one recipient receives
+/// encrypted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Encode, Decode, CborLen)]
 pub struct PrivateSectionPolicy {
     /// Who receives it.
@@ -156,105 +100,91 @@ pub struct PrivateSectionPolicy {
     pub selection: DataSelection,
 }
 
-/// A packet profile.
-#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode, CborLen)]
-pub struct PacketProfile<const RECIPIENTS: usize> {
-    /// The text id.
+/// One profile slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Encode, Decode, CborLen)]
+pub struct PacketProfile {
+    /// The public section; `none` until it is set.
     #[n(0)]
-    pub id: PacketProfileId,
-    /// The format of the packet.
-    #[n(1)]
-    pub format: PacketFormatId,
-    /// The public section; `none` when the profile is created.
-    #[n(2)]
     pub public: DataSelection,
-    /// The private sections, one per recipient.
-    #[n(3)]
-    #[cbor(
-        encode_with = "rohi_config::cbor::seq::encode",
-        decode_with = "rohi_config::cbor::seq::decode",
-        cbor_len = "rohi_config::cbor::seq::cbor_len"
-    )]
-    pub private: Vec<PrivateSectionPolicy, RECIPIENTS>,
-    /// The generation at which the profile was created.
-    #[n(4)]
-    pub incarnation: u32,
-    /// The generation of the last change of the policy.
-    #[n(5)]
+    /// The private section: one recipient with its selection, or none.
+    #[n(1)]
+    pub private: Option<PrivateSectionPolicy>,
+    /// The generation of the last change of the policy, `0` if never edited.
+    #[n(2)]
     pub revision: u32,
+}
+
+impl PacketProfile {
+    /// A slot that discloses nothing: empty public selection, no private
+    /// section.
+    pub const EMPTY: Self = Self {
+        public: DataSelection::NONE,
+        private: None,
+        revision: 0,
+    };
 }
 
 /// Why a mutation was refused. A refused mutation changes nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProfileError {
-    /// The profile id is not valid.
-    InvalidId,
-    /// A profile with this id exists.
-    Duplicate,
-    /// No profile with this id.
-    NotFound,
-    /// No private section for this recipient.
-    RecipientNotFound,
-    /// The format cannot encode the selection or accept the recipient.
+    /// The profile index is not a slot of this build.
+    InvalidIndex,
+    /// The format cannot encode the selection.
     Selection(SelectionError),
-    /// A private selection must not be empty: remove the recipient instead.
+    /// A private selection must not be empty: remove the private section
+    /// instead (a stored config with an empty one is invalid).
     EmptyPrivateSelection,
     /// The recipient key is not usable with the format.
     InvalidRecipient,
-    /// The profile table is full.
-    TooManyProfiles,
-    /// The profile has all its private sections.
-    TooManyRecipients,
+    /// A revision is newer than the generation: the config was not written by
+    /// this code.
+    InconsistentGeneration,
 }
 
-/// All persisted profiles.
+/// All persisted profile slots.
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode, CborLen)]
-pub struct TelemetryConfig<const PROFILES: usize, const RECIPIENTS: usize> {
+pub struct TelemetryConfig<const PROFILES: usize> {
     /// Monotonic counter, see the module documentation.
     #[n(0)]
     pub generation: u32,
-    /// The profiles, in creation order.
+    /// The slots, by `profile_index`. A stored array of another length does
+    /// not decode.
     #[n(1)]
-    #[cbor(
-        encode_with = "rohi_config::cbor::seq::encode",
-        decode_with = "rohi_config::cbor::seq::decode",
-        cbor_len = "rohi_config::cbor::seq::cbor_len"
-    )]
-    pub profiles: Vec<PacketProfile<RECIPIENTS>, PROFILES>,
+    pub profiles: [PacketProfile; PROFILES],
 }
 
-impl<const P: usize, const R: usize> Default for TelemetryConfig<P, R> {
-    /// No profile: nothing is packaged and nothing is disclosed.
+impl<const P: usize> Default for TelemetryConfig<P> {
+    /// Every slot empty: nothing is packaged and nothing is disclosed.
     fn default() -> Self {
-        Self {
-            generation: 0,
-            profiles: Vec::new(),
-        }
+        Self::EMPTY
     }
 }
 
 /// What a format supports, as far as profile validation needs it.
 pub trait FormatCapabilities {
     /// The measurements the format can encode correctly.
-    fn supported(&self, format: PacketFormatId) -> Selection;
+    fn supported(&self) -> Selection;
 
     /// Whether `recipient` is a key the format can encrypt to.
-    fn accepts_recipient(&self, format: PacketFormatId, recipient: &RecipientAddress) -> bool;
+    fn accepts_recipient(&self, recipient: &RecipientAddress) -> bool;
 }
 
-impl<const P: usize, const R: usize> TelemetryConfig<P, R> {
-    /// The profile with `id`.
-    pub fn get(&self, id: &str) -> Option<&PacketProfile<R>> {
-        self.profiles
-            .iter()
-            .find(|profile| profile.id.as_str() == id)
+impl<const P: usize> TelemetryConfig<P> {
+    /// The config of a device without any edit: every slot empty.
+    pub const EMPTY: Self = Self {
+        generation: 0,
+        profiles: [PacketProfile::EMPTY; P],
+    };
+
+    /// The profile at `index`; `None` outside the slots.
+    pub fn get(&self, index: u8) -> Option<&PacketProfile> {
+        self.profiles.get(usize::from(index))
     }
 
-    fn index(&self, id: &str) -> Result<usize, ProfileError> {
+    fn slot(&mut self, index: u8) -> Result<&mut PacketProfile, ProfileError> {
         self.profiles
-            .iter()
-            .position(|profile| profile.id.as_str() == id)
-            .ok_or(ProfileError::NotFound)
+            .get_mut(usize::from(index))
+            .ok_or(ProfileError::InvalidIndex)
     }
 
     fn bump(&mut self) -> u32 {
@@ -262,185 +192,108 @@ impl<const P: usize, const R: usize> TelemetryConfig<P, R> {
         self.generation
     }
 
-    /// Creates an empty profile: public `none`, no private section. Creating a
-    /// profile discloses nothing.
-    ///
-    /// # Errors
-    ///
-    /// [`ProfileError`]; the config is unchanged.
-    pub fn add_profile(&mut self, id: &str, format: PacketFormatId) -> Result<(), ProfileError> {
-        let id = PacketProfileId::new(id).ok_or(ProfileError::InvalidId)?;
-        if self.get(id.as_str()).is_some() {
-            return Err(ProfileError::Duplicate);
-        }
-        if self.profiles.is_full() {
-            return Err(ProfileError::TooManyProfiles);
-        }
-        let generation = self.bump();
-        let profile = PacketProfile {
-            id,
-            format,
-            public: DataSelection::NONE,
-            private: Vec::new(),
-            incarnation: generation,
-            revision: generation,
-        };
-        self.profiles
-            .push(profile)
-            .map_err(|_| ProfileError::TooManyProfiles)
-    }
-
-    /// Deletes a profile. The generation advances, so the same id created
-    /// again is a new incarnation.
-    ///
-    /// # Errors
-    ///
-    /// [`ProfileError::NotFound`].
-    pub fn remove_profile(&mut self, id: &str) -> Result<(), ProfileError> {
-        let index = self.index(id)?;
-        self.profiles.remove(index);
-        self.bump();
-        Ok(())
-    }
-
-    /// Replaces the public selection (never a union with the old one).
+    /// Replaces the public selection of slot `index` (never a union with the
+    /// old one).
     ///
     /// # Errors
     ///
     /// [`ProfileError`]; the config is unchanged.
     pub fn set_public(
         &mut self,
-        id: &str,
+        index: u8,
         selection: DataSelection,
         caps: &impl FormatCapabilities,
     ) -> Result<(), ProfileError> {
-        let index = self.index(id)?;
-        let supported = caps.supported(self.profiles[index].format);
+        if usize::from(index) >= P {
+            return Err(ProfileError::InvalidIndex);
+        }
         selection
             .measurements
-            .validate(&supported)
+            .validate(&caps.supported())
             .map_err(ProfileError::Selection)?;
         let generation = self.bump();
-        let profile = &mut self.profiles[index];
+        let profile = self.slot(index)?;
         profile.public = selection;
         profile.revision = generation;
         Ok(())
     }
 
-    /// Adds the private section of `recipient`, or replaces its selection
-    /// wholesale.
+    /// Sets the private section of slot `index`: `recipient` becomes its only
+    /// recipient, replacing any earlier one, with `selection`. An empty
+    /// selection (`none`) removes the private section instead and does not
+    /// look at `recipient`.
     ///
     /// # Errors
     ///
     /// [`ProfileError`]; the config is unchanged.
-    pub fn add_private(
+    pub fn set_private(
         &mut self,
-        id: &str,
+        index: u8,
         recipient: RecipientAddress,
         selection: DataSelection,
         caps: &impl FormatCapabilities,
     ) -> Result<(), ProfileError> {
-        let index = self.index(id)?;
-        let format = self.profiles[index].format;
-        if selection.measurements.is_none() {
-            return Err(ProfileError::EmptyPrivateSelection);
+        if usize::from(index) >= P {
+            return Err(ProfileError::InvalidIndex);
         }
-        if !caps.accepts_recipient(format, &recipient) {
-            return Err(ProfileError::InvalidRecipient);
-        }
-        selection
-            .measurements
-            .validate(&caps.supported(format))
-            .map_err(ProfileError::Selection)?;
-        let existing = self.profiles[index]
-            .private
-            .iter()
-            .position(|section| section.recipient == recipient);
-        if existing.is_none() && self.profiles[index].private.is_full() {
-            return Err(ProfileError::TooManyRecipients);
-        }
-        let generation = self.bump();
-        let profile = &mut self.profiles[index];
-        match existing {
-            Some(position) => profile.private[position].selection = selection,
-            None => {
-                profile
-                    .private
-                    .push(PrivateSectionPolicy {
-                        recipient,
-                        selection,
-                    })
-                    .map_err(|_| ProfileError::TooManyRecipients)?;
+        let private = if selection.measurements.is_none() {
+            None
+        } else {
+            if !caps.accepts_recipient(&recipient) {
+                return Err(ProfileError::InvalidRecipient);
             }
-        }
-        profile.revision = generation;
-        Ok(())
-    }
-
-    /// Removes the private section of `recipient`.
-    ///
-    /// # Errors
-    ///
-    /// [`ProfileError::NotFound`] or [`ProfileError::RecipientNotFound`].
-    pub fn remove_private(
-        &mut self,
-        id: &str,
-        recipient: &RecipientAddress,
-    ) -> Result<(), ProfileError> {
-        let index = self.index(id)?;
-        let position = self.profiles[index]
-            .private
-            .iter()
-            .position(|section| section.recipient == *recipient)
-            .ok_or(ProfileError::RecipientNotFound)?;
+            selection
+                .measurements
+                .validate(&caps.supported())
+                .map_err(ProfileError::Selection)?;
+            Some(PrivateSectionPolicy {
+                recipient,
+                selection,
+            })
+        };
         let generation = self.bump();
-        let profile = &mut self.profiles[index];
-        profile.private.remove(position);
+        let profile = self.slot(index)?;
+        profile.private = private;
         profile.revision = generation;
         Ok(())
     }
 
-    /// Checks a config that was decoded from storage: ids valid and unique,
-    /// recipients unique, selections valid for the format, private selections
-    /// non-empty, revisions not newer than the generation. A config that
-    /// fails is never used: it must not widen what is disclosed.
+    /// Empties every slot (a reset): public and private selections are
+    /// cleared and every revision becomes the new generation, so no packet
+    /// built before the reset is current.
+    pub fn clear(&mut self) {
+        let generation = self.bump();
+        self.profiles = [PacketProfile {
+            revision: generation,
+            ..PacketProfile::EMPTY
+        }; P];
+    }
+
+    /// Checks a config that was decoded from storage: selections valid for
+    /// the format, private selections non-empty with a usable recipient,
+    /// revisions not newer than the generation. A config that fails is never
+    /// used: it must not widen what is disclosed.
     ///
     /// # Errors
     ///
     /// The first [`ProfileError`] found.
     pub fn validate(&self, caps: &impl FormatCapabilities) -> Result<(), ProfileError> {
-        for (index, profile) in self.profiles.iter().enumerate() {
-            if PacketProfileId::new(profile.id.as_str()).is_none() {
-                return Err(ProfileError::InvalidId);
+        let supported = caps.supported();
+        for profile in &self.profiles {
+            if profile.revision > self.generation {
+                return Err(ProfileError::InconsistentGeneration);
             }
-            if self.profiles[..index].iter().any(|p| p.id == profile.id) {
-                return Err(ProfileError::Duplicate);
-            }
-            if profile.incarnation == 0
-                || profile.revision == 0
-                || profile.incarnation > profile.revision
-                || profile.revision > self.generation
-            {
-                return Err(ProfileError::NotFound);
-            }
-            let supported = caps.supported(profile.format);
             profile
                 .public
                 .measurements
                 .validate(&supported)
                 .map_err(ProfileError::Selection)?;
-            for (position, section) in profile.private.iter().enumerate() {
+            if let Some(section) = &profile.private {
                 if section.selection.measurements.is_none() {
                     return Err(ProfileError::EmptyPrivateSelection);
                 }
-                if !caps.accepts_recipient(profile.format, &section.recipient) {
+                if !caps.accepts_recipient(&section.recipient) {
                     return Err(ProfileError::InvalidRecipient);
-                }
-                if profile.private[..position]
-                    .iter()
-                    .any(|other| other.recipient == section.recipient)
-                {
-                    return Err(ProfileError::Duplicate);
                 }
                 section
                     .selection

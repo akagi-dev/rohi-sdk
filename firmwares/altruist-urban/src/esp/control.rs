@@ -19,9 +19,12 @@
 //! BLE control plane of the Altruist Urban on the ESP.
 //!
 //! ```text
-//! BLE radio -> rohi-net-esp (EspBle) -> rohi-control-ble -> rohi-control
-//!                                                              |
-//!                                        UrbanDevice ([`crate::control`])
+//! BLE radio -> rohi-net-esp (EspBle) -> control_ble_task (framing)
+//!                                              |  slot of the ControlHub
+//!                                              v
+//!                                  control_task: the one Controller
+//!                                              |
+//!                                  UrbanDevice ([`crate::control`])
 //! ```
 //!
 //! The device and its services are the portable composition of
@@ -30,7 +33,9 @@
 use embassy_executor::Spawner;
 use log::{error, info};
 use rohi_sdk::ble::ControlBle;
-use rohi_sdk::control::{Controller, DeviceInfo, OpenPolicy};
+use rohi_sdk::control::{
+    AccessPolicy, ControlHub, Controller, DeviceInfo, EndpointState, Transport,
+};
 use rohi_sdk::esp::net::EspWireless;
 use rohi_sdk::net::NetworkHandle;
 use static_cell::StaticCell;
@@ -53,6 +58,9 @@ const BOARD: &str = "urban-esp32c6";
 
 /// The control backend of the Altruist Urban on the ESP.
 pub type EspDevice = UrbanDevice<Ip, BleStatus, logging::Service>;
+
+/// The request slot of the control worker: one BLE central at a time.
+static HUB: ControlHub<'static, 1> = ControlHub::new();
 
 /// The service instances, shared by the status and the action registry.
 static SERVICES: ServicesSlot<Ip, BleStatus, logging::Service> = StaticCell::new();
@@ -110,29 +118,45 @@ pub fn start(
     identity: IdentityHandle,
     network: Option<NetworkHandle<'static, Ip>>,
 ) {
+    crate::control::set_access_entropy(super::connectivity::esp_entropy);
+    HUB.bind(crate::control::access());
     match wireless.ble(ble_config(), BLE_RESOURCES.init(Default::default())) {
         Ok((transport, runner)) => {
             let device = device(config, identity, network, transport.status());
+            let access = crate::control::access();
             crate::tasks::spawn(spawner, "ble_task", ble_task(runner));
-            crate::tasks::spawn(spawner, "control_task", control_task(transport, device));
+            crate::tasks::spawn(spawner, "control_task", control_task(device));
+            crate::tasks::spawn(spawner, "control_ble_task", control_ble_task(transport));
+            access.set_state(Transport::Ble, EndpointState::Running);
             info!(
                 "BLE control started, wireless heap free {} B",
                 wireless.heap().free
             );
         }
-        Err(error) => error!("BLE unavailable: {}", error),
+        Err(error) => {
+            crate::control::access().set_state(Transport::Ble, EndpointState::Failed);
+            error!("BLE unavailable: {}", error)
+        }
     }
 }
 
-/// Serves control requests received over BLE.
-///
-/// There is no link security policy yet: the transport reports the link
-/// security and the policy hook is in place, but [`OpenPolicy`] allows
-/// everything, including identity provisioning and erase. Switch to a
-/// stricter policy once BLE pairing is enabled.
+/// Frames the control requests of the BLE central: reassembles them into the
+/// request slot of the control worker and fragments its responses. It never
+/// runs the controller.
 #[embassy_executor::task]
-pub async fn control_task(transport: BleTransport, device: EspDevice) {
-    let controller = Controller::new(device, OpenPolicy);
-    let mut control = ControlBle::new(transport, &controller);
+pub async fn control_ble_task(transport: BleTransport) {
+    let mut control = ControlBle::new(transport, &HUB);
     control.run().await
+}
+
+/// The control worker: the one task that owns the [`Controller`] and runs
+/// Config, Status, Actions and streams for every transport.
+///
+/// The access policy follows the access mode of each endpoint, see
+/// [`crate::control::access`]: BLE is open (no pairing, no link encryption), so privileged
+/// operations, including identity provisioning, erase and `control_tcp.reveal_psk`, need none.
+#[embassy_executor::task]
+pub async fn control_task(device: EspDevice) {
+    let controller = Controller::new(device, AccessPolicy::new(crate::control::access()));
+    HUB.serve(&controller).await
 }

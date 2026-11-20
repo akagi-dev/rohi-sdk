@@ -41,13 +41,12 @@ and falls back to the previous generation.
 
 **Not validated on hardware.** The log ring is host-tested on an emulated NOR flash (4-byte write words, a word programmed at
 most twice, power-loss injected at every write) and on a RAM medium with power loss injected at every write and every
-sector erase of a format and of a clear. The log lives in the last partition of the flash (`rohi-log`: 512 KiB at `0x380000` on ESP32-C3,
-1 MiB at `0x700000` on ESP32-C6), see the [firmware README](https://github.com/akagi-dev/rohi-sdk/blob/master/firmwares/altruist-urban/README.md). Checklist for a device
+sector erase of a format and of a clear. The log lives in the `rohi-log` partition (128 KiB at `0x20000`, right after `rohi-cfg`, on ESP32-C3;
+1 MiB at `0x700000`, the last partition, on ESP32-C6), see the [firmware README](https://github.com/akagi-dev/rohi-sdk/blob/master/firmwares/altruist-urban/README.md). Checklist for a device
 (record the results here; the issue is #67):
 
-0. **Flash and first boot (ESP32-C3):** `cargo flash-esp32c3` from a device that ran the former 256 KiB layout, so that the partition table and the
-   firmware are rewritten. Read the partition table back (`espflash read-flash 0x8000 0xC00 pt.bin` and `espflash partition-table pt.bin`) and confirm `factory` at `0x20000` (`0x360000` bytes) and `rohi-log` at `0x380000`
-   (`0x80000` bytes, 512 KiB; `0x700000`, `0x100000` bytes on ESP32-C6). The console shows `No valid format header, the region was formatted` (target `logging`) once and no panic; measure
+0. **Flash and first boot (ESP32-C3):** `cargo flash-esp32c3` from a device that ran an earlier layout, so that the partition table and the
+   firmware are rewritten (the ESP32-C3 app moved from `0x20000` to `0x40000`). Read the partition table back (`espflash read-flash 0x8000 0xC00 pt.bin` and `espflash partition-table pt.bin`) and confirm `rohi-log` at `0x20000` (`0x20000` bytes, 128 KiB) and `factory` at `0x40000` (`0x3C0000` bytes) on ESP32-C3; `factory` at `0x20000` and `rohi-log` at `0x700000` (`0x100000` bytes) on ESP32-C6. The console shows `No valid format header, the region was formatted` (target `logging`) once and no panic; measure
    the time from boot to `Running` of `rohi status logging`, and watch Wi-Fi, BLE and the sensors meanwhile. Reset: no second format message, the
    earlier records and the `history` number are still there. Record whether boot records were dropped (`dropped_records`).
 1. `rohi logs` shows boot records; reboot (`rohi system reboot`) and confirm the earlier records are still there and the sequence continues.
@@ -55,8 +54,8 @@ sector erase of a format and of a clear. The log lives in the last partition of 
    shows a contiguous history, `rohi status logging` has no `storage_corrupt` issue or only the one for the cut segment.
    Repeat with the power cut during the first format (erase a fresh board with `espflash erase-flash` first, then flash and cut
    power a few seconds after boot) and during `rohi logs clear`: the next start must finish the work and no old record may come back.
-3. `rohi logs download -d DIR` while Wi-Fi is connected: all files decode with `lz4 -d`, and record the time it takes over BLE (32 KiB segments on ESP32-C3, 64 KiB on ESP32-C6).
-4. Watch Wi-Fi, BLE and the microphone (noise windows keep arriving) while the log fills its budget (512 KiB on ESP32-C3, 1 MiB on ESP32-C6) and the oldest segments are erased: measure
+3. `rohi logs download -d DIR` while Wi-Fi is connected: all files are readable text (`lz4 -d` first on a firmware built with `lz4`), and record the time it takes over BLE (8 KiB segments on ESP32-C3, 64 KiB on ESP32-C6).
+4. Watch Wi-Fi, BLE and the microphone (noise windows keep arriving) while the log fills its budget (128 KiB on ESP32-C3, 1 MiB on ESP32-C6) and the oldest segments are erased: measure
    how long a flush stalls the CPU.
 5. Fill beyond the retention, confirm `dropped_records` stays 0 at the default `warn` level in normal operation.
 6. `rohi logs clear --yes` with a full log: record how long it takes (it must stay below the 40 s action timeout of the client, also over
@@ -121,3 +120,18 @@ following. The table is filled in after each hardware run:
 | Task stalls (snapshots stop updating) | |
 | Stale measurements | |
 | Memory stability | |
+
+## Control worker stack high-water
+
+`scripts/memcheck.sh` reports static frames, not the stack depth that a request reaches. Measure it on the device before
+any claim about the shared `control_task`: fill the main stack with a pattern at boot, run each of the paths below over BLE
+(BLE control is open and unencrypted in this build), then read how much of the pattern is overwritten.
+
+- Config read and patch, Status of every service, `rohi status logging`;
+- an expensive action (`rohi connectivity get_payload 0`), a stream (`rohi logs download`) and its close;
+- `rohi wifi reconnect`;
+- one request while a second central is refused (`Busy`) and a disconnect during a running action.
+
+Record the result and the margin in the [support matrix](../support/overview.md) before the resource budget is lowered. Also
+connect a phone or a Linux adapter to the open BLE endpoint and record that Config, Status and Actions work without pairing:
+that path is implemented but not verified on a device.

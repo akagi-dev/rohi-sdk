@@ -36,7 +36,13 @@ fn the_defaults_are_valid_and_conservative() {
     let read = |id| config.read_field(id).unwrap();
     assert_eq!(read(LEVEL), Some(Value::Enum(2)));
     assert_eq!(read(STORAGE), Some(Value::Enum(0)));
-    assert_eq!(read(COMPRESSION), Some(Value::Enum(1)));
+    #[cfg(feature = "lz4")]
+    assert_eq!(
+        read(COMPRESSION),
+        Some(Value::Enum(crate::DEFAULT_COMPRESSION.variant()))
+    );
+    #[cfg(not(feature = "lz4"))]
+    assert_eq!(config.compression(), Compression::None);
     assert_eq!(read(RETENTION), Some(Value::U64(1024 * 1024)));
     assert_eq!(read(SEGMENT), Some(Value::U64(64 * 1024)));
     assert_eq!(read(FLUSH), Some(Value::U64(10_000)));
@@ -68,6 +74,7 @@ fn every_field_is_set_by_its_id_and_the_kind_is_checked() {
     let mut config = LoggingConfig::default();
     config.set_field(LEVEL, Value::Enum(4)).unwrap();
     config.set_field(STORAGE, Value::Enum(1)).unwrap();
+    #[cfg(feature = "lz4")]
     config.set_field(COMPRESSION, Value::Enum(0)).unwrap();
     config.set_field(RETENTION, Value::U64(256 * 1024)).unwrap();
     config.set_field(SEGMENT, Value::U64(16 * 1024)).unwrap();
@@ -77,6 +84,7 @@ fn every_field_is_set_by_its_id_and_the_kind_is_checked() {
         LoggingConfig {
             level: LogLevel::Debug,
             storage: LogStorageKind::Sd,
+            #[cfg(feature = "lz4")]
             compression: Compression::None,
             retention_bytes: 256 * 1024,
             segment_bytes: 16 * 1024,
@@ -93,16 +101,20 @@ fn every_field_is_set_by_its_id_and_the_kind_is_checked() {
         config.set_field(LEVEL, Value::text("debug").unwrap()),
         Err(FieldError::WrongKind)
     );
-    for id in [STORAGE, COMPRESSION] {
-        assert_eq!(
-            config.set_field(id, Value::text("lz4").unwrap()),
-            Err(FieldError::WrongKind)
-        );
-    }
+    assert_eq!(
+        config.set_field(STORAGE, Value::text("lz4").unwrap()),
+        Err(FieldError::WrongKind)
+    );
+    #[cfg(feature = "lz4")]
+    assert_eq!(
+        config.set_field(COMPRESSION, Value::text("lz4").unwrap()),
+        Err(FieldError::WrongKind)
+    );
     assert_eq!(
         config.set_field(STORAGE, Value::Enum(2)),
         Err(FieldError::OutOfRange)
     );
+    #[cfg(feature = "lz4")]
     assert_eq!(
         config.set_field(COMPRESSION, Value::Enum(2)),
         Err(FieldError::OutOfRange)
@@ -252,7 +264,11 @@ fn the_schema_is_well_formed() {
     assert_eq!(unit(RETENTION), Unit::Bytes);
     assert_eq!(unit(SEGMENT), Unit::Bytes);
     assert_eq!(unit(FLUSH), Unit::Ms);
-    assert_eq!(LoggingConfig::FIELDS[5].field.name, "flush_interval");
+    let flush = LoggingConfig::FIELDS
+        .iter()
+        .find(|f| f.field.id == FLUSH)
+        .unwrap();
+    assert_eq!(flush.field.name, "flush_interval");
 }
 
 #[test]
@@ -273,6 +289,7 @@ fn the_persisted_section_is_pinned() {
     let overrides = LoggingOverrides {
         level: Override::Value(LogLevel::Debug),
         storage: Override::Value(LogStorageKind::Sd),
+        #[cfg(feature = "lz4")]
         compression: Override::Value(Compression::None),
         retention_bytes: Override::Value(65_536),
         segment_bytes: Override::Default,
@@ -281,6 +298,7 @@ fn the_persisted_section_is_pinned() {
     let mut buffer = [0u8; 64];
     let used = rohi_config::encode_to_slice(&overrides, &mut buffer).unwrap();
     // map(5): 1: 4, 2: 1, 3: 0, 4: 65536, 6: 5000
+    #[cfg(feature = "lz4")]
     assert_eq!(
         &buffer[..used],
         [
@@ -288,10 +306,20 @@ fn the_persisted_section_is_pinned() {
             0x19, 0x13, 0x88
         ]
     );
+    // Without the codec there is no field 3 and the ids of the others do not move.
+    #[cfg(not(feature = "lz4"))]
+    assert_eq!(
+        &buffer[..used],
+        [
+            0xa4, 0x01, 0x04, 0x02, 0x01, 0x04, 0x1a, 0x00, 0x01, 0x00, 0x00, 0x06, 0x19, 0x13,
+            0x88
+        ]
+    );
     let decoded: LoggingOverrides = rohi_config::decode_exact(&buffer[..used]).unwrap();
     assert_eq!(decoded, overrides);
 }
 
+#[cfg(feature = "lz4")]
 #[test]
 fn the_three_enums_are_discoverable_and_match_the_types() {
     assert_eq!(CONFIG_ENUMS.len(), 3);
@@ -336,6 +364,7 @@ fn the_three_enums_are_discoverable_and_match_the_types() {
     assert_eq!(Compression::from_variant(2), None);
 }
 
+#[cfg(feature = "lz4")]
 #[test]
 fn overrides_persisted_before_the_enums_still_decode() {
     // Written when `storage` and `compression` were text fields: the stored
@@ -356,4 +385,54 @@ fn overrides_persisted_before_the_enums_still_decode() {
     let mut buffer = [0u8; 64];
     let used = rohi_config::encode_to_slice(&decoded, &mut buffer).unwrap();
     assert_eq!(&buffer[..used], stored);
+}
+
+#[cfg(not(feature = "lz4"))]
+#[test]
+fn compression_is_not_a_setting_without_the_feature() {
+    use crate::Compression;
+
+    assert_eq!(Compression::from_variant(1), None);
+    assert_eq!(Compression::default(), Compression::None);
+    let mut config = LoggingConfig::default();
+    // The field is not in the schema, nor is its enum; the other ids did not move.
+    assert!(
+        LoggingConfig::FIELDS
+            .iter()
+            .all(|f| f.field.id != COMPRESSION)
+    );
+    assert!(CONFIG_ENUMS.iter().all(|e| e.id != 3));
+    assert_eq!(CONFIG_ENUMS.len(), LoggingConfig::ENUMS.len());
+    assert_eq!(
+        config.set_field(COMPRESSION, Value::Enum(0)),
+        Err(FieldError::UnknownField)
+    );
+    assert_eq!(config.compression(), Compression::None);
+    assert_eq!(
+        config.read_field(COMPRESSION),
+        Err(FieldError::UnknownField)
+    );
+    assert_eq!(
+        config.read_field(RETENTION),
+        Ok(Some(Value::U64(1024 * 1024)))
+    );
+}
+
+#[cfg(not(feature = "lz4"))]
+#[test]
+fn a_compression_override_stored_by_an_lz4_build_is_ignored_not_refused() {
+    // map(4): level 4, storage 1, compression 1 (lz4), retention 262144.
+    let stored = [
+        0xa4, 0x01, 0x04, 0x02, 0x01, 0x03, 0x01, 0x04, 0x1a, 0x00, 0x04, 0x00, 0x00,
+    ];
+    let decoded: LoggingOverrides = rohi_config::decode_exact(&stored).unwrap();
+    assert_eq!(decoded.storage, Override::Value(LogStorageKind::Sd));
+    let effective = rohi_config::materialize::<LoggingConfig>(&Default::default(), &decoded);
+    assert_eq!(effective.storage, LogStorageKind::Sd);
+    assert_eq!(effective.compression(), Compression::None);
+    assert_eq!(effective.validate(), Ok(()));
+    // The next write drops the field the build does not know.
+    let mut buffer = [0u8; 64];
+    let used = rohi_config::encode_to_slice(&decoded, &mut buffer).unwrap();
+    assert!(!buffer[..used].windows(2).any(|pair| pair == [0x03, 0x01]));
 }

@@ -21,35 +21,32 @@
 //! snapshot, so everything derived from one snapshot refers to the same
 //! recorded values, and nothing outlives the snapshot.
 
-use heapless::Vec;
-
 use crate::observation::Observation;
-use crate::profile::{PacketProfile, PacketProfileId, RecipientAddress};
+use crate::profile::{PacketProfile, RecipientAddress};
 use crate::selection::{DataSelection, Selection};
 use crate::snapshot::TelemetrySnapshot;
 
-/// Identifies the exact policy a packet was built under.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Identifies the exact policy a packet was built under: the profile slot and
+/// the revision of its policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProfileStamp {
-    /// The profile.
-    pub id: PacketProfileId,
-    /// The incarnation of the profile.
-    pub incarnation: u32,
+    /// The profile slot.
+    pub profile_index: u8,
     /// The revision of the policy.
     pub revision: u32,
 }
 
 /// The observations of a snapshot that one section of a profile selects.
 #[derive(Clone, Copy, Debug)]
-pub struct SectionView<'s, const N: usize> {
-    snapshot: &'s TelemetrySnapshot<N>,
+pub struct SectionView<'s, const N: usize, const SRC: usize> {
+    snapshot: &'s TelemetrySnapshot<N, SRC>,
     sources: crate::selection::SourceSelection,
     measurements: Selection,
 }
 
-impl<'s, const N: usize> SectionView<'s, N> {
+impl<'s, const N: usize, const SRC: usize> SectionView<'s, N, SRC> {
     fn new(
-        snapshot: &'s TelemetrySnapshot<N>,
+        snapshot: &'s TelemetrySnapshot<N, SRC>,
         selection: &DataSelection,
         available: &Selection,
     ) -> Self {
@@ -72,7 +69,7 @@ impl<'s, const N: usize> SectionView<'s, N> {
 
     /// The snapshot the section selects from. A format may need context the
     /// section does not contain, for example which chip produced a value.
-    pub fn snapshot(&self) -> &'s TelemetrySnapshot<N> {
+    pub fn snapshot(&self) -> &'s TelemetrySnapshot<N, SRC> {
         self.snapshot
     }
 
@@ -84,11 +81,11 @@ impl<'s, const N: usize> SectionView<'s, N> {
 
 /// The section of one recipient, to be encrypted by the format.
 #[derive(Clone, Copy, Debug)]
-pub struct PrivateSectionView<'s, const N: usize> {
+pub struct PrivateSectionView<'s, const N: usize, const SRC: usize> {
     /// Who receives it.
     pub recipient: RecipientAddress,
     /// What it holds, as logical plaintext.
-    pub view: SectionView<'s, N>,
+    pub view: SectionView<'s, N, SRC>,
 }
 
 /// Why no sections could be prepared.
@@ -101,49 +98,45 @@ pub enum PrepareError {
 
 /// The sections of one profile over one snapshot.
 #[derive(Clone, Debug)]
-pub struct PreparedSections<'s, const N: usize, const RECIPIENTS: usize> {
+pub struct PreparedSections<'s, const N: usize, const SRC: usize> {
     /// The policy these sections were prepared under.
     pub profile: ProfileStamp,
     /// The public section, plaintext in the packet.
-    pub public: SectionView<'s, N>,
-    /// Non-empty private sections, one per recipient.
-    pub private: Vec<PrivateSectionView<'s, N>, RECIPIENTS>,
+    pub public: SectionView<'s, N, SRC>,
+    /// The private section of the profile's recipient, if it is not empty.
+    pub private: Option<PrivateSectionView<'s, N, SRC>>,
     /// When the snapshot was captured.
     pub captured_at: rohi_time::MonotonicTimestamp,
 }
 
-/// Applies the policy of `profile` to `snapshot` without reading anything
-/// again. `available` is what the packet format can encode (resolves `all`).
+/// Applies the policy of the profile slot `profile_index` (`profile`) to
+/// `snapshot` without reading anything again. `available` is what the packet format can encode (resolves `all`).
 ///
-/// Empty private sections are omitted: there is nothing to encrypt.
+/// An empty private section is omitted: there is nothing to encrypt.
 ///
 /// # Errors
 ///
 /// [`PrepareError::NothingToPackage`] when every section is empty.
-pub fn prepare<'s, const N: usize, const R: usize>(
-    snapshot: &'s TelemetrySnapshot<N>,
-    profile: &PacketProfile<R>,
+pub fn prepare<'s, const N: usize, const SRC: usize>(
+    snapshot: &'s TelemetrySnapshot<N, SRC>,
+    profile_index: u8,
+    profile: &PacketProfile,
     available: &Selection,
-) -> Result<PreparedSections<'s, N, R>, PrepareError> {
+) -> Result<PreparedSections<'s, N, SRC>, PrepareError> {
     let public = SectionView::new(snapshot, &profile.public, available);
-    let mut private = Vec::new();
-    for policy in &profile.private {
+    let private = profile.private.as_ref().and_then(|policy| {
         let view = SectionView::new(snapshot, &policy.selection, available);
-        if !view.is_empty() {
-            // Bounded by the profile's own capacity.
-            let _ = private.push(PrivateSectionView {
-                recipient: policy.recipient,
-                view,
-            });
-        }
-    }
-    if public.is_empty() && private.is_empty() {
+        (!view.is_empty()).then_some(PrivateSectionView {
+            recipient: policy.recipient,
+            view,
+        })
+    });
+    if public.is_empty() && private.is_none() {
         return Err(PrepareError::NothingToPackage);
     }
     Ok(PreparedSections {
         profile: ProfileStamp {
-            id: profile.id.clone(),
-            incarnation: profile.incarnation,
+            profile_index,
             revision: profile.revision,
         },
         public,
@@ -159,19 +152,19 @@ mod tests {
     use super::*;
     use crate::catalog::{BMX280_TEMPERATURE, LOCATION, SDS011_PM10, all_cataloged};
     use crate::observation::{GeoPoint, ObservationValue, SourceId};
-    use crate::profile::{FormatCapabilities, PacketFormatId, TelemetryConfig};
+    use crate::profile::{FormatCapabilities, TelemetryConfig};
 
     struct Caps;
     impl FormatCapabilities for Caps {
-        fn supported(&self, _: PacketFormatId) -> Selection {
+        fn supported(&self) -> Selection {
             all_cataloged()
         }
-        fn accepts_recipient(&self, _: PacketFormatId, _: &RecipientAddress) -> bool {
+        fn accepts_recipient(&self, _: &RecipientAddress) -> bool {
             true
         }
     }
 
-    fn snapshot() -> TelemetrySnapshot<8> {
+    fn snapshot() -> TelemetrySnapshot<8, 8> {
         let at = MonotonicTimestamp::from_millis(5);
         let mut snapshot = TelemetrySnapshot::new(MonotonicTimestamp::from_millis(9));
         let mut writer = snapshot.writer(SourceId(1));
@@ -194,14 +187,15 @@ mod tests {
         snapshot
     }
 
-    fn profile(build: impl FnOnce(&mut TelemetryConfig<3, 2>)) -> crate::profile::PacketProfile<2> {
-        let mut config = TelemetryConfig::<3, 2>::default();
-        config.add_profile("p", PacketFormatId::Robonomics).unwrap();
+    fn profile(build: impl FnOnce(&mut TelemetryConfig<2>)) -> PacketProfile {
+        let mut config = TelemetryConfig::<2>::default();
         build(&mut config);
-        config.get("p").unwrap().clone()
+        *config.get(0).unwrap()
     }
 
-    fn names<const N: usize>(view: &SectionView<'_, N>) -> std::vec::Vec<u8> {
+    fn names<const N: usize, const SRC: usize>(
+        view: &SectionView<'_, N, SRC>,
+    ) -> std::vec::Vec<u8> {
         view.observations().map(|o| o.measurement.0).collect()
     }
 
@@ -210,7 +204,7 @@ mod tests {
         let snapshot = snapshot();
         let community = profile(|c| {
             c.set_public(
-                "p",
+                0,
                 DataSelection::local(Selection::NONE.with(BMX280_TEMPERATURE)),
                 &Caps,
             )
@@ -218,25 +212,25 @@ mod tests {
         });
         let owner = profile(|c| {
             c.set_public(
-                "p",
+                0,
                 DataSelection::local(Selection::NONE.with(SDS011_PM10)),
                 &Caps,
             )
             .unwrap();
-            c.add_private(
-                "p",
+            c.set_private(
+                0,
                 RecipientAddress([1; 32]),
                 DataSelection::local(Selection::NONE.with(LOCATION)),
                 &Caps,
             )
             .unwrap();
         });
-        let a = prepare(&snapshot, &community, &all_cataloged()).unwrap();
-        let b = prepare(&snapshot, &owner, &all_cataloged()).unwrap();
+        let a = prepare(&snapshot, 0, &community, &all_cataloged()).unwrap();
+        let b = prepare(&snapshot, 0, &owner, &all_cataloged()).unwrap();
         assert_eq!(names(&a.public), [1]);
-        assert!(a.private.is_empty());
+        assert!(a.private.is_none());
         assert_eq!(names(&b.public), [8]);
-        assert_eq!(names(&b.private[0].view), [0]);
+        assert_eq!(names(&b.private.unwrap().view), [0]);
         assert_ne!(a.profile, b.profile);
         // The views borrow the one snapshot: the same recorded value.
         assert!(core::ptr::eq(
@@ -246,25 +240,45 @@ mod tests {
     }
 
     #[test]
+    fn the_stamp_carries_the_slot_and_the_revision() {
+        let snapshot = snapshot();
+        let profile = profile(|c| {
+            c.set_public(0, DataSelection::local(Selection::ALL), &Caps)
+                .unwrap()
+        });
+        let at_zero = prepare(&snapshot, 0, &profile, &all_cataloged()).unwrap();
+        let at_one = prepare(&snapshot, 1, &profile, &all_cataloged()).unwrap();
+        assert_eq!(
+            at_zero.profile,
+            ProfileStamp {
+                profile_index: 0,
+                revision: profile.revision
+            }
+        );
+        assert_ne!(at_zero.profile, at_one.profile);
+    }
+
+    #[test]
     fn all_does_not_include_location_and_nothing_selected_is_no_packet() {
         let snapshot = snapshot();
         let all = profile(|c| {
-            c.set_public("p", DataSelection::local(Selection::ALL), &Caps)
+            c.set_public(0, DataSelection::local(Selection::ALL), &Caps)
                 .unwrap()
         });
-        let sections = prepare(&snapshot, &all, &all_cataloged()).unwrap();
+        let sections = prepare(&snapshot, 0, &all, &all_cataloged()).unwrap();
         assert_eq!(names(&sections.public), [1, 8]);
 
+        // A slot that was never set discloses nothing and builds nothing.
         let empty = profile(|_| {});
         assert_eq!(
-            prepare(&snapshot, &empty, &all_cataloged()).unwrap_err(),
+            prepare(&snapshot, 0, &empty, &all_cataloged()).unwrap_err(),
             PrepareError::NothingToPackage
         );
     }
 
     #[test]
     fn a_missing_selected_measurement_is_omitted_and_location_only_is_a_packet() {
-        let mut snapshot = TelemetrySnapshot::<4>::new(MonotonicTimestamp::from_millis(0));
+        let mut snapshot = TelemetrySnapshot::<4, 8>::new(MonotonicTimestamp::from_millis(0));
         let mut writer = snapshot.writer(SourceId::LOCATION);
         writer
             .write(
@@ -279,16 +293,40 @@ mod tests {
             .unwrap();
         writer.finish(Ok(()));
         let owner = profile(|c| {
-            c.add_private(
-                "p",
+            c.set_private(
+                0,
                 RecipientAddress([1; 32]),
                 DataSelection::local(Selection::NONE.with(LOCATION).with(SDS011_PM10)),
                 &Caps,
             )
             .unwrap()
         });
-        let sections = prepare(&snapshot, &owner, &all_cataloged()).unwrap();
+        let sections = prepare(&snapshot, 0, &owner, &all_cataloged()).unwrap();
         assert!(sections.public.is_empty());
-        assert_eq!(names(&sections.private[0].view), [0]);
+        assert_eq!(names(&sections.private.unwrap().view), [0]);
+    }
+
+    #[test]
+    fn an_empty_private_view_is_omitted() {
+        // The private selection names a measurement the snapshot does not have.
+        let snapshot = snapshot();
+        let profile = profile(|c| {
+            c.set_public(
+                0,
+                DataSelection::local(Selection::NONE.with(SDS011_PM10)),
+                &Caps,
+            )
+            .unwrap();
+            c.set_private(
+                0,
+                RecipientAddress([1; 32]),
+                DataSelection::local(Selection::NONE.with(crate::MeasurementId(5))),
+                &Caps,
+            )
+            .unwrap();
+        });
+        let sections = prepare(&snapshot, 0, &profile, &all_cataloged()).unwrap();
+        assert!(sections.private.is_none());
+        assert_eq!(names(&sections.public), [8]);
     }
 }

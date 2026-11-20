@@ -1,5 +1,5 @@
 [workspace.package]
-version = "0.7.0"
+version = "0.8.0"
 edition = "2024"
 authors = ["Akagi Engineering <admin@akagi.dev>"]
 license = "Apache-2.0"
@@ -37,8 +37,9 @@ rohi-service = { path = "crates/service" }
 rohi-service-derive = { path = "crates/service-derive" }
 rohi-control-proto = { path = "crates/control-proto" }
 rohi-telemetry-robonomics = { path = "crates/telemetry-robonomics" }
-rohi-connectivity = { path = "crates/connectivity" }
+rohi-connectivity = { path = "crates/connectivity", default-features = false }
 rohi-control = { path = "crates/control" }
+rohi-control-endpoints = { path = "crates/control-endpoints" }
 rohi-control-ble = { path = "crates/control-ble" }
 rohi-control-tcp = { path = "crates/control-tcp" }
 rohi-identity = { path = "crates/identity" }
@@ -71,6 +72,7 @@ trouble-host = { version = "0.7.0", default-features = false, features = [
   "peripheral",
   "gatt",
   "derive",
+  "security",
   "default-packet-pool-mtu-255",
 ] }
 bt-hci = "0.9.0"

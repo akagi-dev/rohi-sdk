@@ -36,14 +36,20 @@
 
 use std::collections::hash_map::RandomState;
 use std::hash::BuildHasher as _;
-use std::net::{SocketAddr, TcpListener};
+#[cfg(feature = "std-tcp")]
+use std::net::Ipv4Addr;
+use std::net::{IpAddr, SocketAddr, TcpListener};
 use std::process::ExitCode;
 use std::sync::Mutex;
 use std::time::Duration;
 
 use embassy_executor::{Executor, Spawner};
 use embassy_time::Timer;
+#[cfg(feature = "std-tcp")]
+use log::warn;
 use log::{error, info};
+use rohi_sdk::config::{ConfigStore, materialize};
+use rohi_sdk::endpoints::{ControlTcpConfig, ControlTcpOverrides};
 use rohi_sdk::host::NativeIp;
 use rohi_sdk::net::NetworkHandle;
 use rohi_sdk::sensors::runtime::MeasurementHandle;
@@ -142,22 +148,62 @@ struct Prepared {
     scenario: Scenario,
     storage: FileFlash,
     log_storage: FileLogFlash,
+    /// `None`: the `control_tcp` listener could not be bound (reported as `failed`).
     #[cfg(feature = "std-tcp")]
-    control: TcpListener,
+    control: Option<TcpListener>,
     manage: TcpListener,
 }
 
-fn prepare(args: Args) -> Result<Prepared, StartupError> {
-    if !args.bind.is_loopback() && !args.unsafe_allow_remote {
-        return Err(StartupError::new(
-            Failure::Bind,
-            format!(
-                "refusing to listen on {}: the control and management interfaces have no \
-                 authentication; use a loopback address or pass --unsafe-allow-remote",
-                args.bind
-            ),
-        ));
+/// Refuses an address that exposes the control or management interface to the
+/// network unless the operator asked for it.
+fn check_exposure(address: IpAddr, what: &str, allowed: bool) -> Result<(), StartupError> {
+    if address.is_loopback() || allowed {
+        return Ok(());
     }
+    Err(StartupError::new(
+        Failure::Bind,
+        format!(
+            "refusing to listen on {address} for {what}: it can reconfigure, provision and \
+             erase the device and its requests are neither encrypted nor hidden; use a \
+             loopback address or pass --unsafe-allow-remote"
+        ),
+    ))
+}
+
+/// The stored `control_tcp` section, read before the listener is bound: the
+/// defaults when nothing is stored or the store cannot be read.
+fn stored_control_tcp(storage: &FileFlash) -> ControlTcpConfig {
+    let Ok(mut store) = ConfigStore::open(storage.clone()) else {
+        return ControlTcpConfig::default();
+    };
+    match store.get::<ControlTcpOverrides>() {
+        Ok(Some(user)) => materialize(&ControlTcpOverrides::default(), &user),
+        _ => ControlTcpConfig::default(),
+    }
+}
+
+/// Random bytes of the operating system, for the nonces of the TCP handshake.
+/// Fails closed: without them no client is served.
+#[cfg(unix)]
+fn os_entropy(dst: &mut [u8]) -> bool {
+    use std::io::Read as _;
+
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut random| random.read_exact(dst))
+        .is_ok()
+}
+
+#[cfg(not(unix))]
+fn os_entropy(_: &mut [u8]) -> bool {
+    false
+}
+
+fn prepare(args: Args) -> Result<Prepared, StartupError> {
+    check_exposure(
+        args.management_address(),
+        "management",
+        args.unsafe_allow_remote,
+    )?;
     let scenario = match &args.scenario {
         Some(path) => {
             Scenario::load(path).map_err(|e| StartupError::new(Failure::Scenario, e.to_string()))?
@@ -176,10 +222,29 @@ fn prepare(args: Args) -> Result<Prepared, StartupError> {
         FileLogFlash::open(&args.log_storage())
             .map_err(|e| StartupError::new(Failure::Storage, e.to_string()))?
     };
-    let (_control_port, manage_port) = args.ports();
+    let stored = stored_control_tcp(&storage);
+    let (_control_port, manage_port) = args.ports(stored.port);
     #[cfg(feature = "std-tcp")]
-    let control = bind(SocketAddr::new(args.bind, _control_port), "control")?;
-    let manage = bind(SocketAddr::new(args.bind, manage_port), "management")?;
+    let control = {
+        let address = args.control_address(Ipv4Addr::from(stored.bind_address));
+        check_exposure(address, "control", args.unsafe_allow_remote)?;
+        match bind(SocketAddr::new(address, _control_port), "control") {
+            Ok(listener) => Some(listener),
+            // The port was asked for on the command line: the operator wants to know. A
+            // stored or default port that is taken only fails the endpoint, which the status
+            // reports, so the rest of the device still starts.
+            Err(error) if args.control_port.is_some() => return Err(error),
+            Err(error) => {
+                warn!("control: {error}");
+                None
+            }
+        }
+    };
+    let manage = bind(
+        SocketAddr::new(args.management_address(), manage_port),
+        "management",
+    )?;
+    crate::control::set_access_entropy(os_entropy);
     let name = args
         .name
         .clone()
@@ -235,16 +300,39 @@ fn start(spawner: Spawner, prepared: Prepared) -> Result<(), StartupError> {
     let runtime = ConfigRuntime::new(net::handle(), logging::apply);
     let mut owner = ConfigOwner::open(storage.clone());
     owner.publish_boot(&runtime);
+    #[cfg(feature = "std-tcp")]
+    if let Some(path) = &args.control_psk_file {
+        let key = zeroize::Zeroizing::new(
+            super::args::read_psk_file(path).map_err(|e| platform("control key file", e))?,
+        );
+        crate::control::set_tcp_key(Some(*key));
+        crate::control::access().set_tcp_psk(true);
+        info!(
+            "The TCP control key of this run comes from {} (it replaces the stored one)",
+            path.display()
+        );
+    }
+    #[cfg(feature = "std-tcp")]
+    if args.control_open {
+        warn!(
+            "The TCP control endpoint is open for this run (--control-open): privileged requests need no signature"
+        );
+        crate::control::access().set_mode(
+            rohi_sdk::control::Transport::Tcp,
+            rohi_sdk::control::TransportAccessMode::Open,
+        );
+    }
     crate::tasks::spawn(spawner, "config_task", config_task(owner, runtime));
 
     let mut interfaces = Interfaces::default();
     #[cfg(feature = "std-tcp")]
     {
-        interfaces.control = Some(
-            control
-                .local_addr()
-                .map_err(|e| platform("control address", e))?,
-        );
+        interfaces.control = control
+            .as_ref()
+            .map(TcpListener::local_addr)
+            .transpose()
+            .map_err(|e| platform("control address", e))?;
+        control::record_tcp(interfaces.control);
     }
     let manage_address = manage
         .local_addr()
@@ -291,16 +379,25 @@ fn start(spawner: Spawner, prepared: Prepared) -> Result<(), StartupError> {
     #[cfg(not(feature = "std-ble"))]
     let probe = control::NoBle;
     let controller = control::controller(Some(network), probe);
+    crate::tasks::spawn(spawner, "control_task", control::control_task(controller));
     #[cfg(feature = "std-ble")]
-    crate::tasks::spawn(spawner, "ble_task", control::ble_task(ble, controller));
-    #[cfg(feature = "std-tcp")]
     {
-        let acceptor = rohi_sdk::host::TcpAcceptor::new(control)
-            .map_err(|e| platform("control listener", e))?;
-        crate::tasks::spawn(spawner, "tcp_task", control::tcp_task(acceptor, controller));
+        crate::tasks::spawn(spawner, "ble_task", control::ble_task(ble));
+        crate::control::access().set_state(
+            rohi_sdk::control::Transport::Ble,
+            rohi_sdk::control::EndpointState::Running,
+        );
     }
-    #[cfg(not(feature = "std-tcp"))]
-    let _ = controller;
+    #[cfg(feature = "std-tcp")]
+    if let Some(control) = control {
+        match rohi_sdk::host::TcpAcceptor::new(control) {
+            Ok(acceptor) => crate::tasks::spawn(spawner, "tcp_task", control::tcp_task(acceptor)),
+            Err(error) => {
+                warn!("control: the TCP listener cannot start: {error}");
+                control::record_tcp(None);
+            }
+        }
+    }
 
     management::start(spawner, manage, storage.clone(), HOOKS)
         .map_err(|e| platform("management listener", e))?;

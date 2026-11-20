@@ -215,6 +215,7 @@ const PLAIN: LinkSecurity = LinkSecurity {
     encrypted: false,
     authenticated: false,
     session: 0,
+    transport: Transport::Unspecified,
 };
 
 fn text<const N: usize>(value: &str) -> String<N> {
@@ -899,11 +900,13 @@ fn the_policy_gates_writes_and_privileged_actions() {
         encrypted: true,
         authenticated: false,
         session: 0,
+        transport: Transport::Unspecified,
     };
     let strong = LinkSecurity {
         encrypted: true,
         authenticated: true,
         session: 0,
+        transport: Transport::Unspecified,
     };
 
     let write = || Call::PatchConfigSection(patch(1, &[mutation(3, string_value("a.io"))]));
@@ -1225,8 +1228,8 @@ fn a_service_with_one_capability_is_unsupported_for_the_other() {
 }
 
 #[derive(Service)]
-struct Files {
-    open: Cell<bool>,
+pub(super) struct Files {
+    pub(super) open: Cell<bool>,
     lost: Cell<u32>,
 }
 
@@ -1307,11 +1310,11 @@ impl Action for Files {
     }
 }
 
-fn files_controller(files: &Files) -> Controller<Device<(), (), (&Files,)>, OpenPolicy> {
+pub(super) fn files_controller(files: &Files) -> Controller<Device<(), (), (&Files,)>, OpenPolicy> {
     Controller::new(Device::new(INFO, uptime, (), (), (files,)), OpenPolicy)
 }
 
-fn files() -> Files {
+pub(super) fn files() -> Files {
     Files {
         open: Cell::new(false),
         lost: Cell::new(0),
@@ -1474,9 +1477,10 @@ const OTHER: LinkSecurity = LinkSecurity {
     encrypted: false,
     authenticated: false,
     session: 2,
+    transport: Transport::Unspecified,
 };
 
-fn export(action: u32) -> Call {
+pub(super) fn export(action: u32) -> Call {
     Call::InvokeAction(pb::InvokeActionRequest {
         service_id: Files::ID,
         action_id: action,
@@ -1529,6 +1533,7 @@ fn a_stream_needs_the_privilege_of_the_action_that_created_it() {
         encrypted: true,
         authenticated: false,
         session: 1,
+        transport: Transport::Unspecified,
     };
     assert_eq!(
         error_code(&call(&controller, &PLAIN, export(3))),
@@ -1768,4 +1773,275 @@ fn a_status_only_service_has_no_tail() {
         error_code(&call(&controller, &PLAIN, tail_request(RADIO, 0, 0))),
         pb::ErrorCode::NotSupported
     );
+}
+
+#[test]
+fn closing_a_session_releases_only_its_streams() {
+    let files = files();
+    let controller = files_controller(&files);
+    assert!(matches!(
+        call(&controller, &PLAIN, export(1)),
+        Reply::ActionStream(_)
+    ));
+    // Another session going away neither closes the stream nor forgets its owner.
+    block_on(controller.session_closed(OTHER.session));
+    assert!(files.open.get());
+    assert!(matches!(
+        call(&controller, &PLAIN, read_stream(0)),
+        Reply::ReadStream(_)
+    ));
+    block_on(controller.session_closed(PLAIN.session));
+    assert!(!files.open.get());
+    // The services were not told that every link is gone.
+    assert_eq!(files.lost.get(), 0);
+    assert_eq!(
+        error_code(&call(&controller, &PLAIN, read_stream(0))),
+        pb::ErrorCode::NotFound
+    );
+}
+
+// What the access policy takes from a link: only what the transport established.
+mod link_security {
+    use super::*;
+
+    const TCP: LinkSecurity = LinkSecurity {
+        encrypted: false,
+        authenticated: false,
+        session: 11,
+        transport: Transport::Tcp,
+    };
+    const BLE: LinkSecurity = LinkSecurity {
+        session: 12,
+        transport: Transport::Ble,
+        ..TCP
+    };
+    // A TCP connection that completed the handshake of `rohi-control-tcp`.
+    const TCP_SECURE: LinkSecurity = LinkSecurity {
+        encrypted: true,
+        authenticated: true,
+        ..TCP
+    };
+
+    fn entropy(out: &mut [u8]) -> bool {
+        out.fill(0xA5);
+        true
+    }
+
+    // A mutation that reaches the registry and is answered NotFound there.
+    fn mutate() -> Call {
+        Call::ResetConfigSection(pb::ResetConfigSectionRequest::default())
+    }
+
+    // The provisioning action (with a secret argument) of the test radio.
+    fn provision() -> Call {
+        Call::InvokeAction(pb::InvokeActionRequest {
+            service_id: RADIO,
+            action_id: 3,
+            ..Default::default()
+        })
+    }
+
+    fn reason(reply: &Reply) -> (pb::ErrorCode, &str) {
+        match reply {
+            Reply::Error(error) => (error.code, error.reason().map_or("", |r| r.as_str())),
+            _ => panic!("not an error: {reply:?}"),
+        }
+    }
+
+    macro_rules! restricted {
+        ($controller:ident, $access:ident) => {
+            let $access = ControlAccess::new(entropy);
+            let memory = Memory::default();
+            let radio = radio();
+            let $controller = Controller::new(device(&memory, &radio), AccessPolicy::new(&$access));
+        };
+    }
+
+    #[test]
+    fn reads_are_open_and_privileged_requests_need_a_secured_link_on_restricted_tcp() {
+        restricted!(controller, access);
+        assert!(matches!(
+            call(&controller, &TCP, Call::GetInfo(pb::GetInfoRequest {})),
+            Reply::GetInfo(_)
+        ));
+        // No key is provisioned: the reason says so.
+        assert_eq!(
+            reason(&call(&controller, &TCP, mutate())),
+            (pb::ErrorCode::PermissionDenied, "no_psk")
+        );
+        access.set_tcp_psk(true);
+        assert_eq!(
+            reason(&call(&controller, &TCP, mutate())),
+            (pb::ErrorCode::PermissionDenied, "encryption_required")
+        );
+        // Encrypted alone is not enough on TCP: the client must be authenticated too.
+        let unauthenticated = LinkSecurity {
+            encrypted: true,
+            ..TCP
+        };
+        assert_eq!(
+            reason(&call(&controller, &unauthenticated, mutate())).1,
+            "encryption_required"
+        );
+        assert_eq!(
+            error_code(&call(&controller, &TCP_SECURE, mutate())),
+            pb::ErrorCode::NotFound
+        );
+        let stats = access.stats(Transport::Tcp);
+        assert_eq!((stats.accepted, stats.denied), (2, 3));
+    }
+
+    #[test]
+    fn the_psk_state_is_a_flag_and_a_generation_never_a_key() {
+        let access = ControlAccess::new(entropy);
+        assert!(!access.tcp_psk_enrolled());
+        let before = access.tcp_psk_epoch();
+        access.set_tcp_psk(true);
+        assert!(access.tcp_psk_enrolled());
+        assert_ne!(access.tcp_psk_epoch(), before);
+        let before = access.tcp_psk_epoch();
+        access.set_tcp_psk(false);
+        assert!(!access.tcp_psk_enrolled());
+        assert_ne!(access.tcp_psk_epoch(), before);
+        let mut random = [0u8; 4];
+        assert!(access.fill_random(&mut random));
+        assert_eq!(random, [0xA5; 4]);
+    }
+
+    #[test]
+    fn ble_is_open_and_never_reported_as_protected() {
+        restricted!(controller, access);
+        assert_eq!(
+            error_code(&call(&controller, &BLE, mutate())),
+            pb::ErrorCode::NotFound
+        );
+        assert_ne!(
+            error_code(&call(&controller, &BLE, provision())),
+            pb::ErrorCode::PermissionDenied
+        );
+        // BLE has no mode to change; the link keeps the properties the transport reported.
+        access.set_mode(Transport::Ble, TransportAccessMode::Restricted);
+        assert_eq!(access.mode(Transport::Ble), TransportAccessMode::Open);
+        assert_eq!(
+            error_code(&call(&controller, &BLE, mutate())),
+            pb::ErrorCode::NotFound
+        );
+        const { assert!(!BLE.encrypted && !BLE.authenticated) };
+        // TCP stays restricted.
+        assert_eq!(reason(&call(&controller, &TCP, mutate())).1, "no_psk");
+    }
+
+    // A service with one action that carries the key material of a transport.
+    struct Keys;
+
+    impl Service for Keys {
+        const ID: u32 = rohi_service::service_id("keys");
+        const NAME: &'static str = "keys";
+    }
+
+    impl Action for Keys {
+        const ACTIONS: &'static [ActionDescriptor] = &[
+            ActionDescriptor::new(1, "set_key", ActionAccess::Provision)
+                .secret()
+                .secure_link(),
+            ActionDescriptor::new(2, "plain", ActionAccess::Provision),
+        ];
+
+        async fn invoke(
+            &self,
+            _: u32,
+            _: &[(u32, Value)],
+            _: &mut impl ActionOutput,
+        ) -> Result<(), ActionError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_secure_link_action_needs_a_protected_link_in_every_mode() {
+        let access = ControlAccess::new(entropy);
+        let keys = Keys;
+        let device = Device::new(INFO, uptime, (), (), (&keys,));
+        let controller = Controller::new(device, AccessPolicy::new(&access));
+        let invoke = |link: &LinkSecurity, action: u32| {
+            call(
+                &controller,
+                link,
+                Call::InvokeAction(pb::InvokeActionRequest {
+                    service_id: Keys::ID,
+                    action_id: action,
+                    args: Vec::new(),
+                }),
+            )
+        };
+        let encrypted_only = LinkSecurity {
+            encrypted: true,
+            ..TCP
+        };
+        for mode in [TransportAccessMode::Open, TransportAccessMode::Restricted] {
+            access.set_mode(Transport::Tcp, mode);
+            // Never over an unprotected link, whatever the mode says (the open modes allow the
+            // plain action, which proves the refusal is the action's own).
+            for link in [&TCP, &encrypted_only] {
+                let reply = invoke(link, 1);
+                let (code, why) = reason(&reply);
+                assert_eq!(code, pb::ErrorCode::PermissionDenied, "{mode:?} {link:?}");
+                if mode == TransportAccessMode::Open {
+                    // The mode allows it; the action does not.
+                    assert_eq!(why, "encryption_required");
+                }
+            }
+            // On a protected TCP link it runs. Open BLE is the accepted insecure state of this phase.
+            assert!(
+                matches!(invoke(&TCP_SECURE, 1), Reply::InvokeAction(_)),
+                "{mode:?}"
+            );
+            assert!(
+                matches!(invoke(&BLE, 1), Reply::InvokeAction(_)),
+                "{mode:?}"
+            );
+        }
+        // An action that is not marked is as open as its mode.
+        access.set_mode(Transport::Tcp, TransportAccessMode::Open);
+        assert!(matches!(invoke(&TCP, 2), Reply::InvokeAction(_)));
+    }
+
+    #[test]
+    fn an_open_tcp_endpoint_allows_privileged_requests() {
+        restricted!(controller, access);
+        access.set_mode(Transport::Tcp, TransportAccessMode::Open);
+        assert_eq!(
+            error_code(&call(&controller, &TCP, mutate())),
+            pb::ErrorCode::NotFound
+        );
+    }
+
+    #[test]
+    fn nothing_in_a_request_can_raise_the_security_of_a_link() {
+        restricted!(controller, access);
+        access.set_tcp_psk(true);
+        // Bytes that look like some other wrapper are not a request at all: refused as such,
+        // and a plain mutation stays refused on the same link.
+        let mut wire = [0u8; 16];
+        let request = pb::Request {
+            protocol_version: PROTOCOL_VERSION,
+            request_id: 5,
+            request: Some(mutate()),
+        };
+        let len = encode(&request, &mut wire).unwrap();
+        let mut out = [0u8; limits::MAX_RESPONSE_LEN];
+        for bytes in [
+            &wire[..len],
+            &[0xDA, 0x01, 0x04, 0x0A, 0x02, 0x08, 0x01][..],
+        ] {
+            let n = block_on(controller.handle(&TCP, bytes, &mut out));
+            let reply = decode::<pb::Response>(&out[..n]).unwrap().response.unwrap();
+            assert!(matches!(
+                error_code(&reply),
+                pb::ErrorCode::PermissionDenied
+                    | pb::ErrorCode::NotSupported
+                    | pb::ErrorCode::InvalidArgument
+            ));
+        }
+    }
 }

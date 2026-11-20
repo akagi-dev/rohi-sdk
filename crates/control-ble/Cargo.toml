@@ -22,4 +22,5 @@ log.workspace = true
 rohi-service.workspace = true
 embassy-sync.workspace = true
 embassy-futures.workspace = true
+critical-section.workspace = true
 heapless.workspace = true

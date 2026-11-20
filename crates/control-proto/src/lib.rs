@@ -210,7 +210,7 @@
 //! | [`limits::MAX_SELECTIONS`] | 2 | bitset arguments per action schema |
 //! | [`limits::MAX_SCHEMA_FIELDS`], [`limits::MAX_STATUS_FIELDS`] | 20, 20 | service schema and status fields |
 //! | [`limits::MAX_CONFIG_FIELDS`], [`limits::MAX_MUTATIONS`] | 16, 8 | config fields per section, mutations per patch |
-//! | [`limits::MAX_CONFIG_SECTIONS`], [`limits::MAX_SERVICES`], [`limits::MAX_ACTIONS`] | 12, 12, 12 | registry entries listed |
+//! | [`limits::MAX_CONFIG_SECTIONS`], [`limits::MAX_SERVICES`], [`limits::MAX_ACTIONS`] | 16, 16, 12 | registry entries listed |
 //! | [`limits::MAX_ISSUES`], [`limits::MAX_ISSUE_DESCRIPTORS`] | 4, 12 | active issues, issue descriptors |
 //! | [`limits::MAX_ACTION_ARGS`], [`limits::MAX_RECORDS`], [`limits::MAX_RECORD_FIELDS`] | 3, 6, 4 | action arguments, result records, fields per record |
 //! | [`limits::MAX_STREAM_CHUNK`], [`limits::MAX_TAIL_CHUNK`] | 512, 512 | bytes of one stream chunk, bytes of text of one tail page |

@@ -38,6 +38,8 @@ cli = [
 ]
 # Derivation of a device identity from a master SURI (`rohi::derive_identity`).
 provision = ["dep:sp-core"]
+# LZ4 compressed log segments in the logging tests of the tool.
+lz4 = ["cli", "rohi-logging/lz4"]
 
 [dependencies]
 rohi-control-proto.workspace = true
@@ -65,7 +67,7 @@ terminal_size = { workspace = true, optional = true }
 rohi-control.workspace = true
 rohi-service.workspace = true
 rohi-system.workspace = true
-rohi-connectivity.workspace = true
+rohi-connectivity = { workspace = true, features = ["packet-export"] }
 rohi-location.workspace = true
 rohi-time.workspace = true
 log.workspace = true

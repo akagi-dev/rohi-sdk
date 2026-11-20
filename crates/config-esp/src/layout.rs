@@ -32,8 +32,9 @@
 //! `firmwares/altruist-urban/partitions-esp32c3.csv` (4 MB flash) and
 //! `partitions-esp32c6.csv` (8 MB flash) are mirrored by the constants of this
 //! module; a host test of this module keeps both in sync. The tables differ in
-//! the size of the `factory` partition and of `rohi-log`, which is always the
-//! last partition of the flash: 512 KiB on ESP32-C3, 1 MiB on ESP32-C6.
+//! the size of the `factory` partition and in where `rohi-log` sits: right after
+//! the configuration region on the ESP32-C3 (128 KiB), at the end of the flash on
+//! the ESP32-C6 (1 MiB).
 //!
 //! # Flash layout (Altruist Urban, ESP32-C3 4 MB / ESP32-C6 8 MB)
 //!
@@ -43,25 +44,32 @@
 //! 0x010000  rohi-cfg   16 KiB   <- configuration region
 //!             ├─ slot A  8 KiB (2 sectors)
 //!             └─ slot B  8 KiB (2 sectors)
-//! 0x020000  factory    app: 0x360000 bytes on ESP32-C3, 0x6E0000 on ESP32-C6
 //! ```
 //!
-//! ESP32-C3 (4 MB), the end of the flash:
+//! ESP32-C3 (4 MB): the log follows the configuration region, the app ends the flash:
 //!
 //! ```text
-//! 0x380000  rohi-log   512 KiB (0x80000), up to 0x400000
-//!             126 ring sectors, then 2 format header sectors
+//! 0x020000  rohi-log   128 KiB (0x20000), up to 0x040000
+//!             30 ring sectors (15 segments of 8 KiB), then 2 format header sectors
+//! 0x040000  factory    app: 0x3C0000 bytes, up to 0x400000
 //! ```
 //!
-//! The app area ends on a 64 KiB boundary on both chips, so that two equal OTA
-//! slots can be carved out of it later (#29).
+//! The app area starts and ends on a 64 KiB boundary on both chips, so that two equal OTA
+//! slots can be carved out of it later (#29); no A/B OTA exists yet.
 //!
-//! ESP32-C6 (8 MB), the end of the flash:
+//! ESP32-C6 (8 MB): the app starts at 0x20000 and the log is the last partition:
 //!
 //! ```text
+//! 0x020000  factory    app: 0x6E0000 bytes, up to 0x700000
 //! 0x700000  rohi-log   1 MiB, up to 0x800000
 //!             254 ring sectors, then 2 format header sectors
 //! ```
+//!
+//! Moving or resizing `rohi-log` (as this layout did on the ESP32-C3, where the log used to be 512 KiB at 0x380000 and
+//! the app 0x360000 bytes from 0x20000) discards the old archive: the first start finds no format header in the new
+//! region and formats it. Nothing is migrated, and the application, configuration and NVS partitions are never
+//! touched by the format. The ESP32-C3 app moves, so the device must be reflashed with the new table (the runner does
+//! it).
 //!
 //! `cargo run` passes the table of the selected target to `espflash` (see
 //! `.cargo/config.toml`); run it from the repository root. The store sizes its
@@ -86,18 +94,18 @@ pub const REGION_SIZE: usize = 2 * SLOT_SIZE;
 /// Label of the data partition that holds the persistent log.
 pub const LOG_PARTITION_LABEL: &str = "rohi-log";
 
-/// Size of the `rohi-log` partition of the ESP32-C3 in bytes: 512 KiB, 128
+/// Size of the `rohi-log` partition of the ESP32-C3 in bytes: 128 KiB, 32
 /// sectors. This is the partition, not the journal: the log is a ring of
 /// segments of whole sectors and two format header sectors (`rohi-logging`), so
-/// with 32 KiB segments it retains 15 full segments (480 KiB).
-pub const LOG_REGION_SIZE_ESP32C3: usize = 128 * SECTOR_SIZE;
+/// with 8 KiB segments it retains 15 full segments (120 KiB).
+pub const LOG_REGION_SIZE_ESP32C3: usize = 32 * SECTOR_SIZE;
 
 /// Size of the `rohi-log` partition of the ESP32-C6 in bytes: 1 MiB, 256
 /// sectors.
 pub const LOG_REGION_SIZE_ESP32C6: usize = 256 * SECTOR_SIZE;
 
 /// Size of the `factory` partition of the ESP32-C3 in bytes.
-pub const APP_REGION_SIZE_ESP32C3: usize = 0x36_0000;
+pub const APP_REGION_SIZE_ESP32C3: usize = 0x3C_0000;
 
 /// Size of the `factory` partition of the ESP32-C6 in bytes.
 pub const APP_REGION_SIZE_ESP32C6: usize = 0x6E_0000;
@@ -117,154 +125,109 @@ mod tests {
         }
     }
 
-    #[test]
-    fn partition_tables_match_the_layout() {
-        for chip in [
-            Chip {
-                csv: include_str!("../../../firmwares/altruist-urban/partitions-esp32c3.csv"),
-                flash_size: 4 << 20,
-                app_size: APP_REGION_SIZE_ESP32C3,
-                log_size: LOG_REGION_SIZE_ESP32C3,
-                gap: 0,
-            },
-            Chip {
-                csv: include_str!("../../../firmwares/altruist-urban/partitions-esp32c6.csv"),
-                flash_size: 8 << 20,
-                app_size: APP_REGION_SIZE_ESP32C6,
-                log_size: LOG_REGION_SIZE_ESP32C6,
-                gap: 0,
-            },
-        ] {
-            assert_partition_matches_layout(&chip);
-        }
+    // (label, type, offset, size) of every row of a partition table.
+    fn rows(csv: &str) -> std::vec::Vec<(&str, &str, usize, usize)> {
+        csv.lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .map(|line| {
+                let fields: std::vec::Vec<&str> = line.split(',').map(str::trim).collect();
+                (
+                    fields[0],
+                    fields[1],
+                    parse_number(fields[3]),
+                    parse_number(fields[4]),
+                )
+            })
+            .collect()
     }
 
     struct Chip {
         csv: &'static str,
         flash_size: usize,
-        app_size: usize,
-        log_size: usize,
-        gap: usize,
+        // `factory` and `rohi-log`: offset and size.
+        app: (usize, usize),
+        log: (usize, usize),
     }
 
-    fn rows(csv: &str) -> std::vec::Vec<std::vec::Vec<&str>> {
-        csv.lines()
-            .filter(|line| !line.trim_start().starts_with('#'))
-            .map(|line| line.split(',').map(str::trim).collect())
-            .collect()
+    fn chips() -> [Chip; 2] {
+        [
+            // `rohi-log` follows the configuration region, the app area ends the flash.
+            Chip {
+                csv: include_str!("../../../firmwares/altruist-urban/partitions-esp32c3.csv"),
+                flash_size: 4 << 20,
+                app: (0x4_0000, APP_REGION_SIZE_ESP32C3),
+                log: (0x2_0000, LOG_REGION_SIZE_ESP32C3),
+            },
+            // `rohi-log` ends the flash.
+            Chip {
+                csv: include_str!("../../../firmwares/altruist-urban/partitions-esp32c6.csv"),
+                flash_size: 8 << 20,
+                app: (0x2_0000, APP_REGION_SIZE_ESP32C6),
+                log: (0x70_0000, LOG_REGION_SIZE_ESP32C6),
+            },
+        ]
     }
 
-    fn assert_data_partition(csv: &str, label: &str, size: usize) {
-        let rows = rows(csv);
-        let row = rows
-            .iter()
-            .find(|fields| fields[0] == label)
-            .unwrap_or_else(|| panic!("{label} partition"));
-        assert_eq!(row[1], "data");
-        assert_eq!(parse_number(row[3]) % SECTOR_SIZE, 0);
-        assert_eq!(parse_number(row[4]), size);
-    }
+    #[test]
+    fn partition_tables_match_the_layout() {
+        for chip in chips() {
+            let table = rows(chip.csv);
+            let find = |label: &str| {
+                let row = table.iter().find(|row| row.0 == label).unwrap();
+                (row.1, row.2, row.3)
+            };
+            assert_eq!(find(PARTITION_LABEL), ("data", 0x1_0000, REGION_SIZE));
+            assert_eq!(find(LOG_PARTITION_LABEL), ("data", chip.log.0, chip.log.1));
+            assert_eq!(find("factory"), ("app", chip.app.0, chip.app.1));
+            assert_eq!(table.iter().filter(|row| row.1 == "app").count(), 1);
 
-    fn assert_partition_matches_layout(chip: &Chip) {
-        let Chip {
-            csv,
-            flash_size,
-            app_size: expected_app_size,
-            log_size: expected_log_size,
-            gap,
-        } = *chip;
-        assert_data_partition(csv, PARTITION_LABEL, REGION_SIZE);
-        assert_data_partition(csv, LOG_PARTITION_LABEL, expected_log_size);
+            // No partition overlaps another, and the table ends exactly at the end of the flash.
+            let mut spans: std::vec::Vec<(usize, usize)> =
+                table.iter().map(|row| (row.2, row.3)).collect();
+            spans.sort_unstable();
+            for pair in spans.windows(2) {
+                assert!(pair[0].0 + pair[0].1 <= pair[1].0, "{pair:?} overlap");
+            }
+            let (offset, size) = *spans.last().unwrap();
+            assert_eq!(offset + size, chip.flash_size, "the table ends the flash");
 
-        // Partitions do not overlap and `rohi-log` ends at the end of the flash.
-        let mut spans: std::vec::Vec<(usize, usize)> = rows(csv)
-            .iter()
-            .map(|row| (parse_number(row[3]), parse_number(row[4])))
-            .collect();
-        spans.sort_unstable();
-        for pair in spans.windows(2) {
-            assert!(pair[0].0 + pair[0].1 <= pair[1].0, "{pair:?} overlap");
+            // Whole erase sectors for every partition, 64 KiB alignment of the app at both ends.
+            for row in &table {
+                assert_eq!(row.2 % SECTOR_SIZE, 0, "{}", row.0);
+                assert_eq!(row.3 % SECTOR_SIZE, 0, "{}", row.0);
+            }
+            assert_eq!(chip.app.0 % 0x1_0000, 0);
+            assert_eq!((chip.app.0 + chip.app.1) % 0x1_0000, 0);
         }
-        let end = spans.last().map(|(offset, size)| offset + size).unwrap();
-        assert_eq!(end, flash_size, "{end:#x}");
+    }
 
-        let table = rows(csv);
-        let offset_and_size = |label: &str| {
-            let row = table.iter().find(|row| row[0] == label).unwrap();
-            (parse_number(row[3]), parse_number(row[4]))
-        };
-        // `factory` stays where it was before the log existed, the log is the
-        // last partition of the flash and the app ends `gap` bytes before it.
-        let (app, app_size) = offset_and_size("factory");
-        let (log, log_size) = offset_and_size(LOG_PARTITION_LABEL);
-        assert_eq!(app, 0x20000);
-        assert_eq!(log, flash_size - expected_log_size);
-        assert_eq!(log_size, expected_log_size);
-        assert_eq!(app_size, expected_app_size);
-        assert_eq!(app + app_size + gap, log);
-        // The app area ends on a 64 KiB boundary on both chips, so that two
-        // equal OTA slots can later be carved out of it (#29).
-        assert_eq!((app + app_size) % 0x10000, 0);
-        // The app partition is aligned to 64 KiB, as the bootloader needs.
-        assert_eq!(app % 0x10000, 0);
-        assert_eq!(table.iter().filter(|row| row[1] == "app").count(), 1);
+    #[test]
+    fn the_esp32c3_log_follows_the_configuration_and_the_app_ends_the_flash() {
+        let [c3, _] = chips();
+        // No gap between the log and the app, and the app is what is left of
+        // the 4 MiB: 0x3C0000, as large as with the log at the end.
+        assert_eq!(c3.log.0, 0x2_0000);
+        assert_eq!(c3.log.0 + c3.log.1, c3.app.0);
+        assert_eq!(c3.app.0 + c3.app.1, c3.flash_size);
+        assert_eq!(APP_REGION_SIZE_ESP32C3, 0x3C_0000);
     }
 
     #[test]
     fn the_log_regions_are_whole_sectors() {
-        assert_eq!(LOG_REGION_SIZE_ESP32C3 % SECTOR_SIZE, 0);
-        assert_eq!(LOG_REGION_SIZE_ESP32C3, 512 * 1024);
-        assert_eq!(LOG_REGION_SIZE_ESP32C3, 0x80000);
-        assert_eq!(LOG_REGION_SIZE_ESP32C3 / SECTOR_SIZE, 128);
-        assert_eq!(LOG_REGION_SIZE_ESP32C6 % SECTOR_SIZE, 0);
+        assert_eq!(LOG_REGION_SIZE_ESP32C3, 128 * 1024);
+        assert_eq!(LOG_REGION_SIZE_ESP32C3, 0x2_0000);
+        assert_eq!(LOG_REGION_SIZE_ESP32C3 / SECTOR_SIZE, 32);
         assert_eq!(LOG_REGION_SIZE_ESP32C6, 1 << 20);
         assert_eq!(LOG_REGION_SIZE_ESP32C6 / SECTOR_SIZE, 256);
     }
 
     #[test]
-    fn the_partition_geometry_is_exact() {
-        // (chip table, factory offset and size, rohi-log offset and size)
-        let tables = [
-            (
-                include_str!("../../../firmwares/altruist-urban/partitions-esp32c3.csv"),
-                (0x20000, 0x36_0000),
-                (0x38_0000, 0x8_0000),
-                0x40_0000,
-            ),
-            (
-                include_str!("../../../firmwares/altruist-urban/partitions-esp32c6.csv"),
-                (0x20000, 0x6E_0000),
-                (0x70_0000, 0x10_0000),
-                0x80_0000,
-            ),
-        ];
-        for (csv, factory, log, flash_end) in tables {
-            let table = rows(csv);
-            let find = |label: &str| {
-                let row = table.iter().find(|row| row[0] == label).unwrap();
-                (parse_number(row[3]), parse_number(row[4]))
-            };
-            assert_eq!(find("factory"), factory);
-            assert_eq!(find(LOG_PARTITION_LABEL), log);
-            // `factory` ends where `rohi-log` starts, and `rohi-log` ends the flash.
-            assert_eq!(factory.0 + factory.1, log.0);
-            assert_eq!(log.0 + log.1, flash_end);
-            // Both ends of the app area are 64 KiB aligned (OTA, #29); the log
-            // is whole 4 KiB erase sectors.
-            assert_eq!(factory.0 % 0x10000, 0);
-            assert_eq!((factory.0 + factory.1) % 0x10000, 0);
-            assert_eq!(log.0 % SECTOR_SIZE, 0);
-            assert_eq!(log.1 % SECTOR_SIZE, 0);
-        }
-    }
-
-    #[test]
     fn the_esp32c3_journal_holds_fifteen_whole_segments() {
         // Two sectors are the format header slots of the ring; the rest is
-        // cut into 32 KiB segments of eight sectors.
+        // cut into 8 KiB segments of two sectors.
         let ring = LOG_REGION_SIZE_ESP32C3 - 2 * SECTOR_SIZE;
-        assert_eq!(ring / (8 * SECTOR_SIZE), 15);
-        assert_eq!(15 * 8 * SECTOR_SIZE, 480 * 1024);
+        assert_eq!(ring / (2 * SECTOR_SIZE), 15);
+        assert_eq!(15 * 2 * SECTOR_SIZE, 120 * 1024);
     }
 
     #[test]

@@ -16,9 +16,9 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-//! The `telemetry` service on the host: the packet profiles are edited with
-//! ordinary Actions of a real simulator process through the real `rohi`
-//! client, persist across a restart and are removed by a factory reset.
+//! The `telemetry` and `connectivity` services on the host: the two packet profile slots and the
+//! two route slots are edited with ordinary Actions of a real simulator process through the real
+//! `rohi` client, persist across a restart and are cleared by a factory reset.
 
 mod common;
 
@@ -39,31 +39,24 @@ fn mask(bits: &[usize]) -> Vec<u8> {
     bytes
 }
 
-async fn profiles(device: &mut Device<TcpLink>) -> Vec<(String, Vec<u8>, u64)> {
-    let records = device
-        .invoke("telemetry", "profile_list", &[arg(1, Value::U64(0))])
+const OWNER: [u8; 32] = [
+    0xd7, 0x5a, 0x98, 0x01, 0x82, 0xb1, 0x0a, 0xb7, 0xd5, 0x4b, 0xfe, 0xd3, 0xc9, 0x64, 0x07, 0x3a,
+    0x0e, 0xe1, 0x72, 0xf3, 0xda, 0xa6, 0x23, 0x25, 0xaf, 0x02, 0x1a, 0x68, 0xf7, 0x07, 0x51, 0x1a,
+];
+
+async fn set_public(device: &mut Device<TcpLink>, index: u64, bits: &[usize]) {
+    device
+        .invoke(
+            "telemetry",
+            "set_public",
+            &[arg(1, Value::U64(index)), arg(2, Value::Bytes(mask(bits)))],
+        )
         .await
         .unwrap();
-    records
-        .iter()
-        .map(|record| {
-            let get = |id| record.iter().find(|f| f.field_id == id).unwrap();
-            let Value::String(id) = &get(1).value else {
-                panic!("profile id")
-            };
-            let Value::Bytes(public) = &get(3).value else {
-                panic!("public selection")
-            };
-            let Value::U64(revision) = get(4).value else {
-                panic!("revision")
-            };
-            (id.clone(), public.clone(), revision)
-        })
-        .collect()
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn the_eight_actions_are_discoverable_with_their_access() {
+async fn the_three_telemetry_actions_are_discoverable_with_their_access() {
     let sim = Sim::start(&Launch::new());
     let mut device = sim.device().await;
     let actions = device.actions().await.unwrap();
@@ -75,13 +68,8 @@ async fn the_eight_actions_are_discoverable_with_their_access() {
     assert_eq!(
         telemetry,
         [
-            ("profile_add", ActionAccess::Mutate),
-            ("profile_remove", ActionAccess::Mutate),
             ("set_public", ActionAccess::Mutate),
-            ("add_private", ActionAccess::Mutate),
-            ("remove_private", ActionAccess::Mutate),
-            ("profile_list", ActionAccess::Read),
-            ("profile_recipients", ActionAccess::Read),
+            ("set_private", ActionAccess::Mutate),
             ("measurements", ActionAccess::Read),
         ]
     );
@@ -132,126 +120,128 @@ async fn the_catalog_lists_what_the_robonomics_format_can_encode() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn profiles_are_edited_persist_and_a_factory_reset_removes_them() {
+async fn profiles_are_edited_persist_and_a_factory_reset_clears_them() {
     let dir = TempDir::new().unwrap();
     let storage = dir.path().join("device.flash");
     let sim = Sim::start(&Launch::new().storage(&storage));
     let mut device = sim.device().await;
-    assert!(profiles(&mut device).await.is_empty());
 
-    device
-        .invoke(
-            "telemetry",
-            "profile_add",
-            &[
-                arg(1, text("community")),
-                arg(2, Value::Enum("robonomics".into())),
-            ],
-        )
-        .await
-        .unwrap();
-    // Creating a profile discloses nothing.
-    let created = profiles(&mut device).await;
-    assert_eq!(created[0].1, vec![0u8; 32]);
+    // Both slots exist from the start and disclose nothing.
+    let status = fields(&mut device, "telemetry").await;
+    for slot in 0..2 {
+        assert_eq!(
+            status.get(&format!("profile{slot}_public")),
+            Some(&Value::Bytes(vec![0u8; 32]))
+        );
+        assert_eq!(
+            status.get(&format!("profile{slot}_private")),
+            Some(&Value::Bool(false))
+        );
+    }
+    let created = status.get("profile0_revision").cloned();
 
-    device
-        .invoke(
-            "telemetry",
-            "set_public",
-            &[
-                arg(1, text("community")),
-                arg(2, Value::Bytes(mask(&[1, 7]))),
-            ],
-        )
-        .await
-        .unwrap();
-    let edited = profiles(&mut device).await;
-    assert_eq!(edited[0].1, mask(&[1, 7]));
-    assert!(edited[0].2 > created[0].2, "an edit has a new revision");
+    set_public(&mut device, 0, &[1, 7]).await;
+    let status = fields(&mut device, "telemetry").await;
+    assert_eq!(
+        status.get("profile0_public"),
+        Some(&Value::Bytes(mask(&[1, 7])))
+    );
+    assert_ne!(status.get("profile0_revision").cloned(), created);
+    // Slot 1 is untouched.
+    assert_eq!(
+        status.get("profile1_public"),
+        Some(&Value::Bytes(vec![0u8; 32]))
+    );
 
-    // An unsupported bit (the SCD4x CO2) is refused and changes nothing.
-    assert!(
-        device
+    // An unsupported bit (the SCD4x CO2) and an index outside the two slots are refused and
+    // change nothing.
+    for (index, bits) in [(0u64, &[4usize][..]), (2, &[1][..])] {
+        assert!(
+            device
+                .invoke(
+                    "telemetry",
+                    "set_public",
+                    &[arg(1, Value::U64(index)), arg(2, Value::Bytes(mask(bits)))],
+                )
+                .await
+                .is_err(),
+            "index {index} bits {bits:?}"
+        );
+    }
+    let after = fields(&mut device, "telemetry").await;
+    assert_eq!(after.get("profile0_public"), status.get("profile0_public"));
+
+    // The one private recipient of slot 1 is replaced, never added to.
+    for recipient in [OWNER, [9u8; 32]] {
+        let result = device
             .invoke(
                 "telemetry",
-                "set_public",
-                &[arg(1, text("community")), arg(2, Value::Bytes(mask(&[4])))],
+                "set_private",
+                &[
+                    arg(1, Value::U64(1)),
+                    arg(2, Value::Bytes(recipient.to_vec())),
+                    arg(3, Value::Bytes(mask(&[0]))),
+                ],
             )
-            .await
-            .is_err()
+            .await;
+        // A recipient that is not a valid key is refused; the valid one is accepted.
+        assert_eq!(result.is_ok(), recipient == OWNER);
+    }
+    let status = fields(&mut device, "telemetry").await;
+    assert_eq!(status.get("profile1_private"), Some(&Value::Bool(true)));
+    assert_eq!(
+        status.get("profile1_priv_selection"),
+        Some(&Value::Bytes(mask(&[0])))
     );
-    assert_eq!(profiles(&mut device).await, edited);
-
-    // A private section for a valid key, listed back completely.
-    let owner = vec![
-        0xd7, 0x5a, 0x98, 0x01, 0x82, 0xb1, 0x0a, 0xb7, 0xd5, 0x4b, 0xfe, 0xd3, 0xc9, 0x64, 0x07,
-        0x3a, 0x0e, 0xe1, 0x72, 0xf3, 0xda, 0xa6, 0x23, 0x25, 0xaf, 0x02, 0x1a, 0x68, 0xf7, 0x07,
-        0x51, 0x1a,
-    ];
-    device
-        .invoke(
-            "telemetry",
-            "add_private",
-            &[
-                arg(1, text("community")),
-                arg(2, Value::Bytes(owner.clone())),
-                arg(3, Value::Bytes(mask(&[0]))),
-            ],
-        )
-        .await
-        .unwrap();
-    let recipients = device
-        .invoke(
-            "telemetry",
-            "profile_recipients",
-            &[arg(1, text("community")), arg(2, Value::U64(0))],
-        )
-        .await
-        .unwrap();
-    assert_eq!(recipients.len(), 1);
-    assert_eq!(recipients[0][0].value, Value::Bytes(owner));
-    assert_eq!(recipients[0][1].value, Value::Bytes(mask(&[0])));
     drop(device);
     assert!(sim.stop().success());
 
     // The policy survives a restart.
     let sim = Sim::start(&Launch::new().storage(&storage));
     let mut device = sim.device().await;
-    let restored = profiles(&mut device).await;
-    assert_eq!(restored.len(), 1);
-    assert_eq!(restored[0].1, mask(&[1, 7]));
+    let restored = fields(&mut device, "telemetry").await;
+    assert_eq!(
+        restored.get("profile0_public"),
+        Some(&Value::Bytes(mask(&[1, 7])))
+    );
+    assert_eq!(restored.get("profile1_private"), Some(&Value::Bool(true)));
+
+    // `none` removes the private section.
+    device
+        .invoke(
+            "telemetry",
+            "set_private",
+            &[
+                arg(1, Value::U64(1)),
+                arg(2, Value::Bytes(OWNER.to_vec())),
+                arg(3, Value::Bytes(vec![0u8; 32])),
+            ],
+        )
+        .await
+        .unwrap();
+    let status = fields(&mut device, "telemetry").await;
+    assert_eq!(status.get("profile1_private"), Some(&Value::Bool(false)));
 
     device.invoke("system", "factory_reset", &[]).await.unwrap();
-    assert!(profiles(&mut device).await.is_empty());
     let status = fields(&mut device, "telemetry").await;
-    assert_eq!(status.get("profiles"), Some(&Value::U64(0)));
+    assert_eq!(
+        status.get("profile0_public"),
+        Some(&Value::Bytes(vec![0u8; 32]))
+    );
     drop(device);
     sim.stop();
 }
 
-async fn routes(device: &mut Device<TcpLink>) -> Vec<(String, String, String, u64)> {
-    let records = device
-        .invoke("connectivity", "route_list", &[arg(1, Value::U64(0))])
-        .await
-        .unwrap();
-    records
-        .iter()
-        .map(|record| {
-            let text = |id| match &record.iter().find(|f| f.field_id == id).unwrap().value {
-                Value::String(text) => text.clone(),
-                other => panic!("text, not {other:?}"),
-            };
-            let Value::U64(interval) = record.iter().find(|f| f.field_id == 4).unwrap().value
-            else {
-                panic!("interval")
-            };
-            (text(1), text(2), text(3), interval)
-        })
-        .collect()
+fn route_args(index: u64, profile: u64, endpoint: &str) -> Vec<FieldValue> {
+    vec![
+        arg(1, Value::U64(index)),
+        arg(2, Value::U64(profile)),
+        arg(3, text(endpoint)),
+    ]
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn routes_are_edited_with_actions_persist_and_a_factory_reset_removes_them() {
+async fn routes_are_edited_with_actions_persist_and_a_factory_reset_clears_them() {
     let dir = TempDir::new().unwrap();
     let storage = dir.path().join("device.flash");
     let sim = Sim::start(&Launch::new().storage(&storage));
@@ -266,114 +256,122 @@ async fn routes_are_edited_with_actions_persist_and_a_factory_reset_removes_them
     assert_eq!(
         connectivity,
         [
-            ("route_add", ActionAccess::Mutate),
-            ("route_remove", ActionAccess::Mutate),
+            ("set_endpoint", ActionAccess::Mutate),
             ("set_interval", ActionAccess::Mutate),
-            ("fallback_add", ActionAccess::Mutate),
-            ("fallback_remove", ActionAccess::Mutate),
-            ("route_list", ActionAccess::Read),
-            ("fallback_list", ActionAccess::Read),
-            ("packet_get", ActionAccess::Read),
+            ("set_fallback", ActionAccess::Mutate),
+            ("get_payload", ActionAccess::Read),
         ]
     );
-    assert!(routes(&mut device).await.is_empty(), "no route by default");
+    let status = fields(&mut device, "connectivity").await;
+    assert_eq!(status.get("active_routes"), Some(&Value::U64(0)));
+    for slot in 0..2 {
+        assert_eq!(
+            status.get(&format!("route{slot}_state")),
+            Some(&Value::Enum("empty".into())),
+            "no route by default"
+        );
+    }
 
-    // A route needs an existing telemetry profile.
-    let add = |route: &str, profile: &str, endpoint: &str| {
-        vec![
-            arg(1, text(route)),
-            arg(2, text(profile)),
-            arg(3, text(endpoint)),
-        ]
-    };
-    assert!(
-        device
-            .invoke(
-                "connectivity",
-                "route_add",
-                &add("r", "env", "http://a.example")
-            )
-            .await
-            .is_err()
-    );
-    device
-        .invoke(
-            "telemetry",
-            "profile_add",
-            &[
-                arg(1, text("env")),
-                arg(2, Value::Enum("robonomics".into())),
-            ],
-        )
-        .await
-        .unwrap();
     // The longest supported endpoint (64 bytes) is listed back in full.
     let long = format!("http://{}.example.org:8080", "h".repeat(40));
     assert_eq!(long.len(), 64);
     device
-        .invoke("connectivity", "route_add", &add("community", "env", &long))
+        .invoke("connectivity", "set_endpoint", &route_args(0, 1, &long))
         .await
         .unwrap();
     device
         .invoke(
             "connectivity",
             "set_interval",
-            &[arg(1, text("community")), arg(2, Value::U64(120))],
+            &[arg(1, Value::U64(0)), arg(2, Value::U64(120))],
         )
         .await
         .unwrap();
     device
         .invoke(
             "connectivity",
-            "fallback_add",
-            &[
-                arg(1, text("community")),
-                arg(2, text("backup")),
-                arg(3, text("http://backup.example")),
-            ],
+            "set_fallback",
+            &[arg(1, Value::U64(0)), arg(2, text("http://backup.example"))],
         )
         .await
         .unwrap();
-    assert_eq!(
-        routes(&mut device).await,
-        [("community".to_owned(), "env".to_owned(), long.clone(), 120)]
-    );
-    let fallbacks = device
-        .invoke(
-            "connectivity",
-            "fallback_list",
-            &[arg(1, text("community")), arg(2, Value::U64(0))],
-        )
-        .await
-        .unwrap();
-    assert_eq!(fallbacks.len(), 1);
-    assert_eq!(fallbacks[0][2].value, Value::U64(1));
-
-    // An invalid interval is refused; the route is unchanged.
-    assert!(
-        device
-            .invoke(
-                "connectivity",
-                "set_interval",
-                &[arg(1, text("community")), arg(2, Value::U64(5))],
-            )
-            .await
-            .is_err()
-    );
-    // The service reports its route in the static status slots.
     let status = fields(&mut device, "connectivity").await;
+    assert_eq!(status.get("route0_endpoint"), Some(&text(&long)));
+    assert_eq!(status.get("route0_profile"), Some(&Value::U64(1)));
+    assert_eq!(status.get("route0_interval_s"), Some(&Value::U64(120)));
     assert_eq!(
-        status.get("route0.id"),
-        Some(&Value::String("community".into()))
+        status.get("route0_fallback"),
+        Some(&text("http://backup.example"))
+    );
+    // Slot 1 did not move.
+    assert_eq!(
+        status.get("route1_state"),
+        Some(&Value::Enum("empty".into()))
+    );
+
+    // Refused: an invalid interval, an index outside the two slots, a profile outside the
+    // two slots, an interval of an empty slot.
+    for (action, args) in [
+        (
+            "set_interval",
+            vec![arg(1, Value::U64(0)), arg(2, Value::U64(5))],
+        ),
+        ("set_endpoint", route_args(2, 0, "http://a.example")),
+        ("set_endpoint", route_args(1, 2, "http://a.example")),
+        (
+            "set_interval",
+            vec![arg(1, Value::U64(1)), arg(2, Value::U64(60))],
+        ),
+    ] {
+        assert!(
+            device.invoke("connectivity", action, &args).await.is_err(),
+            "{action}"
+        );
+    }
+    assert_eq!(
+        fields(&mut device, "connectivity")
+            .await
+            .get("route0_interval_s"),
+        Some(&Value::U64(120))
     );
     drop(device);
     assert!(sim.stop().success());
 
     let sim = Sim::start(&Launch::new().storage(&storage));
     let mut device = sim.device().await;
-    assert_eq!(routes(&mut device).await.len(), 1, "persisted");
+    let status = fields(&mut device, "connectivity").await;
+    assert_eq!(
+        status.get("route0_endpoint"),
+        Some(&text(&long)),
+        "persisted"
+    );
+
+    // An absent endpoint (the empty string) deletes the route; the slot is reusable and a new
+    // route inherits nothing.
+    device
+        .invoke("connectivity", "set_endpoint", &route_args(0, 0, ""))
+        .await
+        .unwrap();
+    let status = fields(&mut device, "connectivity").await;
+    assert_eq!(
+        status.get("route0_state"),
+        Some(&Value::Enum("empty".into()))
+    );
+    device
+        .invoke(
+            "connectivity",
+            "set_endpoint",
+            &route_args(0, 0, "http://again.example"),
+        )
+        .await
+        .unwrap();
+    let status = fields(&mut device, "connectivity").await;
+    assert_eq!(status.get("route0_interval_s"), Some(&Value::U64(60)));
+    assert!(!status.contains_key("route0_fallback"));
+
     device.invoke("system", "factory_reset", &[]).await.unwrap();
-    assert!(routes(&mut device).await.is_empty());
+    let status = fields(&mut device, "connectivity").await;
+    assert_eq!(status.get("active_routes"), Some(&Value::U64(0)));
     drop(device);
     sim.stop();
 }

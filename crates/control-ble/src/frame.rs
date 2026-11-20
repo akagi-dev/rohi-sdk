@@ -130,13 +130,14 @@ enum State {
     Discarding,
 }
 
-/// Reassembles frames into one message of at most `N` bytes.
+/// Reassembles frames into one message in a buffer the caller owns.
 ///
-/// One message at a time: a first fragment (`index == 0`) always starts a new
-/// message and drops a partial one. After a rejected frame the remaining
-/// fragments of that message are skipped.
-pub struct Reassembler<const N: usize> {
-    buf: [u8; N],
+/// The state machine of [`Reassembler`] without its buffer: the control
+/// worker's slot is the buffer, so a request is received straight into the
+/// place it is executed from. One message at a time: a first fragment
+/// (`index == 0`) always starts a new message and drops a partial one. After
+/// a rejected frame the remaining fragments of that message are skipped.
+pub struct Assembler {
     state: State,
     /// Id of the frame seen last, for error replies.
     id: u8,
@@ -148,20 +149,16 @@ pub struct Reassembler<const N: usize> {
     filled: usize,
 }
 
-impl<const N: usize> Default for Reassembler<N> {
+impl Default for Assembler {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<const N: usize> Reassembler<N> {
-    /// Largest message this reassembler accepts, bytes.
-    pub const CAPACITY: usize = N;
-
-    /// An empty reassembler.
+impl Assembler {
+    /// An empty assembler.
     pub const fn new() -> Self {
         Self {
-            buf: [0; N],
             state: State::Idle,
             id: 0,
             message_id: 0,
@@ -191,24 +188,27 @@ impl<const N: usize> Reassembler<N> {
         self.id
     }
 
-    /// Feeds one frame. Returns the message when this frame completed it.
+    /// Feeds one frame; the message is collected in `buf`. Returns the message
+    /// id and length when this frame completed it.
     ///
     /// On error the partial message is dropped and the following fragments of
-    /// the same message are skipped until a new first fragment arrives.
+    /// the same message are skipped until a new first fragment arrives. A
+    /// message longer than `buf` is [`FrameError::TooLarge`].
     ///
     /// # Errors
     ///
     /// A [`FrameError`] for the first frame that is rejected; the continuation
     /// frames of that message that follow return `Ok(None)` so that one
     /// failure is reported once.
-    pub fn push(&mut self, frame: &[u8]) -> Result<Option<Message<'_>>, FrameError> {
-        match self.accept(frame) {
+    pub fn push(
+        &mut self,
+        buf: &mut [u8],
+        frame: &[u8],
+    ) -> Result<Option<(u8, usize)>, FrameError> {
+        match self.accept(buf, frame) {
             Ok(true) => {
                 self.state = State::Idle;
-                Ok(Some(Message {
-                    id: self.message_id,
-                    bytes: &self.buf[..self.filled],
-                }))
+                Ok(Some((self.message_id, self.filled)))
             }
             Ok(false) => Ok(None),
             Err(error) => {
@@ -222,7 +222,7 @@ impl<const N: usize> Reassembler<N> {
     }
 
     /// `Ok(true)` when the message is complete.
-    fn accept(&mut self, frame: &[u8]) -> Result<bool, FrameError> {
+    fn accept(&mut self, buf: &mut [u8], frame: &[u8]) -> Result<bool, FrameError> {
         if frame.len() < HEADER_LEN {
             return Err(FrameError::Truncated);
         }
@@ -249,7 +249,7 @@ impl<const N: usize> Reassembler<N> {
             self.total = total;
             self.next = 0;
             self.filled = 0;
-            if usize::from(total) > N {
+            if usize::from(total) > buf.len() {
                 return Err(FrameError::TooLarge);
             }
             if total == 0 {
@@ -271,7 +271,7 @@ impl<const N: usize> Reassembler<N> {
         if end > usize::from(self.total) {
             return Err(FrameError::LengthMismatch);
         }
-        self.buf[self.filled..end].copy_from_slice(payload);
+        buf[self.filled..end].copy_from_slice(payload);
         self.filled = end;
         self.next = index + 1;
 
@@ -282,6 +282,67 @@ impl<const N: usize> Reassembler<N> {
             return Ok(true);
         }
         Ok(false)
+    }
+}
+
+/// Reassembles frames into one message of at most `N` bytes, in a buffer of
+/// its own: an [`Assembler`] with storage.
+pub struct Reassembler<const N: usize> {
+    buf: [u8; N],
+    assembler: Assembler,
+}
+
+impl<const N: usize> Default for Reassembler<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<const N: usize> Reassembler<N> {
+    /// Largest message this reassembler accepts, bytes.
+    pub const CAPACITY: usize = N;
+
+    /// An empty reassembler.
+    pub const fn new() -> Self {
+        Self {
+            buf: [0; N],
+            assembler: Assembler::new(),
+        }
+    }
+
+    /// Drops any partial message. Call on every disconnect.
+    pub fn reset(&mut self) {
+        self.assembler.reset();
+    }
+
+    /// Whether a message is partially received.
+    pub fn is_receiving(&self) -> bool {
+        self.assembler.is_receiving()
+    }
+
+    /// Message id of the most recent frame, for error replies.
+    pub fn last_id(&self) -> u8 {
+        self.assembler.last_id()
+    }
+
+    /// Feeds one frame. Returns the message when this frame completed it.
+    ///
+    /// On error the partial message is dropped and the following fragments of
+    /// the same message are skipped until a new first fragment arrives.
+    ///
+    /// # Errors
+    ///
+    /// A [`FrameError`] for the first frame that is rejected; the continuation
+    /// frames of that message that follow return `Ok(None)` so that one
+    /// failure is reported once.
+    pub fn push(&mut self, frame: &[u8]) -> Result<Option<Message<'_>>, FrameError> {
+        Ok(self
+            .assembler
+            .push(&mut self.buf, frame)?
+            .map(|(id, len)| Message {
+                id,
+                bytes: &self.buf[..len],
+            }))
     }
 }
 

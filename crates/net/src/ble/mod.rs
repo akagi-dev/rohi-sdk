@@ -81,6 +81,7 @@ pub struct BleGattSpec {
 /// let config = BleConfig {
 ///     name_prefix: "ALTRUIST-URBAN",
 ///     name: None,
+///     pairing: false,
 ///     gatt: BleGattSpec {
 ///         service: 0x1111_2222_3333_4444_5555_6666_7777_8888,
 ///         rx: 0x1111_2222_3333_4444_5555_6666_7777_8889,
@@ -103,11 +104,22 @@ pub struct BleConfig {
     pub name_prefix: &'static str,
     /// The configured name, advertised as it is. Replaces the default name.
     pub name: Option<BleName>,
+    /// Require pairing: the peripheral asks the central to pair (LE Secure
+    /// Connections, Just Works, no bonding) and, where the stack can, lets the
+    /// GATT characteristics refuse an unencrypted link. Just Works protects
+    /// against passive eavesdropping, not against an active attacker in the
+    /// middle; it is not an authenticated link.
+    pub pairing: bool,
     /// GATT layout of the byte pipe.
     pub gatt: BleGattSpec,
 }
 
 impl BleConfig {
+    /// The same configuration with pairing switched on or off.
+    pub fn with_pairing(self, pairing: bool) -> Self {
+        Self { pairing, ..self }
+    }
+
     /// The same configuration with the name of `settings`.
     pub fn with_settings(self, settings: &BleSettings) -> Self {
         Self {

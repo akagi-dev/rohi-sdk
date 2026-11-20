@@ -22,11 +22,14 @@
 //! control link (BLE on the ESP; BLE and/or TCP on `std`) -> rohi-control
 //!                                                              |
 //!                                             UrbanDevice (this module)
-//!                          config sections: wifi, network, ble, connectivity, location, time, logging
+//!                          config sections: wifi, network, ble, connectivity, location, time, logging,
+//!                                           control_tcp
 //!                          status: wifi, network, ble, connectivity, location, time,
-//!                                  sensors, identity, logging, system
+//!                                  sensors, identity, logging, system,
+//!                                  control_tcp, control_ble
 //!                          actions: wifi, identity, logging (read, download, clear),
-//!                                   system (reboot, factory_reset)
+//!                                   system (reboot, factory_reset),
+//!                                   control_tcp (reveal_psk)
 //! ```
 //!
 //! The registries only talk to runtime handles; they never own a store, a flash
@@ -43,9 +46,16 @@
 //! `logging` service `L` of the platform; the link, its task, the log storage and
 //! the static storage of the services are the platform's.
 
+use core::cell::Cell;
+
+use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::Delay;
-use rohi_sdk::control::{Device, DeviceInfo};
+use rohi_sdk::control::{ControlAccess, Device, DeviceInfo};
 use rohi_sdk::crash::Report;
+use rohi_sdk::endpoints::{
+    ControlBleService, ControlTcpService, PSK_LEN, PskStore, PskStoreError, TcpPskSection,
+};
 use rohi_sdk::identity::{Identity, IdentityService, IdentityStore, IdentityStoreError, PublicKey};
 use rohi_sdk::location::LocationService;
 use rohi_sdk::net::{BleProbe, BleService, IpBackend, NetworkHandle, NetworkService, WifiService};
@@ -90,6 +100,80 @@ fn identity_error(error: ConfigError) -> IdentityStoreError {
     }
 }
 
+/// The access state of the control plane: the mode of every transport, whether a TCP
+/// pre-shared key is provisioned and the counters of the endpoints. The configuration owner
+/// publishes into it, the control worker reads it, and the endpoint services
+/// report it.
+pub static ACCESS: ControlAccess = ControlAccess::new(access_entropy);
+
+/// The random source of the TCP handshake, set by the platform before the control
+/// plane starts. Without one a restricted TCP endpoint refuses every client.
+type EntropySource = fn(&mut [u8]) -> bool;
+
+static ENTROPY: BlockingMutex<CriticalSectionRawMutex, Cell<Option<EntropySource>>> =
+    BlockingMutex::new(Cell::new(None));
+
+fn access_entropy(dst: &mut [u8]) -> bool {
+    ENTROPY.lock(Cell::get).is_some_and(|source| source(dst))
+}
+
+/// The access state of the control plane, see [`ACCESS`].
+pub fn access() -> &'static ControlAccess {
+    &ACCESS
+}
+
+/// Sets the cryptographic random source of the TCP handshake. It must return
+/// `false` rather than weak bytes.
+pub fn set_access_entropy(source: fn(&mut [u8]) -> bool) {
+    ENTROPY.lock(|cell| cell.set(Some(source)));
+}
+
+/// The pre-shared key section behind the configuration owner task.
+pub struct StoredPsk(ConfigHandle);
+
+impl PskStore for StoredPsk {
+    async fn store(&self, key: &[u8; PSK_LEN]) -> Result<(), PskStoreError> {
+        // The section wipes itself when it is dropped, at the end of this call.
+        let section = TcpPskSection::new(*key);
+        self.0.set(&section).await.map_err(psk_error)
+    }
+}
+
+fn psk_error(error: ConfigError) -> PskStoreError {
+    match error {
+        ConfigError::Unavailable(_) => PskStoreError::Unavailable,
+        _ => PskStoreError::Internal,
+    }
+}
+
+// The key the TCP frontend authenticates clients with: a process of the host platform holds it in
+// memory, a device does not hold it at all (it has no TCP endpoint; the key stays in the flash).
+#[cfg(feature = "std-tcp")]
+static TCP_KEY: BlockingMutex<CriticalSectionRawMutex, Cell<Option<[u8; PSK_LEN]>>> =
+    BlockingMutex::new(Cell::new(None));
+
+/// Replaces the key of the TCP frontend: the stored one when committed or loaded, a key given on
+/// the command line, or none.
+#[cfg(feature = "std-tcp")]
+pub fn set_tcp_key(key: Option<[u8; PSK_LEN]>) {
+    use zeroize::Zeroize as _;
+
+    let mut old = TCP_KEY.lock(|cell| cell.replace(key));
+    old.zeroize();
+}
+
+/// The [`PskSource`](rohi_sdk::tcp::PskSource) of the TCP endpoint of the host platform.
+#[cfg(feature = "std-tcp")]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TcpKey;
+
+#[cfg(feature = "std-tcp")]
+impl rohi_sdk::tcp::PskSource for TcpKey {
+    fn psk(&self) -> Option<[u8; PSK_LEN]> {
+        TCP_KEY.lock(Cell::get)
+    }
+}
+
 /// The config sections of the device plus the factory reset of the storage
 /// behind them.
 pub type UrbanConfig = StorageConfig<ConfigSections>;
@@ -106,6 +190,8 @@ type UrbanLocation = LocationService<'static, RawMutex>;
 type UrbanSensors = SensorsService<'static, RawMutex>;
 type UrbanIdentity = IdentityService<StoredIdentity>;
 type UrbanSystem = SystemService<UrbanSystemPlatform>;
+type UrbanControlTcp = ControlTcpService<'static, StoredPsk>;
+type UrbanControlBle = ControlBleService<'static>;
 type UrbanTelemetry = telemetry::UrbanTelemetry;
 
 /// What the `system` service needs from the Altruist Urban: the deferred reboot
@@ -161,6 +247,8 @@ pub struct UrbanServices<I: 'static, B, L> {
     telemetry: UrbanTelemetry,
     logging: L,
     system: UrbanSystem,
+    control_tcp: UrbanControlTcp,
+    control_ble: UrbanControlBle,
 }
 
 /// The services that report status. The `time` service is the time runtime
@@ -177,6 +265,8 @@ pub type UrbanStatusServices<I, B, L> = (
     &'static UrbanTelemetry,
     &'static L,
     &'static UrbanSystem,
+    &'static UrbanControlTcp,
+    &'static UrbanControlBle,
 );
 
 /// The status registry of the device.
@@ -190,6 +280,7 @@ pub type UrbanActions<I, L> = (
     &'static UrbanConnectivity,
     &'static L,
     &'static UrbanSystem,
+    &'static UrbanControlTcp,
 );
 
 /// The control backend of the Altruist Urban over the IP backend `I` and the
@@ -285,6 +376,8 @@ where
             reboot: reboot_fn,
             boot_report,
         }),
+        control_tcp: ControlTcpService::new(&ACCESS, StoredPsk(config)),
+        control_ble: ControlBleService::new(&ACCESS),
     });
     Device::new(
         info,
@@ -302,6 +395,8 @@ where
             &services.telemetry,
             &services.logging,
             &services.system,
+            &services.control_tcp,
+            &services.control_ble,
         )),
         (
             &services.wifi,
@@ -310,6 +405,7 @@ where
             &services.connectivity,
             &services.logging,
             &services.system,
+            &services.control_tcp,
         ),
     )
 }
@@ -326,12 +422,14 @@ pub const GATT: rohi_sdk::net::BleGattSpec = rohi_sdk::net::BleGattSpec {
 pub const BLE_CONFIG: rohi_sdk::net::BleConfig = rohi_sdk::net::BleConfig {
     name_prefix: "ALTRUIST-URBAN",
     name: None,
+    pairing: false,
     gatt: GATT,
 };
 
 /// [`BLE_CONFIG`] with the name of the `ble` section as the configuration
 /// owner published it at boot: the defaults, the firmware overrides and the
-/// stored overrides. The name is read once, when the peripheral starts.
+/// stored overrides. Read once, when the peripheral starts. BLE control runs without
+/// pairing and without link encryption in this build.
 pub fn ble_config() -> rohi_sdk::net::BleConfig {
     BLE_CONFIG.with_settings(&crate::bindings::ble_settings())
 }

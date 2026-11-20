@@ -26,7 +26,7 @@ use common::*;
 use rohi::model::*;
 use rohi::{ClientTransport, Device, Error, Session};
 use rohi_config::Override;
-use rohi_control::{Controller, OpenPolicy};
+use rohi_control::{ControlAccess, ControlHub, Controller, OpenPolicy};
 use rohi_control_ble::ControlBle;
 use rohi_control_proto::control as pb;
 use rohi_net::WifiSsid;
@@ -518,14 +518,17 @@ impl ClientTransport for StaleFirst {
 async fn stale_responses_are_skipped() {
     let bench = Bench::new();
     let (client, device) = link(244);
+    let access = ControlAccess::new(|_| false);
+    let hub = ControlHub::<1>::with_access(&access);
     let controller = Controller::new(backend(&bench), OpenPolicy);
-    let mut server = ControlBle::new(device, &controller);
+    let mut server = ControlBle::new(device, &hub);
     let transport = StaleFirst {
         inner: client,
         pending: Vec::new(),
     };
     tokio::select! {
         () = async { server.run().await } => unreachable!(),
+        never = hub.serve(&controller) => never,
         () = async {
             let mut device = Device::new(transport);
             assert_eq!(device.info().await.unwrap().firmware, "fake-1.0.0");
@@ -634,8 +637,10 @@ impl ClientTransport for Changing<'_> {
 async fn read_status_while_changing(every: bool) -> rohi::Result<ServiceStatus> {
     let bench = Bench::new();
     let (client, device) = link(244);
+    let access = ControlAccess::new(|_| false);
+    let hub = ControlHub::<1>::with_access(&access);
     let controller = Controller::new(backend(&bench), OpenPolicy);
-    let mut server = ControlBle::new(device, &controller);
+    let mut server = ControlBle::new(device, &hub);
     // Requests: services, schema, then the compact status (3rd) and the
     // detailed one (4th), which is the one that changes the radio first.
     let transport = Changing {
@@ -647,6 +652,7 @@ async fn read_status_while_changing(every: bool) -> rohi::Result<ServiceStatus> 
     };
     tokio::select! {
         () = async { server.run().await } => unreachable!(),
+        never = hub.serve(&controller) => never,
         result = async { Device::new(transport).service_status("radio").await } => result,
     }
 }

@@ -250,7 +250,7 @@ pub(crate) fn invoked(service: u32, action: u32, privilege: Privilege, what: &'s
 }
 
 #[inline(never)]
-pub(crate) fn stream_opened(service: u32, stream: u32, session: u32, files: usize) {
+pub(crate) fn stream_opened(service: u32, stream: u32, session: u64, files: usize) {
     log::debug!(
         target: "control",
         "Stream opened (service={} stream={} session={} files={})",
@@ -335,5 +335,23 @@ pub(crate) fn stream_gone(service: u32, stream: u32) {
         "Stream closed or timed out in the service (service={} stream={})",
         service,
         stream
+    );
+}
+
+#[cold]
+#[inline(never)]
+pub(crate) fn session_stream_closed(
+    session: u64,
+    service: u32,
+    stream: u32,
+    result: Result<(), ActionError>,
+) {
+    log::info!(
+        target: "control",
+        "Session ended, stream closed (session={} service={} stream={} result={:?})",
+        session,
+        service,
+        stream,
+        result
     );
 }

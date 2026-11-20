@@ -18,7 +18,7 @@
 //! The publisher: the task that turns routes into deliveries.
 //!
 //! [`Publisher::run`] loops: reconcile the [`Router`] with the effective
-//! routes, publish what is due (one capture, one sealed packet per distinct
+//! route slots, publish what is due (one capture, one sealed packet per distinct
 //! profile stamp, shared by the due routes), make at most one delivery
 //! attempt, report the status and sleep until the next deadline or change.
 //! All decisions are in [`Router`]; this file only does the waiting and the
@@ -36,7 +36,7 @@ use heapless::Vec;
 use rohi_telemetry::ProfileStamp;
 use rohi_time::{Clock, MonotonicTimestamp};
 
-use crate::config::{MAX_ROUTES, RouteSet};
+use crate::config::Routes;
 use crate::pool::PacketHandle;
 use crate::provider::{BuildFailure, PacketProvider};
 use crate::router::{Admit, Delivery, Router, SkipReason};
@@ -51,16 +51,17 @@ pub struct Publisher<
     T: PacketTransport,
     D: DelayNs,
     C: Clock,
+    const ROUTES: usize,
     const DEPTH: usize,
     const SLOTS: usize,
     const BYTES: usize,
 > {
-    state: &'a ConnectivityState<M>,
+    state: &'a ConnectivityState<M, ROUTES>,
     provider: P,
     transport: T,
     delay: D,
     clock: C,
-    router: Router<DEPTH, SLOTS, BYTES>,
+    router: Router<ROUTES, DEPTH, SLOTS, BYTES>,
     health: Health,
 }
 
@@ -71,14 +72,15 @@ impl<
     T: PacketTransport,
     D: DelayNs,
     C: Clock,
+    const R: usize,
     const DEPTH: usize,
     const SLOTS: usize,
     const BYTES: usize,
-> Publisher<'a, M, P, T, D, C, DEPTH, SLOTS, BYTES>
+> Publisher<'a, M, P, T, D, C, R, DEPTH, SLOTS, BYTES>
 {
     /// A publisher over the effective routes in `state`.
     pub const fn new(
-        state: &'a ConnectivityState<M>,
+        state: &'a ConnectivityState<M, R>,
         provider: P,
         transport: T,
         delay: D,
@@ -100,7 +102,7 @@ impl<
     }
 
     /// The router, for inspection.
-    pub fn router(&self) -> &Router<DEPTH, SLOTS, BYTES> {
+    pub fn router(&self) -> &Router<R, DEPTH, SLOTS, BYTES> {
         &self.router
     }
 
@@ -135,33 +137,24 @@ impl<
             .report(self.router.views(&config, now), self.health.clone());
     }
 
-    fn reconcile(&mut self, config: &RouteSet, now: MonotonicTimestamp) {
+    fn reconcile(&mut self, config: &Routes<R>, now: MonotonicTimestamp) {
         let provider = &self.provider;
-        self.router.sync(
-            config,
-            |id| provider.resolve(id).map(|stamp| stamp.incarnation),
-            now,
-        );
+        self.router
+            .sync(config, |index| provider.resolve(index).is_some(), now);
         self.router.invalidate(|stamp| provider.is_current(stamp));
     }
 
-    async fn publish(&mut self, config: &RouteSet, due: &[usize], now: MonotonicTimestamp) {
+    async fn publish(&mut self, config: &Routes<R>, due: &[usize], now: MonotonicTimestamp) {
         // The publication context is fixed before anything is awaited: each due
-        // route with the stamp of the profile it is bound to. A profile that
+        // route slot with the stamp of the profile slot it publishes. A profile that
         // changes during the capture or the build never joins this execution;
         // the build refuses a stamp that is no longer current and the change
         // takes effect in the next one.
-        let mut context: Vec<(usize, ProfileStamp), MAX_ROUTES> = Vec::new();
+        let mut context: Vec<(usize, ProfileStamp), R> = Vec::new();
         for index in due {
-            let resolved = self
-                .router
-                .id(*index)
-                .and_then(|id| config.get(id.as_str()))
-                .and_then(|route| {
-                    self.provider
-                        .resolve(route.profile.id.as_str())
-                        .filter(|stamp| stamp.incarnation == route.profile.incarnation)
-                });
+            let resolved = config
+                .get(*index)
+                .and_then(|route| self.provider.resolve(route.profile_index));
             match resolved {
                 Some(stamp) => {
                     let _ = context.push((*index, stamp));
@@ -195,8 +188,7 @@ impl<
         }
 
         // One packet per distinct stamp: (stamp, the built packet or the failure).
-        let mut built: Vec<(ProfileStamp, Result<PacketHandle, SkipReason>), MAX_ROUTES> =
-            Vec::new();
+        let mut built: Vec<(ProfileStamp, Result<PacketHandle, SkipReason>), R> = Vec::new();
         for (index, stamp) in &context {
             if !self.route_snapshot_is_current(config) {
                 break;
@@ -206,7 +198,7 @@ impl<
                 Some(position) => built[position].1,
                 None => {
                     let outcome = self.build(&snapshot, stamp).await;
-                    let _ = built.push((stamp.clone(), outcome));
+                    let _ = built.push((*stamp, outcome));
                     if !self.route_snapshot_is_current(config) {
                         break;
                     }
@@ -234,7 +226,7 @@ impl<
         }
     }
 
-    fn route_snapshot_is_current(&self, config: &RouteSet) -> bool {
+    fn route_snapshot_is_current(&self, config: &Routes<R>) -> bool {
         self.state.routes() == *config
     }
 
@@ -243,7 +235,7 @@ impl<
         snapshot: &P::Snapshot,
         stamp: &ProfileStamp,
     ) -> Result<PacketHandle, SkipReason> {
-        let Some((handle, buffer)) = self.router.pool_mut().alloc(stamp.clone()) else {
+        let Some((handle, buffer)) = self.router.pool_mut().alloc(*stamp) else {
             return Err(SkipReason::PoolExhausted);
         };
         match self.provider.build(snapshot, stamp, buffer).await {
@@ -271,7 +263,7 @@ impl<
         }
     }
 
-    async fn deliver(&mut self, config: &RouteSet) {
+    async fn deliver(&mut self, config: &Routes<R>) {
         if !self.route_snapshot_is_current(config) {
             return;
         }
@@ -287,20 +279,13 @@ impl<
             self.router.invalidate(|stamp| provider.is_current(stamp));
             return;
         }
-        let Some(route) = self
-            .router
-            .id(delivery.route)
-            .and_then(|id| config.get(id.as_str()))
-        else {
+        let Some(route) = config.get(delivery.route) else {
             return;
         };
         let uri = if delivery.path == 0 {
-            Some(&route.primary)
+            Some(&route.endpoint)
         } else {
-            route
-                .fallbacks
-                .get(delivery.path - 1)
-                .map(|fallback| &fallback.endpoint)
+            route.fallback.as_ref()
         };
         let Some(endpoint) = uri.and_then(|uri| uri.endpoint()) else {
             return;

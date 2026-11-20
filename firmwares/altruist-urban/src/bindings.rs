@@ -42,6 +42,8 @@ use core::marker::PhantomData;
 use embassy_sync::blocking_mutex::Mutex;
 use log::{info, warn};
 use rohi_sdk::config::{ConfigSection, HasOverrides, materialize};
+use rohi_sdk::control::Transport;
+use rohi_sdk::endpoints::{ControlTcpConfig, TcpPskSection};
 use rohi_sdk::identity::Identity;
 use rohi_sdk::location::LocationConfig;
 use rohi_sdk::logging::LoggingConfig;
@@ -51,7 +53,7 @@ use rohi_sdk::service::{Config, SectionStore, StoreError};
 
 use crate::config::{ConfigHandle, ServiceError};
 use crate::tasks::RawMutex;
-use crate::{identity, location, logging, time};
+use crate::{control, identity, location, logging, time};
 
 /// The cheap handles runtime publication needs. Hardware and storage stay
 /// single-owner elsewhere.
@@ -221,6 +223,20 @@ impl Binding for BleBinding {
     }
 }
 
+/// `control_tcp`: the TCP control endpoint. The whole section is published once, at boot, and
+/// applies as one: a later commit only persists it and takes effect after a reboot, so a
+/// saved setting is never partly applied.
+pub struct ControlTcpBinding;
+
+impl Binding for ControlTcpBinding {
+    type Config = ControlTcpConfig;
+    const RESTART_REQUIRED: bool = true;
+
+    fn publish(_: &ConfigRuntime, effective: &ControlTcpConfig) {
+        control::access().set_settings(Transport::Tcp, effective.settings());
+    }
+}
+
 /// `location`: the shared location of the telemetry frames and the `location`
 /// service.
 pub struct LocationBinding;
@@ -305,6 +321,42 @@ impl PrivateBinding for IdentityBinding {
     }
 }
 
+/// The pre-shared key of the TCP endpoint: recorded in the access state (that there is one, and
+/// that it changed) and, on the host platform, handed to the TCP frontend, when committed, removed
+/// or loaded at boot. The key is never logged.
+///
+/// A key that cannot be read leaves the state without a key: a restricted TCP endpoint then
+/// serves nobody, it never opens and never falls back to plaintext.
+pub struct TcpPskBinding;
+
+impl PrivateBinding for TcpPskBinding {
+    type Section = TcpPskSection;
+
+    fn publish(section: Option<&TcpPskSection>) {
+        #[cfg(feature = "std-tcp")]
+        control::set_tcp_key(section.map(|section| *section.key()));
+        control::access().set_tcp_psk(section.is_some());
+        info!(
+            "TCP key: {}",
+            if section.is_some() {
+                "provisioned"
+            } else {
+                "not provisioned"
+            }
+        );
+    }
+
+    fn unreadable(error: &dyn fmt::Display) {
+        #[cfg(feature = "std-tcp")]
+        control::set_tcp_key(None);
+        control::access().set_tcp_psk(false);
+        warn!(
+            "TCP key: unreadable, a restricted endpoint serves nobody: {}",
+            error
+        );
+    }
+}
+
 /// Lists the firmware config bindings once and generates what the
 /// configuration owner task and the control plane need from the list:
 ///
@@ -350,6 +402,7 @@ macro_rules! firmware_configs {
         /// `boot`: the first publication of a start, which also covers
         /// restart-required sections and falls back to the firmware policy
         /// when the stored value is unusable.
+        #[inline(never)]
         fn publish_section(
             runtime: &ConfigRuntime,
             id: SectionId,
@@ -374,6 +427,7 @@ macro_rules! firmware_configs {
         /// consumer starts from the same effective value a commit would give.
         /// `None`: the store is unavailable, so the firmware policy applies and
         /// private sections stay unknown.
+        #[inline(never)]
         fn publish_boot<S: ConfigStorage>(
             store: Option<&mut ConfigStore<S>>,
             runtime: &ConfigRuntime,
@@ -392,6 +446,7 @@ macro_rules! firmware_configs {
         }
 
         /// Publishes the state after a factory reset: nothing is stored.
+        #[inline(never)]
         fn publish_factory_reset(runtime: &ConfigRuntime) {
             $(publish_managed::<$managed>(runtime, None, false);)+
             $(publish_private::<$private>(None);)+

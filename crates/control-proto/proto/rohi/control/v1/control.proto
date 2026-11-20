@@ -56,6 +56,9 @@ message Request {
     CloseStreamRequest close_stream = 24;
     TailLogsRequest tail_logs = 25;
   }
+  // 26 and 27 were the request authorization of the signed-control design, which is removed:
+  // the security of a link belongs to its transport. Never reuse them.
+  reserved 26, 27;
 }
 
 message Response {
@@ -85,6 +88,8 @@ message Response {
     StreamInfo action_stream = 25;
     TailLogsResponse tail_logs = 26;
   }
+  // 27 was the answer of the removed `GetAuthChallenge`. Never reuse it.
+  reserved 27;
 }
 
 // ---------------------------------------------------------------------------
@@ -111,6 +116,10 @@ enum ErrorCode {
   ERROR_CODE_REJECTED = 8;
 }
 
+// A `PERMISSION_DENIED` error may carry one of these stable reasons:
+//   no_psk              the endpoint is restricted and no pre-shared key is provisioned
+//   encryption_required a privileged request needs a link that the transport has encrypted
+//   pairing_required    a privileged request on a restricted BLE endpoint needs an encrypted link
 message Error {
   ErrorCode code = 1;
   // Stable machine-readable reason, set with `ERROR_CODE_REJECTED`.

@@ -109,7 +109,7 @@ source = "crates/time-ntp"
 id = "telemetry"
 kind = "service"
 name = "Telemetry (profiles, packets and delivery routes)"
-provides = "signed packets with public and encrypted sections built from per-profile selections, delivered per route to HTTP endpoints with ordered fallbacks"
+provides = "signed packets with public and encrypted sections built from the selections of two indexed profile slots, delivered per indexed route slot to HTTP endpoints with one fallback"
 source = "crates/telemetry"
 
 [[capability]]
@@ -118,6 +118,13 @@ kind = "interface"
 name = "BLE control plane"
 provides = "configuration, status and actions for the `rohi` client over BLE"
 source = "crates/control-ble"
+
+[[capability]]
+id = "control-access"
+kind = "service"
+name = "Managed control endpoints and transport security"
+provides = "the `control_tcp` section and the `control_tcp` and `control_ble` services (access mode of the TCP endpoint; the BLE endpoint is open), the device-generated TCP pre-shared key (`control_tcp.reveal_psk`), and the TCP handshake and XChaCha20-Poly1305 records of a restricted endpoint (no forward secrecy)"
+source = "crates/control-endpoints"
 
 [[capability]]
 id = "config-store"
@@ -137,7 +144,7 @@ source = "crates/identity"
 id = "logging"
 kind = "service"
 name = "Persistent logging"
-provides = "the `log` facade persisted to a bounded, rotated, LZ4-compressed ring in internal flash, shown from a RAM tail, followed, downloaded and cleared with `rohi logs`"
+provides = "the `log` facade persisted to a bounded, rotated ring of plain-text segments (optionally LZ4-compressed, feature `lz4`) in internal flash, shown from a RAM tail, followed, downloaded and cleared with `rohi logs`"
 source = "crates/logging"
 
 [[capability]]
@@ -276,6 +283,18 @@ id = "src-control-ble"
 kind = "source"
 title = "rohi-control-ble"
 reference = "crates/control-ble"
+
+[[evidence]]
+id = "src-control-endpoints"
+kind = "source"
+title = "rohi-control-endpoints, rohi-control-tcp (secure channel), rohi-control (hub, access policy)"
+reference = "crates/control-endpoints"
+
+[[evidence]]
+id = "test-std-control"
+kind = "test"
+title = "altruist-urban host process: access modes, pre-shared key and the secure channel over TCP"
+reference = "firmwares/altruist-urban/tests/std_control.rs"
 
 [[evidence]]
 id = "src-config-esp"
@@ -645,7 +664,7 @@ target_build = "ci-built"
 hardware_verification = "not-verified"
 limitations = [
   "One heap measurement exists (Wi-Fi and BLE running, chip not recorded); advertising, coexistence, MTU and 24 h stability are not measured.",
-  "No BLE pairing or encryption yet.",
+  "BLE control runs open in this build: no pairing, no link encryption and no mode to change it (an accepted, temporary insecure state); BLE control without pairing is not verified on a device.",
   "Static analysis only (`scripts/memcheck.sh`, CI job Memcheck): 121 816 B main stack; the frames of the control request path (`rohi status`, `config`, `action`) are below 1.8 KB since #63, but the stack peak is not measured on a device and the exception reported for `rohi status logging` and `rohi logs clear --yes` is not shown to be fixed.",
 ]
 evidence = [
@@ -870,7 +889,7 @@ target_build = "ci-built"
 hardware_verification = "not-verified"
 limitations = [
   "One heap measurement exists (Wi-Fi and BLE running, chip not recorded); advertising, coexistence, MTU and 24 h stability are not measured.",
-  "No BLE pairing or encryption yet.",
+  "BLE control runs open in this build: no pairing, no link encryption and no mode to change it (an accepted, temporary insecure state); BLE control without pairing is not verified on a device.",
   "Static analysis only (`scripts/memcheck.sh`, CI job Memcheck): 21 976 B main stack; the frames of the control request path (`rohi status`, `config`, `action`) are below 1.8 KB since #63, but the stack peak is not measured on a device and the exception reported for `rohi status logging` and `rohi logs clear --yes` is not shown to be fixed.",
 ]
 evidence = [
@@ -1146,6 +1165,54 @@ evidence = [
 [[entry]]
 hardware = "altruist-urban-esp32c3"
 firmware = "rohi-altruist-urban"
+capability = "control-access"
+board_part = "not-applicable"
+implementation = "implemented"
+integration = "integrated"
+host_tests = "passing"
+simulation = "none"
+target_build = "ci-built"
+hardware_verification = "not-verified"
+limitations = [
+  "BLE is open by default: anyone in radio range can change the configuration, provision the identity and enroll the administrator key; restricting TCP does not secure the device while BLE stays open.",
+  "A signature authenticates one request; there is no confidentiality and the device is not authenticated to the client (no TLS or Noise).",
+  "The stack high-water mark of the control worker are not measured on a device.",
+]
+evidence = [
+  "src-control-endpoints",
+  "test-std-control",
+  "test-rohi-cli",
+  "ci-workflow",
+  "doc-hwtest",
+]
+
+[[entry]]
+hardware = "altruist-urban-esp32c6"
+firmware = "rohi-altruist-urban"
+capability = "control-access"
+board_part = "not-applicable"
+implementation = "implemented"
+integration = "integrated"
+host_tests = "passing"
+simulation = "none"
+target_build = "ci-built"
+hardware_verification = "not-verified"
+limitations = [
+  "BLE is open by default: anyone in radio range can change the configuration, provision the identity and enroll the administrator key; restricting TCP does not secure the device while BLE stays open.",
+  "A signature authenticates one request; there is no confidentiality and the device is not authenticated to the client (no TLS or Noise).",
+  "The stack high-water mark of the control worker are not measured on a device.",
+]
+evidence = [
+  "src-control-endpoints",
+  "test-std-control",
+  "test-rohi-cli",
+  "ci-workflow",
+  "doc-hwtest",
+]
+
+[[entry]]
+hardware = "altruist-urban-esp32c3"
+firmware = "rohi-altruist-urban"
 capability = "system"
 board_part = "not-applicable"
 implementation = "implemented"
@@ -1156,7 +1223,7 @@ target_build = "ci-built"
 hardware_verification = "not-verified"
 limitations = [
   "The chip reset after the grace period and the formatting of the configuration partition by `system.factory_reset` are not run on a device; the host process stands in for them in the tests.",
-  "No BLE pairing or encryption yet: both actions are open to any client in range until a link policy is configured.",
+  "Both actions are Mutate: open to any client in BLE range (the BLE control endpoint is open in this build) and, over TCP, need the authenticated and encrypted connection of the pre-shared key once the endpoint is restricted.",
 ]
 evidence = [
   "src-system",
@@ -1181,7 +1248,7 @@ target_build = "ci-built"
 hardware_verification = "not-verified"
 limitations = [
   "The chip reset after the grace period and the formatting of the configuration partition by `system.factory_reset` are not run on a device; the host process stands in for them in the tests.",
-  "No BLE pairing or encryption yet: both actions are open to any client in range until a link policy is configured.",
+  "Both actions are Mutate: open to any client in BLE range (the BLE control endpoint is open in this build) and, over TCP, need the authenticated and encrypted connection of the pre-shared key once the endpoint is restricted.",
 ]
 evidence = [
   "src-system",

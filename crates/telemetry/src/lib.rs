@@ -33,21 +33,21 @@
 //! `rohi-telemetry` owns what telemetry **contains**: collecting observations
 //! from any number of independent sources, the stable measurement catalog,
 //! persistent **packet profiles** and the construction of a **public section**
-//! and recipient-**private sections** from one snapshot. It knows no route,
+//! and a recipient-**private section** from one snapshot. It knows no route,
 //! endpoint, transport, protobuf type or physical driver; a
 //! [`PacketFormat`] implemented elsewhere (`rohi-telemetry-robonomics`)
 //! encodes, encrypts and signs the sections into an immutable
 //! [`SignedPacket`].
 //!
 //! ```text
-//! sources -> capture() -> TelemetrySnapshot -> prepare(profile) -> PreparedSections
+//! sources -> capture() -> TelemetrySnapshot -> prepare(index, profile) -> PreparedSections
 //!                                                   -> PacketFormat::seal -> SignedPacket
 //! ```
 //!
 //! # Quick example
 //!
-//! Two software sources, one capture, one profile: the public section of the
-//! profile holds the selected measurements of the snapshot, nothing else.
+//! Two software sources, one capture, profile slot `0`: the public section of
+//! the profile holds the selected measurements of the snapshot, nothing else.
 //!
 //! ```
 //! use core::cell::Cell;
@@ -56,8 +56,8 @@
 //! use embedded_hal_async::delay::DelayNs;
 //! use rohi_telemetry::catalog::{BMX280_TEMPERATURE, SDS011_PM10};
 //! use rohi_telemetry::{
-//!     DataSelection, FormatCapabilities, PacketFormatId, RecipientAddress, Selection, SourceId,
-//!     StaticSource, TelemetryConfig, TelemetrySnapshot, capture, prepare,
+//!     DataSelection, FormatCapabilities, RecipientAddress, Selection, SourceId, StaticSource,
+//!     TelemetryConfig, TelemetrySnapshot, capture, prepare,
 //! };
 //! use rohi_time::{Clock, MonotonicTimestamp};
 //!
@@ -74,10 +74,10 @@
 //! // What a packet format can encode; a real one comes from the format crate.
 //! struct AnyFormat;
 //! impl FormatCapabilities for AnyFormat {
-//!     fn supported(&self, _: PacketFormatId) -> Selection {
+//!     fn supported(&self) -> Selection {
 //!         rohi_telemetry::catalog::all_cataloged()
 //!     }
-//!     fn accepts_recipient(&self, _: PacketFormatId, _: &RecipientAddress) -> bool {
+//!     fn accepts_recipient(&self, _: &RecipientAddress) -> bool {
 //!         true
 //!     }
 //! }
@@ -89,21 +89,22 @@
 //!     StaticSource::new(SourceId(10), &weather),
 //!     StaticSource::new(SourceId(11), &dust),
 //! );
-//! let snapshot: TelemetrySnapshot<8> =
+//! let snapshot: TelemetrySnapshot<8, 8> =
 //!     block_on(capture(&mut sources, &Uptime(Cell::new(1_000)), &mut NoDelay, 100));
 //!
-//! let mut config = TelemetryConfig::<3, 2>::default();
-//! config.add_profile("community", PacketFormatId::Robonomics).unwrap();
+//! // Two slots, both empty: a slot discloses nothing until it is set.
+//! let mut config = TelemetryConfig::<2>::default();
 //! config
 //!     .set_public(
-//!         "community",
+//!         0,
 //!         DataSelection::local(Selection::NONE.with(SDS011_PM10)),
 //!         &AnyFormat,
 //!     )
 //!     .unwrap();
 //!
-//! let profile = config.get("community").unwrap();
-//! let sections = prepare(&snapshot, profile, &rohi_telemetry::catalog::all_cataloged()).unwrap();
+//! let profile = config.get(0).unwrap();
+//! let sections =
+//!     prepare(&snapshot, 0, profile, &rohi_telemetry::catalog::all_cataloged()).unwrap();
 //! let public: Vec<_> = sections.public.observations().collect();
 //! assert_eq!(public.len(), 1);
 //! assert_eq!(public[0].source, SourceId(11));
@@ -124,10 +125,12 @@
 //! * **Catalog and selections.** The [`catalog`] fixes names, units and
 //!   stable bit indices. A [`Selection`] is a 32-byte bitset (`none`, dynamic
 //!   `all`, or explicit bits); `all` never includes `location`.
-//! * **Packet profiles.** A [`PacketProfile`] is a format, a public selection
-//!   and zero or more private sections, one per recipient. A new profile
-//!   discloses nothing. See [`profile`] for generations, incarnations and
-//!   revisions.
+//! * **Packet profiles.** A [`PacketProfile`] is a public selection and at most
+//!   one private section (one recipient and its selection). A
+//!   [`TelemetryConfig`] holds a fixed number of them, addressed by
+//!   `profile_index` (`0`, `1`); there are no names and no format choice, the
+//!   one packet format is compiled in. Every slot starts empty and discloses
+//!   nothing. See [`profile`] for generations and revisions.
 //! * **Capture once, build many.** [`prepare`] applies a profile to an
 //!   immutable snapshot without reading anything again and without copying
 //!   observations.
@@ -164,8 +167,8 @@ pub use catalog::{CATALOG, MeasurementDescriptor, Unit, ValueKind};
 pub use observation::{GeoPoint, MeasurementId, Observation, ObservationValue, SourceId};
 pub use packet::{Capabilities, PacketFormat, PacketInfo, SealError, SignedPacket};
 pub use profile::{
-    FormatCapabilities, PROFILE_ID_LEN, PacketFormatId, PacketProfile, PacketProfileId,
-    PrivateSectionPolicy, ProfileError, RecipientAddress, TelemetryConfig,
+    FormatCapabilities, PacketFormatId, PacketProfile, PrivateSectionPolicy, ProfileError,
+    RecipientAddress, TelemetryConfig,
 };
 pub use section::{
     PrepareError, PreparedSections, PrivateSectionView, ProfileStamp, SectionView, prepare,
@@ -175,4 +178,6 @@ pub use snapshot::{
     CollectionDiagnostics, SourceFailure, SourceOutcome, SourceReport, SourceWriter,
     TelemetrySnapshot, WriteError,
 };
-pub use source::{SourceError, SourceSet, StaticSource, TelemetrySource, capture, collect_one};
+pub use source::{
+    SourceError, SourceSet, StaticSource, TelemetrySource, capture, capture_accepting, collect_one,
+};

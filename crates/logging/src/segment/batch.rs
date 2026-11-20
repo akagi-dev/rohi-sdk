@@ -22,15 +22,43 @@ use core::fmt::{self, Write};
 
 use heapless::Vec;
 
-use super::lz4::{self, BLOCK_OVERHEAD, Lz4Error};
+#[cfg(feature = "lz4")]
+use super::lz4;
 use super::text::write_line;
 use crate::{Compression, LogRecord};
 
 /// Most text one batch holds, in bytes. A batch is compressed on its own, so
 /// this also bounds the buffers of the writer and of the reader.
-pub const MAX_BATCH_BYTES: usize = 2048;
-/// Most bytes an encoded batch occupies.
-pub const MAX_CHUNK_LEN: usize = MAX_BATCH_BYTES + BLOCK_OVERHEAD;
+pub const MAX_BATCH_BYTES: usize = 1024;
+/// Most bytes an encoded batch occupies: the text, and the block framing of LZ4.
+#[cfg(feature = "lz4")]
+pub const MAX_CHUNK_LEN: usize = MAX_BATCH_BYTES + lz4::BLOCK_OVERHEAD;
+/// Most bytes an encoded batch occupies: the text itself.
+#[cfg(not(feature = "lz4"))]
+pub const MAX_CHUNK_LEN: usize = MAX_BATCH_BYTES;
+
+/// Where [`Batch::encode`] compresses into: a [`MAX_CHUNK_LEN`] buffer with the `lz4`
+/// feature. Zero-sized without it: plain text is written from the batch itself.
+pub struct Scratch(#[cfg(feature = "lz4")] [u8; MAX_CHUNK_LEN]);
+
+/// An empty [`Scratch`].
+#[cfg(feature = "lz4")]
+pub const fn scratch() -> Scratch {
+    Scratch([0u8; MAX_CHUNK_LEN])
+}
+
+/// An empty [`Scratch`].
+#[cfg(not(feature = "lz4"))]
+pub const fn scratch() -> Scratch {
+    Scratch()
+}
+
+/// A batch could not be encoded.
+#[cfg(feature = "lz4")]
+pub type EncodeError = lz4::Lz4Error;
+/// A batch could not be encoded: never, without the `lz4` feature.
+#[cfg(not(feature = "lz4"))]
+pub type EncodeError = core::convert::Infallible;
 
 /// The record does not fit the batch; encode the batch and start another.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,30 +150,41 @@ impl Batch {
     }
 
     /// The batch as the bytes appended to a segment payload: one LZ4 block
-    /// for [`Compression::Lz4`], the text itself for [`Compression::None`].
-    /// Returns the length written; `out` of [`MAX_CHUNK_LEN`] bytes always
-    /// suffices.
+    /// for [`Compression::Lz4`](crate::Compression) (compressed into
+    /// `scratch`), the text itself, borrowed, for [`Compression::None`].
     ///
     /// # Errors
     ///
-    /// [`Lz4Error::OutputTooSmall`] when `out` is shorter than the result.
-    pub fn encode(&self, codec: Compression, out: &mut [u8]) -> Result<usize, Lz4Error> {
+    /// [`EncodeError`] when the compressed block does not fit `scratch`; never
+    /// without the `lz4` feature.
+    pub fn encode<'a>(
+        &'a self,
+        codec: Compression,
+        #[cfg_attr(not(feature = "lz4"), allow(unused_variables))] scratch: &'a mut Scratch,
+    ) -> Result<&'a [u8], EncodeError> {
         match codec {
-            Compression::None => {
-                out.get_mut(..self.text.len())
-                    .ok_or(Lz4Error::OutputTooSmall)?
-                    .copy_from_slice(&self.text);
-                Ok(self.text.len())
+            Compression::None => Ok(&self.text),
+            #[cfg(feature = "lz4")]
+            Compression::Lz4 => {
+                let len = lz4::encode_block(&self.text, &mut scratch.0)?;
+                Ok(&scratch.0[..len])
             }
-            Compression::Lz4 => lz4::encode_block(&self.text, out),
         }
     }
 }
 
+/// Length of [`payload_prefix`]: the LZ4 frame header, nothing without `lz4`.
+#[cfg(feature = "lz4")]
+pub const PREFIX_LEN: usize = lz4::FRAME_HEADER_LEN;
+/// Length of [`payload_prefix`]: the LZ4 frame header, nothing without `lz4`.
+#[cfg(not(feature = "lz4"))]
+pub const PREFIX_LEN: usize = 0;
+
 /// Bytes at the start of a segment payload before the first batch.
-pub fn payload_prefix(codec: Compression) -> heapless::Vec<u8, { lz4::FRAME_HEADER_LEN }> {
+pub fn payload_prefix(codec: Compression) -> heapless::Vec<u8, PREFIX_LEN> {
     match codec {
         Compression::None => heapless::Vec::new(),
+        #[cfg(feature = "lz4")]
         Compression::Lz4 => heapless::Vec::from_slice(&lz4::frame_header()).unwrap_or_default(),
     }
 }
@@ -154,6 +193,7 @@ pub fn payload_prefix(codec: Compression) -> heapless::Vec<u8, { lz4::FRAME_HEAD
 pub const fn payload_suffix(codec: Compression) -> &'static [u8] {
     match codec {
         Compression::None => &[],
+        #[cfg(feature = "lz4")]
         Compression::Lz4 => &lz4::END_MARK,
     }
 }

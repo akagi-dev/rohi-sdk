@@ -211,7 +211,7 @@
 //! | enums per service or action ([`MAX_SERVICE_ENUMS`]) | 1 |
 //! | bitset arguments per action ([`MAX_SELECTIONS`]) | 2 |
 //! | variants per enum ([`MAX_ENUM_VARIANTS`]) | 9 |
-//! | sections or services in a registry ([`MAX_REGISTRY_ENTRIES`]) | 12 |
+//! | sections or services in a registry ([`MAX_REGISTRY_ENTRIES`]) | 16 |
 
 extern crate self as rohi_service;
 
@@ -281,7 +281,7 @@ pub const MAX_ISSUES: usize = 4;
 /// Maximum number of issues the schema of a service describes.
 pub const MAX_ISSUE_DESCRIPTORS: usize = 12;
 /// Maximum number of sections or services in one registry.
-pub const MAX_REGISTRY_ENTRIES: usize = 12;
+pub const MAX_REGISTRY_ENTRIES: usize = 16;
 
 #[cfg(test)]
 extern crate std;

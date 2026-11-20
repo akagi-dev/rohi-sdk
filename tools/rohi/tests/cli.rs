@@ -31,7 +31,7 @@ use common::*;
 use rohi::cli::{Cli, CliError, Ctx, Io, PartialApply, execute};
 use rohi::{Device, Error};
 use rohi_config::Override;
-use rohi_control::{Controller, OpenPolicy};
+use rohi_control::{ControlAccess, ControlHub, Controller, OpenPolicy};
 use rohi_control_ble::ControlBle;
 use rohi_net::WifiPassword;
 use serde_json::{Value, json};
@@ -139,11 +139,14 @@ async fn run_watching(
     ctx.watch_limit = watch_limit;
 
     let (client, device) = link(244);
+    let access = ControlAccess::new(|_| false);
+    let hub = ControlHub::<2>::with_access(&access);
     let controller = Controller::new(backend(bench), OpenPolicy);
-    let mut server = ControlBle::new(device, &controller);
+    let mut server = ControlBle::new(device, &hub);
     let command = cli.command;
     let result = tokio::select! {
         () = async { server.run().await } => unreachable!(),
+        never = hub.serve(&controller) => never,
         result = async {
             let mut device = Device::new(client);
             execute(&mut device, command, &mut ctx).await
@@ -2216,10 +2219,13 @@ async fn a_failing_stdout_fails_the_command_and_a_closed_pipe_is_quiet() {
     ] {
         let bench = Bench::new();
         let (client, device) = link(244);
+        let access = ControlAccess::new(|_| false);
+        let hub = ControlHub::<2>::with_access(&access);
         let controller = Controller::new(backend(&bench), OpenPolicy);
-        let mut server = ControlBle::new(device, &controller);
+        let mut server = ControlBle::new(device, &hub);
         let error = tokio::select! {
             () = async { server.run().await } => unreachable!(),
+            never = hub.serve(&controller) => never,
             result = async {
                 let mut ctx = Ctx::new(
                     Io::scripted(Failing(kind), Buf::default(), false, &[]),
@@ -2484,9 +2490,11 @@ async fn apply_with_rival(bench: &Bench, file: &std::path::Path, at: usize) -> (
 
     let (client, device) = link(244);
     let (rival_client, rival_device) = link(244);
+    let access = ControlAccess::new(|_| false);
+    let hub = ControlHub::<2>::with_access(&access);
     let controller = Controller::new(backend(bench), OpenPolicy);
-    let mut server = ControlBle::new(device, &controller);
-    let mut rival_server = ControlBle::new(rival_device, &controller);
+    let mut server = ControlBle::new(device, &hub);
+    let mut rival_server = ControlBle::new(rival_device, &hub);
     let seen = Rc::new(std::cell::Cell::new(0));
     let transport = Interfering {
         inner: client,
@@ -2498,6 +2506,7 @@ async fn apply_with_rival(bench: &Bench, file: &std::path::Path, at: usize) -> (
     let command = cli.command;
     let result = tokio::select! {
         () = async { server.run().await } => unreachable!(),
+        never = hub.serve(&controller) => never,
         () = async { rival_server.run().await } => unreachable!(),
         result = async {
             let mut device = Device::new(transport);

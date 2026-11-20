@@ -3,41 +3,44 @@
 Telemetry has two independent halves that you configure with ordinary Actions of the device, through the generic
 `rohi action` command (see [Add a control operation or an action](add-control-operation.md)):
 
-* the **`telemetry` service** owns *what* a signed packet contains: persistent **packet profiles** that name a format,
-  a **public section** and zero or more recipient-**private sections** that are encrypted to a recipient's public key;
-* the **`connectivity` service** owns *where and how often* a profile is delivered: **routes** with an interval, a
-  primary HTTP endpoint and ordered **fallback** endpoints.
+* the **`telemetry` service** owns *what* a signed packet contains: two fixed **profile slots**, `0` and `1`. A profile has
+  one **public section** and at most one recipient-**private section** that is encrypted to a recipient's public key. The
+  packet format is fixed (Robonomics); there are no names and no format choice;
+* the **`connectivity` service** owns *where and how often* a profile is delivered: two fixed **route slots**, `0` and
+  `1`. A route has a profile slot, an interval, a primary HTTP endpoint and at most one **fallback** endpoint.
 
-A profile exists without any route (and `packet_get` works without a network); a route only references a profile. A new
-profile discloses nothing, and the device sends nothing until you add a route.
+Indices are stable: changing or clearing one slot never moves the other. A profile exists without any route (and
+`get_payload` works without a network); a route only references a profile slot. Both profile slots start empty and disclose
+nothing, and the device sends nothing until you set an endpoint on a route slot.
 
 ```sh
-# A profile for the community: the BME280 and PM10, in clear.
-rohi telemetry profile_add community robonomics
-rohi telemetry set_public community bmx280,sds011.pm10
+# Profile 0, for the community: the BME280 and PM10, in clear.
+rohi telemetry set_public 0 bmx280,sds011.pm10
 
-# A profile for the owner: PM values in clear, the position and noise only for one key (a 32-byte Ed25519 key).
-rohi telemetry profile_add owner robonomics
-rohi telemetry set_public owner sds011
-rohi telemetry add_private owner \
+# Profile 1, for the owner: PM values in clear, the position and noise only for one key (a 32-byte Ed25519 key).
+rohi telemetry set_public 1 sds011
+rohi telemetry set_private 1 \
   0xd75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a \
   location,microphone.average
+rohi telemetry set_private 1 0xd75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a none   # remove it
 
 rohi telemetry measurements 0          # the catalog: stable bit numbers and names the format can encode
-rohi telemetry profile_list 0
-rohi telemetry profile_recipients owner 0
+rohi status telemetry                  # per profile: profile0_public, profile0_private, profile0_priv_selection, profile0_revision
 
-# Deliver a profile every minute to an ingress, with two fallbacks for the same packet.
-rohi connectivity route_add community community http://ingress.example.org
-rohi connectivity set_interval community 120
-rohi connectivity fallback_add community backup-a http://backup-a.example.org
-rohi connectivity fallback_add community backup-b http://backup-b.example.org
-rohi connectivity route_list 0
-rohi connectivity fallback_list community 0
+# Deliver profile 0 every minute to an ingress from route slot 0, with one fallback for the same packet.
+rohi connectivity set_endpoint 0 0 http://ingress.example.org
+rohi connectivity set_interval 0 120
+rohi connectivity set_fallback 0 http://backup-a.example.org
+rohi connectivity set_fallback 0 ""                                  # no fallback
+rohi connectivity set_endpoint 0 0 ""                                # no route: the slot is empty
+rohi status connectivity               # per slot: route0_profile, route0_endpoint, route0_fallback, route0_state, route0_queue_depth, ...
 
-# The sealed, signed packet of a profile, with no route and no network (a standard stream).
-rohi connectivity packet_get owner > packet.bin
+# The sealed, signed packet of profile 1, with no route and no network (a standard stream).
+rohi connectivity get_payload 1 > packet.bin
 ```
+
+An **absent endpoint** is the empty string (`""`): `set_endpoint` with it deletes the route and `set_fallback` with it
+removes the fallback. Positional arguments and named ones (`rohi action connectivity set_endpoint index=0 profile_index=0 endpoint=`) are equivalent.
 
 Selections (`bmx280,sds011.pm10`, `all`, `none`) are names of the catalog; a sensor name stands for all of its
 measurements. `all` never includes the position: `location` must be named. Names are turned into a 32-byte bitset by the
@@ -45,18 +48,24 @@ measurements. `all` never includes the position: `location` must be named. Names
 
 ## Rules worth knowing
 
-* **Immutable routes.** The id, profile and primary endpoint of a route cannot be changed: remove the route and add it
-  again (a new route inherits no queue and no backoff). Only the interval changes in place. A fallback is another way to
-  deliver the *same* packet, not another publisher.
-* **Policy changes win.** Editing or deleting a profile invalidates the packets that were built under the old policy
-  before anything is sent again; a deleted and recreated profile is never silently picked up by an old route.
+* **A slot is reusable, never stale.** Changing the profile or the endpoint of a route, or deleting it and setting it again,
+  starts a new route: it inherits no queued packet, counter, backoff or generation. A new route starts with an interval of
+  60 s. A fallback is another way to deliver the *same* packet, not another publisher.
+* **Policy changes win.** Changing a profile (or clearing it by a factory reset) invalidates the packets that were built under the old
+  policy before anything is sent again.
 * **Delivery.** Only HTTP `202` acknowledges a packet. Failures try the next path at once; `401`/`403` also pause the
   failing path for ten minutes; `400`/`413` drop the packet without offering it to other endpoints. Retries send
   byte-identical bytes. Delivery is at-least-once, so the ingress deduplicates by the signed envelope.
 * **Honest dating.** A packet is dated at its capture; without a synchronized UTC clock, an identity or entropy the
   packet is refused, never faked. The state of the last attempt is in `rohi status connectivity`.
-* **Limits.** 3 profiles with 2 recipients each, 3 routes with 2 fallbacks each, endpoints up to 64 bytes, all within the
-  1 KiB persistent section of each service. What the Robonomics format cannot encode (the SCD4x, for example) is not in
+* **Stored data.** There is no migration: the persisted `telemetry` and `connectivity` sections of the earlier named
+  profiles and routes are not read. A device that stores one reports it in the log and starts with empty slots; the next
+  change replaces it.
+* **Limits.** 2 profile slots with 1 private recipient each and 2 route slots with 1 fallback each: these are compile-time
+  capacities of the Altruist Urban firmware (the storage is sized for them, a stored table over capacity is refused, not
+  truncated, and the `connectivity` status schema has exactly two route slots, with the fields of each slot in the flat status as
+  `route0_*` and `route1_*`). Endpoints are up to 64 bytes, all within
+  the 1 KiB persistent section of each service. What the Robonomics format cannot encode (the SCD4x, for example) is not in
   the catalog and is rejected, never published under another name.
 
 Reference: [`rohi-telemetry`](https://docs.rs/rohi-telemetry),

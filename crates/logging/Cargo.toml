@@ -12,6 +12,11 @@ description = "Robonomics Open Hardware persistent logging: a non-blocking log s
 [badges]
 maintenance = { status = "actively-developed" }
 
+[features]
+default = []
+# LZ4 compressed segments (`.log.lz4`). Off: plain-text segments only, no codec in the binary.
+lz4 = []
+
 [dependencies]
 rohi-config.workspace = true
 rohi-service.workspace = true

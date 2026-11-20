@@ -29,7 +29,7 @@ use rohi_service::{
     MAX_MUTATIONS, Mutation, ServiceStatusSummary, StatusError, StatusRegistry, TailRequest, Value,
 };
 
-use crate::{AuthorizationPolicy, ControlBackend, LinkSecurity, Privilege};
+use crate::{AuthorizationPolicy, ControlBackend, LinkSecurity, Privilege, Transport};
 use crate::{diag, mapping};
 use rohi_service::isolated;
 
@@ -42,7 +42,7 @@ pub const MAX_OPEN_STREAMS: usize = 16;
 struct OwnedStream {
     service: u32,
     stream: u32,
-    session: u32,
+    session: u64,
     privilege: Privilege,
 }
 
@@ -51,10 +51,9 @@ struct OwnedStream {
 ///
 /// It owns the backend and the policy. The only state it keeps between
 /// requests is who owns each open stream (see
-/// [`LinkSecurity::session`]), so one controller serves every connection; the
-/// per-connection part is the [`LinkSecurity`] passed to
-/// [`handle`](Self::handle). See the [crate documentation](crate) for the
-/// operations, privileges and errors.
+/// [`LinkSecurity::session`]), so one controller serves every connection; the per-connection
+/// part is the [`LinkSecurity`] passed to [`handle`](Self::handle). See the
+/// [crate documentation](crate) for the operations, privileges and errors.
 pub struct Controller<B, P> {
     backend: B,
     policy: P,
@@ -76,9 +75,10 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
         &self.backend
     }
 
-    /// The control link was lost or replaced: services release the streams
-    /// the previous client left open and the controller forgets who owned
-    /// them.
+    /// Every control link was lost or replaced: services release the streams
+    /// the previous clients left open, and the controller forgets who owned
+    /// them. Prefer [`session_closed`](Self::session_closed)
+    /// when one of several connections ends.
     pub fn link_lost(&self) {
         let released = self.streams.lock(|streams| {
             let mut streams = streams.borrow_mut();
@@ -88,6 +88,25 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
         });
         diag::link_lost(released);
         self.backend.actions().link_lost();
+    }
+
+    /// The connection `session` ended: only its own streams are closed in their
+    /// services. Streams of other sessions are untouched.
+    pub async fn session_closed(&self, session: u64) {
+        let mut owned: Vec<(u32, u32), MAX_OPEN_STREAMS> = Vec::new();
+        self.streams.lock(|streams| {
+            streams.borrow_mut().retain(|stream| {
+                if stream.session != session {
+                    return true;
+                }
+                let _ = owned.push((stream.service, stream.stream));
+                false
+            });
+        });
+        for (service, stream) in owned.iter().copied() {
+            let result = self.backend.actions().close_stream(service, stream).await;
+            diag::session_stream_closed(session, service, stream, result);
+        }
     }
 
     /// Handles one encoded request received on a link with the given
@@ -148,12 +167,19 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             diag::unsupported_version(id, request.protocol_version);
             return (id, error(pb::ErrorCode::NotSupported));
         }
-        let Some(call) = request.request else {
-            diag::empty_request(id);
-            return (id, error(pb::ErrorCode::NotSupported));
-        };
+        match request.request {
+            Some(call) => isolated(self.dispatch_call(link, id, call)).await,
+            None => {
+                diag::empty_request(id);
+                (id, error(pb::ErrorCode::NotSupported))
+            }
+        }
+    }
+
+    async fn dispatch_call(&self, link: &LinkSecurity, id: u32, call: Call) -> (u32, Reply) {
         diag::request(id, &call);
 
+        let mut secure_link = false;
         let privilege = match &call {
             Call::ReadStream(request) => {
                 match self.owned_privilege(link, request.service_id, request.stream_id) {
@@ -180,7 +206,10 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
                     .actions()
                     .action(invoke.service_id, invoke.action_id)
                 {
-                    Ok(action) => Privilege::of(action.access),
+                    Ok(action) => {
+                        secure_link = action.secure_link;
+                        Privilege::of(action.access)
+                    }
                     Err(e) => return (id, self.action_failure(e, invoke.service_id)),
                 }
             }
@@ -188,9 +217,24 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
         };
         if !self.policy.allows(privilege, link) {
             diag::denied(id, &call, privilege, link);
-            return (id, error(pb::ErrorCode::PermissionDenied));
+            return (id, self.refusal(privilege, link));
+        }
+        if secure_link && !self.policy.protects_secrets(link) {
+            diag::denied(id, &call, privilege, link);
+            let reason = match link.transport {
+                Transport::Ble => "pairing_required",
+                _ => "encryption_required",
+            };
+            return (id, denied(reason));
         }
         (id, self.execute(link, privilege, call).await)
+    }
+
+    fn refusal(&self, privilege: Privilege, link: &LinkSecurity) -> Reply {
+        match self.policy.denial_reason(privilege, link) {
+            Some(reason) => denied(reason),
+            None => error(pb::ErrorCode::PermissionDenied),
+        }
     }
 
     // The privilege a stream was created with, when `link` is the session
@@ -749,6 +793,15 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             }
         }
     }
+}
+
+fn denied(reason: &'static str) -> Reply {
+    let mut out = pb::Error {
+        code: pb::ErrorCode::PermissionDenied,
+        ..Default::default()
+    };
+    out.set_reason(mapping::text(reason));
+    Reply::Error(out)
 }
 
 fn error(code: pb::ErrorCode) -> Reply {

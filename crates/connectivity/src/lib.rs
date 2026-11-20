@@ -17,33 +17,36 @@
 ///////////////////////////////////////////////////////////////////////////////
 #![no_std]
 
-//! Delivery of sealed telemetry packets: per-route publication, ordered
-//! fallback endpoints and signed-packet export.
+//! Delivery of sealed telemetry packets: per-slot route publication, an
+//! optional fallback endpoint and signed-packet export.
 //!
 //! `rohi-connectivity` consumes **already sealed, immutable packets** built by
 //! the telemetry side (`rohi-telemetry` and a packet format such as
 //! `rohi-telemetry-robonomics`) and delivers them over HTTP. It never reads
 //! observations, keys or protocol messages: it owns routes, schedules,
 //! packet lifetime, delivery, retries, diagnostics and the read-only export of
-//! sealed packets. A telemetry profile exists independently of any route.
+//! sealed packets. A telemetry profile slot exists independently of any route.
 //!
 //! ```text
-//! PacketProvider ──► Router (per-route deadline + one outbox, shared pool)
-//!   resolve/capture/build     │ primary ─► fallback 1 ─► fallback 2
+//! PacketProvider ──► Router (per-slot deadline + one outbox, shared pool)
+//!   resolve/capture/build     │ primary ─► fallback
 //!   is_current                ▼
 //!                       PacketTransport ──► HTTP 202
 //! ```
 //!
 //! # Routes
 //!
-//! A [`Route`] publishes one profile on its own interval to a primary
-//! endpoint, with up to [`MAX_FALLBACKS`] ordered fallbacks. A fallback is
-//! another way to deliver the *same* packet: it has no profile, interval or
-//! outbox of its own. The default is **no route**; `id`, `profile` and
-//! `primary` never change in place (remove and add again for a new
-//! generation); only the interval does. The routes are one bounded typed
-//! value ([`ConnectivitySection`]) edited atomically through the Actions of
-//! [`ConnectivityService`]; see [`config`] and [`managed`].
+//! The routes are **fixed slots addressed by index** (`0`, `1`, ...): each slot is
+//! empty or holds one [`Route`], and deleting a route never moves another.
+//! A route publishes one telemetry profile slot (`profile_index`) on its own
+//! interval to a primary endpoint, with at most one fallback: another way to
+//! deliver the *same* packet, with no profile, interval or outbox of its own. The
+//! default is **no route**. Replacing the profile or the primary endpoint of a
+//! slot is a new generation (the old queue, backoff and counters are gone);
+//! the interval and the fallback change in place. The routes are one bounded
+//! typed value ([`ConnectivitySection`]) edited atomically through the four
+//! Actions of [`ConnectivityService`] (`set_endpoint`, `set_interval`,
+//! `set_fallback`, `get_payload`); see [`config`] and [`managed`].
 //!
 //! # Delivery rules
 //!
@@ -61,19 +64,22 @@
 //! * One capture and one sealed packet serve all routes due at the same
 //!   instant with the same profile stamp ([`PacketPool`] handles, no copies).
 //!   A full outbox skips the new packet and never evicts an older one.
-//! * A change of the telemetry policy or of a route's fallbacks drops the
+//! * A change of the telemetry policy or of the endpoints of a slot drops the
 //!   queued packets of the affected routes before anything new is sent.
 //!
 //! The decisions are in [`Router`] and need no network; [`Publisher`] is the
-//! task that performs the I/O. `packet_get` exports a freshly built packet as
+//! task that performs the I/O. `get_payload` exports a freshly built packet as
 //! a standard Action stream with ordinary `Read` access.
 //!
 //! # Limits
 //!
-//! `no_std`, allocation-free. [`MAX_ROUTES`] routes of up to
-//! [`MAX_FALLBACKS`] fallbacks and a 1 KiB persistent section; the capacity of
-//! the pool, the outboxes and the buffers are const parameters chosen by the
-//! firmware and measured with `scripts/memcheck.sh`. The transport is plain
+//! `no_std`, allocation-free. The number of route slots (`ROUTES`), the capacity of the
+//! pool, the outboxes and the buffers are const parameters chosen by the firmware
+//! (Altruist Urban: 2 route slots, each with at most 1 fallback) and
+//! measured with `scripts/memcheck.sh`; they size the storage of [`Routes`],
+//! [`ConnectivityState`], [`Router`], [`Publisher`] and the status schema of
+//! [`ConnectivityService`]. A persisted section over capacity is refused, not truncated.
+//! The persistent section is 1 KiB at most. The transport is plain
 //! HTTP (`http://host[:port]`, 64 bytes at most).
 
 #[cfg(test)]
@@ -91,12 +97,12 @@ pub mod state;
 pub mod transport;
 
 pub use config::{
-    ConnectivitySection, DEFAULT_INTERVAL_S, Fallback, FallbackId, MAX_FALLBACKS, MAX_INTERVAL_S,
-    MAX_ROUTES, MIN_INTERVAL_S, ProfileBinding, Route, RouteError, RouteId, RouteSet, Routes,
+    ConnectivitySection, DEFAULT_INTERVAL_S, MAX_INTERVAL_S, MIN_INTERVAL_S, Route, RouteError,
+    Routes,
 };
 pub use endpoint::{DEFAULT_PORT, Endpoint, EndpointUri, MAX_ENDPOINT_LEN};
 pub use http::HttpTransport;
-pub use managed::{ConnectivityService, ConnectivityStore, StoreError};
+pub use managed::{ConnectivityService, ConnectivityStore, RouteSlots, Slots, StoreError};
 pub use pool::{PacketHandle, PacketPool};
 pub use provider::{BuildFailure, PacketExporter, PacketProvider};
 pub use publisher::Publisher;

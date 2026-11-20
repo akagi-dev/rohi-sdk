@@ -147,14 +147,11 @@ impl<const SLOTS: usize, const BYTES: usize> PacketPool<SLOTS, BYTES> {
 
 #[cfg(test)]
 mod tests {
-    use rohi_telemetry::PacketProfileId;
-
     use super::*;
 
     fn stamp(revision: u32) -> ProfileStamp {
         ProfileStamp {
-            id: PacketProfileId::new("p").unwrap(),
-            incarnation: 1,
+            profile_index: 0,
             revision,
         }
     }

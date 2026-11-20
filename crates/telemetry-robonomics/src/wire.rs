@@ -196,16 +196,21 @@ use micropb::{PbDecoder, PbEncoder};
 /// | `ED25519_SIGNATURE_LEN` | 64 B |
 /// | `NONCE_LEN` | 16 B (nonce produced by this SDK) |
 /// | `MAX_NONCE_LEN` | 32 B (largest nonce accepted when decoding) |
-/// | `MAX_SENSORS_PER_MESSAGE` | 9 |
-/// | `MAX_PRIVATE_SECTIONS` | 2 |
-/// | `MAX_PRIVATE_PLAINTEXT_LEN` | 128 B (encoded `EncryptedUrban`) |
+/// | `MAX_SENSORS_PER_MESSAGE` | 8 (one per supported measurement) |
+/// | `MAX_PRIVATE_SECTIONS` | 1 (one recipient per profile) |
+/// | `MAX_PRIVATE_PLAINTEXT_LEN` | 115 B (encoded `EncryptedUrban`, every supported measurement at its largest) |
 /// | `NONCE_XCHACHA_LEN` | 24 B |
-/// | `MAX_ENCRYPTED_LEN` | 232 B (one encoded `crypto.v1.Encrypted`) |
-/// | `MAX_MESSAGE_LEN` | 780 B (worst case of the schema: 776 B) |
-/// | `MAX_ENVELOPE_LEN` | 920 B |
+/// | `MAX_ENCRYPTED_LEN` | 207 B (one encoded `crypto.v1.Encrypted`, as this SDK writes it) |
+/// | `MAX_MESSAGE_LEN` | 352 B (full public section and one private section) |
+/// | `MAX_ENVELOPE_LEN` | 473 B (a signed envelope this SDK produces) |
 ///
-/// A full Altruist Urban frame (7 measurements) is about 200 B; every private
-/// section adds about 150 B.
+/// The limits follow the **compiled capabilities** of the encoder, not the schema alone: the
+/// encoder writes one sensor entry per supported measurement (8, at most one of each), so a
+/// section is never larger than the sum of those entries at their largest. The schema alone allows more (a list of
+/// eight GPS entries is 510 B as a message); a section that is larger than the capabilities
+/// allow fails with [`SealError::TooLarge`](rohi_telemetry::SealError), it is never truncated. The
+/// unit tests build the largest possible message and compare it with these numbers.
+/// A full Altruist Urban frame (7 measurements) is about 200 B; the private section adds about 150 B.
 ///
 /// The bounds are enforced when decoding (a longer field is
 /// [`DecodeError::Capacity`]) and, for the sizes of whole messages, checked
@@ -216,9 +221,9 @@ use micropb::{PbDecoder, PbEncoder};
 /// use rohi_telemetry_robonomics::wire::crypto_v1::SignedEnvelope;
 /// use rohi_telemetry_robonomics::wire::{MessageEncode, limits};
 ///
-/// assert_eq!(Message::MAX_SIZE, Ok(776));
-/// assert!(Message::MAX_SIZE.unwrap() <= limits::MAX_MESSAGE_LEN);
-/// assert!(SignedEnvelope::MAX_SIZE.unwrap() <= limits::MAX_ENVELOPE_LEN);
+/// // What the schema alone allows is more than what the encoder can produce.
+/// assert!(Message::MAX_SIZE.unwrap() > limits::MAX_MESSAGE_LEN);
+/// assert!(SignedEnvelope::MAX_SIZE.unwrap() > limits::MAX_ENVELOPE_LEN);
 /// ```
 pub mod limits {
     include!(concat!(env!("OUT_DIR"), "/limits.rs"));

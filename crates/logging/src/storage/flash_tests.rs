@@ -219,7 +219,7 @@ fn writes_of_any_alignment_end_up_as_written() {
 
 #[test]
 fn a_power_loss_at_any_flash_write_loses_at_most_the_open_batch() {
-    for codec in [Compression::Lz4, Compression::None] {
+    for &codec in crate::TEST_CODECS {
         for budget in (0..300).chain((300..70_000).step_by(311)) {
             // The medium is formatted before the power fails.
             let mut flash = open(Emu::new()).into_medium().into_inner();
@@ -263,7 +263,7 @@ fn format_and_clear_stay_inside_the_region() {
     let outside = flash.data.clone();
 
     let mut storage = open(flash);
-    let mut writer = Writer::new(1, Compression::Lz4, LIMITS);
+    let mut writer = Writer::new(1, crate::DEFAULT_COMPRESSION, LIMITS);
     writer.push_many(&mut storage, 600).unwrap();
     writer.flush(&mut storage).unwrap();
     block_on(storage.clear()).unwrap();
@@ -290,24 +290,27 @@ fn reads_of_any_alignment_return_what_was_written() {
     }
 }
 
-// The ESP32-C3 upgrade: 4 MB of flash, the former `rohi-log` of 256 KiB at
-// 0x3C0000 and the new one of 512 KiB at 0x380000, which ends in the same place
-// and so has its header slots in the same sectors.
+// The ESP32-C3 upgrade: 4 MB of flash. The former `rohi-log` of 512 KiB at
+// 0x380000 is gone from the table (what it held is now no partition at all); the
+// new one is 128 KiB at 0x20000, where the application used to start, and the
+// application image of the new table follows it from 0x40000. The new region
+// holds old application code when the device is first started.
 const C3_SECTORS: usize = 1024;
-const C3_OLD_FIRST: u32 = 0x3C_0000 / 4096;
-const C3_OLD_SECTORS: u32 = 64;
-const C3_NEW_FIRST: u32 = 0x38_0000 / 4096;
-const C3_NEW_SECTORS: u32 = 128;
+const C3_FIRST: u32 = 0x2_0000 / 4096;
+const C3_SECTORS_OF_LOG: u32 = 32;
+const C3_LOG_END: usize = (C3_FIRST + C3_SECTORS_OF_LOG) as usize * 4096;
+const C3_OLD_FIRST: u32 = 0x38_0000 / 4096;
+const C3_OLD_SECTORS: u32 = 128;
 
-fn c3_flash_with_the_former_log() -> Emu {
+fn c3_flash_after_the_table_change() -> Emu {
     let mut flash = Emu::with_sectors(C3_SECTORS);
-    // Everything below the new log: other partitions and the end of the former
-    // application image (0x380000..0x3C0000 held the application before).
+    // The application, the configuration and everything else around the log.
     flash.data[..C3_OLD_FIRST as usize * 4096].fill(0x5A);
+    // The former log, formatted and written; it lies inside the new application area.
     let medium = FlashMedium::new(flash, C3_OLD_FIRST * 4096, C3_OLD_SECTORS).unwrap();
     let mut storage = RingStorage::new(medium);
     block_on(storage.recover()).unwrap();
-    let mut writer = Writer::new(1, Compression::Lz4, LIMITS);
+    let mut writer = Writer::new(1, crate::DEFAULT_COMPRESSION, LIMITS);
     writer.push_many(&mut storage, 300).unwrap();
     writer.flush(&mut storage).unwrap();
     assert!(!all_records(&mut storage).is_empty());
@@ -317,28 +320,32 @@ fn c3_flash_with_the_former_log() -> Emu {
 }
 
 fn open_c3(flash: Emu) -> (Storage, Recovery) {
-    let medium = FlashMedium::new(flash, C3_NEW_FIRST * 4096, C3_NEW_SECTORS).unwrap();
+    let medium = FlashMedium::new(flash, C3_FIRST * 4096, C3_SECTORS_OF_LOG).unwrap();
     let mut storage = RingStorage::new(medium);
     let recovery = block_on(storage.recover()).unwrap();
     (storage, recovery)
 }
 
+// The flash below and above the region of the log.
+fn outside(flash: &Emu) -> (std::vec::Vec<u8>, std::vec::Vec<u8>) {
+    (
+        flash.data[..C3_FIRST as usize * 4096].to_vec(),
+        flash.data[C3_LOG_END..].to_vec(),
+    )
+}
+
 #[test]
-fn the_resized_esp32c3_region_is_formatted_on_the_first_start_and_kept_afterwards() {
-    let flash = c3_flash_with_the_former_log();
-    let outside = flash.data[..C3_NEW_FIRST as usize * 4096].to_vec();
-    // The former header sits in the last two sectors, where the new header
-    // slots are too, but it says 64 sectors: it is not a header of this region.
+fn the_moved_esp32c3_region_is_formatted_on_the_first_start_and_kept_afterwards() {
+    let flash = c3_flash_after_the_table_change();
+    let (below, above) = outside(&flash);
+    // Old application code is no header: the region is not read as a log.
     let (mut storage, recovery) = open_c3(flash);
     assert!(recovery.formatted);
     assert_eq!((recovery.segments, recovery.newest_sequence), (0, None));
     assert!(all_records(&mut storage).is_empty());
-    assert_eq!(
-        block_on(storage.stats()).unwrap().capacity_bytes,
-        126 * 4096
-    );
-    let mut writer = Writer::new(1, Compression::Lz4, LIMITS);
-    writer.push_many(&mut storage, 200).unwrap();
+    assert_eq!(block_on(storage.stats()).unwrap().capacity_bytes, 30 * 4096);
+    let mut writer = Writer::new(1, crate::DEFAULT_COMPRESSION, LIMITS);
+    writer.push_many(&mut storage, 100).unwrap();
     writer.flush(&mut storage).unwrap();
 
     // The next start finds the header and keeps the history.
@@ -347,23 +354,22 @@ fn the_resized_esp32c3_region_is_formatted_on_the_first_start_and_kept_afterward
     let (mut storage, recovery) = open_c3(flash);
     assert!(!recovery.formatted);
     assert_contiguous(&all_records(&mut storage));
-    assert_eq!(all_records(&mut storage).len(), 200);
+    assert_eq!(all_records(&mut storage).len(), 100);
 
-    // Nothing below the region was touched: the partitions before it, the
-    // application included, are as they were. Above it there is no flash.
+    // Nothing around the region was touched: not the partitions before it, not
+    // the application after it (the former log is inside it and stays as it is).
     let flash = storage.into_medium().into_inner();
-    assert_eq!(flash.data[..C3_NEW_FIRST as usize * 4096], outside[..]);
+    assert_eq!((outside(&flash)), (below, above));
 }
 
 #[test]
-fn a_format_of_the_resized_region_cut_by_a_power_loss_is_repeated_and_never_corrupts_the_neighbours()
- {
+fn a_format_of_the_moved_region_cut_by_a_power_loss_is_repeated_and_never_touches_the_neighbours() {
     for budget in [0usize, 1, 3, 4, 8, 12, 16, 19] {
-        let mut flash = c3_flash_with_the_former_log();
-        let outside = flash.data[..C3_NEW_FIRST as usize * 4096].to_vec();
+        let mut flash = c3_flash_after_the_table_change();
+        let neighbours = outside(&flash);
         // The header is the last write of a format: cut it.
         flash.budget = Some(budget);
-        let medium = FlashMedium::new(flash, C3_NEW_FIRST * 4096, C3_NEW_SECTORS).unwrap();
+        let medium = FlashMedium::new(flash, C3_FIRST * 4096, C3_SECTORS_OF_LOG).unwrap();
         let mut storage = RingStorage::new(medium);
         assert!(block_on(storage.recover()).is_err(), "budget {budget}");
 
@@ -381,31 +387,33 @@ fn a_format_of_the_resized_region_cut_by_a_power_loss_is_repeated_and_never_corr
         assert!(!recovery.formatted);
         assert_eq!(all_records(&mut storage).len(), 50);
         let flash = storage.into_medium().into_inner();
-        assert_eq!(flash.data[..C3_NEW_FIRST as usize * 4096], outside[..]);
+        assert_eq!(outside(&flash), neighbours);
     }
 }
 
 #[test]
 fn the_esp32c3_region_clears_and_wraps_with_the_default_segments_inside_its_bounds() {
-    let flash = c3_flash_with_the_former_log();
+    let flash = c3_flash_after_the_table_change();
+    let neighbours = outside(&flash);
     let (mut storage, _) = open_c3(flash);
     let limits = Limits {
-        segment_bytes: 32 * 1024,
-        retention_bytes: 512 * 1024,
+        segment_bytes: 8 * 1024,
+        retention_bytes: 128 * 1024,
     };
     let mut writer = Writer::new(1, Compression::None, limits);
     let mut most = 0;
     for _ in 0..300 {
         writer.push_many(&mut storage, 100).unwrap();
         let stats = block_on(storage.stats()).unwrap();
-        assert!(stats.used_bytes <= 126 * 4096, "{stats:?}");
+        assert!(stats.used_bytes <= 30 * 4096, "{stats:?}");
         most = most.max(stats.segments);
     }
-    assert!(most >= 15 && most as usize <= MAX_SEGMENTS, "{most}");
+    assert!(most >= 14 && most as usize <= MAX_SEGMENTS, "{most}");
     assert_contiguous(&all_records(&mut storage));
     block_on(storage.clear()).unwrap();
     assert!(all_records(&mut storage).is_empty());
     let (mut storage, recovery) = open_c3(storage.into_medium().into_inner());
     assert!(!recovery.formatted);
     assert!(all_records(&mut storage).is_empty());
+    assert_eq!(outside(&storage.into_medium().into_inner()), neighbours);
 }

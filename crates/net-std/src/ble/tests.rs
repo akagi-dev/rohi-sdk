@@ -20,7 +20,7 @@
 
 use embassy_futures::block_on;
 use embassy_futures::select::{Either, select};
-use rohi_control::{Controller, Device, DeviceInfo, OpenPolicy};
+use rohi_control::{ControlAccess, ControlHub, Controller, Device, DeviceInfo, OpenPolicy};
 use rohi_control_ble::ControlBle;
 use rohi_control_ble::frame::{Fragmenter, Reassembler};
 use rohi_control_proto::control::{
@@ -35,6 +35,7 @@ fn config(name: Option<&str>) -> BleConfig {
     BleConfig {
         name_prefix: "ALTRUIST-URBAN",
         name: name.and_then(BleName::new),
+        pairing: false,
         gatt: BleGattSpec {
             service: 1,
             rx: 2,
@@ -203,10 +204,12 @@ fn the_control_protocol_runs_over_the_bridge() {
         board: "demo-board",
     };
     let controller = Controller::new(Device::new(info, || 0, (), (), ()), OpenPolicy);
-    let mut control = ControlBle::new(transport, &controller);
+    let access = ControlAccess::new(|_| false);
+    let hub = ControlHub::<1>::with_access(&access);
+    let mut control = ControlBle::new(transport, &hub);
     // Every fragment is one step; the last one answers.
     for _ in 0..fragments.count() {
-        block_on(control.step());
+        step(&hub, &controller, &mut control);
     }
 
     let mut response = Reassembler::<256>::new();
@@ -251,7 +254,21 @@ fn a_response_to_a_connection_that_ended_is_dropped() {
         board: "demo-board",
     };
     let controller = Controller::new(Device::new(info, || 0, (), (), ()), OpenPolicy);
-    let mut control = ControlBle::new(transport, &controller);
-    block_on(control.step());
+    let access = ControlAccess::new(|_| false);
+    let hub = ControlHub::<1>::with_access(&access);
+    let mut control = ControlBle::new(transport, &hub);
+    step(&hub, &controller, &mut control);
     assert!(peripheral.outbox.try_lock().unwrap().try_recv().is_err());
+}
+
+/// One step of the BLE frontend next to the control worker.
+fn step<T: rohi_net::BleTransport>(
+    hub: &ControlHub<'_, 1>,
+    controller: &Controller<Device<(), (), ()>, OpenPolicy>,
+    control: &mut ControlBle<'_, '_, T, 1>,
+) {
+    match block_on(select(hub.serve(controller), control.step())) {
+        Either::First(never) => never,
+        Either::Second(()) => {}
+    }
 }

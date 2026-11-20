@@ -71,7 +71,9 @@ pub trait ClientTransport {
 
 /// One connection to a device: frames requests, matches responses.
 ///
-/// One request at a time, as the device allows only one in flight.
+/// One request at a time, as the device allows only one in flight. The security of the link
+/// (the encrypted records of a restricted TCP endpoint, the pairing of BLE) belongs to the
+/// transport: a session only carries requests.
 pub struct Session<T> {
     transport: T,
     next_request: u32,
@@ -110,17 +112,19 @@ impl<T: ClientTransport> Session<T> {
     /// A typed error response of the device becomes [`Error::Device`].
     pub async fn call(&mut self, call: Call) -> Result<Reply> {
         let limit = self.timeout;
-        timeout(limit, self.exchange(call))
+        timeout(limit, self.call_unbounded(call))
             .await
             .map_err(|_| Error::Timeout)?
     }
 
-    async fn exchange(&mut self, call: Call) -> Result<Reply> {
-        let request_id = self.next_request;
+    fn take_request_id(&mut self) -> u32 {
+        let id = self.next_request;
         self.next_request = self.next_request.wrapping_add(1).max(1);
-        let message_id = self.next_message;
-        self.next_message = self.next_message.wrapping_add(1);
+        id
+    }
 
+    async fn call_unbounded(&mut self, call: Call) -> Result<Reply> {
+        let request_id = self.take_request_id();
         let mut wire = [0u8; MAX_REQUEST_LEN];
         let len = encode(
             &pb::Request {
@@ -130,11 +134,18 @@ impl<T: ClientTransport> Session<T> {
             },
             &mut wire,
         )?;
+        let result = self.exchange(request_id, &wire[..len]).await;
+        wire.fill(0);
+        result
+    }
+
+    // One request and its answer, on the wire.
+    async fn exchange(&mut self, request_id: u32, wire: &[u8]) -> Result<Reply> {
+        let message_id = self.next_message;
+        self.next_message = self.next_message.wrapping_add(1);
 
         if self.transport.framing() == Framing::Messages {
-            let sent = self.transport.send(&wire[..len]).await;
-            wire.fill(0);
-            sent?;
+            self.transport.send(wire).await?;
             loop {
                 let bytes = self.transport.recv().await?;
                 if let Some(result) = answer(&bytes, request_id)? {
@@ -144,12 +155,11 @@ impl<T: ClientTransport> Session<T> {
         }
 
         let max_payload = self.transport.max_payload();
-        let mut fragments = Fragmenter::new(message_id, &wire[..len], max_payload)?;
+        let mut fragments = Fragmenter::new(message_id, wire, max_payload)?;
         let mut chunk = vec![0u8; max_payload];
         while let Some(len) = fragments.next_frame(&mut chunk) {
             self.transport.send(&chunk[..len]).await?;
         }
-        wire.fill(0);
 
         let mut response = Reassembler::<MAX_RESPONSE_LEN>::new();
         loop {
@@ -187,6 +197,9 @@ fn answer(bytes: &[u8], request_id: u32) -> Result<Option<Result<Reply>>> {
         Some(Reply::Error(error)) => Err(match error.reason() {
             Some(reason) if error.code == pb::ErrorCode::Rejected => {
                 Error::Rejected(reason.as_str().to_owned())
+            }
+            Some(reason) if error.code == pb::ErrorCode::PermissionDenied => {
+                Error::Unauthorized(reason.as_str().to_owned())
             }
             _ => Error::Device(ErrorCode::from_proto(error.code)),
         }),

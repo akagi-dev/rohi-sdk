@@ -22,9 +22,7 @@ use rohi_time::MonotonicTimestamp;
 
 use crate::catalog::{self, ValueKind};
 use crate::observation::{MeasurementId, Observation, ObservationValue, SourceId};
-
-/// Maximum number of per-source reports a snapshot keeps.
-pub const MAX_SOURCE_REPORTS: usize = 8;
+use crate::selection::Selection;
 
 /// Why a source did not contribute.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,15 +64,15 @@ pub struct SourceReport {
 
 /// Per-source results of a capture. Sources are independent: a failing one
 /// never prevents the others from contributing.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct CollectionDiagnostics {
-    /// One report per source, in collection order.
-    pub sources: Vec<SourceReport, MAX_SOURCE_REPORTS>,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CollectionDiagnostics<const SRC: usize> {
+    /// One report per source, in collection order; room for the `SRC` sources of the device.
+    pub sources: Vec<SourceReport, SRC>,
     /// Reports that did not fit.
     pub dropped_reports: u8,
 }
 
-impl CollectionDiagnostics {
+impl<const SRC: usize> CollectionDiagnostics<SRC> {
     /// The report of `source`.
     pub fn of(&self, source: SourceId) -> Option<&SourceReport> {
         self.sources.iter().find(|report| report.source == source)
@@ -95,16 +93,18 @@ impl CollectionDiagnostics {
 /// `captured_at` is the capture boundary, not a claim that every value was
 /// acquired at that instant: each [`Observation`] has its own time.
 #[derive(Clone, Debug, PartialEq)]
-pub struct TelemetrySnapshot<const N: usize> {
+pub struct TelemetrySnapshot<const N: usize, const SRC: usize> {
     /// When the capture started.
     pub captured_at: MonotonicTimestamp,
     /// The observations, grouped by source in collection order.
     pub observations: Vec<Observation, N>,
     /// What every source did.
-    pub diagnostics: CollectionDiagnostics,
+    pub diagnostics: CollectionDiagnostics<SRC>,
+    // The measurements this build packages; `None` keeps every cataloged one.
+    accepted: Option<Selection>,
 }
 
-impl<const N: usize> TelemetrySnapshot<N> {
+impl<const N: usize, const SRC: usize> TelemetrySnapshot<N, SRC> {
     /// An empty snapshot captured at `captured_at`.
     pub const fn new(captured_at: MonotonicTimestamp) -> Self {
         Self {
@@ -114,7 +114,19 @@ impl<const N: usize> TelemetrySnapshot<N> {
                 sources: Vec::new(),
                 dropped_reports: 0,
             },
+            accepted: None,
         }
+    }
+
+    /// An empty snapshot that stores only the measurements of `accepted`: the ones the compiled
+    /// packet format can encode. The writer skips every other measurement of a source, silently
+    /// and without counting it as refused, so the capacity `N` is sized for what is packaged and
+    /// a source that also reports a measurement nobody can send (a CO2 sensor next to the
+    /// encodable ones) still contributes whole.
+    pub const fn accepting(captured_at: MonotonicTimestamp, accepted: Selection) -> Self {
+        let mut snapshot = Self::new(captured_at);
+        snapshot.accepted = Some(accepted);
+        snapshot
     }
 
     /// The observation with key `(source, measurement)`.
@@ -125,7 +137,7 @@ impl<const N: usize> TelemetrySnapshot<N> {
     }
 
     /// A writer for the contribution of `source`.
-    pub fn writer(&mut self, source: SourceId) -> SourceWriter<'_, N> {
+    pub fn writer(&mut self, source: SourceId) -> SourceWriter<'_, N, SRC> {
         let mark = self.observations.len();
         SourceWriter {
             snapshot: self,
@@ -166,8 +178,8 @@ pub enum WriteError {
 
 /// What a source writes its observations through. It is bound to one source
 /// id, so a source cannot attribute data to another source.
-pub struct SourceWriter<'a, const N: usize> {
-    snapshot: &'a mut TelemetrySnapshot<N>,
+pub struct SourceWriter<'a, const N: usize, const SRC: usize> {
+    snapshot: &'a mut TelemetrySnapshot<N, SRC>,
     source: SourceId,
     mark: usize,
     accepted: u16,
@@ -175,7 +187,7 @@ pub struct SourceWriter<'a, const N: usize> {
     fatal: Option<SourceFailure>,
 }
 
-impl<const N: usize> SourceWriter<'_, N> {
+impl<const N: usize, const SRC: usize> SourceWriter<'_, N, SRC> {
     /// Adds an observation.
     ///
     /// # Errors
@@ -189,6 +201,14 @@ impl<const N: usize> SourceWriter<'_, N> {
         value: ObservationValue,
         observed_at: MonotonicTimestamp,
     ) -> Result<(), WriteError> {
+        // Not packaged by this build: not stored, and not an error.
+        if self
+            .snapshot
+            .accepted
+            .is_some_and(|accepted| !accepted.contains(measurement))
+        {
+            return Ok(());
+        }
         let result = self.check_and_push(measurement, value, observed_at);
         match result {
             Ok(()) => self.accepted = self.accepted.saturating_add(1),
@@ -286,7 +306,7 @@ mod tests {
 
     #[test]
     fn two_sources_keep_equal_quantities_apart() {
-        let mut snapshot = TelemetrySnapshot::<4>::new(at(10));
+        let mut snapshot = TelemetrySnapshot::<4, 8>::new(at(10));
         for (source, value) in [(SourceId(10), 20.0), (SourceId(11), 21.0)] {
             let mut writer = snapshot.writer(source);
             writer.number(BMX280_TEMPERATURE, value, at(5)).unwrap();
@@ -305,7 +325,7 @@ mod tests {
 
     #[test]
     fn bad_values_are_refused_one_by_one_and_counted() {
-        let mut snapshot = TelemetrySnapshot::<4>::new(at(0));
+        let mut snapshot = TelemetrySnapshot::<4, 8>::new(at(0));
         let mut writer = snapshot.writer(SourceId(1));
         assert_eq!(
             writer.number(BMX280_TEMPERATURE, f32::NAN, at(1)),
@@ -338,7 +358,7 @@ mod tests {
 
     #[test]
     fn a_duplicate_discards_the_whole_contribution_of_that_source_only() {
-        let mut snapshot = TelemetrySnapshot::<8>::new(at(0));
+        let mut snapshot = TelemetrySnapshot::<8, 8>::new(at(0));
         let mut other = snapshot.writer(SourceId(2));
         other.number(SDS011_PM10, 1.0, at(1)).unwrap();
         other.finish(Ok(()));
@@ -361,7 +381,7 @@ mod tests {
 
     #[test]
     fn overflow_is_observable_and_never_partial() {
-        let mut snapshot = TelemetrySnapshot::<2>::new(at(0));
+        let mut snapshot = TelemetrySnapshot::<2, 8>::new(at(0));
         let mut writer = snapshot.writer(SourceId(1));
         writer.number(BMX280_TEMPERATURE, 1.0, at(1)).unwrap();
         writer.number(SDS011_PM10, 1.0, at(1)).unwrap();
@@ -379,10 +399,65 @@ mod tests {
 
     #[test]
     fn a_source_error_discards_its_observations() {
-        let mut snapshot = TelemetrySnapshot::<4>::new(at(0));
+        let mut snapshot = TelemetrySnapshot::<4, 8>::new(at(0));
         let mut writer = snapshot.writer(SourceId(1));
         writer.number(BMX280_TEMPERATURE, 1.0, at(1)).unwrap();
         writer.finish(Err(SourceFailure::Failed));
         assert!(snapshot.observations.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod accepting_tests {
+    use super::*;
+    use crate::catalog::{BMX280_TEMPERATURE, SCD4X_CO2, SDS011_PM10};
+
+    fn at(ms: u64) -> MonotonicTimestamp {
+        MonotonicTimestamp::from_millis(ms)
+    }
+
+    #[test]
+    fn a_measurement_the_build_does_not_package_is_skipped_and_the_source_stays_whole() {
+        let accepted = Selection::NONE.with(BMX280_TEMPERATURE).with(SDS011_PM10);
+        // Room for exactly the packaged measurements.
+        let mut snapshot = TelemetrySnapshot::<2, 1>::accepting(at(10), accepted);
+        let mut writer = snapshot.writer(SourceId(1));
+        writer.number(BMX280_TEMPERATURE, 20.0, at(5)).unwrap();
+        // A CO2 reading nobody can send: neither stored nor an error.
+        writer.number(SCD4X_CO2, 600.0, at(5)).unwrap();
+        writer.number(SDS011_PM10, 3.0, at(5)).unwrap();
+        writer.finish(Ok(()));
+        assert_eq!(snapshot.observations.len(), 2);
+        let report = snapshot.diagnostics.of(SourceId(1)).unwrap();
+        assert_eq!(report.outcome, SourceOutcome::Collected);
+        assert_eq!((report.accepted, report.rejected), (2, 0));
+        assert!(snapshot.diagnostics.is_clean());
+    }
+
+    #[test]
+    fn an_unrestricted_snapshot_that_is_too_small_discards_the_source_as_before() {
+        let mut snapshot = TelemetrySnapshot::<2, 1>::new(at(10));
+        let mut writer = snapshot.writer(SourceId(1));
+        writer.number(BMX280_TEMPERATURE, 20.0, at(5)).unwrap();
+        writer.number(SDS011_PM10, 3.0, at(5)).unwrap();
+        assert_eq!(
+            writer.number(SCD4X_CO2, 600.0, at(5)),
+            Err(WriteError::Full)
+        );
+        writer.finish(Ok(()));
+        assert!(snapshot.observations.is_empty());
+    }
+
+    #[test]
+    fn more_sources_than_reports_are_counted_not_lost_silently() {
+        let mut snapshot = TelemetrySnapshot::<4, 1>::new(at(10));
+        for id in [1, 2] {
+            let mut writer = snapshot.writer(SourceId(id));
+            writer.number(BMX280_TEMPERATURE, 1.0, at(5)).unwrap();
+            writer.finish(Ok(()));
+        }
+        assert_eq!(snapshot.diagnostics.sources.len(), 1);
+        assert_eq!(snapshot.diagnostics.dropped_reports, 1);
+        assert!(!snapshot.diagnostics.is_clean());
     }
 }

@@ -43,6 +43,12 @@ pub struct Launch {
     pub storage: Option<PathBuf>,
     pub scenario: Option<PathBuf>,
     pub extra: Vec<String>,
+    /// Leave the TCP endpoint restricted, as a device is by default.
+    pub restricted: bool,
+    /// A file with the pre-shared key of the TCP endpoint.
+    pub psk_file: Option<PathBuf>,
+    /// Do not pass `--control-port`: the stored (or default) `control_tcp` port applies.
+    pub stored_port: bool,
 }
 
 impl Launch {
@@ -58,6 +64,24 @@ impl Launch {
 
     pub fn scenario(mut self, path: &Path) -> Self {
         self.scenario = Some(path.to_owned());
+        self
+    }
+
+    /// Leaves the TCP endpoint restricted instead of opening it for the run.
+    pub fn restricted(mut self) -> Self {
+        self.restricted = true;
+        self
+    }
+
+    /// Gives the device the key of `path` (`--control-psk-file`).
+    pub fn psk_file(mut self, path: &Path) -> Self {
+        self.psk_file = Some(path.to_owned());
+        self
+    }
+
+    /// Starts on the stored `control_tcp` port instead of a free one.
+    pub fn stored_port(mut self) -> Self {
+        self.stored_port = true;
         self
     }
 
@@ -79,8 +103,11 @@ impl Sim {
     /// Starts a device on free ports and waits until it is ready.
     pub fn start(launch: &Launch) -> Self {
         let mut command = Command::new(env!("CARGO_BIN_EXE_altruist-urban"));
+        command.args(["--log-level", "debug"]);
+        if !launch.stored_port {
+            command.args(["--control-port", "0"]);
+        }
         command
-            .args(["--control-port", "0", "--log-level", "debug"])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .stdin(Stdio::null());
@@ -90,6 +117,12 @@ impl Sim {
         };
         if let Some(scenario) = &launch.scenario {
             command.arg("--scenario").arg(scenario);
+        }
+        if !launch.restricted {
+            command.arg("--control-open");
+        }
+        if let Some(path) = &launch.psk_file {
+            command.arg("--control-psk-file").arg(path);
         }
         command.args(&launch.extra);
         let mut child = command.spawn().expect("the device starts");
@@ -189,6 +222,16 @@ impl Sim {
         let reply = self.manage(line);
         assert!(reply.ends_with("ok\n"), "`{line}` failed: {reply}");
         reply
+    }
+
+    /// A control connection that authenticates with `key`, as a client of a restricted endpoint must.
+    pub async fn secure_device(&self, key: &rohi::TcpKey) -> Device<TcpLink> {
+        let link = TcpLink::connect_secure(&self.control.to_string(), Duration::from_secs(10), key)
+            .await
+            .unwrap_or_else(|e| panic!("cannot connect: {e}\n{}", self.log()));
+        let mut device = Device::new(link);
+        device.set_timeout(Duration::from_secs(10));
+        device
     }
 
     /// A control connection through the `rohi` client library.
@@ -418,11 +461,14 @@ pub async fn archive_text(device: &mut Device<TcpLink>) -> String {
     };
     let mut text = String::new();
     for file in &stream.files {
+        #[cfg(feature = "lz4")]
         let codec = if file.name.ends_with(".lz4") {
             Compression::Lz4
         } else {
             Compression::None
         };
+        #[cfg(not(feature = "lz4"))]
+        let codec = Compression::None;
         let data = read_stream_file(device, &stream, file.id).await;
         let mut decoder = SegmentDecoder::new(codec);
         decoder

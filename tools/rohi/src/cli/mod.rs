@@ -70,6 +70,8 @@ pub struct Ctx {
     pub watch_limit: Option<usize>,
     /// How often `logs --follow` asks for new records.
     pub follow_interval: Duration,
+    /// The pre-shared key of `--psk-file`, which a restricted TCP endpoint wants.
+    pub tcp_key: Option<crate::TcpKey>,
 }
 
 impl Ctx {
@@ -82,6 +84,7 @@ impl Ctx {
             uri: None,
             watch_limit: None,
             follow_interval: Duration::from_secs(1),
+            tcp_key: None,
         }
     }
 
@@ -232,7 +235,13 @@ async fn connect_tcp(
     ctx: &mut Ctx,
 ) -> Result<Device<TcpLink>, CliError> {
     ctx.uri = Some(format!("tcp://{endpoint}"));
-    let link = TcpLink::connect(endpoint, Duration::from_secs(cli.scan_timeout)).await?;
+    let wait = Duration::from_secs(cli.scan_timeout);
+    // With a key the endpoint is restricted: the handshake comes first. Without one the records
+    // are plaintext, which only an open (development) endpoint serves.
+    let link = match &ctx.tcp_key {
+        Some(key) => TcpLink::connect_secure(endpoint, wait, key).await?,
+        None => TcpLink::connect(endpoint, wait).await?,
+    };
     let mut device = Device::new(link);
     device.set_timeout(Duration::from_secs(cli.timeout));
     Ok(device)
@@ -246,6 +255,9 @@ pub async fn run(cli: Cli, ctx: &mut Ctx) -> Result<(), CliError> {
     }
     if let Some(help) = static_help(&cli.command) {
         return ctx.io.result(&help);
+    }
+    if let Some(path) = &cli.psk_file {
+        ctx.tcp_key = Some(crate::TcpKey::load(path)?);
     }
 
     match Target::parse(cli.device.as_deref())? {

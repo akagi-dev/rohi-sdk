@@ -132,6 +132,19 @@ pub struct Cli {
     )]
     pub scan_timeout: u64,
 
+    /// File with the pre-shared key of a TCP endpoint (64 hex characters). A
+    /// restricted endpoint serves only clients that complete a handshake with
+    /// it, and `rohi` then encrypts every request. Never put the key itself on
+    /// the command line; get a key from the device with `rohi control_tcp reveal_psk`, which prints it.
+    #[arg(
+        long,
+        global = true,
+        env = "ROHI_PSK_FILE",
+        value_name = "FILE",
+        help_heading = CONNECTION
+    )]
+    pub psk_file: Option<PathBuf>,
+
     /// How long to wait for a device response.
     #[arg(
         long,
@@ -468,9 +481,9 @@ pub enum LogsAction {
     #[command(
         about = "Save the retained log files of the device",
         long_about = "Save every retained log file of the active storage of the device.\n\n\
-            The files are the compressed segments as the device keeps them\n\
-            (`rohi1.log.lz4`, ...; `.log` for plain segments), oldest first, and are\n\
-            written unchanged: `lz4 -d rohi1.log.lz4` shows the text. Records logged\n\
+            The files are the segments as the device keeps them: plain text\n\
+            (`rohi1.log`, ...) or, on a firmware built with LZ4, `rohi1.log.lz4`\n\
+            (`lz4 -d` shows the text). Oldest first, written unchanged. Records logged\n\
             while the download runs are not part of it. A file that already exists is\n\
             not replaced unless --force is given.",
         after_help = "\

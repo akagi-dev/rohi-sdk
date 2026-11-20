@@ -5,6 +5,9 @@ buffer sizes, heap size) are defined and explained in [Resource limits](https://
 records what was measured with them. Numbers here are history, not contracts: they change with every dependency update
 and are re-measured when the limits change.
 
+The before/after report of the compact firmware change (optional LZ4, a 128 KiB log on the ESP32-C3, compile-time route and
+telemetry capacities, a smaller signed packet, TCP-only encryption) is [Compact firmware report](compact-firmware-report.md);
+its numbers replace the older ones of this page where they differ.
 ## Altruist Urban firmware (Wi-Fi + BLE control)
 
 Measured with `size` on the release build (`cargo build-esp32c3` / `cargo build-esp32c6`), baseline = Wi-Fi only,
@@ -68,7 +71,7 @@ summary in the detailed status, no pagination):
 | `Response` | 2 616 | 1 824 | 1 900 |
 | `FieldDescriptor` | 352 | 48 | 56 |
 | `FieldValue` | 88 | 56 | 64 |
-| `GetServicesStatusResponse` | 792 | 792 (12 services; 536 for 8) | 832 |
+| `GetServicesStatusResponse` | 792 | 1 048 (16 services; 792 for 12) | 1 088 |
 | `GetServiceStatusResponse` | 1 272 (8 values) | 1 192 (20 values) | 1 280 |
 | `GetConfigSectionResponse` | n/a | 1 504 | 1 536 |
 | `PatchConfigSectionRequest` | n/a | 728 | 768 |
@@ -292,17 +295,18 @@ Release build of `altruist-urban`, measured with `nm -S` on the ELF (`cargo buil
 | `altruist_urban::esp::logging::logging_task` future (`.bss`) | 2 304 B | 2 304 B |
 
 The limits are in `firmwares/altruist-urban/src/logging.rs` (`QUEUE_DEPTH` 24 records, `TAIL_RECORDS` 8 on the ESP32-C3 and
-7 on the ESP32-C6, about 200 B each; at most two download streams, and none for the tail) and in `rohi_logging` (batch of 2 KiB of text, one compressed block of at most 2 056 B).
+7 on the ESP32-C6, about 200 B each; at most two download streams, and none for the tail) and in `rohi_logging` (batch of 1 KiB of text; with the `lz4` feature one compressed block of at most 1 032 B).
 
-**Flash.** The `rohi-log` partition is the last partition of the flash. ESP32-C3 (4 MB): 512 KiB (`0x80000`) at `0x380000`,
-128 sectors of 4 KiB, 126 for the ring and the last two for the format header; with 32 KiB segments it retains 15 full segments (480 KiB).
-ESP32-C6 (8 MB): 1 MiB at `0x700000`, 256 sectors, 254 for the ring. The `factory` partition starts at `0x20000` and is `0x360000`
-B (ESP32-C3) / `0x6E0000` B (ESP32-C6). On both chips the app area ends on a 64 KiB boundary (`0x380000` on the ESP32-C3), for future A/B OTA slots (#29). `scripts/image-fits.sh <chip>` (CI job Firmware) runs `espflash save-image`, which
-refuses an image that does not fit: the ESP32-C3 `firmware`-profile image is 1 361 472 B of the 3 538 944 B (`0x360000`) of the
-reduced `factory` partition (38.5 %), the ESP32-C6 `release` image 1 845 552 B of 7 208 960 B (25.6 %); the C3 partition holds the image
+**Flash.** ESP32-C3 (4 MB): `rohi-log` is 128 KiB (`0x20000`) at `0x20000`, right after the configuration region; 32 sectors of 4 KiB,
+30 for the ring and the last two for the format header; with 8 KiB segments it retains 15 full segments (120 KiB; 98 to 116 KiB of text
+lines on an emulated medium, 80 to 160 B lines, see `the_esp32c3_log_retention_is_measured`). The `factory` partition follows at `0x40000` and is
+`0x3C0000` B (it ends the flash). ESP32-C6 (8 MB): `factory` is `0x6E0000` B at `0x20000` and `rohi-log` is the last partition, 1 MiB at `0x700000`,
+256 sectors, 254 for the ring. On both chips the app area starts and ends on a 64 KiB boundary, for future A/B OTA slots (#29; not implemented). `scripts/image-fits.sh <chip>` (CI job Firmware) runs `espflash save-image`, which
+refuses an image that does not fit: the ESP32-C3 `firmware`-profile image was 1 361 472 B of the former 3 538 944 B (`0x360000`) `factory` partition (38.5 %;
+the partition is now `0x3C0000`, 3 932 160 B), the ESP32-C6 `release` image 1 845 552 B of 7 208 960 B (25.6 %); the C3 partition holds the image
 with 2.1 MB to spare.
 
-**RAM does not scale with the flash.** The default retention is 512 KiB in 32 KiB segments on the ESP32-C3 and 1 MiB in 64 KiB segments on the ESP32-C6 (at most 24 segments are kept), and
+**RAM does not scale with the flash.** The default retention is 128 KiB in 8 KiB segments on the ESP32-C3 and 1 MiB in 64 KiB segments on the ESP32-C6 (at most 24 segments are kept), and
 nothing is allocated per sector or per segment byte: a format or a clear erases one 4 KiB sector at a time and yields
 between two erases (no flash lock is held across the region), the recovery reads through 20 B to 128 B buffers, a sealed
 segment is checked with a streaming CRC-32 and the metadata is at most 24 segments. Static analysis of this change against
@@ -359,3 +363,26 @@ LZ4 compressor keeps a 2 KiB table and the writer a 2 KiB chunk on the stack), t
 flash sector erase stalls Wi-Fi, BLE and the microphone DMA ring, how long the first format of the 128 (ESP32-C3) or 256 (ESP32-C6) sectors takes, how long
 `rohi logs clear` takes (it has to stay below the 40 s action timeout of the client) and how long recovery spends on the checksums
 of up to 1 MiB of sealed segments at boot (the CRC-32 is computed bit by bit). These need a device.
+
+## Shared control worker and BLE frontend (#56)
+
+BLE and TCP no longer call the `Controller` in their own poll chain. One `control_task` owns the `Controller`; the BLE
+frontend is its own `control_ble_task` and the request and response buffers are the slot of the `ControlHub` (one slot on
+the ESP, two on the host). Measured with `scripts/memcheck.sh` (static analysis, not a runtime high-water mark):
+
+| Metric | Before (reference CI run, PR #69) | After, ESP32-C3 | After, ESP32-C6 |
+|--------|----------------------------------:|----------------:|----------------:|
+| `control_task::POOL` | 17 512 B | 15 128 B | not recorded |
+| `control_ble_task::POOL` | n/a | 2 784 B | not recorded |
+| `ControlHub` slot (`.bss`) | n/a (buffers in the pool) | 3 272 B | not recorded |
+| `control_task` poll frame | 9 504 B | 9 456 B | not recorded |
+| `control_ble_task` poll frame | n/a | 640 B | not recorded |
+| all task pools | 43 040 B | 45 008 B | 44 984 B |
+| `.data` | 30 400 B | 31 144 B | 34 956 B |
+
+The tasks share the one executor stack, so splitting them lowers the depth only because the transport and controller
+poll chains no longer nest. The new `.data` and task RAM come from the second task, the new sections and services and
+the host stack (`trouble-host`); the `.data` of the hub itself is kept at zero (it holds no reference
+until `bind`), so it lands in `.bss`. No saving of stack or RAM is claimed: the stack high-water mark was **not**
+measured on hardware, see [Hardware testing](hardware-testing.md#control-worker-stack-high-water). The budgets of
+`memcheck-budgets.toml` were raised by 700 B (`.data`, ESP32-C3), 1 200 B (`.data`, ESP32-C6) and 1 700 B (task RAM).

@@ -403,6 +403,12 @@ async fn copy<T: ClientTransport>(
         let chunk = device.read_stream(stream, file, offset).await?;
         out.write_all(&chunk.data)?;
         offset += chunk.data.len() as u64;
+        if offset > size {
+            return Err(Error::Protocol(format!(
+                "the device sent more than the announced {size} bytes"
+            ))
+            .into());
+        }
         if chunk.eof {
             break;
         }

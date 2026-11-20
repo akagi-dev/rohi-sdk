@@ -17,12 +17,16 @@
 ///////////////////////////////////////////////////////////////////////////////
 //! The state machine of publication and delivery, without I/O.
 //!
-//! [`Router`] keeps, for every configured route, its own publication
-//! deadline, one bounded FIFO outbox of [`PacketHandle`]s shared by the
-//! primary and its fallbacks, and the health of every delivery path. It owns
-//! the [`PacketPool`]. The asynchronous driver ([`crate::publisher`]) feeds
-//! it time, built packets and delivery results; everything that decides
+//! [`Router`] keeps, for every route **slot** that holds a route, its own
+//! publication deadline, one bounded FIFO outbox of [`PacketHandle`]s shared by
+//! the primary and the fallback, and the health of both delivery paths. It
+//! owns the [`PacketPool`]. The asynchronous driver ([`crate::publisher`])
+//! feeds it time, built packets and delivery results; everything that decides
 //! lives here and is tested without a network.
+//!
+//! The runtime of slot `i` is the `i`-th entry of a fixed array: a route is
+//! addressed by its index everywhere (`due`, `admit`, [`Delivery::route`],
+//! [`RouteView`]) and deleting the route of one slot never moves another.
 //!
 //! # Rules
 //!
@@ -31,30 +35,30 @@
 //!   restarting a failed transport never resets the cadence. An interval edit
 //!   moves the next deadline to `now + interval` without publishing an extra
 //!   packet and without clearing the queue.
-//! * The outbox of a route is shared by all its paths: a packet is one
-//!   delivery obligation. A full outbox skips the new packet (counted); older
-//!   packets are never evicted.
+//! * The outbox of a route is shared by its paths: a packet is one delivery
+//!   obligation. A full outbox skips the new packet (counted); older packets
+//!   are never evicted.
 //! * The primary is preferred whenever it is eligible; after a failure the
-//!   next eligible fallback is tried at once, without waiting for the
-//!   primary's cooldown. Every path has its own cooldown.
+//!   fallback is tried at once, without waiting for the primary's cooldown.
+//!   Every path has its own cooldown.
 //! * Only `202` completes a packet, from any path. A permanent rejection
-//!   drops the packet and does not offer it to other paths. Retries send the
-//!   same bytes.
-//! * A change of the destination set of a route or of the policy of its
-//!   profile drops the queued packets of that route; other routes are never
-//!   touched. A route whose profile cannot be resolved to the bound
-//!   incarnation is suspended.
+//!   drops the packet and does not offer it to the other path. Retries send
+//!   the same bytes.
+//! * A route that is deleted or whose [`generation`](crate::Route::generation)
+//!   changed (a new endpoint or profile) loses its whole runtime: queue,
+//!   backoff and counters. A change of the fallback or of the policy of the
+//!   profile drops the queued packets of that route only; other routes are
+//!   never touched. A route whose profile slot cannot be resolved is
+//!   suspended.
 
 use heapless::{Deque, Vec};
 use rohi_telemetry::ProfileStamp;
 use rohi_time::{Backoff, MonotonicTimestamp};
 
-use crate::config::{MAX_FALLBACKS, MAX_ROUTES, RouteId, RouteSet};
+use crate::config::Routes;
 use crate::pool::{PacketHandle, PacketPool};
 use crate::transport::{Disposition, TransportAck, TransportError};
 
-/// Number of delivery paths of a route: the primary and its fallbacks.
-pub const MAX_PATHS: usize = 1 + MAX_FALLBACKS;
 /// First cooldown of a path after a transient failure, in milliseconds.
 pub const BACKOFF_INITIAL_MS: u32 = 5_000;
 /// Longest cooldown after repeated transient failures, in milliseconds.
@@ -72,7 +76,7 @@ pub struct RouteCounters {
     pub delivered: u32,
     /// Failed delivery attempts.
     pub retries: u32,
-    /// Packets delivered by a fallback after an earlier path failed.
+    /// Packets delivered by the fallback after the primary failed.
     pub failovers: u32,
     /// Packets not queued because the outbox was full.
     pub skipped_full: u32,
@@ -80,7 +84,7 @@ pub struct RouteCounters {
     pub pool_exhausted: u32,
     /// Packets dropped by a permanent rejection.
     pub rejected: u32,
-    /// Queued packets dropped because the policy or destinations changed.
+    /// Queued packets dropped because the policy or the fallback changed.
     pub invalidated: u32,
 }
 
@@ -93,7 +97,7 @@ pub enum RouteState {
     Delivering,
     /// Packets are queued and every path is cooling down.
     Backoff,
-    /// The bound profile no longer exists or was recreated: suspended.
+    /// The route's telemetry profile slot is not available: suspended.
     ProfileMissing,
 }
 
@@ -118,13 +122,19 @@ pub enum Admit {
 /// A delivery attempt to start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Delivery {
-    /// Index of the route in the router.
+    /// The route slot.
     pub route: usize,
-    /// 0 is the primary, `n` the fallback `n - 1`.
+    /// The [generation](crate::Route::generation) of the route the attempt
+    /// belongs to: a result for another generation of the slot is ignored.
+    pub generation: u32,
+    /// 0 is the primary, 1 the fallback.
     pub path: usize,
     /// The packet at the head of the outbox.
     pub packet: PacketHandle,
 }
+
+/// The paths of a route: the primary and the fallback.
+const PATHS: usize = 2;
 
 #[derive(Clone, Copy)]
 struct Path {
@@ -144,57 +154,61 @@ impl Path {
 }
 
 struct Runtime<const DEPTH: usize> {
-    id: RouteId,
     generation: u32,
     destinations: u32,
     interval_s: u32,
     next_publish_at: MonotonicTimestamp,
     outbox: Deque<PacketHandle, DEPTH>,
-    paths: [Path; MAX_PATHS],
+    paths: [Path; PATHS],
     counters: RouteCounters,
     profile_ok: bool,
     failed_before_delivery: bool,
 }
 
-/// A read-only view of one route, for status.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A read-only view of the runtime of one route, for status.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RouteView {
-    /// The route id.
-    pub id: RouteId,
+    /// The [generation](crate::Route::generation) of the route it describes: a
+    /// view of an earlier route of the slot is not this route's.
+    pub generation: u32,
     /// What the route is doing.
     pub state: RouteState,
     /// Packets queued.
     pub queue_depth: usize,
     /// Counters.
     pub counters: RouteCounters,
-    /// The path the next attempt uses (0 primary), `None` when none can.
+    /// The path the next attempt uses (0 primary, 1 fallback), `None` when
+    /// none can.
     pub active_path: Option<usize>,
 }
 
-/// The state of all routes over a pool of `SLOTS` packets of `BYTES` bytes
-/// with outboxes of `DEPTH` packets.
-pub struct Router<const DEPTH: usize, const SLOTS: usize, const BYTES: usize> {
+/// The state of `ROUTES` route slots, over a pool of `SLOTS` packets of `BYTES`
+/// bytes with outboxes of `DEPTH` packets. The capacities are the storage:
+/// there is no unused room for a third route.
+pub struct Router<const ROUTES: usize, const DEPTH: usize, const SLOTS: usize, const BYTES: usize> {
     pool: PacketPool<SLOTS, BYTES>,
-    routes: Vec<Runtime<DEPTH>, MAX_ROUTES>,
+    routes: [Option<Runtime<DEPTH>>; ROUTES],
     // Where the next delivery search starts: it moves past a route after every
-    // attempt, so a busy route cannot starve the others.
+    // attempt, so a busy route cannot starve the other.
     cursor: usize,
 }
 
-impl<const DEPTH: usize, const SLOTS: usize, const BYTES: usize> Default
-    for Router<DEPTH, SLOTS, BYTES>
+impl<const R: usize, const DEPTH: usize, const SLOTS: usize, const BYTES: usize> Default
+    for Router<R, DEPTH, SLOTS, BYTES>
 {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<const DEPTH: usize, const SLOTS: usize, const BYTES: usize> Router<DEPTH, SLOTS, BYTES> {
+impl<const R: usize, const DEPTH: usize, const SLOTS: usize, const BYTES: usize>
+    Router<R, DEPTH, SLOTS, BYTES>
+{
     /// No route.
     pub const fn new() -> Self {
         Self {
             pool: PacketPool::new(),
-            routes: Vec::new(),
+            routes: [const { None }; R],
             cursor: 0,
         }
     }
@@ -218,88 +232,94 @@ impl<const DEPTH: usize, const SLOTS: usize, const BYTES: usize> Router<DEPTH, S
         dropped
     }
 
-    /// Brings the runtime in line with the effective `config`: removed routes
-    /// are dropped with everything they hold, new ones start, an interval
-    /// edit moves the deadline, a destination edit or an unresolvable profile
-    /// flushes the queue of that route only.
+    fn runtime(&self, index: usize) -> Option<&Runtime<DEPTH>> {
+        self.routes.get(index)?.as_ref()
+    }
+
+    fn runtime_mut(&mut self, index: usize) -> Option<&mut Runtime<DEPTH>> {
+        self.routes.get_mut(index)?.as_mut()
+    }
+
+    /// Brings the runtime in line with the effective `config`: the runtime of
+    /// a deleted route, or of a slot whose route has another generation, is
+    /// dropped with everything it holds (queue, backoff, counters) and the
+    /// slot starts afresh; an interval edit moves the deadline, a fallback
+    /// edit or an unavailable profile flushes the queue of that route only.
     ///
-    /// `resolve` gives the current incarnation of a profile.
+    /// `profile_exists` says whether a telemetry profile slot can be resolved.
     pub fn sync(
         &mut self,
-        config: &RouteSet,
-        resolve: impl Fn(&str) -> Option<u32>,
+        config: &Routes<R>,
+        profile_exists: impl Fn(u8) -> bool,
         now: MonotonicTimestamp,
     ) {
-        let mut index = 0;
-        while index < self.routes.len() {
-            let runtime = &mut self.routes[index];
-            let keep = config
-                .get(runtime.id.as_str())
-                .is_some_and(|route| route.generation == runtime.generation);
-            if keep {
-                index += 1;
-            } else {
-                Self::drop_queue(&mut self.pool, runtime);
-                self.routes.swap_remove(index);
-            }
-        }
-        for route in &config.routes {
-            let ok = resolve(route.profile.id.as_str()) == Some(route.profile.incarnation);
-            if let Some(runtime) = self
-                .routes
-                .iter_mut()
-                .find(|runtime| runtime.id == route.id)
+        for (index, slot) in self.routes.iter_mut().enumerate() {
+            let Some(route) = config.get(index) else {
+                if let Some(runtime) = slot {
+                    Self::drop_queue(&mut self.pool, runtime);
+                }
+                *slot = None;
+                continue;
+            };
+            if let Some(runtime) = slot
+                && runtime.generation != route.generation
             {
-                if runtime.destinations != route.destinations {
-                    runtime.counters.invalidated += Self::drop_queue(&mut self.pool, runtime);
-                    runtime.paths = [Path::new(); MAX_PATHS];
-                    runtime.destinations = route.destinations;
+                Self::drop_queue(&mut self.pool, runtime);
+                *slot = None;
+            }
+            let ok = profile_exists(route.profile_index);
+            match slot {
+                Some(runtime) => {
+                    if runtime.destinations != route.destinations {
+                        runtime.counters.invalidated += Self::drop_queue(&mut self.pool, runtime);
+                        runtime.paths = [Path::new(); PATHS];
+                        runtime.destinations = route.destinations;
+                    }
+                    if runtime.interval_s != route.interval_s {
+                        runtime.interval_s = route.interval_s;
+                        runtime.next_publish_at = after(now, route.interval_s);
+                    }
+                    if !ok {
+                        runtime.counters.invalidated += Self::drop_queue(&mut self.pool, runtime);
+                    }
+                    runtime.profile_ok = ok;
                 }
-                if runtime.interval_s != route.interval_s {
-                    runtime.interval_s = route.interval_s;
-                    runtime.next_publish_at = after(now, route.interval_s);
+                None => {
+                    *slot = Some(Runtime {
+                        generation: route.generation,
+                        destinations: route.destinations,
+                        interval_s: route.interval_s,
+                        // A new route publishes as soon as it is set.
+                        next_publish_at: now,
+                        outbox: Deque::new(),
+                        paths: [Path::new(); PATHS],
+                        counters: RouteCounters::default(),
+                        profile_ok: ok,
+                        failed_before_delivery: false,
+                    });
                 }
-                if !ok {
-                    runtime.counters.invalidated += Self::drop_queue(&mut self.pool, runtime);
-                }
-                runtime.profile_ok = ok;
-            } else {
-                let _ = self.routes.push(Runtime {
-                    id: route.id.clone(),
-                    generation: route.generation,
-                    destinations: route.destinations,
-                    interval_s: route.interval_s,
-                    // A new route publishes as soon as it is enabled.
-                    next_publish_at: now,
-                    outbox: Deque::new(),
-                    paths: [Path::new(); MAX_PATHS],
-                    counters: RouteCounters::default(),
-                    profile_ok: ok,
-                    failed_before_delivery: false,
-                });
             }
         }
     }
 
-    /// The routes due for a publication at `now`.
-    pub fn due(&self, now: MonotonicTimestamp) -> Vec<usize, MAX_ROUTES> {
+    /// The route slots due for a publication at `now`.
+    pub fn due(&self, now: MonotonicTimestamp) -> Vec<usize, R> {
         self.routes
             .iter()
             .enumerate()
-            .filter(|(_, runtime)| runtime.profile_ok && runtime.next_publish_at <= now)
+            .filter(|(_, runtime)| {
+                runtime
+                    .as_ref()
+                    .is_some_and(|runtime| runtime.profile_ok && runtime.next_publish_at <= now)
+            })
             .map(|(index, _)| index)
             .collect()
-    }
-
-    /// The id of route `index`.
-    pub fn id(&self, index: usize) -> Option<&RouteId> {
-        self.routes.get(index).map(|runtime| &runtime.id)
     }
 
     /// Queues `packet` for route `index` (taking a reference) and schedules the
     /// next publication of the route.
     pub fn admit(&mut self, index: usize, packet: PacketHandle, now: MonotonicTimestamp) -> Admit {
-        let Some(runtime) = self.routes.get_mut(index) else {
+        let Some(runtime) = self.routes.get_mut(index).and_then(Option::as_mut) else {
             return Admit::OutboxFull;
         };
         runtime.next_publish_at = after(now, runtime.interval_s);
@@ -318,7 +338,7 @@ impl<const DEPTH: usize, const SLOTS: usize, const BYTES: usize> Router<DEPTH, S
     /// No packet was produced for route `index`; its next publication is
     /// scheduled as usual and the reason counted.
     pub fn skip(&mut self, index: usize, reason: SkipReason, now: MonotonicTimestamp) {
-        if let Some(runtime) = self.routes.get_mut(index) {
+        if let Some(runtime) = self.runtime_mut(index) {
             runtime.next_publish_at = after(now, runtime.interval_s);
             if reason == SkipReason::PoolExhausted {
                 runtime.counters.pool_exhausted += 1;
@@ -327,25 +347,27 @@ impl<const DEPTH: usize, const SLOTS: usize, const BYTES: usize> Router<DEPTH, S
     }
 
     /// The next delivery attempt: the head packet of a route with the
-    /// highest-priority path that is not cooling down. `endpoints` is the
-    /// number of paths the route has (1 + its fallbacks).
-    pub fn next_delivery(&self, config: &RouteSet, now: MonotonicTimestamp) -> Option<Delivery> {
-        let count = self.routes.len();
-        for offset in 0..count {
-            let index = (self.cursor + offset) % count;
-            let runtime = &self.routes[index];
+    /// highest-priority path that is not cooling down.
+    pub fn next_delivery(&self, config: &Routes<R>, now: MonotonicTimestamp) -> Option<Delivery> {
+        for offset in 0..R {
+            let index = (self.cursor + offset) % R;
+            let Some(runtime) = self.runtime(index) else {
+                continue;
+            };
             let Some(packet) = runtime.outbox.front() else {
                 continue;
             };
-            let Some(route) = config.get(runtime.id.as_str()) else {
+            let Some(route) = config.get(index) else {
                 continue;
             };
-            let paths = 1 + route.fallbacks.len();
-            if let Some(path) =
-                (0..paths.min(MAX_PATHS)).find(|p| runtime.paths[*p].blocked_until <= now)
-            {
+            if route.generation != runtime.generation {
+                continue;
+            }
+            let paths = path_count(route.fallback.is_some());
+            if let Some(path) = (0..paths).find(|p| runtime.paths[*p].blocked_until <= now) {
                 return Some(Delivery {
                     route: index,
+                    generation: runtime.generation,
                     path,
                     packet: *packet,
                 });
@@ -354,21 +376,25 @@ impl<const DEPTH: usize, const SLOTS: usize, const BYTES: usize> Router<DEPTH, S
         None
     }
 
-    /// Applies the result of the attempt `delivery`.
+    /// Applies the result of the attempt `delivery`. A result for a route that
+    /// was deleted or replaced while the attempt ran is ignored.
     pub fn complete(
         &mut self,
         delivery: Delivery,
         result: Result<TransportAck, TransportError>,
         now: MonotonicTimestamp,
     ) {
-        let Some(runtime) = self.routes.get_mut(delivery.route) else {
-            return;
-        };
         // The attempt is over, whatever its result: the next search starts with
         // the following route.
         self.cursor = delivery.route + 1;
-        // The queue may have been flushed while the attempt was in flight.
-        if runtime.outbox.front() != Some(&delivery.packet) {
+        let Some(runtime) = self.routes.get_mut(delivery.route).and_then(Option::as_mut) else {
+            return;
+        };
+        // The slot may hold another route, or its queue may have been flushed,
+        // while the attempt was in flight.
+        if runtime.generation != delivery.generation
+            || runtime.outbox.front() != Some(&delivery.packet)
+        {
             return;
         }
         let path = &mut runtime.paths[delivery.path];
@@ -411,7 +437,7 @@ impl<const DEPTH: usize, const SLOTS: usize, const BYTES: usize> Router<DEPTH, S
     /// Drops every queued packet whose policy is no longer current. Other
     /// packets and routes are untouched.
     pub fn invalidate(&mut self, is_current: impl Fn(&ProfileStamp) -> bool) {
-        for runtime in &mut self.routes {
+        for runtime in self.routes.iter_mut().flatten() {
             let mut kept: Deque<PacketHandle, DEPTH> = Deque::new();
             while let Some(handle) = runtime.outbox.pop_front() {
                 let current = self
@@ -443,20 +469,22 @@ impl<const DEPTH: usize, const SLOTS: usize, const BYTES: usize> Router<DEPTH, S
 
     /// The earliest moment something becomes due: a publication, or a cooling
     /// path of a route with queued packets. `None` when nothing is scheduled.
-    pub fn next_wakeup(&self, config: &RouteSet) -> Option<MonotonicTimestamp> {
+    pub fn next_wakeup(&self, config: &Routes<R>) -> Option<MonotonicTimestamp> {
         let mut earliest: Option<MonotonicTimestamp> = None;
         let mut consider = |at: MonotonicTimestamp| {
             earliest = Some(earliest.map_or(at, |current| current.min(at)));
         };
-        for runtime in &self.routes {
+        for (index, runtime) in self.routes.iter().enumerate() {
+            let Some(runtime) = runtime else { continue };
             if runtime.profile_ok {
                 consider(runtime.next_publish_at);
             }
             if !runtime.outbox.is_empty() {
-                let paths = config
-                    .get(runtime.id.as_str())
-                    .map_or(1, |route| 1 + route.fallbacks.len())
-                    .min(MAX_PATHS);
+                let paths = path_count(
+                    config
+                        .get(index)
+                        .is_some_and(|route| route.fallback.is_some()),
+                );
                 if let Some(at) = runtime.paths[..paths].iter().map(|p| p.blocked_until).min() {
                     consider(at);
                 }
@@ -465,40 +493,48 @@ impl<const DEPTH: usize, const SLOTS: usize, const BYTES: usize> Router<DEPTH, S
         earliest
     }
 
-    /// The state of every route, in configuration order of creation.
-    pub fn views(&self, config: &RouteSet, now: MonotonicTimestamp) -> Vec<RouteView, MAX_ROUTES> {
-        self.routes
-            .iter()
-            .map(|runtime| {
-                let paths = config
-                    .get(runtime.id.as_str())
-                    .map_or(1, |route| 1 + route.fallbacks.len())
-                    .min(MAX_PATHS);
-                let active = (0..paths).find(|p| runtime.paths[*p].blocked_until <= now);
-                let state = if !runtime.profile_ok {
-                    RouteState::ProfileMissing
-                } else if runtime.outbox.is_empty() {
-                    RouteState::Idle
-                } else if active.is_some() {
-                    RouteState::Delivering
-                } else {
-                    RouteState::Backoff
-                };
-                RouteView {
-                    id: runtime.id.clone(),
-                    state,
-                    queue_depth: runtime.outbox.len(),
-                    counters: runtime.counters,
-                    active_path: active,
-                }
+    /// The runtime state of every slot: `None` for a slot without a route.
+    pub fn views(&self, config: &Routes<R>, now: MonotonicTimestamp) -> [Option<RouteView>; R] {
+        core::array::from_fn(|index| {
+            let runtime = self.runtime(index)?;
+            let paths = path_count(
+                config
+                    .get(index)
+                    .is_some_and(|route| route.fallback.is_some()),
+            );
+            let active = (0..paths).find(|p| runtime.paths[*p].blocked_until <= now);
+            let state = if !runtime.profile_ok {
+                RouteState::ProfileMissing
+            } else if runtime.outbox.is_empty() {
+                RouteState::Idle
+            } else if active.is_some() {
+                RouteState::Delivering
+            } else {
+                RouteState::Backoff
+            };
+            Some(RouteView {
+                generation: runtime.generation,
+                state,
+                queue_depth: runtime.outbox.len(),
+                counters: runtime.counters,
+                active_path: active,
             })
-            .collect()
+        })
     }
 
     /// Total packets queued over all routes.
     pub fn queued(&self) -> usize {
-        self.routes.iter().map(|runtime| runtime.outbox.len()).sum()
+        self.routes
+            .iter()
+            .flatten()
+            .map(|runtime| runtime.outbox.len())
+            .sum()
     }
+}
+
+// The primary, and the fallback when the route has one.
+fn path_count(has_fallback: bool) -> usize {
+    1 + usize::from(has_fallback)
 }
 
 fn after(now: MonotonicTimestamp, interval_s: u32) -> MonotonicTimestamp {
