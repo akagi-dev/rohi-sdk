@@ -145,14 +145,16 @@
 //! ([`Action::close_stream`]). The service releases what a stream holds when it is
 //! closed, when it times out and when the control link is lost
 //! ([`Action::link_lost`]); a service that has no free stream answers
-//! [`ActionError::Busy`]. An action returns records or a stream, never both.
+//! [`ActionError::Busy`].
 //!
-//! # Tail
+//! # Pages
 //!
-//! The recent text a service keeps in RAM (the log tail) is not a stream: it has
-//! no lifecycle and the service keeps nothing for the client. [`Action::tail_logs`]
-//! writes one page of at most [`MAX_TAIL_CHUNK`] bytes of whole lines into a
-//! buffer, described by a [`TailPage`]; the client continues with its cursor.
+//! An append-only source a service keeps in RAM (the log tail) is neither records
+//! nor a stream: it has no lifecycle and the service keeps nothing for the client.
+//! The action is declared with [`ActionDescriptor::page`] and calls
+//! [`ActionOutput::page`] once with a [`PageInfo`] and at most [`MAX_PAGE_CHUNK`]
+//! bytes of data; the client continues with the cursor of the page. An action
+//! returns records, a stream or a page, never a mix.
 //!
 //! Who may use a stream is decided by the control plane, not by the service: the
 //! controller lets only the connection that invoked the action read or close the
@@ -177,8 +179,8 @@ pub const MAX_RECORD_FIELDS: usize = 4;
 pub const MAX_STREAM_FILES: usize = 24;
 /// Maximum number of bytes of one stream chunk.
 pub const MAX_STREAM_CHUNK: usize = 512;
-/// Maximum number of bytes of text of one tail page, see [`TailPage`].
-pub const MAX_TAIL_CHUNK: usize = 512;
+/// Maximum number of bytes of data of one page, see [`ActionPage`].
+pub const MAX_PAGE_CHUNK: usize = 512;
 
 /// What a link must be allowed to do to invoke an action.
 ///
@@ -222,6 +224,9 @@ pub struct ActionDescriptor {
     /// Whether the action returns a stream instead of records, see
     /// [`ActionOutput::stream`].
     pub stream: bool,
+    /// Whether the action returns one cursor page instead of records, see
+    /// [`ActionOutput::page`].
+    pub page: bool,
 }
 
 impl ActionDescriptor {
@@ -237,6 +242,7 @@ impl ActionDescriptor {
             secret_args: false,
             secure_link: false,
             stream: false,
+            page: false,
         }
     }
 
@@ -264,6 +270,14 @@ impl ActionDescriptor {
     /// stream.
     pub const fn stream(mut self) -> Self {
         self.stream = true;
+        self
+    }
+
+    /// Declares that the action returns one cursor page (see
+    /// [`ActionOutput::page`]) instead of records. It is exclusive with
+    /// [`stream`](Self::stream) and [`results`](Self::results).
+    pub const fn page(mut self) -> Self {
+        self.page = true;
         self
     }
 
@@ -344,22 +358,6 @@ pub trait Action: Service {
 
     /// The control link was lost: release every stream the client left open.
     fn link_lost(&self) {}
-
-    /// Writes one page of the tail of the service, the recent text it keeps in
-    /// RAM, into `buf` (at most [`MAX_TAIL_CHUNK`] bytes).
-    ///
-    /// A tail page is one request and one reply: nothing is registered, so a
-    /// client may poll for as long as it likes. The service answers from RAM,
-    /// without waiting for storage or for another task. The default answers that
-    /// the service has no tail.
-    ///
-    /// # Errors
-    ///
-    /// [`ActionError::UnknownAction`] when the service has no tail.
-    fn tail_logs(&self, request: TailRequest, buf: &mut [u8]) -> Result<TailPage, ActionError> {
-        let _ = (request, buf);
-        Err(ActionError::UnknownAction)
-    }
 }
 
 /// Why an action failed.
@@ -420,36 +418,26 @@ pub enum ActionResult {
     Records(Records),
     /// A stream, see [`ActionOutput::stream`].
     Stream(StreamInfo),
+    /// A cursor page, see [`ActionOutput::page`].
+    Page(ActionPage),
 }
 
 impl ActionResult {
-    /// The records, empty for a stream.
+    /// The records, empty for a stream or a page.
     pub fn records(&self) -> &[Vec<(u32, Value), MAX_RECORD_FIELDS>] {
         match self {
             Self::Records(records) => records,
-            Self::Stream(_) => &[],
+            Self::Stream(_) | Self::Page(_) => &[],
         }
     }
 }
 
-/// Which page of the tail a client asks for, see [`Action::tail_logs`].
+/// Where a page of an append-only source (the log tail) stands. The data is
+/// whole lines, each ending in a newline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TailRequest {
-    /// The session of an earlier page, 0 on the first request.
-    pub session: u32,
-    /// The cursor of an earlier page: lines with a greater sequence are
-    /// returned. 0 asks for the oldest line the service still holds.
-    pub after: u64,
-}
-
-/// One page of the tail, see [`Action::tail_logs`]. The text is in the buffer
-/// the service was given: whole lines, each ending in a newline.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TailPage {
+pub struct PageInfo {
     /// Identifies this boot; sequences are valid inside one session only.
     pub session: u32,
-    /// Bytes written to the buffer.
-    pub len: usize,
     /// Sequence of the last line of the page; the cursor of the next request.
     pub cursor: u64,
     /// Sequence of the oldest line held; 1 when there is none.
@@ -460,6 +448,15 @@ pub struct TailPage {
     pub reset: bool,
     /// Lines overwritten between the cursor of the request and this page.
     pub gap: u64,
+}
+
+/// One bounded page an action returned, see [`ActionOutput::page`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActionPage {
+    /// Where the page stands.
+    pub info: PageInfo,
+    /// At most [`MAX_PAGE_CHUNK`] bytes; empty when nothing is newer.
+    pub data: Vec<u8, MAX_PAGE_CHUNK>,
 }
 
 /// A chunk read from a stream file.
@@ -485,14 +482,29 @@ pub trait ActionOutput: StatusWriter {
         let _ = info;
         Err(WriteError::WrongKind)
     }
+
+    /// Returns one cursor page instead of records. Only for an action declared
+    /// with [`ActionDescriptor::page`], only once and only when no record was
+    /// written. The default refuses it.
+    ///
+    /// # Errors
+    ///
+    /// [`WriteError::WrongKind`] when the action does not return a page,
+    /// [`WriteError::TooLong`] when `data` exceeds [`MAX_PAGE_CHUNK`] bytes.
+    fn page(&mut self, info: PageInfo, data: &[u8]) -> Result<(), WriteError> {
+        let _ = (info, data);
+        Err(WriteError::WrongKind)
+    }
 }
 
 pub(crate) struct RecordCollector {
     results: &'static [FieldDescriptor],
     enums: &'static [EnumDescriptor],
     streams: bool,
+    pages: bool,
     pub(crate) records: Records,
     pub(crate) stream: Option<StreamInfo>,
+    pub(crate) page: Option<ActionPage>,
 }
 
 impl RecordCollector {
@@ -501,8 +513,10 @@ impl RecordCollector {
             results: action.results,
             enums: action.enums,
             streams: action.stream,
+            pages: action.page,
             records: Vec::new(),
             stream: None,
+            page: None,
         }
     }
 }
@@ -543,6 +557,16 @@ impl ActionOutput for RecordCollector {
             return Err(WriteError::WrongKind);
         }
         self.stream = Some(info);
+        Ok(())
+    }
+
+    fn page(&mut self, info: PageInfo, data: &[u8]) -> Result<(), WriteError> {
+        if !self.pages || !self.records.is_empty() || self.page.is_some() {
+            log::debug!(target: "service", "Action page result rejected");
+            return Err(WriteError::WrongKind);
+        }
+        let data = Vec::from_slice(data).map_err(|_| WriteError::TooLong)?;
+        self.page = Some(ActionPage { info, data });
         Ok(())
     }
 }

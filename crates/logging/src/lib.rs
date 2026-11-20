@@ -25,13 +25,12 @@
 //! owned [`LogRecord`]s, queues them without ever blocking the caller, writes
 //! them in batches to segments of a [`LogStorage`](storage::LogStorage), and
 //! offers the history through the generic service model: a `logging` config
-//! section ([`LoggingConfig`]), a status, and the actions `download` and
-//! `clear` ([`LoggingService`]). `download` returns the compressed archive as a
-//! [stream](rohi_service::StreamInfo). The latest records are not an action but
-//! the bounded `TailLogs` request of the control protocol, one reply of at
-//! most [`MAX_TAIL_CHUNK`](rohi_service::MAX_TAIL_CHUNK) bytes that
-//! [`Action::tail_logs`](rohi_service::Action::tail_logs) writes straight into
-//! the response: no stream, nothing kept for the client.
+//! section ([`LoggingConfig`]), a status, and the actions `download`, `clear` and
+//! `tail` ([`LoggingService`]). `download` returns the compressed archive as a
+//! [stream](rohi_service::StreamInfo). `tail` returns the latest records as one
+//! [page](rohi_service::ActionPage) of at most
+//! [`MAX_PAGE_CHUNK`](rohi_service::MAX_PAGE_CHUNK) bytes: no stream, nothing
+//! kept for the client.
 //!
 //! Two stores, two purposes. The **archive** is the compressed, rotated history
 //! in flash; only `download` reads it. The **RAM tail** is the last few records
@@ -100,7 +99,7 @@
 //!
 //! info!(target: "wifi", ..) ─► LogSink::push ─► RAM tail (last `T` records, overwritten)
 //!                                                     ▲
-//! rohi logs [-f] ─► TailLogs ─► LoggingService::tail_logs ─┘ (one bounded page; no flash)
+//! rohi logs [-f] ─► logging.tail ─► LoggingService ─┘ (one bounded page; no flash)
 //! ```
 //!
 //! Records of a download are held in sealed segments that the storage will not
@@ -128,13 +127,12 @@
 //!   `logging` status reports `dropped_records` and the issue `queue_overflow`.
 //! - **RAM tail:** every record that passes the level and target filters is copied
 //!   into the tail by [`LogSink::push`], in a short critical section, even when the
-//!   queue is full and the archive copy is dropped. A `TailLogs` request
-//!   ([`Action::tail_logs`](rohi_service::Action::tail_logs)) never touches
-//!   storage, the batch or the queue and waits for nobody: it writes **one page**
-//!   of at most [`MAX_TAIL_CHUNK`](rohi_service::MAX_TAIL_CHUNK) bytes of whole
-//!   lines, newline terminated, never splitting a line, into the buffer of the
-//!   reply. The reply names the `session` of the boot, the `cursor` (the sequence
-//!   of its last line), the `oldest_sequence` and `newest_sequence` held, a
+//!   queue is full and the archive copy is dropped. The `tail` action
+//!   ([`action::TAIL`]) never touches storage, the batch or the queue and waits
+//!   for nobody: it returns **one page** of at most
+//!   [`MAX_PAGE_CHUNK`](rohi_service::MAX_PAGE_CHUNK) bytes of whole lines,
+//!   newline terminated, never splitting a line. The page names the `session` of the boot, the
+//!   `cursor` (the sequence of its last line), the `oldest_sequence` and `newest_sequence` held, a
 //!   `reset` flag (the request carried a session of another boot or a cursor
 //!   beyond the newest line: the page then starts at the oldest line held) and a
 //!   `gap`, the number of lines overwritten between the cursor of the request and

@@ -98,9 +98,8 @@
 //! | `PatchConfigSection`, `ResetConfigSection` | `ConfigRegistry` | [`Mutate`](Privilege::Mutate) |
 //! | `GetServicesStatus`, `GetServiceSchema`, `GetServiceStatus` | [`StatusRegistry`](rohi_service::StatusRegistry) | `Read` |
 //! | `ListActions`, `GetActionSchema` | [`ActionRegistry`](rohi_service::ActionRegistry) | `Read` |
-//! | `InvokeAction` | `ActionRegistry` | the [`ActionAccess`](rohi_service::ActionAccess) the action declares: `Read`, `Mutate` or `Provision`; secret arguments are a separate property (they are only wiped) |
+//! | `InvokeAction` | `ActionRegistry` | the [`ActionAccess`](rohi_service::ActionAccess) the action declares: `Read`, `Mutate` or `Provision`; secret arguments are a separate property (they are only wiped). An action that declares a page result (`logging.tail`) answers with one bounded page: no stream is registered |
 //! | `ReadStream`, `CloseStream` | `ActionRegistry` | that of the action that created the stream |
-//! | `TailLogs` | `ActionRegistry` (`Action::tail_logs`) | `Read`; one request, one bounded reply, no stream |
 //!
 //! [`AccessPolicy`] is the policy of a device: it reads the [`TransportAccessMode`] of the TCP
 //! endpoint. `Restricted` TCP wants a connection that completed the authenticated and encrypted

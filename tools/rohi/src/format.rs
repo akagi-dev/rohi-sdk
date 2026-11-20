@@ -529,6 +529,19 @@ pub fn action_help(paint: Paint, schema: &ActionSchema, syntax: Syntax) -> Strin
     out
 }
 
+/// A cursor page an action returned: a line of metadata, then the text.
+pub fn page(page: &ActionPage) -> String {
+    let mut out = format!(
+        "# session={} cursor={} oldest_sequence={} newest_sequence={} reset={} gap={}\n",
+        page.session, page.cursor, page.oldest_sequence, page.newest_sequence, page.reset, page.gap
+    );
+    out.push_str(&String::from_utf8_lossy(&page.data));
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
 /// The records an action returned, one table row each.
 pub fn records(paint: Paint, records: &[Record], schema: &ActionSchema) -> String {
     if schema.results.is_empty() {

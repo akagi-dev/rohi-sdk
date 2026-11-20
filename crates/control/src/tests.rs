@@ -28,7 +28,7 @@ use rohi_control_proto::{PROTOCOL_VERSION, decode, encode, limits};
 use rohi_service::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, Config, EnumDescriptor,
     EnumVariant, FIRST_SERVICE_ISSUE, FieldDescriptor, FieldError, Issue, IssueDescriptor,
-    IssueSeverity, Section, SectionStore, Service, ServiceHealth, ServiceSummary, Status,
+    IssueSeverity, PageInfo, Section, SectionStore, Service, ServiceHealth, ServiceSummary, Status,
     StatusWriter, Statuses, StoreError, Unit, Value, ValueKind, WriteError,
 };
 
@@ -1624,73 +1624,92 @@ fn a_bitset_argument_refers_to_its_catalog_through_the_selection_table() {
 #[service(name = "tailing")]
 struct Tailing {
     served: Cell<u32>,
-    oversized: Cell<bool>,
 }
 
 const TAIL_TEXT: &[u8] = b"1 5 - INFO t: one\n2 6 - INFO t: two\n";
+const TAIL_ARGS: &[FieldDescriptor] = &[
+    FieldDescriptor::new(1, "session", ValueKind::U64),
+    FieldDescriptor::new(2, "after", ValueKind::U64),
+];
+
+mod tail_action {
+    pub const TAIL: u32 = 1;
+    pub const ADMIN: u32 = 2;
+    pub const OVERSIZED: u32 = 3;
+}
 
 impl Action for Tailing {
-    const ACTIONS: &'static [ActionDescriptor] = &[];
+    const ACTIONS: &'static [ActionDescriptor] = &[
+        ActionDescriptor::new(tail_action::TAIL, "tail", ActionAccess::Read)
+            .args(TAIL_ARGS)
+            .page(),
+        ActionDescriptor::new(tail_action::ADMIN, "admin", ActionAccess::Mutate).page(),
+        ActionDescriptor::new(tail_action::OVERSIZED, "oversized", ActionAccess::Read).page(),
+    ];
 
     async fn invoke(
         &self,
-        _: u32,
-        _: &[(u32, Value)],
-        _: &mut impl ActionOutput,
+        action: u32,
+        args: &[(u32, Value)],
+        out: &mut impl ActionOutput,
     ) -> Result<(), ActionError> {
-        Err(ActionError::UnknownAction)
-    }
-
-    fn tail_logs(
-        &self,
-        request: rohi_service::TailRequest,
-        buf: &mut [u8],
-    ) -> Result<rohi_service::TailPage, ActionError> {
         self.served.set(self.served.get() + 1);
-        assert_eq!(buf.len(), limits::MAX_TAIL_CHUNK);
-        let len = if self.oversized.get() {
-            buf.len() + 1
-        } else {
-            buf[..TAIL_TEXT.len()].copy_from_slice(TAIL_TEXT);
-            TAIL_TEXT.len()
+        let number = |id| {
+            args.iter().find_map(|(field, value)| match value {
+                Value::U64(number) if *field == id => Some(*number),
+                _ => None,
+            })
         };
-        Ok(rohi_service::TailPage {
-            session: if request.session == 0 {
-                7
-            } else {
-                request.session
-            },
-            len,
-            cursor: request.after + 2,
+        let (session, after) = (number(1).unwrap_or(0), number(2).unwrap_or(0));
+        let info = PageInfo {
+            session: if session == 0 { 7 } else { session as u32 },
+            cursor: after + 2,
             oldest_sequence: 1,
-            newest_sequence: request.after + 2,
-            reset: request.session == 99,
+            newest_sequence: after + 2,
+            reset: session == 99,
             gap: 3,
-        })
+        };
+        let page = match action {
+            tail_action::OVERSIZED => out.page(info, &[b'x'; limits::MAX_PAGE_CHUNK + 1]),
+            _ => out.page(info, TAIL_TEXT),
+        };
+        page.map_err(|_| ActionError::Internal)
     }
 }
 
-fn tail_request(service_id: u32, session: u32, after: u64) -> Call {
-    Call::TailLogs(pb::TailLogsRequest {
+fn tail_call(service_id: u32, action_id: u32, session: u64, after: u64) -> Call {
+    let arg = |field_id, value| pb::ActionArg {
+        field_id,
+        value: Some(pb::ActionArg_::Value::U64Value(value)),
+    };
+    let mut args = Vec::new();
+    if action_id == tail_action::TAIL {
+        args.push(arg(1, session)).ok().unwrap();
+        args.push(arg(2, after)).ok().unwrap();
+    }
+    Call::InvokeAction(pb::InvokeActionRequest {
         service_id,
-        session,
-        after,
+        action_id,
+        args,
     })
 }
 
 #[test]
-fn a_tail_page_is_one_request_and_one_reply_without_a_stream() {
+fn a_page_is_one_invoke_and_one_reply_without_a_stream() {
     let tailing = Tailing {
         served: Cell::new(0),
-        oversized: Cell::new(false),
     };
     let controller = Controller::new(
         Device::new(INFO, uptime, (), (), (&tailing,)),
         RequireEncryption,
     );
-    // Reads are open on a plain link: a tail page needs no encryption.
-    let Reply::TailLogs(page) = call(&controller, &PLAIN, tail_request(Tailing::ID, 0, 10)) else {
-        panic!("not a tail page");
+    // Reads are open on a plain link: a page of a `Read` action needs no encryption.
+    let Reply::ActionPage(page) = call(
+        &controller,
+        &PLAIN,
+        tail_call(Tailing::ID, tail_action::TAIL, 0, 10),
+    ) else {
+        panic!("not a page");
     };
     assert_eq!(page.data.as_slice(), TAIL_TEXT);
     assert_eq!(
@@ -1704,8 +1723,12 @@ fn a_tail_page_is_one_request_and_one_reply_without_a_stream() {
     );
     assert_eq!((page.reset, page.gap), (false, 3));
     // The reply of another session is flagged by the service, as it set it.
-    let Reply::TailLogs(page) = call(&controller, &PLAIN, tail_request(Tailing::ID, 99, 0)) else {
-        panic!("not a tail page");
+    let Reply::ActionPage(page) = call(
+        &controller,
+        &PLAIN,
+        tail_call(Tailing::ID, tail_action::TAIL, 99, 0),
+    ) else {
+        panic!("not a page");
     };
     assert!(page.reset);
     assert_eq!(tailing.served.get(), 2);
@@ -1726,52 +1749,87 @@ fn a_tail_page_is_one_request_and_one_reply_without_a_stream() {
 }
 
 #[test]
-fn a_tail_page_is_refused_for_a_service_without_a_tail_or_an_oversized_page() {
+fn a_page_action_is_discovered_and_follows_its_declared_access() {
     let tailing = Tailing {
         served: Cell::new(0),
-        oversized: Cell::new(false),
     };
-    let files = files();
     let controller = Controller::new(
-        Device::new(INFO, uptime, (), (), (&tailing, &files)),
-        OpenPolicy,
+        Device::new(INFO, uptime, (), (), (&tailing,)),
+        RequireEncryption,
     );
-    // The service has actions but no tail.
+    let Reply::ListActions(list) = call(
+        &controller,
+        &PLAIN,
+        Call::ListActions(pb::ListActionsRequest::default()),
+    ) else {
+        panic!("not a list");
+    };
+    let flags: std::vec::Vec<_> = list
+        .actions
+        .iter()
+        .map(|action| (action.returns_page, action.returns_stream))
+        .collect();
+    assert_eq!(flags, [(true, false); 3]);
+    // A page of an action that mutates needs the privilege of a mutation.
+    let admin = tail_call(Tailing::ID, tail_action::ADMIN, 0, 0);
     assert_eq!(
-        error_code(&call(&controller, &PLAIN, tail_request(Files::ID, 0, 0))),
-        pb::ErrorCode::NotFound
+        error_code(&call(&controller, &PLAIN, admin.clone())),
+        pb::ErrorCode::PermissionDenied
     );
-    // No such service.
+    assert_eq!(tailing.served.get(), 0);
+    let encrypted = LinkSecurity {
+        encrypted: true,
+        authenticated: false,
+        session: 0,
+        transport: Transport::Unspecified,
+    };
+    assert!(matches!(
+        call(&controller, &encrypted, admin),
+        Reply::ActionPage(_)
+    ));
+}
+
+#[test]
+fn a_page_beyond_its_bound_is_never_sent() {
+    let tailing = Tailing {
+        served: Cell::new(0),
+    };
+    let controller = Controller::new(Device::new(INFO, uptime, (), (), (&tailing,)), OpenPolicy);
     assert_eq!(
-        error_code(&call(&controller, &PLAIN, tail_request(12345, 0, 0))),
-        pb::ErrorCode::NotFound
-    );
-    // A service that answers more than a page is an internal error, not a
-    // truncated reply.
-    tailing.oversized.set(true);
-    assert_eq!(
-        error_code(&call(&controller, &PLAIN, tail_request(Tailing::ID, 0, 0))),
+        error_code(&call(
+            &controller,
+            &PLAIN,
+            tail_call(Tailing::ID, tail_action::OVERSIZED, 0, 0)
+        )),
         pb::ErrorCode::Internal
     );
 }
 
 #[test]
-fn a_status_only_service_has_no_tail() {
-    let radio = radio();
-    let controller = Controller::new(
-        Device::new(
-            INFO,
-            uptime,
-            (),
-            Statuses::<NoopRawMutex, _>::new((&radio,)),
-            (),
-        ),
-        OpenPolicy,
+fn a_page_of_a_missing_service_or_action_is_not_found_and_the_old_rpc_is_gone() {
+    let tailing = Tailing {
+        served: Cell::new(0),
+    };
+    let controller = Controller::new(Device::new(INFO, uptime, (), (), (&tailing,)), OpenPolicy);
+    assert_eq!(
+        error_code(&call(&controller, &PLAIN, tail_call(12345, 1, 0, 0))),
+        pb::ErrorCode::NotFound
     );
     assert_eq!(
-        error_code(&call(&controller, &PLAIN, tail_request(RADIO, 0, 0))),
-        pb::ErrorCode::NotSupported
+        error_code(&call(&controller, &PLAIN, tail_call(Tailing::ID, 99, 0, 0))),
+        pb::ErrorCode::NotFound
     );
+    // Arguments that do not fit the action are refused before it runs.
+    let bad = Call::InvokeAction(pb::InvokeActionRequest {
+        service_id: Tailing::ID,
+        action_id: tail_action::TAIL,
+        args: Vec::new(),
+    });
+    assert_eq!(
+        error_code(&call(&controller, &PLAIN, bad)),
+        pb::ErrorCode::InvalidArgument
+    );
+    assert_eq!(tailing.served.get(), 0);
 }
 
 #[test]

@@ -765,7 +765,7 @@ fn packet(service: &Svc<'_, '_>, profile: u64) -> Result<(u32, u64), ActionError
             assert_eq!(info.files[0].name.as_str(), "packet.bin");
             Ok((info.id, info.files[0].size_bytes))
         }
-        ActionResult::Records(_) => panic!("get_payload returns a stream"),
+        ActionResult::Records(_) | ActionResult::Page(_) => panic!("get_payload returns a stream"),
     }
 }
 

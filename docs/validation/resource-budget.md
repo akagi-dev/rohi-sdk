@@ -325,7 +325,7 @@ The growth of `LOGGING` (+8 B) is the index of the active format header slot tha
 are out of line (`#[cold]`): inlined into the config publication they enlarged the `EspWifi::new` frame by 832 B in a
 trial build. The new `Recovery::formatted` flag and the format loop add no buffer.
 
-**`TailLogs` instead of `logging.read` (#70).** `read` decoded archive segments into a 2 048 B buffer held in each open
+**`TailLogs` instead of `logging.read` (#70; the request itself became the `logging.tail` action in #78, see below).** `read` decoded archive segments into a 2 048 B buffer held in each open
 stream slot and polled the decoder and its scratch inside the `control_task` future. The tail only copies records of a RAM ring
 out one at a time, formats at most 512 B of whole lines and writes them **straight into the `data` field of the reply**: there is
 no stream (no table, no id, no timeout, nothing to close and nothing that can be overwritten between selecting a window and
@@ -350,6 +350,27 @@ The tail table of `LOGGING` (two `TailOpen` slots) is gone, so `.data` shrinks b
 `memcheck-budgets.toml` hold with the same limits (`NEEDS HARDWARE DATA`: the static evidence is within them and no stack peak is
 measured); none was raised. The largest frame of the ESP32-C6 is the `control_task` poll, as before; compare it with the base
 branch in CI (`--base`) rather than with the figure of an older commit.
+
+**`logging.tail` as a regular action (#78).** The dedicated `TailLogs` request is gone: the tail is the read-only action
+`logging.tail` whose result is a *cursor page*, a third result kind next to records and streams. The service renders the page into a
+512 B buffer in a frame of its own (`#[inline(never)]`, not part of the future of `invoke`, which awaits the archive), hands it to the
+action output, and `Controller::page_reply` (also `#[inline(never)]`) copies it into the response. A page is thus held twice for a
+moment, and `ActionResult::Page` (512 B of data) lives in the future of `Controller::invoke`. Static analysis, same toolchain and flags as
+above, "before" being the commit before this change (nothing was measured on a device):
+
+| | ESP32-C3 before → after | ESP32-C6 before → after |
+|---|---:|---:|
+| `.data` (limit 30 100 / 33 900) | 29 992 → 30 000 B | 33 612 → 33 636 B |
+| `.bss` (limit 194 000 / 198 100) | 192 496 → 193 056 B | 196 600 → 197 160 B |
+| Task pools (limit 41 200) | 40 048 → 40 608 B | 40 024 → 40 584 B |
+| `control_task` pool | 13 120 → 13 680 B | 13 120 → 13 680 B |
+| Largest frame (limit 12 300 / 8 500) | 12 256 → 12 256 B | 8 400 → 8 400 B |
+| Main stack (declared minimum 32 600 / 131 900) | 34 744 → 34 176 B | 134 264 → 133 680 B |
+
+The 560 B growth of the `control_task` pool is the page the future of `invoke` now holds; the frames of invoking the logging service
+and of the controller did not grow. All budgets of `memcheck-budgets.toml` hold with their limits unchanged
+(`NEEDS HARDWARE DATA`, as before). Polling the tail is reported at `trace` by the controller and the registry, so that following does not
+feed the tail it reads.
 
 The RAM tail is `TAIL_RECORDS` × 200 B inside `LOGGING` (1 600 B on the ESP32-C3, 1 400 B on the ESP32-C6); the 4 096 B of
 `READ` buffers of two streams are gone, and a download slot no longer has the size of a record buffer. `.data` fits the

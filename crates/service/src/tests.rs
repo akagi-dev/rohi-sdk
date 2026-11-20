@@ -1085,6 +1085,88 @@ fn action_metadata_is_exposed() {
     assert!(registry.service_actions(1).is_empty());
 }
 
+#[derive(Service)]
+struct Pager;
+
+const PAGE_INFO: PageInfo = PageInfo {
+    session: 3,
+    cursor: 9,
+    oldest_sequence: 1,
+    newest_sequence: 9,
+    reset: false,
+    gap: 0,
+};
+
+impl Action for Pager {
+    const ACTIONS: &'static [ActionDescriptor] = &[
+        ActionDescriptor::new(1, "page", ActionAccess::Read).page(),
+        ActionDescriptor::new(2, "undeclared", ActionAccess::Read),
+        ActionDescriptor::new(3, "twice", ActionAccess::Read).page(),
+        ActionDescriptor::new(4, "full", ActionAccess::Read).page(),
+        ActionDescriptor::new(5, "overfull", ActionAccess::Read).page(),
+        ActionDescriptor::new(6, "empty", ActionAccess::Read).page(),
+        ActionDescriptor::new(7, "silent", ActionAccess::Read).page(),
+    ];
+
+    async fn invoke(
+        &self,
+        action: u32,
+        _: &[(u32, Value)],
+        out: &mut impl ActionOutput,
+    ) -> Result<(), ActionError> {
+        let page = |out: &mut dyn FnMut() -> Result<(), WriteError>| {
+            out().map_err(|_| ActionError::Internal)
+        };
+        match action {
+            1 | 2 => page(&mut || out.page(PAGE_INFO, b"one\ntwo\n")),
+            3 => {
+                out.page(PAGE_INFO, b"a\n").ok();
+                page(&mut || out.page(PAGE_INFO, b"b\n"))
+            }
+            4 => page(&mut || out.page(PAGE_INFO, &[b'x'; MAX_PAGE_CHUNK])),
+            5 => page(&mut || out.page(PAGE_INFO, &[b'x'; MAX_PAGE_CHUNK + 1])),
+            6 => page(&mut || out.page(PAGE_INFO, b"")),
+            7 => Ok(()),
+            _ => Err(ActionError::UnknownAction),
+        }
+    }
+}
+
+#[test]
+fn an_action_returns_one_bounded_page() {
+    let registry = (&Pager,);
+    let call = |action| block_on(registry.invoke(Pager::ID, action, &[]));
+    let Ok(ActionResult::Page(page)) = call(1) else {
+        panic!("not a page");
+    };
+    assert_eq!(
+        (page.info, page.data.as_slice()),
+        (PAGE_INFO, &b"one\ntwo\n"[..])
+    );
+    assert!(call(1).unwrap().records().is_empty());
+    // An empty page is a page.
+    let Ok(ActionResult::Page(page)) = call(6) else {
+        panic!("not a page");
+    };
+    assert!(page.data.is_empty());
+    // The whole budget is allowed, one byte more is not.
+    let Ok(ActionResult::Page(page)) = call(4) else {
+        panic!("not a page");
+    };
+    assert_eq!(page.data.len(), MAX_PAGE_CHUNK);
+    assert_eq!(call(5), Err(ActionError::Internal));
+}
+
+#[test]
+fn a_page_needs_a_page_action_and_comes_once() {
+    let registry = (&Pager,);
+    let call = |action| block_on(registry.invoke(Pager::ID, action, &[]));
+    assert_eq!(call(2), Err(ActionError::Internal));
+    assert_eq!(call(3), Err(ActionError::Internal));
+    // A page action that returns nothing is an empty record list, not a page.
+    assert!(matches!(call(7), Ok(ActionResult::Records(_))));
+}
+
 #[test]
 fn wipe_clears_secret_values() {
     let mut value = Value::bytes(&[7; 8]).unwrap();
@@ -1320,6 +1402,27 @@ mod schema_invariants {
             ActionAccess::Read
         )
         .results(DUPLICATE_ARGS)]));
+        // A page is exclusive with a stream and with result records.
+        assert!(actions_valid(&[ActionDescriptor::new(
+            1,
+            "tail",
+            ActionAccess::Read
+        )
+        .page()]));
+        assert!(!actions_valid(&[ActionDescriptor::new(
+            1,
+            "tail",
+            ActionAccess::Read
+        )
+        .page()
+        .stream()]));
+        assert!(!actions_valid(&[ActionDescriptor::new(
+            1,
+            "tail",
+            ActionAccess::Read
+        )
+        .page()
+        .results(ARGS)]));
     }
 }
 

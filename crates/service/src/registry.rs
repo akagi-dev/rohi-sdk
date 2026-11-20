@@ -182,8 +182,7 @@ use embassy_sync::blocking_mutex::raw::RawMutex;
 use heapless::Vec;
 
 use crate::action::{
-    Action, ActionDescriptor, ActionError, ActionResult, RecordCollector, StreamChunk, TailPage,
-    TailRequest, check_args,
+    Action, ActionDescriptor, ActionError, ActionResult, RecordCollector, StreamChunk, check_args,
 };
 use crate::isolated::isolated;
 use crate::schema::{actions_valid, enums_valid, fields_valid, issues_valid};
@@ -321,8 +320,16 @@ async fn invoke_of<S: Action>(
         .find(|descriptor| descriptor.id == action)
         .ok_or(ActionError::UnknownAction)
         .inspect_err(|error| log_action_failed(S::NAME, action, *error))?;
-    log::debug!(
+    // A page action is polled (the log tail once a second): trace, so that
+    // reading the persistent log's own tail does not feed it.
+    let level = if descriptor.page {
+        log::Level::Trace
+    } else {
+        log::Level::Debug
+    };
+    log::log!(
         target: "service",
+        level,
         "Invoking action (service={} action={})",
         S::NAME,
         descriptor.name
@@ -333,14 +340,15 @@ async fn invoke_of<S: Action>(
         .invoke(action, args, &mut out)
         .await
         .inspect_err(|error| log_action_failed(S::NAME, action, *error))?;
-    match out.stream {
-        Some(_) if !out.records.is_empty() => {
+    match (out.stream, out.page) {
+        (None, None) => Ok(ActionResult::Records(out.records)),
+        (Some(stream), None) if out.records.is_empty() => Ok(ActionResult::Stream(stream)),
+        (None, Some(page)) if out.records.is_empty() => Ok(ActionResult::Page(page)),
+        _ => {
             let error = ActionError::Internal;
             log_action_failed(S::NAME, action, error);
             Err(error)
         }
-        Some(stream) => Ok(ActionResult::Stream(stream)),
-        None => Ok(ActionResult::Records(out.records)),
     }
 }
 
@@ -563,13 +571,6 @@ pub trait ActionRegistry {
     async fn close_stream(&self, service: u32, stream: u32) -> Result<(), ActionError>;
     /// The control link was lost: every service releases its open streams.
     fn link_lost(&self);
-    /// Writes one page of the tail of the service with the given id into `buf`.
-    fn tail_logs(
-        &self,
-        service: u32,
-        request: TailRequest,
-        buf: &mut [u8],
-    ) -> Result<TailPage, ActionError>;
 
     /// Whether a service with this id has actions.
     fn contains(&self, service: u32) -> bool {
@@ -625,10 +626,6 @@ impl ActionRegistry for () {
     }
 
     fn link_lost(&self) {}
-
-    fn tail_logs(&self, _: u32, _: TailRequest, _: &mut [u8]) -> Result<TailPage, ActionError> {
-        Err(ActionError::UnknownService)
-    }
 }
 
 // One tracker per tuple element; the generic `M` of the expanding impl is not
@@ -776,19 +773,6 @@ macro_rules! tuple_registries {
             fn link_lost(&self) {
                 log::info!(target: "service", "Link lost, notifying services (count={})", $count);
                 $(self.$index.link_lost();)+
-            }
-
-            fn tail_logs(
-                &self,
-                service: u32,
-                request: TailRequest,
-                buf: &mut [u8],
-            ) -> Result<TailPage, ActionError> {
-                $(if $name::ID == service {
-                    return self.$index.tail_logs(request, buf);
-                })+
-                log_unknown_service("tail_logs", service);
-                Err(ActionError::UnknownService)
             }
         }
     };

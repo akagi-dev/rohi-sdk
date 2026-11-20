@@ -57,7 +57,7 @@ async fn status_number(device: &mut Device<TcpLink>, field: u32) -> Option<u64> 
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn logging_is_a_service_with_download_and_clear_and_the_tail_is_no_action() {
+async fn logging_is_a_service_with_download_clear_and_tail_actions() {
     let sim = Sim::start(&Launch::new());
     let mut device = sim.device().await;
 
@@ -70,7 +70,7 @@ async fn logging_is_a_service_with_download_and_clear_and_the_tail_is_no_action(
         .map(|action| action.name.as_str())
         .collect();
     names.sort_unstable();
-    assert_eq!(names, ["clear", "download"]);
+    assert_eq!(names, ["clear", "download", "tail"]);
 
     let status = fields(&mut device, "logging").await;
     assert_eq!(status["storage"], text("internal"));

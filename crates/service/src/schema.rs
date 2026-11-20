@@ -272,6 +272,7 @@ pub(crate) const fn actions_valid(actions: &[ActionDescriptor]) -> bool {
         if !name_ok(action.name)
             || action.args.len() > MAX_ACTION_ARGS
             || action.results.len() > MAX_RECORD_FIELDS
+            || (action.page && (action.stream || !action.results.is_empty()))
             || !enums_valid(action.enums, MAX_SERVICE_ENUMS)
             || !args_valid(action.args, action.enums)
             || !fields_valid(action.results, action.enums)

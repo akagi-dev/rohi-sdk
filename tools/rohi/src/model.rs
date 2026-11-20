@@ -533,12 +533,14 @@ pub enum ActionOutcome {
     Records(Vec<Record>),
     /// Files to read in chunks.
     Stream(Stream),
+    /// One cursor page of an append-only source, with nothing kept on the device.
+    Page(ActionPage),
 }
 
-/// One page of the tail of a service, see
+/// One cursor page an action returned, for example `logging.tail`, see
 /// [`Device::tail_logs`](crate::Device::tail_logs).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TailPage {
+pub struct ActionPage {
     /// Identifies the boot of the device the sequences belong to.
     pub session: u32,
     /// Sequence of the last line of `data`: the cursor of the next request.
@@ -554,6 +556,10 @@ pub struct TailPage {
     /// Whole text lines, each ending in a newline; empty when nothing is new.
     pub data: Vec<u8>,
 }
+
+/// One page of the tail of a service, see
+/// [`Device::tail_logs`](crate::Device::tail_logs).
+pub type TailPage = ActionPage;
 
 /// A chunk of a stream file.
 #[derive(Clone, Debug, PartialEq, Eq)]

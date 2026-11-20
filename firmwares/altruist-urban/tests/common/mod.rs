@@ -402,7 +402,7 @@ impl Tail {
     }
 }
 
-/// One `TailLogs` page, as the device answered it.
+/// One `logging.tail` page, as the device answered it.
 pub async fn tail_page(device: &mut Device<TcpLink>, session: u32, after: u64) -> Tail {
     let page = device.tail_logs("logging", session, after).await.unwrap();
     assert!(page.data.len() <= 512, "a page is at most 512 bytes");

@@ -49,7 +49,7 @@ const _: () = {
     assert!(rohi_service::MAX_RECORD_FIELDS <= limits::MAX_RECORD_FIELDS);
     assert!(rohi_service::MAX_STREAM_FILES <= limits::MAX_STREAM_FILES);
     assert!(rohi_service::MAX_STREAM_CHUNK <= limits::MAX_STREAM_CHUNK);
-    assert!(rohi_service::MAX_TAIL_CHUNK <= limits::MAX_TAIL_CHUNK);
+    assert!(rohi_service::MAX_PAGE_CHUNK <= limits::MAX_PAGE_CHUNK);
     assert!(rohi_service::MAX_REGISTRY_ENTRIES <= limits::MAX_SERVICES);
     assert!(rohi_service::MAX_REGISTRY_ENTRIES <= limits::MAX_CONFIG_SECTIONS);
 };
@@ -400,6 +400,7 @@ pub(crate) fn action_info(
         name: text(action.name),
         secret_args: action.secret_args,
         returns_stream: action.stream,
+        returns_page: action.page,
         access: match action.access {
             ActionAccess::Read => pb::ActionAccess::Read,
             ActionAccess::Mutate => pb::ActionAccess::Mutate,

@@ -335,7 +335,7 @@ Examples:
         long_about = "Show or follow the latest log records of the device, download or clear its\n\
             persistent log.\n\n\
             A convenience over the actions of the `logging` service: `rohi logs` runs\n\
-            the `TailLogs` request, which reads the few most recent records the device\n\
+            the `logging.tail` action, which reads the few most recent records the device\n\
             keeps in RAM page by page (they are lost on a restart, and older ones are\n\
             overwritten; nothing is opened on the device), `logs\n\
             download` runs `logging.download`, which saves the archive kept in flash, and\n\

@@ -189,6 +189,18 @@ pub fn action_schema(schema: &ActionSchema) -> Json {
     json!({ "action": schema.action, "args": schema.args, "results": schema.results })
 }
 
+pub fn page(page: &ActionPage) -> Json {
+    json!({
+        "session": page.session,
+        "cursor": page.cursor,
+        "oldest_sequence": page.oldest_sequence,
+        "newest_sequence": page.newest_sequence,
+        "reset": page.reset,
+        "gap": page.gap,
+        "data": String::from_utf8_lossy(&page.data),
+    })
+}
+
 pub fn records(records: &[Record], schema: &ActionSchema) -> Json {
     let records: Vec<Json> = records
         .iter()

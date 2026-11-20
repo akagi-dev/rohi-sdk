@@ -21,7 +21,8 @@
 // names live in the schema. Collections are never paged: every response
 // fits one bounded message. A result that cannot fit is not paged either: the
 // action returns a stream and the client reads its files in bounded chunks.
-// The one cursor paged exception is the log tail (`TailLogs`), see below.
+// The one cursor paged exception is an action that declares a page result
+// (`ActionPage`, the log tail), see below.
 //
 // Unknown enum values must be treated as "unknown" by clients.
 
@@ -54,7 +55,6 @@ message Request {
     InvokeActionRequest invoke_action = 22;
     ReadStreamRequest read_stream = 23;
     CloseStreamRequest close_stream = 24;
-    TailLogsRequest tail_logs = 25;
   }
   // 26 and 27 were the request authorization of the signed-control design, which is removed:
   // the security of a link belongs to its transport. Never reuse them.
@@ -86,7 +86,9 @@ message Response {
     // The answer of `InvokeAction` when the result does not fit one message:
     // instead of `invoke_action`, never both.
     StreamInfo action_stream = 25;
-    TailLogsResponse tail_logs = 26;
+    // The answer of `InvokeAction` for an action that returns one cursor page
+    // (`ActionInfo.returns_page`), instead of `invoke_action`, never both.
+    ActionPage action_page = 28;
   }
   // 27 was the answer of the removed `GetAuthChallenge`. Never reuse it.
   reserved 27;
@@ -535,6 +537,9 @@ message ActionInfo {
   // The action answers with a stream (`action_stream`) instead of records;
   // it has no result fields.
   bool returns_stream = 7;
+  // The action answers with one cursor page (`action_page`) instead of
+  // records; it has no result fields.
+  bool returns_page = 8;
   // What the link must be allowed to do to invoke the action; never
   // `ACTION_ACCESS_UNSPECIFIED` from a device.
   ActionAccess access = 4;
@@ -645,32 +650,27 @@ message CloseStreamRequest {
 message CloseStreamResponse {}
 
 // ---------------------------------------------------------------------------
-// Log tail
+// Cursor pages
 // ---------------------------------------------------------------------------
 //
-// The latest log lines a service keeps in RAM, read page by page with a cursor.
-// It is one request and one reply: no stream is opened and the device keeps no
-// state for the client, so the tail can be polled for as long as needed.
+// An action declared with a page result (`ActionInfo.returns_page`, for
+// example `logging.tail`) reads an append-only source in RAM page by page
+// with a cursor. It is one `InvokeAction` and one reply: no stream is opened
+// and the device keeps no state for the client, so the page can be polled for
+// as long as needed. The arguments are the ones of the action; for the log
+// tail they are `session` (0 on the first call) and `after` (0 for the oldest
+// line held).
 //
 // - `data` is whole text lines, UTF-8, each ending in a newline. A line is
 //   never split across pages. A line too long for one page is shortened by the
 //   device (and flagged in its own text), so every page makes progress.
-// - `data` holds at most `MAX_TAIL_CHUNK` bytes; more records are read with
-//   the `cursor` of the reply as `after` of the next request.
+// - `data` holds at most `MAX_PAGE_CHUNK` bytes; more records are read with
+//   the `session` and the `cursor` of the reply as the arguments of the next
+//   call.
 // - An empty `data` means there is nothing newer than the cursor.
-// - The tail is volatile: it is read from RAM only, never from storage.
+// - The source is volatile: it is read from RAM only, never from storage.
 
-message TailLogsRequest {
-  // The service that keeps the tail.
-  uint32 service_id = 1;
-  // The `session` of an earlier reply; 0 on the first request.
-  uint32 session = 2;
-  // Lines with a sequence above this are returned. 0, like a session of 0,
-  // asks for the oldest line the device still holds.
-  uint64 after = 3;
-}
-
-message TailLogsResponse {
+message ActionPage {
   // Identifies this boot of the device. Sequences are valid only inside one
   // session: a request with another session starts over (`reset`).
   uint32 session = 1;
