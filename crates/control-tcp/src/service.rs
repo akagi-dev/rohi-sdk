@@ -322,20 +322,17 @@ where
                 Err(Busy::Busy | Busy::Closed) => {
                     warn!(target: "control.tcp", "No request slot, request refused (size_b={})", len);
                     self.error(error_kind::BUSY);
-                    // The record is read and checked, so the counters stay in step.
+                    // The record is read but never opened, so the receive counter would fall behind
+                    // the client: answer once and end the connection; the client reconnects.
                     let mut tag = [0u8; TAG_LEN];
                     if !discard(&mut stream, len).await
                         || stream.read_exact(&mut tag).await.is_err()
                     {
                         return;
                     }
-                    if !self
-                        .send_secure_error(&mut stream, &mut channel, pb::ErrorCode::Busy)
-                        .await
-                    {
-                        return;
-                    }
-                    continue;
+                    self.send_secure_error(&mut stream, &mut channel, pb::ErrorCode::Busy)
+                        .await;
+                    return;
                 }
             };
             let mut tag = [0u8; TAG_LEN];

@@ -270,7 +270,7 @@ impl<'a, const SLOTS: usize> ControlHub<'a, SLOTS> {
     }
 
     /// Ends a connection: its requests that did not start are not executed
-    /// and the worker closes its streams and forgets its challenge, in order
+    /// and the worker closes its streams, in order
     /// with the requests already queued.
     ///
     /// Waits only if the queue is full.

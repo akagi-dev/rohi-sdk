@@ -174,7 +174,7 @@ pub struct ControlAccess {
 
 impl ControlAccess {
     /// The defaults, with `entropy` as the cryptographic random source of
-    /// the challenges. It must return `false` rather than weak bytes.
+    /// the handshake nonces. It must return `false` rather than weak bytes.
     pub const fn new(entropy: fn(&mut [u8]) -> bool) -> Self {
         Self {
             state: Mutex::new(RefCell::new(State {

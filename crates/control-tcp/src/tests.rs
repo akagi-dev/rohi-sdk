@@ -733,6 +733,29 @@ mod secure_endpoint {
     }
 
     #[test]
+    fn a_request_with_no_free_slot_is_answered_busy_and_the_connection_ends() {
+        let access = restricted_access();
+        let key = Key(Cell::new(Some(KEY)));
+        let mut script = Script::start(&KEY);
+        script.request(info(1), 1);
+        script.request(info(2), 2);
+        let controller = secured(&access);
+        let hub = ControlHub::<2>::with_access(&access);
+        let first = hub.connect(rohi_control::Transport::Ble).unwrap();
+        let second = hub.connect(rohi_control::Transport::Ble).unwrap();
+        let held = (first.request().unwrap(), second.request().unwrap());
+        let wire = Connection::new(&script.bytes, 4096);
+        let mut control = ControlTcp::with_psk(Clients([wire.clone()].into()), &hub, &key);
+        drive_secured(&hub, &controller, control.serve_next()).unwrap();
+        // The record counters of the two sides can no longer agree: one answer, then nothing.
+        let answers = script.responses(&wire.outgoing());
+        assert_eq!(answers.len(), 1);
+        assert!(is_error(&answers[0], pb::ErrorCode::Busy));
+        assert_eq!(access.stats(Transport::Tcp).auth_failures, 0);
+        drop(held);
+    }
+
+    #[test]
     fn an_authenticated_client_is_served_over_encrypted_records() {
         let access = restricted_access();
         let key = Key(Cell::new(Some(KEY)));

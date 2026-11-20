@@ -230,9 +230,9 @@
 //!   recorded session), no certificate or TLS, and the key is provisioned through a protected
 //!   link only (see `rohi-control-endpoints`). An `Open` endpoint is plaintext and
 //!   unauthenticated: a platform must bind it to the loopback address unless the developer
-//!   explicitly asks for more. A client that stalls inside the handshake holds the one
-//!   connection until the platform closes the stream: a platform that needs a deadline wraps
-//!   [`ControlTcp::serve_next`] in a timeout.
+//!   explicitly asks for more. A client that goes silent holds the one
+//!   connection until the platform closes the stream: the platform must give its stream a read
+//!   deadline (`rohi-net-std` ends a connection that sends nothing for 60 seconds).
 //! * **Evidence.** The records and the serving loop are covered by host tests
 //!   with scripted in-memory connections (`cargo test -p rohi-control-tcp`) and
 //!   the example above. End-to-end use with host sockets and the `rohi` tool is

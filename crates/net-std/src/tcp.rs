@@ -20,6 +20,7 @@
 //! [`ControlTcp`](rohi_control_tcp::ControlTcp).
 
 use core::net::SocketAddr;
+use core::time::Duration;
 use std::io::ErrorKind;
 
 use embedded_io_async::{ErrorType, Read, Write};
@@ -117,7 +118,12 @@ impl Acceptor for TcpAcceptor {
     }
 }
 
-/// A client connection of a [`TcpAcceptor`]. Dropping it closes the socket.
+/// How long a read waits for the client. The control endpoint serves one client at a
+/// time, so a client that goes silent (or whose key was replaced) must not hold it forever.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// A client connection of a [`TcpAcceptor`]. Dropping it closes the socket. A read that
+/// gets no byte for 60 seconds fails with [`ErrorKind::TimedOut`].
 pub struct TcpConnection {
     stream: TcpStream,
     peer: SocketAddr,
@@ -135,7 +141,13 @@ impl ErrorType for TcpConnection {
 
 impl Read for TcpConnection {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, std::io::Error> {
-        let read = within(self.stream.read(buf)).await.inspect_err(
+        let read = within(async {
+            tokio::time::timeout(IDLE_TIMEOUT, self.stream.read(buf))
+                .await
+                .unwrap_or_else(|_| Err(ErrorKind::TimedOut.into()))
+        })
+        .await
+        .inspect_err(
             |error| debug!(target: "control.tcp", "Read failed (peer={} err={error})", self.peer),
         )?;
         trace!(target: "control.tcp", "Read from peer (size_b={read} peer={})", self.peer);

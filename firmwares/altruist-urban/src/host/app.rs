@@ -182,8 +182,8 @@ fn stored_control_tcp(storage: &FileFlash) -> ControlTcpConfig {
     }
 }
 
-/// Random bytes of the operating system, for the authorization challenges.
-/// Fails closed: without them no challenge is issued.
+/// Random bytes of the operating system, for the nonces of the TCP handshake.
+/// Fails closed: without them no client is served.
 #[cfg(unix)]
 fn os_entropy(dst: &mut [u8]) -> bool {
     use std::io::Read as _;
