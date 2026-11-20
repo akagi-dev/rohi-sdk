@@ -58,7 +58,7 @@
 //! IPv4 configuration, the shared location is updated for the telemetry frames
 //! and the `location` service, the telemetry and NTP tasks are signalled and
 //! restart with the new values, the identity updates the signer. A
-//! restart-required section (`control_tcp`) is only published at boot: a later commit only
+//! restart-required section (`control`) is only published at boot: a later commit only
 //! persists it, so it applies as a whole after a reboot. The `wireless` section is the one
 //! exception: its Wi-Fi and IP fields apply right after a commit and only the BLE name, read
 //! once when the peripheral starts, waits for a reboot; it is reported as restart-required. The same step,
@@ -95,9 +95,11 @@ use rohi_sdk::service::{
     SectionInfo, SectionSchema, SectionValues,
 };
 
+#[cfg(feature = "std-tcp")]
+use crate::bindings::ControlBinding;
 use crate::bindings::{
-    Binding, ConfigRuntime, ControlTcpBinding, IdentityBinding, LocationBinding, LoggingBinding,
-    PrivateBinding, TcpPskBinding, TimeBinding, WirelessBinding,
+    Binding, ConfigRuntime, IdentityBinding, LocationBinding, LoggingBinding, PrivateBinding,
+    TcpPskBinding, TimeBinding, WirelessBinding,
 };
 use crate::connectivity::ConnectivityBinding;
 use crate::tasks::RawMutex;
@@ -768,7 +770,7 @@ where
 
     /// The recovered store is empty, which the runtime learns here: an identity
     /// that was unreadable at boot is now known to be absent. A
-    /// section that is only applied at boot (`control_tcp`) is not published, as after any commit.
+    /// section that is only applied at boot (`control`) is not published, as after any commit.
     fn format_storage(&mut self, runtime: &ConfigRuntime) -> Outcome {
         match self {
             Self::Ready(_) => Outcome::Failed(ServiceError::StorageHealthy),
@@ -948,7 +950,15 @@ fn effective<C: HasOverrides + Default>(
     Ok(materialize(&firmware(), &user))
 }
 
+// The `control` section exists only where there is a TCP endpoint to configure.
+#[cfg(feature = "std-tcp")]
 crate::firmware_configs! {
-    managed WirelessBinding, LocationBinding, TimeBinding, LoggingBinding, ControlTcpBinding;
+    managed WirelessBinding, LocationBinding, TimeBinding, LoggingBinding, ControlBinding;
+    private IdentityBinding, TelemetryBinding, ConnectivityBinding, TcpPskBinding
+}
+
+#[cfg(not(feature = "std-tcp"))]
+crate::firmware_configs! {
+    managed WirelessBinding, LocationBinding, TimeBinding, LoggingBinding;
     private IdentityBinding, TelemetryBinding, ConnectivityBinding, TcpPskBinding
 }

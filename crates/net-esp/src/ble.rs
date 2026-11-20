@@ -593,7 +593,7 @@ async fn advertise<
 
 /// Asks the central to pair, without bonding: the link is encrypted for this
 /// connection and nothing about the central is stored. A failure leaves the
-/// link unencrypted, which a restricted endpoint treats as no proof at all.
+/// link unencrypted, which the access policy treats as no proof at all.
 fn ask_to_pair(connection: &GattConnection<'_, '_, DefaultPacketPool>) {
     let raw = connection.raw();
     if raw.set_bondable(false).is_err() || raw.request_security().is_err() {

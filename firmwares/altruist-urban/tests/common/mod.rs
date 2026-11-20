@@ -43,11 +43,11 @@ pub struct Launch {
     pub storage: Option<PathBuf>,
     pub scenario: Option<PathBuf>,
     pub extra: Vec<String>,
-    /// Leave the TCP endpoint restricted, as a device is by default.
-    pub restricted: bool,
+    /// The `--control-mode` of the run; `None` opens the endpoint (`--control-open`).
+    pub mode: Option<&'static str>,
     /// A file with the pre-shared key of the TCP endpoint.
     pub psk_file: Option<PathBuf>,
-    /// Do not pass `--control-port`: the stored (or default) `control_tcp` port applies.
+    /// Do not pass `--control-port`: the stored (or default) `control` port applies.
     pub stored_port: bool,
 }
 
@@ -67,9 +67,21 @@ impl Launch {
         self
     }
 
-    /// Leaves the TCP endpoint restricted instead of opening it for the run.
-    pub fn restricted(mut self) -> Self {
-        self.restricted = true;
+    /// Runs the TCP endpoint in `protected` mode instead of opening it for the run.
+    pub fn protected(mut self) -> Self {
+        self.mode = Some("protected");
+        self
+    }
+
+    /// Starts with the stored access mode: neither `--control-open` nor `--control-mode`.
+    pub fn stored_mode(mut self) -> Self {
+        self.mode = Some("");
+        self
+    }
+
+    /// Runs the TCP endpoint in `private` mode.
+    pub fn private(mut self) -> Self {
+        self.mode = Some("private");
         self
     }
 
@@ -79,7 +91,7 @@ impl Launch {
         self
     }
 
-    /// Starts on the stored `control_tcp` port instead of a free one.
+    /// Starts on the stored `control` port instead of a free one.
     pub fn stored_port(mut self) -> Self {
         self.stored_port = true;
         self
@@ -118,9 +130,11 @@ impl Sim {
         if let Some(scenario) = &launch.scenario {
             command.arg("--scenario").arg(scenario);
         }
-        if !launch.restricted {
-            command.arg("--control-open");
-        }
+        match launch.mode {
+            Some("") => &mut command,
+            Some(mode) => command.args(["--control-mode", mode]),
+            None => command.arg("--control-open"),
+        };
         if let Some(path) = &launch.psk_file {
             command.arg("--control-psk-file").arg(path);
         }
@@ -224,7 +238,7 @@ impl Sim {
         reply
     }
 
-    /// A control connection that authenticates with `key`, as a client of a restricted endpoint must.
+    /// A control connection that authenticates with `key`, as a client of a protected or private endpoint must to change anything.
     pub async fn secure_device(&self, key: &rohi::TcpKey) -> Device<TcpLink> {
         let link = TcpLink::connect_secure(&self.control.to_string(), Duration::from_secs(10), key)
             .await

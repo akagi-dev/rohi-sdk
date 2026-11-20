@@ -105,7 +105,7 @@
 //! [`ownership`](crate::ownership)), to the device identity (the owner task
 //! updates the signing identity in the commit step) and at boot (stored
 //! configuration is published once after opening the store, also after a
-//! factory reset). A section that is read once at startup (`control_tcp`) is
+//! factory reset). A section that is read once at startup (`control`) is
 //! published only at boot; the BLE name of the `wireless` section is read when
 //! the peripheral starts. The `SectionStore` contract of
 //! [`rohi-service`](../../rohi_service/index.html) states the same rule for every

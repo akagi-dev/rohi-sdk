@@ -626,6 +626,9 @@ fn the_tcp_framing_rejects_oversized_and_malformed_records() {
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
     stream
+        .write_all(&rohi_control_tcp::frame::plain_preamble())
+        .unwrap();
+    stream
         .write_all(&rohi_control_tcp::frame::encode_header(1 << 20))
         .unwrap();
     assert!(is_invalid_argument(&read_record(&mut stream).unwrap()));
@@ -637,6 +640,9 @@ fn the_tcp_framing_rejects_oversized_and_malformed_records() {
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
+    stream
+        .write_all(&rohi_control_tcp::frame::plain_preamble())
+        .unwrap();
     stream.write_all(&0u32.to_le_bytes()).unwrap();
     assert!(is_invalid_argument(&read_record(&mut stream).unwrap()));
 
@@ -644,6 +650,9 @@ fn the_tcp_framing_rejects_oversized_and_malformed_records() {
     let mut stream = std::net::TcpStream::connect(sim.control).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    stream
+        .write_all(&rohi_control_tcp::frame::plain_preamble())
         .unwrap();
     let junk = [0xffu8; 9];
     stream

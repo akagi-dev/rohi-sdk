@@ -30,8 +30,9 @@
 //! (`rohi-control-ble`). Only the carrier differs, and TCP needs none of the BLE
 //! machinery: a TCP stream is ordered and reliable, so there is no
 //! fragmentation, no message id and no MTU. A message is a record: with a 4-byte
-//! length ([`frame`], plaintext, for an open development endpoint) or, on a restricted endpoint,
-//! an authenticated and encrypted record of the channel in [`secure`].
+//! length ([`frame`], plaintext) or an authenticated and encrypted record of the channel in
+//! [`secure`]. A connection says which in its first bytes (the preamble), and one endpoint serves
+//! both, as far as its access mode lets plaintext through.
 //!
 //! The crate is `no_std` and allocation free and contains no socket code. The
 //! listening socket is an [`Acceptor`] supplied by a platform crate
@@ -59,7 +60,7 @@
 //! };
 //! use rohi_control_proto::control::{self as pb, Request_::Request as Call, Response_::Response as Reply};
 //! use rohi_control_proto::{PROTOCOL_VERSION, decode, encode};
-//! use rohi_control_tcp::frame::{HEADER_LEN, decode_header, encode_header};
+//! use rohi_control_tcp::frame::{HEADER_LEN, decode_header, encode_header, plain_preamble};
 //! use rohi_control_tcp::{Acceptor, ControlTcp, Timed};
 //!
 //! // A connection: the bytes the client sent and what the device wrote back.
@@ -124,7 +125,8 @@
 //! };
 //! let mut bytes = [0u8; 16];
 //! let len = encode(&request, &mut bytes).unwrap();
-//! let mut incoming = encode_header(len as u32).to_vec();
+//! let mut incoming = plain_preamble().to_vec();
+//! incoming.extend_from_slice(&encode_header(len as u32));
 //! incoming.extend_from_slice(&bytes[..len]);
 //! let connection = Connection::default();
 //! connection.0.borrow_mut().incoming = incoming;
@@ -134,9 +136,9 @@
 //! let info = DeviceInfo { firmware: "demo-0.1.0", board: "demo-board" };
 //! let controller = Controller::new(Device::new(info, || 0, (), (), ()), OpenPolicy);
 //! let access = ControlAccess::new(|_| false);
-//! // Plaintext records, for a loopback demonstration; the default (`Restricted`) wants the
+//! // A plaintext read is served in the default mode (`Protected`); a mutation would need the
 //! // handshake of [`secure`] with a pre-shared key.
-//! access.set_mode(Transport::Tcp, TransportAccessMode::Open);
+//! access.set_mode(Transport::Tcp, TransportAccessMode::Protected);
 //! let hub = ControlHub::<1>::with_access(&access);
 //! let mut control = ControlTcp::new(OneClient(Some(connection.clone())), &hub);
 //! // On the device the worker is the `control_task`; here both run in turn.
@@ -161,12 +163,13 @@
 //!
 //! | Concept | Meaning |
 //! |---------|---------|
-//! | Record | One Protobuf message: behind a 4-byte little-endian length ([`frame`], open endpoint) or sealed with XChaCha20-Poly1305 ([`secure`], restricted endpoint) |
+//! | Preamble | The first bytes of a connection: `ROHP` and a version for plaintext records ([`frame::plain_preamble`]), `ROHI` and a version for the handshake ([`secure`]). Nothing else is served |
+//! | Record | One Protobuf message: behind a 4-byte little-endian length ([`frame`], plaintext) or sealed with XChaCha20-Poly1305 ([`secure`], after the handshake) |
 //! | Secure channel | A handshake with a 32-byte pre-shared key (HKDF-SHA256, random nonces, mutual proofs bound to the transcript), directional keys and per-record counters, see [`secure`] |
 //! | [`Acceptor`] | Yields the next client connection as an `embedded-io-async` stream |
 //! | [`Timed`] | A stream that can be given an absolute deadline: the handshake and every record have one |
 //! | [`ControlTcp`] | Accepts a client, reads a request record into a slot of the [`ControlHub`](rohi_control::ControlHub), writes the response record of the one control worker |
-//! | Link security | Set by this crate after the handshake (encrypted and authenticated); a plaintext connection of an open endpoint keeps the default (neither) |
+//! | Link security | Set by this crate after the handshake (encrypted and authenticated); a plaintext connection keeps the default (neither). What that allows is decided by the access mode, see [`rohi_control::TransportAccessMode`] |
 //!
 //! **Connections.** One client is served at a time. While it is connected, the
 //! next one waits in the backlog of the platform listener. A client that
@@ -228,7 +231,7 @@
 //! * **Cancellation.** Dropping [`ControlTcp::run`] or [`ControlTcp::serve_next`]
 //!   closes the current connection and abandons the request being handled; what
 //!   a service already committed stays committed.
-//! * **Transport security is owned here.** On a restricted endpoint (the default) nothing is
+//! * **Transport security is owned here.** On a connection that starts with the handshake, nothing is
 //!   read, decrypted or processed before the handshake with the pre-shared key succeeded; the
 //!   records are authenticated and encrypted with XChaCha20-Poly1305 under keys of the direction;
 //!   malformed, replayed, reordered, truncated and tampered records, a counter that is used up and
@@ -236,8 +239,10 @@
 //!   never a fallback to plaintext. The key is never sent or logged and the keys derived from it
 //!   are wiped on drop. There is **no forward secrecy** (whoever learns the key can decrypt a
 //!   recorded session), no certificate or TLS, and the key is provisioned through a protected
-//!   link only (see `rohi-control-endpoints`). An `Open` endpoint is plaintext and
-//!   unauthenticated: a platform must bind it to the loopback address unless the developer
+//!   link only (see `rohi-control-endpoints`). A plaintext connection (preamble `ROHP`,
+//!   served in `Open` and `Protected` mode, refused in `Private`) is unauthenticated and unencrypted: it
+//!   never becomes authenticated, and a client that fails the handshake is not served in plaintext
+//!   afterwards. A platform must bind the endpoint to the loopback address unless the developer
 //!   explicitly asks for more. A client that is slow does not hold the one
 //!   connection: the handshake (from the accepted connection) and every request record (from its
 //!   first byte to its tag) have an **absolute** deadline ([`HANDSHAKE_TIMEOUT`],

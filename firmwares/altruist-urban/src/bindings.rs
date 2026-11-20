@@ -42,8 +42,11 @@ use core::marker::PhantomData;
 use embassy_sync::blocking_mutex::Mutex;
 use log::{info, warn};
 use rohi_sdk::config::{ConfigSection, HasOverrides, materialize};
+#[cfg(feature = "std-tcp")]
 use rohi_sdk::control::Transport;
-use rohi_sdk::endpoints::{ControlTcpConfig, TcpPskSection};
+#[cfg(feature = "std-tcp")]
+use rohi_sdk::endpoints::ControlConfig;
+use rohi_sdk::endpoints::TcpPskSection;
 use rohi_sdk::identity::Identity;
 use rohi_sdk::location::LocationConfig;
 use rohi_sdk::logging::LoggingConfig;
@@ -223,16 +226,19 @@ pub fn ble_settings() -> BleSettings {
     BLE_SETTINGS.lock(|settings| settings.borrow().clone())
 }
 
-/// `control_tcp`: the TCP control endpoint. The whole section is published once, at boot, and
-/// applies as one: a later commit only persists it and takes effect after a reboot, so a
-/// saved setting is never partly applied.
-pub struct ControlTcpBinding;
+/// `control`: the settings of the control endpoints, which are those of the TCP endpoint. The
+/// whole section is published once, at boot, and applies as one: a later commit only persists it
+/// and takes effect after a reboot, so a saved setting is never partly applied. Only a platform
+/// with a TCP endpoint registers it.
+#[cfg(feature = "std-tcp")]
+pub struct ControlBinding;
 
-impl Binding for ControlTcpBinding {
-    type Config = ControlTcpConfig;
+#[cfg(feature = "std-tcp")]
+impl Binding for ControlBinding {
+    type Config = ControlConfig;
     const RESTART_REQUIRED: bool = true;
 
-    fn publish(_: &ConfigRuntime, effective: &ControlTcpConfig) {
+    fn publish(_: &ConfigRuntime, effective: &ControlConfig) {
         control::access().set_settings(Transport::Tcp, effective.settings());
     }
 }
@@ -325,8 +331,8 @@ impl PrivateBinding for IdentityBinding {
 /// that it changed) and, on the host platform, handed to the TCP frontend, when committed, removed
 /// or loaded at boot. The key is never logged.
 ///
-/// A key that cannot be read leaves the state without a key: a restricted TCP endpoint then
-/// serves nobody, it never opens and never falls back to plaintext.
+/// A key that cannot be read leaves the state without a key: no TCP client can then complete the
+/// handshake, and the endpoint never opens or falls back to plaintext for a client that asked for it.
 pub struct TcpPskBinding;
 
 impl PrivateBinding for TcpPskBinding {
@@ -350,10 +356,7 @@ impl PrivateBinding for TcpPskBinding {
         #[cfg(feature = "std-tcp")]
         control::set_tcp_key(None);
         control::access().set_tcp_psk(false);
-        warn!(
-            "TCP key: unreadable, a restricted endpoint serves nobody: {}",
-            error
-        );
+        warn!("TCP key: unreadable, no client can authenticate: {}", error);
     }
 }
 

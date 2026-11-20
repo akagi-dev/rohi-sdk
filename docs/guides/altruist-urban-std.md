@@ -112,7 +112,8 @@ rohi --device tcp://127.0.0.1:9300 status wireless
 `rohi system reboot` restarts the process in place and keeps its ports; `rohi system factory_reset` formats its flash
 and does not restart (run `rohi system reboot` afterwards if a restart is required). TCP is an
 independent transport of the same protobuf messages, with its own framing and no BLE concepts (no fragmentation, no
-connection state faked from BLE). Each message is a record:
+connection state faked from BLE). A plaintext connection starts with the five-byte preamble `ROHP` + version 1 (a
+connection that starts with `ROHI` is the PSK handshake instead, see the security section); then each message is a record:
 
 ```text
 +--------------------+------------------------------+
@@ -132,24 +133,27 @@ rustdoc of [`rohi-control-tcp`](https://docs.rs/rohi-control-tcp).
 The management interface is a **development transport** with no encryption and no authentication. The control endpoint is
 protected by its access mode (see [Access control](../build/control-protocol.md#access-control)):
 
-- the `control_tcp` endpoint is **restricted** by default: a client must complete a handshake with the 32-byte pre-shared key,
-  and every request and response is then authenticated and encrypted. `rohi --psk-file FILE` does it automatically;
-- a restricted endpoint without a key serves nobody (and never falls back to plaintext). Give the process the key with
+- the TCP endpoint is **protected** by default (`control.tcp_access_mode`): a plaintext client may read, and a client that
+  completes a handshake with the 32-byte pre-shared key may do everything, with every request and response authenticated
+  and encrypted. `rohi --psk-file FILE` does it automatically. `open` allows everything without the key and `private`
+  serves only the authenticated, never falling back to plaintext;
+- without a key a `protected` endpoint only reads and a `private` one serves nobody; the listener still runs and reports
+  `tcp_state=running`. Give the process the key with
   `--control-psk-file FILE` (64 hex characters or 32 raw bytes, for that run; it replaces the stored key and is never stored or
-  logged) or let the device generate it: `rohi control_tcp reveal_psk` (every call makes a
+  logged) or let the device generate it: `rohi action run control tcp_generate_psk` (every call makes a
   new key, a client never chooses one; the generic action output prints the key, see [Access and the TCP
   key](../use/desktop/access.md)).
-  `--control-open` opens the endpoint for one run instead: plaintext and unauthenticated, for loopback development only, and even
-  then the key itself is never accepted over it;
-- the stored `control_tcp` section (`access_mode`, `bind_address`, `port`) is read at start, on top of the defaults (an
+  `--control-mode open|protected|private` sets the mode for one run; `--control-open` is `--control-mode open`: unauthenticated,
+  for loopback development only, and even then the key itself is never accepted over plaintext;
+- the stored `control` section (`tcp_access_mode`, `tcp_bind_address`, `tcp_port`) is read at start, on top of the defaults (an
   empty storage is the defaults, there is no `enabled` flag); `--bind` and `--control-port` override the stored address
   and port for that run. A change applies as a whole at the next start. If the stored or default port is taken the endpoint
   is `failed` in its status and the rest of the device starts; a port given on the command line that is taken is a startup error;
 - both listeners bind to `127.0.0.1` by default; a non-loopback address, from `--bind` or from the section, is refused
-  unless `--unsafe-allow-remote` is given: with the endpoint restricted a remote client still needs the key; with it open
+  unless `--unsafe-allow-remote` is given: with the endpoint protected a remote client still needs the key to change anything; with it open
   (`--control-open`) anyone who can reach the port can read and control the device;
 - BLE (BlueZ) is open: no pairing and no link encryption, and the link is never reported as encrypted or authenticated.
-  Anyone in radio range can do everything, including `reveal_psk` and `system factory_reset`; restricting TCP does not
+  Anyone in radio range can do everything, including `tcp_generate_psk` and `system factory_reset`; protecting TCP does not
   secure the device while BLE control runs.
 
 A signature gives no confidentiality; none of this is production-secure.

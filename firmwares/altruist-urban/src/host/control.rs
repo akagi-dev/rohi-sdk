@@ -29,10 +29,10 @@
 //! mobile   -> GATT (BlueZ, rohi-control-ble) -> ControlBle --+   (one Controller, UrbanDevice)
 //! ```
 //!
-//! Each transport has its own access mode ([`crate::control::access`]): TCP is
-//! restricted by default and serves only clients that complete the handshake with the
-//! pre-shared key (authenticated, encrypted records), BLE is open (provisioning needs an
-//! encrypted link). TCP is bound to the loopback address
+//! The access policy follows the access mode of the TCP endpoint ([`crate::control::access`]):
+//! `protected` by default, where a plaintext client may read and a client that completed the
+//! handshake with the pre-shared key (authenticated, encrypted records) may do everything;
+//! `open` and `private` are the other two. BLE is open (no pairing, no link encryption). TCP is bound to the loopback address
 //! unless the developer asks otherwise, see
 //! [`Args::unsafe_allow_remote`](super::args::Args::unsafe_allow_remote).
 
@@ -122,7 +122,7 @@ pub fn controller(
 }
 
 /// Records the control listener, which the launch options may have moved away
-/// from the stored `control_tcp` settings; `None` when it could not listen (`failed`).
+/// from the stored `control` settings; `None` when it could not listen (`failed`).
 #[cfg(feature = "std-tcp")]
 pub fn record_tcp(listening: Option<std::net::SocketAddr>) {
     use rohi_sdk::control::{EndpointState, Transport};

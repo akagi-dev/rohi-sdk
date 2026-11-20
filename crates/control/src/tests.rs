@@ -1944,8 +1944,9 @@ mod link_security {
             error_code(&call(&controller, &TCP_SECURE, mutate())),
             pb::ErrorCode::NotFound
         );
-        let stats = access.stats(Transport::Tcp);
-        assert_eq!((stats.accepted, stats.denied), (2, 3));
+        // Every decoded request is counted once, the refused ones too, and a refusal is no error.
+        assert_eq!(access.requests(), 5);
+        assert_eq!(access.errors(), 0);
     }
 
     #[test]
@@ -1977,7 +1978,7 @@ mod link_security {
             pb::ErrorCode::PermissionDenied
         );
         // BLE has no mode to change; the link keeps the properties the transport reported.
-        access.set_mode(Transport::Ble, TransportAccessMode::Restricted);
+        access.set_mode(Transport::Ble, TransportAccessMode::Private);
         assert_eq!(access.mode(Transport::Ble), TransportAccessMode::Open);
         assert_eq!(
             error_code(&call(&controller, &BLE, mutate())),
@@ -2035,7 +2036,11 @@ mod link_security {
             encrypted: true,
             ..TCP
         };
-        for mode in [TransportAccessMode::Open, TransportAccessMode::Restricted] {
+        for mode in [
+            TransportAccessMode::Open,
+            TransportAccessMode::Protected,
+            TransportAccessMode::Private,
+        ] {
             access.set_mode(Transport::Tcp, mode);
             // Never over an unprotected link, whatever the mode says (the open modes allow the
             // plain action, which proves the refusal is the action's own).
@@ -2061,6 +2066,110 @@ mod link_security {
         // An action that is not marked is as open as its mode.
         access.set_mode(Transport::Tcp, TransportAccessMode::Open);
         assert!(matches!(invoke(&TCP, 2), Reply::InvokeAction(_)));
+    }
+
+    #[test]
+    fn the_modes_decide_what_a_client_without_proof_may_do() {
+        restricted!(controller, access);
+        let read = || Call::GetInfo(pb::GetInfoRequest {});
+        let allowed = |reply: &Reply| {
+            !matches!(
+                reply,
+                Reply::Error(error) if error.code == pb::ErrorCode::PermissionDenied
+            )
+        };
+        // (mode, read, mutate, provision) for a client without proof, then after the handshake.
+        let table = [
+            (TransportAccessMode::Open, true, true, true),
+            (TransportAccessMode::Protected, true, false, false),
+            (TransportAccessMode::Private, false, false, false),
+        ];
+        for (mode, can_read, can_mutate, can_provision) in table {
+            access.set_mode(Transport::Tcp, mode);
+            assert_eq!(
+                allowed(&call(&controller, &TCP, read())),
+                can_read,
+                "{mode:?}"
+            );
+            assert_eq!(
+                allowed(&call(&controller, &TCP, mutate())),
+                can_mutate,
+                "{mode:?}"
+            );
+            assert_eq!(
+                allowed(&call(&controller, &TCP, provision())),
+                can_provision,
+                "{mode:?}"
+            );
+            // A connection that completed the handshake may do all three in every mode.
+            assert!(allowed(&call(&controller, &TCP_SECURE, read())), "{mode:?}");
+            assert!(
+                allowed(&call(&controller, &TCP_SECURE, mutate())),
+                "{mode:?}"
+            );
+            assert!(
+                allowed(&call(&controller, &TCP_SECURE, provision())),
+                "{mode:?}"
+            );
+            // Encrypted without being authenticated proves nothing.
+            let half = LinkSecurity {
+                encrypted: true,
+                ..TCP
+            };
+            assert_eq!(
+                allowed(&call(&controller, &half, mutate())),
+                can_mutate,
+                "{mode:?}"
+            );
+            // BLE is untouched by the mode of TCP.
+            assert!(allowed(&call(&controller, &BLE, mutate())), "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn requests_are_counted_once_and_a_refusal_is_not_an_error() {
+        restricted!(controller, access);
+        let mut out = [0u8; limits::MAX_RESPONSE_LEN];
+        // Not a request: not counted.
+        block_on(controller.handle(&TCP, &[0xFF, 0xFF], &mut out));
+        assert_eq!(access.requests(), 0);
+        let _ = call(&controller, &TCP, Call::GetInfo(pb::GetInfoRequest {}));
+        let _ = call(&controller, &TCP, mutate());
+        let _ = call(&controller, &BLE, mutate());
+        assert_eq!(access.requests(), 3);
+        assert_eq!(access.errors(), 0);
+        access.transport_error(Transport::Tcp, 1);
+        access.transport_error(Transport::Ble, 2);
+        assert_eq!(access.errors(), 2);
+        assert_eq!(access.stats(Transport::Tcp).errors, 1);
+    }
+
+    #[test]
+    fn the_availability_follows_the_expected_endpoints_only() {
+        use crate::Availability::*;
+        let access = ControlAccess::new(entropy);
+        assert_eq!(access.availability(), None);
+        // Absent by build is not a failure, whatever the state says.
+        access.set_state(Transport::Ble, EndpointState::Failed);
+        assert_eq!(access.availability(), None);
+        access.expect(Transport::Tcp);
+        assert_eq!(access.availability(), Starting);
+        access.set_state(Transport::Tcp, EndpointState::Running);
+        assert_eq!(access.availability(), All);
+        access.expect(Transport::Ble);
+        assert_eq!(access.availability(), Some);
+        access.set_state(Transport::Ble, EndpointState::Running);
+        assert_eq!(access.availability(), All);
+        access.set_state(Transport::Ble, EndpointState::Disabled);
+        assert_eq!(access.availability(), Starting);
+        access.set_state(Transport::Tcp, EndpointState::Failed);
+        access.set_state(Transport::Ble, EndpointState::Failed);
+        assert_eq!(access.availability(), Failed);
+        // Sessions, counters, mode and key do not move it.
+        access.session_opened(Transport::Tcp);
+        access.transport_error(Transport::Tcp, 1);
+        access.set_tcp_psk(true);
+        assert_eq!(access.availability(), Failed);
     }
 
     #[test]

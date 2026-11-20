@@ -123,7 +123,7 @@ source = "crates/control-ble"
 id = "control-access"
 kind = "service"
 name = "Managed control endpoints and transport security"
-provides = "the `control_tcp` section and the `control_tcp` and `control_ble` services (access mode of the TCP endpoint; the BLE endpoint is open), the device-generated TCP pre-shared key (`control_tcp.reveal_psk`), and the TCP handshake and XChaCha20-Poly1305 records of a restricted endpoint (no forward secrecy)"
+provides = "the `control` section and the `control` service (TCP access mode `open`, `protected` or `private`; the BLE endpoint is open; five status fields), the device-generated TCP pre-shared key (`control.tcp_generate_psk`), and the TCP preamble, handshake and XChaCha20-Poly1305 records (plaintext reads served in `protected`; no forward secrecy)"
 source = "crates/control-endpoints"
 
 [[capability]]
@@ -1223,7 +1223,7 @@ target_build = "ci-built"
 hardware_verification = "not-verified"
 limitations = [
   "The chip reset after the grace period and the formatting of the configuration partition by `system.factory_reset` are not run on a device; the host process stands in for them in the tests.",
-  "Both actions are Mutate: open to any client in BLE range (the BLE control endpoint is open in this build) and, over TCP, need the authenticated and encrypted connection of the pre-shared key once the endpoint is restricted.",
+  "Both actions are Mutate: open to any client in BLE range (the BLE control endpoint is open in this build) and, over TCP, need the authenticated and encrypted connection of the pre-shared key unless the mode of the endpoint (`tcp_access_mode`) is `open`.",
 ]
 evidence = [
   "src-system",
@@ -1248,7 +1248,7 @@ target_build = "ci-built"
 hardware_verification = "not-verified"
 limitations = [
   "The chip reset after the grace period and the formatting of the configuration partition by `system.factory_reset` are not run on a device; the host process stands in for them in the tests.",
-  "Both actions are Mutate: open to any client in BLE range (the BLE control endpoint is open in this build) and, over TCP, need the authenticated and encrypted connection of the pre-shared key once the endpoint is restricted.",
+  "Both actions are Mutate: open to any client in BLE range (the BLE control endpoint is open in this build) and, over TCP, need the authenticated and encrypted connection of the pre-shared key unless the mode of the endpoint (`tcp_access_mode`) is `open`.",
 ]
 evidence = [
   "src-system",

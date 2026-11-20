@@ -69,7 +69,7 @@ The same steps work with the desktop tool over BLE from another machine or a sec
   and the result and platform limitations are recorded in the [support matrix](../support/overview.md).
 - **Open: no pairing.** BLE control has no pairing and no link encryption in this build, and no setting changes that. The
   link is never reported as encrypted or authenticated, and every client in range may change the device, provision the
-  identity, reset it and run `control_tcp reveal_psk`. Do not treat this as production-secure.
+  identity, reset it and run `control tcp_generate_psk`. Do not treat this as production-secure.
 - **Connection detection.** BlueZ does not report an ATT connection to a GATT application. A central counts as connected
   when it subscribes to the TX characteristic or writes the RX characteristic, and as disconnected when its notification
   session ends. A central that never subscribes cannot receive responses and is not tracked.

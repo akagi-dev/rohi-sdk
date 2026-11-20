@@ -228,8 +228,8 @@ async fn factory_reset_repairs_a_corrupted_configuration_storage() {
         )
         .await
         .unwrap();
-    let tcp = fields(&mut device, "control_tcp").await;
-    assert_eq!(tcp.get("access_mode"), Some(&text("open")));
+    let tcp = fields(&mut device, "control").await;
+    assert_eq!(tcp.get("tcp_state"), Some(&Value::Enum("running".into())));
     drop(device);
     assert!(sim.stop().success());
 

@@ -120,6 +120,7 @@ pub fn start(
 ) {
     crate::control::set_access_entropy(super::connectivity::esp_entropy);
     HUB.bind(crate::control::access());
+    crate::control::access().expect(Transport::Ble);
     match wireless.ble(ble_config(), BLE_RESOURCES.init(Default::default())) {
         Ok((transport, runner)) => {
             let device = device(config, identity, network, transport.status());
@@ -154,7 +155,7 @@ pub async fn control_ble_task(transport: BleTransport) {
 ///
 /// The access policy follows the access mode of each endpoint, see
 /// [`crate::control::access`]: BLE is open (no pairing, no link encryption), so privileged
-/// operations, including identity provisioning, erase and `control_tcp.reveal_psk`, need none.
+/// operations, including identity provisioning, erase and `control.tcp_generate_psk`, need none.
 #[embassy_executor::task]
 pub async fn control_task(device: EspDevice) {
     let controller = Controller::new(device, AccessPolicy::new(crate::control::access()));

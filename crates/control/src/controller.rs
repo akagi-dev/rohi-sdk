@@ -163,6 +163,7 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
                 return (0, error(pb::ErrorCode::InvalidArgument));
             }
         };
+        self.policy.request_decoded();
         let id = request.request_id;
         if request.protocol_version != PROTOCOL_VERSION {
             diag::unsupported_version(id, request.protocol_version);

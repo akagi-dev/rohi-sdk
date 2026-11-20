@@ -84,7 +84,7 @@ Connection:
           [default: 10]
 
       --psk-file <FILE>
-          File with the pre-shared key of a TCP endpoint (64 hex characters). A restricted endpoint serves only clients that complete a handshake with it, and `rohi` then encrypts every request. Never put the key itself on the command line; get a key from the device with `rohi control_tcp reveal_psk`, which prints it
+          File with the pre-shared key of a TCP endpoint (64 hex characters). With it `rohi` completes the handshake and encrypts every request: the way to change or provision a `protected` endpoint, and the only way into a `private` one. Without it requests are plaintext, which a `protected` endpoint answers for reads only. Never put the key itself on the command line; get a key from the device with `rohi action run control tcp_generate_psk`, which prints it
           
           [env: ROHI_PSK_FILE=]
 

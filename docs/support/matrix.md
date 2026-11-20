@@ -111,7 +111,7 @@ Limitations of Managed control endpoints and transport security:
 Limitations of System actions:
 
 - The chip reset after the grace period and the formatting of the configuration partition by `system.factory_reset` are not run on a device; the host process stands in for them in the tests.
-- Both actions are Mutate: open to any client in BLE range (the BLE control endpoint is open in this build) and, over TCP, need the authenticated and encrypted connection of the pre-shared key once the endpoint is restricted.
+- Both actions are Mutate: open to any client in BLE range (the BLE control endpoint is open in this build) and, over TCP, need the authenticated and encrypted connection of the pre-shared key unless the mode of the endpoint (`tcp_access_mode`) is `open`.
 
 ### Altruist Urban with altruist-firmware (esp32c6)
 
@@ -216,7 +216,7 @@ Limitations of Managed control endpoints and transport security:
 Limitations of System actions:
 
 - The chip reset after the grace period and the formatting of the configuration partition by `system.factory_reset` are not run on a device; the host process stands in for them in the tests.
-- Both actions are Mutate: open to any client in BLE range (the BLE control endpoint is open in this build) and, over TCP, need the authenticated and encrypted connection of the pre-shared key once the endpoint is restricted.
+- Both actions are Mutate: open to any client in BLE range (the BLE control endpoint is open in this build) and, over TCP, need the authenticated and encrypted connection of the pre-shared key unless the mode of the endpoint (`tcp_access_mode`) is `open`.
 
 ### Altruist Urban (legacy) with altruist-firmware (esp32c3)
 
