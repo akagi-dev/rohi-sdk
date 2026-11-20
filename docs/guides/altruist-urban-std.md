@@ -136,8 +136,9 @@ protected by its access mode (see [Access control](../build/control-protocol.md#
   and every request and response is then authenticated and encrypted. `rohi --psk-file FILE` does it automatically;
 - a restricted endpoint without a key serves nobody (and never falls back to plaintext). Give the process the key with
   `--control-psk-file FILE` (64 hex characters or 32 raw bytes, for that run; it replaces the stored key and is never stored or
-  logged) or let the device generate it: `rohi tcp-key reveal tcp.key` (action `control_tcp reveal_psk`; every call makes a
-  new key, a client never chooses one).
+  logged) or let the device generate it: `rohi control_tcp reveal_psk` (every call makes a
+  new key, a client never chooses one; the generic action output prints the key, see [Access and the TCP
+  key](../use/desktop/access.md)).
   `--control-open` opens the endpoint for one run instead: plaintext and unauthenticated, for loopback development only, and even
   then the key itself is never accepted over it;
 - the stored `control_tcp` section (`access_mode`, `bind_address`, `port`) is read at start, on top of the defaults (an

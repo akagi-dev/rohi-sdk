@@ -125,8 +125,12 @@
 //! [`Controller::session_closed`] closes only the streams of one session;
 //! [`Controller::link_lost`] is the same for every session.
 //! A [`ControlHub`] gives each connection a session that is unique across
-//! transports and ends it with the connection; a caller that uses
-//! [`Controller::handle`] directly gives each connection its own `session`.
+//! transports and ends it with the connection (the end is recorded in the hub, so the streams
+//! are closed even if the queue of the worker is full or the transport task is cancelled); a
+//! caller that uses [`Controller::handle`] directly gives each connection its own `session`.
+//! A transport that authenticates with a pre-shared key binds its session to the generation of
+//! the key ([`ControlHub::set_epoch`]): the worker does not run a queued request of a session
+//! whose key was replaced meanwhile.
 //!
 //! ## Errors on the wire
 //!

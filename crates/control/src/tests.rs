@@ -1228,8 +1228,8 @@ fn a_service_with_one_capability_is_unsupported_for_the_other() {
 }
 
 #[derive(Service)]
-struct Files {
-    open: Cell<bool>,
+pub(super) struct Files {
+    pub(super) open: Cell<bool>,
     lost: Cell<u32>,
 }
 
@@ -1310,11 +1310,11 @@ impl Action for Files {
     }
 }
 
-fn files_controller(files: &Files) -> Controller<Device<(), (), (&Files,)>, OpenPolicy> {
+pub(super) fn files_controller(files: &Files) -> Controller<Device<(), (), (&Files,)>, OpenPolicy> {
     Controller::new(Device::new(INFO, uptime, (), (), (files,)), OpenPolicy)
 }
 
-fn files() -> Files {
+pub(super) fn files() -> Files {
     Files {
         open: Cell::new(false),
         lost: Cell::new(0),
@@ -1480,7 +1480,7 @@ const OTHER: LinkSecurity = LinkSecurity {
     transport: Transport::Unspecified,
 };
 
-fn export(action: u32) -> Call {
+pub(super) fn export(action: u32) -> Call {
     Call::InvokeAction(pb::InvokeActionRequest {
         service_id: Files::ID,
         action_id: action,

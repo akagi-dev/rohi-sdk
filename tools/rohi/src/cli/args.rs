@@ -135,7 +135,7 @@ pub struct Cli {
     /// File with the pre-shared key of a TCP endpoint (64 hex characters). A
     /// restricted endpoint serves only clients that complete a handshake with
     /// it, and `rohi` then encrypts every request. Never put the key itself on
-    /// the command line; create the file with `rohi tcp-key generate FILE`.
+    /// the command line; get a key from the device with `rohi control_tcp reveal_psk`, which prints it.
     #[arg(
         long,
         global = true,
@@ -157,21 +157,6 @@ pub struct Cli {
 
     #[command(subcommand)]
     pub command: Command,
-}
-
-/// What `rohi tcp-key` does.
-#[derive(Subcommand, Debug, Clone)]
-pub enum TcpKeyAction {
-    /// Make the device generate a new key and save it to FILE (readable by you only).
-    ///
-    /// Every call replaces the device's key and disconnects the TCP clients of the old one.
-    /// The key is not printed. Over BLE the link is open in this build, so the key travels in
-    /// the clear: only run this where nobody else is in radio range.
-    Reveal {
-        /// Where to write the key. An existing file is never replaced.
-        #[arg(value_name = "FILE")]
-        file: PathBuf,
-    },
 }
 
 #[derive(Subcommand)]
@@ -386,25 +371,6 @@ Examples:
         #[arg(short, long)]
         follow: bool,
     },
-    /// Get the pre-shared key of the TCP control endpoint.
-    ///
-    /// A TCP control endpoint is restricted by default: a client must complete a
-    /// handshake with one 32-byte pre-shared key, and every request and response
-    /// is then authenticated and encrypted. `rohi` uses the key of `--psk-file
-    /// FILE` for `tcp://` targets.
-    ///
-    /// The device generates the key; a client never chooses it. `rohi tcp-key reveal FILE`
-    /// asks the device for a new one and saves it. There is no forward secrecy: whoever
-    /// learns the key can read a recorded session.
-    #[command(
-        name = "tcp-key",
-        subcommand,
-        after_help = "\
-Examples:
-  rohi tcp-key reveal tcp.key
-  rohi --psk-file tcp.key --device tcp://127.0.0.1:9300 status"
-    )]
-    TcpKey(TcpKeyAction),
     /// `rohi SERVICE [ACTION [ARG]...]`: a service of the device, see
     /// `rohi action --help`. The words are as the user typed them.
     #[command(external_subcommand)]

@@ -17,15 +17,16 @@
 ///////////////////////////////////////////////////////////////////////////////
 
 use core::fmt::Debug;
+use core::time::Duration;
 
-use embedded_io_async::{Read, Write};
+use embedded_io_async::{ErrorKind, ErrorType, Read, ReadExactError, Write};
 use log::{debug, info, trace, warn};
 use rohi_control::{Busy, Connection, ControlAccess, ControlHub, Transport, TransportAccessMode};
 use rohi_control_proto::control::{self as pb, Response_::Response as Reply};
 use rohi_control_proto::limits::MAX_REQUEST_LEN;
 use rohi_control_proto::{PROTOCOL_VERSION, encode};
 
-use zeroize::Zeroize;
+use zeroize::Zeroizing;
 
 use crate::frame::{HEADER_LEN, decode_header, encode_header};
 use crate::secure::{
@@ -37,7 +38,8 @@ use crate::secure::{
 pub mod error_kind {
     /// A record header was rejected.
     pub const FRAME: u8 = 1;
-    /// The connection ended inside a record or I/O failed.
+    /// The connection ended inside a record or I/O failed, or a client was too slow to finish a
+    /// handshake or a record in time.
     pub const IO: u8 = 2;
     /// The hub had no slot or no session for the request.
     pub const BUSY: u8 = 3;
@@ -45,6 +47,27 @@ pub mod error_kind {
     pub const AUTH: u8 = 4;
     /// A restricted endpoint has no pre-shared key (or no random source) and refused a client.
     pub const NO_PSK: u8 = 5;
+}
+
+/// How long a client has, from the moment it is accepted, to finish the handshake of a restricted
+/// endpoint. The limit is absolute: bytes that trickle in do not extend it.
+pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long a request record has, from its first byte to its last (header, data and tag), and how
+/// long a response has to be written. The limit is absolute: a client that sends one byte at a
+/// time does not extend it.
+pub const RECORD_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// A client connection whose time can be bounded.
+///
+/// The serving loop asks for an absolute limit, not for a limit on each read: a client that sends
+/// one byte just before every limit must not keep the connection (only one is served at a time).
+pub trait Timed: Read + Write {
+    /// Bounds the connection: with `Some(limit)`, every read and write that is still waiting
+    /// `limit` after this call fails with an error of kind [`ErrorKind::TimedOut`], however many
+    /// bytes arrived meanwhile. It replaces an earlier limit; `None` removes it, so a read waits
+    /// for the client (a stream can still end an idle connection by itself).
+    fn set_deadline(&mut self, limit: Option<Duration>);
 }
 
 /// A source of client connections, usually a listening socket.
@@ -59,7 +82,7 @@ pub mod error_kind {
 pub trait Acceptor {
     /// A connection: an ordered byte stream to one client. Dropping it closes
     /// the connection.
-    type Stream: Read + Write;
+    type Stream: Timed;
 
     /// A failure that makes the acceptor unusable. Transient failures
     /// (for example a client that gave up before it was accepted) are handled
@@ -116,6 +139,13 @@ impl PskSource for () {
 ///   unencrypted: for a loopback development setup only. A request on it is not trusted by the
 ///   policy beyond what the open mode allows.
 ///
+/// The only connection is not held by a client that is slow rather than silent: the handshake and
+/// every record have an absolute time limit ([`HANDSHAKE_TIMEOUT`], [`RECORD_TIMEOUT`], changed
+/// with [`with_timeouts`](ControlTcp::with_timeouts)) that the arrival of single bytes does not
+/// extend, and a response that cannot be written within [`RECORD_TIMEOUT`] ends the connection
+/// too. Waiting for the first byte of a record is not limited here: the stream ends an idle
+/// connection by itself (the host acceptor gives up after 60 seconds of silence).
+///
 /// One connection and one request in flight at a time, like a BLE central. Every connection is
 /// its own [`session`](rohi_control::LinkSecurity::session) of the hub, unique across every
 /// transport, so it cannot use the streams of another; the worker closes only that session's
@@ -124,6 +154,8 @@ pub struct ControlTcp<'h, 'a, A, K, const SLOTS: usize> {
     acceptor: A,
     hub: &'h ControlHub<'a, SLOTS>,
     key: K,
+    handshake_timeout: Duration,
+    record_timeout: Duration,
 }
 
 impl<'h, 'a, A, const SLOTS: usize> ControlTcp<'h, 'a, A, (), SLOTS>
@@ -137,6 +169,8 @@ where
             acceptor,
             hub,
             key: (),
+            handshake_timeout: HANDSHAKE_TIMEOUT,
+            record_timeout: RECORD_TIMEOUT,
         }
     }
 }
@@ -148,7 +182,22 @@ where
 {
     /// Serves the clients of `acceptor` through `hub`, authenticating them with the key of `key`.
     pub const fn with_psk(acceptor: A, hub: &'h ControlHub<'a, SLOTS>, key: K) -> Self {
-        Self { acceptor, hub, key }
+        Self {
+            acceptor,
+            hub,
+            key,
+            handshake_timeout: HANDSHAKE_TIMEOUT,
+            record_timeout: RECORD_TIMEOUT,
+        }
+    }
+
+    /// Replaces the absolute time limits of the handshake and of a record, see
+    /// [`HANDSHAKE_TIMEOUT`] and [`RECORD_TIMEOUT`].
+    #[must_use]
+    pub const fn with_timeouts(mut self, handshake: Duration, record: Duration) -> Self {
+        self.handshake_timeout = handshake;
+        self.record_timeout = record;
+        self
     }
 
     /// The wrapped acceptor.
@@ -218,13 +267,14 @@ where
         let access = self.hub.access()?;
         // The epoch before the key: a key replaced in between is noticed at the first record.
         let epoch = access.tcp_psk_epoch();
-        let Some(mut psk) = self.key.psk() else {
+        // Wiped when dropped, so also when the handshake is cancelled.
+        let Some(psk) = self.key.psk().map(Zeroizing::new) else {
             warn!(target: "control.tcp", "No pre-shared key is provisioned, client refused");
             self.error(error_kind::NO_PSK);
             return None;
         };
+        stream.set_deadline(Some(self.handshake_timeout));
         let result = self.exchange(access, stream, &psk).await;
-        psk.zeroize();
         result.map(|channel| (channel, epoch))
     }
 
@@ -235,9 +285,8 @@ where
         psk: &[u8; PSK_LEN],
     ) -> Option<Channel> {
         let mut hello = [0u8; CLIENT_HELLO_LEN];
-        if stream.read_exact(&mut hello).await.is_err() {
-            self.error(error_kind::IO);
-            debug!(target: "control.tcp", "Connection ended inside the handshake");
+        if let Err(error) = stream.read_exact(&mut hello).await {
+            self.read_failed("the handshake", error);
             return None;
         }
         let mut nonce = [0u8; NONCE_LEN];
@@ -253,14 +302,17 @@ where
                 return None;
             }
         };
-        if stream.write_all(&server_hello).await.is_err() || stream.flush().await.is_err() {
-            self.error(error_kind::IO);
+        let sent = async {
+            stream.write_all(&server_hello).await?;
+            stream.flush().await
+        };
+        if let Err(error) = sent.await {
+            self.failed("the handshake", &error);
             return None;
         }
         let mut finish = [0u8; CLIENT_FINISH_LEN];
-        if stream.read_exact(&mut finish).await.is_err() {
-            self.error(error_kind::IO);
-            debug!(target: "control.tcp", "Connection ended inside the handshake");
+        if let Err(error) = stream.read_exact(&mut finish).await {
+            self.read_failed("the handshake", error);
             return None;
         }
         match handshake.finish(&finish) {
@@ -289,24 +341,23 @@ where
         };
         // Only now is this the connection of an authenticated client.
         connection.set_link(true, true);
+        connection.set_epoch(epoch);
         debug!(target: "control.tcp", "Client authenticated");
         loop {
+            stream.set_deadline(None);
             // A key that was set, replaced or removed ends the connections of the old one.
             if access.tcp_psk_epoch() != epoch {
                 info!(target: "control.tcp", "The key changed, closing the connection");
                 return;
             }
             let mut header = [0u8; RECORD_HEADER_LEN];
-            match read_header(&mut stream, &mut header).await {
+            match self.read_header(&mut stream, &mut header).await {
                 Ok(true) => {}
                 Ok(false) => {
                     debug!(target: "control.tcp", "Client closed the connection");
                     return;
                 }
-                Err(()) => {
-                    self.error(error_kind::IO);
-                    return;
-                }
+                Err(()) => return,
             }
             let len = match channel.open_header(header, MAX_REQUEST_LEN) {
                 Ok(len) => len,
@@ -325,8 +376,8 @@ where
                     // The record is read but never opened, so the receive counter would fall behind
                     // the client: answer once and end the connection; the client reconnects.
                     let mut tag = [0u8; TAG_LEN];
-                    if !discard(&mut stream, len).await
-                        || stream.read_exact(&mut tag).await.is_err()
+                    if !self.discard(&mut stream, len).await
+                        || self.read_tag(&mut stream, &mut tag).await.is_err()
                     {
                         return;
                     }
@@ -336,14 +387,11 @@ where
                 }
             };
             let mut tag = [0u8; TAG_LEN];
-            if stream
-                .read_exact(&mut reservation.buffer()[..len])
-                .await
-                .is_err()
-                || stream.read_exact(&mut tag).await.is_err()
-            {
-                self.error(error_kind::IO);
-                debug!(target: "control.tcp", "Connection ended inside a request (size_b={})", len);
+            if let Err(error) = stream.read_exact(&mut reservation.buffer()[..len]).await {
+                self.read_failed("a request", error);
+                return;
+            }
+            if self.read_tag(&mut stream, &mut tag).await.is_err() {
                 return;
             }
             // A key that changed while the record was on its way revokes it too.
@@ -382,18 +430,15 @@ where
     async fn serve_plain(&self, mut stream: A::Stream, connection: &Connection<'h, 'a, SLOTS>) {
         warn!(target: "control.tcp", "Plaintext connection: the endpoint is open");
         loop {
+            stream.set_deadline(None);
             let mut header = [0u8; HEADER_LEN];
-            match read_header(&mut stream, &mut header).await {
+            match self.read_header(&mut stream, &mut header).await {
                 Ok(true) => {}
                 Ok(false) => {
                     debug!(target: "control.tcp", "Client closed the connection");
                     return;
                 }
-                Err(()) => {
-                    self.error(error_kind::IO);
-                    debug!(target: "control.tcp", "Connection ended inside a record header");
-                    return;
-                }
+                Err(()) => return,
             }
             let len = match decode_header(header, MAX_REQUEST_LEN) {
                 Ok(len) => len,
@@ -402,7 +447,8 @@ where
                     // resynchronized: answer once and close.
                     warn!(target: "control.tcp", "Record rejected (err={})", error);
                     self.error(error_kind::FRAME);
-                    send_error(&mut stream, pb::ErrorCode::InvalidArgument).await;
+                    self.send_plain_error(&mut stream, pb::ErrorCode::InvalidArgument)
+                        .await;
                     return;
                 }
             };
@@ -411,8 +457,10 @@ where
                 Err(Busy::Busy | Busy::Closed) => {
                     warn!(target: "control.tcp", "No request slot, request refused (size_b={})", len);
                     self.error(error_kind::BUSY);
-                    if !discard(&mut stream, len).await
-                        || !send_error(&mut stream, pb::ErrorCode::Busy).await
+                    if !self.discard(&mut stream, len).await
+                        || !self
+                            .send_plain_error(&mut stream, pb::ErrorCode::Busy)
+                            .await
                     {
                         return;
                     }
@@ -420,12 +468,7 @@ where
                 }
             };
             if let Err(error) = stream.read_exact(&mut reservation.buffer()[..len]).await {
-                self.error(error_kind::IO);
-                debug!(
-                    target: "control.tcp",
-                    "Connection ended inside a request (size_b={} err={:?})",
-                    len, error
-                );
+                self.read_failed("a request", error);
                 return;
             }
             trace!(target: "control.tcp", "Request record received (size_b={})", len);
@@ -444,6 +487,82 @@ where
         self.hub.transport_error(Transport::Tcp, kind);
     }
 
+    // Counts a failed read or write. A timeout is a client that was too slow.
+    fn failed(&self, what: &str, error: &impl embedded_io_async::Error) {
+        self.error(error_kind::IO);
+        if error.kind() == ErrorKind::TimedOut {
+            self.slow(what);
+        } else {
+            debug!(target: "control.tcp", "Connection ended inside {} (err={:?})", what, error);
+        }
+    }
+
+    fn read_failed(&self, what: &str, error: ReadExactError<<A::Stream as ErrorType>::Error>) {
+        match error {
+            ReadExactError::Other(error) => self.failed(what, &error),
+            ReadExactError::UnexpectedEof => {
+                self.error(error_kind::IO);
+                debug!(target: "control.tcp", "Connection ended inside {}", what);
+            }
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn slow(&self, what: &str) {
+        warn!(target: "control.tcp", "Client too slow, closing the connection (in={})", what);
+    }
+
+    // A record header. The wait for its first byte is not limited; the limit of the whole record,
+    // header, data and tag, starts with that byte. `Ok(false)` is a clean end of the stream before
+    // the first byte; `Err` ended the connection (counted).
+    async fn read_header<const N: usize>(
+        &self,
+        stream: &mut A::Stream,
+        header: &mut [u8; N],
+    ) -> Result<bool, ()> {
+        match stream.read(&mut header[..1]).await {
+            Ok(0) => return Ok(false),
+            Ok(_) => {}
+            Err(error) => {
+                self.failed("a record header", &error);
+                return Err(());
+            }
+        }
+        stream.set_deadline(Some(self.record_timeout));
+        match stream.read_exact(&mut header[1..]).await {
+            Ok(()) => Ok(true),
+            Err(error) => {
+                self.read_failed("a record header", error);
+                Err(())
+            }
+        }
+    }
+
+    async fn read_tag(&self, stream: &mut A::Stream, tag: &mut [u8; TAG_LEN]) -> Result<(), ()> {
+        match stream.read_exact(tag).await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.read_failed("a request", error);
+                Err(())
+            }
+        }
+    }
+
+    // Reads and drops `len` bytes; `false` if the connection ended.
+    async fn discard(&self, stream: &mut A::Stream, mut len: usize) -> bool {
+        let mut scratch = [0u8; 64];
+        while len > 0 {
+            let take = len.min(scratch.len());
+            if let Err(error) = stream.read_exact(&mut scratch[..take]).await {
+                self.read_failed("a record", error);
+                return false;
+            }
+            len -= take;
+        }
+        true
+    }
+
     // One encrypted record: header, data (already sealed in place) and tag.
     async fn write_record(
         &self,
@@ -452,6 +571,7 @@ where
         sealed: &[u8],
         tag: [u8; TAG_LEN],
     ) -> bool {
+        stream.set_deadline(Some(self.record_timeout));
         let result = async {
             stream.write_all(&header).await?;
             stream.write_all(sealed).await?;
@@ -465,8 +585,7 @@ where
                 true
             }
             Err(error) => {
-                self.error(error_kind::IO);
-                debug!(target: "control.tcp", "Sending the response failed (err={:?})", error);
+                self.failed("a response", &error);
                 false
             }
         }
@@ -500,6 +619,7 @@ where
             );
             return false;
         };
+        stream.set_deadline(Some(self.record_timeout));
         let result = async {
             stream.write_all(&encode_header(len)).await?;
             stream.write_all(payload).await?;
@@ -512,29 +632,20 @@ where
                 true
             }
             Err(error) => {
-                self.error(error_kind::IO);
-                debug!(
-                    target: "control.tcp",
-                    "Sending the response failed (size_b={} err={:?})",
-                    payload.len(), error
-                );
+                self.failed("a response", &error);
                 false
             }
         }
     }
-}
 
-/// Reads and drops `len` bytes; `false` if the connection ended.
-async fn discard<R: Read>(stream: &mut R, mut len: usize) -> bool {
-    let mut scratch = [0u8; 64];
-    while len > 0 {
-        let take = len.min(scratch.len());
-        if stream.read_exact(&mut scratch[..take]).await.is_err() {
+    /// Answers a plaintext client with a typed error that has no request id.
+    async fn send_plain_error(&self, stream: &mut A::Stream, code: pb::ErrorCode) -> bool {
+        let mut bytes = [0u8; 16];
+        let Some(written) = encode_error(code, &mut bytes) else {
             return false;
-        }
-        len -= take;
+        };
+        self.send(stream, &bytes[..written]).await
     }
-    true
 }
 
 /// A typed error with no request id, encoded; `None` when it does not fit.
@@ -552,42 +663,4 @@ fn encode_error(code: pb::ErrorCode, bytes: &mut [u8; 16]) -> Option<usize> {
         warn!(target: "control.tcp", "Cannot encode the error response");
     }
     written.ok()
-}
-
-/// Answers a plaintext client with a typed error that has no request id.
-async fn send_error<W: Write>(stream: &mut W, code: pb::ErrorCode) -> bool {
-    let mut bytes = [0u8; 16];
-    let Some(written) = encode_error(code, &mut bytes) else {
-        return false;
-    };
-    let Ok(len) = u32::try_from(written) else {
-        return false;
-    };
-    let result = async {
-        stream.write_all(&encode_header(len)).await?;
-        stream.write_all(&bytes[..written]).await?;
-        stream.flush().await
-    }
-    .await;
-    result.is_ok()
-}
-
-/// Reads a record header. `Ok(false)` is a clean end of the stream before the
-/// first byte; an end inside the header is an error.
-async fn read_header<R: Read, const N: usize>(
-    stream: &mut R,
-    header: &mut [u8; N],
-) -> Result<bool, ()> {
-    match stream.read(&mut header[..1]).await {
-        Ok(0) => return Ok(false),
-        Ok(_) => {}
-        Err(error) => {
-            debug!(target: "control.tcp", "Reading a record header failed (err={:?})", error);
-            return Err(());
-        }
-    }
-    stream.read_exact(&mut header[1..]).await.map_err(|error| {
-        debug!(target: "control.tcp", "Reading a record header failed (err={:?})", error);
-    })?;
-    Ok(true)
 }

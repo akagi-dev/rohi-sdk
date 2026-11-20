@@ -40,7 +40,6 @@ mod logs;
 mod positional;
 mod status;
 mod target;
-mod tcp_key;
 mod terminal;
 mod values;
 
@@ -48,7 +47,7 @@ use std::future::Future;
 use std::process::ExitCode;
 use std::time::Duration;
 
-pub use args::{Cli, ColorChoice, Command, ConfigAction, LogsAction, OutputFormat, TcpKeyAction};
+pub use args::{Cli, ColorChoice, Command, ConfigAction, LogsAction, OutputFormat};
 pub use diagnostic::{CliError, Diagnostic, PartialApply};
 pub use target::{Match, Target, resolve};
 pub use terminal::Io;
@@ -164,7 +163,6 @@ pub async fn execute<T: ClientTransport>(
             lines,
             follow,
         } => logs::run(device, action, lines, follow, ctx).await,
-        Command::TcpKey(action) => tcp_key::run(device, action, ctx).await,
     }
 }
 

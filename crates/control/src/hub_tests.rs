@@ -210,3 +210,91 @@ fn a_session_that_ended_before_its_request_ran_gets_no_execution() {
     });
     assert!(matches!(reply, Ok(Reply::GetInfo(_))));
 }
+
+fn serve<B: crate::ControlBackend, P: crate::AuthorizationPolicy, T>(
+    hub: &ControlHub<'_, 4>,
+    controller: &Controller<B, P>,
+    client: impl core::future::Future<Output = T>,
+) -> T {
+    match block_on(select(hub.serve(controller), client)) {
+        Either::First(never) => never,
+        Either::Second(value) => value,
+    }
+}
+
+// A queued export of a session bound to the current key, then the key rotates (or not) before
+// the worker gets to it. Returns whether the response is empty and whether the export ran.
+fn queued_export(rotate: bool) -> (bool, bool) {
+    let access = ControlAccess::new(|_| false);
+    access.set_tcp_psk(true);
+    let hub = ControlHub::<4>::with_access(&access);
+    let files = crate::tests::files();
+    let controller = crate::tests::files_controller(&files);
+    let connection = hub.connect(Transport::Tcp).unwrap();
+    connection.set_link(true, true);
+    connection.set_epoch(access.tcp_psk_epoch());
+    let mut reservation = connection.request().unwrap();
+    let bytes = request(7, crate::tests::export(1));
+    reservation.buffer()[..bytes.len()].copy_from_slice(&bytes);
+    let mut submit = core::pin::pin!(reservation.submit(bytes.len()));
+    assert!(poll_once(submit.as_mut()).is_pending());
+    if rotate {
+        access.set_tcp_psk(true);
+    }
+    let empty = serve(&hub, &controller, async { submit.await.bytes().is_empty() });
+    (empty, files.open.get())
+}
+
+#[test]
+fn a_request_queued_before_the_key_rotated_is_not_executed() {
+    assert_eq!(queued_export(false), (false, true));
+    // Nothing runs and the empty response ends the connection.
+    assert_eq!(queued_export(true), (true, false));
+}
+
+#[test]
+fn a_request_of_a_session_with_no_key_epoch_is_not_affected_by_rotation() {
+    let access = ControlAccess::new(|_| false);
+    let hub = ControlHub::<4>::with_access(&access);
+    let controller = controller();
+    let session = hub.open_session(Transport::Ble).unwrap();
+    access.set_tcp_psk(true);
+    let reply = run(&hub, &controller, exchange(&hub, session, 1, info()));
+    assert!(matches!(reply, Ok(Reply::GetInfo(_))));
+}
+
+#[test]
+fn the_end_of_a_connection_is_not_lost_when_the_queue_is_full() {
+    let access = ControlAccess::new(|_| false);
+    let hub = ControlHub::<4>::with_access(&access);
+    let files = crate::tests::files();
+    let controller = crate::tests::files_controller(&files);
+    let connection = hub.connect(Transport::Ble).unwrap();
+    let export = serve(&hub, &controller, async {
+        exchange(&hub, connection.id(), 1, crate::tests::export(1)).await
+    });
+    assert!(matches!(export, Ok(Reply::ActionStream(_))));
+    assert!(files.open.get());
+    // Fill the queue: an ending per dropped connection and one request ticket.
+    for _ in 0..7 {
+        drop(hub.connect(Transport::Ble).unwrap());
+    }
+    let mut reservation = connection.request().unwrap();
+    let bytes = request(2, info());
+    reservation.buffer()[..bytes.len()].copy_from_slice(&bytes);
+    {
+        let mut submit = core::pin::pin!(reservation.submit(bytes.len()));
+        assert!(poll_once(submit.as_mut()).is_pending());
+        // No room for the wake-up of this one.
+        drop(connection);
+    }
+    serve(&hub, &controller, async {
+        for _ in 0..16 {
+            embassy_futures::yield_now().await;
+        }
+    });
+    assert!(
+        !files.open.get(),
+        "the stream of the ended connection is closed"
+    );
+}

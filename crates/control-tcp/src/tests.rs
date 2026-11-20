@@ -17,6 +17,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 
 use core::convert::Infallible;
+use core::time::Duration;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -33,7 +34,7 @@ use rohi_control_proto::limits::{MAX_REQUEST_LEN, MAX_RESPONSE_LEN};
 use rohi_control_proto::{PROTOCOL_VERSION, decode, encode};
 
 use crate::frame::{HEADER_LEN, decode_header, encode_header};
-use crate::{Acceptor, ControlTcp};
+use crate::{Acceptor, ControlTcp, Timed};
 
 #[derive(Default)]
 struct Wire {
@@ -43,6 +44,13 @@ struct Wire {
     chunk: usize,
     /// A read that finds no data fails instead of ending the stream.
     reset_when_empty: bool,
+    /// From this offset of `incoming` on (counted in bytes read), a byte takes `pace` to arrive.
+    slow_from: usize,
+    pace: Duration,
+    read: usize,
+    /// The virtual time, advanced by the slow bytes, and the absolute limit set by the server.
+    now: Duration,
+    deadline: Option<Duration>,
 }
 
 #[derive(Clone, Default)]
@@ -53,18 +61,42 @@ impl Connection {
         let wire = Wire {
             incoming: incoming.iter().copied().collect(),
             chunk,
+            slow_from: usize::MAX,
             ..Wire::default()
         };
         Self(Rc::new(RefCell::new(wire)))
     }
 
+    // A client whose bytes from `slow_from` on come one at a time, each `pace` after the last.
+    fn trickling(incoming: &[u8], slow_from: usize, pace: Duration) -> Self {
+        let connection = Self::new(incoming, 4096);
+        {
+            let mut wire = connection.0.borrow_mut();
+            wire.slow_from = slow_from;
+            wire.pace = pace;
+        }
+        connection
+    }
+
     fn outgoing(&self) -> Vec<u8> {
         self.0.borrow().outgoing.clone()
+    }
+
+    // How much of the script the server consumed.
+    fn consumed(&self) -> usize {
+        self.0.borrow().read
+    }
+}
+
+impl Timed for Connection {
+    fn set_deadline(&mut self, limit: Option<Duration>) {
+        let mut wire = self.0.borrow_mut();
+        wire.deadline = limit.map(|limit| wire.now + limit);
     }
 }
 
 #[derive(Debug)]
-struct Reset;
+struct Reset(bool);
 
 impl core::fmt::Display for Reset {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -76,7 +108,11 @@ impl core::error::Error for Reset {}
 
 impl embedded_io_async::Error for Reset {
     fn kind(&self) -> embedded_io_async::ErrorKind {
-        embedded_io_async::ErrorKind::ConnectionReset
+        if self.0 {
+            embedded_io_async::ErrorKind::TimedOut
+        } else {
+            embedded_io_async::ErrorKind::ConnectionReset
+        }
     }
 }
 
@@ -88,12 +124,24 @@ impl Read for Connection {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Reset> {
         let mut wire = self.0.borrow_mut();
         if wire.incoming.is_empty() && wire.reset_when_empty {
-            return Err(Reset);
+            return Err(Reset(false));
         }
-        let count = buf.len().min(wire.chunk.max(1)).min(wire.incoming.len());
+        let mut count = buf.len().min(wire.chunk.max(1)).min(wire.incoming.len());
+        if wire.read < wire.slow_from {
+            count = count.min(wire.slow_from - wire.read);
+        } else if count > 0 {
+            // A slow byte: the time passes, and a read after the limit is refused.
+            count = 1;
+            let pace = wire.pace;
+            wire.now += pace;
+            if wire.deadline.is_some_and(|deadline| wire.now > deadline) {
+                return Err(Reset(true));
+            }
+        }
         for slot in &mut buf[..count] {
             *slot = wire.incoming.pop_front().unwrap();
         }
+        wire.read += count;
         Ok(count)
     }
 }
@@ -965,6 +1013,11 @@ mod secure_endpoint {
                 self.inner.read(buf).await
             }
         }
+        impl Timed for Rotating<'_> {
+            fn set_deadline(&mut self, limit: Option<Duration>) {
+                self.inner.set_deadline(limit);
+            }
+        }
         impl Write for Rotating<'_> {
             async fn write(&mut self, buf: &[u8]) -> Result<usize, Reset> {
                 self.inner.write(buf).await
@@ -1018,6 +1071,11 @@ mod secure_endpoint {
                 self.0.read(buf).await
             }
         }
+        impl Timed for Silent {
+            fn set_deadline(&mut self, limit: Option<Duration>) {
+                self.0.set_deadline(limit);
+            }
+        }
         impl Write for Silent {
             async fn write(&mut self, buf: &[u8]) -> Result<usize, Reset> {
                 self.0.write(buf).await
@@ -1062,5 +1120,61 @@ mod secure_endpoint {
         });
         assert!(cancelled);
         assert_eq!(access.stats(Transport::Tcp).sessions, 0);
+    }
+
+    // A client of a restricted endpoint that sends one byte every 400 ms from byte `from` on,
+    // against limits of one second: no single read is slow, the whole is.
+    fn trickle(bytes: &[u8], from: usize) -> (ControlAccess, Connection) {
+        let access = restricted_access();
+        let key = Key(Cell::new(Some(KEY)));
+        let wire = Connection::trickling(bytes, from, Duration::from_millis(400));
+        let controller = secured(&access);
+        let hub = ControlHub::<2>::with_access(&access);
+        let mut control = ControlTcp::with_psk(Clients([wire.clone()].into()), &hub, &key)
+            .with_timeouts(Duration::from_secs(1), Duration::from_secs(1));
+        drive_secured(&hub, &controller, control.serve_next()).unwrap();
+        assert_eq!(access.stats(Transport::Tcp).sessions, 0);
+        (access, wire)
+    }
+
+    #[test]
+    fn a_client_that_trickles_the_handshake_is_cut_off_at_the_deadline() {
+        let script = Script::start(&KEY);
+        let (access, wire) = trickle(&script.bytes, 0);
+        // The third byte after the first is the one that passes the second.
+        assert!(wire.consumed() < CLIENT_HELLO_LEN);
+        assert!(wire.outgoing().is_empty());
+        assert_eq!(access.stats(Transport::Tcp).last_error, error_kind::IO);
+        assert_eq!(access.stats(Transport::Tcp).auth_failures, 0);
+    }
+
+    #[test]
+    fn a_client_that_trickles_a_request_is_cut_off_at_the_deadline() {
+        let mut script = Script::start(&KEY);
+        let handshake = script.bytes.len();
+        script.request(info(1), 1);
+        let (access, wire) = trickle(&script.bytes, handshake);
+        // The handshake was served; the record never completed and got no answer.
+        assert!(wire.consumed() < script.bytes.len());
+        assert_eq!(wire.outgoing().len(), SERVER_HELLO_LEN);
+        assert_eq!(access.stats(Transport::Tcp).last_error, error_kind::IO);
+        assert_eq!(access.stats(Transport::Tcp).accepted, 0);
+    }
+
+    #[test]
+    fn a_client_that_is_in_time_is_not_cut_off() {
+        // The same pace, with limits that allow it.
+        let mut script = Script::start(&KEY);
+        let handshake = script.bytes.len();
+        script.request(info(1), 1);
+        let access = restricted_access();
+        let key = Key(Cell::new(Some(KEY)));
+        let wire = Connection::trickling(&script.bytes, handshake, Duration::from_millis(2));
+        let controller = secured(&access);
+        let hub = ControlHub::<2>::with_access(&access);
+        let mut control = ControlTcp::with_psk(Clients([wire.clone()].into()), &hub, &key)
+            .with_timeouts(Duration::from_secs(1), Duration::from_secs(1));
+        drive_secured(&hub, &controller, control.serve_next()).unwrap();
+        assert_eq!(script.responses(&wire.outgoing()).len(), 1);
     }
 }

@@ -253,3 +253,39 @@ fn the_control_transport_serves_a_client_over_a_host_socket() {
     assert_eq!(response.request_id, 3);
     assert!(matches!(response.response, Some(Reply::GetInfo(_))));
 }
+
+#[test]
+fn a_deadline_ends_a_client_that_sends_one_byte_at_a_time() {
+    use rohi_control_tcp::Timed as _;
+    use std::time::Instant;
+
+    let mut acceptor = TcpAcceptor::bind(([127, 0, 0, 1], 0).into()).unwrap();
+    let address = acceptor.local_addr().unwrap();
+    let client = std::thread::spawn(move || {
+        let mut stream = std::net::TcpStream::connect(address).unwrap();
+        // Each byte is well inside any per-read limit; together they are not.
+        for _ in 0..50 {
+            if stream.write_all(b"x").is_err() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+    block_on(async {
+        let mut stream = acceptor.accept().await.unwrap();
+        stream.set_deadline(Some(Duration::from_millis(350)));
+        let started = Instant::now();
+        let mut buffer = [0u8; 32];
+        let error = stream.read_exact(&mut buffer).await.unwrap_err();
+        assert!(matches!(
+            error,
+            embedded_io_async::ReadExactError::Other(ref error) if error.kind() == std::io::ErrorKind::TimedOut
+        ));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        // Without a deadline the same client is read on.
+        stream.set_deadline(None);
+        let mut next = [0u8; 1];
+        stream.read_exact(&mut next).await.unwrap();
+    });
+    client.join().unwrap();
+}

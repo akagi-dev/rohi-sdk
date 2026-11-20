@@ -22,13 +22,12 @@ need no update of this tool.
 Usage: rohi [OPTIONS] <COMMAND>
 
 Commands:
-  scan     Discover nearby ROHI devices
-  status   Show the runtime status of the device and its services
-  config   Read and change the persistent configuration.
-  action   List and run the actions of the services.
-  logs     Show, follow, download or clear the device log
-  tcp-key  Get the pre-shared key of the TCP control endpoint
-  help     Print this message or the help of the given subcommand(s)
+  scan    Discover nearby ROHI devices
+  status  Show the runtime status of the device and its services
+  config  Read and change the persistent configuration.
+  action  List and run the actions of the services.
+  logs    Show, follow, download or clear the device log
+  help    Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help
@@ -70,7 +69,7 @@ Connection:
           [default: 10]
 
       --psk-file <FILE>
-          File with the pre-shared key of a TCP endpoint (64 hex characters). A restricted endpoint serves only clients that complete a handshake with it, and `rohi` then encrypts every request. Never put the key itself on the command line; create the file with `rohi tcp-key generate FILE`
+          File with the pre-shared key of a TCP endpoint (64 hex characters). A restricted endpoint serves only clients that complete a handshake with it, and `rohi` then encrypts every request. Never put the key itself on the command line; get a key from the device with `rohi control_tcp reveal_psk`, which prints it
           
           [env: ROHI_PSK_FILE=]
 

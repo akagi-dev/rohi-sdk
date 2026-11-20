@@ -18,6 +18,7 @@
 //! The mailbox between the transports and the one control worker.
 
 use core::cell::{Cell, RefCell};
+use core::ops::{Deref, DerefMut};
 
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -25,6 +26,7 @@ use embassy_sync::channel::Channel;
 use embassy_sync::mutex::{Mutex, MutexGuard};
 use embassy_sync::signal::Signal;
 use heapless::Vec;
+use log::debug;
 use rohi_control_proto::limits::{MAX_REQUEST_LEN, MAX_RESPONSE_LEN};
 use zeroize::Zeroize;
 
@@ -35,7 +37,10 @@ use crate::{
 /// The most connections that are live at once, over every transport.
 pub const MAX_SESSIONS: usize = 4;
 
-// Requests in flight plus session endings that wait for the worker.
+// Live plus ended-but-not-closed sessions at most: an ending always has room.
+const TRACKED: usize = 2 * MAX_SESSIONS;
+
+// Requests in flight plus wake-ups of the worker for session endings.
 const QUEUE: usize = 8;
 
 type Raw = CriticalSectionRawMutex;
@@ -127,7 +132,9 @@ impl Slot {
 #[derive(Clone, Copy)]
 enum Work {
     Request { slot: usize, generation: u32 },
-    Close(u64),
+    // Some session ended: the worker looks in `Sessions::closed`. Carries no
+    // identity, so a lost or repeated token never loses or repeats an ending.
+    Sweep,
 }
 
 #[derive(Clone, Copy)]
@@ -136,6 +143,8 @@ struct Session {
     transport: Transport,
     encrypted: bool,
     authenticated: bool,
+    // The generation of the pre-shared key the connection authenticated with.
+    epoch: Option<u32>,
 }
 
 struct Sessions {
@@ -143,6 +152,9 @@ struct Sessions {
     // zero so that the whole hub is zero-initialized and lands in `.bss`.
     issued: u64,
     live: Vec<Session, MAX_SESSIONS>,
+    // Ended sessions whose streams the worker has not closed yet. `live` and
+    // `closed` together never exceed TRACKED, so an ending always fits.
+    closed: Vec<u64, TRACKED>,
 }
 
 /// The mailbox of the control worker: `SLOTS` request/response buffers that
@@ -155,7 +167,7 @@ struct Sessions {
 ///   request(session) ─► Reservation ─ fill ─ submit ─┐
 ///                                                    ├─► ticket ─► serve: Controller::handle
 ///   Response ◄──────────── response in the same slot ┘
-///   close_session ─► ticket ─► Controller::session_closed
+///   close_session ─► ending recorded ─► Controller::session_closed
 /// ```
 ///
 /// Only [`serve`](Self::serve) calls the [`Controller`], so Config, Status,
@@ -193,6 +205,7 @@ impl<'a, const SLOTS: usize> ControlHub<'a, SLOTS> {
             sessions: BlockingMutex::new(RefCell::new(Sessions {
                 issued: 0,
                 live: Vec::new(),
+                closed: Vec::new(),
             })),
         }
     }
@@ -227,12 +240,14 @@ impl<'a, const SLOTS: usize> ControlHub<'a, SLOTS> {
     ///
     /// # Errors
     ///
-    /// [`Busy::Busy`] when [`MAX_SESSIONS`] connections are live or the
-    /// 64-bit identity space is exhausted.
+    /// [`Busy::Busy`] when [`MAX_SESSIONS`] connections are live, when as
+    /// many more ended and wait for the worker to close their streams (it is
+    /// busy with a long action), or when the 64-bit identity space is
+    /// exhausted.
     pub fn open_session(&self, transport: Transport) -> Result<SessionId, Busy> {
         let id = self.sessions.lock(|sessions| {
             let mut sessions = sessions.borrow_mut();
-            if sessions.live.is_full() {
+            if sessions.live.is_full() || sessions.live.len() + sessions.closed.len() >= TRACKED {
                 return None;
             }
             let id = sessions.issued.checked_add(1)?;
@@ -242,6 +257,7 @@ impl<'a, const SLOTS: usize> ControlHub<'a, SLOTS> {
                 transport,
                 encrypted: false,
                 authenticated: false,
+                epoch: None,
             });
             Some(id)
         });
@@ -269,18 +285,40 @@ impl<'a, const SLOTS: usize> ControlHub<'a, SLOTS> {
         });
     }
 
-    /// Ends a connection: its requests that did not start are not executed
-    /// and the worker closes its streams, in order
-    /// with the requests already queued.
+    /// Binds the connection of `session` to the generation of the
+    /// pre-shared key it authenticated with ([`ControlAccess::tcp_psk_epoch`]).
     ///
-    /// Waits only if the queue is full.
+    /// The worker runs a request of the session only while the key still has
+    /// that generation: a request that was queued before the key changed is
+    /// answered with an empty response, which the frontend turns into a
+    /// closed connection, and never executes.
+    pub fn set_epoch(&self, session: SessionId, epoch: u32) {
+        self.sessions.lock(|sessions| {
+            if let Some(entry) = sessions
+                .borrow_mut()
+                .live
+                .iter_mut()
+                .find(|entry| entry.id == session.0)
+            {
+                entry.epoch = Some(epoch);
+            }
+        });
+    }
+
+    /// Ends a connection: its requests that did not start are not executed
+    /// and the worker closes its streams.
+    ///
+    /// The ending is recorded before this waits, so dropping the future (or
+    /// a full queue) never loses it: the worker closes the streams after the
+    /// request it is handling. Waits only if the queue is full.
     pub async fn close_session(&self, session: SessionId) {
         if self.forget(session) {
-            self.queue.send(Work::Close(session.0)).await;
+            self.queue.send(Work::Sweep).await;
         }
     }
 
-    // Removes the session; `false` if it was not live.
+    // Removes the session and records its ending for the worker; `false` if
+    // it was not live.
     fn forget(&self, session: SessionId) -> bool {
         let transport = self.sessions.lock(|sessions| {
             let mut sessions = sessions.borrow_mut();
@@ -288,7 +326,9 @@ impl<'a, const SLOTS: usize> ControlHub<'a, SLOTS> {
                 .live
                 .iter()
                 .position(|entry| entry.id == session.0)?;
-            Some(sessions.live.swap_remove(at).transport)
+            let ended = sessions.live.swap_remove(at);
+            let _ = sessions.closed.push(ended.id);
+            Some(ended.transport)
         });
         let Some(transport) = transport else {
             return false;
@@ -362,20 +402,48 @@ impl<'a, const SLOTS: usize> ControlHub<'a, SLOTS> {
         Err(Busy::Busy)
     }
 
-    fn link_of(&self, session: u64) -> Option<LinkSecurity> {
+    // The link of a live session and the key generation it is bound to.
+    fn link_of(&self, session: u64) -> Option<(LinkSecurity, Option<u32>)> {
         self.sessions.lock(|sessions| {
             sessions
                 .borrow()
                 .live
                 .iter()
                 .find(|entry| entry.id == session)
-                .map(|entry| LinkSecurity {
-                    encrypted: entry.encrypted,
-                    authenticated: entry.authenticated,
-                    session: entry.id,
-                    transport: entry.transport,
+                .map(|entry| {
+                    let link = LinkSecurity {
+                        encrypted: entry.encrypted,
+                        authenticated: entry.authenticated,
+                        session: entry.id,
+                        transport: entry.transport,
+                    };
+                    (link, entry.epoch)
                 })
         })
+    }
+
+    // Whether a session bound to `epoch` may still run: the key must be the
+    // one it authenticated with. Fails closed without an access state.
+    fn epoch_valid(&self, epoch: Option<u32>) -> bool {
+        match epoch {
+            None => true,
+            Some(epoch) => self
+                .access()
+                .is_some_and(|access| access.tcp_psk_epoch() == epoch),
+        }
+    }
+
+    // Closes the streams of the sessions that ended.
+    async fn sweep<B: ControlBackend, P: AuthorizationPolicy>(
+        &self,
+        controller: &Controller<B, P>,
+    ) {
+        while let Some(session) = self
+            .sessions
+            .lock(|sessions| sessions.borrow_mut().closed.pop())
+        {
+            controller.session_closed(session).await;
+        }
     }
 
     /// The control worker: serves the tickets of every transport with the one
@@ -385,9 +453,9 @@ impl<'a, const SLOTS: usize> ControlHub<'a, SLOTS> {
         controller: &Controller<B, P>,
     ) -> ! {
         loop {
-            match self.queue.receive().await {
-                Work::Close(session) => controller.session_closed(session).await,
-                Work::Request { slot, generation } => self.run(controller, slot, generation).await,
+            self.sweep(controller).await;
+            if let Work::Request { slot, generation } = self.queue.receive().await {
+                self.run(controller, slot, generation).await;
             }
         }
     }
@@ -417,22 +485,29 @@ impl<'a, const SLOTS: usize> ControlHub<'a, SLOTS> {
         let Some(started) = started else {
             return;
         };
-        let mut data = slot.data.lock().await;
+        let mut data = Wiped(slot.data.lock().await);
         let Some((session, len)) = started else {
             release(slot, &mut data);
             return;
         };
         // A session that ended meanwhile gets no execution.
-        let Some(link) = self.link_of(session) else {
+        let Some((link, epoch)) = self.link_of(session) else {
             slot.meta(|meta| meta.state = State::Abandoned);
             release(slot, &mut data);
             return;
         };
-        let SlotData { request, response } = &mut *data;
-        let written = controller
-            .handle(&link, &request[..len.min(MAX_REQUEST_LEN)], response)
-            .await;
-        request.zeroize();
+        // A key that changed since the connection authenticated revokes what it queued:
+        // nothing runs, and the empty response ends the connection.
+        let written = if self.epoch_valid(epoch) {
+            let SlotData { request, response } = &mut *data;
+            controller
+                .handle(&link, &request[..len.min(MAX_REQUEST_LEN)], response)
+                .await
+        } else {
+            debug!(target: "control.hub", "Request dropped, the key changed (session={})", session);
+            0
+        };
+        data.request.zeroize();
         let delivered = slot.meta(|meta| {
             if meta.state == State::Abandoned {
                 return false;
@@ -446,6 +521,30 @@ impl<'a, const SLOTS: usize> ControlHub<'a, SLOTS> {
         } else {
             release(slot, &mut data);
         }
+    }
+}
+
+// The data of a slot the worker holds: the request is wiped when this is
+// dropped, also when the worker is cancelled in the middle of a request.
+struct Wiped<'h>(MutexGuard<'h, Raw, SlotData>);
+
+impl Deref for Wiped<'_> {
+    type Target = SlotData;
+
+    fn deref(&self) -> &SlotData {
+        &self.0
+    }
+}
+
+impl DerefMut for Wiped<'_> {
+    fn deref_mut(&mut self) -> &mut SlotData {
+        &mut self.0
+    }
+}
+
+impl Drop for Wiped<'_> {
+    fn drop(&mut self) {
+        self.0.request.zeroize();
     }
 }
 
@@ -587,9 +686,9 @@ impl<const SLOTS: usize> Response<'_, '_, SLOTS> {
 
 /// A live connection of a transport, see [`ControlHub::connect`].
 ///
-/// [`close`](Self::close) ends it in order with the requests already queued.
-/// Dropping it without that (a cancelled task) ends it too, but the worker is
-/// told only if the queue has room.
+/// [`close`](Self::close) ends it and waits for room to wake the worker. Dropping it without
+/// that (a cancelled task) ends it too and the worker closes the streams all the same: the
+/// ending is recorded in the hub, never in the queue alone.
 pub struct Connection<'h, 'a, const SLOTS: usize> {
     hub: &'h ControlHub<'a, SLOTS>,
     id: SessionId,
@@ -604,6 +703,11 @@ impl<'h, 'a, const SLOTS: usize> Connection<'h, 'a, SLOTS> {
     /// See [`ControlHub::set_link`].
     pub fn set_link(&self, encrypted: bool, authenticated: bool) {
         self.hub.set_link(self.id, encrypted, authenticated);
+    }
+
+    /// See [`ControlHub::set_epoch`].
+    pub fn set_epoch(&self, epoch: u32) {
+        self.hub.set_epoch(self.id, epoch);
     }
 
     /// See [`ControlHub::request`].
@@ -626,8 +730,10 @@ impl<'h, 'a, const SLOTS: usize> Connection<'h, 'a, SLOTS> {
 
 impl<const SLOTS: usize> Drop for Connection<'_, '_, SLOTS> {
     fn drop(&mut self) {
+        // The ending is recorded by `forget`; the token only wakes the worker. If the queue is
+        // full the worker has work and looks at the endings after it.
         if self.hub.forget(self.id) {
-            let _ = self.hub.queue.try_send(Work::Close(self.id.0));
+            let _ = self.hub.queue.try_send(Work::Sweep);
         }
     }
 }

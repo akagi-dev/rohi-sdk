@@ -156,7 +156,10 @@ static TCP_KEY: BlockingMutex<CriticalSectionRawMutex, Cell<Option<[u8; PSK_LEN]
 /// the command line, or none.
 #[cfg(feature = "std-tcp")]
 pub fn set_tcp_key(key: Option<[u8; PSK_LEN]>) {
-    TCP_KEY.lock(|cell| cell.set(key));
+    use zeroize::Zeroize as _;
+
+    let mut old = TCP_KEY.lock(|cell| cell.replace(key));
+    old.zeroize();
 }
 
 /// The [`PskSource`](rohi_sdk::tcp::PskSource) of the TCP endpoint of the host platform.

@@ -51,6 +51,7 @@
 //!
 //! use embassy_futures::block_on;
 //! use embassy_futures::select::{Either, select};
+//! use core::time::Duration;
 //! use embedded_io_async::{ErrorType, Read, Write};
 //! use rohi_control::{
 //!     ControlAccess, ControlHub, Controller, Device, DeviceInfo, OpenPolicy, Transport,
@@ -59,7 +60,7 @@
 //! use rohi_control_proto::control::{self as pb, Request_::Request as Call, Response_::Response as Reply};
 //! use rohi_control_proto::{PROTOCOL_VERSION, decode, encode};
 //! use rohi_control_tcp::frame::{HEADER_LEN, decode_header, encode_header};
-//! use rohi_control_tcp::{Acceptor, ControlTcp};
+//! use rohi_control_tcp::{Acceptor, ControlTcp, Timed};
 //!
 //! // A connection: the bytes the client sent and what the device wrote back.
 //! #[derive(Default)]
@@ -96,6 +97,11 @@
 //!     async fn flush(&mut self) -> Result<(), Infallible> {
 //!         Ok(())
 //!     }
+//! }
+//!
+//! // This in-memory client never waits, so there is no time to bound.
+//! impl Timed for Connection {
+//!     fn set_deadline(&mut self, _limit: Option<Duration>) {}
 //! }
 //!
 //! // An acceptor with a single client.
@@ -158,6 +164,7 @@
 //! | Record | One Protobuf message: behind a 4-byte little-endian length ([`frame`], open endpoint) or sealed with XChaCha20-Poly1305 ([`secure`], restricted endpoint) |
 //! | Secure channel | A handshake with a 32-byte pre-shared key (HKDF-SHA256, random nonces, mutual proofs bound to the transcript), directional keys and per-record counters, see [`secure`] |
 //! | [`Acceptor`] | Yields the next client connection as an `embedded-io-async` stream |
+//! | [`Timed`] | A stream that can be given an absolute deadline: the handshake and every record have one |
 //! | [`ControlTcp`] | Accepts a client, reads a request record into a slot of the [`ControlHub`](rohi_control::ControlHub), writes the response record of the one control worker |
 //! | Link security | Set by this crate after the handshake (encrypted and authenticated); a plaintext connection of an open endpoint keeps the default (neither) |
 //!
@@ -200,6 +207,7 @@
 //! |------|-----------|
 //! | [`ControlTcp`] | serve a controller to the clients of an acceptor |
 //! | [`Acceptor`] | provide client connections from a platform |
+//! | [`Timed`] | bound a connection with an absolute deadline ([`HANDSHAKE_TIMEOUT`], [`RECORD_TIMEOUT`]) |
 //! | [`frame`] | encode and check record headers, on either side of the link |
 //!
 //! # Guarantees and Limitations
@@ -224,14 +232,19 @@
 //!   read, decrypted or processed before the handshake with the pre-shared key succeeded; the
 //!   records are authenticated and encrypted with XChaCha20-Poly1305 under keys of the direction;
 //!   malformed, replayed, reordered, truncated and tampered records, a counter that is used up and
-//!   a key that was replaced end the connection with nothing written in plaintext, and there is
+//!   a key that was replaced (also for a request that was already queued) end the connection with nothing written in plaintext, and there is
 //!   never a fallback to plaintext. The key is never sent or logged and the keys derived from it
 //!   are wiped on drop. There is **no forward secrecy** (whoever learns the key can decrypt a
 //!   recorded session), no certificate or TLS, and the key is provisioned through a protected
 //!   link only (see `rohi-control-endpoints`). An `Open` endpoint is plaintext and
 //!   unauthenticated: a platform must bind it to the loopback address unless the developer
-//!   explicitly asks for more. A client that goes silent holds the one
-//!   connection until the platform closes the stream: the platform must give its stream a read
+//!   explicitly asks for more. A client that is slow does not hold the one
+//!   connection: the handshake (from the accepted connection) and every request record (from its
+//!   first byte to its tag) have an **absolute** deadline ([`HANDSHAKE_TIMEOUT`],
+//!   [`RECORD_TIMEOUT`], 10 seconds; [`ControlTcp::with_timeouts`]) that single bytes do not
+//!   extend, and a response must be written within [`RECORD_TIMEOUT`]. The stream enforces it
+//!   ([`Timed::set_deadline`]). A client that is silent before the first byte of a record holds the
+//!   connection until the platform closes the stream: the platform must give its stream an idle
 //!   deadline (`rohi-net-std` ends a connection that sends nothing for 60 seconds).
 //! * **Evidence.** The records and the serving loop are covered by host tests
 //!   with scripted in-memory connections (`cargo test -p rohi-control-tcp`) and
@@ -248,4 +261,6 @@ mod service;
 #[cfg(test)]
 mod tests;
 
-pub use service::{Acceptor, ControlTcp, PskSource, error_kind};
+pub use service::{
+    Acceptor, ControlTcp, HANDSHAKE_TIMEOUT, PskSource, RECORD_TIMEOUT, Timed, error_kind,
+};
