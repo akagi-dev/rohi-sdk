@@ -140,7 +140,7 @@ protected by its access mode (see [Access control](../build/control-protocol.md#
 - without a key a `protected` endpoint only reads and a `private` one serves nobody; the listener still runs and reports
   `tcp_state=running`. Give the process the key with
   `--control-psk-file FILE` (64 hex characters or 32 raw bytes, for that run; it replaces the stored key and is never stored or
-  logged) or let the device generate it: `rohi action run control tcp_generate_psk` (every call makes a
+  logged) or let the device generate it: `rohi action control tcp_generate_psk` (every call makes a
   new key, a client never chooses one; the generic action output prints the key, see [Access and the TCP
   key](../use/desktop/access.md)).
   `--control-mode open|protected|private` sets the mode for one run; `--control-open` is `--control-mode open`: unauthenticated,
