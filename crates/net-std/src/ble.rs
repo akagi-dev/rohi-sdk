@@ -21,7 +21,7 @@
 //! Available with the `ble` feature on Linux. [`start`] returns a
 //! [`BluezBle`], the [`BleTransport`] a control link
 //! ([`rohi_control_ble::ControlBle`]) runs on, and a [`BluezProbe`], the view of
-//! the same peripheral for the `ble` service. The GATT layout is the one of the
+//! the same peripheral for the `wireless` service. The GATT layout is the one of the
 //! firmware: [`BleConfig::gatt`] names a service with a write characteristic
 //! (`rx`) and a notify characteristic (`tx`); framing and the protocol are the
 //! layers above, exactly as on the ESP.
@@ -89,7 +89,6 @@ const ATT_HEADER: usize = 3;
 #[derive(Debug)]
 struct Link {
     state: BleState,
-    name: Option<BleName>,
     payload: usize,
     epoch: u32,
 }
@@ -112,7 +111,7 @@ enum Inbound {
     Disconnected,
 }
 
-/// The view of the peripheral for the `ble` service. Cloning it gives another
+/// The view of the peripheral for the `wireless` service. Cloning it gives another
 /// view of the same peripheral.
 #[derive(Clone, Debug)]
 pub struct BluezProbe(Arc<Shared>);
@@ -120,14 +119,6 @@ pub struct BluezProbe(Arc<Shared>);
 impl BleProbe for BluezProbe {
     fn state(&self) -> BleState {
         self.0.with(|link| link.state)
-    }
-
-    fn max_payload(&self) -> usize {
-        self.0.with(|link| link.payload)
-    }
-
-    fn name(&self) -> Option<BleName> {
-        self.0.with(|link| link.name.clone())
     }
 }
 
@@ -143,7 +134,7 @@ pub struct BluezBle {
 }
 
 impl BluezBle {
-    /// A view of this peripheral for the `ble` service.
+    /// A view of this peripheral for the `wireless` service.
     pub fn probe(&self) -> BluezProbe {
         BluezProbe(self.shared.clone())
     }
@@ -228,7 +219,6 @@ struct Peripheral {
 fn bridge() -> (BluezBle, Peripheral) {
     let shared = Arc::new(Shared(Mutex::new(Link {
         state: BleState::Disabled,
-        name: None,
         payload: DEFAULT_BLE_PAYLOAD,
         epoch: 0,
     })));
@@ -251,10 +241,6 @@ fn bridge() -> (BluezBle, Peripheral) {
 impl Peripheral {
     fn set_state(&self, state: BleState) {
         self.shared.with(|link| link.state = state);
-    }
-
-    fn set_name(&self, name: Option<BleName>) {
-        self.shared.with(|link| link.name = name);
     }
 
     fn is_connected(&self) -> bool {
@@ -421,7 +407,6 @@ async fn serve(
         adapter.name()
     );
     let name = advertised_name(config, address.0);
-    peripheral.set_name(name.clone());
 
     let write = {
         let peripheral = peripheral.clone();

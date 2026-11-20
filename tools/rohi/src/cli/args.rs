@@ -190,7 +190,7 @@ Examples:
     #[command(after_help = "\
 Examples:
   rohi status
-  rohi status wifi
+  rohi status wireless
   rohi status --watch
   rohi status connectivity --watch --interval 5
   rohi -o json status sensors")]
@@ -243,14 +243,14 @@ Examples:
         after_help = "\
 Examples:
   rohi config
-  rohi config wifi
-  rohi config wifi ssid=office password=-
-  rohi config wifi scan_timeout=5000
-  rohi config wifi scan_timeout=null
-  rohi config wifi password=none
-  rohi config wifi scan_timeout=5000 --dry-run
-  rohi config wifi --help
-  echo 'hunter2hunter2' | rohi config wifi password=-"
+  rohi config wireless
+  rohi config wireless wifi_ssid=office wifi_password=-
+  rohi config wireless wifi_scan_timeout=5000
+  rohi config wireless wifi_scan_timeout=null
+  rohi config wireless wifi_password=none
+  rohi config wireless wifi_scan_timeout=5000 --dry-run
+  rohi config wireless --help
+  echo 'hunter2hunter2' | rohi config wireless wifi_password=-"
     )]
     Config {
         #[command(subcommand)]
@@ -302,14 +302,14 @@ Examples:
         after_help = "\
 Examples:
   rohi action
-  rohi action wifi
-  rohi action wifi scan
-  rohi action wifi reconnect
-  rohi action wifi reconnect --help
+  rohi action wireless
+  rohi action wireless wifi_scan
+  rohi action wireless wifi_reconnect
+  rohi action wireless wifi_reconnect --help
   rohi action identity provision secret=-
   rohi action system reboot
-  rohi -o json action wifi scan
-  rohi wifi scan
+  rohi -o json action wireless wifi_scan
+  rohi wireless wifi_scan
   rohi system reboot
   rohi system factory_reset
   rohi identity provision -

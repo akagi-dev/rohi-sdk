@@ -86,14 +86,14 @@ Connection:
 
 Examples:
   rohi action
-  rohi action wifi
-  rohi action wifi scan
-  rohi action wifi reconnect
-  rohi action wifi reconnect --help
+  rohi action wireless
+  rohi action wireless wifi_scan
+  rohi action wireless wifi_reconnect
+  rohi action wireless wifi_reconnect --help
   rohi action identity provision secret=-
   rohi action system reboot
-  rohi -o json action wifi scan
-  rohi wifi scan
+  rohi -o json action wireless wifi_scan
+  rohi wireless wifi_scan
   rohi system reboot
   rohi system factory_reset
   rohi identity provision -

@@ -5,12 +5,13 @@ Actions are the operations a device offers: scan for Wi-Fi networks, reconnect, 
 
 ```bash
 rohi action                                        # all actions: service, name, access
-rohi action network                                # the actions of one service with their arguments
-rohi action network scan --help                    # arguments and results (generated from the device)
-rohi action network scan                           # results as a table, one row per record
-rohi action network reconnect
+rohi action wireless                               # the actions of one service with their arguments
+rohi action wireless wifi_scan --help              # arguments and results (generated from the device)
+rohi action wireless wifi_scan                     # results as a table, one row per record
+rohi action wireless wifi_reconnect                # queues a reconnection; success means "accepted"
+rohi action wireless wifi_disconnect               # Wi-Fi stays idle until wifi_reconnect or a config change
 rohi action radio tune channel=11                  # arguments are NAME=VALUE, all required
-rohi -o json action network scan
+rohi -o json action wireless wifi_scan
 ```
 
 `-o json` with `--help` prints the schema. Every action declares the access it needs: `read`, `mutate` or
@@ -31,7 +32,7 @@ rohi system                                        # the actions of a service, f
 rohi system reboot --help                          # arguments, kinds, enum variants and the access level
 rohi system reboot                                 # reboots the device shortly after answering
 rohi system factory_reset                          # formats the configuration storage; does not reboot
-rohi wifi scan
+rohi wireless wifi_scan
 rohi -o json system factory_reset                  # global options may come before or after the service
 ```
 

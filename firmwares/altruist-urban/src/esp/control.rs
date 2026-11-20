@@ -57,13 +57,13 @@ const BOARD: &str = "urban-esp32c3";
 const BOARD: &str = "urban-esp32c6";
 
 /// The control backend of the Altruist Urban on the ESP.
-pub type EspDevice = UrbanDevice<Ip, BleStatus, logging::Service>;
+pub type EspDevice = UrbanDevice<BleStatus, logging::Service>;
 
 /// The request slot of the control worker: one BLE central at a time.
 static HUB: ControlHub<'static, 1> = ControlHub::new();
 
 /// The service instances, shared by the status and the action registry.
-static SERVICES: ServicesSlot<Ip, BleStatus, logging::Service> = StaticCell::new();
+static SERVICES: ServicesSlot<BleStatus, logging::Service> = StaticCell::new();
 
 /// The device over the runtime handles of the firmware.
 ///

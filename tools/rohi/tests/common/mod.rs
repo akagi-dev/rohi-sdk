@@ -42,7 +42,7 @@ use rohi_identity::{Identity, IdentityService, IdentityStore, IdentityStoreError
 use rohi_location::LocationConfig;
 use rohi_location::{LocationOverrides, LocationService, LocationShared};
 use rohi_net::{BleConnectionInfo, BleError, BleState, BleTransport};
-use rohi_net::{WifiConfig, WifiOverrides};
+use rohi_net::{WirelessConfig, WirelessOverrides};
 use rohi_service::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, Config, EnumDescriptor,
     EnumVariant, FIRST_SERVICE_ISSUE, FieldDescriptor, FieldError, Issue, IssueDescriptor,
@@ -370,7 +370,7 @@ pub struct BenchPlatform {
     pub reboots: Cell<u32>,
     pub can_reboot: Cell<bool>,
     pub resets: Cell<u32>,
-    wifi: Rc<RefCell<Option<WifiOverrides>>>,
+    wireless: Rc<RefCell<Option<WirelessOverrides>>>,
     telemetry: Rc<RefCell<Option<ConnectivityOverrides>>>,
     gadget: Rc<RefCell<Option<GadgetOverrides>>>,
     location: Rc<RefCell<Option<LocationOverrides>>>,
@@ -388,7 +388,7 @@ impl SystemPlatform for BenchPlatform {
 
     async fn factory_reset(&self) -> Result<rohi_service::FactoryReset, SystemError> {
         self.resets.set(self.resets.get() + 1);
-        *self.wifi.borrow_mut() = None;
+        *self.wireless.borrow_mut() = None;
         *self.telemetry.borrow_mut() = None;
         *self.gadget.borrow_mut() = None;
         *self.location.borrow_mut() = None;
@@ -454,7 +454,7 @@ impl SectionStore<LocationConfig> for LocationStore {
 /// The state of the fake device, kept by the test so it can look at it after
 /// the command ran.
 pub struct Bench {
-    pub wifi: Mem<WifiOverrides>,
+    pub wireless: Mem<WirelessOverrides>,
     pub telemetry: Mem<ConnectivityOverrides>,
     pub gadget: Mem<GadgetOverrides>,
     pub location: LocationStore,
@@ -466,7 +466,7 @@ pub struct Bench {
 
 impl Bench {
     pub fn new() -> Self {
-        let wifi = Mem::new(Rc::default(), false);
+        let wireless = Mem::new(Rc::default(), false);
         let telemetry = Mem::new(Rc::default(), false);
         let gadget = Mem::new(Rc::default(), true);
         let location = LocationStore {
@@ -478,14 +478,14 @@ impl Bench {
             reboots: Cell::new(0),
             can_reboot: Cell::new(true),
             resets: Cell::new(0),
-            wifi: wifi.value.clone(),
+            wireless: wireless.value.clone(),
             telemetry: telemetry.value.clone(),
             gadget: gadget.value.clone(),
             location: location.mem.value.clone(),
             identity: identity.clone(),
         });
         let bench = Self {
-            wifi,
+            wireless,
             telemetry,
             gadget,
             location,
@@ -499,7 +499,7 @@ impl Bench {
     }
 
     pub fn writes(&self) -> u32 {
-        self.wifi.writes.get()
+        self.wireless.writes.get()
             + self.telemetry.writes.get()
             + self.gadget.writes.get()
             + self.location.mem.writes.get()
@@ -513,7 +513,7 @@ impl Default for Bench {
 }
 
 type Sections = (
-    Section<WifiConfig, Mem<WifiOverrides>, NoopRawMutex>,
+    Section<WirelessConfig, Mem<WirelessOverrides>, NoopRawMutex>,
     Section<ConnectivityConfig, Mem<ConnectivityOverrides>, NoopRawMutex>,
     Section<Gadget, Mem<GadgetOverrides>, NoopRawMutex>,
     Section<LocationConfig, LocationStore, NoopRawMutex>,
@@ -551,7 +551,7 @@ pub fn backend(bench: &Bench) -> Backend<'_> {
         },
         uptime,
         (
-            Section::new(bench.wifi.clone()),
+            Section::new(bench.wireless.clone()),
             Section::new(bench.telemetry.clone()),
             Section::new(bench.gadget.clone()),
             Section::new(bench.location.clone()),

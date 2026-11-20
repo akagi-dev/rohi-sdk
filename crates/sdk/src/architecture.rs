@@ -97,8 +97,8 @@
 //! 2. **Feature crates own their own config sections.**
 //!    [`rohi-config`](../../rohi_config/index.html) never learns the set of
 //!    application sections:
-//!    [`rohi-net`](../../rohi_net/index.html) owns `WifiConfig`, `NetworkConfig`
-//!    and `BleSettings` (each the effective configuration, persisted as
+//!    [`rohi-net`](../../rohi_net/index.html) owns `WirelessConfig`
+//!    (Wi-Fi, IP and BLE settings as one effective configuration, persisted as
 //!    generated overrides), [`rohi-identity`](../../rohi_identity/index.html) owns
 //!    the `Identity` section, [`rohi-location`](../../rohi_location/index.html)
 //!    owns `LocationConfig`, [`rohi-time-ntp`](../../rohi_time_ntp/index.html)
@@ -148,7 +148,7 @@
 //! and the application then uses the network through the data plane:
 //!
 //! ```text
-//! ConfigHandle::set(WifiConfig) ─► config owner task ─ commit ─► publish desired Wi-Fi config ─► WifiManager
+//! ConfigHandle::set(WirelessConfig) ─► config owner task ─ commit ─► publish desired Wi-Fi config ─► WifiManager
 //!                                                                                                  │
 //!                                           application ◄── NetworkHandle (DNS, TCP) ◄── EspIp ◄───┘ (link + DHCP)
 //! ```

@@ -9,7 +9,7 @@ one of them becomes visible to generic clients without changing a client.
 | a setting | [Add a ConfigSection](../guides/add-config-section.md) | a section in `rohi config` |
 | a runtime part with state | [Add a service](../guides/add-service.md) | a service in `rohi status` |
 | an operation | [Add a control operation or an action](../guides/add-control-operation.md) | an action in `rohi action` |
-| networking | [Use IP networking](../guides/use-network.md) | the `network` / `wifi` services |
+| networking | [Use IP networking](../guides/use-network.md) | the `wireless` service |
 | another board | [Add or support a board](../guides/add-board.md) | a new row in the [support matrix](../support/matrix.md) |
 
 ## With an AI assistant

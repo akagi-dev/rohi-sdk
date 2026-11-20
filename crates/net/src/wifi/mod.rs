@@ -28,38 +28,36 @@
 //!
 //! | Type | Role |
 //! |------|------|
-//! | [`WifiConfig`] | Persistent CBOR section `wifi`: `ssid`, optional `password` (open network = `None`), scan and connect timeouts, reconnect backoff and link refresh |
-//! | [`NetworkConfig`](crate::NetworkConfig) | Persistent CBOR section `network`: DHCP or static IPv4, host name, DHCP timeout |
+//! | [`WifiConfig`] | The `wifi_*` fields of the `wireless` section: `ssid`, optional `password` (open network = `None`), scan and connect timeouts, reconnect backoff and link refresh |
+//! | [`NetworkConfig`](crate::NetworkConfig) | The `ip_*` fields of the `wireless` section: DHCP or static IPv4, host name, DHCP timeout |
 //! | [`LinkConfig`] | The two together, as the manager and the backend see them |
 //! | [`WifiState`] / [`WifiStatus`] | `NotConfigured`, `Idle`, `Scanning`, `Connecting`, `Connected`, `Disconnected`, `Error` (+ last [`WifiError`]) |
 //! | [`NetworkInfo`] | SSID, RSSI, channel, MAC, IPv4, gateway, DNS. Never contains credentials |
 //! | [`WifiNetwork`] / [`WifiScanResults`] | Bounded scan result ([`heapless::Vec`]), strongest first |
 //! | [`WifiError`] | Stable typed errors (`AuthenticationFailed`, `DhcpFailed`, `Busy`, ...) |
 //! | [`WifiShared`] / [`WifiHandle`] | `static` shared state and the handle other tasks use |
-//! | [`WifiService`] | The `wifi` service of the management plane |
+//! | [`WirelessService`](crate::WirelessService) | The `wireless` service of the management plane |
 //!
 //! [`WifiState::Connected`] means *network ready*: association **and** DHCP
 //! have completed.
 //!
-//! # The `wifi` section
+//! # The Wi-Fi fields of the `wireless` section
 //!
-//! [`WifiConfig`] is the effective configuration (firmware defaults plus the
-//! user's overrides, [`WifiOverrides`]) with the properties `ssid`, `password`
-//! (secret), `scan_timeout`, `connect_timeout`, `backoff_initial`,
-//! `backoff_max` and `link_refresh` (all timings in ms). `ssid` is nullable and
-//! `None` is the default: without an `ssid` Wi-Fi is disabled and the radio
-//! stays idle, an `ssid` enables it. `ssid=none` disables Wi-Fi explicitly even
-//! when the firmware default names a network, `ssid=null` follows the firmware
-//! default again. A change of the `wifi` or `network` section reconnects.
-//! The timings default to the constants of this module. The `wifi` and
-//! `network` services share the link: `network` is `ok` when the link is
-//! up and reports `dhcp_failed` as its issue; every other link error is an
-//! issue of `wifi`.
+//! [`WifiConfig`] is the effective Wi-Fi part of the `wireless` section
+//! (firmware defaults plus the user's overrides) with the fields `wifi_ssid`,
+//! `wifi_password` (secret), `wifi_scan_timeout`, `wifi_connect_timeout`,
+//! `wifi_backoff_initial`, `wifi_backoff_max` and `wifi_link_refresh` (all
+//! timings in ms). `wifi_ssid` is nullable and `None` is the default: without
+//! an SSID Wi-Fi is disabled and the radio stays idle, an SSID enables it.
+//! `wifi_ssid=none` disables Wi-Fi explicitly even when the firmware default
+//! names a network, `wifi_ssid=null` follows the firmware default again. A
+//! change of a Wi-Fi or IP field reconnects. The timings default to the
+//! constants of this module.
 //!
-//! Status fields of the `wifi` service: `ssid`, `rssi`, `channel`, `mac`,
-//! `reconnects`, `link_uptime` and the radio heap (`heap_size`, `heap_free`,
-//! and `heap_min_free` where the platform tracks it). Actions: `scan`,
-//! `reconnect`, `disconnect`. See [`WifiService`].
+//! Status fields of the `wireless` service: `wifi_state`, `wifi_ip`,
+//! `wifi_rssi`, `wifi_reconnects` and `heap_free`. Actions: `wifi_scan`,
+//! `wifi_reconnect` and `wifi_disconnect`. See
+//! [`WirelessService`](crate::WirelessService).
 //!
 //! # Desired state versus commands
 //!
@@ -124,7 +122,6 @@ mod managed;
 mod manager;
 mod network;
 mod scan;
-mod service;
 mod state;
 
 pub use backend::WifiBackend;
@@ -133,7 +130,7 @@ pub use config::{
     BACKOFF_INITIAL_RANGE_MS, BACKOFF_MAX_RANGE_MS, CONNECT_TIMEOUT_RANGE_MS,
     DEFAULT_BACKOFF_INITIAL_MS, DEFAULT_BACKOFF_MAX_MS, DEFAULT_CONNECT_TIMEOUT_MS,
     DEFAULT_LINK_REFRESH_MS, DEFAULT_SCAN_TIMEOUT_MS, LINK_REFRESH_RANGE_MS, LinkConfig,
-    SCAN_TIMEOUT_RANGE_MS, WifiConfig, WifiOverrides, WifiPassword, WifiSsid,
+    SCAN_TIMEOUT_RANGE_MS, WifiConfig, WifiPassword, WifiSsid,
 };
 pub use error::WifiError;
 pub use manager::{
@@ -141,8 +138,4 @@ pub use manager::{
 };
 pub use network::NetworkInfo;
 pub use scan::{ScanCollector, WifiNetwork, WifiScanResults, WifiSecurity};
-pub(crate) use service::summary_of as service_summary;
-pub use service::{
-    HeapStats, WifiProbe, WifiService, action, issue, scan_field, security, status_field,
-};
 pub use state::{WifiState, WifiStatus};

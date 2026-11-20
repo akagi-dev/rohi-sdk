@@ -343,12 +343,12 @@ pub async fn config_text(
         })
 }
 
-/// Field ids of the `wifi` section.
-pub mod wifi {
-    pub const SSID: u32 = 1;
-    pub const PASSWORD: u32 = 2;
-    pub const BACKOFF_INITIAL: u32 = 5;
-    pub const BACKOFF_MAX: u32 = 6;
+/// Field ids of the `wireless` section.
+pub mod wireless {
+    pub const WIFI_SSID: u32 = 1;
+    pub const WIFI_PASSWORD: u32 = 2;
+    pub const WIFI_BACKOFF_INITIAL: u32 = 5;
+    pub const WIFI_BACKOFF_MAX: u32 = 6;
 }
 
 pub fn f32_of(value: Option<&Value>) -> Option<f32> {

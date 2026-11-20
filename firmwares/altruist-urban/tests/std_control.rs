@@ -29,7 +29,7 @@ use rohi::{Device, Error, TcpKey, TcpLink, write_tcp_key};
 use tempfile::TempDir;
 
 const ACCESS_MODE: u32 = 2;
-const SSID: u32 = wifi::SSID;
+const SSID: u32 = wireless::WIFI_SSID;
 
 fn key(seed: u8) -> TcpKey {
     TcpKey::from_bytes([seed; 32]).unwrap()
@@ -57,7 +57,7 @@ async fn reveal_psk(device: &mut Device<TcpLink>) -> Result<TcpKey, Error> {
 
 async fn patch_ssid(device: &mut Device<TcpLink>, ssid: &str) -> Result<(), Error> {
     device
-        .config_patch("wifi", &[set(SSID, text(ssid))], false)
+        .config_patch("wireless", &[set(SSID, text(ssid))], false)
         .await
         .map(|_| ())
 }
@@ -138,7 +138,7 @@ async fn a_client_with_the_key_is_served_and_everyone_else_is_not() {
     device.info().await.unwrap();
     patch_ssid(&mut device, "first").await.unwrap();
     assert_eq!(
-        config_text(&mut device, "wifi", SSID).await.as_deref(),
+        config_text(&mut device, "wireless", SSID).await.as_deref(),
         Some("first")
     );
     let tcp = fields(&mut device, "control_tcp").await;
@@ -166,7 +166,7 @@ async fn a_client_with_the_key_is_served_and_everyone_else_is_not() {
         "{tcp:?}"
     );
     assert_eq!(
-        config_text(&mut device, "wifi", SSID).await.as_deref(),
+        config_text(&mut device, "wireless", SSID).await.as_deref(),
         Some("first")
     );
     drop(device);

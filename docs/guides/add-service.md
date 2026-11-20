@@ -24,7 +24,7 @@ The SDK adds the status revision and the time in the current state; the firmware
 ## 2. Config (optional)
 
 If users configure it, add a section as in [Add a ConfigSection](add-config-section.md). Name the section like the
-service when they belong together (`location`, `connectivity`, `wifi`).
+service when they belong together (`location`, `connectivity`, `wireless`).
 
 ## 3. Actions (optional)
 

@@ -95,7 +95,7 @@ provides = "on-device display output"
 id = "wifi-ip"
 kind = "interface"
 name = "Wi-Fi station and IP networking"
-provides = "Wi-Fi connection, DNS and TCP"
+provides = "Wi-Fi connection, DNS and TCP; the `wireless` section and service (Wi-Fi, IP and BLE settings, Wi-Fi status and the scan, reconnect and disconnect actions)"
 source = "crates/net"
 
 [[capability]]

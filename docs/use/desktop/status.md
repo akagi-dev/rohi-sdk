@@ -97,15 +97,15 @@ services with `unknown` health do not count.
 issues**:
 
 ```console
-$ rohi status network
-Service:  network
+$ rohi status wireless
+Service:  wireless
 Health:   ok
 
-ssid     office
-rssi     -61 dBm
-ip       192.168.1.42
-gateway  192.168.1.1
-dns      192.168.1.1
+wifi_state       connected
+wifi_ip          192.168.1.42
+wifi_rssi        -61 dBm
+wifi_reconnects  0
+heap_free        41200 B
 ```
 
 An **issue** has a stable machine-readable code (`connection_timeout`, `no_location`), a severity, a message and an
@@ -113,11 +113,11 @@ age. Scripts react to the code, people read the message. Only issues that are ac
 diagnostics. With `-o json` the values are keyed by field name and carry their units:
 
 ```console
-$ rohi -o json status network
+$ rohi -o json status wireless
 {
   "schema_version": 1,
-  "service": { "service": "network", "health": "ok", "revision": 3, ... },
-  "values": { "ssid": "office", "rssi": -61, "ip": "192.168.1.42" },
+  "service": { "service": "wireless", "health": "ok", "revision": 3, ... },
+  "values": { "wifi_state": "connected", "wifi_rssi": -61, "wifi_ip": "192.168.1.42" },
   "units": { "rssi": "dBm" },
   "issues": []
 }
@@ -142,17 +142,17 @@ Status never changes anything. Operations are **actions**, listed and described 
 ```console
 $ rohi action
 SERVICE   ACTION         ACCESS
-network   scan           read
-network   reconnect      mutate
-network   disconnect     mutate
+wireless  wifi_scan      read
+wireless  wifi_reconnect mutate
+wireless  wifi_disconnect mutate
 identity  provision      provision
 identity  erase          mutate
 system    reboot         mutate
 system    factory_reset  provision
 
-$ rohi action network                  # the actions of one service, with their arguments
-$ rohi action network scan --help      # arguments and results, from the device schema
-$ rohi action network scan
+$ rohi action wireless                 # the actions of one service, with their arguments
+$ rohi action wireless wifi_scan --help  # arguments and results, from the device schema
+$ rohi action wireless wifi_scan
 SSID    RSSI     CHANNEL  SECURITY
 office  -50 dBm  6        wpa2
 guest   -70 dBm  11       open
@@ -173,9 +173,7 @@ section. Secrets are write-only. It is covered on [Configuration](configuration.
 
 | Service | What it reports | Typical issue codes |
 |---------|-----------------|---------------------|
-| `wifi` | connection state, network, signal, channel, radio heap | `authentication_failed`, `network_not_found`, `association_failed` |
-| `network` | IPv4 address, gateway, DNS, address mode, socket usage | `dhcp_failed` |
-| `ble` | peripheral state, advertised name, link security | `driver_error` |
+| `wireless` | Wi-Fi state, IPv4 address, signal and reconnects, radio heap; the BLE peripheral shows up in the health and the issues only | `authentication_failed`, `network_not_found`, `dhcp_failed`, `driver_error` |
 | `connectivity` | telemetry queue and counters | `connection_timeout`, `unauthorized`, `no_identity`, `no_utc_time`, `no_location` |
 | `time` | wall-clock time, source, age, failures | `network_unavailable`, `timeout`, `implausible` |
 | `sensors` | `<sensor>.<measurement>` values in canonical units | `bmx280_error`, `sds011_degraded`, ... |

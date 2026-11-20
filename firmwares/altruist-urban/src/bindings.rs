@@ -47,7 +47,7 @@ use rohi_sdk::endpoints::{ControlTcpConfig, TcpPskSection};
 use rohi_sdk::identity::Identity;
 use rohi_sdk::location::LocationConfig;
 use rohi_sdk::logging::LoggingConfig;
-use rohi_sdk::net::{BleSettings, NetworkConfig, WifiConfig, WifiHandle};
+use rohi_sdk::net::{BleSettings, WifiHandle, WirelessConfig};
 use rohi_sdk::ntp::NtpServersConfig;
 use rohi_sdk::service::{Config, SectionStore, StoreError};
 
@@ -77,9 +77,16 @@ pub trait Binding {
     /// The effective section.
     type Config: Config;
 
-    /// Whether a change only takes effect after a restart. Such a section is
-    /// published once, at boot; a later commit only persists it.
+    /// Whether a change only takes effect after a restart, as clients are told.
+    /// Unless [`PUBLISH_LIVE`](Self::PUBLISH_LIVE) says otherwise, such a
+    /// section is published once, at boot; a later commit only persists it.
     const RESTART_REQUIRED: bool = false;
+
+    /// Whether a commit is published to the consumer right away. A
+    /// restart-required section whose consumers apply a part of it live
+    /// (see [`WirelessBinding`]) sets it; the rest of the section then goes
+    /// through [`publish_boot`](Self::publish_boot).
+    const PUBLISH_LIVE: bool = !Self::RESTART_REQUIRED;
 
     /// The product policy compiled into the firmware, never persisted; all
     /// `Default` when the product has none.
@@ -96,6 +103,10 @@ pub trait Binding {
     /// cheap: the owner task calls it in the commit step, with no `.await`
     /// between the commit and the publication.
     fn publish(runtime: &ConfigRuntime, effective: &Self::Config);
+
+    /// Hands the part of the effective value that is read once, when its
+    /// consumer starts. Called at boot only, before [`publish`](Self::publish).
+    fn publish_boot(_: &ConfigRuntime, _: &Self::Config) {}
 }
 
 /// A persisted section the firmware keeps for itself: not a [`Config`],
@@ -179,25 +190,26 @@ impl<B: Binding> SectionStore<B::Config> for Stored<B> {
     }
 }
 
-/// `wifi`: the desired state of the Wi-Fi manager.
-pub struct WifiBinding;
+/// `wireless`: Wi-Fi, IP and BLE in one section.
+///
+/// The Wi-Fi and IP parts are the desired state of the Wi-Fi manager and apply
+/// live, after every commit. The BLE name is read once, when the peripheral
+/// starts, from the snapshot of the last boot. The section is reported as
+/// restart-required to clients, whichever field changed.
+pub struct WirelessBinding;
 
-impl Binding for WifiBinding {
-    type Config = WifiConfig;
+impl Binding for WirelessBinding {
+    type Config = WirelessConfig;
+    const RESTART_REQUIRED: bool = true;
+    const PUBLISH_LIVE: bool = true;
 
-    fn publish(runtime: &ConfigRuntime, effective: &WifiConfig) {
-        runtime.wifi.set_wifi_config(effective.clone());
+    fn publish(runtime: &ConfigRuntime, effective: &WirelessConfig) {
+        runtime.wifi.set_wifi_config(effective.wifi());
+        runtime.wifi.set_network_config(effective.network());
     }
-}
 
-/// `network`: the desired IPv4 setup of the Wi-Fi manager.
-pub struct NetworkBinding;
-
-impl Binding for NetworkBinding {
-    type Config = NetworkConfig;
-
-    fn publish(runtime: &ConfigRuntime, effective: &NetworkConfig) {
-        runtime.wifi.set_network_config(effective.clone());
+    fn publish_boot(_: &ConfigRuntime, effective: &WirelessConfig) {
+        BLE_SETTINGS.lock(|settings| *settings.borrow_mut() = effective.ble());
     }
 }
 
@@ -209,18 +221,6 @@ static BLE_SETTINGS: Mutex<RawMutex, RefCell<BleSettings>> =
 /// starts.
 pub fn ble_settings() -> BleSettings {
     BLE_SETTINGS.lock(|settings| settings.borrow().clone())
-}
-
-/// `ble`: the startup snapshot of the peripheral. Restart-required.
-pub struct BleBinding;
-
-impl Binding for BleBinding {
-    type Config = BleSettings;
-    const RESTART_REQUIRED: bool = true;
-
-    fn publish(_: &ConfigRuntime, effective: &BleSettings) {
-        BLE_SETTINGS.lock(|settings| *settings.borrow_mut() = effective.clone());
-    }
 }
 
 /// `control_tcp`: the TCP control endpoint. The whole section is published once, at boot, and

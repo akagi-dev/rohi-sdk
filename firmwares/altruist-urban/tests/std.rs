@@ -27,7 +27,8 @@ mod common;
 use std::time::Duration;
 
 use common::*;
-use rohi::model::{ServiceHealth, Value};
+use rohi::model::{ActionAccess, ServiceHealth, Value};
+use rohi::{Device, TcpLink};
 use tempfile::TempDir;
 
 const WAIT: Duration = Duration::from_secs(20);
@@ -56,8 +57,12 @@ async fn starts_with_empty_storage_and_answers_get_info() {
 
     let services = device.services().await.unwrap();
     let names: Vec<_> = services.iter().map(|s| s.name.as_str()).collect();
-    for expected in ["wifi", "network", "sensors", "identity", "time"] {
+    for expected in ["wireless", "sensors", "identity", "time"] {
         assert!(names.contains(&expected), "{names:?}");
+    }
+    // Wi-Fi, IP and BLE are one public service, not three.
+    for gone in ["wifi", "network", "ble"] {
+        assert!(!names.contains(&gone), "{names:?}");
     }
     drop(device);
     assert!(sim.stop().success());
@@ -150,13 +155,16 @@ async fn configuration_survives_a_restart() {
 
     let sim = Sim::start(&Launch::new().storage(&storage));
     let mut device = sim.device().await;
-    assert_eq!(config_text(&mut device, "wifi", wifi::SSID).await, None);
+    assert_eq!(
+        config_text(&mut device, "wireless", wireless::WIFI_SSID).await,
+        None
+    );
     device
         .config_patch(
-            "wifi",
+            "wireless",
             &[
-                set(wifi::SSID, text("persisted-net")),
-                set(wifi::PASSWORD, text("correct horse")),
+                set(wireless::WIFI_SSID, text("persisted-net")),
+                set(wireless::WIFI_PASSWORD, text("correct horse")),
             ],
             false,
         )
@@ -168,7 +176,7 @@ async fn configuration_survives_a_restart() {
     let sim = Sim::start(&Launch::new().storage(&storage));
     let mut device = sim.device().await;
     assert_eq!(
-        config_text(&mut device, "wifi", wifi::SSID)
+        config_text(&mut device, "wireless", wireless::WIFI_SSID)
             .await
             .as_deref(),
         Some("persisted-net")
@@ -185,14 +193,22 @@ async fn an_interrupted_config_write_recovers_the_committed_generation() {
     let mut sim = Sim::start(&Launch::new().storage(&storage));
     let mut device = sim.device().await;
     device
-        .config_patch("wifi", &[set(wifi::SSID, text("generation-one"))], false)
+        .config_patch(
+            "wireless",
+            &[set(wireless::WIFI_SSID, text("generation-one"))],
+            false,
+        )
         .await
         .unwrap();
 
     // Power is lost while the next generation is being programmed.
     sim.manage_ok("storage power-loss program 8");
     let outcome = device
-        .config_patch("wifi", &[set(wifi::SSID, text("generation-two"))], false)
+        .config_patch(
+            "wireless",
+            &[set(wireless::WIFI_SSID, text("generation-two"))],
+            false,
+        )
         .await;
     assert!(outcome.is_err(), "the device lost power: {outcome:?}");
     drop(device);
@@ -204,18 +220,22 @@ async fn an_interrupted_config_write_recovers_the_committed_generation() {
     let sim = Sim::start(&Launch::new().storage(&storage));
     let mut device = sim.device().await;
     assert_eq!(
-        config_text(&mut device, "wifi", wifi::SSID)
+        config_text(&mut device, "wireless", wireless::WIFI_SSID)
             .await
             .as_deref(),
         Some("generation-one")
     );
     // The recovered store is fully usable.
     device
-        .config_patch("wifi", &[set(wifi::SSID, text("generation-three"))], false)
+        .config_patch(
+            "wireless",
+            &[set(wireless::WIFI_SSID, text("generation-three"))],
+            false,
+        )
         .await
         .unwrap();
     assert_eq!(
-        config_text(&mut device, "wifi", wifi::SSID)
+        config_text(&mut device, "wireless", wireless::WIFI_SSID)
             .await
             .as_deref(),
         Some("generation-three")
@@ -230,37 +250,42 @@ async fn wifi_connects_backs_off_and_recovers() {
     let mut device = sim.device().await;
 
     // Not configured: the manager is idle.
-    let (health, _) = summary(&mut device, "wifi").await;
+    let (health, _) = summary(&mut device, "wireless").await;
     assert_eq!(health, ServiceHealth::Unknown);
 
     device
         .config_patch(
-            "wifi",
+            "wireless",
             &[
-                set(wifi::SSID, text("ROHI-LAB")),
-                set(wifi::PASSWORD, text("correct horse")),
-                set(wifi::BACKOFF_INITIAL, Value::U64(100)),
-                set(wifi::BACKOFF_MAX, Value::U64(400)),
+                set(wireless::WIFI_SSID, text("ROHI-LAB")),
+                set(wireless::WIFI_PASSWORD, text("correct horse")),
+                set(wireless::WIFI_BACKOFF_INITIAL, Value::U64(100)),
+                set(wireless::WIFI_BACKOFF_MAX, Value::U64(400)),
             ],
             false,
         )
         .await
         .unwrap();
     eventually("the Wi-Fi link", WAIT, async || {
-        let (health, _) = summary(&mut device, "wifi").await;
+        let (health, _) = summary(&mut device, "wireless").await;
         (health == ServiceHealth::Ok).then_some(())
     })
     .await;
-    eventually("the network to be ready", WAIT, async || {
-        let (health, _) = summary(&mut device, "network").await;
-        (health == ServiceHealth::Ok).then_some(())
+    let status = eventually("the link to have an address", WAIT, async || {
+        let status = fields(&mut device, "wireless").await;
+        status.contains_key("wifi_ip").then_some(status)
     })
     .await;
+    assert_eq!(
+        status.get("wifi_state"),
+        Some(&Value::Enum("connected".to_owned())),
+        "{status:?}"
+    );
 
     // The access point disappears: the manager reports it and keeps retrying.
     sim.manage_ok("ap ROHI-LAB down");
     let issues = eventually("the Wi-Fi failure", WAIT, async || {
-        let (health, issues) = summary(&mut device, "wifi").await;
+        let (health, issues) = summary(&mut device, "wireless").await;
         (health != ServiceHealth::Ok && issues.contains(&"network_not_found".to_owned()))
             .then_some(issues)
     })
@@ -269,7 +294,7 @@ async fn wifi_connects_backs_off_and_recovers() {
 
     sim.manage_ok("ap ROHI-LAB up");
     eventually("the Wi-Fi to recover", WAIT, async || {
-        let (health, issues) = summary(&mut device, "wifi").await;
+        let (health, issues) = summary(&mut device, "wireless").await;
         (health == ServiceHealth::Ok && issues.is_empty()).then_some(())
     })
     .await;
@@ -278,7 +303,7 @@ async fn wifi_connects_backs_off_and_recovers() {
     sim.manage_ok("wifi fail authentication");
     sim.manage_ok("wifi drop");
     let issues = eventually("an authentication failure", WAIT, async || {
-        let (health, issues) = summary(&mut device, "wifi").await;
+        let (health, issues) = summary(&mut device, "wireless").await;
         (health != ServiceHealth::Ok && issues.contains(&"authentication_failed".to_owned()))
             .then_some(issues)
     })
@@ -286,12 +311,183 @@ async fn wifi_connects_backs_off_and_recovers() {
     assert!(!issues.is_empty());
     sim.manage_ok("wifi recover");
     eventually("recovery after the fault", WAIT, async || {
-        let (health, _) = summary(&mut device, "wifi").await;
+        let (health, _) = summary(&mut device, "wireless").await;
         (health == ServiceHealth::Ok).then_some(())
     })
     .await;
     drop(device);
     sim.stop();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn one_wireless_section_and_service_replace_wifi_network_and_ble() {
+    let sim = Sim::start(&Launch::new());
+    let mut device = sim.device().await;
+
+    let sections = device.config_sections().await.unwrap();
+    let names: Vec<_> = sections.iter().map(|s| s.name.as_str()).collect();
+    assert!(names.contains(&"wireless"), "{names:?}");
+    for gone in ["wifi", "network", "ble"] {
+        assert!(!names.contains(&gone), "{names:?}");
+    }
+
+    let schema = device.config_schema("wireless").await.unwrap();
+    let fields: Vec<_> = schema
+        .fields
+        .iter()
+        .map(|f| f.field.name.as_str())
+        .collect();
+    assert_eq!(
+        fields,
+        [
+            "wifi_ssid",
+            "wifi_password",
+            "wifi_scan_timeout",
+            "wifi_connect_timeout",
+            "wifi_backoff_initial",
+            "wifi_backoff_max",
+            "wifi_link_refresh",
+            "ip_mode",
+            "ip_address",
+            "ip_prefix_len",
+            "ip_gateway",
+            "ip_dns",
+            "ip_hostname",
+            "ip_dhcp_timeout",
+            "ble_name",
+        ]
+    );
+    let secret: Vec<_> = schema
+        .fields
+        .iter()
+        .filter(|f| f.secret)
+        .map(|f| f.field.name.as_str())
+        .collect();
+    assert_eq!(secret, ["wifi_password"]);
+
+    // The five diagnostic fields; no SSID and no BLE state or name.
+    let service = device.service_schema("wireless").await.unwrap();
+    let status: Vec<_> = service.fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(
+        status,
+        [
+            "wifi_state",
+            "wifi_ip",
+            "wifi_rssi",
+            "wifi_reconnects",
+            "heap_free"
+        ]
+    );
+
+    // Exactly three actions, all of the wireless service.
+    let actions = device.actions().await.unwrap();
+    let actions: Vec<_> = actions
+        .iter()
+        .filter(|a| a.service == "wireless")
+        .map(|a| (a.name.as_str(), a.access))
+        .collect();
+    assert_eq!(
+        actions,
+        [
+            ("wifi_scan", ActionAccess::Read),
+            ("wifi_reconnect", ActionAccess::Mutate),
+            ("wifi_disconnect", ActionAccess::Mutate),
+        ]
+    );
+    drop(device);
+    assert!(sim.stop().success());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_wireless_change_is_applied_live_and_never_returns_the_password() {
+    let sim = Sim::start(&Launch::new());
+    let mut device = sim.device().await;
+
+    let applied = device
+        .config_patch(
+            "wireless",
+            &[
+                set(wireless::WIFI_SSID, text("ROHI-LAB")),
+                set(wireless::WIFI_PASSWORD, text("correct horse")),
+            ],
+            false,
+        )
+        .await
+        .unwrap();
+    // The whole section is reported as restart-required, the BLE name needs it.
+    assert!(applied.restart_required);
+
+    // The Wi-Fi settings apply without a restart.
+    eventually("the Wi-Fi link", WAIT, async || {
+        let status = fields(&mut device, "wireless").await;
+        (status.get("wifi_state") == Some(&Value::Enum("connected".to_owned()))).then_some(())
+    })
+    .await;
+    let values = device.config_get("wireless").await.unwrap();
+    assert_eq!(values.overridden, [1, 2]);
+    assert!(values.entries.iter().any(|entry| {
+        entry.field_id == wireless::WIFI_PASSWORD
+            && entry.state == rohi::model::EntryState::Redacted
+    }));
+    drop(device);
+    assert!(sim.stop().success());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_wifi_actions_scan_disconnect_and_reconnect() {
+    let sim = Sim::start(&Launch::new());
+    let mut device = sim.device().await;
+
+    // The scan lists the access points of the simulated world, SSIDs included.
+    let records = device.invoke("wireless", "wifi_scan", &[]).await.unwrap();
+    assert!(!records.is_empty());
+    assert!(
+        records
+            .iter()
+            .any(|record| record.iter().any(|field| field.value == text("ROHI-LAB")))
+    );
+    assert!(records.iter().all(|record| record.len() == 4));
+
+    device
+        .config_patch(
+            "wireless",
+            &[
+                set(wireless::WIFI_SSID, text("ROHI-LAB")),
+                set(wireless::WIFI_PASSWORD, text("correct horse")),
+            ],
+            false,
+        )
+        .await
+        .unwrap();
+    let state = async |device: &mut Device<TcpLink>, expected: &str| {
+        fields(device, "wireless").await.get("wifi_state")
+            == Some(&Value::Enum(expected.to_owned()))
+    };
+    eventually("the Wi-Fi link", WAIT, async || {
+        state(&mut device, "connected").await.then_some(())
+    })
+    .await;
+
+    // Disconnecting keeps the radio idle, until it is told to connect again.
+    device
+        .invoke("wireless", "wifi_disconnect", &[])
+        .await
+        .unwrap();
+    eventually("the radio to be idle", WAIT, async || {
+        state(&mut device, "idle").await.then_some(())
+    })
+    .await;
+    // The request is accepted; the connection follows.
+    device
+        .invoke("wireless", "wifi_reconnect", &[])
+        .await
+        .unwrap();
+    eventually("the Wi-Fi link again", WAIT, async || {
+        state(&mut device, "connected").await.then_some(())
+    })
+    .await;
+    drop(device);
+    assert!(sim.stop().success());
 }
 
 /// A link that delivers every request and never reads its answer, like a
@@ -328,7 +524,11 @@ async fn an_abandoned_request_leaves_the_services_usable() {
         .unwrap();
     let mut abandoning = rohi::Device::new(Abandoning { link });
     let abandoned = abandoning
-        .config_patch("wifi", &[set(wifi::SSID, text("abandoned"))], false)
+        .config_patch(
+            "wireless",
+            &[set(wireless::WIFI_SSID, text("abandoned"))],
+            false,
+        )
         .await;
     assert!(abandoned.is_err());
     drop(abandoning);
@@ -336,7 +536,7 @@ async fn an_abandoned_request_leaves_the_services_usable() {
     // The device serves the next client; the abandoned change was either
     // committed whole or not at all, and every service answers.
     let mut device = sim.device().await;
-    let ssid = config_text(&mut device, "wifi", wifi::SSID).await;
+    let ssid = config_text(&mut device, "wireless", wireless::WIFI_SSID).await;
     assert!(
         matches!(ssid.as_deref(), None | Some("abandoned")),
         "{ssid:?}"
@@ -344,11 +544,15 @@ async fn an_abandoned_request_leaves_the_services_usable() {
     let status = device.services_status().await.unwrap();
     assert!(!status.services.is_empty());
     device
-        .config_patch("wifi", &[set(wifi::SSID, text("after"))], false)
+        .config_patch(
+            "wireless",
+            &[set(wireless::WIFI_SSID, text("after"))],
+            false,
+        )
         .await
         .unwrap();
     assert_eq!(
-        config_text(&mut device, "wifi", wifi::SSID)
+        config_text(&mut device, "wireless", wireless::WIFI_SSID)
             .await
             .as_deref(),
         Some("after")

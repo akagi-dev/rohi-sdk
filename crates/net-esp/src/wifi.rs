@@ -36,10 +36,10 @@
 //!   [`WifiSecurity`](rohi_net::WifiSecurity)).
 //! * **Timeouts.** Association is bounded by the `connect_timeout` of the
 //!   [`WifiConfig`] (`WifiError::Timeout`); obtaining the address is bounded
-//!   separately by `dhcp_timeout` of the [`NetworkConfig`]: a missing DHCP
+//!   separately by `ip_dhcp_timeout` of the [`NetworkConfig`]: a missing DHCP
 //!   lease is `WifiError::DhcpFailed`, a static address that does not see the
 //!   link in time is `WifiError::Timeout`. A scan has no timeout of its own;
-//!   the `wifi` service bounds it with `scan_timeout`.
+//!   the `wireless` service bounds it with `wifi_scan_timeout`.
 //! * **Scans.** At most 48 raw access points are converted, hidden networks
 //!   and duplicate SSIDs are removed and the strongest
 //!   [`MAX_WIFI_SCAN_RESULTS`](rohi_net::MAX_WIFI_SCAN_RESULTS) are kept

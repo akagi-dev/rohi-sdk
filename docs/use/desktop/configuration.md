@@ -10,29 +10,39 @@ enums) and checked again by the device.
 
 ```bash
 rohi config                                        # sections and their versions
-rohi config wifi                                   # the effective values; secrets are shown as <redacted>
-rohi config wifi --help                            # fields: type, unit, allowed values (from the device)
+rohi config wireless                               # the effective values; secrets are shown as <redacted>
+rohi config wireless --help                        # fields: type, unit, allowed values (from the device)
 
-rohi config wifi ssid=office scan_timeout=20 --dry-run
-rohi config wifi ssid=office password=-               # secret from stdin or a hidden prompt
-rohi config wifi ssid=none                            # disable Wi-Fi (no ssid is the default)
-rohi config wifi scan_timeout=null                    # remove the override: back to the firmware default
-rohi config wifi password=none                        # explicit "no value": an open network
-rohi config reset wifi                             # remove every override of the section
+rohi config wireless wifi_ssid=office wifi_scan_timeout=20000 --dry-run
+rohi config wireless wifi_ssid=office wifi_password=-   # secret from stdin or a hidden prompt
+rohi config wireless wifi_ssid=none                   # disable Wi-Fi (no ssid is the default)
+rohi config wireless wifi_scan_timeout=null           # remove the override: back to the firmware default
+rohi config wireless wifi_password=none               # explicit "no value": an open network
+rohi config wireless ip_mode=static ip_address=192.168.1.50 ip_prefix_len=24 ip_gateway=192.168.1.1
+rohi config wireless ble_name=kitchen                 # applies after a reboot
+rohi config reset wireless                         # remove every override of the section
 ```
 
 A name that is also a command (`reset`, `export`, `diff`, `apply`) is not a valid section name. `rohi config --help`
 and `rohi action --help` need no device; `rohi config SECTION --help` connects and is generated from the schema.
 
 ```text
-$ rohi config wifi
-ssid             office
-password         <redacted>
-scan_timeout     20000 ms
-connect_timeout  30000 ms
-backoff_initial  1000 ms
-backoff_max      60000 ms
-link_refresh     10000 ms
+$ rohi config wireless
+wifi_ssid             office
+wifi_password         <redacted>
+wifi_scan_timeout     20000 ms
+wifi_connect_timeout  30000 ms
+wifi_backoff_initial  1000 ms
+wifi_backoff_max      60000 ms
+wifi_link_refresh     10000 ms
+ip_mode               dhcp
+ip_address            <unset>
+ip_prefix_len         <unset>
+ip_gateway            <unset>
+ip_dns                <unset>
+ip_hostname           <unset>
+ip_dhcp_timeout       20000 ms
+ble_name              <unset>
 ```
 
 An optional field without a value shows as `<unset>` when it follows a default that has none, and as `<none>` when you
@@ -74,17 +84,17 @@ Special values:
   are applied to a copy, the complete effective result is validated on the device and stored atomically: if anything
   is invalid, nothing is stored. `--dry-run` validates without storing.
 - **The result of every change is validated** as `defaults + overrides`; an unconfigured or disabled section (no
-  `ssid` means Wi-Fi is disabled, no location, connectivity disabled) is a valid state. Fields that belong together are therefore set in one
+  `wifi_ssid` means Wi-Fi is disabled, no location, connectivity disabled) is a valid state. Fields that belong together are therefore set in one
   command: `rohi config connectivity enabled=true` alone fails until the `host` is set,
   `rohi config connectivity enabled=true host=ingress.example.org` works.
 - **Three states for a nullable field.** `FIELD=value` is an explicit value, `FIELD=none` is an explicit "no value"
-  (`rohi config wifi password=none` configures an open network, `rohi config time server2=none` disables the second NTP
+  (`rohi config wireless wifi_password=none` configures an open network, `rohi config time server2=none` disables the second NTP
   server) and `FIELD=null` removes the override, so the field follows the **current firmware default** again
   (`rohi config time server2=null` restores the firmware's second server). `none` is only valid for fields that
   `--help` marks `nullable`; `rohi` refuses it for any other field before contacting the device. `FIELD=null` works for
   any writable field, required or not.
 - **Secrets** (`secret` in `--help`) are never returned and never part of exports. Put `NAME=-` instead of a value;
-  the tool refuses a secret on the command line. `password=none` and `password=null` are allowed: they carry no secret.
+  the tool refuses a secret on the command line. `wifi_password=none` and `wifi_password=null` are allowed: they carry no secret.
 - **Reset** removes every override of the section, so the firmware defaults apply again.
 - A change that needs a restart says so (`A restart is required for the change to take effect`).
 
@@ -103,7 +113,7 @@ A file maps section names to their fields:
 
 ```json
 {
-  "wifi": { "ssid": "office" },
+  "wireless": { "wifi_ssid": "office" },
   "connectivity": { "enabled": true, "interval_s": 120, "host": "ingress.example.org", "port": 443 },
   "location": { "latitude": 52.52, "longitude": 13.405 }
 }

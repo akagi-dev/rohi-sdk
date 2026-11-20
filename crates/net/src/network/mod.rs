@@ -15,40 +15,32 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-//! The `network` section and service of the management plane.
+//! The IPv4 settings of the Wi-Fi link: the `ip_*` fields of the `wireless`
+//! section of the management plane.
 //!
 //! The device has one network: a Wi-Fi station with an IPv4 stack. Its
-//! desired state is the persistent [`NetworkConfig`] (address mode, host
-//! name, DHCP timing); the Wi-Fi station itself is the [`wifi`](crate::wifi)
-//! section and service. Its observed state is the [`NetworkService`]: the
-//! address and the socket usage.
+//! desired state is the [`NetworkConfig`] (address mode, host name, DHCP
+//! timing); the Wi-Fi station itself is the [`wifi`](crate::wifi) module.
+//! Both are shown to clients as one `wireless` section and one `wireless`
+//! service, see [`WirelessConfig`](crate::WirelessConfig) and
+//! [`WirelessService`](crate::WirelessService).
 //!
-//! # The `network` section
+//! # The IP fields
 //!
-//! [`NetworkConfig`] holds `address_mode` ([`AddressMode::Dhcp`] or
-//! [`AddressMode::Static`]), `ip`, `prefix_len`, `gateway`, `dns`, `hostname`
-//! (DHCP option 12) and `dhcp_timeout` (ms). Static mode needs `ip`,
-//! `prefix_len` and `gateway` on the same link. A change of the section
-//! reconnects, because the address is obtained while joining the network (see
+//! [`NetworkConfig`] holds the address mode ([`AddressMode::Dhcp`] or
+//! [`AddressMode::Static`], field `ip_mode`), `ip_address`,
+//! `ip_prefix_len`, `ip_gateway`, `ip_dns`, `ip_hostname` (DHCP option 12)
+//! and `ip_dhcp_timeout` (ms). Static mode needs the address, the prefix
+//! length and the gateway on the same link. A change reconnects, because the
+//! address is obtained while joining the network (see
 //! [`WifiHandle::set_network_config`](crate::WifiHandle::set_network_config)).
-//!
-//! # The `network` service
-//!
-//! Status fields: `ip`, `gateway`, `dns`, `tcp_in_use`, `tcp_capacity`,
-//! `udp_in_use` and `udp_capacity`; the socket numbers come from a
-//! [`NetworkProbe`] the firmware passes to [`NetworkService`], so this crate
-//! stays free of platform types. The service has no actions: the link is
-//! operated through the `wifi` service. It shares the link state with `wifi`:
-//! `network` is `ok` when the link is up and reports `dhcp_failed` as its
-//! issue ([`issue`]); every other link error is an issue of `wifi`.
+//! The address of the link is reported as the `wifi_ip` status field.
 
 mod config;
 mod managed;
-mod service;
 
 pub use config::{
     AddressMode, DEFAULT_DHCP_TIMEOUT_MS, DHCP_TIMEOUT_RANGE_MS, Hostname, Ipv4, MAX_HOSTNAME_LEN,
-    NetworkConfig, NetworkOverrides, StaticIpv4,
+    NetworkConfig, StaticIpv4,
 };
 pub use managed::{ADDRESS_MODE_ENUM, ADDRESS_MODES, Ipv4Codec, address_mode};
-pub use service::{NetworkProbe, NetworkService, issue, status_field};

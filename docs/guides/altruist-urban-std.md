@@ -48,8 +48,8 @@ control dispatcher, identity, time and the telemetry profiles, the connectivity 
 
 `std-tcp`, `std-ble` and `sensor-simulator` are independent: any subset builds. Combinations of the platforms are
 rejected when the crate is built, and `std-ble` is rejected outside Linux. Without `sensor-simulator` no sensor is
-fabricated: the `sensors` service reports every sensor as not detected. Without `std-ble` the `ble` service is
-`disabled`; it never pretends to advertise over TCP.
+fabricated: the `sensors` service reports every sensor as not detected. Without `std-ble` the BLE peripheral is
+`disabled` and says nothing to the `wireless` health; it never pretends to advertise over TCP.
 
 ## Run it
 
@@ -104,9 +104,9 @@ The normal `rohi` commands work unchanged; only the target differs:
 ```bash
 rohi --device tcp://127.0.0.1:9300 status
 rohi --device tcp://127.0.0.1:9300 status sensors
-rohi --device tcp://127.0.0.1:9300 action wifi scan
-echo 'a long password' | rohi --device tcp://127.0.0.1:9300 config wifi ssid=ROHI-LAB password=-
-rohi --device tcp://127.0.0.1:9300 status wifi
+rohi --device tcp://127.0.0.1:9300 action wireless wifi_scan
+echo 'a long password' | rohi --device tcp://127.0.0.1:9300 config wireless wifi_ssid=ROHI-LAB wifi_password=-
+rohi --device tcp://127.0.0.1:9300 status wireless
 ```
 
 `rohi system reboot` restarts the process in place and keeps its ports; `rohi system factory_reset` formats its flash

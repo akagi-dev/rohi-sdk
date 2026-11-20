@@ -52,8 +52,8 @@ bounded by the compact protocol layout and by explicit budgets, see [Control pro
 The static future of `control_task` is 17 440 B of `.bss` (`firmware` profile, ESP32-C3, from the size of `altruist_urban::esp::control::control_task::POOL`; the earlier 11 856 B were a release build of an older revision). [Task memory and stack budget](#task-memory-and-stack-budget-memcheck) reports every task pool, the stack and the frames in CI. **Stack depth under load is not measured yet**: it needs a
 device, see [the plan to measure it](#measuring-the-control-task). The stack is what the linker leaves after `.bss`, so every
 static byte and every deep frame on the config or control path costs stack: a decoder that builds a large section from
-temporaries (the `wifi` section, about 200 B) needed ~900 B of frame and overflowed the stack on a `rohi config` request;
-`WifiConfig` is decoded in place for that reason. Check `_stack_end` and the frames of the config and control path
+temporaries (the former `wifi` section, about 200 B) needed ~900 B of frame and overflowed the stack on a `rohi config` request;
+`WifiConfig` was decoded in place for that reason; `WirelessConfig` is the one section now, so its frames are checked by memcheck. Check `_stack_end` and the frames of the config and control path
 when a section or a static grows.
 
 
@@ -106,7 +106,7 @@ Scenarios, each with the device in the stated state (all services active, i.e. t
 4. Wi-Fi and identity both configured: `rohi status` (**the regression scenario**) and `rohi status <service>` for
    every service
 5. `rohi config <section>` and `rohi config <section> FIELD=VALUE` of every section
-6. Wi-Fi scan and `wifi reconnect` action invocation
+6. Wi-Fi scan and `wireless wifi_reconnect` action invocation
 7. identity `provision` and `erase` action invocation
 8. `rohi system factory_reset`
 9. `rohi system reboot`

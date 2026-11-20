@@ -299,8 +299,8 @@ async fn tail_serves_the_records_in_ram_and_follows_them_once() {
     for round in 0..3 {
         device
             .config_patch(
-                "wifi",
-                &[set(wifi::SSID, text(&format!("tail-{round}")))],
+                "wireless",
+                &[set(wireless::WIFI_SSID, text(&format!("tail-{round}")))],
                 false,
             )
             .await
@@ -424,8 +424,11 @@ async fn following_the_tail_at_debug_generates_no_records_of_its_own() {
     for round in 0..altruist_urban::logging::TAIL_RECORDS {
         device
             .config_patch(
-                "wifi",
-                &[set(wifi::SSID, text(&format!("debug-tail-{round}")))],
+                "wireless",
+                &[set(
+                    wireless::WIFI_SSID,
+                    text(&format!("debug-tail-{round}")),
+                )],
                 false,
             )
             .await

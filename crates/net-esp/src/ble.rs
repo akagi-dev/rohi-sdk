@@ -61,7 +61,7 @@
 //!   the pairing result is only seen through the security level. This path
 //!   is not verified on hardware.
 
-use core::cell::{Cell, RefCell};
+use core::cell::Cell;
 
 use embassy_futures::join::join;
 use embassy_futures::select::{Either, select};
@@ -73,8 +73,8 @@ use esp_radio::ble::controller::BleConnector;
 use heapless::Vec;
 use log::{debug, info, trace};
 use rohi_net::{
-    BleConfig, BleConnectionInfo, BleError, BleName, BleProbe, BleState, BleTransport,
-    DEFAULT_BLE_PAYLOAD, MAX_BLE_PAYLOAD,
+    BleConfig, BleConnectionInfo, BleError, BleProbe, BleState, BleTransport, DEFAULT_BLE_PAYLOAD,
+    MAX_BLE_PAYLOAD,
 };
 use trouble_host::prelude::*;
 
@@ -126,8 +126,6 @@ struct Shared<const RX_DEPTH: usize, const TX_DEPTH: usize> {
     rx: Channel<CriticalSectionRawMutex, RxEvent, RX_DEPTH>,
     tx: Channel<CriticalSectionRawMutex, Chunk, TX_DEPTH>,
     link: Mutex<CriticalSectionRawMutex, Cell<Link>>,
-    /// The advertised name, empty until the runner started.
-    name: Mutex<CriticalSectionRawMutex, RefCell<heapless::String<NAME_MAX>>>,
 }
 
 impl<const RX_DEPTH: usize, const TX_DEPTH: usize> Shared<RX_DEPTH, TX_DEPTH> {
@@ -141,7 +139,6 @@ impl<const RX_DEPTH: usize, const TX_DEPTH: usize> Shared<RX_DEPTH, TX_DEPTH> {
                 payload: DEFAULT_BLE_PAYLOAD,
                 info: None,
             })),
-            name: Mutex::new(RefCell::new(heapless::String::new())),
         }
     }
 
@@ -154,14 +151,6 @@ impl<const RX_DEPTH: usize, const TX_DEPTH: usize> Shared<RX_DEPTH, TX_DEPTH> {
             let mut value = cell.get();
             f(&mut value);
             cell.set(value);
-        });
-    }
-
-    fn set_name(&self, name: &str) {
-        self.name.lock(|cell| {
-            let mut stored = cell.borrow_mut();
-            stored.clear();
-            let _ = stored.push_str(name);
         });
     }
 }
@@ -245,7 +234,7 @@ pub struct EspBle<const RX_DEPTH: usize, const TX_DEPTH: usize> {
 }
 
 impl<const RX_DEPTH: usize, const TX_DEPTH: usize> EspBle<RX_DEPTH, TX_DEPTH> {
-    /// A copyable view of the peripheral for the `ble` service. The transport
+    /// A copyable view of the peripheral for the `wireless` service. The transport
     /// itself belongs to the control link, so take the view before handing it
     /// over.
     pub fn status(&self) -> EspBleStatus<RX_DEPTH, TX_DEPTH> {
@@ -271,16 +260,6 @@ impl<const RX_DEPTH: usize, const TX_DEPTH: usize> Copy for EspBleStatus<RX_DEPT
 impl<const RX_DEPTH: usize, const TX_DEPTH: usize> BleProbe for EspBleStatus<RX_DEPTH, TX_DEPTH> {
     fn state(&self) -> BleState {
         self.shared.link().state
-    }
-
-    fn max_payload(&self) -> usize {
-        self.shared.link().payload
-    }
-
-    fn name(&self) -> Option<BleName> {
-        self.shared
-            .name
-            .lock(|cell| BleName::new(cell.borrow().as_str()))
     }
 }
 
@@ -468,7 +447,6 @@ impl<
         let mut runner = stack.runner();
 
         let name = device_name(&self.config);
-        shared.set_name(name.as_str());
         info!(target: "ble", "Runner started (name={})", name.as_str());
         let mut rx_store = [0u8; MAX_BLE_PAYLOAD];
         let mut tx_store = [0u8; MAX_BLE_PAYLOAD];

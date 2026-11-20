@@ -39,9 +39,9 @@ async fn without_the_simulator_no_sensor_is_reported_as_working() {
         "{sensors:?}"
     );
 
-    // The BLE service tells that no BLE peripheral runs; it does not pretend
-    // to advertise over TCP.
-    let (health, _) = summary(&mut device, "ble").await;
+    // Without a BLE peripheral and with Wi-Fi not configured the wireless
+    // service has nothing to report; it does not pretend to advertise over TCP.
+    let (health, _) = summary(&mut device, "wireless").await;
     assert_eq!(health, ServiceHealth::Unknown);
 
     // Commands that need simulated sensors are refused, not silently ignored.

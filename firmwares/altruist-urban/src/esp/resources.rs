@@ -188,7 +188,7 @@ pub type BleResources = rohi_sdk::esp::net::BleResources<
 /// BLE transport of the product.
 pub type BleTransport = rohi_sdk::esp::net::EspBle<BLE_RX_DEPTH, BLE_TX_DEPTH>;
 
-/// Read-only view of the BLE peripheral for the `ble` service.
+/// Read-only view of the BLE peripheral for the `wireless` service.
 pub type BleStatus = rohi_sdk::esp::net::EspBleStatus<BLE_RX_DEPTH, BLE_TX_DEPTH>;
 
 /// Runner of the BLE stack of the product.

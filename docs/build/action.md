@@ -14,8 +14,8 @@ With the service registered, every client lists the action and builds its argume
 
 ```bash
 rohi action                      # all actions
-rohi action wifi scan --help     # arguments and results, generated from the device
-rohi action wifi scan
+rohi action wireless wifi_scan --help     # arguments and results, generated from the device
+rohi action wireless wifi_scan
 ```
 
 The user's view is [Actions](../use/desktop/actions.md).

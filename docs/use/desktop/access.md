@@ -48,7 +48,7 @@ says only whether a key is provisioned (`psk_enrolled`).
 With the key, `rohi` does the handshake and encrypts every request:
 
 ```bash
-rohi -D tcp://192.168.1.50:9300 --psk-file tcp.key config wifi ssid=ROHI-LAB
+rohi -D tcp://192.168.1.50:9300 --psk-file tcp.key config wireless wifi_ssid=ROHI-LAB
 rohi -D tcp://192.168.1.50:9300 --psk-file old.key control_tcp reveal_psk   # rotate (see below)
 ```
 

@@ -95,12 +95,12 @@ Connection:
 
 Examples:
   rohi config
-  rohi config wifi
-  rohi config wifi ssid=office password=-
-  rohi config wifi scan_timeout=5000
-  rohi config wifi scan_timeout=null
-  rohi config wifi password=none
-  rohi config wifi scan_timeout=5000 --dry-run
-  rohi config wifi --help
-  echo 'hunter2hunter2' | rohi config wifi password=-
+  rohi config wireless
+  rohi config wireless wifi_ssid=office wifi_password=-
+  rohi config wireless wifi_scan_timeout=5000
+  rohi config wireless wifi_scan_timeout=null
+  rohi config wireless wifi_password=none
+  rohi config wireless wifi_scan_timeout=5000 --dry-run
+  rohi config wireless --help
+  echo 'hunter2hunter2' | rohi config wireless wifi_password=-
 

@@ -127,7 +127,11 @@ async fn factory_reset_formats_the_configuration_and_keeps_the_log_and_the_proce
     let mut sim = Sim::start(&Launch::new().storage(&storage));
     let mut device = sim.device().await;
     device
-        .config_patch("wifi", &[set(wifi::SSID, text("home-net"))], false)
+        .config_patch(
+            "wireless",
+            &[set(wireless::WIFI_SSID, text("home-net"))],
+            false,
+        )
         .await
         .unwrap();
     provision_identity(&mut device).await;
@@ -138,7 +142,10 @@ async fn factory_reset_formats_the_configuration_and_keeps_the_log_and_the_proce
 
     // The runtime is back to the defaults, the identity is gone, and nothing
     // rebooted: the same process still answers.
-    assert_eq!(config_text(&mut device, "wifi", wifi::SSID).await, None);
+    assert_eq!(
+        config_text(&mut device, "wireless", wireless::WIFI_SSID).await,
+        None
+    );
     assert!(!provisioned(&mut device).await);
     assert!(sim.wait_exit(Duration::from_millis(500)).is_none());
     device.info().await.unwrap();
@@ -164,7 +171,10 @@ async fn factory_reset_formats_the_configuration_and_keeps_the_log_and_the_proce
         fields(&mut device, "system").await.get("boot_count"),
         Some(&Value::U64(2))
     );
-    assert_eq!(config_text(&mut device, "wifi", wifi::SSID).await, None);
+    assert_eq!(
+        config_text(&mut device, "wireless", wireless::WIFI_SSID).await,
+        None
+    );
     assert!(!provisioned(&mut device).await);
     drop(device);
     sim.stop();
@@ -180,7 +190,7 @@ async fn factory_reset_repairs_a_corrupted_configuration_storage() {
     let sim = Sim::start(&Launch::new().storage(&storage));
     let mut device = sim.device().await;
     device
-        .config_patch("wifi", &[set(wifi::SSID, text("lost"))], false)
+        .config_patch("wireless", &[set(wireless::WIFI_SSID, text("lost"))], false)
         .await
         .unwrap();
     drop(device);
@@ -197,7 +207,11 @@ async fn factory_reset_repairs_a_corrupted_configuration_storage() {
     let mut device = sim.device().await;
     assert!(
         device
-            .config_patch("wifi", &[set(wifi::SSID, text("refused"))], false)
+            .config_patch(
+                "wireless",
+                &[set(wireless::WIFI_SSID, text("refused"))],
+                false
+            )
             .await
             .is_err(),
         "the corrupted store is unusable"
@@ -207,7 +221,11 @@ async fn factory_reset_repairs_a_corrupted_configuration_storage() {
     // The reset restores the stored defaults of the endpoint, which apply at the next start,
     // never partly: this run keeps the endpoint it was started with (open by the launch option).
     device
-        .config_patch("wifi", &[set(wifi::SSID, text("denied"))], false)
+        .config_patch(
+            "wireless",
+            &[set(wireless::WIFI_SSID, text("denied"))],
+            false,
+        )
         .await
         .unwrap();
     let tcp = fields(&mut device, "control_tcp").await;
@@ -218,7 +236,11 @@ async fn factory_reset_repairs_a_corrupted_configuration_storage() {
     let sim = Sim::start(&Launch::new().storage(&storage));
     let mut device = sim.device().await;
     device
-        .config_patch("wifi", &[set(wifi::SSID, text("repaired"))], false)
+        .config_patch(
+            "wireless",
+            &[set(wireless::WIFI_SSID, text("repaired"))],
+            false,
+        )
         .await
         .unwrap();
     drop(device);
@@ -227,7 +249,7 @@ async fn factory_reset_repairs_a_corrupted_configuration_storage() {
     let sim = Sim::start(&Launch::new().storage(&storage));
     let mut device = sim.device().await;
     assert_eq!(
-        config_text(&mut device, "wifi", wifi::SSID)
+        config_text(&mut device, "wireless", wireless::WIFI_SSID)
             .await
             .as_deref(),
         Some("repaired")
@@ -243,7 +265,7 @@ async fn reboot_answers_first_and_restarts_the_process_in_place() {
     let sim = Sim::start(&Launch::new().storage(&storage));
     let mut device = sim.device().await;
     device
-        .config_patch("wifi", &[set(wifi::SSID, text("kept"))], false)
+        .config_patch("wireless", &[set(wireless::WIFI_SSID, text("kept"))], false)
         .await
         .unwrap();
 
@@ -271,7 +293,7 @@ async fn reboot_answers_first_and_restarts_the_process_in_place() {
     })
     .await;
     assert_eq!(
-        config_text(&mut device, "wifi", wifi::SSID)
+        config_text(&mut device, "wireless", wireless::WIFI_SSID)
             .await
             .as_deref(),
         Some("kept")

@@ -330,7 +330,7 @@ mod tests {
     #[test]
     fn rendering_has_the_message_details_and_hints() {
         let rendered = CliError::PartialApply(Box::new(PartialApply {
-            applied: vec!["wifi".into()],
+            applied: vec!["wireless".into()],
             failed: "connectivity".into(),
             pending: vec![],
             source: Error::Device(ErrorCode::InvalidArgument),
@@ -342,7 +342,7 @@ mod tests {
             "{rendered}"
         );
         assert!(rendered.contains("failed: connectivity"), "{rendered}");
-        assert!(rendered.contains("applied:\n  wifi"), "{rendered}");
+        assert!(rendered.contains("applied:\n  wireless"), "{rendered}");
     }
 
     #[test]

@@ -18,7 +18,7 @@
 
 //! The BLE peripheral of the host platform without a Bluetooth adapter being
 //! required: the device must start and serve TCP whether BlueZ is there or not,
-//! and the `ble` service must tell the truth about it. Talking to a real central
+//! and the `wireless` service must tell the truth about it. Talking to a real central
 //! is a separate, hardware-bound smoke test, see the std guide.
 
 mod common;
@@ -39,7 +39,7 @@ async fn the_ble_service_reports_the_real_state_of_the_peripheral() {
         "the BLE peripheral to settle",
         Duration::from_secs(30),
         async || {
-            let (health, _) = summary(&mut device, "ble").await;
+            let (health, _) = summary(&mut device, "wireless").await;
             (health != ServiceHealth::Unknown).then_some(health)
         },
     )
