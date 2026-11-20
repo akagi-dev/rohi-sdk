@@ -527,7 +527,7 @@ impl<T: ClientTransport> Device<T> {
     ///
     /// # Errors
     ///
-    /// [`Error::Protocol`] when the action returns a stream: use
+    /// [`Error::Protocol`] when the action returns a stream or a page: use
     /// [`invoke_outcome`](Self::invoke_outcome) for those.
     pub async fn invoke(
         &mut self,
@@ -540,12 +540,15 @@ impl<T: ClientTransport> Device<T> {
             ActionOutcome::Stream(_) => Err(Error::Protocol(format!(
                 "{service} {action} returns a stream, which this call cannot show"
             ))),
+            ActionOutcome::Page(_) => Err(Error::Protocol(format!(
+                "{service} {action} returns a page, which this call cannot show"
+            ))),
         }
     }
 
-    /// Runs an action and returns what it returned: records, or a stream the
+    /// Runs an action and returns what it returned: records, a stream the
     /// caller reads with [`read_stream`](Self::read_stream) and must
-    /// [`close_stream`](Self::close_stream).
+    /// [`close_stream`](Self::close_stream), or one cursor page.
     pub async fn invoke_outcome(
         &mut self,
         service: &str,
@@ -582,6 +585,15 @@ impl<T: ClientTransport> Device<T> {
                         size_bytes: file.size_bytes,
                     })
                     .collect(),
+            })),
+            Reply::ActionPage(page) => Ok(ActionOutcome::Page(ActionPage {
+                session: page.session,
+                cursor: page.cursor,
+                oldest_sequence: page.oldest_sequence,
+                newest_sequence: page.newest_sequence,
+                reset: page.reset,
+                gap: page.gap,
+                data: page.data.to_vec(),
             })),
             Reply::InvokeAction(done) => Ok(ActionOutcome::Records(
                 done.records
@@ -637,26 +649,25 @@ impl<T: ClientTransport> Device<T> {
     /// `session` or `after` is 0. Continue with the `cursor` and the `session` of
     /// the page; an empty page means there is nothing newer.
     ///
-    /// Nothing is opened on the device: there is no stream to close, and the
-    /// call can be repeated as often as needed.
+    /// This is the `tail` action of the service (`session` and `after` are its
+    /// arguments 1 and 2). Nothing is opened on the device: there is no stream to
+    /// close, and the call can be repeated as often as needed.
     pub async fn tail_logs(&mut self, service: &str, session: u32, after: u64) -> Result<TailPage> {
-        let service_id = self.service_id(service).await?;
-        let call = Call::TailLogs(pb::TailLogsRequest {
-            service_id,
-            session,
-            after,
-        });
-        match self.call(call).await? {
-            Reply::TailLogs(page) => Ok(TailPage {
-                session: page.session,
-                cursor: page.cursor,
-                oldest_sequence: page.oldest_sequence,
-                newest_sequence: page.newest_sequence,
-                reset: page.reset,
-                gap: page.gap,
-                data: page.data.to_vec(),
-            }),
-            other => Err(unexpected(&other)),
+        let args = [
+            FieldValue {
+                field_id: 1,
+                value: Value::U64(session.into()),
+            },
+            FieldValue {
+                field_id: 2,
+                value: Value::U64(after),
+            },
+        ];
+        match self.invoke_outcome(service, "tail", &args).await? {
+            ActionOutcome::Page(page) => Ok(page),
+            _ => Err(Error::Protocol(format!(
+                "{service} tail does not return a page"
+            ))),
         }
     }
 

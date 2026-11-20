@@ -70,7 +70,7 @@ pub struct Ctx {
     pub watch_limit: Option<usize>,
     /// How often `logs --follow` asks for new records.
     pub follow_interval: Duration,
-    /// The pre-shared key of `--psk-file`, which a restricted TCP endpoint wants.
+    /// The pre-shared key of `--psk-file`, which the TCP endpoint wants for changes (and for any request in `private` mode).
     pub tcp_key: Option<crate::TcpKey>,
 }
 
@@ -236,8 +236,9 @@ async fn connect_tcp(
 ) -> Result<Device<TcpLink>, CliError> {
     ctx.uri = Some(format!("tcp://{endpoint}"));
     let wait = Duration::from_secs(cli.scan_timeout);
-    // With a key the endpoint is restricted: the handshake comes first. Without one the records
-    // are plaintext, which only an open (development) endpoint serves.
+    // With a key the handshake comes first and every request is authenticated and encrypted.
+    // Without one the records are plaintext: reads on a protected endpoint, everything on an open
+    // one, nothing on a private one.
     let link = match &ctx.tcp_key {
         Some(key) => TcpLink::connect_secure(endpoint, wait, key).await?,
         None => TcpLink::connect(endpoint, wait).await?,

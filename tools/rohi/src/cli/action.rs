@@ -319,6 +319,12 @@ async fn invoke<T: ClientTransport>(
             || format::records(ctx.paint, &records, schema),
         ),
         ActionOutcome::Stream(stream) => show_stream(device, &stream, ctx).await,
+        ActionOutcome::Page(page) => {
+            ctx.io
+                .emit(ctx.format, &dto::Versioned::new(dto::page(&page)), || {
+                    format::page(&page)
+                })
+        }
     }
 }
 

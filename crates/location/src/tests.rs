@@ -19,7 +19,7 @@ use embassy_futures::block_on;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use rohi_config::{ConfigOverrides, ConfigSection, Override};
 use rohi_service::{
-    Bounds, Config, ConfigField, FieldError, ServiceState, Status, StatusRegistry, Statuses, Unit,
+    Bounds, Config, ConfigField, FieldError, ServiceHealth, Status, StatusRegistry, Statuses, Unit,
     Value,
 };
 
@@ -275,15 +275,13 @@ fn the_service_is_disabled_until_a_location_is_set() {
     let service = LocationService(&shared);
     let registry = Statuses::<NoopRawMutex, _>::new((&service,));
     let status = block_on(registry.status(SERVICE_ID, 0)).unwrap();
-    assert_eq!(status.summary.state, ServiceState::Disabled);
-    assert!(!status.summary.ready);
+    assert_eq!(status.summary.health, ServiceHealth::Unknown);
     assert_eq!(status.issues[0].code, issue::NOT_SET);
     assert!(status.fields.is_empty());
 
     shared.publish_configured(Some(&config()));
     let status = block_on(registry.status(SERVICE_ID, 1_000)).unwrap();
-    assert_eq!(status.summary.state, ServiceState::Running);
-    assert!(status.summary.ready);
+    assert_eq!(status.summary.health, ServiceHealth::Ok);
     assert!(status.issues.is_empty());
     assert_eq!(
         status.fields[0],

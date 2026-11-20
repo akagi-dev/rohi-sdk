@@ -24,7 +24,7 @@
 //! (desired-state reconciliation, backoff, link-loss handling) runs unchanged:
 //!
 //! ```text
-//! wifi / network config -> WifiManager -> SimWifi -> World (access points, faults)
+//! `wireless` config -> WifiManager -> SimWifi -> World (access points, faults)
 //! ```
 //!
 //! Connection outcomes flow through the portable error model:

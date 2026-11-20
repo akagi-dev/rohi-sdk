@@ -32,7 +32,7 @@ const FINGERPRINT_LEN: usize = 8;
 /// `TcpPskSection`).
 ///
 /// It lives in the normal configuration store, so it has the A/B transactional writes of
-/// every section, and it is written only by `control_tcp.reveal_psk` and removed by a factory reset.
+/// every section, and it is written only by `control.tcp_generate_psk` and removed by a factory reset.
 /// It is not a managed config section: no config
 /// request reads, patches or resets it, and no status or log shows it. The memory it occupies
 /// is wiped when the value is dropped. CBOR: `[bytes(32)]`.
@@ -82,7 +82,7 @@ pub trait PskStore {
 }
 
 /// The first bytes of a SHA-256 of `key` under a fixed domain: what the status shows instead of
-/// the key, so that an operator can tell which key a device holds (it is in the result of `reveal_psk`, never in the status).
+/// the key, so that an operator can tell which key a device holds (it is in the result of `tcp_generate_psk`, never in the status).
 ///
 /// ```
 /// use rohi_control_endpoints::fingerprint;

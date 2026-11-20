@@ -15,6 +15,7 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
+
 //! Per-transport access modes and the shared access state.
 
 use core::cell::RefCell;
@@ -24,37 +25,52 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 
 use crate::{AuthorizationPolicy, LinkSecurity, Privilege, Transport};
 
-/// What a TCP endpoint demands for privileged requests.
+/// What a TCP endpoint lets a client do without proof of the pre-shared key.
 ///
-/// | Request | `Open` | `Restricted` |
-/// |---------|--------|--------------|
-/// | read | yes | yes (the handshake already proved the client) |
-/// | mutate | yes | an authenticated, encrypted connection (the TCP handshake with the pre-shared key) |
-/// | provision | yes | the same as mutate |
+/// | Request | `Open` | `Protected` | `Private` |
+/// |---------|--------|-------------|-----------|
+/// | read, no key | yes | yes | no |
+/// | mutate, no key | yes | no | no |
+/// | provision, no key | yes | no | no |
+/// | any request, after the handshake with the key | yes | yes | yes |
 ///
-/// A restricted TCP endpoint does not even read a request before its handshake succeeded, so the
-/// policy never sees an unauthenticated TCP request there. An action that is marked
-/// [`secure_link`](rohi_service::ActionDescriptor::secure_link) (the one that reveals the pre-shared key)
-/// needs [`protects_secrets`](AuthorizationPolicy::protects_secrets) on top of this in every
-/// mode: an authenticated and encrypted connection on TCP.
+/// "Proof" is the handshake of `rohi-control-tcp` with the pre-shared key: the transport reports
+/// the link as encrypted and authenticated, and nothing in a request can raise that. In `Open` and
+/// `Protected` a plaintext connection is served next to the authenticated ones; `Private` serves
+/// authenticated connections only and never falls back to plaintext. Whether a key exists changes
+/// nothing about the state of the endpoint: without one only the unauthenticated rows of the
+/// table are possible.
+///
+/// An action that is marked [`secure_link`](rohi_service::ActionDescriptor::secure_link) (the one
+/// that generates the pre-shared key) needs [`protects_secrets`](AuthorizationPolicy::protects_secrets)
+/// on top of this in every mode: an authenticated and encrypted connection on TCP. `Open` never
+/// makes a plaintext link eligible for a secret.
 ///
 /// BLE has no mode: in the current build the BLE endpoint is open, with no pairing and no link
 /// encryption, and a BLE link is never reported as encrypted or authenticated.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransportAccessMode {
-    /// Everything is allowed. Deliberately insecure for privileged operations.
+    /// Everything is allowed without proof. Deliberately insecure for privileged operations.
     Open,
-    /// Privileged requests need proof, see the table above.
-    Restricted,
+    /// Reads need no proof; mutations and provisioning do.
+    Protected,
+    /// Every request needs proof: a plaintext connection is refused.
+    Private,
 }
 
 impl TransportAccessMode {
-    /// The value of the `access_mode` config field.
+    /// The value of the `tcp_access_mode` config field.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Open => "open",
-            Self::Restricted => "restricted",
+            Self::Protected => "protected",
+            Self::Private => "private",
         }
+    }
+
+    /// Whether a connection without proof may be served at all: every mode but `Private`.
+    pub const fn serves_plaintext(self) -> bool {
+        !matches!(self, Self::Private)
     }
 }
 
@@ -69,11 +85,11 @@ pub enum EndpointState {
     Failed,
 }
 
-/// What a running endpoint was started with: the persisted `control_tcp` section (or a launch
+/// What a running endpoint was started with: the persisted `control` section (or a launch
 /// option of the platform) as the runtime applied it at boot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EndpointSettings {
-    /// What privileged requests need.
+    /// What a client without proof may do.
     pub mode: TransportAccessMode,
     /// The IPv4 address a TCP endpoint listens on; unused for BLE.
     pub address: [u8; 4],
@@ -82,9 +98,9 @@ pub struct EndpointSettings {
 }
 
 impl EndpointSettings {
-    /// The defaults of the TCP endpoint: restricted, loopback, port 9300.
+    /// The defaults of the TCP endpoint: protected, loopback, port 9300.
     pub const TCP: Self = Self {
-        mode: TransportAccessMode::Restricted,
+        mode: TransportAccessMode::Protected,
         address: [127, 0, 0, 1],
         port: 9300,
     };
@@ -97,22 +113,21 @@ impl EndpointSettings {
     };
 }
 
-/// Counters and state of one transport endpoint, for its status.
+/// State and counters of one transport endpoint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EndpointStats {
     /// Whether the endpoint serves clients.
     pub state: EndpointState,
+    /// Whether the build has this endpoint: set by the platform that starts it. An endpoint that
+    /// is not expected is no failure, and one that is expected but not running yet is starting.
+    pub expected: bool,
     /// What the running endpoint was started with.
     pub settings: EndpointSettings,
     /// Live connections.
     pub sessions: u32,
-    /// Requests the policy allowed.
-    pub accepted: u32,
-    /// Requests the policy refused.
-    pub denied: u32,
-    /// Connections that did not authenticate (a TCP handshake that failed).
-    pub auth_failures: u32,
-    /// Framing, reassembly or I/O errors of the transport.
+    /// Failures of the transport: framing, reassembly, I/O, no slot, a handshake that did not
+    /// authenticate. Every failure event is counted once, here, and a request the access policy
+    /// refused is not one.
     pub errors: u32,
     /// The kind of the last transport error, 0 for none; set by the transport.
     pub last_error: u8,
@@ -122,15 +137,28 @@ impl EndpointStats {
     const fn new(settings: EndpointSettings) -> Self {
         Self {
             state: EndpointState::Disabled,
+            expected: false,
             settings,
             sessions: 0,
-            accepted: 0,
-            denied: 0,
-            auth_failures: 0,
             errors: 0,
             last_error: 0,
         }
     }
+}
+
+/// How well the endpoints that the build has work, see [`ControlAccess::availability`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Availability {
+    /// The build has no control endpoint, or none was announced yet.
+    None,
+    /// An expected endpoint is still starting and none failed.
+    Starting,
+    /// Every expected endpoint runs.
+    All,
+    /// At least one expected endpoint failed and at least one runs.
+    Some,
+    /// Endpoints are expected, at least one failed and none runs.
+    Failed,
 }
 
 const TCP: usize = 0;
@@ -146,25 +174,27 @@ fn index(transport: Transport) -> Option<usize> {
 
 struct State {
     stats: [EndpointStats; 2],
+    requests: u32,
     psk_enrolled: bool,
     psk_epoch: u32,
 }
 
 /// The access state shared by the [`Controller`](crate::Controller) (through
-/// [`AccessPolicy`]), the transports and the endpoint services: the mode of
-/// every transport, whether a pre-shared key of the TCP endpoint is provisioned and the counters.
+/// [`AccessPolicy`]), the transports and the `control` service: the mode of
+/// the TCP endpoint, whether a pre-shared key of the TCP endpoint is provisioned, the state of the
+/// endpoints and the counters.
 ///
-/// Defaults: TCP `Restricted`, BLE `Open`, no pre-shared key. Nothing here
+/// Defaults: TCP `Protected`, BLE `Open`, no pre-shared key, no endpoint expected. Nothing here
 /// touches storage: the owners of the configuration publish into it.
 ///
 /// ```
 /// use rohi_control::{ControlAccess, Transport, TransportAccessMode};
 ///
 /// let access = ControlAccess::new(|_| false);
-/// assert_eq!(access.mode(Transport::Tcp), TransportAccessMode::Restricted);
+/// assert_eq!(access.mode(Transport::Tcp), TransportAccessMode::Protected);
 /// assert_eq!(access.mode(Transport::Ble), TransportAccessMode::Open);
 /// // BLE has no mode: it is open whatever is asked.
-/// access.set_mode(Transport::Ble, TransportAccessMode::Restricted);
+/// access.set_mode(Transport::Ble, TransportAccessMode::Private);
 /// assert_eq!(access.mode(Transport::Ble), TransportAccessMode::Open);
 /// ```
 pub struct ControlAccess {
@@ -182,6 +212,7 @@ impl ControlAccess {
                     EndpointStats::new(EndpointSettings::TCP),
                     EndpointStats::new(EndpointSettings::BLE),
                 ],
+                requests: 0,
                 psk_enrolled: false,
                 psk_epoch: 0,
             })),
@@ -194,12 +225,12 @@ impl ControlAccess {
     }
 
     /// The mode of `transport`: BLE is always open in this build and an unspecified transport
-    /// is always restricted.
+    /// is always private.
     pub fn mode(&self, transport: Transport) -> TransportAccessMode {
         match transport {
             Transport::Ble => TransportAccessMode::Open,
             Transport::Tcp => self.with(|state| state.stats[TCP].settings.mode),
-            Transport::Unspecified => TransportAccessMode::Restricted,
+            Transport::Unspecified => TransportAccessMode::Private,
         }
     }
 
@@ -237,7 +268,7 @@ impl ControlAccess {
         (self.entropy)(dst)
     }
 
-    /// The counters of `transport`.
+    /// The state and counters of `transport`.
     pub fn stats(&self, transport: Transport) -> EndpointStats {
         match index(transport) {
             Some(index) => self.with(|state| state.stats[index]),
@@ -267,11 +298,51 @@ impl ControlAccess {
         }
     }
 
+    /// Announces that the build has an endpoint of `transport`: its failure is then a failure of
+    /// the service, and not being up yet means starting. A platform calls it once, before the
+    /// endpoint starts.
+    pub fn expect(&self, transport: Transport) {
+        if let Some(index) = index(transport) {
+            self.with(|state| state.stats[index].expected = true);
+        }
+    }
+
     /// Records whether the endpoint of `transport` serves clients.
     pub fn set_state(&self, transport: Transport, endpoint: EndpointState) {
         if let Some(index) = index(transport) {
             self.with(|state| state.stats[index].state = endpoint);
         }
+    }
+
+    /// How well the endpoints the build has (see [`expect`](Self::expect)) work. It looks at the
+    /// state of the endpoints only: not at sessions, counters, the mode or the key.
+    pub fn availability(&self) -> Availability {
+        self.with(|state| {
+            let mut expected = 0u8;
+            let mut running = 0u8;
+            let mut failed = 0u8;
+            for stats in state.stats.iter().filter(|stats| stats.expected) {
+                expected += 1;
+                match stats.state {
+                    EndpointState::Running => running += 1,
+                    EndpointState::Failed => failed += 1,
+                    EndpointState::Disabled => {}
+                }
+            }
+            if expected == 0 {
+                Availability::None
+            } else if failed == 0 {
+                if running == expected {
+                    Availability::All
+                } else {
+                    Availability::Starting
+                }
+            } else if running == 0 {
+                Availability::Failed
+            } else {
+                Availability::Some
+            }
+        })
     }
 
     /// A connection of `transport` opened.
@@ -292,7 +363,8 @@ impl ControlAccess {
         }
     }
 
-    /// The transport hit a framing or I/O error of the given kind (not 0).
+    /// The transport hit a failure of the given kind (not 0): a framing, reassembly or I/O error,
+    /// a request without a slot or a client that did not authenticate. Call it once per event.
     pub fn transport_error(&self, transport: Transport, kind: u8) {
         if let Some(index) = index(transport) {
             self.with(|state| {
@@ -302,6 +374,27 @@ impl ControlAccess {
             });
         }
     }
+
+    /// Requests the control worker decoded since boot, whether it ran them or the policy refused
+    /// them. Counted once, here, whichever transport carried the request.
+    pub fn requests(&self) -> u32 {
+        self.with(|state| state.requests)
+    }
+
+    /// Failures since boot over every transport: each event is counted once, by the transport
+    /// that met it, so the sum has no overlap. A request the access policy refused is no failure.
+    pub fn errors(&self) -> u32 {
+        self.with(|state| {
+            state
+                .stats
+                .iter()
+                .fold(0u32, |sum, stats| sum.saturating_add(stats.errors))
+        })
+    }
+
+    fn request_decoded(&self) {
+        self.with(|state| state.requests = state.requests.saturating_add(1));
+    }
 }
 
 /// The [`AuthorizationPolicy`] of a [`ControlAccess`]: the mode of the
@@ -309,22 +402,26 @@ impl ControlAccess {
 ///
 /// It consumes only what the transport established, never a field of the request: `encrypted`
 /// and `authenticated` are set by the TCP handshake; an open BLE link sets neither. A transport the policy
-/// cannot identify is restricted and, being neither TCP nor BLE, needs an encrypted and
-/// authenticated link.
+/// cannot identify is private and, being neither TCP nor BLE, needs an encrypted and
+/// authenticated link for every request.
 ///
 /// ```
 /// use rohi_control::{
 ///     AccessPolicy, AuthorizationPolicy, ControlAccess, LinkSecurity, Privilege, Transport,
+///     TransportAccessMode,
 /// };
 ///
 /// let access = ControlAccess::new(|_| false);
 /// let policy = AccessPolicy::new(&access);
 /// let tcp = LinkSecurity { transport: Transport::Tcp, ..Default::default() };
 /// let ble = LinkSecurity { transport: Transport::Ble, ..Default::default() };
-/// // TCP is restricted by default, BLE is open.
+/// // TCP is protected by default, BLE is open.
 /// assert!(policy.allows(Privilege::Read, &tcp));
 /// assert!(!policy.allows(Privilege::Mutate, &tcp));
 /// assert!(policy.allows(Privilege::Mutate, &ble));
+/// // A private endpoint refuses even a read without proof.
+/// access.set_mode(Transport::Tcp, TransportAccessMode::Private);
+/// assert!(!policy.allows(Privilege::Read, &tcp));
 /// // What an action that carries transport keys wants on top of that, in every mode.
 /// // BLE is open in this build, so it is the one place a secret action may run without encryption.
 /// assert!(policy.protects_secrets(&ble));
@@ -347,32 +444,26 @@ impl<'a> AccessPolicy<'a> {
     }
 
     fn permits(&self, privilege: Privilege, link: &LinkSecurity) -> bool {
-        if privilege == Privilege::Read {
-            return true;
-        }
+        let proven = link.encrypted && link.authenticated;
         match link.transport {
             // Open BLE: the policy hook where a restricted mode can return later.
             Transport::Ble => true,
-            Transport::Tcp if self.0.mode(Transport::Tcp) == TransportAccessMode::Open => true,
-            Transport::Tcp | Transport::Unspecified => link.encrypted && link.authenticated,
+            Transport::Tcp => {
+                proven
+                    || match self.0.mode(Transport::Tcp) {
+                        TransportAccessMode::Open => true,
+                        TransportAccessMode::Protected => privilege == Privilege::Read,
+                        TransportAccessMode::Private => false,
+                    }
+            }
+            Transport::Unspecified => privilege == Privilege::Read || proven,
         }
     }
 }
 
 impl AuthorizationPolicy for AccessPolicy<'_> {
     fn allows(&self, privilege: Privilege, link: &LinkSecurity) -> bool {
-        let allowed = self.permits(privilege, link);
-        if let Some(index) = index(link.transport) {
-            self.0.with(|state| {
-                let stats = &mut state.stats[index];
-                if allowed {
-                    stats.accepted = stats.accepted.saturating_add(1);
-                } else {
-                    stats.denied = stats.denied.saturating_add(1);
-                }
-            });
-        }
-        allowed
+        self.permits(privilege, link)
     }
 
     fn protects_secrets(&self, link: &LinkSecurity) -> bool {
@@ -389,16 +480,8 @@ impl AuthorizationPolicy for AccessPolicy<'_> {
             _ => "encryption_required",
         })
     }
-}
 
-impl ControlAccess {
-    /// A client of `transport` failed to authenticate (a TCP handshake that did not verify).
-    pub fn auth_failed(&self, transport: Transport) {
-        if let Some(index) = index(transport) {
-            self.with(|state| {
-                state.stats[index].auth_failures =
-                    state.stats[index].auth_failures.saturating_add(1)
-            });
-        }
+    fn request_decoded(&self) {
+        self.0.request_decoded();
     }
 }

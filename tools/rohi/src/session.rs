@@ -72,7 +72,7 @@ pub trait ClientTransport {
 /// One connection to a device: frames requests, matches responses.
 ///
 /// One request at a time, as the device allows only one in flight. The security of the link
-/// (the encrypted records of a restricted TCP endpoint, the pairing of BLE) belongs to the
+/// (the encrypted records of an authenticated TCP connection, the pairing of BLE) belongs to the
 /// transport: a session only carries requests.
 pub struct Session<T> {
     transport: T,

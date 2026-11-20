@@ -35,6 +35,15 @@
 //! requests and [`MAX_RESPONSE_LEN`](rohi_control_proto::limits::MAX_RESPONSE_LEN)
 //! for responses. A length of 0 is invalid.
 //!
+//! # Preamble
+//!
+//! A connection does not start with a record. The client first sends a preamble that says which
+//! framing follows, so the device never guesses it from arbitrary bytes. The plaintext preamble is
+//! the five bytes `ROHP` and [`PLAIN_VERSION`]; the other one is the hello of the handshake of
+//! [`secure`](crate::secure), which starts with `ROHI`. A device that does not recognise the first
+//! four bytes, or the version, ends the connection. An endpoint in `private` mode refuses the
+//! plaintext preamble too.
+//!
 //! The functions of this module are independent of the transport: the device
 //! ([`ControlTcp`](crate::ControlTcp)) and the `rohi` tool use the same header
 //! code.
@@ -52,6 +61,21 @@ use core::fmt;
 
 /// Size of the record header in bytes.
 pub const HEADER_LEN: usize = 4;
+
+/// The first four bytes of the preamble of a plaintext connection.
+pub const PLAIN_MAGIC: [u8; 4] = *b"ROHP";
+
+/// The version of the plaintext framing, the fifth byte of the preamble.
+pub const PLAIN_VERSION: u8 = 1;
+
+/// Size of the plaintext preamble in bytes.
+pub const PLAIN_PREAMBLE_LEN: usize = 5;
+
+/// The preamble a client sends before its first plaintext record.
+pub const fn plain_preamble() -> [u8; PLAIN_PREAMBLE_LEN] {
+    let m = PLAIN_MAGIC;
+    [m[0], m[1], m[2], m[3], PLAIN_VERSION]
+}
 
 /// Why a record header was rejected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

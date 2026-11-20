@@ -89,8 +89,8 @@ pub struct WirelessHeap {
 }
 
 impl WirelessHeap {
-    /// The portable form, as reported by the heap fields of the `wifi`
-    /// service ([`rohi_net::WifiProbe`]).
+    /// The portable form, as reported by the `heap_free` field of
+    /// the `wireless` service ([`rohi_net::WirelessProbe`]).
     pub const fn stats(&self) -> rohi_net::HeapStats {
         rohi_net::HeapStats {
             size: self.size,

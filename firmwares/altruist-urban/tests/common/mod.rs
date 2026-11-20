@@ -31,7 +31,7 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rohi::model::{Mutation, MutationOp, ServiceHealth, ServiceState, Value};
+use rohi::model::{Mutation, MutationOp, ServiceHealth, Value};
 use rohi::{Device, TcpLink};
 
 /// How long a device may take to become ready.
@@ -43,11 +43,11 @@ pub struct Launch {
     pub storage: Option<PathBuf>,
     pub scenario: Option<PathBuf>,
     pub extra: Vec<String>,
-    /// Leave the TCP endpoint restricted, as a device is by default.
-    pub restricted: bool,
+    /// The `--control-mode` of the run; `None` opens the endpoint (`--control-open`).
+    pub mode: Option<&'static str>,
     /// A file with the pre-shared key of the TCP endpoint.
     pub psk_file: Option<PathBuf>,
-    /// Do not pass `--control-port`: the stored (or default) `control_tcp` port applies.
+    /// Do not pass `--control-port`: the stored (or default) `control` port applies.
     pub stored_port: bool,
 }
 
@@ -67,9 +67,21 @@ impl Launch {
         self
     }
 
-    /// Leaves the TCP endpoint restricted instead of opening it for the run.
-    pub fn restricted(mut self) -> Self {
-        self.restricted = true;
+    /// Runs the TCP endpoint in `protected` mode instead of opening it for the run.
+    pub fn protected(mut self) -> Self {
+        self.mode = Some("protected");
+        self
+    }
+
+    /// Starts with the stored access mode: neither `--control-open` nor `--control-mode`.
+    pub fn stored_mode(mut self) -> Self {
+        self.mode = Some("");
+        self
+    }
+
+    /// Runs the TCP endpoint in `private` mode.
+    pub fn private(mut self) -> Self {
+        self.mode = Some("private");
         self
     }
 
@@ -79,7 +91,7 @@ impl Launch {
         self
     }
 
-    /// Starts on the stored `control_tcp` port instead of a free one.
+    /// Starts on the stored `control` port instead of a free one.
     pub fn stored_port(mut self) -> Self {
         self.stored_port = true;
         self
@@ -118,9 +130,11 @@ impl Sim {
         if let Some(scenario) = &launch.scenario {
             command.arg("--scenario").arg(scenario);
         }
-        if !launch.restricted {
-            command.arg("--control-open");
-        }
+        match launch.mode {
+            Some("") => &mut command,
+            Some(mode) => command.args(["--control-mode", mode]),
+            None => command.arg("--control-open"),
+        };
         if let Some(path) = &launch.psk_file {
             command.arg("--control-psk-file").arg(path);
         }
@@ -224,7 +238,7 @@ impl Sim {
         reply
     }
 
-    /// A control connection that authenticates with `key`, as a client of a restricted endpoint must.
+    /// A control connection that authenticates with `key`, as a client of a protected or private endpoint must to change anything.
     pub async fn secure_device(&self, key: &rohi::TcpKey) -> Device<TcpLink> {
         let link = TcpLink::connect_secure(&self.control.to_string(), Duration::from_secs(10), key)
             .await
@@ -306,16 +320,11 @@ pub async fn fields(device: &mut Device<TcpLink>, service: &str) -> HashMap<Stri
         .collect()
 }
 
-/// State, health and issue names of `service`.
-pub async fn summary(
-    device: &mut Device<TcpLink>,
-    service: &str,
-) -> (ServiceState, ServiceHealth, bool, Vec<String>) {
+/// Health and issue names of `service`.
+pub async fn summary(device: &mut Device<TcpLink>, service: &str) -> (ServiceHealth, Vec<String>) {
     let status = device.service_status(service).await.unwrap();
     (
-        status.summary.state,
         status.summary.health,
-        status.summary.ready,
         status.issues.into_iter().map(|issue| issue.code).collect(),
     )
 }
@@ -348,12 +357,12 @@ pub async fn config_text(
         })
 }
 
-/// Field ids of the `wifi` section.
-pub mod wifi {
-    pub const SSID: u32 = 1;
-    pub const PASSWORD: u32 = 2;
-    pub const BACKOFF_INITIAL: u32 = 5;
-    pub const BACKOFF_MAX: u32 = 6;
+/// Field ids of the `wireless` section.
+pub mod wireless {
+    pub const WIFI_SSID: u32 = 1;
+    pub const WIFI_PASSWORD: u32 = 2;
+    pub const WIFI_BACKOFF_INITIAL: u32 = 5;
+    pub const WIFI_BACKOFF_MAX: u32 = 6;
 }
 
 pub fn f32_of(value: Option<&Value>) -> Option<f32> {
@@ -407,7 +416,7 @@ impl Tail {
     }
 }
 
-/// One `TailLogs` page, as the device answered it.
+/// One `logging.tail` page, as the device answered it.
 pub async fn tail_page(device: &mut Device<TcpLink>, session: u32, after: u64) -> Tail {
     let page = device.tail_logs("logging", session, after).await.unwrap();
     assert!(page.data.len() <= 512, "a page is at most 512 bytes");

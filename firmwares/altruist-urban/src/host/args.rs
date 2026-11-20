@@ -30,6 +30,29 @@ use log::LevelFilter;
 /// flash, the Wi-Fi/IP platform of the host and the ROHI control protocol over
 /// TCP and/or Bluetooth LE, depending on the build features. Connect with
 /// `rohi --device tcp://127.0.0.1:9300 ...`.
+/// The access mode of the control endpoint over TCP, as the command line names it.
+#[cfg(feature = "std-tcp")]
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControlMode {
+    /// Reads, mutations and provisioning need no key.
+    Open,
+    /// Reads need no key; the rest needs the handshake with the pre-shared key.
+    Protected,
+    /// Every request needs the handshake with the pre-shared key.
+    Private,
+}
+
+#[cfg(feature = "std-tcp")]
+impl From<ControlMode> for rohi_sdk::control::TransportAccessMode {
+    fn from(mode: ControlMode) -> Self {
+        match mode {
+            ControlMode::Open => Self::Open,
+            ControlMode::Protected => Self::Protected,
+            ControlMode::Private => Self::Private,
+        }
+    }
+}
+
 #[derive(Parser, Debug, Clone)]
 #[command(name = "altruist-urban", version)]
 pub struct Args {
@@ -39,35 +62,43 @@ pub struct Args {
     pub name: Option<String>,
 
     /// Address of the control and management listeners. The control listener
-    /// follows the stored `control_tcp.bind_address` (loopback by default) unless
+    /// follows the stored `control.tcp_bind_address` (loopback by default) unless
     /// this is given; the management listener is on loopback unless this is
     /// given.
     #[arg(long, value_name = "ADDRESS")]
     pub bind: Option<IpAddr>,
 
     /// Allow `--bind` to be a non-loopback address. The management interface has
-    /// no authentication or encryption, and the control transport has none while
-    /// it is open (`--control-open`): anyone who can reach them can reconfigure,
-    /// provision and erase the device.
+    /// no authentication or encryption, and the control transport needs no key for
+    /// privileged requests while it is open (`--control-open`): anyone who can
+    /// reach them can reconfigure, provision and erase the device.
     #[arg(long)]
     pub unsafe_allow_remote: bool,
 
     /// Port of the ROHI control transport over TCP; 0 picks a free port. The
-    /// stored `control_tcp.port` (9300 by default) applies unless this is given.
+    /// stored `control.tcp_port` (9300 by default) applies unless this is given.
     #[cfg(feature = "std-tcp")]
     #[arg(long, value_name = "PORT")]
     pub control_port: Option<u16>,
 
     /// Start with the control endpoint over TCP open for this run, whatever the
-    /// stored `control_tcp.access_mode` says: plaintext, unauthenticated records
-    /// that need no key. For development on a loopback address; without it the
-    /// endpoint is restricted by default: a client must complete the handshake with
-    /// the pre-shared key and every record is encrypted.
+    /// stored `control.tcp_access_mode` says: reads, mutations and provisioning
+    /// need no key (a secret still travels only on a connection that completed
+    /// the handshake). For development on a loopback address. The same as
+    /// `--control-mode open`.
     #[cfg(feature = "std-tcp")]
-    #[arg(long)]
+    #[arg(long, conflicts_with = "control_mode")]
     pub control_open: bool,
 
-    /// File with the 32-byte pre-shared key of the restricted TCP endpoint, as 64
+    /// Access mode of the control endpoint over TCP for this run, whatever the stored
+    /// `control.tcp_access_mode` says: `open`, `protected` (reads need no key,
+    /// the rest needs the handshake with the pre-shared key) or `private` (every request
+    /// needs it). Without it the stored mode applies (`protected` by default).
+    #[cfg(feature = "std-tcp")]
+    #[arg(long, value_enum, value_name = "MODE")]
+    pub control_mode: Option<ControlMode>,
+
+    /// File with the 32-byte pre-shared key of the TCP endpoint, as 64
     /// hexadecimal characters (whitespace around them is ignored) or as exactly 32
     /// raw bytes. It replaces the key stored on the device for this run and is
     /// never stored or logged; keep the file readable by its owner only. Without it
@@ -127,7 +158,7 @@ pub struct Args {
 
 impl Args {
     /// The control port of the TCP transport; `stored` is the one of the
-    /// `control_tcp` section.
+    /// `control` section.
     #[cfg(feature = "std-tcp")]
     fn control(&self, stored: u16) -> u16 {
         self.control_port.unwrap_or(stored)
@@ -139,7 +170,7 @@ impl Args {
     }
 
     /// The address of the management listener, and of the control listener when
-    /// `stored` (the `control_tcp.bind_address`) is not asked for.
+    /// `stored` (the `control.tcp_bind_address`) is not asked for.
     pub fn management_address(&self) -> IpAddr {
         self.bind.unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST))
     }
@@ -150,7 +181,7 @@ impl Args {
     }
 
     /// The control and management ports to bind; `stored` is the port of the
-    /// `control_tcp` section.
+    /// `control` section.
     pub fn ports(&self, stored: u16) -> (u16, u16) {
         if let Some([control, manage]) = self.reboot_ports.as_deref() {
             return (*control, *manage);
@@ -161,6 +192,18 @@ impl Args {
             port => port.wrapping_add(1),
         });
         (control, manage)
+    }
+
+    /// The access mode asked for on the command line, if any.
+    #[cfg(feature = "std-tcp")]
+    pub fn control_access_mode(&self) -> Option<rohi_sdk::control::TransportAccessMode> {
+        use rohi_sdk::control::TransportAccessMode;
+
+        match (self.control_open, self.control_mode) {
+            (true, _) => Some(TransportAccessMode::Open),
+            (false, Some(mode)) => Some(mode.into()),
+            (false, None) => None,
+        }
     }
 
     /// The file of the persistent log flash: `device.flash` is paired with

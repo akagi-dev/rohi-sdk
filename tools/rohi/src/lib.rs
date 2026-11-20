@@ -21,8 +21,8 @@
 //!
 //! - [`BleLink`] / [`scan`]: BLE central built on `btleplug`, finds devices
 //!   exposing the ROHI Control Service and moves chunks;
-//! - [`TcpLink`]: Protobuf records over a TCP socket, plaintext behind a length
-//!   ([`rohi_control_tcp::frame`]) for an open development endpoint or authenticated and
+//! - [`TcpLink`]: Protobuf records over a TCP socket, plaintext behind a preamble and
+//!   a length ([`rohi_control_tcp::frame`], what `open` and `protected` endpoints serve) or authenticated and
 //!   encrypted after a handshake with a pre-shared key ([`TcpKey`],
 //!   [`rohi_control_tcp::secure`]), for a device that serves the control
 //!   protocol over TCP such as the `std` Altruist Urban;

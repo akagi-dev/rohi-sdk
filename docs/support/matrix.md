@@ -100,7 +100,7 @@ Limitations of Persistent logging:
 - Only the internal-flash backend exists; the SD backend is not implemented (issue #26 is implemented only in part) and `storage = sd` reports `storage_unavailable`.
 - Flash erase and programming stall the whole CPU for tens of milliseconds per sector; the effect on Wi-Fi, BLE and the microphone DMA ring is not measured.
 - Persistence across reset, power-loss recovery (including payload checksum validation and the history generation), flash rotation, coexistence with the configuration partition and the transfer speed of `rohi logs download` over BLE are covered by host emulation only; no hardware run is recorded.
-- Static analysis only (`scripts/memcheck.sh`, CI job Memcheck): 121 816 B main stack; the frame of invoking the logging service fell from 8 016 B to 5 808 B when `logging.read` was replaced by the RAM-only tail (#70), which is now one bounded `TailLogs` reply written into the response (no stream; the `control_task` pool is unchanged), but the stack peak is not measured on a device and the exception reported for `rohi status logging` and `rohi logs clear --yes` is not shown to be fixed.
+- Static analysis only (`scripts/memcheck.sh`, CI job Memcheck): 121 816 B main stack; the frame of invoking the logging service fell from 8 016 B to 5 808 B when `logging.read` was replaced by the RAM-only tail (#70), which is now the `logging.tail` action returning one bounded page (no stream; since #78 the `control_task` pool is 560 B larger and the largest frame is unchanged), but the stack peak is not measured on a device and the exception reported for `rohi status logging` and `rohi logs clear --yes` is not shown to be fixed.
 
 Limitations of Managed control endpoints and transport security:
 
@@ -111,7 +111,7 @@ Limitations of Managed control endpoints and transport security:
 Limitations of System actions:
 
 - The chip reset after the grace period and the formatting of the configuration partition by `system.factory_reset` are not run on a device; the host process stands in for them in the tests.
-- Both actions are Mutate: open to any client in BLE range (the BLE control endpoint is open in this build) and, over TCP, need the authenticated and encrypted connection of the pre-shared key once the endpoint is restricted.
+- Both actions are Mutate: open to any client in BLE range (the BLE control endpoint is open in this build) and, over TCP, need the authenticated and encrypted connection of the pre-shared key unless the mode of the endpoint (`tcp_access_mode`) is `open`.
 
 ### Altruist Urban with altruist-firmware (esp32c6)
 
@@ -205,7 +205,7 @@ Limitations of Persistent logging:
 - Only the internal-flash backend exists; the SD backend is not implemented (issue #26 is implemented only in part) and `storage = sd` reports `storage_unavailable`.
 - Flash erase and programming stall the whole CPU for tens of milliseconds per sector; the effect on Wi-Fi, BLE and the microphone DMA ring is not measured.
 - Persistence across reset, power-loss recovery (including payload checksum validation and the history generation), flash rotation, coexistence with the configuration partition and the transfer speed of `rohi logs download` over BLE are covered by host emulation only; no hardware run is recorded.
-- Static analysis only (`scripts/memcheck.sh`, CI job Memcheck): 21 976 B main stack; the frame of invoking the logging service fell from 8 016 B to 5 808 B when `logging.read` was replaced by the RAM-only tail (#70), which is now one bounded `TailLogs` reply written into the response (no stream; the `control_task` pool is unchanged), but the stack peak is not measured on a device and the exception reported for `rohi status logging` and `rohi logs clear --yes` is not shown to be fixed.
+- Static analysis only (`scripts/memcheck.sh`, CI job Memcheck): 21 976 B main stack; the frame of invoking the logging service fell from 8 016 B to 5 808 B when `logging.read` was replaced by the RAM-only tail (#70), which is now the `logging.tail` action returning one bounded page (no stream; since #78 the `control_task` pool is 560 B larger and the largest frame is unchanged), but the stack peak is not measured on a device and the exception reported for `rohi status logging` and `rohi logs clear --yes` is not shown to be fixed.
 
 Limitations of Managed control endpoints and transport security:
 
@@ -216,7 +216,7 @@ Limitations of Managed control endpoints and transport security:
 Limitations of System actions:
 
 - The chip reset after the grace period and the formatting of the configuration partition by `system.factory_reset` are not run on a device; the host process stands in for them in the tests.
-- Both actions are Mutate: open to any client in BLE range (the BLE control endpoint is open in this build) and, over TCP, need the authenticated and encrypted connection of the pre-shared key once the endpoint is restricted.
+- Both actions are Mutate: open to any client in BLE range (the BLE control endpoint is open in this build) and, over TCP, need the authenticated and encrypted connection of the pre-shared key unless the mode of the endpoint (`tcp_access_mode`) is `open`.
 
 ### Altruist Urban (legacy) with altruist-firmware (esp32c3)
 

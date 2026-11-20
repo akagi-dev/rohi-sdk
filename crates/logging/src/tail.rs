@@ -16,14 +16,57 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-//! The RAM tail: the last few records, kept for the `TailLogs` request.
+//! The RAM tail: the last few records, kept for the `logging.tail` action.
 
 use core::fmt;
 
-use rohi_service::{TailPage, TailRequest};
+use rohi_service::PageInfo;
 
 use crate::LogRecord;
 use crate::segment::text::{line_len, write_line_within};
+
+/// Which page of the tail a client asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TailRequest {
+    /// The session of an earlier page, 0 on the first request.
+    pub session: u32,
+    /// The cursor of an earlier page: lines with a greater sequence are
+    /// returned. 0 asks for the oldest line still held.
+    pub after: u64,
+}
+
+/// One page of the tail: the text is in the buffer the caller gave.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TailPage {
+    /// Identifies this boot; sequences are valid inside one session only.
+    pub session: u32,
+    /// Bytes written to the buffer.
+    pub len: usize,
+    /// Sequence of the last line of the page; the cursor of the next request.
+    pub cursor: u64,
+    /// Sequence of the oldest line held; 1 when there is none.
+    pub oldest_sequence: u64,
+    /// Sequence of the newest line held; 0 when there is none.
+    pub newest_sequence: u64,
+    /// The request belonged to another boot: the page starts over.
+    pub reset: bool,
+    /// Lines overwritten between the cursor of the request and this page.
+    pub gap: u64,
+}
+
+impl TailPage {
+    /// What the action reports about the page.
+    pub(crate) const fn info(&self) -> PageInfo {
+        PageInfo {
+            session: self.session,
+            cursor: self.cursor,
+            oldest_sequence: self.oldest_sequence,
+            newest_sequence: self.newest_sequence,
+            reset: self.reset,
+            gap: self.gap,
+        }
+    }
+}
 
 /// Records the RAM tail of a [`LogSink`](crate::LogSink) keeps unless the
 /// firmware chooses another depth.
@@ -217,7 +260,7 @@ mod tests {
     use crate::segment::text::{MAX_LINE_LEN, parse_line};
     use crate::{LogLevel, MAX_MESSAGE_LEN, MAX_TARGET_LEN};
 
-    const PAGE: usize = rohi_service::MAX_TAIL_CHUNK;
+    const PAGE: usize = rohi_service::MAX_PAGE_CHUNK;
 
     fn record(text: &str) -> LogRecord {
         LogRecord::new(LogLevel::Info, "t", format_args!("{text}"), 5, None)

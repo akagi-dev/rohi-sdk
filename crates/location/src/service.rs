@@ -21,8 +21,8 @@ use embassy_sync::blocking_mutex::raw::RawMutex;
 use heapless::Vec;
 use rohi_service::{
     EnumDescriptor, EnumVariant, FIRST_SERVICE_ISSUE, FieldDescriptor, Issue, IssueDescriptor,
-    IssueSeverity, MAX_ISSUES, Service, ServiceHealth, ServiceState, ServiceSummary, Status,
-    StatusWriter, Unit, ValueKind, WriteError,
+    IssueSeverity, MAX_ISSUES, Service, ServiceHealth, ServiceSummary, Status, StatusWriter, Unit,
+    ValueKind, WriteError,
 };
 
 use crate::{LocationShared, LocationSourceKind};
@@ -57,8 +57,8 @@ pub mod status_field {
 /// [`rohi_service::Status`]).
 ///
 /// Not knowing where the device is is not an error, so the service is
-/// `disabled` (with the informational issue `not_set`) until a location is
-/// set, then `running`, `ok` and ready; consumers that need it (telemetry)
+/// `unknown` (with the informational issue `not_set`) until a location is
+/// set, then `ok`; consumers that need it (telemetry)
 /// report their own degradation. Status fields (see [`status_field`]):
 /// `latitude`, `longitude`, `height_m` (absent when unknown) and `source`
 /// (`configured` or `gps`, see [`source`]). It is not essential for the device
@@ -71,14 +71,14 @@ pub mod status_field {
 /// use embassy_futures::block_on;
 /// use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 /// use rohi_location::{LocationConfig, LocationService, LocationShared};
-/// use rohi_service::{Service, ServiceState, Status};
+/// use rohi_service::{Service, ServiceHealth, Status};
 ///
 /// let shared = LocationShared::<NoopRawMutex>::new();
 /// let service = LocationService(&shared);
 /// assert_eq!(<LocationService<NoopRawMutex> as Service>::NAME, "location");
 ///
 /// // Nothing is known: disabled, not an error.
-/// assert_eq!(block_on(service.summary()).state, ServiceState::Disabled);
+/// assert_eq!(block_on(service.summary()).health, ServiceHealth::Unknown);
 ///
 /// shared.publish_configured(Some(&LocationConfig {
 ///     latitude: 52.52,
@@ -86,8 +86,7 @@ pub mod status_field {
 ///     height_m: None,
 /// }));
 /// let summary = block_on(service.summary());
-/// assert_eq!(summary.state, ServiceState::Running);
-/// assert!(summary.ready);
+/// assert_eq!(summary.health, ServiceHealth::Ok);
 /// ```
 #[derive(Service)]
 pub struct LocationService<'a, M: RawMutex>(pub &'a LocationShared<M>);
@@ -114,9 +113,9 @@ impl<M: RawMutex> Status for LocationService<'_, M> {
 
     async fn summary(&self) -> ServiceSummary {
         if self.0.current().is_some() {
-            ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true)
+            ServiceSummary::new(ServiceHealth::Ok)
         } else {
-            ServiceSummary::new(ServiceState::Disabled, ServiceHealth::Unknown, false)
+            ServiceSummary::new(ServiceHealth::Unknown)
         }
     }
 

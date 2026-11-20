@@ -47,9 +47,9 @@ Device:  altruist-urban-0.4.0 (urban-esp32c3)
 Uptime:  2h 14m
 Health:  ok
 
-SERVICE       STATE    HEALTH  READY  SINCE
-network        running  ok      yes    2h 14m
-connectivity  running  ok      yes    34s
+SERVICE       HEALTH
+network       ok
+connectivity  ok
 ...
 ```
 
@@ -76,10 +76,10 @@ Each command has its own page: [Discovery & connection](discovery.md), [Configur
 |--------|-----|
 | `rohi sensors` | `rohi status sensors` |
 | `rohi time` | `rohi status time` |
-| `rohi wifi` (status) | `rohi status wifi` |
-| `rohi wifi scan` | `rohi action wifi scan` |
-| `rohi wifi reconnect`, `disconnect` | `rohi action wifi reconnect` / `disconnect` |
-| `rohi wifi configure`, `forget` | `rohi config wifi ssid=.. password=-`, `rohi config reset wifi`, then `rohi status wifi` |
+| `rohi wifi` (status) | `rohi status wireless` |
+| `rohi wifi scan` | `rohi action wireless wifi_scan` |
+| `rohi wifi reconnect`, `disconnect` | `rohi action wireless wifi_reconnect` / `wifi_disconnect` |
+| `rohi wifi configure`, `forget` | `rohi config wireless wifi_ssid=.. wifi_password=-`, `rohi config reset wireless`, then `rohi status wireless` |
 | `rohi connectivity set --host ..` | `rohi config connectivity host=..` |
 | `rohi config list`, `config describe <section>` | `rohi config`, `rohi config <section> --help` |
 | `rohi config get <section>`, `config set <section> ..` | `rohi config <section>`, `rohi config <section> FIELD=VALUE` |

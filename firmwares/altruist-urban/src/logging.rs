@@ -38,7 +38,7 @@
 //! queue and read sizes, the aliases of the runtime and of the service for the
 //! [`Backends`](rohi_sdk::logging::Backends) of a platform, and the initial configuration.
 //!
-//! The RAM tail is served by the `TailLogs` request, one bounded page per
+//! The RAM tail is served by the `logging.tail` action, one bounded page per
 //! request. Its **session** identifies a start to a client that follows it. Each
 //! platform sets a fresh random token when it starts the logging task (the
 //! hardware RNG on the ESP, a process-seeded hash on the host). It is
@@ -71,8 +71,8 @@ pub const QUEUE_DEPTH: usize = 128;
 #[cfg(not(feature = "std"))]
 pub const QUEUE_DEPTH: usize = 24;
 
-/// Records the RAM tail of the `logging` service keeps for the `TailLogs`
-/// request.
+/// Records the RAM tail of the `logging` service keeps for the `logging.tail`
+/// action.
 ///
 /// - Consumer: `rohi_sdk::logging::LogSink` keeps this many `LogRecord`s of
 ///   about 200 bytes in a ring, so 8 records are about 1.6 KiB of static RAM.

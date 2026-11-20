@@ -17,7 +17,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 //! The pre-shared key of the TCP endpoint, on the host.
 //!
-//! A restricted TCP endpoint of a device authenticates its clients with one 32-byte secret,
+//! The TCP endpoint of a device authenticates its clients with one 32-byte secret,
 //! see [`rohi_control_tcp::secure`]. The secret lives in a file of the user (64 hex
 //! characters, readable by its owner only): it is never a command line argument, never logged
 //! and wiped from memory when dropped.

@@ -84,18 +84,6 @@ open_enum! {
 }
 
 open_enum! {
-    /// Lifecycle state of a service.
-    ServiceState: pb::ServiceState {
-        Disabled = Disabled => "disabled",
-        Stopped = Stopped => "stopped",
-        Starting = Starting => "starting",
-        Running = Running => "running",
-        Stopping = Stopping => "stopping",
-        Failed = Failed => "failed",
-    }
-}
-
-open_enum! {
     /// Operational quality of a service.
     ServiceHealth: pb::ServiceHealth {
         Unknown = Unknown => "unknown",
@@ -412,16 +400,10 @@ pub struct ServiceSummary {
     pub service: String,
     /// Version of the status schema.
     pub version: u32,
-    /// Lifecycle state.
-    pub state: ServiceState,
     /// Operational quality.
     pub health: ServiceHealth,
-    /// Whether the service can currently do its job.
-    pub ready: bool,
-    /// Changes when state, health, readiness or issues change.
+    /// Changes when health or issues change.
     pub revision: u32,
-    /// Time in the current state.
-    pub state_age_ms: u64,
 }
 
 /// Compact status of the whole device.
@@ -499,6 +481,8 @@ pub struct ActionInfo {
     pub name: String,
     /// What the link must be allowed to do to invoke the action.
     pub access: ActionAccess,
+    /// Whether the action returns one cursor page instead of records.
+    pub returns_page: bool,
     /// Whether the arguments are secrets; they must be read with `NAME=-`.
     pub secret_args: bool,
 }
@@ -551,12 +535,14 @@ pub enum ActionOutcome {
     Records(Vec<Record>),
     /// Files to read in chunks.
     Stream(Stream),
+    /// One cursor page of an append-only source, with nothing kept on the device.
+    Page(ActionPage),
 }
 
-/// One page of the tail of a service, see
+/// One cursor page an action returned, for example `logging.tail`, see
 /// [`Device::tail_logs`](crate::Device::tail_logs).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TailPage {
+pub struct ActionPage {
     /// Identifies the boot of the device the sequences belong to.
     pub session: u32,
     /// Sequence of the last line of `data`: the cursor of the next request.
@@ -572,6 +558,10 @@ pub struct TailPage {
     /// Whole text lines, each ending in a newline; empty when nothing is new.
     pub data: Vec<u8>,
 }
+
+/// One page of the tail of a service, see
+/// [`Device::tail_logs`](crate::Device::tail_logs).
+pub type TailPage = ActionPage;
 
 /// A chunk of a stream file.
 #[derive(Clone, Debug, PartialEq, Eq)]

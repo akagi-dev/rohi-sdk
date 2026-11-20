@@ -90,7 +90,7 @@
 //! The Wi-Fi configuration is the first concrete application of rule 2:
 //!
 //! ```text
-//! validate ─► ConfigHandle::set(WifiConfig)         ┐ request is queued: from here the owner task completes it
+//! validate ─► ConfigHandle::set(WirelessConfig)     ┐ request is queued: from here the owner task completes it
 //!                                                   │
 //!            config owner task:  commit to flash ─► publish desired Wi-Fi config (synchronous) ─► respond
 //!                                   no .await between commit and publish
@@ -105,8 +105,9 @@
 //! [`ownership`](crate::ownership)), to the device identity (the owner task
 //! updates the signing identity in the commit step) and at boot (stored
 //! configuration is published once after opening the store, also after a
-//! factory reset). A section that needs a restart (`ble`) is published only at
-//! boot. The `SectionStore` contract of
+//! factory reset). A section that is read once at startup (`control`) is
+//! published only at boot; the BLE name of the `wireless` section is read when
+//! the peripheral starts. The `SectionStore` contract of
 //! [`rohi-service`](../../rohi_service/index.html) states the same rule for every
 //! section: `store` and `remove` hand the validated effective value to the
 //! runtime in the commit step.

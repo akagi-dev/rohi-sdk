@@ -43,12 +43,12 @@
 //! config section ([`rohi_time_ntp`](../../rohi_time_ntp/section/index.html)),
 //! not repeated in the status.
 //!
-//! | Sync state | Service state | Health | Ready |
-//! |------------|---------------|--------|-------|
-//! | `Unsynchronized`, nothing failed yet | `starting` | unknown | no |
-//! | `Unsynchronized`, after failures | `running` | `degraded` | no |
-//! | `Synchronized` | `running` | `ok` | yes |
-//! | `Stale` (usable, may have drifted) | `running` | `degraded` | yes |
+//! | Sync state | Health |
+//! |------------|--------|
+//! | `Unsynchronized`, nothing failed yet | `unknown` |
+//! | `Unsynchronized`, after failures | `degraded` |
+//! | `Synchronized` | `ok` |
+//! | `Stale` (usable, may have drifted) | `degraded` |
 //!
 //! While the last attempt failed, the active issue is the one of the last
 //! failure category ([`issue`]): `network_unavailable`, `resolve_failed`,
@@ -95,8 +95,8 @@ use heapless::Vec;
 use log::{debug, info, trace, warn};
 use rohi_service::{
     EnumDescriptor, EnumVariant, FieldDescriptor, Issue, IssueDescriptor, IssueSeverity,
-    MAX_ISSUES, Service, ServiceHealth, ServiceState, ServiceSummary, Status, StatusWriter, Unit,
-    ValueKind, WriteError,
+    MAX_ISSUES, Service, ServiceHealth, ServiceSummary, Status, StatusWriter, Unit, ValueKind,
+    WriteError,
 };
 
 use crate::{
@@ -556,17 +556,16 @@ impl<C: Clock, M: RawMutex> Status for TimeService<C, M> {
 
     async fn summary(&self) -> ServiceSummary {
         use ServiceHealth as H;
-        use ServiceState as S;
         let status = self.status();
         match status.state {
-            TimeSyncState::Synchronized => ServiceSummary::new(S::Running, H::Ok, true),
+            TimeSyncState::Synchronized => ServiceSummary::new(H::Ok),
             // The time is usable but may have drifted.
-            TimeSyncState::Stale => ServiceSummary::new(S::Running, H::Degraded, true),
+            TimeSyncState::Stale => ServiceSummary::new(H::Degraded),
             TimeSyncState::Unsynchronized if status.last_failure.is_some() => {
-                ServiceSummary::new(S::Running, H::Degraded, false)
+                ServiceSummary::new(H::Degraded)
             }
             // Nothing failed yet: still waiting for the first sample.
-            TimeSyncState::Unsynchronized => ServiceSummary::new(S::Starting, H::Unknown, false),
+            TimeSyncState::Unsynchronized => ServiceSummary::new(H::Unknown),
         }
     }
 
@@ -624,8 +623,7 @@ mod tests {
         let registry = Statuses::<NoopRawMutex, _>::new((&service,));
         let status =
             block_on(registry.status(TimeService::<ManualClock, NoopRawMutex>::ID, 0)).unwrap();
-        assert_eq!(status.summary.state, rohi_service::ServiceState::Starting);
-        assert!(!status.summary.ready);
+        assert_eq!(status.summary.health, rohi_service::ServiceHealth::Unknown);
         assert!(status.issues.is_empty());
         // No time and no source: only the failure counter.
         assert_eq!(status.fields.len(), 1);

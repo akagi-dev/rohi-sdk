@@ -36,8 +36,7 @@ use rohi_control_proto::{PROTOCOL_VERSION, decode, encode};
 use rohi_net::{BleConnectionInfo, BleError, BleState, BleTransport, MAX_BLE_PAYLOAD};
 use rohi_service::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, FieldDescriptor, Service,
-    ServiceHealth, ServiceState, ServiceSummary, Status, StatusWriter, Statuses, Value, ValueKind,
-    WriteError,
+    ServiceHealth, ServiceSummary, Status, StatusWriter, Statuses, Value, ValueKind, WriteError,
 };
 
 use crate::ControlBle;
@@ -413,7 +412,7 @@ impl Status for Radio<'_> {
     ];
 
     async fn summary(&self) -> ServiceSummary {
-        ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true)
+        ServiceSummary::new(ServiceHealth::Ok)
     }
 
     async fn status(&self, out: &mut impl StatusWriter) -> Result<(), WriteError> {

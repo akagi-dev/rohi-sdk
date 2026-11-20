@@ -242,8 +242,8 @@ mod tests {
     #[test]
     fn global_options_move_in_front_of_the_service() {
         assert_eq!(
-            lifted("rohi wifi scan -o json"),
-            ["rohi", "-o", "json", "wifi", "scan"]
+            lifted("rohi wireless wifi_scan -o json"),
+            ["rohi", "-o", "json", "wireless", "wifi_scan"]
         );
         assert_eq!(
             lifted("rohi system reboot --device=tcp://h:1 --color never"),
@@ -271,7 +271,7 @@ mod tests {
     fn commands_and_service_help_are_left_alone() {
         for line in [
             "rohi status -o json",
-            "rohi config wifi ssid=a -o json",
+            "rohi config wireless wifi_ssid=a -o json",
             "rohi --help",
             "rohi help",
             "rohi -o json",
@@ -282,8 +282,8 @@ mod tests {
         }
         // Unknown options after a service stay where they are for the words.
         assert_eq!(
-            lifted("rohi wifi scan --bogus"),
-            ["rohi", "wifi", "scan", "--bogus"]
+            lifted("rohi wireless wifi_scan --bogus"),
+            ["rohi", "wireless", "wifi_scan", "--bogus"]
         );
     }
 }

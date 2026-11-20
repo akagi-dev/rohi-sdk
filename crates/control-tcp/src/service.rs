@@ -21,16 +21,16 @@ use core::time::Duration;
 
 use embedded_io_async::{ErrorKind, ErrorType, Read, ReadExactError, Write};
 use log::{debug, info, trace, warn};
-use rohi_control::{Busy, Connection, ControlAccess, ControlHub, Transport, TransportAccessMode};
+use rohi_control::{Busy, Connection, ControlAccess, ControlHub, Transport};
 use rohi_control_proto::control::{self as pb, Response_::Response as Reply};
 use rohi_control_proto::limits::MAX_REQUEST_LEN;
 use rohi_control_proto::{PROTOCOL_VERSION, encode};
 
 use zeroize::Zeroizing;
 
-use crate::frame::{HEADER_LEN, decode_header, encode_header};
+use crate::frame::{HEADER_LEN, PLAIN_MAGIC, PLAIN_VERSION, decode_header, encode_header};
 use crate::secure::{
-    CLIENT_FINISH_LEN, CLIENT_HELLO_LEN, Channel, HandshakeError, NONCE_LEN, PSK_LEN,
+    CLIENT_FINISH_LEN, CLIENT_HELLO_LEN, Channel, HandshakeError, MAGIC, NONCE_LEN, PSK_LEN,
     RECORD_HEADER_LEN, ServerHandshake, TAG_LEN,
 };
 
@@ -45,12 +45,13 @@ pub mod error_kind {
     pub const BUSY: u8 = 3;
     /// A client did not authenticate: a handshake with another key, or a record that did not verify.
     pub const AUTH: u8 = 4;
-    /// A restricted endpoint has no pre-shared key (or no random source) and refused a client.
+    /// A client asked for the handshake and the endpoint has no pre-shared key (or no random
+    /// source).
     pub const NO_PSK: u8 = 5;
 }
 
-/// How long a client has, from the moment it is accepted, to finish the handshake of a restricted
-/// endpoint. The limit is absolute: bytes that trickle in do not extend it.
+/// How long a client has, from the moment it is accepted, to send its preamble and, if it asks for
+/// the handshake, to finish it. The limit is absolute: bytes that trickle in do not extend it.
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long a request record has, from its first byte to its last (header, data and tag), and how
@@ -99,12 +100,11 @@ pub trait Acceptor {
 /// caller wipes its copy after the handshake. The platform stores the key (the configuration
 /// owner); this crate never keeps one.
 pub trait PskSource {
-    /// The current key, `None` when none is provisioned: a restricted endpoint then serves
-    /// nobody.
+    /// The current key, `None` when none is provisioned: a client of the handshake is then refused.
     fn psk(&self) -> Option<[u8; PSK_LEN]>;
 }
 
-/// No key: a restricted endpoint serves nobody, an open one is plaintext.
+/// No key: a client of the handshake is refused; plaintext clients are served as the mode allows.
 impl PskSource for () {
     fn psk(&self) -> Option<[u8; PSK_LEN]> {
         None
@@ -128,16 +128,22 @@ impl PskSource for () {
 /// What a client gets depends on the access mode of the TCP endpoint in the
 /// [`ControlAccess`](rohi_control::ControlAccess) of the hub:
 ///
-/// * **`Restricted`** (the default): the secure channel of [`secure`](crate::secure) is
-///   mandatory. The client must complete the handshake with the pre-shared key from the
-///   [`PskSource`] before a single request byte is read or processed; a failed handshake, a
-///   record that does not authenticate, a replayed or reordered record, a counter that is
-///   exhausted and a key that was replaced all end the connection, with nothing written in
-///   plaintext. After the handshake the link is reported to the policy as encrypted and
-///   authenticated. Without a key, or without a random source, nobody is served.
-/// * **`Open`**: plaintext records (see [`frame`](crate::frame)), unauthenticated and
-///   unencrypted: for a loopback development setup only. A request on it is not trusted by the
-///   policy beyond what the open mode allows.
+/// Every connection starts with a preamble that names its framing; nothing is guessed from other
+/// bytes, and an unknown preamble ends the connection (counted as one error).
+///
+/// * **Handshake** (preamble of [`secure`](crate::secure), served in every mode): the client must
+///   complete the handshake with the pre-shared key from the [`PskSource`] before a single request
+///   byte is read or processed; a failed handshake, a record that does not authenticate, a
+///   replayed or reordered record, a counter that is exhausted and a key that was replaced all end
+///   the connection, with nothing written in plaintext and no fallback to plaintext. After the
+///   handshake the link is reported to the policy as encrypted and authenticated, which is what
+///   unlocks every request in every mode. Without a key, or without a random source, such a client
+///   is refused.
+/// * **Plaintext** (preamble of [`frame`](crate::frame), served in `Open` and `Protected`, refused
+///   in `Private` before anything else is read): unauthenticated and unencrypted records. The link
+///   keeps the default security (neither), so the policy of the mode decides what a request may
+///   do: `Protected` lets reads through and refuses the rest, `Open` allows everything but a
+///   `secure_link` action. For a loopback development setup or reads only.
 ///
 /// The only connection is not held by a client that is slow rather than silent: the handshake and
 /// every record have an absolute time limit ([`HANDSHAKE_TIMEOUT`], [`RECORD_TIMEOUT`], changed
@@ -162,8 +168,8 @@ impl<'h, 'a, A, const SLOTS: usize> ControlTcp<'h, 'a, A, (), SLOTS>
 where
     A: Acceptor,
 {
-    /// Serves the clients of `acceptor` through `hub`, without a pre-shared key: only an endpoint
-    /// in `Open` mode (plaintext) serves anybody.
+    /// Serves the clients of `acceptor` through `hub`, without a pre-shared key: only the plaintext
+    /// framing is served, as far as the access mode allows it.
     pub const fn new(acceptor: A, hub: &'h ControlHub<'a, SLOTS>) -> Self {
         Self {
             acceptor,
@@ -247,22 +253,64 @@ where
         };
         let session = connection.id().get();
         info!(target: "control.tcp", "Client connected (session={})", session);
-        let open = self
-            .hub
-            .access()
-            .is_some_and(|access| access.mode(Transport::Tcp) == TransportAccessMode::Open);
-        if open {
-            self.serve_plain(stream, &connection).await;
-        } else {
-            self.serve_secure(stream, &connection).await;
-        }
+        self.serve(stream, &connection).await;
         connection.close().await;
         info!(target: "control.tcp", "Client disconnected (session={})", session);
         Ok(())
     }
 
+    // The first bytes of the connection say how it goes on: the preamble of the handshake (`ROHI`)
+    // or of plaintext records (`ROHP`). Nothing else is served, and nothing is guessed from other
+    // bytes. The whole preamble is under the absolute handshake limit.
+    async fn serve(&self, mut stream: A::Stream, connection: &Connection<'h, 'a, SLOTS>) {
+        // Without an access state there is no mode and no random source: fail closed.
+        let Some(access) = self.hub.access() else {
+            return;
+        };
+        stream.set_deadline(Some(self.handshake_timeout));
+        let mut magic = [0u8; 4];
+        if let Err(error) = stream.read_exact(&mut magic).await {
+            self.read_failed("the preamble", error);
+            return;
+        }
+        if magic == MAGIC {
+            self.serve_secure(stream, connection, magic).await;
+        } else if magic == PLAIN_MAGIC {
+            if !access.mode(Transport::Tcp).serves_plaintext() {
+                // A policy refusal, not a failure of the transport: no downgrade, nothing read.
+                self.refused_plaintext();
+                return;
+            }
+            let mut version = [0u8; 1];
+            if let Err(error) = stream.read_exact(&mut version).await {
+                self.read_failed("the preamble", error);
+                return;
+            }
+            if version[0] != PLAIN_VERSION {
+                self.bad_preamble(version[0]);
+                return;
+            }
+            self.serve_plain(stream, connection).await;
+        } else {
+            self.bad_preamble(magic[0]);
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn refused_plaintext(&self) {
+        warn!(target: "control.tcp", "Plaintext client refused (mode=private)");
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn bad_preamble(&self, first: u8) {
+        warn!(target: "control.tcp", "Unknown preamble, client refused (first_byte={})", first);
+        self.error(error_kind::FRAME);
+    }
+
     // The handshake. `None` ends the connection; nothing was processed.
-    async fn handshake(&self, stream: &mut A::Stream) -> Option<(Channel, u32)> {
+    async fn handshake(&self, stream: &mut A::Stream, magic: [u8; 4]) -> Option<(Channel, u32)> {
         // Without an access state there is no mode and no random source: fail closed.
         let access = self.hub.access()?;
         // The epoch before the key: a key replaced in between is noticed at the first record.
@@ -273,8 +321,7 @@ where
             self.error(error_kind::NO_PSK);
             return None;
         };
-        stream.set_deadline(Some(self.handshake_timeout));
-        let result = self.exchange(access, stream, &psk).await;
+        let result = self.exchange(access, stream, magic, &psk).await;
         result.map(|channel| (channel, epoch))
     }
 
@@ -282,10 +329,12 @@ where
         &self,
         access: &ControlAccess,
         stream: &mut A::Stream,
+        magic: [u8; 4],
         psk: &[u8; PSK_LEN],
     ) -> Option<Channel> {
         let mut hello = [0u8; CLIENT_HELLO_LEN];
-        if let Err(error) = stream.read_exact(&mut hello).await {
+        hello[..magic.len()].copy_from_slice(&magic);
+        if let Err(error) = stream.read_exact(&mut hello[magic.len()..]).await {
             self.read_failed("the handshake", error);
             return None;
         }
@@ -298,7 +347,7 @@ where
         let (handshake, server_hello) = match ServerHandshake::respond(psk, &hello, &nonce) {
             Ok(answer) => answer,
             Err(error) => {
-                self.failed_handshake(access, error);
+                self.failed_handshake(error);
                 return None;
             }
         };
@@ -318,7 +367,7 @@ where
         match handshake.finish(&finish) {
             Ok(channel) => Some(channel),
             Err(error) => {
-                self.failed_handshake(access, error);
+                self.failed_handshake(error);
                 None
             }
         }
@@ -326,14 +375,18 @@ where
 
     #[cold]
     #[inline(never)]
-    fn failed_handshake(&self, access: &ControlAccess, error: HandshakeError) {
+    fn failed_handshake(&self, error: HandshakeError) {
         warn!(target: "control.tcp", "Client did not authenticate (err={:?})", error);
-        access.auth_failed(Transport::Tcp);
         self.error(error_kind::AUTH);
     }
 
-    async fn serve_secure(&self, mut stream: A::Stream, connection: &Connection<'h, 'a, SLOTS>) {
-        let Some((mut channel, epoch)) = self.handshake(&mut stream).await else {
+    async fn serve_secure(
+        &self,
+        mut stream: A::Stream,
+        connection: &Connection<'h, 'a, SLOTS>,
+        magic: [u8; 4],
+    ) {
+        let Some((mut channel, epoch)) = self.handshake(&mut stream, magic).await else {
             return;
         };
         let Some(access) = self.hub.access() else {
@@ -402,7 +455,6 @@ where
             if let Err(error) = channel.open(header, &mut reservation.buffer()[..len], &tag) {
                 // Tampered, replayed, reordered or truncated: fail closed, no response.
                 warn!(target: "control.tcp", "Record did not authenticate (err={:?})", error);
-                access.auth_failed(Transport::Tcp);
                 self.error(error_kind::AUTH);
                 return;
             }
@@ -428,7 +480,7 @@ where
     }
 
     async fn serve_plain(&self, mut stream: A::Stream, connection: &Connection<'h, 'a, SLOTS>) {
-        warn!(target: "control.tcp", "Plaintext connection: the endpoint is open");
+        debug!(target: "control.tcp", "Plaintext connection");
         loop {
             stream.set_deadline(None);
             let mut header = [0u8; HEADER_LEN];

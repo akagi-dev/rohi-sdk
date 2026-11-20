@@ -49,7 +49,7 @@ use embassy_time::Timer;
 use log::warn;
 use log::{error, info};
 use rohi_sdk::config::{ConfigStore, materialize};
-use rohi_sdk::endpoints::{ControlTcpConfig, ControlTcpOverrides};
+use rohi_sdk::endpoints::{ControlConfig, ControlOverrides};
 use rohi_sdk::host::NativeIp;
 use rohi_sdk::net::NetworkHandle;
 use rohi_sdk::sensors::runtime::MeasurementHandle;
@@ -148,7 +148,7 @@ struct Prepared {
     scenario: Scenario,
     storage: FileFlash,
     log_storage: FileLogFlash,
-    /// `None`: the `control_tcp` listener could not be bound (reported as `failed`).
+    /// `None`: the TCP control listener could not be bound (reported as `failed`).
     #[cfg(feature = "std-tcp")]
     control: Option<TcpListener>,
     manage: TcpListener,
@@ -170,15 +170,15 @@ fn check_exposure(address: IpAddr, what: &str, allowed: bool) -> Result<(), Star
     ))
 }
 
-/// The stored `control_tcp` section, read before the listener is bound: the
+/// The stored `control` section, read before the listener is bound: the
 /// defaults when nothing is stored or the store cannot be read.
-fn stored_control_tcp(storage: &FileFlash) -> ControlTcpConfig {
+fn stored_control(storage: &FileFlash) -> ControlConfig {
     let Ok(mut store) = ConfigStore::open(storage.clone()) else {
-        return ControlTcpConfig::default();
+        return ControlConfig::default();
     };
-    match store.get::<ControlTcpOverrides>() {
-        Ok(Some(user)) => materialize(&ControlTcpOverrides::default(), &user),
-        _ => ControlTcpConfig::default(),
+    match store.get::<ControlOverrides>() {
+        Ok(Some(user)) => materialize(&ControlOverrides::default(), &user),
+        _ => ControlConfig::default(),
     }
 }
 
@@ -222,11 +222,11 @@ fn prepare(args: Args) -> Result<Prepared, StartupError> {
         FileLogFlash::open(&args.log_storage())
             .map_err(|e| StartupError::new(Failure::Storage, e.to_string()))?
     };
-    let stored = stored_control_tcp(&storage);
-    let (_control_port, manage_port) = args.ports(stored.port);
+    let stored = stored_control(&storage);
+    let (_control_port, manage_port) = args.ports(stored.tcp_port);
     #[cfg(feature = "std-tcp")]
     let control = {
-        let address = args.control_address(Ipv4Addr::from(stored.bind_address));
+        let address = args.control_address(Ipv4Addr::from(stored.tcp_bind_address));
         check_exposure(address, "control", args.unsafe_allow_remote)?;
         match bind(SocketAddr::new(address, _control_port), "control") {
             Ok(listener) => Some(listener),
@@ -313,20 +313,23 @@ fn start(spawner: Spawner, prepared: Prepared) -> Result<(), StartupError> {
         );
     }
     #[cfg(feature = "std-tcp")]
-    if args.control_open {
-        warn!(
-            "The TCP control endpoint is open for this run (--control-open): privileged requests need no signature"
-        );
-        crate::control::access().set_mode(
-            rohi_sdk::control::Transport::Tcp,
-            rohi_sdk::control::TransportAccessMode::Open,
-        );
+    if let Some(mode) = args.control_access_mode() {
+        if mode == rohi_sdk::control::TransportAccessMode::Open {
+            warn!("The TCP control endpoint is open for this run: privileged requests need no key");
+        } else {
+            info!(
+                "The TCP control access mode of this run is {} (it replaces the stored one)",
+                mode.as_str()
+            );
+        }
+        crate::control::access().set_mode(rohi_sdk::control::Transport::Tcp, mode);
     }
     crate::tasks::spawn(spawner, "config_task", config_task(owner, runtime));
 
     let mut interfaces = Interfaces::default();
     #[cfg(feature = "std-tcp")]
     {
+        crate::control::access().expect(rohi_sdk::control::Transport::Tcp);
         interfaces.control = control
             .as_ref()
             .map(TcpListener::local_addr)
@@ -382,6 +385,7 @@ fn start(spawner: Spawner, prepared: Prepared) -> Result<(), StartupError> {
     crate::tasks::spawn(spawner, "control_task", control::control_task(controller));
     #[cfg(feature = "std-ble")]
     {
+        crate::control::access().expect(rohi_sdk::control::Transport::Ble);
         crate::tasks::spawn(spawner, "ble_task", control::ble_task(ble));
         crate::control::access().set_state(
             rohi_sdk::control::Transport::Ble,

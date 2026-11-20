@@ -44,7 +44,6 @@ fn op_name(call: &Call) -> &'static str {
         Call::InvokeAction(_) => "invoke_action",
         Call::ReadStream(_) => "read_stream",
         Call::CloseStream(_) => "close_stream",
-        Call::TailLogs(_) => "tail_logs",
     }
 }
 
@@ -218,9 +217,18 @@ pub(crate) fn config_applied(op: &'static str, section: u64, dry_run: bool, rest
 }
 
 #[inline(never)]
-pub(crate) fn invoking(service: u32, action: u32, args: usize) {
-    log::debug!(
+// A page action is polled (`rohi logs -f` reads the log tail once a second), so
+// it is reported at trace, which the persistent log never keeps: following the
+// tail must not feed it.
+pub(crate) fn invoking(service: u32, action: u32, args: usize, quiet: bool) {
+    let level = if quiet {
+        log::Level::Trace
+    } else {
+        log::Level::Debug
+    };
+    log::log!(
         target: "control",
+        level,
         "Invoking action (service={} action={} args_count={})",
         service,
         action,
@@ -239,8 +247,14 @@ pub(crate) fn invoked(service: u32, action: u32, privilege: Privilege, what: &'s
             what
         );
     } else {
-        log::debug!(
+        let level = if what == "page" {
+            log::Level::Trace
+        } else {
+            log::Level::Debug
+        };
+        log::log!(
             target: "control",
+            level,
             "Action completed (service={} action={} result={})",
             service,
             action,
@@ -302,17 +316,6 @@ pub(crate) fn stream_read_oversized(service: u32, stream: u32, len: usize) {
         "Stream read returned more than a chunk (service={} stream={} size_b={})",
         service,
         stream,
-        len
-    );
-}
-
-#[cold]
-#[inline(never)]
-pub(crate) fn tail_oversized(service: u32, len: usize) {
-    log::warn!(
-        target: "control",
-        "Tail page is larger than the limit (service={} size_b={})",
-        service,
         len
     );
 }

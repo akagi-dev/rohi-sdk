@@ -299,7 +299,7 @@ fn an_unreadable_store_is_an_error_not_an_empty_policy() {
         Err(ActionError::Unavailable)
     );
     let summary = block_on(service.summary());
-    assert_eq!(summary.state, ServiceState::Failed);
+    assert_eq!(summary.health, ServiceHealth::Error);
 }
 
 #[test]

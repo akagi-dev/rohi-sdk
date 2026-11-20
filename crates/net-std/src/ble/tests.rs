@@ -182,7 +182,6 @@ fn nothing_is_sent_without_a_connection() {
 #[test]
 fn the_control_protocol_runs_over_the_bridge() {
     let (transport, peripheral) = bridge();
-    let probe = transport.probe();
     peripheral.connected();
 
     let request = pb::Request {
@@ -192,7 +191,7 @@ fn the_control_protocol_runs_over_the_bridge() {
     };
     let mut bytes = [0u8; 16];
     let len = encode(&request, &mut bytes).unwrap();
-    let payload = probe.max_payload();
+    let payload = transport.max_payload();
     let mut chunk = vec![0u8; payload];
     let mut fragments = Fragmenter::new(4, &bytes[..len], payload).unwrap();
     while let Some(n) = fragments.next_frame(&mut chunk) {

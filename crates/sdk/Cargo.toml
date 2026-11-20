@@ -93,7 +93,7 @@ crash = ["dep:rohi-crash"]
 control = ["service", "dep:rohi-control"]
 ble = ["control", "net", "dep:rohi-control-ble"]
 tcp = ["control", "dep:rohi-control-tcp"]
-# The `control_tcp`, `control_ble` and `control_psk` services and sections.
+# The `control` service and section, and the TCP pre-shared key.
 endpoints = ["control", "net", "identity", "dep:rohi-control-endpoints"]
 # `time::EmbassyClock`, the monotonic clock over `embassy-time`.
 embassy-time = ["time", "rohi-time/embassy-time"]

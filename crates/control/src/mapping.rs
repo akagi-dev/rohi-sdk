@@ -24,7 +24,7 @@ use rohi_control_proto::limits;
 use rohi_service::{
     ActionAccess, ActionDescriptor, ConfigEntry, ConfigField, DeviceHealth, EntryState,
     EnumDescriptor, FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, Mutation, MutationOp,
-    SectionInfo, ServiceHealth, ServiceState, ServiceStatusSummary, Unit, Value, ValueKind,
+    SectionInfo, ServiceHealth, ServiceStatusSummary, Unit, Value, ValueKind,
 };
 use zeroize::Zeroize;
 
@@ -49,7 +49,7 @@ const _: () = {
     assert!(rohi_service::MAX_RECORD_FIELDS <= limits::MAX_RECORD_FIELDS);
     assert!(rohi_service::MAX_STREAM_FILES <= limits::MAX_STREAM_FILES);
     assert!(rohi_service::MAX_STREAM_CHUNK <= limits::MAX_STREAM_CHUNK);
-    assert!(rohi_service::MAX_TAIL_CHUNK <= limits::MAX_TAIL_CHUNK);
+    assert!(rohi_service::MAX_PAGE_CHUNK <= limits::MAX_PAGE_CHUNK);
     assert!(rohi_service::MAX_REGISTRY_ENTRIES <= limits::MAX_SERVICES);
     assert!(rohi_service::MAX_REGISTRY_ENTRIES <= limits::MAX_CONFIG_SECTIONS);
 };
@@ -343,17 +343,6 @@ pub(crate) fn wipe_mutation(mutation: &mut pb::ConfigMutation) {
     }
 }
 
-fn state(state: ServiceState) -> pb::ServiceState {
-    match state {
-        ServiceState::Disabled => pb::ServiceState::Disabled,
-        ServiceState::Stopped => pb::ServiceState::Stopped,
-        ServiceState::Starting => pb::ServiceState::Starting,
-        ServiceState::Running => pb::ServiceState::Running,
-        ServiceState::Stopping => pb::ServiceState::Stopping,
-        ServiceState::Failed => pb::ServiceState::Failed,
-    }
-}
-
 fn health(health: ServiceHealth) -> pb::ServiceHealth {
     match health {
         ServiceHealth::Unknown => pb::ServiceHealth::Unknown,
@@ -381,11 +370,8 @@ pub(crate) fn summary(summary: &ServiceStatusSummary) -> pb::ServiceStatusSummar
         service_id: summary.id,
         name: text(summary.name),
         version: summary.version,
-        state: state(summary.state),
         health: health(summary.health),
-        ready: summary.ready,
         revision: summary.revision,
-        state_age_ms: millis(summary.state_age_ms),
     }
 }
 
@@ -414,6 +400,7 @@ pub(crate) fn action_info(
         name: text(action.name),
         secret_args: action.secret_args,
         returns_stream: action.stream,
+        returns_page: action.page,
         access: match action.access {
             ActionAccess::Read => pb::ActionAccess::Read,
             ActionAccess::Mutate => pb::ActionAccess::Mutate,

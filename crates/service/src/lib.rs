@@ -54,7 +54,7 @@
 //! use embassy_futures::block_on;
 //! use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 //! use rohi_service::{
-//!     FieldDescriptor, Service, ServiceHealth, ServiceState, ServiceSummary, Status,
+//!     FieldDescriptor, Service, ServiceHealth, ServiceSummary, Status,
 //!     StatusRegistry, StatusWriter, Statuses, Unit, Value, ValueKind, WriteError,
 //! };
 //!
@@ -70,7 +70,7 @@
 //!         &[FieldDescriptor::new(1, "pressure", ValueKind::U64).unit(Unit::Pascal)];
 //!
 //!     async fn summary(&self) -> ServiceSummary {
-//!         ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true)
+//!         ServiceSummary::new(ServiceHealth::Ok)
 //!     }
 //!
 //!     async fn status(&self, out: &mut impl StatusWriter) -> Result<(), WriteError> {
@@ -82,7 +82,7 @@
 //! let statuses = Statuses::<NoopRawMutex, _>::new((&pump,));
 //!
 //! let status = block_on(statuses.status(PumpService::ID, 5_000)).unwrap();
-//! assert_eq!(status.summary.state, ServiceState::Running);
+//! assert_eq!(status.summary.health, ServiceHealth::Ok);
 //! assert_eq!(status.fields[0], (1, Value::U64(101_325)));
 //! ```
 //!
@@ -159,7 +159,7 @@
 //! |--------|----------|
 //! | [`service`] | [`Service`] identity, [`service_id`] and the id algorithm, `#[derive(Service)]`. |
 //! | [`config`] | [`Config`] sections: effective configuration, overrides, patch semantics, secrets, atomic reset, [`Section`], [`ConfigUpdate`], [`ConfigRegistry`]. |
-//! | [`status`] | [`Status`]: lifecycle state, health, readiness, issues, [`Startup`], device health. |
+//! | [`status`] | [`Status`]: health, issues, [`Startup`], device health. |
 //! | [`action`] | [`Action`] descriptors, arguments, records and [`ActionError`]. |
 //! | [`registry`] | [`StatusRegistry`] / [`ActionRegistry`], the tracker bookkeeping, schema validation, which crate offers what. |
 //!
@@ -201,7 +201,7 @@
 //! | action arguments ([`MAX_ACTION_ARGS`]) | 3 |
 //! | action records ([`MAX_RECORDS`]) | 6 |
 //! | files of a stream ([`MAX_STREAM_FILES`]), bytes of a stream chunk ([`MAX_STREAM_CHUNK`]) | 24, 512 |
-//! | bytes of text of a tail page ([`MAX_TAIL_CHUNK`]) | 512 |
+//! | bytes of data of a page ([`MAX_PAGE_CHUNK`]) | 512 |
 //! | fields per record ([`MAX_RECORD_FIELDS`]) | 4 |
 //! | string or bytes status value or action result ([`MAX_FIELD_VALUE_LEN`]) | 64 bytes |
 //! | string or bytes config value or action argument ([`MAX_VALUE_LEN`]) | 64 bytes |
@@ -225,9 +225,9 @@ pub mod service;
 pub mod status;
 
 pub use action::{
-    Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, ActionResult,
-    MAX_ACTION_ARGS, MAX_RECORD_FIELDS, MAX_RECORDS, MAX_STREAM_CHUNK, MAX_STREAM_FILES,
-    MAX_TAIL_CHUNK, Records, StreamChunk, StreamFile, StreamInfo, TailPage, TailRequest,
+    Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, ActionPage, ActionResult,
+    MAX_ACTION_ARGS, MAX_PAGE_CHUNK, MAX_RECORD_FIELDS, MAX_RECORDS, MAX_STREAM_CHUNK,
+    MAX_STREAM_FILES, PageInfo, Records, StreamChunk, StreamFile, StreamInfo,
 };
 pub use config::{
     Config, ConfigEntry, ConfigError, ConfigRegistry, ConfigSectionOps, ConfigUpdate, EntryState,
@@ -245,8 +245,8 @@ pub use rohi_service_derive::Service;
 pub use service::{Service, assert_service_name, distinct_ids, service_id, service_name_is_valid};
 pub use status::{
     DeviceHealth, FIRST_SERVICE_ISSUE, ISSUE_STARTUP_FAILED, Issue, IssueDescriptor, IssueSeverity,
-    ServiceHealth, ServiceInfo, ServiceSchema, ServiceState, ServiceStatus, ServiceStatusSummary,
-    ServiceSummary, Startup, Status, StatusError, StatusWriter, WriteError, default_device_health,
+    ServiceHealth, ServiceInfo, ServiceSchema, ServiceStatus, ServiceStatusSummary, ServiceSummary,
+    Startup, Status, StatusError, StatusWriter, WriteError, default_device_health,
 };
 
 /// Maximum length of a string or bytes status value or action result, in

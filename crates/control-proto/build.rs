@@ -155,9 +155,9 @@ const LIMITS: &[(&str, usize, &str)] = &[
         "Maximum number of files of one stream.",
     ),
     (
-        "MAX_TAIL_CHUNK",
+        "MAX_PAGE_CHUNK",
         512,
-        "Maximum number of bytes of text one `TailLogsResponse` carries.",
+        "Maximum number of bytes of data one `ActionPage` carries.",
     ),
     (
         "MAX_REASON_LEN",
@@ -342,8 +342,8 @@ fn main() {
             ".rohi.control.v1.ReadStreamResponse.data",
             "MAX_STREAM_CHUNK",
         ),
-        // Log tail.
-        (".rohi.control.v1.TailLogsResponse.data", "MAX_TAIL_CHUNK"),
+        // Cursor pages.
+        (".rohi.control.v1.ActionPage.data", "MAX_PAGE_CHUNK"),
     ];
     for (path, name) in bounded {
         let size = limit(name) as u32;

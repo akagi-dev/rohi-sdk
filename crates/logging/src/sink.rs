@@ -25,9 +25,7 @@ use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, RawMutex};
 use embassy_sync::channel::Channel;
 use log::{Log, Metadata, Record};
 
-use rohi_service::{TailPage, TailRequest};
-
-use crate::tail::{DEFAULT_TAIL_RECORDS, Tail, read_page};
+use crate::tail::{DEFAULT_TAIL_RECORDS, Tail, TailPage, TailRequest, read_page};
 use crate::{LogClock, LogLevel, LogRecord};
 
 /// Records whose target starts with this are never persisted, so the logging
@@ -37,7 +35,7 @@ pub const INTERNAL_TARGET: &str = "rohi_logging";
 /// The producer side of persistent logging.
 ///
 /// A `LogSink` is a bounded queue of `N` [`LogRecord`]s with a runtime level,
-/// and a RAM tail of the last `T` records for the `TailLogs` request.
+/// and a RAM tail of the last `T` records for the `logging.tail` action.
 /// A log call filters by level first, then formats into an owned record,
 /// stamps it from the [`LogClock`] and `try_send`s it. It never waits: when
 /// the queue is full the new record is dropped and counted. The logging task

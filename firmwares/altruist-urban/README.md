@@ -72,20 +72,20 @@ See [HAL](https://docs.rs/rohi-hal), [Sensors](https://docs.rs/rohi-hal/latest/r
 
 ## Wi-Fi
 
-The firmware starts a Wi-Fi station through [`rohi-net`](https://docs.rs/rohi-net). If the `wifi` configuration section has overrides (an SSID, set as the effective `WifiConfig`) they are
-applied and it connects automatically (and reconnects with bounded backoff); otherwise the state stays `NotConfigured`.
+The firmware starts a Wi-Fi station through [`rohi-net`](https://docs.rs/rohi-net). If the `wireless` configuration section has Wi-Fi overrides (`wifi_ssid` and the other `wifi_*` and `ip_*` fields) they are
+applied live and it connects automatically (and reconnects with bounded backoff); otherwise the state stays `NotConfigured`.
 Wi-Fi can be provisioned over BLE with the `rohi` tool, see below.
 
 ## Control plane (BLE)
 
-The firmware advertises the ROHI Control Service (device name `ALTRUIST-URBAN-XXXX`, the last two MAC bytes, unless the `ble` section sets a `name`, read at start) and serves a bounded protobuf
-control protocol over BLE: device information, capabilities, sensors, typed configuration and Wi-Fi scan / status /
-reconnect / disconnect. Wi-Fi and BLE share one radio runtime (`rohi_net_esp::EspWireless`). Use the desktop client:
+The firmware advertises the ROHI Control Service (device name `ALTRUIST-URBAN-XXXX`, the last two MAC bytes, unless the `ble_name` field of the `wireless` section sets one, read at start, so a change applies after a reboot) and serves a bounded protobuf
+control protocol over BLE: device information, capabilities, sensors, typed configuration and the `wireless` service (Wi-Fi status and the `wifi_scan`, `wifi_reconnect` and
+`wifi_disconnect` actions). Wi-Fi and BLE share one radio runtime (`rohi_net_esp::EspWireless`). Use the desktop client:
 
 ```bash
 cargo run -p rohi -- scan
 cargo run -p rohi -- status sensors
-cargo run -p rohi -- config wifi ssid=<SSID> password=-   # asks for the password
+cargo run -p rohi -- config wireless wifi_ssid=<SSID> wifi_password=-   # asks for the password
 ```
 
 > **Security:** there is no BLE pairing and no authorization policy in this version, so anyone in radio range can read

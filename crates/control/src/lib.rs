@@ -98,13 +98,13 @@
 //! | `PatchConfigSection`, `ResetConfigSection` | `ConfigRegistry` | [`Mutate`](Privilege::Mutate) |
 //! | `GetServicesStatus`, `GetServiceSchema`, `GetServiceStatus` | [`StatusRegistry`](rohi_service::StatusRegistry) | `Read` |
 //! | `ListActions`, `GetActionSchema` | [`ActionRegistry`](rohi_service::ActionRegistry) | `Read` |
-//! | `InvokeAction` | `ActionRegistry` | the [`ActionAccess`](rohi_service::ActionAccess) the action declares: `Read`, `Mutate` or `Provision`; secret arguments are a separate property (they are only wiped) |
+//! | `InvokeAction` | `ActionRegistry` | the [`ActionAccess`](rohi_service::ActionAccess) the action declares: `Read`, `Mutate` or `Provision`; secret arguments are a separate property (they are only wiped). An action that declares a page result (`logging.tail`) answers with one bounded page: no stream is registered |
 //! | `ReadStream`, `CloseStream` | `ActionRegistry` | that of the action that created the stream |
-//! | `TailLogs` | `ActionRegistry` (`Action::tail_logs`) | `Read`; one request, one bounded reply, no stream |
 //!
 //! [`AccessPolicy`] is the policy of a device: it reads the [`TransportAccessMode`] of the TCP
-//! endpoint. `Restricted` TCP wants a connection that completed the authenticated and encrypted
-//! handshake of `rohi-control-tcp`, a property the *transport* reports in [`LinkSecurity`], which no
+//! endpoint: `Open` allows every request, `Protected` allows reads and wants a connection that
+//! completed the authenticated and encrypted handshake of `rohi-control-tcp` for the rest, and
+//! `Private` wants it for every request. That handshake is a property the *transport* reports in [`LinkSecurity`], which no
 //! request field can change. BLE has no mode: in the current build it is open (no pairing, no link
 //! encryption, and never reported as encrypted or authenticated), so every BLE request is allowed.
 //! This crate implements no encryption, no signature and no challenge.
@@ -232,7 +232,7 @@ mod hub_tests;
 mod tests;
 
 pub use access::{
-    AccessPolicy, ControlAccess, EndpointSettings, EndpointState, EndpointStats,
+    AccessPolicy, Availability, ControlAccess, EndpointSettings, EndpointState, EndpointStats,
     TransportAccessMode,
 };
 pub use backend::{ControlBackend, Device, DeviceInfo};

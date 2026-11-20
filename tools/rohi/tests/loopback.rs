@@ -82,7 +82,7 @@ async fn info_and_discovery() {
         assert_eq!(
             sections,
             [
-                ("wifi".to_owned(), 1),
+                ("wireless".to_owned(), 1),
                 ("connectivity".to_owned(), 1),
                 ("gadget".to_owned(), 3),
                 ("location".to_owned(), 1)
@@ -116,10 +116,25 @@ async fn info_and_discovery() {
                 "example.two",
                 "example.configure",
                 "example.pick",
+                "example.page",
                 "system.reboot",
                 "system.factory_reset"
             ]
         );
+        let actions = device.actions().await.unwrap();
+        let page_action = actions
+            .iter()
+            .find(|action| action.service == "example" && action.name == "page")
+            .unwrap();
+        assert!(page_action.returns_page);
+        assert!(
+            serde_json::to_value(page_action).unwrap()["returns_page"]
+                .as_bool()
+                .unwrap()
+        );
+
+        let schema = device.action_schema("example", "page").await.unwrap();
+        assert!(schema.action.returns_page);
     })
     .await;
 }
@@ -144,11 +159,11 @@ async fn a_schema_describes_the_fields_of_a_section_the_client_has_never_seen() 
         assert_eq!(mode.field.variants, ["fast", "slow"]);
         assert!(!schema.fields[3].writable);
 
-        let wifi = device.config_schema("wifi").await.unwrap();
-        let password = wifi
+        let wireless = device.config_schema("wireless").await.unwrap();
+        let password = wireless
             .fields
             .iter()
-            .find(|f| f.field.name == "password")
+            .find(|f| f.field.name == "wifi_password")
             .unwrap();
         assert!(password.secret && password.optional);
 
@@ -163,7 +178,7 @@ async fn a_patch_is_stored_atomically_and_secrets_are_never_returned() {
     let bench = Bench::new();
     with_device(20, &bench, |mut device| async move {
         // Nothing is overridden: the effective values are the defaults.
-        let defaults = device.config_get("wifi").await.unwrap();
+        let defaults = device.config_get("wireless").await.unwrap();
         assert!(defaults.overridden.is_empty());
         assert_eq!(entry(&defaults, 1), None);
         assert_eq!(entry(&defaults, 2), None);
@@ -174,7 +189,7 @@ async fn a_patch_is_stored_atomically_and_secrets_are_never_returned() {
 
         let applied = device
             .config_patch(
-                "wifi",
+                "wireless",
                 &[set(1, text("office")), set(2, text("hunter2hunter2"))],
                 false,
             )
@@ -182,7 +197,7 @@ async fn a_patch_is_stored_atomically_and_secrets_are_never_returned() {
             .unwrap();
         assert!(!applied.restart_required);
 
-        let values = device.config_get("wifi").await.unwrap();
+        let values = device.config_get("wireless").await.unwrap();
         assert_eq!(values.overridden, [1, 2]);
         assert_eq!(entry(&values, 1), Some(&EntryState::Value(text("office"))));
         assert_eq!(entry(&values, 2), Some(&EntryState::Redacted));
@@ -195,20 +210,20 @@ async fn a_patch_is_stored_atomically_and_secrets_are_never_returned() {
 
         // Clearing the override of the password restores its default, none.
         device
-            .config_patch("wifi", &[clear(2)], false)
+            .config_patch("wireless", &[clear(2)], false)
             .await
             .unwrap();
-        let values = device.config_get("wifi").await.unwrap();
+        let values = device.config_get("wireless").await.unwrap();
         assert_eq!(entry(&values, 2), None);
         assert_eq!(values.overridden, [1]);
     })
     .await;
-    let stored = bench.wifi.value.borrow().clone().unwrap();
+    let stored = bench.wireless.value.borrow().clone().unwrap();
     assert_eq!(
-        stored.ssid,
+        stored.wifi_ssid,
         Override::Value(Some(WifiSsid::from_bytes(b"office").unwrap()))
     );
-    assert_eq!(stored.password, Override::Default);
+    assert_eq!(stored.wifi_password, Override::Default);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -217,42 +232,42 @@ async fn none_is_an_explicit_override_that_clear_removes() {
     with_device(20, &bench, |mut device| async move {
         // An open network is an explicit choice: no password, overridden.
         device
-            .config_patch("wifi", &[set(1, text("office")), none(2)], false)
+            .config_patch("wireless", &[set(1, text("office")), none(2)], false)
             .await
             .unwrap();
-        let values = device.config_get("wifi").await.unwrap();
+        let values = device.config_get("wireless").await.unwrap();
         assert_eq!(values.overridden, [1, 2]);
         assert_eq!(entry(&values, 2), None);
 
         // A required field has no "none"; nothing changes.
         let error = device
-            .config_patch("wifi", &[none(3)], false)
+            .config_patch("wireless", &[none(3)], false)
             .await
             .unwrap_err();
         assert!(matches!(error, Error::Device(ErrorCode::InvalidArgument)));
 
         // A value replaces it, clear follows the default again.
         device
-            .config_patch("wifi", &[set(2, text("hunter2hunter2"))], false)
+            .config_patch("wireless", &[set(2, text("hunter2hunter2"))], false)
             .await
             .unwrap();
         assert_eq!(
-            entry(&device.config_get("wifi").await.unwrap(), 2),
+            entry(&device.config_get("wireless").await.unwrap(), 2),
             Some(&EntryState::Redacted)
         );
         device
-            .config_patch("wifi", &[none(2)], false)
+            .config_patch("wireless", &[none(2)], false)
             .await
             .unwrap();
         device
-            .config_patch("wifi", &[clear(2)], false)
+            .config_patch("wireless", &[clear(2)], false)
             .await
             .unwrap();
-        assert_eq!(device.config_get("wifi").await.unwrap().overridden, [1]);
+        assert_eq!(device.config_get("wireless").await.unwrap().overridden, [1]);
     })
     .await;
-    let stored = bench.wifi.value.borrow().clone().unwrap();
-    assert_eq!(stored.password, Override::Default);
+    let stored = bench.wireless.value.borrow().clone().unwrap();
+    assert_eq!(stored.wifi_password, Override::Default);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -340,7 +355,7 @@ async fn dry_runs_restarts_and_reset() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn services_report_state_health_readiness_and_issues() {
+async fn services_report_health_and_issues() {
     let bench = Bench::new();
     with_device(20, &bench, |mut device| async move {
         let all = device.services_status().await.unwrap();
@@ -348,8 +363,7 @@ async fn services_report_state_health_readiness_and_issues() {
         assert_eq!(all.health, DeviceHealth::Ok);
         let radio = &all.services[0];
         assert_eq!(radio.service, "radio");
-        assert_eq!(radio.state, ServiceState::Running);
-        assert!(radio.ready);
+        assert_eq!(radio.health, ServiceHealth::Ok);
         let revision = radio.revision;
 
         let schema = device.service_schema("radio").await.unwrap();
@@ -555,7 +569,7 @@ async fn identity_is_an_ordinary_service_with_actions() {
     let expected = derived.public_key();
     with_device(20, &bench, |mut device| async move {
         let status = device.service_status("identity").await.unwrap();
-        assert_eq!(status.summary.state, ServiceState::Stopped);
+        assert_eq!(status.summary.health, ServiceHealth::Unknown);
         assert_eq!(status.issues[0].code, "not_provisioned");
 
         let schema = device.action_schema("identity", "provision").await.unwrap();
@@ -578,7 +592,7 @@ async fn identity_is_an_ordinary_service_with_actions() {
         );
 
         let status = device.service_status("identity").await.unwrap();
-        assert_eq!(status.summary.state, ServiceState::Running);
+        assert_eq!(status.summary.health, ServiceHealth::Ok);
         // The public key is reported, the secret never is.
         assert!(
             status

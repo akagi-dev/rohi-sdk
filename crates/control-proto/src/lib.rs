@@ -110,7 +110,7 @@
 //! | status | `GetServicesStatus` (17), `GetServiceSchema` (18), `GetServiceStatus` (19) |
 //! | actions | `ListActions` (20, paged by `offset`: a page holds at most `MAX_ACTIONS` and `total` is the count of the device), `GetActionSchema` (21), `InvokeAction` (22) |
 //! | stream | `ReadStream` (23), `CloseStream` (24); the files of a stream come as `action_stream` (25), the answer of `InvokeAction` |
-//! | log tail | `TailLogs` (25), answered by `tail_logs` (26): one cursor paged page of text of at most [`limits::MAX_TAIL_CHUNK`] bytes, no stream |
+//! | page | an action with `returns_page` (such as `logging.tail`) answers `InvokeAction` with `action_page` (28): one cursor paged page of at most [`limits::MAX_PAGE_CHUNK`] bytes, no stream |
 //!
 //! **Schemas drive clients.** The protocol knows no device module. A device
 //! publishes descriptors (`FieldDescriptor`, `ConfigFieldDescriptor`,
@@ -130,8 +130,8 @@
 //! and [`control::InvokeActionRequest`] are written by hand to never show
 //! values.
 //!
-//! **Time and counters.** `state_age_ms` and issue `age_ms` are `u32` and
-//! saturate at the maximum; `uptime_ms` is `u64`.
+//! **Time and counters.** issue `age_ms` is a `u32` and
+//! saturates at the maximum; `uptime_ms` is `u64`.
 //!
 //! # Architecture and Integration
 //!
@@ -213,7 +213,7 @@
 //! | [`limits::MAX_CONFIG_SECTIONS`], [`limits::MAX_SERVICES`], [`limits::MAX_ACTIONS`] | 16, 16, 12 | registry entries listed |
 //! | [`limits::MAX_ISSUES`], [`limits::MAX_ISSUE_DESCRIPTORS`] | 4, 12 | active issues, issue descriptors |
 //! | [`limits::MAX_ACTION_ARGS`], [`limits::MAX_RECORDS`], [`limits::MAX_RECORD_FIELDS`] | 3, 6, 4 | action arguments, result records, fields per record |
-//! | [`limits::MAX_STREAM_CHUNK`], [`limits::MAX_TAIL_CHUNK`] | 512, 512 | bytes of one stream chunk, bytes of text of one tail page |
+//! | [`limits::MAX_STREAM_CHUNK`], [`limits::MAX_PAGE_CHUNK`] | 512, 512 | bytes of one stream chunk, bytes of data of one action page |
 //!
 //! The limits are defined once, in the build script of this crate, which also
 //! applies them to the generated types, so the schema and the constants

@@ -49,7 +49,7 @@ impl Privilege {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Transport {
     /// Not declared: an [`AccessPolicy`](crate::AccessPolicy) treats it as
-    /// restricted and never as open.
+    /// private for everything but reads and never as open.
     #[default]
     Unspecified,
     /// A BLE central.
@@ -112,6 +112,11 @@ pub trait AuthorizationPolicy {
     fn protects_secrets(&self, link: &LinkSecurity) -> bool {
         link.encrypted
     }
+
+    /// Called once for every request that decoded, before it is authorized, whatever the
+    /// outcome: a policy that keeps the request counter of the device does it here. The default
+    /// does nothing.
+    fn request_decoded(&self) {}
 }
 
 /// Allows everything. Used until a link security policy is configured.

@@ -31,15 +31,15 @@ use heapless::Vec;
 use rohi_service::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, EnumDescriptor,
     FIRST_SERVICE_ISSUE, FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES,
-    MAX_STREAM_CHUNK, MAX_TAIL_CHUNK, Service, ServiceHealth, ServiceState, ServiceSummary, Status,
-    StatusWriter, StreamChunk, StreamFile, StreamInfo, TailPage, TailRequest, Unit, Value,
-    ValueKind, WriteError,
+    MAX_PAGE_CHUNK, MAX_STREAM_CHUNK, Service, ServiceHealth, ServiceSummary, Status, StatusWriter,
+    StreamChunk, StreamFile, StreamInfo, Unit, Value, ValueKind, WriteError,
 };
 
 use crate::segment::{Batch, MAX_CHUNK_LEN, file_name, scratch};
 use crate::storage::{
     ChunkMeta, Limits, LogStorage, MAX_SEGMENTS, Recovery, SegmentId, StorageError, StorageStats,
 };
+use crate::tail::TailRequest;
 use crate::{
     Compression, LEVEL_ENUM, LEVELS, LogClock, LogRecord, LogSink, LogStorageKind, LoggingConfig,
 };
@@ -99,8 +99,43 @@ pub mod action {
     pub const DOWNLOAD: u32 = 2;
     /// Removes the history of the active backend.
     pub const CLEAR: u32 = 3;
-    // Id 4 was `tail`, an action that returned a stream; the tail is the
-    // `TailLogs` request now, see `Action::tail_logs`. Ids are never reused.
+    /// Reads one cursor page of the RAM tail: no stream, nothing kept for the client.
+    pub const TAIL: u32 = 4;
+}
+
+/// Field ids of the arguments of the `tail` action.
+pub mod tail_field {
+    /// The session of an earlier page, 0 to start a new one. Must fit a `u32`.
+    pub const SESSION: u32 = 1;
+    /// The cursor of an earlier page, 0 for the oldest line held.
+    pub const AFTER: u32 = 2;
+}
+
+const TAIL_ARGS: &[FieldDescriptor] = &[
+    FieldDescriptor::new(tail_field::SESSION, "session", ValueKind::U64),
+    FieldDescriptor::new(tail_field::AFTER, "after", ValueKind::U64),
+];
+
+// The registry has checked that both arguments are present once and are `u64`;
+// a session that does not fit `u32` is refused, never narrowed.
+fn tail_request(args: &[(u32, Value)]) -> Result<TailRequest, ActionError> {
+    let mut session = None;
+    let mut after = None;
+    for (id, value) in args {
+        match (*id, value) {
+            (tail_field::SESSION, Value::U64(value)) => session = Some(*value),
+            (tail_field::AFTER, Value::U64(value)) => after = Some(*value),
+            _ => {}
+        }
+    }
+    let (Some(session), Some(after)) = (session, after) else {
+        return Err(ActionError::InvalidArgument);
+    };
+    let session = u32::try_from(session).map_err(|_| {
+        debug_action("Tail rejected: session out of range", "session", &session);
+        ActionError::InvalidArgument
+    })?;
+    Ok(TailRequest { session, after })
 }
 
 /// How long an idle stream is kept before its segments are released.
@@ -301,7 +336,7 @@ const FLUSH_BYTES: usize = 1_536;
 
 // The shortest page the tail serves: the longest line without a message.
 const MIN_TAIL_CHUNK: usize = crate::segment::text::MIN_WITHIN_LEN;
-const _: () = assert!(MIN_TAIL_CHUNK < MAX_TAIL_CHUNK);
+const _: () = assert!(MIN_TAIL_CHUNK < MAX_PAGE_CHUNK);
 
 /// Opens the backend a `storage` setting names.
 ///
@@ -1002,15 +1037,13 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize> S
             )
         });
         if !started {
-            ServiceSummary::new(ServiceState::Starting, ServiceHealth::Unknown, false)
+            ServiceSummary::new(ServiceHealth::Unknown)
         } else if unavailable {
-            ServiceSummary::new(ServiceState::Running, ServiceHealth::Error, false)
-        } else if write_failed {
-            ServiceSummary::new(ServiceState::Running, ServiceHealth::Degraded, false)
-        } else if degraded {
-            ServiceSummary::new(ServiceState::Running, ServiceHealth::Degraded, true)
+            ServiceSummary::new(ServiceHealth::Error)
+        } else if write_failed || degraded {
+            ServiceSummary::new(ServiceHealth::Degraded)
         } else {
-            ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true)
+            ServiceSummary::new(ServiceHealth::Ok)
         }
     }
 
@@ -1089,16 +1122,20 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize> A
     const ACTIONS: &'static [ActionDescriptor] = &[
         ActionDescriptor::new(action::DOWNLOAD, "download", ActionAccess::Read).stream(),
         ActionDescriptor::new(action::CLEAR, "clear", ActionAccess::Mutate),
+        ActionDescriptor::new(action::TAIL, "tail", ActionAccess::Read)
+            .args(TAIL_ARGS)
+            .page(),
     ];
 
     async fn invoke(
         &self,
         action: u32,
-        _args: &[(u32, Value)],
+        args: &[(u32, Value)],
         out: &mut impl ActionOutput,
     ) -> Result<(), ActionError> {
         let logging = self.0;
         match action {
+            action::TAIL => logging.serve_tail(args, out),
             action::DOWNLOAD => {
                 let info = logging.download().await?;
                 out.stream(info).map_err(|_| ActionError::Internal)
@@ -1129,10 +1166,6 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize> A
         log::debug!(target: "logging", "Link lost, open streams are released");
         self.0.with(|state| state.release_all = true);
         self.0.wake.signal(());
-    }
-
-    fn tail_logs(&self, request: TailRequest, buf: &mut [u8]) -> Result<TailPage, ActionError> {
-        self.0.tail_logs(request, buf)
     }
 }
 
@@ -1167,14 +1200,17 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize>
     // The tail reads the RAM ring and nothing else: no storage, no commit, no
     // lock shared with the logging task, so it answers while the archive is
     // busy, faulted or pinned by a download, and a clear of the archive does
-    // not touch it. The page is written straight into `buf`.
-    fn tail_logs(&self, request: TailRequest, buf: &mut [u8]) -> Result<TailPage, ActionError> {
-        let len = buf.len().min(MAX_TAIL_CHUNK);
-        if len < MIN_TAIL_CHUNK {
-            debug_action("Tail rejected: buffer too small", "size_b", &buf.len());
-            return Err(ActionError::InvalidArgument);
-        }
-        let page = self.sink.tail_page(request, &mut buf[..len]);
+    // not touch it. The page buffer lives in this frame only, apart from the
+    // future of `invoke`, which awaits the archive.
+    #[inline(never)]
+    fn serve_tail(
+        &self,
+        args: &[(u32, Value)],
+        out: &mut impl ActionOutput,
+    ) -> Result<(), ActionError> {
+        let request = tail_request(args)?;
+        let mut buf = [0u8; MAX_PAGE_CHUNK];
+        let page = self.sink.tail_page(request, &mut buf);
         trace_tail(
             request.session,
             request.after,
@@ -1182,7 +1218,9 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize>
             page.reset,
             page.gap,
         );
-        Ok(page)
+        let data = buf.get(..page.len).ok_or(ActionError::Internal)?;
+        out.page(page.info(), data)
+            .map_err(|_| ActionError::Internal)
     }
 
     async fn download(&self) -> Result<StreamInfo, ActionError> {

@@ -58,8 +58,10 @@
 //! IPv4 configuration, the shared location is updated for the telemetry frames
 //! and the `location` service, the telemetry and NTP tasks are signalled and
 //! restart with the new values, the identity updates the signer. A
-//! restart-required section (`ble`, `control_tcp`) is only published at boot: a later commit only
-//! persists it, so it applies as a whole after a reboot. The same step,
+//! restart-required section (`control`) is only published at boot: a later commit only
+//! persists it, so it applies as a whole after a reboot. The `wireless` section is the one
+//! exception: its Wi-Fi and IP fields apply right after a commit and only the BLE name, read
+//! once when the peripheral starts, waits for a reboot; it is reported as restart-required. The same step,
 //! with the same firmware overrides, runs once at boot for every section and
 //! after a factory reset. There is no `.await` between commit and
 //! publication, so a caller that is cancelled while waiting for the response
@@ -93,9 +95,11 @@ use rohi_sdk::service::{
     SectionInfo, SectionSchema, SectionValues,
 };
 
+#[cfg(feature = "std-tcp")]
+use crate::bindings::ControlBinding;
 use crate::bindings::{
-    Binding, BleBinding, ConfigRuntime, ControlTcpBinding, IdentityBinding, LocationBinding,
-    LoggingBinding, NetworkBinding, PrivateBinding, TcpPskBinding, TimeBinding, WifiBinding,
+    Binding, ConfigRuntime, IdentityBinding, LocationBinding, LoggingBinding, PrivateBinding,
+    TcpPskBinding, TimeBinding, WirelessBinding,
 };
 use crate::connectivity::ConnectivityBinding;
 use crate::tasks::RawMutex;
@@ -766,7 +770,7 @@ where
 
     /// The recovered store is empty, which the runtime learns here: an identity
     /// that was unreadable at boot is now known to be absent. A
-    /// restart-required section is not published, as after any commit.
+    /// section that is only applied at boot (`control`) is not published, as after any commit.
     fn format_storage(&mut self, runtime: &ConfigRuntime) -> Outcome {
         match self {
             Self::Ready(_) => Outcome::Failed(ServiceError::StorageHealthy),
@@ -840,16 +844,17 @@ const fn ids_are_unique(ids: &[u64]) -> bool {
 /// the consumer of `B`. Synchronous on purpose, see the module documentation.
 ///
 /// A restart-required section is only published at `boot`; a later commit
-/// is only persisted. At boot an
+/// is only persisted, unless the binding applies part of it live
+/// ([`Binding::PUBLISH_LIVE`]). At boot an
 /// unusable stored value falls back to the firmware policy: the consumer must
 /// get a value to start with, and the stored section stays untouched for the
 /// user to fix.
 fn publish_managed<B: Binding>(runtime: &ConfigRuntime, blob: Option<&Blob>, boot: bool) {
-    if B::RESTART_REQUIRED && !boot {
+    if !boot && !B::PUBLISH_LIVE {
         return;
     }
     match effective::<B::Config>(blob, B::firmware_overrides) {
-        Ok(config) => B::publish(runtime, &config),
+        Ok(config) => publish_effective::<B>(runtime, &config, boot),
         Err(error) => {
             warn!(
                 "{}: stored configuration cannot be decoded: {}",
@@ -857,10 +862,19 @@ fn publish_managed<B: Binding>(runtime: &ConfigRuntime, blob: Option<&Blob>, boo
                 error
             );
             if boot {
-                B::publish(runtime, &B::firmware_only());
+                publish_effective::<B>(runtime, &B::firmware_only(), true);
             }
         }
     }
+}
+
+/// Hands `config` to the consumer of `B`; at `boot` also the part that is read
+/// once, when the consumer starts.
+fn publish_effective<B: Binding>(runtime: &ConfigRuntime, config: &B::Config, boot: bool) {
+    if boot {
+        B::publish_boot(runtime, config);
+    }
+    B::publish(runtime, config);
 }
 
 /// Publishes a committed (`Some`) or removed (`None`) private section.
@@ -936,8 +950,15 @@ fn effective<C: HasOverrides + Default>(
     Ok(materialize(&firmware(), &user))
 }
 
+// The `control` section exists only where there is a TCP endpoint to configure.
+#[cfg(feature = "std-tcp")]
 crate::firmware_configs! {
-    managed WifiBinding, NetworkBinding, BleBinding, LocationBinding, TimeBinding, LoggingBinding,
-        ControlTcpBinding;
+    managed WirelessBinding, LocationBinding, TimeBinding, LoggingBinding, ControlBinding;
+    private IdentityBinding, TelemetryBinding, ConnectivityBinding, TcpPskBinding
+}
+
+#[cfg(not(feature = "std-tcp"))]
+crate::firmware_configs! {
+    managed WirelessBinding, LocationBinding, TimeBinding, LoggingBinding;
     private IdentityBinding, TelemetryBinding, ConnectivityBinding, TcpPskBinding
 }

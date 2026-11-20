@@ -25,8 +25,9 @@ use rohi_control_proto::control::{
 };
 use rohi_control_proto::{PROTOCOL_VERSION, decode, encode, limits};
 use rohi_service::{
-    ActionError, ActionRegistry, ActionResult, ConfigError, ConfigRegistry, MAX_ACTION_ARGS,
-    MAX_MUTATIONS, Mutation, ServiceStatusSummary, StatusError, StatusRegistry, TailRequest, Value,
+    ActionError, ActionPage, ActionRegistry, ActionResult, ConfigError, ConfigRegistry,
+    MAX_ACTION_ARGS, MAX_MUTATIONS, Mutation, ServiceStatusSummary, StatusError, StatusRegistry,
+    Value,
 };
 
 use crate::{AuthorizationPolicy, ControlBackend, LinkSecurity, Privilege, Transport};
@@ -162,6 +163,7 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
                 return (0, error(pb::ErrorCode::InvalidArgument));
             }
         };
+        self.policy.request_decoded();
         let id = request.request_id;
         if request.protocol_version != PROTOCOL_VERSION {
             diag::unsupported_version(id, request.protocol_version);
@@ -307,7 +309,6 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             Call::InvokeAction(request) => isolated(self.invoke(link, privilege, request)).await,
             Call::ReadStream(request) => isolated(self.read_stream(request)).await,
             Call::CloseStream(request) => isolated(self.close_stream(request)).await,
-            Call::TailLogs(request) => self.tail_logs(request),
         }
     }
 
@@ -672,41 +673,6 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
         }
     }
 
-    // One bounded page of text straight into the data field of the reply: no
-    // buffer of its own, no stream and nothing kept for the client.
-    #[inline(never)]
-    fn tail_logs(&self, request: pb::TailLogsRequest) -> Reply {
-        let mut reply = pb::TailLogsResponse::default();
-        if reply.data.resize_default(limits::MAX_TAIL_CHUNK).is_err() {
-            return error(pb::ErrorCode::Internal);
-        }
-        let page = self.backend.actions().tail_logs(
-            request.service_id,
-            TailRequest {
-                session: request.session,
-                after: request.after,
-            },
-            reply.data.as_mut_slice(),
-        );
-        match page {
-            Ok(page) if page.len <= limits::MAX_TAIL_CHUNK => {
-                reply.data.truncate(page.len);
-                reply.session = page.session;
-                reply.cursor = page.cursor;
-                reply.oldest_sequence = page.oldest_sequence;
-                reply.newest_sequence = page.newest_sequence;
-                reply.reset = page.reset;
-                reply.gap = page.gap;
-                Reply::TailLogs(reply)
-            }
-            Ok(page) => {
-                diag::tail_oversized(request.service_id, page.len);
-                error(pb::ErrorCode::Internal)
-            }
-            Err(e) => self.action_failure(e, request.service_id),
-        }
-    }
-
     async fn invoke(
         &self,
         link: &LinkSecurity,
@@ -722,7 +688,12 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             }
         }
         let result = if valid {
-            diag::invoking(request.service_id, request.action_id, args.len());
+            let quiet = self
+                .backend
+                .actions()
+                .action(request.service_id, request.action_id)
+                .is_ok_and(|action| action.page);
+            diag::invoking(request.service_id, request.action_id, args.len(), quiet);
             self.backend
                 .actions()
                 .invoke(request.service_id, request.action_id, &args)
@@ -775,6 +746,10 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
                     files,
                 })
             }
+            Ok(ActionResult::Page(page)) => {
+                diag::invoked(request.service_id, request.action_id, privilege, "page");
+                page_reply(&page)
+            }
             Ok(ActionResult::Records(records)) => {
                 diag::invoked(request.service_id, request.action_id, privilege, "records");
                 let mut out = Vec::new();
@@ -793,6 +768,24 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             }
         }
     }
+}
+
+// One bounded page: no stream is registered and nothing is kept for the client.
+#[inline(never)]
+fn page_reply(page: &ActionPage) -> Reply {
+    let mut reply = pb::ActionPage {
+        session: page.info.session,
+        cursor: page.info.cursor,
+        oldest_sequence: page.info.oldest_sequence,
+        newest_sequence: page.info.newest_sequence,
+        reset: page.info.reset,
+        gap: page.info.gap,
+        ..Default::default()
+    };
+    if reply.data.extend_from_slice(&page.data).is_err() {
+        return error(pb::ErrorCode::Internal);
+    }
+    Reply::ActionPage(reply)
 }
 
 fn denied(reason: &'static str) -> Reply {

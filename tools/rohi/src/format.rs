@@ -74,7 +74,7 @@ impl Paint {
         self.tone(Tone::Muted, text)
     }
 
-    /// A state, health, readiness or severity word, colored by how well it
+    /// A health or severity word, colored by how well it
     /// is going; other text stays as it is.
     fn status(self, text: &str) -> String {
         let tone = match text.to_lowercase().as_str() {
@@ -194,17 +194,6 @@ fn health(health: ServiceHealth) -> String {
     }
 }
 
-fn yes_no(value: bool) -> &'static str {
-    if value { "yes" } else { "no" }
-}
-
-fn since(summary: &ServiceSummary) -> String {
-    match summary.state {
-        ServiceState::Disabled => "-".to_owned(),
-        _ => duration(summary.state_age_ms),
-    }
-}
-
 /// The device-wide summary of `rohi status`.
 ///
 /// `sensor_id` is the SS58 address of the device identity, shown when known.
@@ -232,22 +221,9 @@ pub fn services_status(
     let rows: Vec<Vec<String>> = status
         .services
         .iter()
-        .map(|service| {
-            vec![
-                service.service.clone(),
-                service.state.to_string(),
-                health(service.health),
-                yes_no(service.ready).to_owned(),
-                since(service),
-            ]
-        })
+        .map(|service| vec![service.service.clone(), health(service.health)])
         .collect();
-    out.push_str(&table(
-        paint,
-        &["SERVICE", "STATE", "HEALTH", "READY", "SINCE"],
-        &rows,
-        &[1, 2, 3],
-    ));
+    out.push_str(&table(paint, &["SERVICE", "HEALTH"], &rows, &[1]));
     out
 }
 
@@ -263,15 +239,9 @@ pub fn service_status(paint: Paint, status: &ServiceStatus, schema: &ServiceSche
         &[
             ("Service:".to_owned(), summary.service.clone()),
             (
-                "State:".to_owned(),
-                paint.status(&summary.state.to_string()),
-            ),
-            (
                 "Health:".to_owned(),
                 paint.status(&summary.health.to_string()),
             ),
-            ("Ready:".to_owned(), paint.status(yes_no(summary.ready))),
-            ("Since:".to_owned(), since(summary)),
         ],
     );
     if !status.fields.is_empty() {
@@ -556,6 +526,19 @@ pub fn action_help(paint: Paint, schema: &ActionSchema, syntax: Syntax) -> Strin
         paint.strong("Access:"),
         action.access
     ));
+    out
+}
+
+/// A cursor page an action returned: a line of metadata, then the text.
+pub fn page(page: &ActionPage) -> String {
+    let mut out = format!(
+        "# session={} cursor={} oldest_sequence={} newest_sequence={} reset={} gap={}\n",
+        page.session, page.cursor, page.oldest_sequence, page.newest_sequence, page.reset, page.gap
+    );
+    out.push_str(&String::from_utf8_lossy(&page.data));
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
     out
 }
 

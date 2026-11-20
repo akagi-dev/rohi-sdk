@@ -21,7 +21,7 @@ device, so a new setting appears without an application update. The semantics ar
 
 ## Status & diagnostics
 
-Show the health of the device, the state of each service, its metrics and its active issues, as
+Show the health of the device and of each service, its metrics and its active issues, as
 [`rohi status`](desktop/status.md) does.
 
 ## Actions

@@ -71,7 +71,7 @@ reason = "the sensors status observer is laid out differently after the logging 
 # `max_data` was raised by 200 B (ESP32-C3, 30 300 → 30 500) and 300 B (ESP32-C6, 33 500 → 33 800) when the
 # connectivity rewrite was merged with the persistent logging (#68): `.data` measured 30 400 B and 33 740 B.
 
-# The managed control endpoints (#56): the control worker and the BLE frontend are two tasks (`control_task`
+# The managed control endpoints (#56, one `control` service since #80): the control worker and the BLE frontend are two tasks (`control_task`
 # 15 128 B, `control_ble_task` 2 784 B on the ESP32-C3), the request slot of the `ControlHub` (3 272 B, `.bss`)
 # replaces the reassembly and response buffers the BLE loop owned, and the new sections, services and the BLE
 # pairing of the host stack (trouble-host `security`) add statics. Measured: `.data` 31 144 B (ESP32-C3) and

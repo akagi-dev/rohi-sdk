@@ -519,12 +519,12 @@ fn status_summary_follows_the_routes() {
     let exporter = fixture.exporter();
     let service = Svc::new(&fixture.memory, &exporter, &fixture.state);
     assert_eq!(
-        block_on(service.summary()).state,
-        ServiceState::Stopped,
+        block_on(service.summary()).health,
+        ServiceHealth::Unknown,
         "no route is a valid state"
     );
     fixture.state.mark_unreadable();
-    assert_eq!(block_on(service.summary()).state, ServiceState::Failed);
+    assert_eq!(block_on(service.summary()).health, ServiceHealth::Error);
 }
 
 #[test]
@@ -765,7 +765,7 @@ fn packet(service: &Svc<'_, '_>, profile: u64) -> Result<(u32, u64), ActionError
             assert_eq!(info.files[0].name.as_str(), "packet.bin");
             Ok((info.id, info.files[0].size_bytes))
         }
-        ActionResult::Records(_) => panic!("get_payload returns a stream"),
+        ActionResult::Records(_) | ActionResult::Page(_) => panic!("get_payload returns a stream"),
     }
 }
 

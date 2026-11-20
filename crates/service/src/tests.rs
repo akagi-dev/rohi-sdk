@@ -819,7 +819,6 @@ fn value_debug_never_shows_the_content() {
 
 #[derive(Service)]
 struct Probe {
-    state: RefCell<ServiceState>,
     health: RefCell<ServiceHealth>,
     issue: RefCell<Option<u32>>,
     queue: RefCell<u64>,
@@ -828,7 +827,6 @@ struct Probe {
 impl Probe {
     fn new() -> Self {
         Self {
-            state: RefCell::new(ServiceState::Running),
             health: RefCell::new(ServiceHealth::Ok),
             issue: RefCell::new(None),
             queue: RefCell::new(0),
@@ -854,7 +852,7 @@ impl Status for Probe {
 
     async fn summary(&self) -> ServiceSummary {
         let health = *self.health.borrow();
-        ServiceSummary::new(*self.state.borrow(), health, health == ServiceHealth::Ok)
+        ServiceSummary::new(health)
     }
 
     async fn issues(&self, out: &mut heapless::Vec<Issue, MAX_ISSUES>) {
@@ -898,18 +896,6 @@ fn the_status_revision_follows_observable_changes_only() {
     *probe.issue.borrow_mut() = None;
     *probe.health.borrow_mut() = ServiceHealth::Ok;
     assert_eq!(summary(5_000).revision, 3);
-}
-
-#[test]
-fn state_age_counts_from_the_last_state_change() {
-    let probe = Probe::new();
-    let registry = Statuses::<NoopRawMutex, _>::new((&probe,));
-    let summary = |now| block_on(registry.summary(0, now)).unwrap();
-    assert_eq!(summary(1_000).state_age_ms, 0);
-    assert_eq!(summary(4_000).state_age_ms, 3_000);
-    *probe.state.borrow_mut() = ServiceState::Failed;
-    assert_eq!(summary(5_000).state_age_ms, 0);
-    assert_eq!(summary(6_500).state_age_ms, 1_500);
 }
 
 #[test]
@@ -959,21 +945,13 @@ fn the_writer_checks_the_schema() {
     assert_eq!(writer.fields[0].1.as_str().unwrap().len(), 64);
 }
 
-fn summary(
-    state: ServiceState,
-    health: ServiceHealth,
-    ready: bool,
-    essential: bool,
-) -> ServiceStatusSummary {
+fn summary(health: ServiceHealth, essential: bool) -> ServiceStatusSummary {
     ServiceStatusSummary {
         id: 1,
         name: "s",
         version: 1,
-        state,
         health,
-        ready,
         revision: 1,
-        state_age_ms: 0,
         essential,
     }
 }
@@ -982,33 +960,16 @@ fn summary(
 fn the_default_device_health_policy() {
     use DeviceHealth::*;
     use ServiceHealth as H;
-    use ServiceState as S;
     assert_eq!(default_device_health(&[]), Ok);
+    assert_eq!(default_device_health(&[summary(H::Unknown, true)]), Ok);
+    assert_eq!(default_device_health(&[summary(H::Ok, true)]), Ok);
     assert_eq!(
-        default_device_health(&[summary(S::Disabled, H::Unknown, false, true)]),
-        Ok
-    );
-    assert_eq!(
-        default_device_health(&[summary(S::Running, H::Ok, true, true)]),
-        Ok
-    );
-    assert_eq!(
-        default_device_health(&[summary(S::Running, H::Degraded, false, true)]),
+        default_device_health(&[summary(H::Degraded, true)]),
         Degraded
     );
+    assert_eq!(default_device_health(&[summary(H::Error, true)]), Error);
     assert_eq!(
-        default_device_health(&[summary(S::Running, H::Ok, false, true)]),
-        Degraded
-    );
-    assert_eq!(
-        default_device_health(&[summary(S::Failed, H::Error, false, true)]),
-        Error
-    );
-    assert_eq!(
-        default_device_health(&[
-            summary(S::Failed, H::Error, false, false),
-            summary(S::Running, H::Ok, true, true),
-        ]),
+        default_device_health(&[summary(H::Error, false), summary(H::Ok, true)]),
         Degraded
     );
 }
@@ -1122,6 +1083,88 @@ fn action_metadata_is_exposed() {
     assert_eq!(actions[0].access, ActionAccess::Read);
     assert!(actions[2].access == ActionAccess::Provision && actions[2].secret_args);
     assert!(registry.service_actions(1).is_empty());
+}
+
+#[derive(Service)]
+struct Pager;
+
+const PAGE_INFO: PageInfo = PageInfo {
+    session: 3,
+    cursor: 9,
+    oldest_sequence: 1,
+    newest_sequence: 9,
+    reset: false,
+    gap: 0,
+};
+
+impl Action for Pager {
+    const ACTIONS: &'static [ActionDescriptor] = &[
+        ActionDescriptor::new(1, "page", ActionAccess::Read).page(),
+        ActionDescriptor::new(2, "undeclared", ActionAccess::Read),
+        ActionDescriptor::new(3, "twice", ActionAccess::Read).page(),
+        ActionDescriptor::new(4, "full", ActionAccess::Read).page(),
+        ActionDescriptor::new(5, "overfull", ActionAccess::Read).page(),
+        ActionDescriptor::new(6, "empty", ActionAccess::Read).page(),
+        ActionDescriptor::new(7, "silent", ActionAccess::Read).page(),
+    ];
+
+    async fn invoke(
+        &self,
+        action: u32,
+        _: &[(u32, Value)],
+        out: &mut impl ActionOutput,
+    ) -> Result<(), ActionError> {
+        let page = |out: &mut dyn FnMut() -> Result<(), WriteError>| {
+            out().map_err(|_| ActionError::Internal)
+        };
+        match action {
+            1 | 2 => page(&mut || out.page(PAGE_INFO, b"one\ntwo\n")),
+            3 => {
+                out.page(PAGE_INFO, b"a\n").ok();
+                page(&mut || out.page(PAGE_INFO, b"b\n"))
+            }
+            4 => page(&mut || out.page(PAGE_INFO, &[b'x'; MAX_PAGE_CHUNK])),
+            5 => page(&mut || out.page(PAGE_INFO, &[b'x'; MAX_PAGE_CHUNK + 1])),
+            6 => page(&mut || out.page(PAGE_INFO, b"")),
+            7 => Ok(()),
+            _ => Err(ActionError::UnknownAction),
+        }
+    }
+}
+
+#[test]
+fn an_action_returns_one_bounded_page() {
+    let registry = (&Pager,);
+    let call = |action| block_on(registry.invoke(Pager::ID, action, &[]));
+    let Ok(ActionResult::Page(page)) = call(1) else {
+        panic!("not a page");
+    };
+    assert_eq!(
+        (page.info, page.data.as_slice()),
+        (PAGE_INFO, &b"one\ntwo\n"[..])
+    );
+    assert!(call(1).unwrap().records().is_empty());
+    // An empty page is a page.
+    let Ok(ActionResult::Page(page)) = call(6) else {
+        panic!("not a page");
+    };
+    assert!(page.data.is_empty());
+    // The whole budget is allowed, one byte more is not.
+    let Ok(ActionResult::Page(page)) = call(4) else {
+        panic!("not a page");
+    };
+    assert_eq!(page.data.len(), MAX_PAGE_CHUNK);
+    assert_eq!(call(5), Err(ActionError::Internal));
+}
+
+#[test]
+fn a_page_needs_a_page_action_and_comes_once() {
+    let registry = (&Pager,);
+    let call = |action| block_on(registry.invoke(Pager::ID, action, &[]));
+    assert_eq!(call(2), Err(ActionError::Internal));
+    assert_eq!(call(3), Err(ActionError::Internal));
+    // A page action that returns nothing is an empty record list, not a page.
+    assert!(matches!(call(7), Ok(ActionResult::Records(_))));
 }
 
 #[test]
@@ -1359,6 +1402,27 @@ mod schema_invariants {
             ActionAccess::Read
         )
         .results(DUPLICATE_ARGS)]));
+        // A page is exclusive with a stream and with result records.
+        assert!(actions_valid(&[ActionDescriptor::new(
+            1,
+            "tail",
+            ActionAccess::Read
+        )
+        .page()]));
+        assert!(!actions_valid(&[ActionDescriptor::new(
+            1,
+            "tail",
+            ActionAccess::Read
+        )
+        .page()
+        .stream()]));
+        assert!(!actions_valid(&[ActionDescriptor::new(
+            1,
+            "tail",
+            ActionAccess::Read
+        )
+        .page()
+        .results(ARGS)]));
     }
 }
 
@@ -1379,15 +1443,11 @@ fn issue_age_follows_the_set_of_active_issues_only() {
     assert_eq!(age(2_000), Some(0));
     let before = revision(2_000);
 
-    // The state, health and readiness change while the same issue stays: a
-    // new revision, but the issue is as old as ever.
-    *probe.state.borrow_mut() = ServiceState::Failed;
+    // The health changes while the same issue stays: a new revision, but the
+    // issue is as old as ever.
     *probe.health.borrow_mut() = ServiceHealth::Error;
     assert_eq!(age(5_000), Some(3_000));
     assert_eq!(revision(5_000), before + 1);
-    // The state age is its own clock.
-    let summary = block_on(registry.summary(0, 6_000));
-    assert_eq!(summary.unwrap().state_age_ms, 1_000);
     assert_eq!(age(6_000), Some(4_000));
 
     // Another issue replaces it: the set changed, so the age starts over.

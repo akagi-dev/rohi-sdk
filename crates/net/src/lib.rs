@@ -30,8 +30,8 @@
 //!
 //! Use it when firmware needs a Wi-Fi station with automatic reconnection, a
 //! typed IP data plane for higher layers (TLS, HTTP, NTP, uplink), a BLE byte
-//! pipe, or the `wifi`, `network` and `ble` sections and services of the
-//! management plane ([`rohi_service`], [`rohi_config`]).
+//! pipe, or the `wireless` section and service of the management plane
+//! ([`rohi_service`], [`rohi_config`]).
 //!
 //! # Quick example
 //!
@@ -141,20 +141,21 @@
 //!   [`BleTransport`] are the only places where a platform plugs in; no
 //!   vendor type appears in any public signature of this crate and vendor
 //!   errors become [`WifiError`], [`NetError`] and [`BleError`].
-//! * **Management plane.** The radio side of the device appears as three
-//!   config sections and three services named `wifi`, `network` and `ble`
-//!   (for example `rohi config wifi`, `rohi status network`).
+//! * **Management plane.** The three planes stay separate internally, but the
+//!   radio side of the device appears as one config section and one service,
+//!   both named `wireless` (for example `rohi config wireless`,
+//!   `rohi status wireless`).
 //!
-//! | | `wifi` | `network` | `ble` |
+//! | | Wi-Fi | IP | BLE |
 //! |---|---|---|---|
-//! | Config | [`WifiConfig`] | [`NetworkConfig`] | [`BleSettings`] |
-//! | Service | [`WifiService`] | [`NetworkService`] | [`BleService`] |
-//! | Platform readings | [`WifiProbe`] | [`NetworkProbe`] | [`BleProbe`] |
-//! | Actions | `scan`, `reconnect`, `disconnect` | none | none |
+//! | Part of the `wireless` config | [`WifiConfig`] (`wifi_*`) | [`NetworkConfig`] (`ip_*`) | [`BleSettings`] (`ble_name`) |
+//! | Platform readings | [`WirelessProbe`] | | [`BleProbe`] |
 //!
-//! Each section holds only the properties of its own target; the properties
-//! are documented where they are implemented. A field a platform cannot tell
-//! (heap, clock, socket counts) is not reported at all.
+//! The one section is [`WirelessConfig`] and the one service is
+//! [`WirelessService`] (status `wifi_state`, `wifi_ip`, `wifi_rssi`,
+//! `wifi_reconnects`, `heap_free`; actions `wifi_scan`, `wifi_reconnect`,
+//! `wifi_disconnect`). A value a platform cannot tell (heap) is not reported
+//! at all.
 //!
 //! # Architecture and integration
 //!
@@ -177,15 +178,15 @@
 //! |-------|-------------|-------|
 //! | [`WifiManager`], [`WifiShared`], [`WifiHandle`] | this crate | One manager task per radio; `WifiShared` lives in a `static`. |
 //! | [`WifiBackend`], [`IpBackend`], [`BleTransport`] | implemented by `rohi-net-esp` | Cancel-safe futures; every error already mapped. |
-//! | [`WifiService`], [`NetworkService`], [`BleService`] | this crate, generic over probes | Register them in the service registry of [`rohi_service`]. |
-//! | `wifi`, `network`, `ble` sections | [`WifiConfig`], [`NetworkConfig`], [`BleSettings`] | Persisted as overrides ([`WifiOverrides`], [`NetworkOverrides`], [`BleOverrides`]) by [`rohi_config`]. |
+//! | [`WirelessService`] | this crate, generic over probes | Register it in the service registry of [`rohi_service`]. |
+//! | `wireless` section | [`WirelessConfig`] | Persisted as overrides ([`WirelessOverrides`]) by [`rohi_config`]; [`WirelessConfig::wifi`], [`network`](WirelessConfig::network) and [`ble`](WirelessConfig::ble) give the parts below. |
 //! | BLE control link | [`rohi-control`](../rohi_control/index.html) and [`rohi-control-ble`](../rohi_control_ble/index.html) | Consume [`BleTransport`]; this crate only moves bytes. |
 //! | NTP time source | [`rohi-time-ntp`](../rohi_time_ntp/index.html) | Built on [`UdpSocket`]. |
 //!
 //! The Altruist Urban firmware wires these pieces in `firmwares/altruist-urban`:
 //! `src/net.rs` (manager task, probes), `src/config.rs` (the configuration
-//! owner publishes the effective [`WifiConfig`] and [`NetworkConfig`] right
-//! after a commit and once at boot), `src/esp/resources.rs` (sizes of every static
+//! owner publishes the Wi-Fi and IP parts of the effective
+//! [`WirelessConfig`] right after a commit and once at boot), `src/esp/resources.rs` (sizes of every static
 //! resource). The platform side is described in the
 //! [`rohi-net-esp`](../rohi_net_esp/index.html) crate documentation.
 //!
@@ -193,18 +194,19 @@
 //!
 //! | Module | Start with |
 //! |--------|------------|
-//! | [`wifi`] | [`WifiManager`], [`WifiHandle`], [`WifiBackend`], [`WifiConfig`], [`WifiState`], [`WifiStatus`], [`WifiError`], [`ScanCollector`], [`Backoff`], [`WifiService`] |
-//! | [`network`] | [`NetworkConfig`], [`AddressMode`], [`StaticIpv4`], [`Hostname`], [`NetworkService`] |
+//! | [`wireless`] | [`WirelessConfig`], [`WirelessService`], [`WirelessProbe`] |
+//! | [`wifi`] | [`WifiManager`], [`WifiHandle`], [`WifiBackend`], [`WifiConfig`], [`WifiState`], [`WifiStatus`], [`WifiError`], [`ScanCollector`], [`Backoff`] |
+//! | [`network`] | [`NetworkConfig`], [`AddressMode`], [`StaticIpv4`], [`Hostname`] |
 //! | [`ip`] | [`NetworkHandle`], [`IpBackend`], [`UdpSocket`], [`NetError`], [`IpUsage`] |
-//! | [`ble`] | [`BleTransport`], [`BleConfig`], [`BleGattSpec`], [`BleState`], [`BleError`], [`BleSettings`], [`BleService`] |
+//! | [`ble`] | [`BleTransport`], [`BleConfig`], [`BleGattSpec`], [`BleState`], [`BleError`], [`BleSettings`], [`BleProbe`] |
 //! | [`limits`] | The compile-time bounds, [`MAX_SSID_LEN`] and friends |
 //! | `testing` | `FakeIp`, an in-memory [`IpBackend`] (feature `testing`, see below) |
 //!
-//! Service ids are exposed in per-service modules re-exported with a prefix:
-//! [`wifi_action`], [`wifi_issue`], [`wifi_status_field`], [`wifi_scan_field`],
-//! [`wifi_security`], [`network_issue`], [`network_status_field`],
-//! [`ble_issue`], [`ble_state`], [`ble_status_field`]. They are part of the
-//! wire interface of the services; the status field ids are only ever added to.
+//! Service ids are exposed in modules of the `wireless` service, re-exported
+//! with a prefix: [`wireless_action`], [`wireless_issue`],
+//! [`wireless_status_field`], [`wireless_scan_field`], [`wireless_security`],
+//! [`wireless_wifi_state`]. They are part of the wire interface of the
+//! service; the status field ids are only ever added to.
 //!
 //! # Guarantees and limitations
 //!
@@ -221,7 +223,7 @@
 //! |-------|-------|
 //! | SSID | 0 to [`MAX_SSID_LEN`] (32) bytes, non-empty when configured |
 //! | Wi-Fi password | [`MIN_WIFI_PASSWORD_LEN`] (8) to [`MAX_WIFI_PASSWORD_LEN`] (64) bytes |
-//! | Scan result | [`MAX_WIFI_SCAN_RESULTS`] (16) networks; a client of the `wifi` service gets at most 6 records |
+//! | Scan result | [`MAX_WIFI_SCAN_RESULTS`] (16) networks; a client of the `wireless` service gets at most 6 records |
 //! | Manager command queue | [`WIFI_COMMAND_QUEUE_DEPTH`] (4) |
 //! | Status receivers | [`STATUS_RECEIVERS`] (3) |
 //! | DHCP host name | [`MAX_HOSTNAME_LEN`] (32) bytes |
@@ -280,12 +282,11 @@ pub mod network;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub mod wifi;
+pub mod wireless;
 
 pub use ble::{
-    BleConfig, BleConnectionInfo, BleError, BleGattSpec, BleName, BleOverrides, BleProbe,
-    BleService, BleSettings, BleState, BleTransport, DEFAULT_BLE_PAYLOAD, MAX_BLE_NAME_LEN,
-    MAX_BLE_PAYLOAD, STATES as BLE_STATES, issue as ble_issue, state as ble_state,
-    status_field as ble_status_field,
+    BleConfig, BleConnectionInfo, BleError, BleGattSpec, BleName, BleProbe, BleSettings, BleState,
+    BleTransport, DEFAULT_BLE_PAYLOAD, MAX_BLE_NAME_LEN, MAX_BLE_PAYLOAD,
 };
 pub use ip::{IpBackend, IpUsage, NetError, NetworkHandle, UdpSocket};
 pub use limits::{
@@ -294,17 +295,19 @@ pub use limits::{
 };
 pub use network::{
     ADDRESS_MODE_ENUM, ADDRESS_MODES, AddressMode, DEFAULT_DHCP_TIMEOUT_MS, DHCP_TIMEOUT_RANGE_MS,
-    Hostname, Ipv4, MAX_HOSTNAME_LEN, NetworkConfig, NetworkOverrides, NetworkProbe,
-    NetworkService, StaticIpv4, address_mode, issue as network_issue,
-    status_field as network_status_field,
+    Hostname, Ipv4, MAX_HOSTNAME_LEN, NetworkConfig, StaticIpv4, address_mode,
 };
 pub use wifi::{
     BACKOFF_INITIAL_RANGE_MS, BACKOFF_MAX_RANGE_MS, Backoff, CONNECT_TIMEOUT_RANGE_MS,
     DEFAULT_BACKOFF_INITIAL_MS, DEFAULT_BACKOFF_MAX_MS, DEFAULT_CONNECT_TIMEOUT_MS,
-    DEFAULT_LINK_REFRESH_MS, DEFAULT_SCAN_TIMEOUT_MS, HeapStats, LINK_REFRESH_RANGE_MS, LinkConfig,
+    DEFAULT_LINK_REFRESH_MS, DEFAULT_SCAN_TIMEOUT_MS, LINK_REFRESH_RANGE_MS, LinkConfig,
     LinkMetrics, ManagerConfig, NetworkInfo, SCAN_TIMEOUT_RANGE_MS, STATUS_RECEIVERS,
     ScanCollector, WifiBackend, WifiConfig, WifiError, WifiHandle, WifiManager, WifiNetwork,
-    WifiOverrides, WifiPassword, WifiProbe, WifiScanResults, WifiSecurity, WifiService, WifiShared,
-    WifiSsid, WifiState, WifiStatus, action as wifi_action, issue as wifi_issue,
-    scan_field as wifi_scan_field, security as wifi_security, status_field as wifi_status_field,
+    WifiPassword, WifiScanResults, WifiSecurity, WifiShared, WifiSsid, WifiState, WifiStatus,
+};
+pub use wireless::{
+    HeapStats, WirelessConfig, WirelessOverrides, WirelessProbe, WirelessService,
+    action as wireless_action, issue as wireless_issue, scan_field as wireless_scan_field,
+    security as wireless_security, status_field as wireless_status_field,
+    wifi_state as wireless_wifi_state,
 };
