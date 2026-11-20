@@ -14,6 +14,8 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
+
 //! Per-transport access modes and the shared access state.
 
 use core::cell::RefCell;

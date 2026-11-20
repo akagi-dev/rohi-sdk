@@ -14,6 +14,8 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
+
 //! The persisted `control` section.
 
 use core::net::Ipv4Addr;

@@ -14,6 +14,8 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
+
 //! The managed control endpoints of the std platform end to end: the access
 //! modes of the TCP endpoint, the pre-shared key and the secure channel.
 

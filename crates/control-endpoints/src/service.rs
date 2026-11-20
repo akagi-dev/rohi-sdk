@@ -14,6 +14,8 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+///////////////////////////////////////////////////////////////////////////////
+
 //! The `control` service: the state of the control endpoints, and the pre-shared key of the TCP
 //! endpoint.
 
