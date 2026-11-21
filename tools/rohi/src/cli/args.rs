@@ -178,6 +178,17 @@ Examples:
         #[arg(long, default_value_t = 5, value_name = "SECONDS")]
         duration: u64,
     },
+    /// Show the firmware and the build of the device.
+    ///
+    /// The build identifier is `<platform>/<version>+<sha8>.<YYYYMMDD>`: the
+    /// platform, the firmware version, the first eight characters of the Git
+    /// commit and the UTC build date. The device sends the same text as the
+    /// `User-Agent` of its telemetry requests.
+    #[command(after_help = "\
+Examples:
+  rohi info
+  rohi -o json info")]
+    Info,
     /// Show the runtime status of the device and its services.
     ///
     /// Without a service this is one compact request: the device health set by

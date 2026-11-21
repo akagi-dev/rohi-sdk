@@ -281,10 +281,12 @@ pub struct FieldValue {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct DeviceInfo {
-    /// Firmware name and version.
+    /// Firmware name without a version.
     pub firmware: String,
     /// Board and chip.
     pub board: String,
+    /// Build identifier `<platform>/<version>+<sha8>.<YYYYMMDD>`.
+    pub build: String,
 }
 
 // -- config -------------------------------------------------------------------

@@ -465,6 +465,7 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
         Reply::GetInfo(pb::GetInfoResponse {
             firmware: mapping::text(info.firmware),
             board: mapping::text(info.board),
+            build: mapping::text(info.build),
         })
     }
 

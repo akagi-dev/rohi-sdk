@@ -42,7 +42,7 @@
 //! use rohi_control_proto::control::{self as pb, Request_::Request as Call, Response_::Response as Reply};
 //! use rohi_control_proto::{PROTOCOL_VERSION, decode, encode};
 //!
-//! let info = DeviceInfo { firmware: "demo-0.1.0", board: "demo-board" };
+//! let info = DeviceInfo { firmware: "demo", board: "demo-board", build: "demo-board/0.1.0+00000000.20260101" };
 //! let device = Device::new(info, || 0, (), (), ());
 //! let controller = Controller::new(device, RequireEncryption);
 //!
@@ -63,7 +63,8 @@
 //! let reply = ask(Call::GetInfo(pb::GetInfoRequest {}), &LinkSecurity::new(Transport::Tcp));
 //! assert_eq!(reply.request_id, 7);
 //! let Some(Reply::GetInfo(info)) = reply.response else { panic!() };
-//! assert_eq!(info.firmware.as_str(), "demo-0.1.0");
+//! assert_eq!(info.firmware.as_str(), "demo");
+//! assert_eq!(info.build.as_str(), "demo-board/0.1.0+00000000.20260101");
 //!
 //! // A reset of a config section is a mutation: it needs an encrypted link,
 //! // and this device has no such section anyway.

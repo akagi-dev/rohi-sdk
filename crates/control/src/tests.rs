@@ -184,8 +184,9 @@ type TestDevice<'a> = Device<(NetSection<'a>,), Statuses<NoopRawMutex, (&'a Radi
 const RADIO: u32 = Radio::ID;
 
 const INFO: DeviceInfo = DeviceInfo {
-    firmware: "test-0.1.0",
+    firmware: "test",
     board: "test-board",
+    build: "test-board/1.0.0+00000000.20260101",
 };
 
 fn uptime() -> u64 {
@@ -285,8 +286,9 @@ fn info_is_served_without_any_module() {
     else {
         panic!()
     };
-    assert_eq!(info.firmware.as_str(), "test-0.1.0");
+    assert_eq!(info.firmware.as_str(), "test");
     assert_eq!(info.board.as_str(), "test-board");
+    assert_eq!(info.build.as_str(), "test-board/1.0.0+00000000.20260101");
     // An empty device lists nothing and knows no section, service or action.
     let Reply::ListConfigSections(sections) = call(
         &controller,

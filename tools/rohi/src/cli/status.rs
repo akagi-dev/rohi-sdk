@@ -134,3 +134,18 @@ async fn sensor_id<T: ClientTransport>(
         });
     Ok(key.map(|key| crate::ss58(&key)))
 }
+
+/// `rohi info`: the firmware name and the build identifier.
+pub async fn info<T: ClientTransport>(
+    device: &mut Device<T>,
+    ctx: &mut Ctx,
+) -> Result<(), CliError> {
+    let info = device.info().await?;
+    let text = format::device_info(ctx.paint, &info);
+    ctx.io.emit(
+        ctx.format,
+        &dto::Versioned::new(dto::device_info(&info)),
+        || text,
+    )?;
+    Ok(())
+}

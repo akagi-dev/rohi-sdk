@@ -142,8 +142,9 @@ fn backend(
 ) -> BackendDevice<(), Statuses<NoopRawMutex, (&'static Service,)>, (&'static Service,)> {
     BackendDevice::new(
         DeviceInfo {
-            firmware: "fake-1.0.0",
+            firmware: "fake",
             board: "bench-esp32c3",
+            build: "bench-esp32c3/1.0.0+00000000.20260101",
         },
         || 90_000,
         (),

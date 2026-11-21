@@ -101,7 +101,7 @@ pub use config::{
     Routes,
 };
 pub use endpoint::{DEFAULT_PORT, Endpoint, EndpointUri, MAX_ENDPOINT_LEN};
-pub use http::HttpTransport;
+pub use http::{HttpTransport, MAX_USER_AGENT_LEN};
 pub use managed::{ConnectivityService, ConnectivityStore, RouteSlots, Slots, StoreError};
 pub use pool::{PacketHandle, PacketPool};
 pub use provider::{BuildFailure, PacketExporter, PacketProvider};

@@ -382,7 +382,7 @@ pub fn service(config: ConfigHandle, packets: UrbanPackets) -> UrbanConnectivity
 /// Runs the publisher; never returns. The platform runs it in its connectivity
 /// task. It reads snapshots only.
 pub async fn run<I: IpBackend>(network: NetworkHandle<'static, I>, packets: UrbanPackets) -> ! {
-    let transport = HttpTransport::new(network, Delay);
+    let transport = HttpTransport::new(network, Delay).with_user_agent(crate::build::BUILD);
     let mut publisher: Publisher<
         '_,
         RawMutex,

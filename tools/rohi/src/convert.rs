@@ -30,6 +30,7 @@ pub(crate) fn info(info: pb::GetInfoResponse) -> DeviceInfo {
     DeviceInfo {
         firmware: info.firmware.as_str().to_owned(),
         board: info.board.as_str().to_owned(),
+        build: info.build.as_str().to_owned(),
     }
 }
 

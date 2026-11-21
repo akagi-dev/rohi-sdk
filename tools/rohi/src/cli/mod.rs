@@ -120,6 +120,7 @@ pub async fn execute<T: ClientTransport>(
     }
     match command {
         Command::Scan { .. } => Err(CliError::Usage("scan does not talk to a device".into())),
+        Command::Info => status::info(device, ctx).await,
         Command::Status {
             service,
             watch,

@@ -42,19 +42,11 @@ use static_cell::StaticCell;
 
 use super::logging;
 use super::resources::{BleResources, BleRunner, BleStatus, BleTransport, Ip};
+use crate::build::{BOARD, BUILD, FIRMWARE};
 use crate::config::ConfigHandle;
 use crate::control::{Platform, ServicesSlot, UrbanDevice};
 use crate::identity::IdentityHandle;
 use crate::reboot;
-
-/// Firmware name and version.
-const FIRMWARE: &str = concat!(env!("CARGO_PKG_NAME"), "-", env!("CARGO_PKG_VERSION"));
-
-/// Board and chip.
-#[cfg(feature = "esp32c3")]
-const BOARD: &str = "urban-esp32c3";
-#[cfg(feature = "esp32c6")]
-const BOARD: &str = "urban-esp32c6";
 
 /// The control backend of the Altruist Urban on the ESP.
 pub type EspDevice = UrbanDevice<BleStatus, logging::Service>;
@@ -81,6 +73,7 @@ pub fn device(
             info: DeviceInfo {
                 firmware: FIRMWARE,
                 board: BOARD,
+                build: BUILD,
             },
             services: &SERVICES,
             network,

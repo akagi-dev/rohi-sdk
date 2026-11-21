@@ -35,6 +35,7 @@ device (for example fewer fields of a section).
 
 ```bash
 rohi scan                  # find nearby ROHI devices
+rohi info                  # firmware name and build identifier
 rohi status                # device health and every service
 rohi status sensors        # one service in detail
 rohi config                # the configuration sections of the device

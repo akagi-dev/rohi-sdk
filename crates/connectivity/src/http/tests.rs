@@ -81,7 +81,7 @@ fn exchange(
     response: &[u8],
 ) -> (Result<TransportAck, TransportError>, std::vec::Vec<u8>) {
     let frame = frame();
-    let head = request_head(endpoint, frame.len()).unwrap();
+    let head = request_head(endpoint, frame.len(), None).unwrap();
     let mut transport = HttpTransport::new(NetworkHandle::new(ip), NeverDelay);
     let (result, received) = block_on(join(
         transport.deliver(endpoint, &frame),
@@ -95,7 +95,7 @@ fn exchange(
 
 #[test]
 fn request_shape_is_exactly_the_documented_one() {
-    let head = request_head(endpoint(80), 123).unwrap();
+    let head = request_head(endpoint(80), 123, None).unwrap();
     assert_eq!(
         head.as_str(),
         "POST /v1/telemetry HTTP/1.1\r\n\
@@ -104,7 +104,7 @@ fn request_shape_is_exactly_the_documented_one() {
          Content-Length: 123\r\n\
          Connection: close\r\n\r\n"
     );
-    let head = request_head(endpoint(8080), 5).unwrap();
+    let head = request_head(endpoint(8080), 5, None).unwrap();
     assert!(head.contains("Host: ingress.test:8080\r\n"));
 }
 
@@ -209,7 +209,7 @@ fn closing_before_a_response_is_a_retryable_io_error() {
     let ip = ip();
     let frame = frame();
     let endpoint = endpoint(80);
-    let head = request_head(endpoint, frame.len()).unwrap();
+    let head = request_head(endpoint, frame.len(), None).unwrap();
     let mut transport = HttpTransport::new(NetworkHandle::new(&ip), NeverDelay);
     let (result, _) = block_on(join(
         transport.deliver(endpoint, &frame),
@@ -240,5 +240,63 @@ fn the_status_line_may_arrive_in_pieces() {
     assert_eq!(
         parse_status(b"HTTP/1.1 202 Accepted\r\nX: y"),
         Ok(Some(202))
+    );
+}
+
+#[test]
+fn user_agent_is_sent_and_leaves_the_rest_unchanged() {
+    let agent = "urban-esp32c3/0.8.0+5c582f4a.20261122";
+    let head = request_head(endpoint(80), 123, Some(agent)).unwrap();
+    assert_eq!(
+        head.as_str(),
+        "POST /v1/telemetry HTTP/1.1\r\n\
+         Host: ingress.test\r\n\
+         Content-Type: application/protobuf\r\n\
+         Content-Length: 123\r\n\
+         User-Agent: urban-esp32c3/0.8.0+5c582f4a.20261122\r\n\
+         Connection: close\r\n\r\n"
+    );
+
+    let ip = ip();
+    let frame = frame();
+    let head = request_head(endpoint(80), frame.len(), Some(agent)).unwrap();
+    let mut transport =
+        HttpTransport::new(NetworkHandle::new(&ip), NeverDelay).with_user_agent(agent);
+    let (result, received) = block_on(join(
+        transport.deliver(endpoint(80), &frame),
+        server(
+            &ip,
+            80,
+            head.len() + frame.len(),
+            b"HTTP/1.1 202 Accepted\r\n\r\n",
+        ),
+    ));
+    assert_eq!(result, Ok(TransportAck { status: 202 }));
+    assert!(received.starts_with(head.as_bytes()));
+    assert!(received.ends_with(&frame));
+}
+
+#[test]
+fn longest_user_agent_fits_next_to_the_longest_endpoint() {
+    let host = "h".repeat(crate::endpoint::MAX_ENDPOINT_LEN - "http://".len());
+    let endpoint = Endpoint {
+        host: &host,
+        port: 65535,
+    };
+    let agent = "a".repeat(MAX_USER_AGENT_LEN);
+    let head = request_head(endpoint, 65_535, Some(&agent)).unwrap();
+    assert!(head.contains(&agent));
+}
+
+#[test]
+fn unfit_user_agents_are_refused() {
+    let long = "a".repeat(MAX_USER_AGENT_LEN + 1);
+    assert_eq!(
+        request_head(endpoint(80), 1, Some(&long)),
+        Err(TransportError::BadResponse)
+    );
+    assert_eq!(
+        request_head(endpoint(80), 1, Some("a\r\nX: b")),
+        Err(TransportError::BadResponse)
     );
 }

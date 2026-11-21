@@ -23,6 +23,7 @@ Usage: rohi [OPTIONS] <COMMAND>
 
 Commands:
   scan    Discover nearby ROHI devices
+  info    Show the firmware and the build of the device
   status  Show the runtime status of the device and its services
   config  Read and change the persistent configuration.
   action  List and run the actions of the services.

@@ -201,6 +201,7 @@ fn the_control_protocol_runs_over_the_bridge() {
     let info = DeviceInfo {
         firmware: "demo-0.1.0",
         board: "demo-board",
+        build: "demo-board/1.0.0+00000000.20260101",
     };
     let controller = Controller::new(Device::new(info, || 0, (), (), ()), OpenPolicy);
     let access = ControlAccess::new(|_| false);
@@ -251,6 +252,7 @@ fn a_response_to_a_connection_that_ended_is_dropped() {
     let info = DeviceInfo {
         firmware: "demo-0.1.0",
         board: "demo-board",
+        build: "demo-board/1.0.0+00000000.20260101",
     };
     let controller = Controller::new(Device::new(info, || 0, (), (), ()), OpenPolicy);
     let access = ControlAccess::new(|_| false);

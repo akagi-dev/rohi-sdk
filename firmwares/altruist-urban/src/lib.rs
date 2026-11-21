@@ -60,6 +60,7 @@
 //! Without a chip feature only the portable part is built.
 
 pub mod bindings;
+pub mod build;
 pub mod config;
 pub mod connectivity;
 pub mod control;

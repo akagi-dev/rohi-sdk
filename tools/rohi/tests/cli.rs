@@ -214,6 +214,7 @@ fn help_texts_are_snapshots() {
     let pages: &[&[&str]] = &[
         &[],
         &["scan"],
+        &["info"],
         &["status"],
         &["config"],
         &["config", "reset"][..],
@@ -281,16 +282,12 @@ fn the_command_tree_has_no_module_specific_commands() {
         .get_subcommands()
         .map(|command| command.get_name().to_owned())
         .collect();
-    assert_eq!(names, ["scan", "status", "config", "action", "logs"]);
+    assert_eq!(
+        names,
+        ["scan", "info", "status", "config", "action", "logs"]
+    );
     // Any other word is a service of the device, resolved when connected.
-    for service in [
-        "wireless",
-        "connectivity",
-        "backup",
-        "sensors",
-        "time",
-        "info",
-    ] {
+    for service in ["wireless", "connectivity", "backup", "sensors", "time"] {
         let cli = parse(&[service]).unwrap();
         assert!(
             matches!(&cli.command, rohi::cli::Command::External(words) if words == &[service]),
@@ -333,9 +330,10 @@ async fn status_is_one_compact_summary_of_all_services() {
     assert_eq!(
         outcome.stdout,
         "\
-Device:  fake-1.0.0 (bench-esp32c3)
-Uptime:  1m 30s
-Health:  ok
+Firmware:  fake
+Build:     bench-esp32c3/1.0.0+00000000.20260101
+Uptime:    1m 30s
+Health:    ok
 
 SERVICE   HEALTH
 radio     ok
@@ -344,6 +342,23 @@ location  -
 "
     );
     assert!(outcome.stderr.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn info_shows_the_firmware_name_and_the_build() {
+    let bench = Bench::new();
+    let outcome = run(&bench, &["info"]).await;
+    assert_eq!(
+        outcome.ok().stdout,
+        "Firmware:  fake\nBuild:     bench-esp32c3/1.0.0+00000000.20260101\n"
+    );
+
+    let json = run(&bench, &["-o", "json", "info"]).await.ok().json();
+    assert_eq!(json["device"]["firmware"], "fake");
+    assert_eq!(
+        json["device"]["build"],
+        "bench-esp32c3/1.0.0+00000000.20260101"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -388,7 +403,11 @@ async fn status_json_is_keyed_by_names_and_carries_no_protocol_types() {
     let all = run(&bench, &["-o", "json", "status"]).await;
     let json = all.ok().json();
     assert_eq!(json["schema_version"], 1);
-    assert_eq!(json["device"]["firmware"], "fake-1.0.0");
+    assert_eq!(json["device"]["firmware"], "fake");
+    assert_eq!(
+        json["device"]["build"],
+        "bench-esp32c3/1.0.0+00000000.20260101"
+    );
     assert_eq!(json["health"], "ok");
     assert_eq!(json["services"][0]["service"], "radio");
     assert_eq!(json["services"][0]["health"], "ok");
@@ -437,8 +456,9 @@ async fn status_shows_the_sensor_id_once_an_identity_is_provisioned() {
     let outcome = run(&bench, &["status"]).await;
     let lines: Vec<&str> = outcome.ok().stdout.lines().collect();
     assert_eq!(lines[0], format!("SensorId:  {expected}"));
-    assert_eq!(lines[1], "Device:    fake-1.0.0 (bench-esp32c3)");
-    assert_eq!(lines[2], "Uptime:    1m 30s");
+    assert_eq!(lines[1], "Firmware:  fake");
+    assert_eq!(lines[2], "Build:     bench-esp32c3/1.0.0+00000000.20260101");
+    assert_eq!(lines[3], "Uptime:    1m 30s");
 
     let json = run(&bench, &["-o", "json", "status"]).await.ok().json();
     assert_eq!(json["sensor_id"], expected);
@@ -463,7 +483,7 @@ async fn a_watch_prints_again_only_when_the_status_changed() {
         toggler
     );
     outcome.ok();
-    let documents = outcome.stdout.matches("Device:").count();
+    let documents = outcome.stdout.matches("Firmware:").count();
     assert_eq!(documents, 2, "{}", outcome.stdout);
     assert!(outcome.stdout.contains("degraded"), "{}", outcome.stdout);
 }
@@ -514,7 +534,7 @@ async fn a_watch_on_a_terminal_redraws_in_place() {
     outcome.ok();
     // Every refresh homes the cursor, even when nothing changed.
     assert_eq!(outcome.stdout.matches("\x1b[H").count(), 3);
-    assert_eq!(outcome.stdout.matches("Device:").count(), 3);
+    assert_eq!(outcome.stdout.matches("Firmware:").count(), 3);
     assert!(outcome.stdout.ends_with("\x1b[J"), "{:?}", outcome.stdout);
 }
 
@@ -550,7 +570,7 @@ async fn a_watch_redraws_in_place_only_while_it_fits_the_terminal() {
     // Too few rows: ordinary output.
     let outcome = watch(Some((200, 2)), 1).await;
     assert!(!outcome.stdout.contains("\x1b[H"), "{:?}", outcome.stdout);
-    assert!(outcome.stdout.contains("Device:"), "{:?}", outcome.stdout);
+    assert!(outcome.stdout.contains("Firmware:"), "{:?}", outcome.stdout);
 
     // Wrapping makes lines take more than one row.
     let outcome = watch(Some((4, 20)), 1).await;

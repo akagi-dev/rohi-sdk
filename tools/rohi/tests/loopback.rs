@@ -69,7 +69,7 @@ async fn info_and_discovery() {
     let bench = Bench::new();
     with_device(20, &bench, |mut device| async move {
         let info = device.info().await.unwrap();
-        assert_eq!(info.firmware, "fake-1.0.0");
+        assert_eq!(info.firmware, "fake");
         assert_eq!(info.board, "bench-esp32c3");
 
         let sections: Vec<_> = device
@@ -564,7 +564,7 @@ async fn stale_responses_are_skipped() {
         never = hub.serve(&controller) => never,
         () = async {
             let mut device = Device::new(transport);
-            assert_eq!(device.info().await.unwrap().firmware, "fake-1.0.0");
+            assert_eq!(device.info().await.unwrap().firmware, "fake");
         } => {}
     }
 }

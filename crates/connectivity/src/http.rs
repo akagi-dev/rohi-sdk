@@ -22,12 +22,15 @@
 //! Host: <host>[:<port>]
 //! Content-Type: application/protobuf
 //! Content-Length: <packet length>
+//! User-Agent: <user agent>
 //! Connection: close
 //!
 //! <exact SignedEnvelope bytes>
 //! ```
 //!
-//! The port is part of the `Host` header unless it is 80. The request goes
+//! The port is part of the `Host` header unless it is 80. `User-Agent` is
+//! optional: it is sent only after [`HttpTransport::with_user_agent`]. The
+//! request goes
 //! over plain TCP (DNS or an IPv4 literal, then `NetworkHandle::connect`),
 //! one request per connection, with a total timeout per attempt
 //! ([`DEFAULT_TIMEOUT_MS`], 20 s). The response body is ignored; only the
@@ -60,6 +63,9 @@ pub const CONTENT_TYPE: &str = "application/protobuf";
 pub const DEFAULT_TIMEOUT_MS: u32 = 20_000;
 
 const HEAD_CAPACITY: usize = 256;
+/// Longest `User-Agent` value that fits the request head next to the longest
+/// endpoint the parser accepts.
+pub const MAX_USER_AGENT_LEN: usize = 48;
 const RESPONSE_CAPACITY: usize = 64;
 
 /// HTTP transport of sealed packets.
@@ -100,8 +106,10 @@ const RESPONSE_CAPACITY: usize = 64;
 /// ip.add_host("ingress.test", server_addr);
 ///
 /// let endpoint = Endpoint::parse("http://ingress.test").unwrap();
-/// let head = request_head(endpoint, packet.len()).unwrap();
-/// let mut transport = HttpTransport::new(NetworkHandle::new(&ip), NeverDelay);
+/// let agent = "urban-esp32c3/0.8.0+5c582f4a.20261122";
+/// let head = request_head(endpoint, packet.len(), Some(agent)).unwrap();
+/// let mut transport = HttpTransport::new(NetworkHandle::new(&ip), NeverDelay)
+///     .with_user_agent(agent);
 ///
 /// // The server: wait for head and packet, answer `202 Accepted`.
 /// let remote = SocketAddr::new(server_addr, 80);
@@ -125,6 +133,7 @@ pub struct HttpTransport<'a, B, D> {
     net: NetworkHandle<'a, B>,
     delay: D,
     timeout_ms: u32,
+    user_agent: Option<&'a str>,
 }
 
 impl<'a, B: IpBackend, D: DelayNs> HttpTransport<'a, B, D> {
@@ -134,6 +143,7 @@ impl<'a, B: IpBackend, D: DelayNs> HttpTransport<'a, B, D> {
             net,
             delay,
             timeout_ms: DEFAULT_TIMEOUT_MS,
+            user_agent: None,
         }
     }
 
@@ -143,9 +153,19 @@ impl<'a, B: IpBackend, D: DelayNs> HttpTransport<'a, B, D> {
         self
     }
 
+    /// Sends `User-Agent: <user_agent>` with every request. The value is at
+    /// most [`MAX_USER_AGENT_LEN`] bytes of printable ASCII; anything else
+    /// fails the attempt with [`TransportError::BadResponse`], see
+    /// [`request_head`].
+    pub fn with_user_agent(mut self, user_agent: &'a str) -> Self {
+        self.user_agent = Some(user_agent);
+        self
+    }
+
     async fn exchange(
         net: NetworkHandle<'a, B>,
         endpoint: Endpoint<'_>,
+        user_agent: Option<&str>,
         packet: &[u8],
     ) -> Result<u16, TransportError> {
         let address = match endpoint.host.parse::<IpAddr>() {
@@ -167,7 +187,7 @@ impl<'a, B: IpBackend, D: DelayNs> HttpTransport<'a, B, D> {
             .map_err(map_error)?;
 
         log::trace!(target: "connectivity.http", "Connected");
-        let head = request_head(endpoint, packet.len())?;
+        let head = request_head(endpoint, packet.len(), user_agent)?;
         connection
             .write_all(head.as_bytes())
             .await
@@ -211,7 +231,7 @@ impl<B: IpBackend, D: DelayNs> PacketTransport for HttpTransport<'_, B, D> {
             endpoint.host
         );
         let timeout_ms = self.timeout_ms;
-        let exchange = Self::exchange(self.net, endpoint, packet);
+        let exchange = Self::exchange(self.net, endpoint, self.user_agent, packet);
         let status = with_timeout(&mut self.delay, self.timeout_ms, exchange)
             .await
             .map_err(|_| {
@@ -235,12 +255,15 @@ fn map_error(error: NetError) -> TransportError {
     }
 }
 
-/// The request line and headers for a body of `content_length` bytes.
+/// The request line and headers for a body of `content_length` bytes, with a
+/// `User-Agent` header when `user_agent` is set.
 ///
 /// # Errors
 ///
 /// [`TransportError::BadResponse`] if the head does not fit its 256-byte
-/// buffer (a host and port that the endpoint parser would not accept).
+/// buffer (a host and port that the endpoint parser would not accept, or a
+/// `user_agent` over [`MAX_USER_AGENT_LEN`] bytes) or if `user_agent` has a
+/// byte that is not printable ASCII.
 ///
 /// ```
 /// use rohi_connectivity::Endpoint;
@@ -248,18 +271,30 @@ fn map_error(error: NetError) -> TransportError {
 ///
 /// let endpoint = Endpoint::parse("http://ingress.example.org:8080").unwrap();
 /// assert_eq!(
-///     request_head(endpoint, 194).unwrap().as_str(),
+///     request_head(endpoint, 194, None).unwrap().as_str(),
 ///     "POST /v1/telemetry HTTP/1.1\r\n\
 ///      Host: ingress.example.org:8080\r\n\
 ///      Content-Type: application/protobuf\r\n\
 ///      Content-Length: 194\r\n\
 ///      Connection: close\r\n\r\n"
 /// );
+/// assert!(
+///     request_head(endpoint, 194, Some("urban-std/0.8.0+5c582f4a.20261122"))
+///         .unwrap()
+///         .contains("User-Agent: urban-std/0.8.0+5c582f4a.20261122\r\n")
+/// );
 /// ```
 pub fn request_head(
     endpoint: Endpoint<'_>,
     content_length: usize,
+    user_agent: Option<&str>,
 ) -> Result<String<HEAD_CAPACITY>, TransportError> {
+    if user_agent.is_some_and(|agent| {
+        agent.len() > MAX_USER_AGENT_LEN || !agent.bytes().all(|byte| (0x20..0x7f).contains(&byte))
+    }) {
+        log::warn!(target: "connectivity.http", "User agent rejected (max_b={})", MAX_USER_AGENT_LEN);
+        return Err(TransportError::BadResponse);
+    }
     let mut head = String::new();
     let host_header = if endpoint.port == 80 {
         write!(
@@ -278,9 +313,14 @@ pub fn request_head(
         .and_then(|()| {
             write!(
                 head,
-                "Content-Type: {CONTENT_TYPE}\r\nContent-Length: {content_length}\r\nConnection: close\r\n\r\n"
+                "Content-Type: {CONTENT_TYPE}\r\nContent-Length: {content_length}\r\n"
             )
         })
+        .and_then(|()| match user_agent {
+            Some(agent) => write!(head, "User-Agent: {agent}\r\n"),
+            None => Ok(()),
+        })
+        .and_then(|()| write!(head, "Connection: close\r\n\r\n"))
         .map_err(|_| {
             log::warn!(
                 target: "connectivity.http",

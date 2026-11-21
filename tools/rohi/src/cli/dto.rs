@@ -114,6 +114,10 @@ pub fn summary(summary: &ServiceSummary) -> Json {
     json(summary)
 }
 
+pub fn device_info(info: &DeviceInfo) -> Json {
+    json!({ "device": info })
+}
+
 pub fn services_status(
     info: &DeviceInfo,
     status: &ServicesStatus,

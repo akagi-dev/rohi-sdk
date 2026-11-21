@@ -56,6 +56,7 @@ measurements. `all` never includes the position: `location` must be named. Names
 * **Delivery.** Only HTTP `202` acknowledges a packet. Failures try the next path at once; `401`/`403` also pause the
   failing path for ten minutes; `400`/`413` drop the packet without offering it to other endpoints. Retries send
   byte-identical bytes. Delivery is at-least-once, so the ingress deduplicates by the signed envelope.
+  Every request carries `User-Agent: <build>`, the `build` of `rohi info`; it is not part of the signed payload.
 * **Honest dating.** A packet is dated at its capture; without a synchronized UTC clock, an identity or entropy the
   packet is refused, never faked. The state of the last attempt is in `rohi status connectivity`.
 * **Stored data.** There is no migration: the persisted `telemetry` and `connectivity` sections of the earlier named

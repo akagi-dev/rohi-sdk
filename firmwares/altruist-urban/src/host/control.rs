@@ -43,14 +43,9 @@ use rohi_sdk::sim::ip::SimIp;
 use static_cell::StaticCell;
 
 use super::logging;
+use crate::build::{BOARD, BUILD, FIRMWARE};
 use crate::control::{Platform, ServicesSlot, UrbanDevice};
 use crate::{config, identity, reboot};
-
-/// Firmware name and version.
-const FIRMWARE: &str = concat!(env!("CARGO_PKG_NAME"), "-", env!("CARGO_PKG_VERSION"));
-
-/// Board of the host platform.
-const BOARD: &str = "urban-std";
 
 /// The IP backend of the host platform: the sockets of the host behind the
 /// faults of the simulated world.
@@ -101,6 +96,7 @@ pub fn controller(
             info: DeviceInfo {
                 firmware: FIRMWARE,
                 board: BOARD,
+                build: BUILD,
             },
             services: &SERVICES,
             network,

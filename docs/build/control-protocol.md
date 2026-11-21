@@ -1,3 +1,12 @@
+
+## Device identity
+
+`GetInfo` reports the `firmware` name (no version), the `board` and the `build` identifier
+`<platform>/<version>+<sha8>.<YYYYMMDD>`, for example `urban-esp32c3/0.8.0+5c582f4a.20261122`; `rohi info` and
+`rohi status` show `firmware` and `build`. The firmware generates it in its `build.rs`: `<sha8>` is the Git commit
+(`ROHI_BUILD_SHA` overrides it in CI) and the UTC date comes from the build time (`SOURCE_DATE_EPOCH` makes it
+reproducible). The same text is the `User-Agent` of the telemetry HTTP requests. `board` stays for compatibility until
+the protocol drops it.
 # Control protocol
 
 The **control protocol** is the shared contract that lets a generic application operate any firmware. It exists so

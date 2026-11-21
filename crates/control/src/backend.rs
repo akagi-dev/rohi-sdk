@@ -23,10 +23,14 @@ use rohi_service::{
 /// Static description of the device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeviceInfo {
-    /// Firmware name and version, for example `altruist-urban-0.1.0`.
+    /// Firmware name without a version, for example `altruist-urban`.
     pub firmware: &'static str,
     /// Board and chip, for example `urban-esp32c3`.
     pub board: &'static str,
+    /// Build identifier `<platform>/<version>+<sha8>.<YYYYMMDD>`, for example
+    /// `urban-esp32c3/0.8.0+5c582f4a.20261122`, at most
+    /// [`MAX_BUILD_LEN`](rohi_control_proto::limits::MAX_BUILD_LEN) bytes.
+    pub build: &'static str,
 }
 
 /// What the dispatcher needs from the firmware: the device description and

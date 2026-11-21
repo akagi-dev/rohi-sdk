@@ -45,6 +45,11 @@ const LIMITS: &[(&str, usize, &str)] = &[
         "Maximum length of a name or version string.",
     ),
     (
+        "MAX_BUILD_LEN",
+        48,
+        "Maximum length of the firmware build identifier, in bytes.",
+    ),
+    (
         "MAX_NAME_LEN",
         24,
         "Maximum length of a section, service, action, field or issue name, in bytes.",
@@ -223,6 +228,7 @@ fn main() {
     let bounded = [
         (".rohi.control.v2.GetInfoResponse.firmware", "MAX_TEXT_LEN"),
         (".rohi.control.v2.GetInfoResponse.board", "MAX_TEXT_LEN"),
+        (".rohi.control.v2.GetInfoResponse.build", "MAX_BUILD_LEN"),
         (".rohi.control.v2.Error.reason", "MAX_REASON_LEN"),
         // Values.
         (

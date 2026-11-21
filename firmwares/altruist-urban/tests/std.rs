@@ -52,7 +52,8 @@ async fn starts_with_empty_storage_and_answers_get_info() {
     let mut device = sim.device().await;
 
     let info = device.info().await.unwrap();
-    assert!(info.firmware.starts_with("altruist-urban-"), "{info:?}");
+    assert_eq!(info.firmware, "altruist-urban", "{info:?}");
+    assert!(info.build.starts_with("urban-std/"), "{info:?}");
     assert_eq!(info.board, "urban-std");
 
     let services = device.services().await.unwrap();

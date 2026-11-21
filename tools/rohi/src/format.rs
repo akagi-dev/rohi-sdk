@@ -194,6 +194,18 @@ fn health(health: ServiceHealth) -> String {
     }
 }
 
+/// The firmware and build of `rohi info`.
+pub fn device_info(paint: Paint, info: &DeviceInfo) -> String {
+    pairs(paint, &device_rows(info))
+}
+
+fn device_rows(info: &DeviceInfo) -> [(String, String); 2] {
+    [
+        ("Firmware:".to_owned(), info.firmware.clone()),
+        ("Build:".to_owned(), info.build.clone()),
+    ]
+}
+
 /// The device-wide summary of `rohi status`.
 ///
 /// `sensor_id` is the SS58 address of the device identity, shown when known.
@@ -207,10 +219,7 @@ pub fn services_status(
     if let Some(sensor_id) = sensor_id {
         rows.push(("SensorId:".to_owned(), sensor_id.to_owned()));
     }
-    rows.push((
-        "Device:".to_owned(),
-        format!("{} ({})", info.firmware, info.board),
-    ));
+    rows.extend(device_rows(info));
     rows.push(("Uptime:".to_owned(), duration(status.uptime_ms)));
     rows.push((
         "Health:".to_owned(),

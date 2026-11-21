@@ -194,6 +194,7 @@
 //! | [`limits::MAX_REQUEST_LEN`] | 768 | encoded `Request` |
 //! | [`limits::MAX_RESPONSE_LEN`] | 2048 | encoded `Response` |
 //! | [`limits::MAX_TEXT_LEN`] | 32 | firmware and board strings |
+//! | [`limits::MAX_BUILD_LEN`] | 48 | `GetInfoResponse.build`, also the HTTP `User-Agent` |
 //! | [`limits::MAX_NAME_LEN`] | 24 | section, service, action, field, issue names |
 //! | [`limits::MAX_VALUE_LEN`] | 64 | string/bytes of requests and config values |
 //! | [`limits::MAX_FIELD_VALUE_LEN`] | 64 | string/bytes of status values and action results |

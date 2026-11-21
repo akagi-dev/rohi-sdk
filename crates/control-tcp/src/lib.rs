@@ -133,7 +133,7 @@
 //!
 //! // The device: one controller over a device, served through the hub of the
 //! // control worker; the TCP side only frames.
-//! let info = DeviceInfo { firmware: "demo-0.1.0", board: "demo-board" };
+//! let info = DeviceInfo { firmware: "demo", board: "demo-board", build: "demo-board/0.1.0+00000000.20260101" };
 //! let controller = Controller::new(Device::new(info, || 0, (), (), ()), OpenPolicy);
 //! let access = ControlAccess::new(|_| false);
 //! // A plaintext read is served in the default mode (`Protected`); a mutation would need the

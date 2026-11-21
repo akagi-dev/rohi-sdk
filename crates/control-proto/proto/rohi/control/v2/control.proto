@@ -135,10 +135,16 @@ message Error {
 message GetInfoRequest {}
 
 message GetInfoResponse {
-  // Firmware name and version in one string, for example "altruist-urban-0.1.0".
+  // Firmware name without a version, for example "altruist-urban".
   string firmware = 1;
-  // Board and chip in one string, for example "urban-esp32c3".
+  // Board and chip in one string, for example "urban-esp32c3". Kept for
+  // compatibility; a later revision of the protocol may drop it, `build`
+  // already starts with the same platform.
   string board = 2;
+  // Build identifier `<platform>/<version>+<sha8>.<YYYYMMDD>`, for example
+  // "urban-esp32c3/0.8.0+5c582f4a.20261122". The device sends the same text as
+  // the HTTP `User-Agent` of its telemetry requests.
+  string build = 3;
 }
 
 // ---------------------------------------------------------------------------

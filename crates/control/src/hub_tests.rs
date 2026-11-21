@@ -30,6 +30,7 @@ use crate::{
 const INFO: DeviceInfo = DeviceInfo {
     firmware: "hub-0.1.0",
     board: "hub-board",
+    build: "hub-board/1.0.0+00000000.20260101",
 };
 
 fn controller() -> Controller<Device<(), (), ()>, RequireEncryption> {

@@ -607,8 +607,9 @@ pub fn backend(bench: &Bench) -> Backend<'_> {
     let location: &_ = Box::leak(Box::new(LocationService(&bench.location.shared)));
     BackendDevice::new(
         DeviceInfo {
-            firmware: "fake-1.0.0",
+            firmware: "fake",
             board: "bench-esp32c3",
+            build: "bench-esp32c3/1.0.0+00000000.20260101",
         },
         uptime,
         (

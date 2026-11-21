@@ -232,6 +232,7 @@ fn the_control_transport_serves_a_client_over_a_host_socket() {
     let info = DeviceInfo {
         firmware: "demo-0.1.0",
         board: "demo-board",
+        build: "demo-board/1.0.0+00000000.20260101",
     };
     let controller = Controller::new(Device::new(info, || 0, (), (), ()), OpenPolicy);
     let access = ControlAccess::new(|_| false);

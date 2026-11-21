@@ -193,6 +193,7 @@ fn controller() -> Demo {
     let info = DeviceInfo {
         firmware: "demo-0.1.0",
         board: "demo-board",
+        build: "demo-board/1.0.0+00000000.20260101",
     };
     Controller::new(Device::new(info, || 0, (), (), ()), OpenPolicy)
 }
@@ -570,6 +571,7 @@ fn a_stream_is_released_with_its_connection_and_never_reaches_the_next_client() 
     let info = DeviceInfo {
         firmware: "demo-0.1.0",
         board: "demo-board",
+        build: "demo-board/1.0.0+00000000.20260101",
     };
     let controller = Controller::new(Device::new(info, || 0, (), (), (&probe,)), OpenPolicy);
     let first = Connection::plain(&[export(), read_stream()].concat(), 4096);
@@ -608,6 +610,7 @@ fn a_stream_left_open_cannot_be_read_by_the_next_connection_even_if_it_lives() {
     let info = DeviceInfo {
         firmware: "demo-0.1.0",
         board: "demo-board",
+        build: "demo-board/1.0.0+00000000.20260101",
     };
     let controller = Controller::new(Device::new(info, || 0, (), (), (&probe,)), OpenPolicy);
     let first = Connection::plain(&export(), 4096);
@@ -671,6 +674,7 @@ mod secure_endpoint {
         let info = DeviceInfo {
             firmware: "demo-0.1.0",
             board: "demo-board",
+            build: "demo-board/1.0.0+00000000.20260101",
         };
         Controller::new(
             Device::new(info, || 0, (), (), ()),

@@ -486,6 +486,7 @@ fn device<'a>(radio: &'a Radio<'a>) -> Bench<'a> {
         DeviceInfo {
             firmware: "fake-0",
             board: "bench-esp32c3",
+            build: "bench-esp32c3/1.0.0+00000000.20260101",
         },
         uptime,
         (),
