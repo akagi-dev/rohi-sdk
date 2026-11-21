@@ -19,17 +19,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aes"
-version = "0.8.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b169f7a6d4742236a0a00c541b845991d0ac43e546831af1249753ab4c3aa3a0"
-dependencies = [
- "cfg-if",
- "cipher",
- "cpufeatures 0.2.17",
-]
-
-[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -962,17 +951,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e0921b3876b3a1df8a1c9f912e7f94342458022c2e84288015893d83c4d62a79"
 
 [[package]]
-name = "cmac"
-version = "0.7.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8543454e3c3f5126effff9cd44d562af4e31fb8ce1cc0d3dcd8f084515dbc1aa"
-dependencies = [
- "cipher",
- "dbl",
- "digest 0.10.7",
-]
-
-[[package]]
 name = "colorchoice"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1322,15 +1300,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dbl"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd2735a791158376708f9347fe8faba9667589d82427ef3aed6794a8981de3d9"
-dependencies = [
- "generic-array",
-]
-
-[[package]]
 name = "dbus"
 version = "0.9.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1616,7 +1585,6 @@ dependencies = [
  "ff",
  "generic-array",
  "group",
- "hkdf",
  "pkcs8",
  "rand_core 0.6.4",
  "sec1",
@@ -3606,16 +3574,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
-name = "p256"
-version = "0.13.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c9863ad85fa8f4460f9c48cb909d38a0d689dba1f6f6988a5e3e0d31071bcd4b"
-dependencies = [
- "elliptic-curve",
- "primeorder",
-]
-
-[[package]]
 name = "parity-scale-codec"
 version = "3.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3814,15 +3772,6 @@ checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
 dependencies = [
  "proc-macro2",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "primeorder"
-version = "0.13.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "353e1ca18966c16d9deb1c69278edbc5f194139612772bd9537af60ac231e1e6"
-dependencies = [
- "elliptic-curve",
 ]
 
 [[package]]
@@ -5737,19 +5686,13 @@ version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bb9fe2be24000037431b036ba244cdb1d26f40e1719548553fb43c3fc62d496b"
 dependencies = [
- "aes",
  "bt-hci",
- "cmac",
  "embassy-futures",
  "embassy-sync 0.8.0",
  "embassy-time",
  "embedded-io 0.7.1",
  "futures",
  "heapless 0.9.4",
- "p256",
- "rand 0.8.8",
- "rand_chacha",
- "rand_core 0.6.4",
  "static_cell",
  "trouble-host-macros",
  "zerocopy",

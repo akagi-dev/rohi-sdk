@@ -409,7 +409,6 @@ pub const GATT: rohi_sdk::net::BleGattSpec = rohi_sdk::net::BleGattSpec {
 pub const BLE_CONFIG: rohi_sdk::net::BleConfig = rohi_sdk::net::BleConfig {
     name_prefix: "ALTRUIST-URBAN",
     name: None,
-    pairing: false,
     gatt: GATT,
 };
 

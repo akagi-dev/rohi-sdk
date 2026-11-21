@@ -72,7 +72,6 @@ trouble-host = { version = "0.7.0", default-features = false, features = [
   "peripheral",
   "gatt",
   "derive",
-  "security",
   "default-packet-pool-mtu-255",
 ] }
 bt-hci = "0.9.0"

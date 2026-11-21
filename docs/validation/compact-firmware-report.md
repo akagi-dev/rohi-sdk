@@ -185,6 +185,28 @@ queue is full (the streams are still closed) and cancellation (the session is re
   Robonomics format is the only compiled telemetry format; unsupported measurements are no longer stored in a snapshot.
 - A TCP client can no longer connect without the key unless the endpoint is explicitly open (plaintext, loopback development).
 
+## BLE without pairing (#83)
+
+The host stack (`trouble-host`) is built without its `security` feature: the peripheral is open and never pairs, so the
+`Pairing::handle_input` handlers (20.2 KiB for the peripheral in the ESP32-C3 `cargo bloat` before the change, plus the
+central one and smaller pairing functions) and the `aes`, `cmac`, `dbl`, `p256` and `primeorder` crates are no longer in
+the image. `cargo bloat` of the ESP32-C3 image has no `Pairing` symbol after the change. The TCP secure channel, the
+identity and the telemetry cryptography do not use these crates and are unchanged.
+
+| Metric (`scripts/measure.sh`, default features, the same toolchain and profiles) | C3 before | C3 after | Δ bytes | C6 before | C6 after | Δ bytes |
+|---|---:|---:|---:|---:|---:|---:|
+| `.text` | 1 223 758 | 1 128 684 | −95 074 | 1 728 406 | 1 575 126 | −153 280 |
+| `.rodata` | 173 112 | 167 496 | −5 616 | 205 648 | 202 080 | −3 568 |
+| `.data` | 29 984 | 29 512 | −472 | 33 668 | 32 796 | −872 |
+| `.bss` | 191 936 | 190 120 | −1 816 | 196 048 | 194 232 | −1 816 |
+| flash image | 1 527 562 | 1 426 400 | −101 162 | 2 103 866 | 1 946 146 | −157 720 |
+| RAM (static) | 221 920 | 219 632 | −2 288 | 229 716 | 227 028 | −2 688 |
+
+Measured from built images. The saving is larger than the two handlers alone because the dependent cryptography and the
+shared code went with them. `max_data` and `max_bss` of `memcheck-budgets.toml` were lowered to match. BLE is **open and
+unencrypted** and a link is always reported as unencrypted and unauthenticated; suitable only for trusted environments.
+Advertising, connection, writes, notifications, disconnect and reconnect were **not** run on a device.
+
 ## Not measured, not verified
 
 - Everything on hardware: boot time, the time of a log format and a download, stack high-water marks, flash wear, BLE control without pairing and the

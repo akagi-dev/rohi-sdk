@@ -35,7 +35,6 @@ fn config(name: Option<&str>) -> BleConfig {
     BleConfig {
         name_prefix: "ALTRUIST-URBAN",
         name: name.and_then(BleName::new),
-        pairing: false,
         gatt: BleGattSpec {
             service: 1,
             rx: 2,

@@ -79,16 +79,18 @@ reason = "the sensors status observer is laid out differently after the logging 
 # The managed control endpoints (#56, one `control` service since #80): the control worker and the BLE frontend are two tasks (`control_task`
 # 15 128 B, `control_ble_task` 2 784 B on the ESP32-C3), the request slot of the `ControlHub` (3 272 B, `.bss`)
 # replaces the reassembly and response buffers the BLE loop owned, and the new sections, services and the BLE
-# pairing of the host stack (trouble-host `security`) add statics. Measured: `.data` 31 144 B (ESP32-C3) and
+# pairing of the host stack (trouble-host `security`, removed by #83) add statics. Measured: `.data` 31 144 B (ESP32-C3) and
 # 34 956 B (ESP32-C6), task pools 45 008 B and 44 984 B. The `control_task` poll frame did not grow (9 456 B).
 # Stack depth and the high-water mark are NOT measured on hardware.
 # Lowered with the compact firmware change (#73): optional LZ4, a smaller log batch, compile-time route and
 # telemetry capacities, a tighter packet bound and no signed control. Measured on the ESP32-C3: `.data` 30 056 B,
 # `.bss` 193 912 B, task pools 41 136 B, largest frame 12 256 B, main stack 32 672 B (before: 31 144, 199 264,
 # 45 008, 13 120, 26 232). Limits only go down: see docs/validation/compact-firmware-report.md.
+# Lowered without BLE pairing (#83): `.data` 29 512 B and `.bss` 190 120 B on the ESP32-C3, `.data` 32 796 B and `.bss` 194 232 B on the
+# ESP32-C6.
 [chips.esp32c3]
-max_data = 30100
-max_bss = 194000
+max_data = 29600
+max_bss = 190200
 max_task_ram = 41200
 min_main_stack = 32600
 max_frame = 12300
@@ -100,8 +102,8 @@ logging = ["rohi_logging::service", "rohi_logging::storage", "rohi_logging::segm
 # ESP32-C6, same change: `.data` 33 884 B, `.bss` 198 016 B, task pools 41 112 B, largest frame 8 400 B, main stack
 # 131 960 B (before: 34 956, 203 376, 44 984, 9 744, 125 528).
 [chips.esp32c6]
-max_data = 33900
-max_bss = 198100
+max_data = 32900
+max_bss = 194300
 max_task_ram = 41200
 min_main_stack = 131900
 # The frame of `Controller::read_result_page` (a page of records read from a held snapshot, 9 632 B) is the largest; the

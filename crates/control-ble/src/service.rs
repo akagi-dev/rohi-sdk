@@ -45,8 +45,8 @@ use crate::frame::{Assembler, Fragmenter};
 /// cannot use the streams of another transport or central.
 /// The security of the link reported by [`BleTransport::connection_info`]
 /// reaches the policy of the worker; a link without a connection is treated as
-/// unencrypted and unauthenticated. BLE keeps its own link security (pairing and
-/// encryption of the host stack) and adds no framing encryption of its own.
+/// unencrypted and unauthenticated. BLE is open (the host stack has no pairing
+/// or link encryption) and this crate adds no framing encryption of its own.
 ///
 /// The [crate documentation](crate) has a complete example over an in-memory
 /// transport.

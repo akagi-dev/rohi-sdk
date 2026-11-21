@@ -40,7 +40,7 @@ A fact lives on exactly one page; other pages link to it. Canonical pages:
 - Do not leave obsolete work-package terminology or history in normative pages; history belongs to the commit log and
   the measured-data tables of the validation pages.
 - Mark claims that are **not validated on hardware** explicitly ("not yet measured", "not verified on hardware").
-- State security limitations plainly (BLE is open by default and pairing is Just Works only, no TLS yet).
+- State security limitations plainly (BLE is open: no pairing or encryption, no TLS yet).
 - Prefer tables for support and verification status, and short paragraphs.
 - Examples are compiled where possible: put host-compilable code in a test file, show it with
   `\{{#include path:anchor}}` and mark the block `rust,ignore`; use `text` or `rust,ignore` for hardware-only snippets.

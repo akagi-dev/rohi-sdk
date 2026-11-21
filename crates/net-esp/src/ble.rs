@@ -54,12 +54,10 @@
 //!   A driver or advertising error sets the state to `Error` and is retried
 //!   after one second.
 //! * **One central.** The peripheral serves one connection at a time.
-//! * **Security.** The link properties reported through
-//!   [`BleConnectionInfo`] come from the security level the host stack
-//!   negotiated. With [`BleConfig::pairing`] the peripheral asks the central to
-//!   pair on every connection (LE Secure Connections, Just Works, no bonding);
-//!   the pairing result is only seen through the security level. This path
-//!   is not verified on hardware.
+//! * **Security.** None: the peripheral never pairs or encrypts the link, so
+//!   [`BleConnectionInfo`] always reports an unencrypted, unauthenticated link and
+//!   any central in range may connect. The host stack is built without its
+//!   `security` feature.
 
 use core::cell::Cell;
 
@@ -509,9 +507,6 @@ impl<
                 .await
                 {
                     Ok(connection) => {
-                        if self.config.pairing {
-                            ask_to_pair(&connection);
-                        }
                         serve_connection(shared, &connection, rx_handle.handle, &tx_handle).await;
                         end_connection(shared).await;
                     }
@@ -591,35 +586,11 @@ async fn advertise<
     Ok(connection)
 }
 
-/// Asks the central to pair, without bonding: the link is encrypted for this
-/// connection and nothing about the central is stored. A failure leaves the
-/// link unencrypted, which the access policy treats as no proof at all.
-fn ask_to_pair(connection: &GattConnection<'_, '_, DefaultPacketPool>) {
-    let raw = connection.raw();
-    if raw.set_bondable(false).is_err() || raw.request_security().is_err() {
-        report::pairing_not_requested();
-    }
-}
-
-fn connection_info(connection: &GattConnection<'_, '_, DefaultPacketPool>) -> BleConnectionInfo {
-    match connection.raw().security_level() {
-        Ok(SecurityLevel::Encrypted) => BleConnectionInfo {
-            encrypted: true,
-            authenticated: false,
-        },
-        Ok(SecurityLevel::EncryptedAuthenticated) => BleConnectionInfo {
-            encrypted: true,
-            authenticated: true,
-        },
-        _ => BleConnectionInfo::default(),
-    }
-}
-
 fn refresh_link<const RX_DEPTH: usize, const TX_DEPTH: usize>(
     shared: &Shared<RX_DEPTH, TX_DEPTH>,
     connection: &GattConnection<'_, '_, DefaultPacketPool>,
 ) {
-    let info = connection_info(connection);
+    let info = BleConnectionInfo::default();
     let mtu = connection.raw().att_mtu().saturating_sub(ATT_OVERHEAD);
     let payload = usize::from(mtu).clamp(DEFAULT_BLE_PAYLOAD, MAX_BLE_PAYLOAD);
     let before = shared.link();
@@ -630,13 +601,6 @@ fn refresh_link<const RX_DEPTH: usize, const TX_DEPTH: usize>(
     });
     if before.payload != payload {
         debug!(target: "ble", "MTU negotiated (mtu_b={} payload_b={})", mtu, payload);
-    }
-    if before.info != Some(info) {
-        debug!(
-            target: "ble",
-            "Link security changed (encrypted={} authenticated={})",
-            info.encrypted, info.authenticated
-        );
     }
 }
 
@@ -765,12 +729,6 @@ mod report {
     #[inline(never)]
     pub(super) fn controller_init_failed(error: &dyn Debug) {
         warn!(target: "ble", "Controller init failed (err={:?})", error);
-    }
-
-    #[cold]
-    #[inline(never)]
-    pub(super) fn pairing_not_requested() {
-        warn!(target: "ble", "Pairing could not be requested");
     }
 
     #[cold]

@@ -664,7 +664,7 @@ target_build = "ci-built"
 hardware_verification = "not-verified"
 limitations = [
   "One heap measurement exists (Wi-Fi and BLE running, chip not recorded); advertising, coexistence, MTU and 24 h stability are not measured.",
-  "BLE control runs open in this build: no pairing, no link encryption and no mode to change it (an accepted, temporary insecure state); BLE control without pairing is not verified on a device.",
+  "BLE control runs open in this build: no pairing, no link encryption and no mode to change it, and the host stack is built without pairing support (an accepted, temporary insecure state, suitable only for trusted environments); open BLE control is not verified on a device.",
   "Static analysis only (`scripts/memcheck.sh`, CI job Memcheck): 121 816 B main stack; the frames of the control request path (`rohi status`, `config`, `action`) are below 1.8 KB since #63, but the stack peak is not measured on a device and the exception reported for `rohi status logging` and `rohi logs clear --yes` is not shown to be fixed.",
 ]
 evidence = [
@@ -889,7 +889,7 @@ target_build = "ci-built"
 hardware_verification = "not-verified"
 limitations = [
   "One heap measurement exists (Wi-Fi and BLE running, chip not recorded); advertising, coexistence, MTU and 24 h stability are not measured.",
-  "BLE control runs open in this build: no pairing, no link encryption and no mode to change it (an accepted, temporary insecure state); BLE control without pairing is not verified on a device.",
+  "BLE control runs open in this build: no pairing, no link encryption and no mode to change it, and the host stack is built without pairing support (an accepted, temporary insecure state, suitable only for trusted environments); open BLE control is not verified on a device.",
   "Static analysis only (`scripts/memcheck.sh`, CI job Memcheck): 21 976 B main stack; the frames of the control request path (`rohi status`, `config`, `action`) are below 1.8 KB since #63, but the stack peak is not measured on a device and the exception reported for `rohi status logging` and `rohi logs clear --yes` is not shown to be fixed.",
 ]
 evidence = [

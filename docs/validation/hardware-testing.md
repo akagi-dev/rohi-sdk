@@ -134,4 +134,5 @@ any claim about the shared `control_task`: fill the main stack with a pattern at
 
 Record the result and the margin in the [support matrix](../support/overview.md) before the resource budget is lowered. Also
 connect a phone or a Linux adapter to the open BLE endpoint and record that Config, Status and Actions work without pairing:
-that path is implemented but not verified on a device.
+that path is implemented but not verified on a device. After removing the pairing code of the host stack (#83), also check advertising,
+connection, writes, notifications, disconnect and reconnect of an image built without it.
