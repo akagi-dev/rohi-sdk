@@ -110,6 +110,7 @@ async fn info_and_discovery() {
                 "radio.reconnect",
                 "radio.tune",
                 "radio.explode",
+                "radio.survey",
                 "identity.provision",
                 "identity.erase",
                 "example.one",
@@ -126,15 +127,11 @@ async fn info_and_discovery() {
             .iter()
             .find(|action| action.service == "example" && action.name == "page")
             .unwrap();
-        assert!(page_action.returns_page);
-        assert!(
-            serde_json::to_value(page_action).unwrap()["returns_page"]
-                .as_bool()
-                .unwrap()
-        );
+        assert_eq!(page_action.format, ResultFormat::Feed);
+        assert_eq!(serde_json::to_value(page_action).unwrap()["format"], "feed");
 
         let schema = device.action_schema("example", "page").await.unwrap();
-        assert!(schema.action.returns_page);
+        assert_eq!(schema.action.format, ResultFormat::Feed);
     })
     .await;
 }
@@ -412,13 +409,13 @@ async fn actions_take_arguments_and_return_records() {
             ActionAccess::Mutate
         );
 
-        let records = device.invoke("radio", "scan", &[]).await.unwrap();
+        let records = device.records_all("radio", "scan", &[]).await.unwrap();
         assert_eq!(records.len(), 2);
         assert_eq!(records[1][0].value, text("guest"));
         assert_eq!(records[0][2].value, Value::Enum("wpa2".into()));
 
         device
-            .invoke(
+            .invoke_empty(
                 "radio",
                 "tune",
                 &[FieldValue {
@@ -431,23 +428,38 @@ async fn actions_take_arguments_and_return_records() {
 
         // Missing arguments, unknown names and refusals are typed.
         assert!(matches!(
-            device.invoke("radio", "tune", &[]).await.unwrap_err(),
+            device
+                .invoke_outcome("radio", "tune", &[])
+                .await
+                .unwrap_err(),
             Error::Device(ErrorCode::InvalidArgument)
         ));
         assert!(matches!(
-            device.invoke("radio", "missing", &[]).await.unwrap_err(),
+            device
+                .invoke_outcome("radio", "missing", &[])
+                .await
+                .unwrap_err(),
             Error::Device(ErrorCode::NotFound)
         ));
         // `location` reports status but offers no actions.
         assert!(matches!(
-            device.invoke("location", "scan", &[]).await.unwrap_err(),
+            device
+                .invoke_outcome("location", "scan", &[])
+                .await
+                .unwrap_err(),
             Error::Device(ErrorCode::NotSupported)
         ));
         assert!(matches!(
-            device.invoke("nobody", "scan", &[]).await.unwrap_err(),
+            device
+                .invoke_outcome("nobody", "scan", &[])
+                .await
+                .unwrap_err(),
             Error::Device(ErrorCode::NotFound)
         ));
-        let error = device.invoke("radio", "explode", &[]).await.unwrap_err();
+        let error = device
+            .invoke_outcome("radio", "explode", &[])
+            .await
+            .unwrap_err();
         assert!(matches!(&error, Error::Rejected(reason) if reason == "not_today"));
     })
     .await;
@@ -462,7 +474,14 @@ async fn works_with_a_large_mtu() {
     let bench = Bench::new();
     with_device(244, &bench, |mut device| async move {
         assert_eq!(device.services_status().await.unwrap().services.len(), 3);
-        assert_eq!(device.invoke("radio", "scan", &[]).await.unwrap().len(), 2);
+        assert_eq!(
+            device
+                .records_all("radio", "scan", &[])
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
     })
     .await;
 }
@@ -575,8 +594,8 @@ async fn identity_is_an_ordinary_service_with_actions() {
         let schema = device.action_schema("identity", "provision").await.unwrap();
         assert_eq!(schema.action.access, ActionAccess::Provision);
         assert!(schema.action.secret_args);
-        let records = device
-            .invoke(
+        let record = device
+            .invoke_inline(
                 "identity",
                 "provision",
                 &[FieldValue {
@@ -586,10 +605,7 @@ async fn identity_is_an_ordinary_service_with_actions() {
             )
             .await
             .unwrap();
-        assert_eq!(
-            records[0][0].value,
-            Value::Bytes(expected.to_bytes().to_vec())
-        );
+        assert_eq!(record[0].value, Value::Bytes(expected.to_bytes().to_vec()));
 
         let status = device.service_status("identity").await.unwrap();
         assert_eq!(status.summary.health, ServiceHealth::Ok);
@@ -602,7 +618,7 @@ async fn identity_is_an_ordinary_service_with_actions() {
         );
 
         let error = device
-            .invoke(
+            .invoke_inline(
                 "identity",
                 "provision",
                 &[FieldValue {
@@ -614,7 +630,7 @@ async fn identity_is_an_ordinary_service_with_actions() {
             .unwrap_err();
         assert!(matches!(&error, Error::Rejected(reason) if reason == "already_provisioned"));
 
-        device.invoke("identity", "erase", &[]).await.unwrap();
+        device.invoke_empty("identity", "erase", &[]).await.unwrap();
     })
     .await;
     assert!(bench.identity.0.borrow().is_none());
@@ -683,4 +699,144 @@ async fn a_service_changing_between_compact_and_detailed_status_is_read_again() 
 async fn a_service_that_keeps_changing_is_an_error_not_a_mixed_status() {
     let error = read_status_while_changing(true).await.unwrap_err();
     assert!(matches!(error, Error::StatusChanging(service) if service == "radio"));
+}
+
+// ---------------------------------------------------------------------------
+// Result formats
+// ---------------------------------------------------------------------------
+
+fn ssids(records: &[Record]) -> Vec<String> {
+    records
+        .iter()
+        .map(|record| match &record[0].value {
+            Value::String(ssid) => ssid.clone(),
+            other => panic!("{other:?}"),
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn every_result_format_is_discovered_and_distinct() {
+    let bench = Bench::new();
+    with_device(23, &bench, |mut device| async move {
+        let formats = |actions: Vec<ActionInfo>| -> Vec<(String, ResultFormat)> {
+            actions
+                .into_iter()
+                .map(|a| (format!("{}.{}", a.service, a.name), a.format))
+                .collect()
+        };
+        let all = formats(device.actions().await.unwrap());
+        let format_of = |name: &str| all.iter().find(|(n, _)| n == name).unwrap().1;
+        assert_eq!(format_of("radio.scan"), ResultFormat::Records);
+        assert_eq!(format_of("radio.survey"), ResultFormat::Records);
+        assert_eq!(format_of("radio.reconnect"), ResultFormat::Empty);
+        assert_eq!(format_of("example.configure"), ResultFormat::Inline);
+        assert_eq!(format_of("system.factory_reset"), ResultFormat::Inline);
+        assert_eq!(format_of("system.reboot"), ResultFormat::Empty);
+
+        // Each outcome is its own case: no data, one record, a collection.
+        assert_eq!(
+            device
+                .invoke_outcome("radio", "reconnect", &[])
+                .await
+                .unwrap(),
+            ActionOutcome::Empty
+        );
+        let args = [FieldValue {
+            field_id: 7,
+            value: text("http://x"),
+        }];
+        let ActionOutcome::Inline(record) = device
+            .invoke_outcome(
+                "example",
+                "configure",
+                &[
+                    args[0].clone(),
+                    FieldValue {
+                        field_id: 2,
+                        value: Value::Bool(true),
+                    },
+                    FieldValue {
+                        field_id: 9,
+                        value: Value::U64(5),
+                    },
+                ],
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("not inline");
+        };
+        assert_eq!(record[0].value, text("http://x"));
+        let ActionOutcome::Records(page) =
+            device.invoke_outcome("radio", "scan", &[]).await.unwrap()
+        else {
+            panic!("not records");
+        };
+        assert_eq!(page.records.len(), 2);
+        assert!(page.next_page_token.is_none());
+        // The wrong accessor for the format is a protocol error, not data.
+        assert!(matches!(
+            device.invoke_empty("radio", "scan", &[]).await.unwrap_err(),
+            Error::Protocol(_)
+        ));
+        assert!(matches!(
+            device
+                .records_all("radio", "reconnect", &[])
+                .await
+                .unwrap_err(),
+            Error::Protocol(_)
+        ));
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_collection_is_followed_page_by_page_and_released() {
+    let bench = Bench::new();
+    let radio = &bench.radio;
+    with_device(23, &bench, |mut device| async move {
+        let all = device.records_all("radio", "survey", &[]).await.unwrap();
+        let expected: Vec<String> = (0..SURVEY).map(|i| format!("net{i:02}")).collect();
+        assert_eq!(ssids(&all), expected);
+        // 6 + 6 + 2 records: three reads of the snapshot, one run.
+        assert_eq!(radio.pages.get(), 3);
+        assert_eq!(
+            radio
+                .calls
+                .borrow()
+                .iter()
+                .filter(|c| *c == "survey")
+                .count(),
+            1
+        );
+        // `records_all` released the snapshot: the next one is not Busy.
+        assert_eq!(radio.held.get(), 0);
+
+        // The page iterator does not need the whole collection at once, and an
+        // early stop is closed explicitly.
+        let mut pages = device.records_pages("radio", "survey", &[]).await.unwrap();
+        let first = pages.next_page(&mut device).await.unwrap().unwrap();
+        assert_eq!(ssids(&first), expected[..6]);
+        assert_eq!(radio.held.get(), 77);
+        pages.close(&mut device).await.unwrap();
+        assert_eq!(radio.held.get(), 0);
+        assert_eq!(pages.next_page(&mut device).await.unwrap(), None);
+        // Closing twice is harmless.
+        pages.close(&mut device).await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_second_collection_is_busy_until_the_first_is_closed() {
+    let bench = Bench::new();
+    with_device(23, &bench, |mut device| async move {
+        let mut first = device.records_pages("radio", "survey", &[]).await.unwrap();
+        let busy = device.records_pages("radio", "survey", &[]).await;
+        assert!(matches!(busy, Err(Error::Device(ErrorCode::Busy))));
+        first.close(&mut device).await.unwrap();
+        assert!(device.records_pages("radio", "survey", &[]).await.is_ok());
+    })
+    .await;
 }

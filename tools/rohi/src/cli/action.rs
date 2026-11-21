@@ -29,7 +29,8 @@ use super::positional::Words;
 use super::{Ctx, dto, values};
 use crate::format::Syntax;
 use crate::model::{
-    ActionInfo, ActionOutcome, ActionSchema, ErrorCode, FieldDescriptor, FieldValue, Stream, Value,
+    ActionInfo, ActionOutcome, ActionSchema, ErrorCode, FieldDescriptor, FieldValue, ResultFormat,
+    Stream, Value,
 };
 use crate::{ClientTransport, Device, Error, format};
 use zeroize::Zeroize;
@@ -312,17 +313,37 @@ async fn invoke<T: ClientTransport>(
             value,
         });
     }
-    match device.invoke_outcome(service, action, &arguments.0).await? {
-        ActionOutcome::Records(records) => ctx.io.emit(
+    // A collection is read page by page until its end; the device runs the
+    // action once.
+    if schema.action.format == ResultFormat::Records {
+        let records = device.records_all(service, action, &arguments.0).await?;
+        return ctx.io.emit(
             ctx.format,
             &dto::Versioned::new(dto::records(&records, schema)),
             || format::records(ctx.paint, &records, schema),
+        );
+    }
+    match device.invoke_outcome(service, action, &arguments.0).await? {
+        ActionOutcome::Empty => ctx.io.emit(
+            ctx.format,
+            &dto::Versioned::new(dto::empty()),
+            format::empty,
+        ),
+        ActionOutcome::Inline(record) => ctx.io.emit(
+            ctx.format,
+            &dto::Versioned::new(dto::inline(&record, schema)),
+            || format::inline(&record, schema),
+        ),
+        ActionOutcome::Records(records) => ctx.io.emit(
+            ctx.format,
+            &dto::Versioned::new(dto::records(&records.records, schema)),
+            || format::records(ctx.paint, &records.records, schema),
         ),
         ActionOutcome::Stream(stream) => show_stream(device, &stream, ctx).await,
-        ActionOutcome::Page(page) => {
+        ActionOutcome::Feed(page) => {
             ctx.io
-                .emit(ctx.format, &dto::Versioned::new(dto::page(&page)), || {
-                    format::page(&page)
+                .emit(ctx.format, &dto::Versioned::new(dto::feed(&page)), || {
+                    format::feed(&page)
                 })
         }
     }

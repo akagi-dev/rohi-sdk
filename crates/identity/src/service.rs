@@ -25,8 +25,8 @@
 use heapless::Vec;
 use rohi_service::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, FIRST_SERVICE_ISSUE,
-    FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES, Service, ServiceHealth,
-    ServiceSummary, Status, StatusWriter, Value, ValueKind, WriteError,
+    FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES, ResultFormat, Service,
+    ServiceHealth, ServiceSummary, Status, StatusWriter, Value, ValueKind, WriteError,
 };
 
 use crate::{Identity, PublicKey, SECRET_LEN};
@@ -251,6 +251,7 @@ impl<S: IdentityStore> Action for IdentityService<S> {
                 "secret",
                 ValueKind::Bytes,
             )])
+            .format(ResultFormat::Inline)
             .results(&[FieldDescriptor::new(
                 action_field::PUBLIC_KEY,
                 "public_key",
@@ -384,12 +385,9 @@ mod tests {
         let expected = Identity::from_secret(&[7; SECRET_LEN])
             .unwrap()
             .public_key();
-        let records = records.records();
-        assert_eq!(records.len(), 1);
-        assert_eq!(
-            records[0][0].1.as_bytes(),
-            Some(expected.as_bytes().as_slice())
-        );
+        let record = records.inline().unwrap();
+        assert_eq!(record.len(), 1);
+        assert_eq!(record[0].1.as_bytes(), Some(expected.as_bytes().as_slice()));
         assert_eq!(*memory.0.borrow(), Some(expected));
     }
 

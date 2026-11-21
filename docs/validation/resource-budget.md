@@ -407,3 +407,29 @@ the host stack (`trouble-host`); the `.data` of the hub itself is kept at zero (
 until `bind`), so it lands in `.bss`. No saving of stack or RAM is claimed: the stack high-water mark was **not**
 measured on hardware, see [Hardware testing](hardware-testing.md#control-worker-stack-high-water). The budgets of
 `memcheck-budgets.toml` were raised by 700 B (`.data`, ESP32-C3), 1 200 B (`.data`, ESP32-C6) and 1 700 B (task RAM).
+
+## Action result formats
+
+An action returns one of five result formats (`Empty`, `Inline`, `Records`, `Feed`, `Stream`), the records of a long
+`Records` result are read page by page from a snapshot the service holds, and the control protocol is version 2 (see
+[Action result formats](../build/action-results.md)). Measured with `scripts/memcheck.sh` against the commit before the
+change (`101cc16`), same toolchain and features; not measured on hardware.
+
+| Item | Before | After |
+|------|-------:|------:|
+| `size_of::<Response>()` (host) | 2 184 B | 2 200 B (budget 2 200 B; the page token) |
+| `RecordsPage` worst case, encoded | n/a | fits `MAX_RESPONSE_LEN` with the envelope (test `the_worst_records_page_fits_the_response_limit`) |
+| ESP32-C3 `.bss` | 192 976 B | 191 880 B |
+| ESP32-C3 `.data` | 29 952 B | 29 976 B |
+| ESP32-C3 task pools | 40 544 B | 38 768 B |
+| ESP32-C3 largest frame | 12 256 B | 12 256 B |
+| ESP32-C6 `.bss` / `.data` / task pools | not measured on the base | 195 992 B / 33 660 B / 38 744 B |
+| ESP32-C6 largest frame | not measured on the base | 9 632 B (`Controller::read_result_page`) |
+
+The held scan of `wireless` is one `WifiScanResults` (up to 16 networks) in the service, in `.bss`. The control task shrank
+because the first page of a result is built without a second copy of the records and because a stream or a snapshot that
+is closed after the reply (an eviction, a result that fitted its first page) is queued and closed once the reply is encoded,
+so the reply is not kept across that wait. The poll frames of `registry::invoke_of` grew by 0.5 to 1.5 KB (approved in
+`memcheck-budgets.toml`) and the ESP32-C6 frame limit went from 8 500 B to 9 700 B for `read_result_page`. The stack
+high-water mark was **not** measured on hardware, and neither were the BLE round trips of a three-page scan (the number of
+pages follows from 16 networks, 6 records per page); both need hardware data.

@@ -4432,6 +4432,7 @@ dependencies = [
  "rohi-config",
  "rohi-net",
  "rohi-service",
+ "rohi-time",
 ]
 
 [[package]]

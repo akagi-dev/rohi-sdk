@@ -470,8 +470,8 @@ fn every_tcp_connection_is_its_own_session_across_transports() {
 use core::cell::Cell;
 
 use rohi_service::{
-    Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, Service, StreamChunk,
-    StreamFile, StreamInfo, Value,
+    Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, ResultFormat, Service,
+    StreamChunk, StreamFile, StreamInfo, Value,
 };
 
 #[derive(Service)]
@@ -482,7 +482,7 @@ struct Probe {
 
 impl Action for Probe {
     const ACTIONS: &'static [ActionDescriptor] =
-        &[ActionDescriptor::new(1, "export", ActionAccess::Read).stream()];
+        &[ActionDescriptor::new(1, "export", ActionAccess::Read).format(ResultFormat::Stream)];
 
     async fn invoke(
         &self,

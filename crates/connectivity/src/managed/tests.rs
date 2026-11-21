@@ -20,7 +20,7 @@ use std::vec::Vec;
 
 use embassy_futures::block_on;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use rohi_service::{ActionRegistry, ActionResult, MAX_FIELDS};
+use rohi_service::{ActionRegistry, ActionResult, MAX_FIELDS, ResultFormat};
 use rohi_telemetry::ProfileStamp;
 
 use super::*;
@@ -193,16 +193,16 @@ fn rejected(code: &'static str) -> ActionError {
 fn the_actions_are_the_four_documented_ones() {
     let actions: Vec<_> = Svc::ACTIONS
         .iter()
-        .map(|a| (a.name, a.access, a.args.len(), a.stream))
+        .map(|a| (a.name, a.access, a.args.len(), a.format))
         .collect();
     assert_eq!(
         actions,
         [
-            ("set_endpoint", ActionAccess::Mutate, 3, false),
-            ("set_interval", ActionAccess::Mutate, 2, false),
-            ("set_fallback", ActionAccess::Mutate, 2, false),
+            ("set_endpoint", ActionAccess::Mutate, 3, ResultFormat::Empty),
+            ("set_interval", ActionAccess::Mutate, 2, ResultFormat::Empty),
+            ("set_fallback", ActionAccess::Mutate, 2, ResultFormat::Empty),
             #[cfg(feature = "packet-export")]
-            ("get_payload", ActionAccess::Read, 1, true),
+            ("get_payload", ActionAccess::Read, 1, ResultFormat::Stream),
         ]
     );
     let args = |name: &str| -> Vec<&str> {
@@ -765,7 +765,7 @@ fn packet(service: &Svc<'_, '_>, profile: u64) -> Result<(u32, u64), ActionError
             assert_eq!(info.files[0].name.as_str(), "packet.bin");
             Ok((info.id, info.files[0].size_bytes))
         }
-        ActionResult::Records(_) | ActionResult::Page(_) => panic!("get_payload returns a stream"),
+        _ => panic!("get_payload returns a stream"),
     }
 }
 

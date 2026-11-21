@@ -18,9 +18,11 @@
 //! The `wireless` service: the Wi-Fi link, the radio heap, the BLE peripheral
 //! health and the actions `wifi_scan`, `wifi_reconnect` and `wifi_disconnect`.
 
+use core::cell::RefCell;
 use core::fmt::Write as _;
 
 use embassy_futures::select::{Either, select};
+use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embedded_hal_async::delay::DelayNs;
 use heapless::{String, Vec};
@@ -28,11 +30,18 @@ use log::debug;
 use rohi_service::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, EnumDescriptor, EnumVariant,
     FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_FIELD_VALUE_LEN, MAX_ISSUES,
-    Service, ServiceHealth, ServiceSummary, Status, StatusWriter, Unit, Value, ValueKind,
-    WriteError,
+    MAX_RECORDS, ResultFormat, Service, ServiceHealth, ServiceSummary, SnapshotInfo, Status,
+    StatusWriter, Unit, Value, ValueKind, WriteError,
+};
+use rohi_time::{Clock, MonotonicTimestamp};
+
+use crate::{
+    BleError, BleProbe, BleState, WifiError, WifiHandle, WifiNetwork, WifiScanResults,
+    WifiSecurity, WifiState,
 };
 
-use crate::{BleError, BleProbe, BleState, WifiError, WifiHandle, WifiSecurity, WifiState};
+/// How long an idle scan result is held for its client, in milliseconds.
+pub const SCAN_HOLD_MS: u64 = 30_000;
 
 // SSIDs are scan results, which are never cut.
 const _: () = assert!(crate::MAX_SSID_LEN <= MAX_FIELD_VALUE_LEN);
@@ -341,7 +350,7 @@ fn worst(parts: [Option<ServiceHealth>; 2]) -> ServiceHealth {
 /// |-------|------|--------|
 /// | config section `wireless` | 15 fields: `wifi_*`, `ip_*` and `ble_name` | `rohi config wireless wifi_ssid=office wifi_password=-` |
 /// | service `wireless` | `wifi_state`, `wifi_ip`, `wifi_rssi` (dBm), `wifi_reconnects`, `heap_free` (bytes). `wifi_ip` and `wifi_rssi` only while connected, `heap_free` only when the [`WirelessProbe`] reports it | `rohi status wireless` |
-/// | action `wifi_scan` | one record per network, strongest first: `ssid`, `rssi`, `channel`, `security` | `rohi action wireless wifi_scan` |
+/// | action `wifi_scan` (`Records`) | one record per network, strongest first, up to [`MAX_WIFI_SCAN_RESULTS`](crate::MAX_WIFI_SCAN_RESULTS): `ssid`, `rssi`, `channel`, `security` | `rohi action wireless wifi_scan` |
 /// | actions `wifi_reconnect`, `wifi_disconnect` (mutate access) | queue a forced connection attempt / disconnect and stay idle | `rohi action wireless wifi_reconnect` |
 ///
 /// There is no SSID, BLE name or BLE state field: the BLE peripheral is always
@@ -361,8 +370,13 @@ fn worst(parts: [Option<ServiceHealth>; 2]) -> ServiceHealth {
 /// once. See [`issue`](mod@issue).
 ///
 /// A scan is bounded by `wifi_scan_timeout` (20 s by default), measured with
-/// `delay`, and lists at most six networks (the record limit of an action
-/// result); networks whose name is not UTF-8 are not listed. `wifi_reconnect`
+/// `delay`, and runs once: all its networks (those whose name is UTF-8) are one
+/// `Records` result, so a client reads the pages of one scan and a later page
+/// never scans again. Up to six networks are returned at once. A longer result
+/// is kept in the service, in the compact form of the scan, for the one client
+/// that read it first: it is released when that client closes it, after
+/// [`SCAN_HOLD_MS`](crate::SCAN_HOLD_MS) without a read or when the control link is lost, and until
+/// then another `wifi_scan` is `Busy`. `wifi_reconnect`
 /// only queues the attempt: success means it was accepted, not that the link
 /// is up, so watch `wifi_state`. `wifi_disconnect` keeps the radio idle until a
 /// `wifi_reconnect` or a configuration change, and can drop an active TCP
@@ -374,12 +388,21 @@ fn worst(parts: [Option<ServiceHealth>; 2]) -> ServiceHealth {
 /// use embedded_hal_async::delay::DelayNs;
 /// use rohi_net::{BleProbe, BleState, WifiShared, WirelessService};
 /// use rohi_service::{ServiceHealth, Status};
+/// use rohi_time::{Clock, MonotonicTimestamp};
 ///
 /// #[derive(Clone)]
 /// struct Delay;
 ///
 /// impl DelayNs for Delay {
 ///     async fn delay_ns(&mut self, _ns: u32) {}
+/// }
+///
+/// struct Uptime;
+///
+/// impl Clock for Uptime {
+///     fn now(&self) -> MonotonicTimestamp {
+///         MonotonicTimestamp::from_millis(0)
+///     }
 /// }
 ///
 /// struct Ble;
@@ -392,7 +415,7 @@ fn worst(parts: [Option<ServiceHealth>; 2]) -> ServiceHealth {
 ///
 /// let shared = WifiShared::<NoopRawMutex>::new();
 /// // `()` is a probe that reports no radio heap.
-/// let service = WirelessService::new(shared.handle(), Delay, (), Ble);
+/// let service = WirelessService::new(shared.handle(), Delay, Uptime, (), Ble);
 ///
 /// // Wi-Fi is not configured, which is not a fault while BLE works.
 /// let summary = block_on(service.summary());
@@ -401,25 +424,74 @@ fn worst(parts: [Option<ServiceHealth>; 2]) -> ServiceHealth {
 ///
 /// [`WifiManager`]: crate::WifiManager
 #[derive(Service)]
-pub struct WirelessService<'a, M: RawMutex, D, P, B> {
+pub struct WirelessService<'a, M: RawMutex, D, C, P, B> {
     handle: WifiHandle<'a, M>,
     delay: D,
+    clock: C,
     probe: P,
     ble: B,
+    scan: Mutex<M, RefCell<ScanSlot>>,
 }
 
-impl<'a, M: RawMutex, D: DelayNs + Clone, P: WirelessProbe, B: BleProbe>
-    WirelessService<'a, M, D, P, B>
+/// The one scan result held for a client: a snapshot of the networks of one
+/// scan, read page by page.
+struct ScanSlot {
+    // 0 when nothing is held.
+    id: u32,
+    next_id: u32,
+    deadline_ms: u64,
+    networks: WifiScanResults,
+}
+
+impl ScanSlot {
+    const fn new() -> Self {
+        Self {
+            id: 0,
+            next_id: 1,
+            deadline_ms: 0,
+            networks: WifiScanResults::new(),
+        }
+    }
+
+    fn release(&mut self) {
+        self.id = 0;
+        self.networks.clear();
+    }
+
+    // Releases the held scan once its deadline passed.
+    fn expire(&mut self, now_ms: u64) {
+        if self.id != 0 && now_ms >= self.deadline_ms {
+            report::scan_expired(self.id);
+            self.release();
+        }
+    }
+}
+
+impl<'a, M: RawMutex, D: DelayNs + Clone, C: Clock, P: WirelessProbe, B: BleProbe>
+    WirelessService<'a, M, D, C, P, B>
 {
     /// The service of the manager behind `handle`, with the radio heap of
-    /// `probe` and the state of the peripheral behind `ble`.
-    pub const fn new(handle: WifiHandle<'a, M>, delay: D, probe: P, ble: B) -> Self {
+    /// `probe` and the state of the peripheral behind `ble`. `delay` bounds a
+    /// scan; `clock` times out a scan result nobody reads.
+    pub const fn new(handle: WifiHandle<'a, M>, delay: D, clock: C, probe: P, ble: B) -> Self {
         Self {
             handle,
             delay,
+            clock,
             probe,
             ble,
+            scan: Mutex::new(RefCell::new(ScanSlot::new())),
         }
+    }
+
+    fn now_ms(&self) -> u64 {
+        self.clock
+            .now()
+            .saturating_millis_since(MonotonicTimestamp::from_millis(0))
+    }
+
+    fn with_scan<R>(&self, f: impl FnOnce(&mut ScanSlot) -> R) -> R {
+        self.scan.lock(|slot| f(&mut slot.borrow_mut()))
     }
 
     fn scan_timeout_ms(&self) -> u32 {
@@ -427,8 +499,8 @@ impl<'a, M: RawMutex, D: DelayNs + Clone, P: WirelessProbe, B: BleProbe>
     }
 }
 
-impl<M: RawMutex, D: DelayNs + Clone, P: WirelessProbe, B: BleProbe> Status
-    for WirelessService<'_, M, D, P, B>
+impl<M: RawMutex, D: DelayNs + Clone, C: Clock, P: WirelessProbe, B: BleProbe> Status
+    for WirelessService<'_, M, D, C, P, B>
 {
     const VERSION: u16 = 1;
     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[
@@ -492,11 +564,12 @@ impl<M: RawMutex, D: DelayNs + Clone, P: WirelessProbe, B: BleProbe> Status
     }
 }
 
-impl<M: RawMutex, D: DelayNs + Clone, P: WirelessProbe, B: BleProbe> Action
-    for WirelessService<'_, M, D, P, B>
+impl<M: RawMutex, D: DelayNs + Clone, C: Clock, P: WirelessProbe, B: BleProbe> Action
+    for WirelessService<'_, M, D, C, P, B>
 {
     const ACTIONS: &'static [ActionDescriptor] = &[
         ActionDescriptor::new(action::WIFI_SCAN, "wifi_scan", ActionAccess::Read)
+            .format(ResultFormat::Records)
             .results(&[
                 FieldDescriptor::new(scan_field::SSID, "ssid", ValueKind::String),
                 FieldDescriptor::new(scan_field::RSSI, "rssi", ValueKind::I64).unit(Unit::Dbm),
@@ -525,37 +598,50 @@ impl<M: RawMutex, D: DelayNs + Clone, P: WirelessProbe, B: BleProbe> Action
     ) -> Result<(), ActionError> {
         match action {
             action::WIFI_SCAN => {
+                // The one held result belongs to a client that has not finished
+                // reading it: no new scan until it is released or expires.
+                if self.with_scan(|slot| {
+                    slot.expire(self.now_ms());
+                    slot.id != 0
+                }) {
+                    report::scan_busy();
+                    return Err(ActionError::Busy);
+                }
                 let scan = self.handle.scan();
                 let mut delay = self.delay.clone();
                 let timeout = delay.delay_ms(self.scan_timeout_ms());
-                let results = match select(scan, timeout).await {
+                let mut results = match select(scan, timeout).await {
                     Either::First(results) => results.map_err(action_error)?,
                     Either::Second(()) => {
                         report::scan_timed_out(self.scan_timeout_ms());
                         return Err(ActionError::Unavailable);
                     }
                 };
+                // A name that is not UTF-8 cannot be a result value.
+                results.retain(|network| network.ssid.as_str().is_some());
                 debug!(target: "wifi", "Scan action returns results (count={})", results.len());
-                for network in results.iter() {
-                    let Some(ssid) = network.ssid.as_str() else {
-                        continue;
-                    };
-                    if out.next_record().is_err() {
-                        break;
-                    }
-                    let written = out
-                        .text(scan_field::SSID, ssid)
-                        .and_then(|()| out.i64(scan_field::RSSI, i64::from(network.rssi_dbm)))
-                        .and_then(|()| out.u64(scan_field::CHANNEL, u64::from(network.channel)))
-                        .and_then(|()| {
-                            out.variant(scan_field::SECURITY, security_value(network.security))
-                        });
-                    if written.is_err() {
-                        report::scan_output_failed();
-                        return Err(ActionError::Internal);
-                    }
+                if results.len() <= MAX_RECORDS {
+                    return write_networks(out, &results);
                 }
-                Ok(())
+                let total = u16::try_from(results.len()).map_err(|_| ActionError::Internal)?;
+                let id = self.with_scan(|slot| {
+                    slot.expire(self.now_ms());
+                    if slot.id != 0 {
+                        return None;
+                    }
+                    let id = slot.next_id;
+                    slot.next_id = id.checked_add(1).unwrap_or(1);
+                    slot.id = id;
+                    slot.deadline_ms = self.now_ms() + SCAN_HOLD_MS;
+                    slot.networks = results;
+                    Some(id)
+                });
+                let Some(id) = id else {
+                    report::scan_busy();
+                    return Err(ActionError::Busy);
+                };
+                out.snapshot(SnapshotInfo { id, total })
+                    .map_err(|_| ActionError::Internal)
             }
             action::WIFI_RECONNECT => self.handle.reconnect().map_err(action_error),
             action::WIFI_DISCONNECT => self.handle.disconnect().map_err(action_error),
@@ -565,6 +651,69 @@ impl<M: RawMutex, D: DelayNs + Clone, P: WirelessProbe, B: BleProbe> Action
             }
         }
     }
+
+    async fn read_records(
+        &self,
+        action: u32,
+        snapshot: u32,
+        from: u32,
+        out: &mut impl ActionOutput,
+    ) -> Result<(), ActionError> {
+        if action != action::WIFI_SCAN {
+            return Err(ActionError::UnknownSnapshot);
+        }
+        let now = self.now_ms();
+        self.with_scan(|slot| {
+            slot.expire(now);
+            if slot.id == 0 || slot.id != snapshot {
+                return Err(ActionError::UnknownSnapshot);
+            }
+            // A reader keeps the result alive.
+            slot.deadline_ms = now + SCAN_HOLD_MS;
+            let from = usize::try_from(from).map_err(|_| ActionError::InvalidArgument)?;
+            let networks = slot.networks.get(from..).unwrap_or_default();
+            write_networks(out, &networks[..networks.len().min(MAX_RECORDS)])
+        })
+    }
+
+    async fn close_records(&self, snapshot: u32) -> Result<(), ActionError> {
+        self.with_scan(|slot| {
+            if slot.id == 0 || slot.id != snapshot {
+                return Err(ActionError::UnknownSnapshot);
+            }
+            slot.release();
+            Ok(())
+        })
+    }
+
+    fn link_lost(&self) {
+        self.with_scan(ScanSlot::release);
+    }
+}
+
+// Writes `networks` as records: as many as `out` takes.
+fn write_networks(
+    out: &mut impl ActionOutput,
+    networks: &[WifiNetwork],
+) -> Result<(), ActionError> {
+    for network in networks {
+        let Some(ssid) = network.ssid.as_str() else {
+            continue;
+        };
+        if out.next_record().is_err() {
+            break;
+        }
+        let written = out
+            .text(scan_field::SSID, ssid)
+            .and_then(|()| out.i64(scan_field::RSSI, i64::from(network.rssi_dbm)))
+            .and_then(|()| out.u64(scan_field::CHANNEL, u64::from(network.channel)))
+            .and_then(|()| out.variant(scan_field::SECURITY, security_value(network.security)));
+        if written.is_err() {
+            report::scan_output_failed();
+            return Err(ActionError::Internal);
+        }
+    }
+    Ok(())
 }
 
 // Out of line, so that the reports do not enlarge the frame of the action.
@@ -575,6 +724,18 @@ mod report {
     #[inline(never)]
     pub(super) fn scan_timed_out(timeout_ms: u32) {
         warn!(target: "wifi", "Scan action timed out (timeout_ms={})", timeout_ms);
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub(super) fn scan_busy() {
+        log::debug!(target: "wifi", "Scan refused: a scan result is held for a client");
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub(super) fn scan_expired(id: u32) {
+        log::debug!(target: "wifi", "Scan result released after its deadline (id={})", id);
     }
 
     #[cold]
@@ -598,7 +759,9 @@ mod tests {
 
     use embassy_futures::block_on;
     use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-    use rohi_service::{MAX_FIELDS, MAX_ISSUE_DESCRIPTORS, MAX_SERVICE_ENUMS};
+    use rohi_service::{
+        ActionRegistry, ActionResult, MAX_FIELDS, MAX_ISSUE_DESCRIPTORS, MAX_SERVICE_ENUMS,
+    };
 
     use super::*;
     use crate::{
@@ -646,6 +809,15 @@ mod tests {
     #[derive(Default)]
     struct Collect(std::vec::Vec<(u32, Value)>);
 
+    #[derive(Clone, Copy)]
+    struct Uptime;
+
+    impl Clock for Uptime {
+        fn now(&self) -> MonotonicTimestamp {
+            MonotonicTimestamp::from_millis(0)
+        }
+    }
+
     impl StatusWriter for Collect {
         fn put(&mut self, id: u32, value: Value) -> Result<(), WriteError> {
             self.0.push((id, value));
@@ -669,7 +841,7 @@ mod tests {
     }
 
     type Shared = WifiShared<NoopRawMutex>;
-    type Service<'a, P> = WirelessService<'a, NoopRawMutex, NoDelay, P, &'a Ble>;
+    type Service<'a, P> = WirelessService<'a, NoopRawMutex, NoDelay, Uptime, P, &'a Ble>;
 
     fn text(value: &str) -> Value {
         Value::text(value).unwrap()
@@ -806,7 +978,7 @@ mod tests {
     fn reconnect_and_disconnect_are_queued_and_unknown_actions_are_refused() {
         let ble = Ble::new(BleState::Advertising);
         let shared = Shared::new();
-        let service = WirelessService::new(shared.handle(), NoDelay, (), &ble);
+        let service = WirelessService::new(shared.handle(), NoDelay, Uptime, (), &ble);
         let mut out = Collect::default();
         for id in [action::WIFI_RECONNECT, action::WIFI_DISCONNECT] {
             assert_eq!(block_on(service.invoke(id, &[], &mut out)), Ok(()));
@@ -821,7 +993,7 @@ mod tests {
     fn a_full_command_queue_is_busy() {
         let ble = Ble::new(BleState::Advertising);
         let shared = Shared::new();
-        let service = WirelessService::new(shared.handle(), NoDelay, (), &ble);
+        let service = WirelessService::new(shared.handle(), NoDelay, Uptime, (), &ble);
         let mut out = Collect::default();
         for _ in 0..crate::WIFI_COMMAND_QUEUE_DEPTH {
             assert_eq!(
@@ -839,7 +1011,7 @@ mod tests {
     fn an_unconfigured_wifi_with_a_working_ble_is_healthy() {
         let ble = Ble::new(BleState::Advertising);
         let shared = Shared::new();
-        let service = WirelessService::new(shared.handle(), NoDelay, FULL, &ble);
+        let service = WirelessService::new(shared.handle(), NoDelay, Uptime, FULL, &ble);
         assert_eq!(health(&service), ServiceHealth::Ok);
         assert!(issue_codes(&service).is_empty());
 
@@ -852,7 +1024,7 @@ mod tests {
     fn a_new_manager_reports_its_state_counters_and_heap_but_no_link_details() {
         let ble = Ble::new(BleState::Advertising);
         let shared = Shared::new();
-        let service = WirelessService::new(shared.handle(), NoDelay, FULL, &ble);
+        let service = WirelessService::new(shared.handle(), NoDelay, Uptime, FULL, &ble);
         let mut out = Collect::default();
         block_on(service.status(&mut out)).unwrap();
         assert_eq!(
@@ -870,7 +1042,7 @@ mod tests {
     fn what_the_platform_cannot_tell_is_not_reported() {
         let ble = Ble::new(BleState::Advertising);
         let shared = Shared::new();
-        let service = WirelessService::new(shared.handle(), NoDelay, (), &ble);
+        let service = WirelessService::new(shared.handle(), NoDelay, Uptime, (), &ble);
         let mut out = Collect::default();
         block_on(service.status(&mut out)).unwrap();
         assert!(out.get(status_field::HEAP_FREE).is_none());
@@ -882,7 +1054,7 @@ mod tests {
         let ble = Ble::new(BleState::Advertising);
         let shared = Shared::new();
         settle(&shared, None);
-        let service = WirelessService::new(shared.handle(), NoDelay, FULL, &ble);
+        let service = WirelessService::new(shared.handle(), NoDelay, Uptime, FULL, &ble);
         assert_eq!(health(&service), ServiceHealth::Ok);
 
         let mut out = Collect::default();
@@ -902,7 +1074,7 @@ mod tests {
         let ble = Ble::new(BleState::Advertising);
         let shared = Shared::new();
         settle(&shared, Some(WifiError::AuthenticationFailed));
-        let service = WirelessService::new(shared.handle(), NoDelay, (), &ble);
+        let service = WirelessService::new(shared.handle(), NoDelay, Uptime, (), &ble);
         assert_eq!(health(&service), ServiceHealth::Error);
         assert_eq!(issue_codes(&service), [issue::AUTHENTICATION_FAILED]);
     }
@@ -912,7 +1084,7 @@ mod tests {
         let ble = Ble::new(BleState::Advertising);
         let shared = Shared::new();
         settle(&shared, Some(WifiError::DhcpFailed));
-        let service = WirelessService::new(shared.handle(), NoDelay, (), &ble);
+        let service = WirelessService::new(shared.handle(), NoDelay, Uptime, (), &ble);
         assert_eq!(issue_codes(&service), [issue::DHCP_FAILED]);
     }
 
@@ -921,7 +1093,7 @@ mod tests {
         let ble = Ble::new(BleState::Error(BleError::BufferTooSmall));
         let shared = Shared::new();
         settle(&shared, None);
-        let service = WirelessService::new(shared.handle(), NoDelay, (), &ble);
+        let service = WirelessService::new(shared.handle(), NoDelay, Uptime, (), &ble);
         assert_eq!(health(&service), ServiceHealth::Error);
         assert_eq!(issue_codes(&service), [issue::BUFFER_TOO_SMALL]);
 
@@ -938,12 +1110,12 @@ mod tests {
         let ble = Ble::new(BleState::Error(BleError::DriverError));
         let shared = Shared::new();
         settle(&shared, Some(WifiError::DriverError));
-        let service = WirelessService::new(shared.handle(), NoDelay, (), &ble);
+        let service = WirelessService::new(shared.handle(), NoDelay, Uptime, (), &ble);
         assert_eq!(issue_codes(&service), [issue::DRIVER_ERROR]);
 
         // Different codes are both listed.
         let ble = Ble::new(BleState::Error(BleError::Busy));
-        let service = WirelessService::new(shared.handle(), NoDelay, (), &ble);
+        let service = WirelessService::new(shared.handle(), NoDelay, Uptime, (), &ble);
         assert_eq!(issue_codes(&service), [issue::DRIVER_ERROR, issue::BUSY]);
     }
 
@@ -962,7 +1134,7 @@ mod tests {
         let ble = Ble::new(BleState::Advertising);
         let shared = Shared::new();
         let handle = shared.handle();
-        let service = WirelessService::new(handle, NoDelay, (), &ble);
+        let service = WirelessService::new(handle, NoDelay, Uptime, (), &ble);
         assert_eq!(
             service.scan_timeout_ms(),
             WifiConfig::default().scan_timeout_ms
@@ -973,6 +1145,264 @@ mod tests {
         });
         assert!(!handle.is_configured());
         assert_eq!(service.scan_timeout_ms(), 7_000);
+    }
+
+    const WIRELESS: u32 = rohi_service::service_id("wireless");
+
+    /// A radio whose scans find `networks`; it counts them.
+    struct Scanner<'a> {
+        networks: WifiScanResults,
+        scans: &'a Cell<u32>,
+    }
+
+    impl WifiBackend for Scanner<'_> {
+        async fn scan(&mut self) -> Result<WifiScanResults, WifiError> {
+            self.scans.set(self.scans.get() + 1);
+            Ok(self.networks.clone())
+        }
+        async fn connect(&mut self, _: &LinkConfig) -> Result<NetworkInfo, WifiError> {
+            Err(WifiError::Timeout)
+        }
+        async fn disconnect(&mut self) -> Result<(), WifiError> {
+            Ok(())
+        }
+        async fn wait_link_lost(&mut self) -> WifiError {
+            core::future::pending().await
+        }
+        fn network_info(&mut self) -> Option<NetworkInfo> {
+            None
+        }
+    }
+
+    /// A clock the test moves.
+    struct Clk<'a>(&'a Cell<u64>);
+
+    impl Clock for Clk<'_> {
+        fn now(&self) -> MonotonicTimestamp {
+            MonotonicTimestamp::from_millis(self.0.get())
+        }
+    }
+
+    // `count` networks, strongest first: `net00` is the strongest.
+    fn networks(count: usize) -> WifiScanResults {
+        let mut collector = crate::ScanCollector::new();
+        for index in 0..count {
+            collector.insert(WifiNetwork {
+                ssid: WifiSsid::from_bytes(std::format!("net{index:02}").as_bytes()).unwrap(),
+                rssi_dbm: -40 - index as i8,
+                security: WifiSecurity::Wpa2,
+                channel: 1 + index as u8,
+            });
+        }
+        collector.finish()
+    }
+
+    fn ssids(records: &[heapless::Vec<(u32, Value), 4>]) -> std::vec::Vec<std::string::String> {
+        records
+            .iter()
+            .map(|record| match &record[0] {
+                (id, Value::String(ssid)) if *id == scan_field::SSID => ssid.as_str().into(),
+                other => panic!("{other:?}"),
+            })
+            .collect()
+    }
+
+    // Everything a scan test needs: one service over a radio that finds
+    // `networks`, driven by `manager`.
+    struct Rig<'a> {
+        service: WirelessService<'a, NoopRawMutex, NoDelay, Clk<'a>, (), &'a Ble>,
+        manager: WifiManager<'a, Scanner<'a>, NoDelay, NoopRawMutex>,
+    }
+
+    fn rig<'a>(
+        shared: &'a Shared,
+        ble: &'a Ble,
+        scans: &'a Cell<u32>,
+        clock: &'a Cell<u64>,
+        networks: WifiScanResults,
+    ) -> Rig<'a> {
+        Rig {
+            service: WirelessService::new(shared.handle(), NoDelay, Clk(clock), (), ble),
+            manager: WifiManager::new(
+                Scanner { networks, scans },
+                NoDelay,
+                shared,
+                ManagerConfig::DEFAULT,
+            ),
+        }
+    }
+
+    impl Rig<'_> {
+        // One `wifi_scan`: the first page of its result.
+        fn scan(&mut self) -> Result<ActionResult, ActionError> {
+            let registry = (&self.service,);
+            let (result, ()) = block_on(embassy_futures::join::join(
+                registry.invoke(WIRELESS, action::WIFI_SCAN, &[]),
+                self.manager.step(),
+            ));
+            result
+        }
+
+        // A scan that is refused before the radio is asked: nothing drives the
+        // manager, which would wait for a command that never comes.
+        fn scan_refused(&self) -> Result<ActionResult, ActionError> {
+            let registry = (&self.service,);
+            block_on(registry.invoke(WIRELESS, action::WIFI_SCAN, &[]))
+        }
+
+        fn read(&self, snapshot: u32, from: u32) -> Result<rohi_service::Records, ActionError> {
+            let registry = (&self.service,);
+            block_on(registry.read_records(WIRELESS, action::WIFI_SCAN, snapshot, from))
+        }
+
+        fn close(&self, snapshot: u32) -> Result<(), ActionError> {
+            let registry = (&self.service,);
+            block_on(registry.close_records(WIRELESS, snapshot))
+        }
+    }
+
+    #[test]
+    fn a_scan_of_sixteen_networks_is_one_scan_read_in_three_pages() {
+        let (ble, shared) = (Ble::new(BleState::Advertising), Shared::new());
+        let (scans, clock) = (Cell::new(0), Cell::new(0));
+        let mut rig = rig(&shared, &ble, &scans, &clock, networks(16));
+        let Ok(ActionResult::Records(first)) = rig.scan() else {
+            panic!("not records");
+        };
+        let snapshot = first.snapshot.expect("a result longer than a page is held");
+        assert_eq!(snapshot.total, 16);
+        let mut seen = ssids(&first.records);
+        assert_eq!(seen.len(), MAX_RECORDS);
+        // The later pages are the same scan: 6 + 6 + 4, nothing dropped.
+        let second = rig.read(snapshot.id, 6).unwrap();
+        let third = rig.read(snapshot.id, 12).unwrap();
+        assert_eq!((second.len(), third.len()), (6, 4));
+        seen.extend(ssids(&second));
+        seen.extend(ssids(&third));
+        let expected: std::vec::Vec<_> = (0..16).map(|i| std::format!("net{i:02}")).collect();
+        assert_eq!(seen, expected);
+        assert_eq!(scans.get(), 1);
+        // A page is the same every time it is read.
+        assert_eq!(rig.read(snapshot.id, 6).unwrap(), second);
+        assert_eq!(scans.get(), 1);
+        // The record carries every field.
+        assert_eq!(first.records[1].len(), 4);
+        assert_eq!(first.records[1][2], (scan_field::CHANNEL, Value::U64(2)));
+        rig.close(snapshot.id).unwrap();
+        assert_eq!(rig.read(snapshot.id, 6), Err(ActionError::UnknownSnapshot));
+        assert_eq!(rig.close(snapshot.id), Err(ActionError::UnknownSnapshot));
+    }
+
+    #[test]
+    fn a_short_scan_holds_nothing_and_no_networks_is_an_empty_collection() {
+        let (ble, shared) = (Ble::new(BleState::Advertising), Shared::new());
+        let (scans, clock) = (Cell::new(0), Cell::new(0));
+        let mut rig = rig(&shared, &ble, &scans, &clock, networks(MAX_RECORDS));
+        let Ok(ActionResult::Records(page)) = rig.scan() else {
+            panic!("not records");
+        };
+        assert_eq!((page.records.len(), page.snapshot), (MAX_RECORDS, None));
+        // Nothing is held: the next scan is free to run.
+        assert!(rig.scan().is_ok());
+        assert_eq!(scans.get(), 2);
+
+        let mut rig = self::rig(&shared, &ble, &scans, &clock, networks(0));
+        let Ok(ActionResult::Records(page)) = rig.scan() else {
+            panic!("not records");
+        };
+        assert!(page.records.is_empty() && page.snapshot.is_none());
+    }
+
+    #[test]
+    fn a_name_that_is_not_utf8_is_not_a_record_and_leaves_no_gap() {
+        let (ble, shared) = (Ble::new(BleState::Advertising), Shared::new());
+        let (scans, clock) = (Cell::new(0), Cell::new(0));
+        let mut found = networks(8);
+        found[3].ssid = WifiSsid::from_bytes(&[0xff, 0xfe]).unwrap();
+        let mut rig = rig(&shared, &ble, &scans, &clock, found);
+        let Ok(ActionResult::Records(first)) = rig.scan() else {
+            panic!("not records");
+        };
+        let snapshot = first.snapshot.unwrap();
+        // Seven networks are listed: the pages add up to the total.
+        assert_eq!(snapshot.total, 7);
+        let rest = rig.read(snapshot.id, 6).unwrap();
+        assert_eq!(first.records.len() + rest.len(), 7);
+        assert!(!ssids(&first.records).contains(&"net03".into()));
+    }
+
+    #[test]
+    fn a_held_scan_is_one_at_a_time_and_expires_without_a_reader() {
+        let (ble, shared) = (Ble::new(BleState::Advertising), Shared::new());
+        let (scans, clock) = (Cell::new(0), Cell::new(0));
+        let mut rig = rig(&shared, &ble, &scans, &clock, networks(10));
+        let Ok(ActionResult::Records(first)) = rig.scan() else {
+            panic!("not records");
+        };
+        let held = first.snapshot.unwrap().id;
+        // Another scan is refused, and does not scan.
+        assert_eq!(rig.scan_refused(), Err(ActionError::Busy));
+        assert_eq!(scans.get(), 1);
+        // A reader keeps it alive.
+        clock.set(SCAN_HOLD_MS - 1);
+        assert!(rig.read(held, 6).is_ok());
+        clock.set(2 * SCAN_HOLD_MS - 2);
+        assert!(rig.read(held, 6).is_ok());
+        // Without one it is released after the hold, and its id is gone.
+        clock.set(3 * SCAN_HOLD_MS);
+        assert_eq!(rig.read(held, 6), Err(ActionError::UnknownSnapshot));
+        let Ok(ActionResult::Records(next)) = rig.scan() else {
+            panic!("not records");
+        };
+        assert_ne!(next.snapshot.unwrap().id, held);
+        assert_eq!(rig.read(held, 6), Err(ActionError::UnknownSnapshot));
+        assert_eq!(scans.get(), 2);
+    }
+
+    #[test]
+    fn a_lost_link_releases_the_held_scan() {
+        let (ble, shared) = (Ble::new(BleState::Advertising), Shared::new());
+        let (scans, clock) = (Cell::new(0), Cell::new(0));
+        let mut rig = rig(&shared, &ble, &scans, &clock, networks(10));
+        let Ok(ActionResult::Records(first)) = rig.scan() else {
+            panic!("not records");
+        };
+        (&rig.service,).link_lost();
+        assert_eq!(
+            rig.read(first.snapshot.unwrap().id, 6),
+            Err(ActionError::UnknownSnapshot)
+        );
+        assert!(rig.scan().is_ok());
+    }
+
+    #[test]
+    fn only_a_scan_has_a_result_and_a_snapshot_of_another_action_is_unknown() {
+        let (ble, shared) = (Ble::new(BleState::Advertising), Shared::new());
+        let (scans, clock) = (Cell::new(0), Cell::new(0));
+        let rig = rig(&shared, &ble, &scans, &clock, networks(10));
+        let registry = (&rig.service,);
+        let id = WIRELESS;
+        for action in [action::WIFI_RECONNECT, action::WIFI_DISCONNECT, 99] {
+            assert_eq!(
+                block_on(registry.read_records(id, action, 1, 0)),
+                Err(ActionError::UnknownSnapshot)
+            );
+        }
+        // The two commands have no result at all.
+        for action in [action::WIFI_RECONNECT, action::WIFI_DISCONNECT] {
+            assert_eq!(
+                <Service<'static, ()> as Action>::ACTIONS
+                    .iter()
+                    .find(|descriptor| descriptor.id == action)
+                    .unwrap()
+                    .format,
+                ResultFormat::Empty
+            );
+        }
+        assert_eq!(
+            <Service<'static, ()> as Action>::ACTIONS[0].format,
+            ResultFormat::Records
+        );
     }
 
     #[test]

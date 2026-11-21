@@ -17,17 +17,20 @@ An action is a capability of a service, so adding one is a change inside the ser
 [`rohi-service` rustdoc](https://docs.rs/rohi-service) for the contract.
 
 1. **Describe it** in the service's action table: a stable numeric id that is never reused, a name, typed arguments (all
-   required) and the fields of the records it returns.
+   required) and its **result format** (`.format(ResultFormat::...)`): `Empty` (the default), `Inline`, `Records`, `Feed` or
+   `Stream`, see [Action result formats](../build/action-results.md). `Inline` and `Records` also list the fields of the
+   record. A longer collection stays in the service as a snapshot (`ActionOutput::snapshot`) that the control plane
+   reads page by page with `Action::read_records`; the action has no paging argument of its own.
 2. **Declare the access.** Every action states what the link must be allowed to do: `ActionAccess::Read` for a scan,
    `Mutate` for an action that changes the runtime or the configuration, `Provision` for one that changes what
    identifies the device (the identity, the whole configuration storage). A secret argument is a separate property
    (`.secret()`): it only makes the argument wiped after the call and never logged, and it does not change the access.
-3. **Implement it** in the service's `invoke`. The arguments are already checked against the description. Refuse with a
-   stable, machine readable reason that a client may react to.
+3. **Implement it** in the service's `invoke`. The arguments are already checked against the description, and the
+   output refuses anything but the declared format. Refuse with a stable, machine readable reason that a client may react to.
 4. **Mutation rule.** If the action commits durable state that a runtime must react to, the commit and the publication
    happen in the owner task. Long-running actions bound their own wait and must be cancellation safe, see the
    [cancellation rules](https://docs.rs/rohi-sdk/latest/rohi_sdk/cancellation/index.html).
-5. **Tests**: the action against the registry (arguments checked, records, refusals) and, if the privilege matters,
+5. **Tests**: the action against the registry (arguments checked, the result of its format, refusals) and, if the privilege matters,
    through the dispatcher.
 6. **Docs**: the rustdoc of the service. `rohi action <service>` lists the action and generates its help from the
    device; no protocol, dispatcher, client or CLI change is needed.
@@ -36,9 +39,9 @@ An action is a capability of a service, so adding one is a change inside the ser
 
 Only when the operation fits none of the planes (config, status, actions, info):
 
-1. **Schema** in `crates/control-proto/proto/rohi/control/v1/control.proto`: add the messages and a `oneof` entry with a
+1. **Schema** in `crates/control-proto/proto/rohi/control/v2/control.proto`: add the messages and a `oneof` entry with a
    **new field number**; bound every repeated, string and bytes field in `build.rs` and keep the memory budget test
-   green. Prefer paging to a larger response. Do not bump the protocol version; it is under development.
+   green. Prefer a result format to a larger response. An incompatible wire change raises `PROTOCOL_VERSION`; the client and the firmware are updated together.
 2. **Dispatch** in `rohi-control`: handle the call, decide its privilege and map the types; protobuf types do not leak
    into other crates, and secrets are never returned or logged.
 3. **Backend**: if the dispatcher needs something from the firmware, add it to the control backend and update its

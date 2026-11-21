@@ -18,7 +18,7 @@
 #![no_std]
 
 //! Bounded protobuf schema of the Robonomics Open Hardware Interface (ROHI)
-//! local control protocol, version 1.
+//! local control protocol, version 2.
 //!
 //! # Overview
 //!
@@ -28,8 +28,8 @@
 //! transport such as [`rohi-control-ble`](../rohi_control_ble/index.html). It
 //! contains no device logic. What it provides:
 //!
-//! * the schema, `proto/rohi/control/v1/control.proto` (package
-//!   `rohi.control.v1`), the single source of truth of the wire format;
+//! * the schema, `proto/rohi/control/v2/control.proto` (package
+//!   `rohi.control.v2`), the single source of truth of the wire format;
 //! * the generated `no_std`, allocation-free message types in [`control`],
 //!   created at build time from that file by `micropb`, with every string,
 //!   bytes and repeated field bounded by the compile-time [`limits`];
@@ -109,8 +109,7 @@
 //! | config | `ListConfigSections` (11), `GetConfigSchema` (12), `GetConfigSection` (13), `PatchConfigSection` (14), `ResetConfigSection` (15) |
 //! | status | `GetServicesStatus` (17), `GetServiceSchema` (18), `GetServiceStatus` (19) |
 //! | actions | `ListActions` (20, paged by `offset`: a page holds at most `MAX_ACTIONS` and `total` is the count of the device), `GetActionSchema` (21), `InvokeAction` (22) |
-//! | stream | `ReadStream` (23), `CloseStream` (24); the files of a stream come as `action_stream` (25), the answer of `InvokeAction` |
-//! | page | an action with `returns_page` (such as `logging.tail`) answers `InvokeAction` with `action_page` (28): one cursor paged page of at most [`limits::MAX_PAGE_CHUNK`] bytes, no stream |
+//! | results | `ReadStream` (23), `CloseStream` (24), `ReadResultPage` (25), `CloseResultPage` (26); the answer of `InvokeAction` has the case of the `ResultFormat` of the action: `action_empty` (22), `action_inline` (26), `records_page` (27, a finite collection, the first page; later pages with `ReadResultPage`), `feed_page` (28, one cursor page of a changing source of at most [`limits::MAX_FEED_CHUNK`] bytes, nothing kept on the device) or `action_stream` (25, a binary snapshot) |
 //!
 //! **Schemas drive clients.** The protocol knows no device module. A device
 //! publishes descriptors (`FieldDescriptor`, `ConfigFieldDescriptor`,
@@ -150,13 +149,13 @@
 //!
 //! # API Navigation
 //!
-//! * [`control`] - generated messages of `rohi.control.v1`; oneof payloads are
+//! * [`control`] - generated messages of `rohi.control.v2`; oneof payloads are
 //!   in `Request_` and `Response_`, nested enums in modules named after
 //!   their message (for example [`control::ConfigMutation_`]).
 //! * [`limits`] - the compile-time bounds, listed below.
 //! * [`encode`], [`decode`], [`EncodeError`], [`DecodeError`],
 //!   [`MessageEncode`], [`MessageDecode`]: the codec.
-//! * [`PROTOCOL_VERSION`] - `1`.
+//! * [`PROTOCOL_VERSION`] - `2`.
 //!
 //! # Guarantees and Limitations
 //!
@@ -165,8 +164,9 @@
 //!   tests of this crate check that the worst-case request fits
 //!   [`MAX_REQUEST_LEN`](limits::MAX_REQUEST_LEN) and that the largest schema,
 //!   status, action and list responses fit
-//!   [`MAX_RESPONSE_LEN`](limits::MAX_RESPONSE_LEN). Collections are never
-//!   paged. A memory budget test also caps the in-memory size of the largest
+//!   [`MAX_RESPONSE_LEN`](limits::MAX_RESPONSE_LEN). Collections of status and
+//!   configuration are never paged; the records of an action are, see the
+//!   schema. A memory budget test also caps the in-memory size of the largest
 //!   generated types (`Request`, `Response`, `FieldDescriptor`, `FieldValue`
 //!   and the status, config section and patch messages): the control task
 //!   builds responses on a small microcontroller stack, so growth fails CI
@@ -182,14 +182,7 @@
 //!   (`ErrorCode(0x7f)`) and clients should treat them as unknown. Field
 //!   ids in schemas are only added, never reused. A device whose
 //!   `protocol_version` differs from the one in the request answers
-//!   `NotSupported`; this version is `1`.
-//! * **Breaking changes inside version 1.** The dedicated `FactoryReset` and
-//!   `Reboot` requests were removed: both operations are actions of the
-//!   `system` service. Their former field numbers 23 and 24 are reused by
-//!   `ReadStream` and `CloseStream`; `action_stream` uses field 25.
-//!   `ActionInfo.access` reuses the former `privileged` field number (4). The
-//!   version stays `1`; there is no negotiation or fallback, and clients built
-//!   against the previous schema are unsupported.
+//!   `NotSupported`; this version is `2`.
 //! * **Not verified here.** The encoding is plain protobuf 3; this crate
 //!   tests golden bytes of representative messages, not interoperability with
 //!   other protobuf implementations.
@@ -212,22 +205,23 @@
 //! | [`limits::MAX_CONFIG_FIELDS`], [`limits::MAX_MUTATIONS`] | 16, 8 | config fields per section, mutations per patch |
 //! | [`limits::MAX_CONFIG_SECTIONS`], [`limits::MAX_SERVICES`], [`limits::MAX_ACTIONS`] | 16, 16, 12 | registry entries listed |
 //! | [`limits::MAX_ISSUES`], [`limits::MAX_ISSUE_DESCRIPTORS`] | 4, 12 | active issues, issue descriptors |
-//! | [`limits::MAX_ACTION_ARGS`], [`limits::MAX_RECORDS`], [`limits::MAX_RECORD_FIELDS`] | 3, 6, 4 | action arguments, result records, fields per record |
-//! | [`limits::MAX_STREAM_CHUNK`], [`limits::MAX_PAGE_CHUNK`] | 512, 512 | bytes of one stream chunk, bytes of data of one action page |
+//! | [`limits::MAX_ACTION_ARGS`], [`limits::MAX_RECORDS`], [`limits::MAX_RECORD_FIELDS`] | 3, 6, 4 | action arguments, records of one page, fields per record |
+//! | [`limits::MAX_STREAM_CHUNK`], [`limits::MAX_FEED_CHUNK`] | 512, 512 | bytes of one stream chunk, bytes of data of one feed page |
+//! | [`limits::MAX_PAGE_TOKEN_LEN`] | 6 | bytes of the opaque page token of a `Records` result |
 //!
 //! The limits are defined once, in the build script of this crate, which also
 //! applies them to the generated types, so the schema and the constants
 //! cannot drift.
 
 /// Version of the control protocol, carried in every request and response.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Compile-time bounds of the protocol.
 pub mod limits {
     include!(concat!(env!("OUT_DIR"), "/limits.rs"));
 }
 
-/// Generated message types of `rohi.control.v1`.
+/// Generated message types of `rohi.control.v2`.
 pub mod control {
     #[allow(
         clippy::all,
@@ -240,7 +234,7 @@ pub mod control {
         include!(concat!(env!("OUT_DIR"), "/control.rs"));
     }
 
-    pub use generated::rohi_::control_::v1_::*;
+    pub use generated::rohi_::control_::v2_::*;
 }
 
 use core::fmt;

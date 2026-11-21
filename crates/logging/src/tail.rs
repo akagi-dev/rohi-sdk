@@ -20,7 +20,7 @@
 
 use core::fmt;
 
-use rohi_service::PageInfo;
+use rohi_service::FeedInfo;
 
 use crate::LogRecord;
 use crate::segment::text::{line_len, write_line_within};
@@ -56,8 +56,8 @@ pub(crate) struct TailPage {
 
 impl TailPage {
     /// What the action reports about the page.
-    pub(crate) const fn info(&self) -> PageInfo {
-        PageInfo {
+    pub(crate) const fn info(&self) -> FeedInfo {
+        FeedInfo {
             session: self.session,
             cursor: self.cursor,
             oldest_sequence: self.oldest_sequence,
@@ -260,7 +260,7 @@ mod tests {
     use crate::segment::text::{MAX_LINE_LEN, parse_line};
     use crate::{LogLevel, MAX_MESSAGE_LEN, MAX_TARGET_LEN};
 
-    const PAGE: usize = rohi_service::MAX_PAGE_CHUNK;
+    const PAGE: usize = rohi_service::MAX_FEED_CHUNK;
 
     fn record(text: &str) -> LogRecord {
         LogRecord::new(LogLevel::Info, "t", format_args!("{text}"), 5, None)

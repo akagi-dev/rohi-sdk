@@ -63,6 +63,7 @@ use rohi_sdk::service::{
     Status, StatusSet, Statuses,
 };
 use rohi_sdk::system::{SystemError, SystemPlatform, SystemService};
+use rohi_sdk::time::EmbassyClock;
 use static_cell::StaticCell;
 
 use crate::config::{
@@ -179,7 +180,8 @@ pub type UrbanConfig = StorageConfig<ConfigSections>;
 static SECTIONS: StaticCell<ConfigSections> = StaticCell::new();
 
 /// The services of the device, by capability.
-type UrbanWireless<B> = Startup<WirelessService<'static, RawMutex, Delay, net::Probe, B>>;
+type UrbanWireless<B> =
+    Startup<WirelessService<'static, RawMutex, Delay, EmbassyClock, net::Probe, B>>;
 type UrbanConnectivity = connectivity::UrbanConnectivity;
 type UrbanLocation = LocationService<'static, RawMutex>;
 type UrbanSensors = SensorsService<'static, RawMutex>;
@@ -342,7 +344,13 @@ where
     let storage_config = StorageConfig::new(sections, maintenance());
     let services: &'static UrbanServices<B, L> = services.init(UrbanServices {
         wireless: Startup::new(
-            WirelessService::new(net::handle(), Delay, net::Probe::new(heap), ble),
+            WirelessService::new(
+                net::handle(),
+                Delay,
+                EmbassyClock,
+                net::Probe::new(heap),
+                ble,
+            ),
             network_failed,
         ),
         connectivity: connectivity::service(

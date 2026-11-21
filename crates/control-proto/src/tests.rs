@@ -32,8 +32,8 @@ fn the_request_fits_the_limit_in_the_worst_case() {
 }
 
 #[test]
-fn protocol_version_is_one() {
-    assert_eq!(PROTOCOL_VERSION, 1);
+fn protocol_version_is_two() {
+    assert_eq!(PROTOCOL_VERSION, 2);
 }
 
 #[test]
@@ -49,9 +49,9 @@ fn stream_envelope_fields_match_the_wire_schema() {
     };
     let mut buf = [0u8; 16];
     let len = encode(&read, &mut buf).unwrap();
-    assert_eq!(&buf[..len], &[0x08, 0x01, 0x10, 0x07, 0xba, 0x01, 0x00]);
+    assert_eq!(&buf[..len], &[0x08, 0x02, 0x10, 0x07, 0xba, 0x01, 0x00]);
     let len = encode(&close, &mut buf).unwrap();
-    assert_eq!(&buf[..len], &[0x08, 0x01, 0x10, 0x07, 0xc2, 0x01, 0x00]);
+    assert_eq!(&buf[..len], &[0x08, 0x02, 0x10, 0x07, 0xc2, 0x01, 0x00]);
 
     let read = Response {
         protocol_version: PROTOCOL_VERSION,
@@ -71,11 +71,11 @@ fn stream_envelope_fields_match_the_wire_schema() {
         ..read.clone()
     };
     let len = encode(&read, &mut buf).unwrap();
-    assert_eq!(&buf[..len], &[0x08, 0x01, 0x10, 0x07, 0xba, 0x01, 0x00]);
+    assert_eq!(&buf[..len], &[0x08, 0x02, 0x10, 0x07, 0xba, 0x01, 0x00]);
     let len = encode(&close, &mut buf).unwrap();
-    assert_eq!(&buf[..len], &[0x08, 0x01, 0x10, 0x07, 0xc2, 0x01, 0x00]);
+    assert_eq!(&buf[..len], &[0x08, 0x02, 0x10, 0x07, 0xc2, 0x01, 0x00]);
     let len = encode(&action_stream, &mut buf).unwrap();
-    assert_eq!(&buf[..len], &[0x08, 0x01, 0x10, 0x07, 0xca, 0x01, 0x00]);
+    assert_eq!(&buf[..len], &[0x08, 0x02, 0x10, 0x07, 0xca, 0x01, 0x00]);
 }
 
 #[test]
@@ -114,7 +114,7 @@ fn get_info_request_golden_bytes() {
     let mut buf = [0u8; 16];
     let len = encode(&request, &mut buf).unwrap();
     // field 1 varint 1, field 2 varint 7, field 10 empty message.
-    assert_eq!(&buf[..len], &[0x08, 0x01, 0x10, 0x07, 0x52, 0x00]);
+    assert_eq!(&buf[..len], &[0x08, 0x02, 0x10, 0x07, 0x52, 0x00]);
 
     let decoded: Request = decode(&buf[..len]).unwrap();
     assert!(decoded == request);
@@ -135,7 +135,7 @@ fn error_response_golden_bytes() {
     // field 9 (error) holds field 1 = 3.
     assert_eq!(
         &buf[..len],
-        &[0x08, 0x01, 0x10, 0xac, 0x02, 0x4a, 0x02, 0x08, 0x03]
+        &[0x08, 0x02, 0x10, 0xac, 0x02, 0x4a, 0x02, 0x08, 0x03]
     );
     assert_eq!(decode::<Response>(&buf[..len]).unwrap(), response);
 }
@@ -143,7 +143,7 @@ fn error_response_golden_bytes() {
 #[test]
 fn unknown_fields_are_skipped() {
     // protocol_version = 1, request_id = 5, unknown field 99 (varint), get_info.
-    let wire = [0x08, 0x01, 0x10, 0x05, 0x98, 0x06, 0x2a, 0x52, 0x00];
+    let wire = [0x08, 0x02, 0x10, 0x05, 0x98, 0x06, 0x2a, 0x52, 0x00];
     let request: Request = decode(&wire).unwrap();
     assert_eq!(request.request_id, 5);
     assert!(matches!(
@@ -155,7 +155,7 @@ fn unknown_fields_are_skipped() {
 #[test]
 fn unknown_request_decodes_without_a_variant() {
     // A request type from a future protocol revision: field 99 message.
-    let wire = [0x08, 0x01, 0x10, 0x09, 0x9a, 0x06, 0x00];
+    let wire = [0x08, 0x02, 0x10, 0x09, 0x9a, 0x06, 0x00];
     let request: Request = decode(&wire).unwrap();
     assert_eq!(request.request_id, 9);
     assert!(request.request.is_none());
@@ -163,7 +163,7 @@ fn unknown_request_decodes_without_a_variant() {
 
 #[test]
 fn unknown_enum_values_are_preserved() {
-    let wire = [0x08, 0x01, 0x10, 0x01, 0x4a, 0x02, 0x08, 0x7f];
+    let wire = [0x08, 0x02, 0x10, 0x01, 0x4a, 0x02, 0x08, 0x7f];
     let response: Response = decode(&wire).unwrap();
     let Some(Response_::Response::Error(error)) = response.response else {
         panic!("not an error");
@@ -174,7 +174,7 @@ fn unknown_enum_values_are_preserved() {
 #[test]
 fn truncated_message_is_malformed() {
     assert_eq!(
-        decode::<Request>(&[0x08, 0x01, 0x10]).err(),
+        decode::<Request>(&[0x08, 0x02, 0x10]).err(),
         Some(DecodeError::Malformed)
     );
     assert_eq!(
@@ -518,8 +518,7 @@ fn every_action_listed_fits_the_response_limit() {
                 name: text(&"a".repeat(limits::MAX_NAME_LEN)),
                 access: ActionAccess::Provision,
                 secret_args: true,
-                returns_stream: true,
-                returns_page: true,
+                result_format: ResultFormat::Records,
                 service: text(&"s".repeat(limits::MAX_NAME_LEN)),
             })
             .ok()
@@ -556,8 +555,7 @@ fn a_full_action_schema_fits_the_response_limit() {
         name: text(&"a".repeat(limits::MAX_NAME_LEN)),
         access: ActionAccess::Provision,
         secret_args: true,
-        returns_stream: true,
-        returns_page: true,
+        result_format: ResultFormat::Records,
         service: text(&"s".repeat(limits::MAX_NAME_LEN)),
     });
     round_trip(response(Response_::Response::GetActionSchema(schema)));
@@ -575,7 +573,7 @@ fn list_config_sections_request_golden_bytes() {
     let mut buf = [0u8; 16];
     let len = encode(&request, &mut buf).unwrap();
     // field 11, length-delimited and empty.
-    assert_eq!(&buf[..len], &[0x08, 0x01, 0x10, 0x07, 0x5a, 0x00]);
+    assert_eq!(&buf[..len], &[0x08, 0x02, 0x10, 0x07, 0x5a, 0x00]);
 }
 
 #[test]
@@ -620,9 +618,10 @@ fn a_full_action_result_fits_the_response_limit_with_typical_values() {
         }
         records.push(ActionRecord { fields }).ok().unwrap();
     }
-    let len = round_trip(response(Response_::Response::InvokeAction(
-        InvokeActionResponse { records },
-    )));
+    let len = round_trip(response(Response_::Response::RecordsPage(RecordsPage {
+        records,
+        page_token: bytes(&[0xff; limits::MAX_PAGE_TOKEN_LEN]),
+    })));
     assert!(len < limits::MAX_RESPONSE_LEN / 2, "{len}");
 }
 
@@ -776,71 +775,246 @@ fn the_response_fits_the_limit_in_the_worst_case() {
 }
 
 #[test]
-fn the_action_page_envelope_field_matches_the_wire_schema() {
+fn the_feed_page_envelope_field_matches_the_wire_schema() {
     let response = Response {
         protocol_version: PROTOCOL_VERSION,
         request_id: 7,
-        response: Some(Response_::Response::ActionPage(ActionPage::default())),
+        response: Some(Response_::Response::FeedPage(FeedPage::default())),
     };
     let mut buf = [0u8; 16];
     let len = encode(&response, &mut buf).unwrap();
     // Field 28 of `Response`, length-delimited.
-    assert_eq!(&buf[..len], &[0x08, 0x01, 0x10, 0x07, 0xe2, 0x01, 0x00]);
+    assert_eq!(&buf[..len], &[0x08, 0x02, 0x10, 0x07, 0xe2, 0x01, 0x00]);
 }
 
 #[test]
-fn an_action_that_returns_a_page_is_flagged_in_discovery() {
+fn every_result_format_is_one_field_of_discovery() {
+    for (format, number) in [
+        (ResultFormat::Empty, 1),
+        (ResultFormat::Inline, 2),
+        (ResultFormat::Records, 3),
+        (ResultFormat::Feed, 4),
+        (ResultFormat::Stream, 5),
+    ] {
+        let mut buf = [0u8; 16];
+        let info = ActionInfo {
+            result_format: format,
+            ..Default::default()
+        };
+        let len = encode(&info, &mut buf).unwrap();
+        // Field 7, varint; the access field is left out while it is unspecified.
+        assert_eq!(&buf[..len], &[0x38, number]);
+        assert_eq!(
+            decode::<ActionInfo>(&buf[..len]).unwrap().result_format,
+            format
+        );
+    }
+    // No format is the unspecified one, which a device never sends.
     let mut buf = [0u8; 16];
-    let info = ActionInfo {
-        returns_page: true,
-        ..Default::default()
-    };
-    let len = encode(&info, &mut buf).unwrap();
-    // Field 8, varint 1; the access field is left out while it is unspecified.
-    assert!(buf[..len].windows(2).any(|pair| pair == [0x40, 0x01]));
-    assert!(decode::<ActionInfo>(&buf[..len]).unwrap().returns_page);
+    assert_eq!(encode(&ActionInfo::default(), &mut buf), Ok(0));
 }
 
-fn full_page() -> ActionPage {
-    ActionPage {
+fn full_page() -> FeedPage {
+    FeedPage {
         session: u32::MAX,
         cursor: u64::MAX,
         oldest_sequence: u64::MAX,
         newest_sequence: u64::MAX,
         reset: true,
         gap: u64::MAX,
-        data: bytes(&[b'x'; limits::MAX_PAGE_CHUNK]),
+        data: bytes(&[b'x'; limits::MAX_FEED_CHUNK]),
     }
 }
 
 #[test]
-fn a_full_action_page_fits_the_response_limit_with_room_to_spare() {
-    // The page is bounded at compile time: data of at most `MAX_PAGE_CHUNK`
+fn a_full_feed_page_fits_the_response_limit_with_room_to_spare() {
+    // The page is bounded at compile time: data of at most `MAX_FEED_CHUNK`
     // bytes and a fixed amount of metadata.
     const METADATA: usize = 2 + 2 + 5 + 3 * 11 + 2 + 11 + 5;
-    assert_eq!(limits::MAX_PAGE_CHUNK, 512);
-    let worst = ActionPage::MAX_SIZE.unwrap();
-    assert!(worst <= limits::MAX_PAGE_CHUNK + METADATA + 8, "{worst}");
-    let reply = response(Response_::Response::ActionPage(full_page()));
+    assert_eq!(limits::MAX_FEED_CHUNK, 512);
+    let worst = FeedPage::MAX_SIZE.unwrap();
+    assert!(worst <= limits::MAX_FEED_CHUNK + METADATA + 8, "{worst}");
+    let reply = response(Response_::Response::FeedPage(full_page()));
     let len = round_trip(reply);
     assert!(len <= limits::MAX_RESPONSE_LEN / 2, "{len}");
-    assert!(len > limits::MAX_PAGE_CHUNK);
+    assert!(len > limits::MAX_FEED_CHUNK);
 }
 
 #[test]
-fn an_action_page_above_its_bound_is_a_capacity_error() {
+fn a_feed_page_above_its_bound_is_a_capacity_error() {
     let mut buf = [0u8; 32];
     // Field 7 (`data`), length 513, but only a few bytes follow: the bound is
     // checked before the bytes are read.
     buf[0] = 0x3a;
     buf[1] = 0x81;
     buf[2] = 0x04;
-    assert_eq!(decode::<ActionPage>(&buf[..3]), Err(DecodeError::Capacity));
+    assert_eq!(decode::<FeedPage>(&buf[..3]), Err(DecodeError::Capacity));
 }
 
 #[test]
-fn the_action_page_does_not_grow_the_largest_message() {
+fn the_feed_page_does_not_grow_the_largest_message() {
     // The page has the capacity of a stream chunk: the largest response of the
     // control task is not made larger by it.
-    assert!(core::mem::size_of::<ActionPage>() <= core::mem::size_of::<ReadStreamResponse>() + 40);
+    assert!(core::mem::size_of::<FeedPage>() <= core::mem::size_of::<ReadStreamResponse>() + 40);
+}
+
+#[test]
+fn the_result_envelope_fields_match_the_wire_schema() {
+    let mut buf = [0u8; 16];
+    let head = [0x08, 0x02, 0x10, 0x07];
+    let encoded = |response: Response_::Response| {
+        let message = Response {
+            protocol_version: PROTOCOL_VERSION,
+            request_id: 7,
+            response: Some(response),
+        };
+        let mut buf = [0u8; 16];
+        let len = encode(&message, &mut buf).unwrap();
+        buf[..len].to_vec()
+    };
+    // Length-delimited fields 22, 25, 26, 27, 28 and 29 of `Response`.
+    for (case, tag) in [
+        (Response_::Response::ActionEmpty(Empty {}), 0xb2),
+        (
+            Response_::Response::ActionStream(StreamInfo::default()),
+            0xca,
+        ),
+        (
+            Response_::Response::ActionInline(InlineResult::default()),
+            0xd2,
+        ),
+        (
+            Response_::Response::RecordsPage(RecordsPage::default()),
+            0xda,
+        ),
+        (Response_::Response::FeedPage(FeedPage::default()), 0xe2),
+        (
+            Response_::Response::CloseResultPage(CloseResultPageResponse::default()),
+            0xea,
+        ),
+    ] {
+        let mut expected = head.to_vec();
+        expected.extend_from_slice(&[tag, 0x01, 0x00]);
+        assert_eq!(encoded(case), expected);
+    }
+    // Fields 25 and 26 of `Request`.
+    let request = |call: Request_::Request| Request {
+        protocol_version: PROTOCOL_VERSION,
+        request_id: 7,
+        request: Some(call),
+    };
+    let len = encode(
+        &request(Request_::Request::ReadResultPage(
+            ReadResultPageRequest::default(),
+        )),
+        &mut buf,
+    )
+    .unwrap();
+    assert_eq!(&buf[..len], &[0x08, 0x02, 0x10, 0x07, 0xca, 0x01, 0x00]);
+    let len = encode(
+        &request(Request_::Request::CloseResultPage(
+            CloseResultPageRequest::default(),
+        )),
+        &mut buf,
+    )
+    .unwrap();
+    assert_eq!(&buf[..len], &[0x08, 0x02, 0x10, 0x07, 0xd2, 0x01, 0x00]);
+}
+
+#[test]
+fn an_inline_result_and_a_records_page_are_not_the_same_message() {
+    // `Empty`, an empty `Inline` and an empty collection are three messages.
+    let message = |response: Response_::Response| {
+        let mut buf = [0u8; 16];
+        let len = encode(&self::response(response), &mut buf).unwrap();
+        buf[..len].to_vec()
+    };
+    let empty = message(Response_::Response::ActionEmpty(Empty {}));
+    let inline = message(Response_::Response::ActionInline(InlineResult::default()));
+    let records = message(Response_::Response::RecordsPage(RecordsPage::default()));
+    assert!(empty != inline && inline != records && empty != records);
+}
+
+#[test]
+fn a_page_request_round_trips_with_its_token() {
+    let token = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
+    let read = Request {
+        protocol_version: PROTOCOL_VERSION,
+        request_id: 9,
+        request: Some(Request_::Request::ReadResultPage(ReadResultPageRequest {
+            service_id: u32::MAX,
+            action_id: u32::MAX,
+            page_token: bytes(&token),
+        })),
+    };
+    let mut buf = [0u8; limits::MAX_REQUEST_LEN];
+    let len = encode(&read, &mut buf).unwrap();
+    assert!(decode::<Request>(&buf[..len]).unwrap() == read);
+    let close = Request {
+        request: Some(Request_::Request::CloseResultPage(CloseResultPageRequest {
+            service_id: 1,
+            action_id: 2,
+            page_token: bytes(&token),
+        })),
+        ..read
+    };
+    let len = encode(&close, &mut buf).unwrap();
+    assert!(decode::<Request>(&buf[..len]).unwrap() == close);
+}
+
+#[test]
+fn a_page_token_above_its_bound_is_a_capacity_error() {
+    let mut buf = [0u8; 32];
+    // Field 3 (`page_token`) of the request, one byte more than the bound.
+    buf[0] = 0x1a;
+    buf[1] = limits::MAX_PAGE_TOKEN_LEN as u8 + 1;
+    let len = 2 + limits::MAX_PAGE_TOKEN_LEN + 1;
+    assert_eq!(
+        decode::<ReadResultPageRequest>(&buf[..len]),
+        Err(DecodeError::Capacity)
+    );
+}
+
+#[test]
+fn the_worst_records_page_fits_the_response_limit() {
+    // Every record with every field at its bound, the longest token.
+    let mut records = Vec::new();
+    for _ in 0..limits::MAX_RECORDS {
+        let mut fields = Vec::new();
+        for id in 0..limits::MAX_RECORD_FIELDS as u32 {
+            fields
+                .push(string_field(
+                    u32::MAX - id,
+                    &"x".repeat(limits::MAX_FIELD_VALUE_LEN),
+                ))
+                .ok()
+                .unwrap();
+        }
+        records.push(ActionRecord { fields }).ok().unwrap();
+    }
+    let page = RecordsPage {
+        records,
+        page_token: bytes(&[0xff; limits::MAX_PAGE_TOKEN_LEN]),
+    };
+    // The page leaves room for the envelope around it.
+    assert!(page.compute_size() <= limits::MAX_RESPONSE_LEN - 16);
+    assert!(RecordsPage::MAX_SIZE.unwrap() + 16 <= limits::MAX_RESPONSE_LEN);
+    round_trip(response(Response_::Response::RecordsPage(page)));
+}
+
+#[test]
+fn the_worst_inline_result_fits_the_response_limit() {
+    let mut fields = Vec::new();
+    for id in 0..limits::MAX_RECORD_FIELDS as u32 {
+        fields
+            .push(string_field(
+                u32::MAX - id,
+                &"x".repeat(limits::MAX_FIELD_VALUE_LEN),
+            ))
+            .ok()
+            .unwrap();
+    }
+    round_trip(response(Response_::Response::ActionInline(InlineResult {
+        fields,
+    })));
 }

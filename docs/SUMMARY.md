@@ -30,6 +30,7 @@
   - [Config](build/config.md)
   - [Status](build/status.md)
   - [Action](build/action.md)
+    - [Action result formats](build/action-results.md)
 - [Control protocol](build/control-protocol.md)
 - [Create & customize](build/create-and-customize.md)
   - [Customize firmware with AI](build/customize-with-ai.md)

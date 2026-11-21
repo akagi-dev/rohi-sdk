@@ -24,7 +24,7 @@ use std::path::PathBuf;
 use micropb_gen::config::IntSize;
 use micropb_gen::{Config, Generator};
 
-const PROTO: &str = "proto/rohi/control/v1/control.proto";
+const PROTO: &str = "proto/rohi/control/v2/control.proto";
 
 /// Compile-time bounds of the protocol. Written to `limits.rs` and applied to
 /// the generated types, so the schema and the Rust constants cannot drift.
@@ -150,14 +150,19 @@ const LIMITS: &[(&str, usize, &str)] = &[
         "Maximum number of bytes one `ReadStreamResponse` carries.",
     ),
     (
+        "MAX_PAGE_TOKEN_LEN",
+        6,
+        "Maximum length of the opaque page token of a `Records` result, in bytes.",
+    ),
+    (
         "MAX_STREAM_FILES",
         24,
         "Maximum number of files of one stream.",
     ),
     (
-        "MAX_PAGE_CHUNK",
+        "MAX_FEED_CHUNK",
         512,
-        "Maximum number of bytes of data one `ActionPage` carries.",
+        "Maximum number of bytes of data one `FeedPage` carries.",
     ),
     (
         "MAX_REASON_LEN",
@@ -168,28 +173,29 @@ const LIMITS: &[(&str, usize, &str)] = &[
 
 /// Repeated fields: bounded by element count, not by byte length.
 const REPEATED: &[&str] = &[
-    ".rohi.control.v1.GetConfigSchemaResponse.fields",
-    ".rohi.control.v1.GetConfigSchemaResponse.enums",
-    ".rohi.control.v1.ListConfigSectionsResponse.sections",
-    ".rohi.control.v1.GetConfigSectionResponse.effective",
-    ".rohi.control.v1.GetConfigSectionResponse.overridden",
-    ".rohi.control.v1.PatchConfigSectionRequest.mutations",
-    ".rohi.control.v1.GetServicesStatusResponse.services",
-    ".rohi.control.v1.GetServiceSchemaResponse.fields",
-    ".rohi.control.v1.GetServiceSchemaResponse.enums",
-    ".rohi.control.v1.GetServiceSchemaResponse.issues",
-    ".rohi.control.v1.GetServiceStatusResponse.fields",
-    ".rohi.control.v1.GetServiceStatusResponse.issues",
-    ".rohi.control.v1.ListActionsResponse.actions",
-    ".rohi.control.v1.GetActionSchemaResponse.args",
-    ".rohi.control.v1.GetActionSchemaResponse.results",
-    ".rohi.control.v1.GetActionSchemaResponse.enums",
-    ".rohi.control.v1.GetActionSchemaResponse.selections",
-    ".rohi.control.v1.InvokeActionRequest.args",
-    ".rohi.control.v1.ActionRecord.fields",
-    ".rohi.control.v1.InvokeActionResponse.records",
-    ".rohi.control.v1.EnumDescriptor.variants",
-    ".rohi.control.v1.StreamInfo.files",
+    ".rohi.control.v2.GetConfigSchemaResponse.fields",
+    ".rohi.control.v2.GetConfigSchemaResponse.enums",
+    ".rohi.control.v2.ListConfigSectionsResponse.sections",
+    ".rohi.control.v2.GetConfigSectionResponse.effective",
+    ".rohi.control.v2.GetConfigSectionResponse.overridden",
+    ".rohi.control.v2.PatchConfigSectionRequest.mutations",
+    ".rohi.control.v2.GetServicesStatusResponse.services",
+    ".rohi.control.v2.GetServiceSchemaResponse.fields",
+    ".rohi.control.v2.GetServiceSchemaResponse.enums",
+    ".rohi.control.v2.GetServiceSchemaResponse.issues",
+    ".rohi.control.v2.GetServiceStatusResponse.fields",
+    ".rohi.control.v2.GetServiceStatusResponse.issues",
+    ".rohi.control.v2.ListActionsResponse.actions",
+    ".rohi.control.v2.GetActionSchemaResponse.args",
+    ".rohi.control.v2.GetActionSchemaResponse.results",
+    ".rohi.control.v2.GetActionSchemaResponse.enums",
+    ".rohi.control.v2.GetActionSchemaResponse.selections",
+    ".rohi.control.v2.InvokeActionRequest.args",
+    ".rohi.control.v2.ActionRecord.fields",
+    ".rohi.control.v2.InlineResult.fields",
+    ".rohi.control.v2.RecordsPage.records",
+    ".rohi.control.v2.EnumDescriptor.variants",
+    ".rohi.control.v2.StreamInfo.files",
 ];
 
 fn limit(name: &str) -> usize {
@@ -215,135 +221,145 @@ fn main() {
     generator.use_container_heapless();
 
     let bounded = [
-        (".rohi.control.v1.GetInfoResponse.firmware", "MAX_TEXT_LEN"),
-        (".rohi.control.v1.GetInfoResponse.board", "MAX_TEXT_LEN"),
-        (".rohi.control.v1.Error.reason", "MAX_REASON_LEN"),
+        (".rohi.control.v2.GetInfoResponse.firmware", "MAX_TEXT_LEN"),
+        (".rohi.control.v2.GetInfoResponse.board", "MAX_TEXT_LEN"),
+        (".rohi.control.v2.Error.reason", "MAX_REASON_LEN"),
         // Values.
         (
-            ".rohi.control.v1.FieldValue.string_value",
+            ".rohi.control.v2.FieldValue.string_value",
             "MAX_FIELD_VALUE_LEN",
         ),
         (
-            ".rohi.control.v1.FieldValue.bytes_value",
+            ".rohi.control.v2.FieldValue.bytes_value",
             "MAX_FIELD_VALUE_LEN",
         ),
-        (".rohi.control.v1.ActionArg.string_value", "MAX_VALUE_LEN"),
-        (".rohi.control.v1.ActionArg.bytes_value", "MAX_VALUE_LEN"),
-        (".rohi.control.v1.ConfigEntry.string_value", "MAX_VALUE_LEN"),
-        (".rohi.control.v1.ConfigEntry.bytes_value", "MAX_VALUE_LEN"),
+        (".rohi.control.v2.ActionArg.string_value", "MAX_VALUE_LEN"),
+        (".rohi.control.v2.ActionArg.bytes_value", "MAX_VALUE_LEN"),
+        (".rohi.control.v2.ConfigEntry.string_value", "MAX_VALUE_LEN"),
+        (".rohi.control.v2.ConfigEntry.bytes_value", "MAX_VALUE_LEN"),
         (
-            ".rohi.control.v1.ConfigMutation.string_value",
+            ".rohi.control.v2.ConfigMutation.string_value",
             "MAX_VALUE_LEN",
         ),
         (
-            ".rohi.control.v1.ConfigMutation.bytes_value",
+            ".rohi.control.v2.ConfigMutation.bytes_value",
             "MAX_VALUE_LEN",
         ),
         // Descriptors.
-        (".rohi.control.v1.FieldDescriptor.name", "MAX_NAME_LEN"),
-        (".rohi.control.v1.EnumVariant.name", "MAX_VARIANT_NAME_LEN"),
+        (".rohi.control.v2.FieldDescriptor.name", "MAX_NAME_LEN"),
+        (".rohi.control.v2.EnumVariant.name", "MAX_VARIANT_NAME_LEN"),
         (
-            ".rohi.control.v1.EnumDescriptor.variants",
+            ".rohi.control.v2.EnumDescriptor.variants",
             "MAX_ENUM_VARIANTS",
         ),
-        (".rohi.control.v1.IssueDescriptor.name", "MAX_NAME_LEN"),
+        (".rohi.control.v2.IssueDescriptor.name", "MAX_NAME_LEN"),
         // Config.
-        (".rohi.control.v1.ConfigSectionInfo.name", "MAX_NAME_LEN"),
+        (".rohi.control.v2.ConfigSectionInfo.name", "MAX_NAME_LEN"),
         (
-            ".rohi.control.v1.ListConfigSectionsResponse.sections",
+            ".rohi.control.v2.ListConfigSectionsResponse.sections",
             "MAX_CONFIG_SECTIONS",
         ),
         (
-            ".rohi.control.v1.GetConfigSchemaResponse.fields",
+            ".rohi.control.v2.GetConfigSchemaResponse.fields",
             "MAX_CONFIG_FIELDS",
         ),
         (
-            ".rohi.control.v1.GetConfigSchemaResponse.enums",
+            ".rohi.control.v2.GetConfigSchemaResponse.enums",
             "MAX_ENUMS",
         ),
         (
-            ".rohi.control.v1.GetConfigSectionResponse.effective",
+            ".rohi.control.v2.GetConfigSectionResponse.effective",
             "MAX_CONFIG_FIELDS",
         ),
         (
-            ".rohi.control.v1.GetConfigSectionResponse.overridden",
+            ".rohi.control.v2.GetConfigSectionResponse.overridden",
             "MAX_CONFIG_FIELDS",
         ),
         (
-            ".rohi.control.v1.PatchConfigSectionRequest.mutations",
+            ".rohi.control.v2.PatchConfigSectionRequest.mutations",
             "MAX_MUTATIONS",
         ),
         // Services.
-        (".rohi.control.v1.ServiceStatusSummary.name", "MAX_NAME_LEN"),
+        (".rohi.control.v2.ServiceStatusSummary.name", "MAX_NAME_LEN"),
         (
-            ".rohi.control.v1.GetServicesStatusResponse.services",
+            ".rohi.control.v2.GetServicesStatusResponse.services",
             "MAX_SERVICES",
         ),
         (
-            ".rohi.control.v1.GetServiceSchemaResponse.name",
+            ".rohi.control.v2.GetServiceSchemaResponse.name",
             "MAX_NAME_LEN",
         ),
         (
-            ".rohi.control.v1.GetServiceSchemaResponse.fields",
+            ".rohi.control.v2.GetServiceSchemaResponse.fields",
             "MAX_SCHEMA_FIELDS",
         ),
         (
-            ".rohi.control.v1.GetServiceSchemaResponse.enums",
+            ".rohi.control.v2.GetServiceSchemaResponse.enums",
             "MAX_SERVICE_ENUMS",
         ),
         (
-            ".rohi.control.v1.GetServiceSchemaResponse.issues",
+            ".rohi.control.v2.GetServiceSchemaResponse.issues",
             "MAX_ISSUE_DESCRIPTORS",
         ),
         (
-            ".rohi.control.v1.GetServiceStatusResponse.fields",
+            ".rohi.control.v2.GetServiceStatusResponse.fields",
             "MAX_STATUS_FIELDS",
         ),
         (
-            ".rohi.control.v1.GetServiceStatusResponse.issues",
+            ".rohi.control.v2.GetServiceStatusResponse.issues",
             "MAX_ISSUES",
         ),
         // Actions.
-        (".rohi.control.v1.ActionInfo.name", "MAX_NAME_LEN"),
-        (".rohi.control.v1.ActionInfo.service", "MAX_NAME_LEN"),
+        (".rohi.control.v2.ActionInfo.name", "MAX_NAME_LEN"),
+        (".rohi.control.v2.ActionInfo.service", "MAX_NAME_LEN"),
         (
-            ".rohi.control.v1.ListActionsResponse.actions",
+            ".rohi.control.v2.ListActionsResponse.actions",
             "MAX_ACTIONS",
         ),
         (
-            ".rohi.control.v1.GetActionSchemaResponse.args",
+            ".rohi.control.v2.GetActionSchemaResponse.args",
             "MAX_ACTION_ARGS",
         ),
         (
-            ".rohi.control.v1.GetActionSchemaResponse.results",
+            ".rohi.control.v2.GetActionSchemaResponse.results",
             "MAX_RECORD_FIELDS",
         ),
         (
-            ".rohi.control.v1.GetActionSchemaResponse.enums",
+            ".rohi.control.v2.GetActionSchemaResponse.enums",
             "MAX_SERVICE_ENUMS",
         ),
         (
-            ".rohi.control.v1.GetActionSchemaResponse.selections",
+            ".rohi.control.v2.GetActionSchemaResponse.selections",
             "MAX_SELECTIONS",
         ),
         (
-            ".rohi.control.v1.InvokeActionRequest.args",
+            ".rohi.control.v2.InvokeActionRequest.args",
             "MAX_ACTION_ARGS",
         ),
-        (".rohi.control.v1.ActionRecord.fields", "MAX_RECORD_FIELDS"),
+        (".rohi.control.v2.ActionRecord.fields", "MAX_RECORD_FIELDS"),
+        (".rohi.control.v2.InlineResult.fields", "MAX_RECORD_FIELDS"),
+        (".rohi.control.v2.RecordsPage.records", "MAX_RECORDS"),
         (
-            ".rohi.control.v1.InvokeActionResponse.records",
-            "MAX_RECORDS",
+            ".rohi.control.v2.RecordsPage.page_token",
+            "MAX_PAGE_TOKEN_LEN",
+        ),
+        (
+            ".rohi.control.v2.ReadResultPageRequest.page_token",
+            "MAX_PAGE_TOKEN_LEN",
+        ),
+        (
+            ".rohi.control.v2.CloseResultPageRequest.page_token",
+            "MAX_PAGE_TOKEN_LEN",
         ),
         // Streams.
-        (".rohi.control.v1.StreamFile.name", "MAX_NAME_LEN"),
-        (".rohi.control.v1.StreamInfo.files", "MAX_STREAM_FILES"),
+        (".rohi.control.v2.StreamFile.name", "MAX_NAME_LEN"),
+        (".rohi.control.v2.StreamInfo.files", "MAX_STREAM_FILES"),
         (
-            ".rohi.control.v1.ReadStreamResponse.data",
+            ".rohi.control.v2.ReadStreamResponse.data",
             "MAX_STREAM_CHUNK",
         ),
-        // Cursor pages.
-        (".rohi.control.v1.ActionPage.data", "MAX_PAGE_CHUNK"),
+        // Feeds.
+        (".rohi.control.v2.FeedPage.data", "MAX_FEED_CHUNK"),
     ];
     for (path, name) in bounded {
         let size = limit(name) as u32;
@@ -357,16 +373,16 @@ fn main() {
 
     // Table ids are small: at most MAX_SELECTIONS.
     generator.configure(
-        ".rohi.control.v1.SelectionDescriptor.id",
+        ".rohi.control.v2.SelectionDescriptor.id",
         Config::new().int_size(IntSize::S8),
     );
 
     generator.configure(
-        ".rohi.control.v1.ConfigMutation",
+        ".rohi.control.v2.ConfigMutation",
         Config::new().no_debug_impl(true),
     );
     generator.configure(
-        ".rohi.control.v1.InvokeActionRequest",
+        ".rohi.control.v2.InvokeActionRequest",
         Config::new().no_debug_impl(true),
     );
 

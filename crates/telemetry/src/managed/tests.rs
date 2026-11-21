@@ -22,7 +22,7 @@ use std::vec;
 use embassy_futures::block_on;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use rohi_service::{Action, ActionError, Service, Status};
-use rohi_service::{ActionRegistry, MAX_FIELD_VALUE_LEN, MAX_FIELDS};
+use rohi_service::{ActionRegistry, ActionResult, MAX_FIELD_VALUE_LEN, MAX_FIELDS};
 
 use super::*;
 use crate::catalog::{BMX280_TEMPERATURE, LOCATION, SDS011_PM10, all_cataloged};
@@ -147,7 +147,7 @@ fn the_service_exposes_exactly_the_three_actions_with_their_access() {
                 ActionAccess::Mutate,
                 vec!["index", "recipient", "selection"]
             ),
-            ("measurements", ActionAccess::Read, vec!["offset"]),
+            ("measurements", ActionAccess::Read, vec![]),
         ]
     );
     // The selection fields point at the catalog action of this service.
@@ -339,27 +339,54 @@ fn arguments_of_the_wrong_shape_are_invalid() {
 }
 
 #[test]
-fn the_catalog_lists_what_the_format_can_encode_in_pages() {
+fn the_catalog_lists_what_the_format_can_encode_as_a_records_result() {
     let memory = Memory::default();
     let service = service(&memory);
-    let mut seen = std::vec::Vec::new();
-    let mut offset = 0u64;
-    loop {
-        let page = call(&service, action::MEASUREMENTS, &[(1, Value::U64(offset))]).unwrap();
-        if page.is_empty() {
-            break;
-        }
-        assert!(page.len() <= MAX_RECORDS);
-        for record in &page {
-            seen.push((
+    let registry = (&service,);
+    let Ok(ActionResult::Records(first)) =
+        block_on(registry.invoke(Service_::ID, action::MEASUREMENTS, &[]))
+    else {
+        panic!("not records");
+    };
+    // 18 cataloged, 17 encodable: more than a page, so the rest is read from
+    // the snapshot, a view that holds nothing.
+    let info = first.snapshot.expect("the catalog is longer than a page");
+    assert_eq!(info.total, 17);
+    assert_eq!(first.records.len(), MAX_RECORDS);
+    let mut records = first.records.to_vec();
+    while records.len() < usize::from(info.total) {
+        let page = block_on(registry.read_records(
+            Service_::ID,
+            action::MEASUREMENTS,
+            info.id,
+            records.len() as u32,
+        ))
+        .unwrap();
+        assert!(!page.is_empty() && page.len() <= MAX_RECORDS);
+        records.extend(page);
+    }
+    assert_eq!(records.len(), 17);
+    // Reading is repeatable, and the view can be closed any number of times.
+    let again = block_on(registry.read_records(Service_::ID, action::MEASUREMENTS, info.id, 6));
+    assert_eq!(again.unwrap().len(), MAX_RECORDS);
+    assert_eq!(
+        block_on(registry.close_records(Service_::ID, info.id)),
+        Ok(())
+    );
+    assert_eq!(
+        block_on(registry.read_records(Service_::ID, action::MEASUREMENTS, 99, 0)),
+        Err(ActionError::UnknownSnapshot)
+    );
+    let seen: std::vec::Vec<(u64, std::string::String)> = records
+        .iter()
+        .map(|record| {
+            (
                 record[0].1.as_u64().unwrap(),
                 std::string::String::from(record[1].1.as_str().unwrap()),
-            ));
-        }
-        offset += page.len() as u64;
-    }
-    // 18 cataloged, 17 encodable, ascending and complete.
-    assert_eq!(seen.len(), 17);
+            )
+        })
+        .collect();
+    // Ascending and complete.
     assert_eq!(seen[0], (0, "location".into()));
     assert!(seen.windows(2).all(|w| w[0].0 < w[1].0));
     assert!(!seen.iter().any(|(bit, _)| *bit == 17));

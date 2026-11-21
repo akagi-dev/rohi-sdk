@@ -189,8 +189,21 @@ pub fn action_schema(schema: &ActionSchema) -> Json {
     json!({ "action": schema.action, "args": schema.args, "results": schema.results })
 }
 
-pub fn page(page: &ActionPage) -> Json {
+pub fn empty() -> Json {
+    json!({ "format": "empty" })
+}
+
+pub fn inline(record: &Record, schema: &ActionSchema) -> Json {
     json!({
+        "format": "inline",
+        "record": values(record, &schema.results),
+        "units": units(&schema.results),
+    })
+}
+
+pub fn feed(page: &FeedPage) -> Json {
+    json!({
+        "format": "feed",
         "session": page.session,
         "cursor": page.cursor,
         "oldest_sequence": page.oldest_sequence,
@@ -206,5 +219,5 @@ pub fn records(records: &[Record], schema: &ActionSchema) -> Json {
         .iter()
         .map(|record| values(record, &schema.results))
         .collect();
-    json!({ "records": records, "units": units(&schema.results) })
+    json!({ "format": "records", "records": records, "units": units(&schema.results) })
 }

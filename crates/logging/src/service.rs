@@ -30,9 +30,9 @@ use embedded_hal_async::delay::DelayNs;
 use heapless::Vec;
 use rohi_service::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, EnumDescriptor,
-    FIRST_SERVICE_ISSUE, FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES,
-    MAX_PAGE_CHUNK, MAX_STREAM_CHUNK, Service, ServiceHealth, ServiceSummary, Status, StatusWriter,
-    StreamChunk, StreamFile, StreamInfo, Unit, Value, ValueKind, WriteError,
+    FIRST_SERVICE_ISSUE, FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_FEED_CHUNK,
+    MAX_ISSUES, MAX_STREAM_CHUNK, ResultFormat, Service, ServiceHealth, ServiceSummary, Status,
+    StatusWriter, StreamChunk, StreamFile, StreamInfo, Unit, Value, ValueKind, WriteError,
 };
 
 use crate::segment::{Batch, MAX_CHUNK_LEN, file_name, scratch};
@@ -336,7 +336,7 @@ const FLUSH_BYTES: usize = 1_536;
 
 // The shortest page the tail serves: the longest line without a message.
 const MIN_TAIL_CHUNK: usize = crate::segment::text::MIN_WITHIN_LEN;
-const _: () = assert!(MIN_TAIL_CHUNK < MAX_PAGE_CHUNK);
+const _: () = assert!(MIN_TAIL_CHUNK < MAX_FEED_CHUNK);
 
 /// Opens the backend a `storage` setting names.
 ///
@@ -1120,11 +1120,12 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize> A
     for LoggingService<'_, M, C, B, N, TAIL>
 {
     const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new(action::DOWNLOAD, "download", ActionAccess::Read).stream(),
+        ActionDescriptor::new(action::DOWNLOAD, "download", ActionAccess::Read)
+            .format(ResultFormat::Stream),
         ActionDescriptor::new(action::CLEAR, "clear", ActionAccess::Mutate),
         ActionDescriptor::new(action::TAIL, "tail", ActionAccess::Read)
             .args(TAIL_ARGS)
-            .page(),
+            .format(ResultFormat::Feed),
     ];
 
     async fn invoke(
@@ -1209,7 +1210,7 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize>
         out: &mut impl ActionOutput,
     ) -> Result<(), ActionError> {
         let request = tail_request(args)?;
-        let mut buf = [0u8; MAX_PAGE_CHUNK];
+        let mut buf = [0u8; MAX_FEED_CHUNK];
         let page = self.sink.tail_page(request, &mut buf);
         trace_tail(
             request.session,
@@ -1219,7 +1220,7 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize>
             page.gap,
         );
         let data = buf.get(..page.len).ok_or(ActionError::Internal)?;
-        out.page(page.info(), data)
+        out.feed(page.info(), data)
             .map_err(|_| ActionError::Internal)
     }
 

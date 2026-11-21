@@ -42,6 +42,6 @@ mod service;
 
 pub use config::{WirelessConfig, WirelessOverrides};
 pub use service::{
-    HeapStats, WirelessProbe, WirelessService, action, issue, scan_field, security, status_field,
-    wifi_state,
+    HeapStats, SCAN_HOLD_MS, WirelessProbe, WirelessService, action, issue, scan_field, security,
+    status_field, wifi_state,
 };

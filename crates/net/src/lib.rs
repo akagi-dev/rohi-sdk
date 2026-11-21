@@ -223,7 +223,7 @@
 //! |-------|-------|
 //! | SSID | 0 to [`MAX_SSID_LEN`] (32) bytes, non-empty when configured |
 //! | Wi-Fi password | [`MIN_WIFI_PASSWORD_LEN`] (8) to [`MAX_WIFI_PASSWORD_LEN`] (64) bytes |
-//! | Scan result | [`MAX_WIFI_SCAN_RESULTS`] (16) networks; a client of the `wireless` service gets at most 6 records |
+//! | Scan result | [`MAX_WIFI_SCAN_RESULTS`] (16) networks, all of them returned by `wireless.wifi_scan` as a `Records` result in pages of at most 6 |
 //! | Manager command queue | [`WIFI_COMMAND_QUEUE_DEPTH`] (4) |
 //! | Status receivers | [`STATUS_RECEIVERS`] (3) |
 //! | DHCP host name | [`MAX_HOSTNAME_LEN`] (32) bytes |
@@ -306,7 +306,7 @@ pub use wifi::{
     WifiPassword, WifiScanResults, WifiSecurity, WifiShared, WifiSsid, WifiState, WifiStatus,
 };
 pub use wireless::{
-    HeapStats, WirelessConfig, WirelessOverrides, WirelessProbe, WirelessService,
+    HeapStats, SCAN_HOLD_MS, WirelessConfig, WirelessOverrides, WirelessProbe, WirelessService,
     action as wireless_action, issue as wireless_issue, scan_field as wireless_scan_field,
     security as wireless_security, status_field as wireless_status_field,
     wifi_state as wireless_wifi_state,

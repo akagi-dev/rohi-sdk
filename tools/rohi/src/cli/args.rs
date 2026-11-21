@@ -137,7 +137,7 @@ pub struct Cli {
     /// change or provision a `protected` endpoint, and the only way into a
     /// `private` one. Without it requests are plaintext, which a `protected`
     /// endpoint answers for reads only. Never put the key itself on the command
-    /// line; get a key from the device with `rohi action control tcp_generate_psk`, which prints it.
+    /// line.
     #[arg(
         long,
         global = true,

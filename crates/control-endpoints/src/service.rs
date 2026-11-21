@@ -23,8 +23,8 @@ use heapless::Vec;
 use rohi_control::{Availability, ControlAccess, EndpointState, Transport, TransportAccessMode};
 use rohi_service::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, EnumDescriptor, EnumVariant,
-    FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES, Service, ServiceHealth,
-    ServiceSummary, Status, StatusWriter, Value, ValueKind, WriteError,
+    FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES, ResultFormat, Service,
+    ServiceHealth, ServiceSummary, Status, StatusWriter, Value, ValueKind, WriteError,
 };
 use zeroize::Zeroize;
 
@@ -68,8 +68,6 @@ pub mod issue {
     /// A control path that needs no proof for privileged requests is available: the BLE endpoint,
     /// or the TCP endpoint in `open` mode.
     pub const UNSECURED: u32 = BASE + 1;
-    /// No pre-shared key: a TCP client cannot authenticate until `tcp_generate_psk` runs.
-    pub const NOT_ENROLLED: u32 = BASE + 2;
 }
 
 const STATES: &[EnumDescriptor] = &[EnumDescriptor::new(
@@ -92,7 +90,6 @@ const SCHEMA: &[FieldDescriptor] = &[
 const ISSUES: &[IssueDescriptor] = &[
     IssueDescriptor::new(issue::ENDPOINT_FAILED, "endpoint_failed"),
     IssueDescriptor::new(issue::UNSECURED, "unsecured"),
-    IssueDescriptor::new(issue::NOT_ENROLLED, "not_enrolled"),
 ];
 
 /// A key being handled: wiped when dropped, so that a cancelled action never leaves one behind.
@@ -118,8 +115,8 @@ impl Drop for Key {
 /// running is `ok`, some failed and some running `degraded`, expected but none running `error`. An
 /// endpoint that the build does not have is no failure, and a platform announces its endpoints
 /// with [`ControlAccess::expect`]. Current conditions are issues: `endpoint_failed`, `unsecured`
-/// (a control path with no proof for privileged requests: BLE today, TCP in `open` mode) and
-/// `not_enrolled`.
+/// (a control path with no proof for privileged requests: BLE today, TCP in `open` mode). A missing
+/// TCP key is not an issue: an endpoint works without one, as its access mode says.
 ///
 /// Action `tcp_generate_psk` ([`Provision`](ActionAccess::Provision),
 /// [`secure_link`](ActionDescriptor::secure_link)) **generates** a new random 32-byte key, stores
@@ -221,13 +218,6 @@ impl<S: PskStore> Status for ControlService<'_, S> {
                 age_ms: None,
             });
         }
-        if tcp_running && !self.access.tcp_psk_enrolled() {
-            let _ = out.push(Issue {
-                severity: IssueSeverity::Info,
-                code: issue::NOT_ENROLLED,
-                age_ms: None,
-            });
-        }
     }
 
     async fn status(&self, out: &mut impl StatusWriter) -> Result<(), WriteError> {
@@ -255,6 +245,7 @@ impl<S: PskStore> Action for ControlService<'_, S> {
         ActionAccess::Provision,
     )
     .secure_link()
+    .format(ResultFormat::Inline)
     .results(&[
         FieldDescriptor::new(psk_result::PSK, "psk", ValueKind::Bytes),
         FieldDescriptor::new(psk_result::FINGERPRINT, "fingerprint", ValueKind::Bytes),
@@ -397,7 +388,13 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), SCHEMA.len());
-        assert_eq!(ISSUES.len(), 3);
+        assert_eq!(
+            ISSUES
+                .iter()
+                .map(|issue| issue.name)
+                .collect::<std::vec::Vec<_>>(),
+            ["endpoint_failed", "unsecured"]
+        );
         assert!(ISSUES.len() <= MAX_ISSUES);
         assert_eq!(<ControlService<&Memory> as Service>::NAME, "control");
     }
@@ -515,11 +512,13 @@ mod tests {
 
     #[test]
     fn the_issues_name_current_conditions_and_fit_the_limit() {
-        // TCP only, protected, no key.
+        // TCP only, protected, no key: working as configured, so no issue and a healthy service.
         let access = ControlAccess::new(|_| false);
         access.expect(Transport::Tcp);
         access.set_state(Transport::Tcp, EndpointState::Running);
-        assert_eq!(issues(&access), [issue::NOT_ENROLLED]);
+        assert!(!access.tcp_psk_enrolled());
+        assert!(issues(&access).is_empty());
+        assert_eq!(health(&access), ServiceHealth::Ok);
         access.set_tcp_psk(true);
         assert!(issues(&access).is_empty());
         access.set_mode(Transport::Tcp, TransportAccessMode::Open);
@@ -536,7 +535,7 @@ mod tests {
         access.set_state(Transport::Ble, EndpointState::Failed);
         assert_eq!(issues(&access), [issue::ENDPOINT_FAILED]);
 
-        // The worst combination stays inside the limit: one failed, the other open and no key.
+        // The worst combination stays inside the limit: one failed, the other open.
         let access = ControlAccess::new(|_| false);
         access.expect(Transport::Tcp);
         access.expect(Transport::Ble);
@@ -544,14 +543,7 @@ mod tests {
         access.set_state(Transport::Tcp, EndpointState::Running);
         access.set_state(Transport::Ble, EndpointState::Failed);
         let all = issues(&access);
-        assert_eq!(
-            all,
-            [
-                issue::ENDPOINT_FAILED,
-                issue::UNSECURED,
-                issue::NOT_ENROLLED
-            ]
-        );
+        assert_eq!(all, [issue::ENDPOINT_FAILED, issue::UNSECURED]);
         assert!(all.len() <= MAX_ISSUES);
     }
 

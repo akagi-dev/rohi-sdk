@@ -46,8 +46,8 @@ use rohi_net::{WirelessConfig, WirelessOverrides};
 use rohi_service::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, Config, EnumDescriptor,
     EnumVariant, FIRST_SERVICE_ISSUE, FieldDescriptor, FieldError, Issue, IssueDescriptor,
-    IssueSeverity, Section, SectionStore, Service, ServiceHealth, ServiceSummary, Status,
-    StatusWriter, Statuses, StoreError, Unit, Value, ValueKind, WriteError,
+    IssueSeverity, ResultFormat, Section, SectionStore, Service, ServiceHealth, ServiceSummary,
+    SnapshotInfo, Status, StatusWriter, Statuses, StoreError, Unit, Value, ValueKind, WriteError,
 };
 use rohi_system::{SystemError, SystemPlatform, SystemService};
 pub use sample::{ConnectivityConfig, ConnectivityOverrides};
@@ -198,6 +198,26 @@ pub struct Radio {
     pub connected: Cell<bool>,
     pub degraded: Cell<bool>,
     pub calls: RefCell<Vec<String>>,
+    /// The survey held for a client, 0 when none.
+    pub held: Cell<u32>,
+    /// Pages of the survey read, the first one included.
+    pub pages: Cell<u32>,
+}
+
+/// The networks of a `survey`: more than one page.
+pub const SURVEY: u16 = 14;
+
+impl Radio {
+    fn write_survey(out: &mut impl ActionOutput, from: u32) -> Result<(), ActionError> {
+        for index in from..u32::from(SURVEY) {
+            if out.next_record().is_err() {
+                break;
+            }
+            out.text(1, &format!("net{index:02}"))
+                .map_err(|_| ActionError::Internal)?;
+        }
+        Ok(())
+    }
 }
 
 impl Status for Radio {
@@ -246,6 +266,7 @@ impl Status for Radio {
 impl Action for Radio {
     const ACTIONS: &'static [ActionDescriptor] = &[
         ActionDescriptor::new(1, "scan", ActionAccess::Read)
+            .format(ResultFormat::Records)
             .results(&[
                 FieldDescriptor::new(1, "ssid", ValueKind::String),
                 FieldDescriptor::new(2, "rssi", ValueKind::I64).unit(Unit::Dbm),
@@ -262,6 +283,9 @@ impl Action for Radio {
             ValueKind::U64,
         )]),
         ActionDescriptor::new(4, "explode", ActionAccess::Read),
+        ActionDescriptor::new(5, "survey", ActionAccess::Read)
+            .format(ResultFormat::Records)
+            .results(&[FieldDescriptor::new(1, "ssid", ValueKind::String)]),
     ];
 
     async fn invoke(
@@ -294,8 +318,43 @@ impl Action for Radio {
                 Ok(())
             }
             4 => Err(ActionError::Rejected("not_today")),
+            5 if self.held.get() != 0 => Err(ActionError::Busy),
+            5 => {
+                self.held.set(77);
+                out.snapshot(SnapshotInfo {
+                    id: 77,
+                    total: SURVEY,
+                })
+                .map_err(|_| ActionError::Internal)
+            }
             _ => Err(ActionError::UnknownAction),
         }
+    }
+
+    async fn read_records(
+        &self,
+        action: u32,
+        snapshot: u32,
+        from: u32,
+        out: &mut impl ActionOutput,
+    ) -> Result<(), ActionError> {
+        if action != 5 || snapshot == 0 || snapshot != self.held.get() {
+            return Err(ActionError::UnknownSnapshot);
+        }
+        self.pages.set(self.pages.get() + 1);
+        Self::write_survey(out, from)
+    }
+
+    async fn close_records(&self, snapshot: u32) -> Result<(), ActionError> {
+        if snapshot == 0 || snapshot != self.held.get() {
+            return Err(ActionError::UnknownSnapshot);
+        }
+        self.held.set(0);
+        Ok(())
+    }
+
+    fn link_lost(&self) {
+        self.held.set(0);
     }
 }
 
@@ -305,7 +364,7 @@ pub type Call = (&'static str, Vec<(u32, Value)>);
 /// A service with actions of one, two and three arguments, for the positional
 /// syntax: its field ids are not sequential and not in the order of the
 /// arguments. (The device lists at most twelve actions in one response, and the
-/// fake device already has eight others.)
+/// fake device already has nine others.)
 #[derive(Default, Service)]
 pub struct Example {
     /// Every call: the action and the arguments as the device received them.
@@ -329,6 +388,7 @@ impl Action for Example {
                 FieldDescriptor::new(2, "enabled", ValueKind::Bool),
                 FieldDescriptor::new(9, "timeout_ms", ValueKind::U64),
             ])
+            .format(ResultFormat::Inline)
             .results(&[FieldDescriptor::new(1, "endpoint", ValueKind::String)]),
         ActionDescriptor::new(5, "pick", ActionAccess::Read)
             .args(&[
@@ -339,7 +399,7 @@ impl Action for Example {
                 1,
                 &[EnumVariant::new(0, "slow"), EnumVariant::new(1, "fast")],
             )]),
-        ActionDescriptor::new(6, "page", ActionAccess::Read).page(),
+        ActionDescriptor::new(6, "page", ActionAccess::Read).format(ResultFormat::Feed),
     ];
 
     async fn invoke(

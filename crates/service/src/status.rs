@@ -110,7 +110,7 @@ use embassy_sync::blocking_mutex::raw::RawMutex;
 use heapless::Vec;
 
 use crate::action::enum_ok;
-use crate::action::{Action, ActionDescriptor, ActionError, ActionOutput};
+use crate::action::{Action, ActionDescriptor, ActionError, ActionOutput, StreamChunk};
 use crate::field::{EnumDescriptor, FieldDescriptor};
 use crate::service::Service;
 use crate::{MAX_FIELD_VALUE_LEN, MAX_FIELDS, MAX_ISSUES};
@@ -426,6 +426,39 @@ impl<S: Action> Action for Startup<S> {
             return Err(ActionError::Unavailable);
         }
         Action::invoke(&self.service, action, args, out).await
+    }
+
+    // What a started service holds is read and released through the wrapper too.
+    async fn read_records(
+        &self,
+        action: u32,
+        snapshot: u32,
+        from: u32,
+        out: &mut impl ActionOutput,
+    ) -> Result<(), ActionError> {
+        Action::read_records(&self.service, action, snapshot, from, out).await
+    }
+
+    async fn close_records(&self, snapshot: u32) -> Result<(), ActionError> {
+        Action::close_records(&self.service, snapshot).await
+    }
+
+    async fn read_stream(
+        &self,
+        stream: u32,
+        file: u32,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> Result<StreamChunk, ActionError> {
+        Action::read_stream(&self.service, stream, file, offset, buf).await
+    }
+
+    async fn close_stream(&self, stream: u32) -> Result<(), ActionError> {
+        Action::close_stream(&self.service, stream).await
+    }
+
+    fn link_lost(&self) {
+        Action::link_lost(&self.service);
     }
 }
 

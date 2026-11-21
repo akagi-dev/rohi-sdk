@@ -68,7 +68,7 @@
 //! // Factory reset reports that a restart is needed and does not reboot.
 //! let done = block_on(actions.invoke(SystemService::<Platform>::ID, 2, &[])).unwrap();
 //! assert_eq!(
-//!     done.records()[0][0],
+//!     done.inline().unwrap()[0],
 //!     (result_field::RESTART_REQUIRED, Value::Bool(true))
 //! );
 //! assert_eq!(system.0.reboots.get(), 0);
@@ -166,7 +166,7 @@
 use rohi_crash::Report;
 use rohi_service::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, FactoryReset,
-    FieldDescriptor, Service, Value, ValueKind,
+    FieldDescriptor, ResultFormat, Service, Value, ValueKind,
 };
 
 mod boot;
@@ -280,6 +280,7 @@ impl<P: SystemPlatform> Action for SystemService<P> {
             "factory_reset",
             ActionAccess::Provision,
         )
+        .format(ResultFormat::Inline)
         .results(&[FieldDescriptor::new(
             result_field::RESTART_REQUIRED,
             "restart_required",

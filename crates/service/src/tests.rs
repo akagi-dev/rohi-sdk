@@ -983,6 +983,7 @@ impl Action for Scanner {
     const ACTIONS: &'static [ActionDescriptor] = &[
         ActionDescriptor::new(1, "scan", ActionAccess::Read)
             .args(&[FieldDescriptor::new(1, "limit", ValueKind::U64)])
+            .format(ResultFormat::Records)
             .results(&[
                 FieldDescriptor::new(1, "name", ValueKind::String),
                 FieldDescriptor::new(2, "rssi", ValueKind::I64).unit(Unit::Dbm),
@@ -1088,7 +1089,7 @@ fn action_metadata_is_exposed() {
 #[derive(Service)]
 struct Pager;
 
-const PAGE_INFO: PageInfo = PageInfo {
+const PAGE_INFO: FeedInfo = FeedInfo {
     session: 3,
     cursor: 9,
     oldest_sequence: 1,
@@ -1099,13 +1100,13 @@ const PAGE_INFO: PageInfo = PageInfo {
 
 impl Action for Pager {
     const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new(1, "page", ActionAccess::Read).page(),
+        ActionDescriptor::new(1, "page", ActionAccess::Read).format(ResultFormat::Feed),
         ActionDescriptor::new(2, "undeclared", ActionAccess::Read),
-        ActionDescriptor::new(3, "twice", ActionAccess::Read).page(),
-        ActionDescriptor::new(4, "full", ActionAccess::Read).page(),
-        ActionDescriptor::new(5, "overfull", ActionAccess::Read).page(),
-        ActionDescriptor::new(6, "empty", ActionAccess::Read).page(),
-        ActionDescriptor::new(7, "silent", ActionAccess::Read).page(),
+        ActionDescriptor::new(3, "twice", ActionAccess::Read).format(ResultFormat::Feed),
+        ActionDescriptor::new(4, "full", ActionAccess::Read).format(ResultFormat::Feed),
+        ActionDescriptor::new(5, "overfull", ActionAccess::Read).format(ResultFormat::Feed),
+        ActionDescriptor::new(6, "empty", ActionAccess::Read).format(ResultFormat::Feed),
+        ActionDescriptor::new(7, "silent", ActionAccess::Read).format(ResultFormat::Feed),
     ];
 
     async fn invoke(
@@ -1118,14 +1119,14 @@ impl Action for Pager {
             out().map_err(|_| ActionError::Internal)
         };
         match action {
-            1 | 2 => page(&mut || out.page(PAGE_INFO, b"one\ntwo\n")),
+            1 | 2 => page(&mut || out.feed(PAGE_INFO, b"one\ntwo\n")),
             3 => {
-                out.page(PAGE_INFO, b"a\n").ok();
-                page(&mut || out.page(PAGE_INFO, b"b\n"))
+                out.feed(PAGE_INFO, b"a\n").ok();
+                page(&mut || out.feed(PAGE_INFO, b"b\n"))
             }
-            4 => page(&mut || out.page(PAGE_INFO, &[b'x'; MAX_PAGE_CHUNK])),
-            5 => page(&mut || out.page(PAGE_INFO, &[b'x'; MAX_PAGE_CHUNK + 1])),
-            6 => page(&mut || out.page(PAGE_INFO, b"")),
+            4 => page(&mut || out.feed(PAGE_INFO, &[b'x'; MAX_FEED_CHUNK])),
+            5 => page(&mut || out.feed(PAGE_INFO, &[b'x'; MAX_FEED_CHUNK + 1])),
+            6 => page(&mut || out.feed(PAGE_INFO, b"")),
             7 => Ok(()),
             _ => Err(ActionError::UnknownAction),
         }
@@ -1133,10 +1134,10 @@ impl Action for Pager {
 }
 
 #[test]
-fn an_action_returns_one_bounded_page() {
+fn an_action_returns_one_bounded_feed_page() {
     let registry = (&Pager,);
     let call = |action| block_on(registry.invoke(Pager::ID, action, &[]));
-    let Ok(ActionResult::Page(page)) = call(1) else {
+    let Ok(ActionResult::Feed(page)) = call(1) else {
         panic!("not a page");
     };
     assert_eq!(
@@ -1145,26 +1146,314 @@ fn an_action_returns_one_bounded_page() {
     );
     assert!(call(1).unwrap().records().is_empty());
     // An empty page is a page.
-    let Ok(ActionResult::Page(page)) = call(6) else {
+    let Ok(ActionResult::Feed(page)) = call(6) else {
         panic!("not a page");
     };
     assert!(page.data.is_empty());
     // The whole budget is allowed, one byte more is not.
-    let Ok(ActionResult::Page(page)) = call(4) else {
+    let Ok(ActionResult::Feed(page)) = call(4) else {
         panic!("not a page");
     };
-    assert_eq!(page.data.len(), MAX_PAGE_CHUNK);
+    assert_eq!(page.data.len(), MAX_FEED_CHUNK);
     assert_eq!(call(5), Err(ActionError::Internal));
 }
 
 #[test]
-fn a_page_needs_a_page_action_and_comes_once() {
+fn a_feed_needs_a_feed_action_and_comes_once() {
     let registry = (&Pager,);
     let call = |action| block_on(registry.invoke(Pager::ID, action, &[]));
     assert_eq!(call(2), Err(ActionError::Internal));
     assert_eq!(call(3), Err(ActionError::Internal));
-    // A page action that returns nothing is an empty record list, not a page.
-    assert!(matches!(call(7), Ok(ActionResult::Records(_))));
+    // A feed that returns nothing returned no result at all.
+    assert_eq!(call(7), Err(ActionError::Internal));
+}
+
+// --- result formats ---------------------------------------------------------
+
+const KEY: &[FieldDescriptor] = &[
+    FieldDescriptor::new(1, "psk", ValueKind::Bytes),
+    FieldDescriptor::new(2, "fingerprint", ValueKind::Bytes),
+];
+
+#[derive(Service)]
+struct Formats {
+    // The numbers of the snapshot held, 0 when none.
+    held: core::cell::Cell<u32>,
+}
+
+impl Formats {
+    const TOTAL: u16 = 10;
+
+    fn write(out: &mut impl ActionOutput, from: u32) -> Result<(), ActionError> {
+        for index in from..u32::from(Self::TOTAL) {
+            if out.next_record().is_err() {
+                break;
+            }
+            out.text(1, "net").map_err(|_| ActionError::Internal)?;
+            out.i64(2, -i64::from(index))
+                .map_err(|_| ActionError::Internal)?;
+        }
+        Ok(())
+    }
+}
+
+const NETWORKS: &[FieldDescriptor] = &[
+    FieldDescriptor::new(1, "name", ValueKind::String),
+    FieldDescriptor::new(2, "rssi", ValueKind::I64),
+];
+
+impl Action for Formats {
+    const ACTIONS: &'static [ActionDescriptor] = &[
+        ActionDescriptor::new(1, "nothing", ActionAccess::Mutate),
+        ActionDescriptor::new(2, "nothing_with_data", ActionAccess::Mutate),
+        ActionDescriptor::new(3, "key", ActionAccess::Provision)
+            .format(ResultFormat::Inline)
+            .results(KEY),
+        ActionDescriptor::new(4, "key_twice", ActionAccess::Provision)
+            .format(ResultFormat::Inline)
+            .results(KEY),
+        ActionDescriptor::new(5, "key_missing", ActionAccess::Provision)
+            .format(ResultFormat::Inline)
+            .results(KEY),
+        ActionDescriptor::new(6, "key_collection", ActionAccess::Provision)
+            .format(ResultFormat::Inline)
+            .results(KEY),
+        ActionDescriptor::new(7, "none_found", ActionAccess::Read)
+            .format(ResultFormat::Records)
+            .results(NETWORKS),
+        ActionDescriptor::new(8, "few", ActionAccess::Read)
+            .format(ResultFormat::Records)
+            .results(NETWORKS),
+        ActionDescriptor::new(9, "many", ActionAccess::Read)
+            .format(ResultFormat::Records)
+            .results(NETWORKS),
+        ActionDescriptor::new(10, "many_and_snapshot", ActionAccess::Read)
+            .format(ResultFormat::Records)
+            .results(NETWORKS),
+        ActionDescriptor::new(11, "empty_snapshot", ActionAccess::Read)
+            .format(ResultFormat::Records)
+            .results(NETWORKS),
+        ActionDescriptor::new(12, "snapshot_of_inline", ActionAccess::Read)
+            .format(ResultFormat::Inline)
+            .results(NETWORKS),
+        ActionDescriptor::new(13, "stream_of_records", ActionAccess::Read)
+            .format(ResultFormat::Records)
+            .results(NETWORKS),
+        ActionDescriptor::new(14, "records_of_stream", ActionAccess::Read)
+            .format(ResultFormat::Stream),
+    ];
+
+    async fn invoke(
+        &self,
+        action: u32,
+        _: &[(u32, Value)],
+        out: &mut impl ActionOutput,
+    ) -> Result<(), ActionError> {
+        let internal = |_| ActionError::Internal;
+        match action {
+            1 => Ok(()),
+            // `nothing_with_data` has no result fields, so a field is unknown.
+            2 => out.bytes(1, &[1]).map_err(internal),
+            3 => {
+                out.bytes(1, &[7; 32]).map_err(internal)?;
+                out.bytes(2, &[9; 4]).map_err(internal)
+            }
+            4 => {
+                out.bytes(1, &[7; 32]).map_err(internal)?;
+                out.bytes(1, &[8; 32]).map_err(internal)
+            }
+            5 => Ok(()),
+            6 => {
+                out.bytes(1, &[7; 32]).map_err(internal)?;
+                out.next_record().map_err(internal)?;
+                out.next_record().map_err(internal)
+            }
+            7 => Ok(()),
+            8 => Self::write(out, 4),
+            9..=13 => {
+                if action == 10 {
+                    Self::write(out, 0)?;
+                }
+                if action == 11 {
+                    return out
+                        .snapshot(SnapshotInfo { id: 5, total: 0 })
+                        .map_err(internal);
+                }
+                if action == 12 {
+                    return out
+                        .snapshot(SnapshotInfo { id: 5, total: 3 })
+                        .map_err(internal);
+                }
+                if action == 13 {
+                    return out
+                        .stream(StreamInfo {
+                            id: 1,
+                            files: heapless::Vec::new(),
+                        })
+                        .map_err(internal);
+                }
+                if self.held.get() != 0 {
+                    return Err(ActionError::Busy);
+                }
+                self.held.set(5);
+                out.snapshot(SnapshotInfo {
+                    id: 5,
+                    total: Self::TOTAL,
+                })
+                .map_err(internal)
+            }
+            14 => out
+                .next_record()
+                .and_then(|()| out.text(1, "x"))
+                .map_err(internal),
+            _ => Err(ActionError::UnknownAction),
+        }
+    }
+
+    async fn read_records(
+        &self,
+        action: u32,
+        snapshot: u32,
+        from: u32,
+        out: &mut impl ActionOutput,
+    ) -> Result<(), ActionError> {
+        if action != 9 || snapshot != self.held.get() {
+            return Err(ActionError::UnknownSnapshot);
+        }
+        Self::write(out, from)
+    }
+
+    async fn close_records(&self, snapshot: u32) -> Result<(), ActionError> {
+        if snapshot != self.held.get() {
+            return Err(ActionError::UnknownSnapshot);
+        }
+        self.held.set(0);
+        Ok(())
+    }
+
+    fn link_lost(&self) {
+        self.held.set(0);
+    }
+}
+
+fn formats() -> Formats {
+    Formats {
+        held: core::cell::Cell::new(0),
+    }
+}
+
+#[test]
+fn an_empty_result_has_no_data_and_is_not_an_empty_collection() {
+    let service = formats();
+    let registry = (&service,);
+    assert_eq!(
+        block_on(registry.invoke(Formats::ID, 1, &[])),
+        Ok(ActionResult::Empty)
+    );
+    // An empty collection is a collection.
+    let Ok(ActionResult::Records(page)) = block_on(registry.invoke(Formats::ID, 7, &[])) else {
+        panic!("not records");
+    };
+    assert!(page.records.is_empty() && page.snapshot.is_none());
+    // The data of an action that declares none is refused.
+    assert_eq!(
+        block_on(registry.invoke(Formats::ID, 2, &[])),
+        Err(ActionError::Internal)
+    );
+}
+
+#[test]
+fn an_inline_result_is_one_record_with_each_field_once() {
+    let service = formats();
+    let registry = (&service,);
+    let result = block_on(registry.invoke(Formats::ID, 3, &[])).unwrap();
+    let record = result.inline().unwrap();
+    assert_eq!(record.len(), 2);
+    assert_eq!(record[0], (1, Value::bytes(&[7; 32]).unwrap()));
+    assert!(result.records().is_empty());
+    // A field twice, nothing at all, and a second record are refused.
+    for action in [4, 5, 6] {
+        assert_eq!(
+            block_on(registry.invoke(Formats::ID, action, &[])),
+            Err(ActionError::Internal),
+            "{action}"
+        );
+    }
+}
+
+#[test]
+fn a_short_collection_is_written_directly() {
+    let service = formats();
+    let registry = (&service,);
+    let Ok(ActionResult::Records(page)) = block_on(registry.invoke(Formats::ID, 8, &[])) else {
+        panic!("not records");
+    };
+    assert_eq!(page.records.len(), 6);
+    assert_eq!(page.snapshot, None);
+}
+
+#[test]
+fn a_long_collection_is_a_snapshot_read_page_by_page() {
+    let service = formats();
+    let registry = (&service,);
+    let Ok(ActionResult::Records(first)) = block_on(registry.invoke(Formats::ID, 9, &[])) else {
+        panic!("not records");
+    };
+    assert_eq!(first.records.len(), MAX_RECORDS);
+    assert_eq!(first.records[0][1], (2, Value::I64(0)));
+    assert_eq!(
+        first.snapshot,
+        Some(SnapshotInfo {
+            id: 5,
+            total: Formats::TOTAL
+        })
+    );
+    // The next page starts where the first ended, and is the same every time.
+    let next = || block_on(registry.read_records(Formats::ID, 9, 5, 6)).unwrap();
+    assert_eq!(next().len(), 4);
+    assert_eq!(next()[0][1], (2, Value::I64(-6)));
+    assert_eq!(next(), next());
+    // One snapshot at a time.
+    assert_eq!(
+        block_on(registry.invoke(Formats::ID, 9, &[])),
+        Err(ActionError::Busy)
+    );
+    // Closing releases it; reading it again, or closing it again, is refused.
+    assert_eq!(block_on(registry.close_records(Formats::ID, 5)), Ok(()));
+    assert_eq!(
+        block_on(registry.read_records(Formats::ID, 9, 5, 6)),
+        Err(ActionError::UnknownSnapshot)
+    );
+    assert_eq!(
+        block_on(registry.close_records(Formats::ID, 5)),
+        Err(ActionError::UnknownSnapshot)
+    );
+    assert!(block_on(registry.invoke(Formats::ID, 9, &[])).is_ok());
+    // A lost link releases it.
+    registry.link_lost();
+    assert!(block_on(registry.invoke(Formats::ID, 9, &[])).is_ok());
+}
+
+#[test]
+fn a_snapshot_is_refused_where_it_does_not_belong() {
+    let service = formats();
+    let registry = (&service,);
+    for action in [10, 11, 12, 13, 14] {
+        assert_eq!(
+            block_on(registry.invoke(Formats::ID, action, &[])),
+            Err(ActionError::Internal),
+            "{action}"
+        );
+    }
+    // Another service has no snapshots.
+    assert_eq!(
+        block_on(registry.read_records(0, 9, 5, 0)),
+        Err(ActionError::UnknownService)
+    );
+    assert_eq!(
+        block_on((&Scanner,).read_records(Scanner::ID, 1, 1, 0)),
+        Err(ActionError::UnknownSnapshot)
+    );
 }
 
 #[test]
@@ -1402,27 +1691,41 @@ mod schema_invariants {
             ActionAccess::Read
         )
         .results(DUPLICATE_ARGS)]));
-        // A page is exclusive with a stream and with result records.
-        assert!(actions_valid(&[ActionDescriptor::new(
-            1,
-            "tail",
-            ActionAccess::Read
-        )
-        .page()]));
-        assert!(!actions_valid(&[ActionDescriptor::new(
-            1,
-            "tail",
-            ActionAccess::Read
-        )
-        .page()
-        .stream()]));
-        assert!(!actions_valid(&[ActionDescriptor::new(
-            1,
-            "tail",
-            ActionAccess::Read
-        )
-        .page()
-        .results(ARGS)]));
+        // Only `Inline` and `Records` describe result fields.
+        for format in [
+            ResultFormat::Empty,
+            ResultFormat::Feed,
+            ResultFormat::Stream,
+        ] {
+            assert!(actions_valid(&[ActionDescriptor::new(
+                1,
+                "tail",
+                ActionAccess::Read
+            )
+            .format(format)]));
+            assert!(!actions_valid(&[ActionDescriptor::new(
+                1,
+                "tail",
+                ActionAccess::Read
+            )
+            .format(format)
+            .results(ARGS)]));
+        }
+        for format in [ResultFormat::Inline, ResultFormat::Records] {
+            assert!(actions_valid(&[ActionDescriptor::new(
+                1,
+                "list",
+                ActionAccess::Read
+            )
+            .format(format)
+            .results(ARGS)]));
+            assert!(!actions_valid(&[ActionDescriptor::new(
+                1,
+                "list",
+                ActionAccess::Read
+            )
+            .format(format)]));
+        }
     }
 }
 
@@ -1605,6 +1908,7 @@ mod bitset_selections {
             "share",
             ActionAccess::Read
         )
+        .format(ResultFormat::Records)
         .results(&[SELECTION])]));
         assert!(!fields_valid(&[SELECTION], &[]));
     }

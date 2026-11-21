@@ -46,7 +46,7 @@ const OWNER: [u8; 32] = [
 
 async fn set_public(device: &mut Device<TcpLink>, index: u64, bits: &[usize]) {
     device
-        .invoke(
+        .invoke_empty(
             "telemetry",
             "set_public",
             &[arg(1, Value::U64(index)), arg(2, Value::Bytes(mask(bits)))],
@@ -158,7 +158,7 @@ async fn profiles_are_edited_persist_and_a_factory_reset_clears_them() {
     for (index, bits) in [(0u64, &[4usize][..]), (2, &[1][..])] {
         assert!(
             device
-                .invoke(
+                .invoke_empty(
                     "telemetry",
                     "set_public",
                     &[arg(1, Value::U64(index)), arg(2, Value::Bytes(mask(bits)))],
@@ -174,7 +174,7 @@ async fn profiles_are_edited_persist_and_a_factory_reset_clears_them() {
     // The one private recipient of slot 1 is replaced, never added to.
     for recipient in [OWNER, [9u8; 32]] {
         let result = device
-            .invoke(
+            .invoke_empty(
                 "telemetry",
                 "set_private",
                 &[
@@ -208,7 +208,7 @@ async fn profiles_are_edited_persist_and_a_factory_reset_clears_them() {
 
     // `none` removes the private section.
     device
-        .invoke(
+        .invoke_empty(
             "telemetry",
             "set_private",
             &[
@@ -222,7 +222,10 @@ async fn profiles_are_edited_persist_and_a_factory_reset_clears_them() {
     let status = fields(&mut device, "telemetry").await;
     assert_eq!(status.get("profile1_private"), Some(&Value::Bool(false)));
 
-    device.invoke("system", "factory_reset", &[]).await.unwrap();
+    device
+        .invoke_inline("system", "factory_reset", &[])
+        .await
+        .unwrap();
     let status = fields(&mut device, "telemetry").await;
     assert_eq!(
         status.get("profile0_public"),
@@ -276,11 +279,11 @@ async fn routes_are_edited_with_actions_persist_and_a_factory_reset_clears_them(
     let long = format!("http://{}.example.org:8080", "h".repeat(40));
     assert_eq!(long.len(), 64);
     device
-        .invoke("connectivity", "set_endpoint", &route_args(0, 1, &long))
+        .invoke_empty("connectivity", "set_endpoint", &route_args(0, 1, &long))
         .await
         .unwrap();
     device
-        .invoke(
+        .invoke_empty(
             "connectivity",
             "set_interval",
             &[arg(1, Value::U64(0)), arg(2, Value::U64(120))],
@@ -288,7 +291,7 @@ async fn routes_are_edited_with_actions_persist_and_a_factory_reset_clears_them(
         .await
         .unwrap();
     device
-        .invoke(
+        .invoke_empty(
             "connectivity",
             "set_fallback",
             &[arg(1, Value::U64(0)), arg(2, text("http://backup.example"))],
@@ -324,7 +327,10 @@ async fn routes_are_edited_with_actions_persist_and_a_factory_reset_clears_them(
         ),
     ] {
         assert!(
-            device.invoke("connectivity", action, &args).await.is_err(),
+            device
+                .invoke_empty("connectivity", action, &args)
+                .await
+                .is_err(),
             "{action}"
         );
     }
@@ -349,7 +355,7 @@ async fn routes_are_edited_with_actions_persist_and_a_factory_reset_clears_them(
     // An absent endpoint (the empty string) deletes the route; the slot is reusable and a new
     // route inherits nothing.
     device
-        .invoke("connectivity", "set_endpoint", &route_args(0, 0, ""))
+        .invoke_empty("connectivity", "set_endpoint", &route_args(0, 0, ""))
         .await
         .unwrap();
     let status = fields(&mut device, "connectivity").await;
@@ -358,7 +364,7 @@ async fn routes_are_edited_with_actions_persist_and_a_factory_reset_clears_them(
         Some(&Value::Enum("empty".into()))
     );
     device
-        .invoke(
+        .invoke_empty(
             "connectivity",
             "set_endpoint",
             &route_args(0, 0, "http://again.example"),
@@ -369,7 +375,10 @@ async fn routes_are_edited_with_actions_persist_and_a_factory_reset_clears_them(
     assert_eq!(status.get("route0_interval_s"), Some(&Value::U64(60)));
     assert!(!status.contains_key("route0_fallback"));
 
-    device.invoke("system", "factory_reset", &[]).await.unwrap();
+    device
+        .invoke_inline("system", "factory_reset", &[])
+        .await
+        .unwrap();
     let status = fields(&mut device, "connectivity").await;
     assert_eq!(status.get("active_routes"), Some(&Value::U64(0)));
     drop(device);

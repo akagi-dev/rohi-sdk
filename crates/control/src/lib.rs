@@ -38,7 +38,7 @@
 //!
 //! ```
 //! use embassy_futures::block_on;
-//! use rohi_control::{Controller, Device, DeviceInfo, LinkSecurity, RequireEncryption};
+//! use rohi_control::{Controller, Device, DeviceInfo, LinkSecurity, RequireEncryption, Transport};
 //! use rohi_control_proto::control::{self as pb, Request_::Request as Call, Response_::Response as Reply};
 //! use rohi_control_proto::{PROTOCOL_VERSION, decode, encode};
 //!
@@ -60,7 +60,7 @@
 //! };
 //!
 //! // Reads are open on every link.
-//! let reply = ask(Call::GetInfo(pb::GetInfoRequest {}), &LinkSecurity::default());
+//! let reply = ask(Call::GetInfo(pb::GetInfoRequest {}), &LinkSecurity::new(Transport::Tcp));
 //! assert_eq!(reply.request_id, 7);
 //! let Some(Reply::GetInfo(info)) = reply.response else { panic!() };
 //! assert_eq!(info.firmware.as_str(), "demo-0.1.0");
@@ -68,11 +68,11 @@
 //! // A reset of a config section is a mutation: it needs an encrypted link,
 //! // and this device has no such section anyway.
 //! let reset = || Call::ResetConfigSection(pb::ResetConfigSectionRequest::default());
-//! let denied = ask(reset(), &LinkSecurity::default());
+//! let denied = ask(reset(), &LinkSecurity::new(Transport::Tcp));
 //! let Some(Reply::Error(error)) = denied.response else { panic!() };
 //! assert_eq!(error.code, pb::ErrorCode::PermissionDenied);
 //!
-//! let encrypted = LinkSecurity { encrypted: true, ..Default::default() };
+//! let encrypted = LinkSecurity { encrypted: true, ..LinkSecurity::new(Transport::Tcp) };
 //! let unknown = ask(reset(), &encrypted);
 //! let Some(Reply::Error(error)) = unknown.response else { panic!() };
 //! assert_eq!(error.code, pb::ErrorCode::NotFound);
@@ -98,8 +98,8 @@
 //! | `PatchConfigSection`, `ResetConfigSection` | `ConfigRegistry` | [`Mutate`](Privilege::Mutate) |
 //! | `GetServicesStatus`, `GetServiceSchema`, `GetServiceStatus` | [`StatusRegistry`](rohi_service::StatusRegistry) | `Read` |
 //! | `ListActions`, `GetActionSchema` | [`ActionRegistry`](rohi_service::ActionRegistry) | `Read` |
-//! | `InvokeAction` | `ActionRegistry` | the [`ActionAccess`](rohi_service::ActionAccess) the action declares: `Read`, `Mutate` or `Provision`; secret arguments are a separate property (they are only wiped). An action that declares a page result (`logging.tail`) answers with one bounded page: no stream is registered |
-//! | `ReadStream`, `CloseStream` | `ActionRegistry` | that of the action that created the stream |
+//! | `InvokeAction` | `ActionRegistry` | the [`ActionAccess`](rohi_service::ActionAccess) the action declares: `Read`, `Mutate` or `Provision`; secret arguments are a separate property (they are only wiped). The answer has one case per [`ResultFormat`](rohi_service::ResultFormat): a `Feed` (`logging.tail`) answers with one bounded page and registers nothing; a `Stream`, or a `Records` result longer than one page, is registered for the session |
+//! | `ReadStream`, `CloseStream`, `ReadResultPage`, `CloseResultPage` | `ActionRegistry` | that of the action that created the stream or the snapshot |
 //!
 //! [`AccessPolicy`] is the policy of a device: it reads the [`TransportAccessMode`] of the TCP
 //! endpoint: `Open` allows every request, `Protected` allows reads and wants a connection that
@@ -116,13 +116,19 @@
 //! learn its privilege, so an unknown action is answered `NotFound` or
 //! `NotSupported` even to a link the policy would otherwise deny.
 //!
-//! ## Stream ownership
+//! ## Ownership of streams and snapshots
 //!
-//! A stream belongs to the [`LinkSecurity::session`] that invoked the action
-//! and carries that action's privilege. `ReadStream` and `CloseStream` from
-//! another session are answered `NotFound`, as if the stream did not exist,
-//! and the policy is applied with the privilege of the creating action.
-//! [`Controller::session_closed`] closes only the streams of one session;
+//! A stream, and the snapshot behind a `Records` result that does not fit one page, belongs to the
+//! [`LinkSecurity::session`] that invoked the action and carries that action's privilege.
+//! `ReadStream`, `CloseStream`, `ReadResultPage` and `CloseResultPage` from another session are
+//! answered `NotFound`, as if it did not exist, and the policy is applied with the privilege of the
+//! creating action. A page token names a snapshot and a position, nothing else: it is checked
+//! against the owner, the service and the action on every request and grants no authority. A page
+//! is the records that fit one response (whole records, at most the page limit); a service that
+//! cannot advance, or a record that cannot fit, is an `Internal` error and never an endless
+//! empty page. A result that fits its first page is released at once; a longer one is held until
+//! it is closed, its service expires it or the link ends.
+//! [`Controller::session_closed`] closes only the streams and snapshots of one session;
 //! [`Controller::link_lost`] is the same for every session.
 //! A [`ControlHub`] gives each connection a session that is unique across
 //! transports and ends it with the connection (the end is recorded in the hub, so the streams
@@ -187,15 +193,16 @@
 //!   other connections. A connection has one request in flight and a full hub answers `Busy`.
 //! * **One response per request, no allocation.** The request and the response
 //!   are caller-owned slices; the dispatcher keeps no state between requests
-//!   except the owners of the open streams ([`MAX_OPEN_STREAMS`]).
+//!   except the owners of the open streams and snapshots ([`MAX_OPEN_STREAMS`]).
 //!   Malformed input is answered with an error response, not a panic or a
 //!   disconnect.
 //! * **Bounded messages.** Requests are limited to
 //!   [`MAX_REQUEST_LEN`](rohi_control_proto::limits::MAX_REQUEST_LEN) bytes,
 //!   responses to what fits the response buffer the caller provides
 //!   ([`MAX_RESPONSE_LEN`](rohi_control_proto::limits::MAX_RESPONSE_LEN) is
-//!   enough for every message). Collections are never paged: the limits of
-//!   [`rohi_service`] equal those of the protocol, so a full registry fits.
+//!   enough for every message). Configuration and status are never paged: the limits of
+//!   [`rohi_service`] equal those of the protocol, so a full registry fits. The records of an
+//!   action are paged by the control plane, not by the action.
 //! * **Response overflow.** If the response does not fit the buffer, an
 //!   `Internal` error is sent instead; [`Controller::handle`] returns `0` only
 //!   if not even that fits.

@@ -164,11 +164,10 @@ pub enum Availability {
 const TCP: usize = 0;
 const BLE: usize = 1;
 
-fn index(transport: Transport) -> Option<usize> {
+fn index(transport: Transport) -> usize {
     match transport {
-        Transport::Tcp => Some(TCP),
-        Transport::Ble => Some(BLE),
-        Transport::Unspecified => None,
+        Transport::Tcp => TCP,
+        Transport::Ble => BLE,
     }
 }
 
@@ -224,13 +223,11 @@ impl ControlAccess {
         self.state.lock(|state| f(&mut state.borrow_mut()))
     }
 
-    /// The mode of `transport`: BLE is always open in this build and an unspecified transport
-    /// is always private.
+    /// The mode of `transport`: BLE is always open in this build.
     pub fn mode(&self, transport: Transport) -> TransportAccessMode {
         match transport {
             Transport::Ble => TransportAccessMode::Open,
             Transport::Tcp => self.with(|state| state.stats[TCP].settings.mode),
-            Transport::Unspecified => TransportAccessMode::Private,
         }
     }
 
@@ -270,48 +267,41 @@ impl ControlAccess {
 
     /// The state and counters of `transport`.
     pub fn stats(&self, transport: Transport) -> EndpointStats {
-        match index(transport) {
-            Some(index) => self.with(|state| state.stats[index]),
-            None => EndpointStats::new(EndpointSettings::BLE),
-        }
+        self.with(|state| state.stats[index(transport)])
     }
 
     /// Records what `transport` was started with: the settings the platform applied at boot.
     /// Nothing is applied later; a change of the stored settings takes effect at the next start.
     pub fn set_settings(&self, transport: Transport, settings: EndpointSettings) {
-        if let Some(index) = index(transport) {
-            self.with(|state| {
-                state.stats[index].settings = settings;
-            });
-        }
+        let index = index(transport);
+        self.with(|state| {
+            state.stats[index].settings = settings;
+        });
     }
 
     /// Records what the running endpoint of `transport` really listens on: the platform may
     /// start it from a launch option and not from the stored settings. The access mode is kept.
     pub fn set_listening(&self, transport: Transport, address: [u8; 4], port: u16) {
-        if let Some(index) = index(transport) {
-            self.with(|state| {
-                let settings = &mut state.stats[index].settings;
-                settings.address = address;
-                settings.port = port;
-            });
-        }
+        let index = index(transport);
+        self.with(|state| {
+            let settings = &mut state.stats[index].settings;
+            settings.address = address;
+            settings.port = port;
+        });
     }
 
     /// Announces that the build has an endpoint of `transport`: its failure is then a failure of
     /// the service, and not being up yet means starting. A platform calls it once, before the
     /// endpoint starts.
     pub fn expect(&self, transport: Transport) {
-        if let Some(index) = index(transport) {
-            self.with(|state| state.stats[index].expected = true);
-        }
+        let index = index(transport);
+        self.with(|state| state.stats[index].expected = true);
     }
 
     /// Records whether the endpoint of `transport` serves clients.
     pub fn set_state(&self, transport: Transport, endpoint: EndpointState) {
-        if let Some(index) = index(transport) {
-            self.with(|state| state.stats[index].state = endpoint);
-        }
+        let index = index(transport);
+        self.with(|state| state.stats[index].state = endpoint);
     }
 
     /// How well the endpoints the build has (see [`expect`](Self::expect)) work. It looks at the
@@ -347,32 +337,29 @@ impl ControlAccess {
 
     /// A connection of `transport` opened.
     pub fn session_opened(&self, transport: Transport) {
-        if let Some(index) = index(transport) {
-            self.with(|state| {
-                state.stats[index].sessions = state.stats[index].sessions.saturating_add(1)
-            });
-        }
+        let index = index(transport);
+        self.with(|state| {
+            state.stats[index].sessions = state.stats[index].sessions.saturating_add(1)
+        });
     }
 
     /// A connection of `transport` closed.
     pub fn session_closed(&self, transport: Transport) {
-        if let Some(index) = index(transport) {
-            self.with(|state| {
-                state.stats[index].sessions = state.stats[index].sessions.saturating_sub(1)
-            });
-        }
+        let index = index(transport);
+        self.with(|state| {
+            state.stats[index].sessions = state.stats[index].sessions.saturating_sub(1)
+        });
     }
 
     /// The transport hit a failure of the given kind (not 0): a framing, reassembly or I/O error,
     /// a request without a slot or a client that did not authenticate. Call it once per event.
     pub fn transport_error(&self, transport: Transport, kind: u8) {
-        if let Some(index) = index(transport) {
-            self.with(|state| {
-                let stats = &mut state.stats[index];
-                stats.errors = stats.errors.saturating_add(1);
-                stats.last_error = kind;
-            });
-        }
+        let index = index(transport);
+        self.with(|state| {
+            let stats = &mut state.stats[index];
+            stats.errors = stats.errors.saturating_add(1);
+            stats.last_error = kind;
+        });
     }
 
     /// Requests the control worker decoded since boot, whether it ran them or the policy refused
@@ -413,8 +400,8 @@ impl ControlAccess {
 ///
 /// let access = ControlAccess::new(|_| false);
 /// let policy = AccessPolicy::new(&access);
-/// let tcp = LinkSecurity { transport: Transport::Tcp, ..Default::default() };
-/// let ble = LinkSecurity { transport: Transport::Ble, ..Default::default() };
+/// let tcp = LinkSecurity::new(Transport::Tcp);
+/// let ble = LinkSecurity::new(Transport::Ble);
 /// // TCP is protected by default, BLE is open.
 /// assert!(policy.allows(Privilege::Read, &tcp));
 /// assert!(!policy.allows(Privilege::Mutate, &tcp));
@@ -456,7 +443,6 @@ impl<'a> AccessPolicy<'a> {
                         TransportAccessMode::Private => false,
                     }
             }
-            Transport::Unspecified => privilege == Privilege::Read || proven,
         }
     }
 }
@@ -470,7 +456,7 @@ impl AuthorizationPolicy for AccessPolicy<'_> {
         match link.transport {
             // The accepted insecure state of this phase: an open BLE link carries secrets.
             Transport::Ble => true,
-            Transport::Tcp | Transport::Unspecified => link.encrypted && link.authenticated,
+            Transport::Tcp => link.encrypted && link.authenticated,
         }
     }
 

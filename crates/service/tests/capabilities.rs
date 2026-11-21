@@ -25,8 +25,9 @@ use embassy_futures::block_on;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use rohi_service::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, ActionRegistry,
-    FieldDescriptor, ISSUE_STARTUP_FAILED, Service, ServiceHealth, ServiceSummary, Startup, Status,
-    StatusError, StatusRegistry, StatusWriter, Statuses, Value, ValueKind, WriteError,
+    FieldDescriptor, ISSUE_STARTUP_FAILED, ResultFormat, Service, ServiceHealth, ServiceSummary,
+    Startup, Status, StatusError, StatusRegistry, StatusWriter, Statuses, Value, ValueKind,
+    WriteError,
 };
 
 /// Status only.
@@ -93,13 +94,9 @@ impl Status for WirelessService {
 
 impl Action for WirelessService {
     const ACTIONS: &'static [ActionDescriptor] =
-        &[
-            ActionDescriptor::new(1, "scan", ActionAccess::Read).results(&[FieldDescriptor::new(
-                1,
-                "ssid",
-                ValueKind::String,
-            )]),
-        ];
+        &[ActionDescriptor::new(1, "scan", ActionAccess::Read)
+            .format(ResultFormat::Records)
+            .results(&[FieldDescriptor::new(1, "ssid", ValueKind::String)])];
 
     async fn invoke(
         &self,
@@ -299,4 +296,94 @@ fn id_clashes_are_visible_to_the_build() {
     assert!(black_box(
         <(&RebootService,) as ActionRegistry>::SCHEMAS_VALID
     ));
+}
+
+#[test]
+fn a_started_service_releases_what_it_holds_through_the_wrapper() {
+    use core::cell::Cell;
+
+    #[derive(Service)]
+    struct Holder {
+        held: Cell<bool>,
+        lost: Cell<u32>,
+    }
+    impl Status for Holder {
+        const VERSION: u16 = 1;
+        const STATUS_SCHEMA: &'static [FieldDescriptor] = &[];
+        async fn summary(&self) -> ServiceSummary {
+            ServiceSummary::new(ServiceHealth::Ok)
+        }
+        async fn status(&self, _: &mut impl StatusWriter) -> Result<(), WriteError> {
+            Ok(())
+        }
+    }
+    impl Action for Holder {
+        const ACTIONS: &'static [ActionDescriptor] =
+            &[ActionDescriptor::new(1, "hold", ActionAccess::Read)
+                .format(ResultFormat::Records)
+                .results(&[FieldDescriptor::new(1, "n", ValueKind::U64)])];
+        async fn invoke(
+            &self,
+            _: u32,
+            _: &[(u32, Value)],
+            out: &mut impl ActionOutput,
+        ) -> Result<(), ActionError> {
+            self.held.set(true);
+            out.snapshot(rohi_service::SnapshotInfo { id: 3, total: 9 })
+                .map_err(|_| ActionError::Internal)
+        }
+        async fn read_records(
+            &self,
+            _: u32,
+            snapshot: u32,
+            from: u32,
+            out: &mut impl ActionOutput,
+        ) -> Result<(), ActionError> {
+            if !self.held.get() || snapshot != 3 {
+                return Err(ActionError::UnknownSnapshot);
+            }
+            for n in from..9 {
+                if out.next_record().is_err() {
+                    break;
+                }
+                out.u64(1, u64::from(n))
+                    .map_err(|_| ActionError::Internal)?;
+            }
+            Ok(())
+        }
+        async fn close_records(&self, _: u32) -> Result<(), ActionError> {
+            self.held.set(false);
+            Ok(())
+        }
+        fn link_lost(&self) {
+            self.lost.set(self.lost.get() + 1);
+            self.held.set(false);
+        }
+    }
+
+    let started = Startup::new(
+        Holder {
+            held: Cell::new(false),
+            lost: Cell::new(0),
+        },
+        false,
+    );
+    let actions = (&started,);
+    let id = Holder::ID;
+    assert!(block_on(actions.invoke(id, 1, &[])).is_ok());
+    assert_eq!(
+        block_on(actions.read_records(id, 1, 3, 6)).unwrap().len(),
+        3
+    );
+    assert_eq!(block_on(actions.close_records(id, 3)), Ok(()));
+    assert_eq!(
+        block_on(actions.read_records(id, 1, 3, 6)),
+        Err(ActionError::UnknownSnapshot)
+    );
+    assert!(block_on(actions.invoke(id, 1, &[])).is_ok());
+    actions.link_lost();
+    assert_eq!(
+        block_on(actions.read_records(id, 1, 3, 0)),
+        Err(ActionError::UnknownSnapshot)
+    );
 }

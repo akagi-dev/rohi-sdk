@@ -27,8 +27,8 @@ mod common;
 use std::time::Duration;
 
 use common::*;
-use rohi::model::{ActionAccess, ServiceHealth, Value};
-use rohi::{Device, TcpLink};
+use rohi::model::{ActionAccess, ActionOutcome, ErrorCode, ServiceHealth, Value};
+use rohi::{Device, Error, TcpLink};
 use tempfile::TempDir;
 
 const WAIT: Duration = Duration::from_secs(20);
@@ -439,7 +439,10 @@ async fn the_wifi_actions_scan_disconnect_and_reconnect() {
     let mut device = sim.device().await;
 
     // The scan lists the access points of the simulated world, SSIDs included.
-    let records = device.invoke("wireless", "wifi_scan", &[]).await.unwrap();
+    let records = device
+        .records_all("wireless", "wifi_scan", &[])
+        .await
+        .unwrap();
     assert!(!records.is_empty());
     assert!(
         records
@@ -470,7 +473,7 @@ async fn the_wifi_actions_scan_disconnect_and_reconnect() {
 
     // Disconnecting keeps the radio idle, until it is told to connect again.
     device
-        .invoke("wireless", "wifi_disconnect", &[])
+        .invoke_empty("wireless", "wifi_disconnect", &[])
         .await
         .unwrap();
     eventually("the radio to be idle", WAIT, async || {
@@ -479,7 +482,7 @@ async fn the_wifi_actions_scan_disconnect_and_reconnect() {
     .await;
     // The request is accepted; the connection follows.
     device
-        .invoke("wireless", "wifi_reconnect", &[])
+        .invoke_empty("wireless", "wifi_reconnect", &[])
         .await
         .unwrap();
     eventually("the Wi-Fi link again", WAIT, async || {
@@ -701,4 +704,180 @@ fn the_ready_line_names_the_interfaces_that_run() {
     assert!(sim.control.ip().is_loopback());
     assert!(sim.manage.ip().is_loopback());
     sim.stop();
+}
+
+/// A scenario with `count` networks around the lab, strongest first.
+fn crowded(dir: &TempDir, count: usize) -> std::path::PathBuf {
+    let networks: Vec<String> = (0..count)
+        .map(|index| {
+            format!(
+                "{{ ssid = \"net{index:02}\", rssi = {}, security = \"wpa2\", channel = {} }}",
+                -40 - index as i32,
+                1 + index % 11
+            )
+        })
+        .collect();
+    scenario(
+        dir,
+        &format!("[wifi]\nnetworks = [{}]\n", networks.join(", ")),
+    )
+}
+
+fn ssids(records: &[rohi::model::Record]) -> Vec<String> {
+    records
+        .iter()
+        .map(|record| match &record[0].value {
+            Value::String(ssid) => ssid.clone(),
+            other => panic!("{other:?}"),
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_scan_returns_all_sixteen_networks_of_one_scan_in_three_pages() {
+    let dir = TempDir::new().unwrap();
+    let sim = Sim::start(&Launch::new().scenario(&crowded(&dir, 16)));
+    let mut device = sim.device().await;
+
+    let ActionOutcome::Records(first) = device
+        .invoke_outcome("wireless", "wifi_scan", &[])
+        .await
+        .unwrap()
+    else {
+        panic!("a scan is a collection");
+    };
+    // Six records and the token of the rest: the device keeps the scan.
+    assert_eq!(first.records.len(), 6);
+    assert!(first.next_page_token.is_some());
+    let action = device
+        .action_schema("wireless", "wifi_scan")
+        .await
+        .unwrap()
+        .action;
+    device
+        .close_records(
+            action.service_id,
+            action.id,
+            first.next_page_token.as_deref().unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let all = device
+        .records_all("wireless", "wifi_scan", &[])
+        .await
+        .unwrap();
+    let expected: Vec<String> = (0..16).map(|index| format!("net{index:02}")).collect();
+    assert_eq!(ssids(&all), expected);
+    assert!(all.iter().all(|record| record.len() == 4));
+    drop(device);
+    assert!(sim.stop().success());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_short_scan_is_one_page_and_no_networks_is_an_empty_collection() {
+    let dir = TempDir::new().unwrap();
+    let sim = Sim::start(&Launch::new().scenario(&crowded(&dir, 4)));
+    let mut device = sim.device().await;
+    let ActionOutcome::Records(page) = device
+        .invoke_outcome("wireless", "wifi_scan", &[])
+        .await
+        .unwrap()
+    else {
+        panic!("a scan is a collection");
+    };
+    assert_eq!(ssids(&page.records), ["net00", "net01", "net02", "net03"]);
+    assert!(page.next_page_token.is_none());
+    drop(device);
+    assert!(sim.stop().success());
+
+    let dir = TempDir::new().unwrap();
+    let sim = Sim::start(&Launch::new().scenario(&crowded(&dir, 0)));
+    let mut device = sim.device().await;
+    let ActionOutcome::Records(page) = device
+        .invoke_outcome("wireless", "wifi_scan", &[])
+        .await
+        .unwrap()
+    else {
+        panic!("no networks is still a collection");
+    };
+    assert!(page.records.is_empty() && page.next_page_token.is_none());
+    assert!(
+        device
+            .records_all("wireless", "wifi_scan", &[])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    drop(device);
+    assert!(sim.stop().success());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_held_scan_is_one_at_a_time_and_a_connection_never_reads_the_pages_of_another() {
+    let dir = TempDir::new().unwrap();
+    let sim = Sim::start(&Launch::new().scenario(&crowded(&dir, 16)));
+    let mut first = sim.device().await;
+    let schema = first.action_schema("wireless", "wifi_scan").await.unwrap();
+    let (service, action) = (schema.action.service_id, schema.action.id);
+
+    // The held scan is the one slot of the device: a second scan is Busy until
+    // the first is closed.
+    let ActionOutcome::Records(page) = first
+        .invoke_outcome("wireless", "wifi_scan", &[])
+        .await
+        .unwrap()
+    else {
+        panic!("a scan is a collection");
+    };
+    let token = page.next_page_token.unwrap();
+    assert!(matches!(
+        first.invoke_outcome("wireless", "wifi_scan", &[]).await,
+        Err(Error::Device(ErrorCode::Busy))
+    ));
+    // Pages are read again and again, the same each time.
+    let read = async |device: &mut Device<TcpLink>| {
+        device
+            .read_records_page(service, action, &schema.results, &token)
+            .await
+    };
+    let again = read(&mut first).await.unwrap();
+    assert_eq!(again, read(&mut first).await.unwrap());
+    assert_eq!(again.records.len(), 6);
+    first.close_records(service, action, &token).await.unwrap();
+    assert!(matches!(
+        read(&mut first).await,
+        Err(Error::Device(ErrorCode::NotFound))
+    ));
+
+    // A scan left open when its connection ends is released with it.
+    let ActionOutcome::Records(page) = first
+        .invoke_outcome("wireless", "wifi_scan", &[])
+        .await
+        .unwrap()
+    else {
+        panic!("a scan is a collection");
+    };
+    let token = page.next_page_token.unwrap();
+    drop(first);
+    let mut second = eventually("the next connection to be served", WAIT, async || {
+        let mut device = sim.device().await;
+        device.info().await.ok().map(|_| device)
+    })
+    .await;
+    // Another connection cannot use the pages of the old one, and is not
+    // blocked by its scan.
+    assert!(matches!(
+        second
+            .read_records_page(service, action, &schema.results, &token)
+            .await,
+        Err(Error::Device(ErrorCode::NotFound))
+    ));
+    let all = second
+        .records_all("wireless", "wifi_scan", &[])
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 16);
+    drop(second);
+    assert!(sim.stop().success());
 }

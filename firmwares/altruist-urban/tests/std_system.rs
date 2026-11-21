@@ -34,10 +34,12 @@ const WAIT: Duration = Duration::from_secs(20);
 
 /// Runs `system.factory_reset` and returns `restart_required`.
 async fn factory_reset(device: &mut Device<TcpLink>) -> bool {
-    let records = device.invoke("system", "factory_reset", &[]).await.unwrap();
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].len(), 1);
-    match &records[0][0].value {
+    let record = device
+        .invoke_inline("system", "factory_reset", &[])
+        .await
+        .unwrap();
+    assert_eq!(record.len(), 1);
+    match &record[0].value {
         Value::Bool(required) => *required,
         other => panic!("restart_required is {other:?}"),
     }
@@ -49,7 +51,7 @@ async fn provision_identity(device: &mut Device<TcpLink>) {
         value: Value::Bytes(vec![7; 32]),
     };
     device
-        .invoke("identity", "provision", &[secret])
+        .invoke_inline("identity", "provision", &[secret])
         .await
         .unwrap();
 }
@@ -273,8 +275,7 @@ async fn reboot_answers_first_and_restarts_the_process_in_place() {
 
     // The Action succeeds, and the link still works right after: the reset
     // is deferred, not synchronous.
-    let records = device.invoke("system", "reboot", &[]).await.unwrap();
-    assert!(records.is_empty());
+    device.invoke_empty("system", "reboot", &[]).await.unwrap();
     device.info().await.unwrap();
     drop(device);
 

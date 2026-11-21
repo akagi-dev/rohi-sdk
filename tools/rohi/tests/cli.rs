@@ -1616,11 +1616,7 @@ async fn system_factory_reset_formats_the_configuration_and_does_not_reboot() {
 
         // No confirmation prompt, and the result is the generic record.
         let outcome = run(&bench, args).await;
-        let rows = table_rows(&outcome.ok().stdout)
-            .into_iter()
-            .map(|row| row.join(" "))
-            .collect::<Vec<_>>();
-        assert_eq!(rows, ["RESTART_REQUIRED", "true"], "{args:?}");
+        assert_eq!(outcome.ok().stdout, "restart_required: true\n", "{args:?}");
         assert!(bench.gadget.value.borrow().is_none());
         assert!(bench.location.mem.value.borrow().is_none());
         assert!(bench.identity.0.borrow().is_none());
@@ -1634,7 +1630,8 @@ async fn system_factory_reset_formats_the_configuration_and_does_not_reboot() {
         .await
         .ok()
         .json();
-    assert_eq!(json["records"][0]["restart_required"], true);
+    assert_eq!(json["format"], "inline");
+    assert_eq!(json["record"]["restart_required"], true);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1652,7 +1649,10 @@ async fn system_reboot_is_its_own_action() {
         .await
         .ok()
         .json();
-    assert_eq!(json["records"], json!([]));
+    // No data is neither an empty collection nor an empty record.
+    assert_eq!(json["format"], "empty");
+    assert_eq!(json.get("records"), None);
+    assert_eq!(json.get("record"), None);
 
     // A device that cannot schedule a reboot says so.
     bench.system.0.can_reboot.set(false);
@@ -1740,11 +1740,7 @@ async fn positional_arguments_follow_the_schema_order_not_the_field_ids() {
         ],
     )
     .await;
-    let rows = table_rows(&outcome.ok().stdout)
-        .into_iter()
-        .map(|row| row.join(" "))
-        .collect::<Vec<_>>();
-    assert_eq!(rows, ["ENDPOINT", "https://example.org"]);
+    assert_eq!(outcome.ok().stdout, "endpoint: https://example.org\n");
     let [(name, args)] = &calls(&bench)[..] else {
         panic!()
     };
@@ -2122,7 +2118,8 @@ async fn global_options_work_before_and_after_the_service() {
         let cli = parse(args).unwrap();
         assert_eq!(cli.output, rohi::cli::OutputFormat::Json, "{args:?}");
         let json = run(&bench, args).await.ok().json();
-        assert_eq!(json["records"][0]["restart_required"], true, "{args:?}");
+        assert_eq!(json["format"], "inline", "{args:?}");
+        assert_eq!(json["record"]["restart_required"], true, "{args:?}");
     }
     let cli = parse(&["--device", "tcp://localhost:9000", "system", "reboot"]).unwrap();
     assert_eq!(cli.device.as_deref(), Some("tcp://localhost:9000"));
@@ -2741,4 +2738,65 @@ async fn no_ssid_means_wifi_is_disabled_and_ssid_none_disables_it_explicitly() {
         "{}",
         outcome.stdout
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_collection_longer_than_a_page_is_followed_and_released() {
+    let bench = Bench::new();
+    let outcome = run(&bench, &["action", "radio", "survey"]).await;
+    let stdout = outcome.ok().stdout.clone();
+    // All fourteen rows, header first: the pages are one table.
+    let rows = table_rows(&stdout);
+    assert_eq!(rows.len(), 1 + usize::from(SURVEY), "{stdout}");
+    assert_eq!(rows[1], ["net00"]);
+    assert_eq!(rows[14], ["net13"]);
+    assert_eq!(bench.radio.pages.get(), 3);
+    // Nothing is left held on the device.
+    assert_eq!(bench.radio.held.get(), 0);
+
+    let json = run(&bench, &["-o", "json", "action", "radio", "survey"])
+        .await
+        .ok()
+        .json();
+    assert_eq!(json["format"], "records");
+    assert_eq!(
+        json["records"].as_array().unwrap().len(),
+        usize::from(SURVEY)
+    );
+    assert_eq!(json["records"][13]["ssid"], "net13");
+    assert_eq!(bench.radio.held.get(), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_empty_collection_an_empty_result_and_one_record_are_shown_differently() {
+    let bench = Bench::new();
+    // No data: the action has no result.
+    let outcome = run(&bench, &["action", "radio", "reconnect"]).await;
+    assert_eq!(outcome.ok().stdout, "Done\n");
+    let json = run(&bench, &["-o", "json", "action", "radio", "reconnect"])
+        .await
+        .ok()
+        .json();
+    assert_eq!(json["format"], "empty");
+
+    // One record is one object, not a one-element collection.
+    let json = run(
+        &bench,
+        &[
+            "-o",
+            "json",
+            "action",
+            "example",
+            "configure",
+            "endpoint=https://example.org",
+            "enabled=true",
+            "timeout_ms=5",
+        ],
+    )
+    .await
+    .ok()
+    .json();
+    assert_eq!(json["format"], "inline");
+    assert_eq!(json["record"]["endpoint"], "https://example.org");
+    assert_eq!(json.get("records"), None);
 }

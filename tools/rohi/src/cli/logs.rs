@@ -288,7 +288,7 @@ async fn download<T: ClientTransport>(
 ) -> Result<(), CliError> {
     let stream = match device.invoke_outcome(SERVICE, "download", &[]).await? {
         ActionOutcome::Stream(stream) => stream,
-        ActionOutcome::Records(_) | ActionOutcome::Page(_) => {
+        _ => {
             return Err(Error::Protocol("logging.download returned no stream".into()).into());
         }
     };
@@ -441,7 +441,7 @@ async fn clear<T: ClientTransport>(
             yes,
         )
         .await?;
-    device.invoke(SERVICE, "clear", &[]).await?;
+    device.invoke_empty(SERVICE, "clear", &[]).await?;
     ctx.io.emit(
         ctx.format,
         &dto::Versioned::new(serde_json::json!({ "cleared": true })),

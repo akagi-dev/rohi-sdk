@@ -199,9 +199,9 @@
 //! | active issues per service ([`MAX_ISSUES`]) | 4 |
 //! | issue descriptors per service ([`MAX_ISSUE_DESCRIPTORS`]) | 12 |
 //! | action arguments ([`MAX_ACTION_ARGS`]) | 3 |
-//! | action records ([`MAX_RECORDS`]) | 6 |
+//! | records of one page of a `Records` result ([`MAX_RECORDS`]) | 6 |
 //! | files of a stream ([`MAX_STREAM_FILES`]), bytes of a stream chunk ([`MAX_STREAM_CHUNK`]) | 24, 512 |
-//! | bytes of data of a page ([`MAX_PAGE_CHUNK`]) | 512 |
+//! | bytes of data of a feed page ([`MAX_FEED_CHUNK`]) | 512 |
 //! | fields per record ([`MAX_RECORD_FIELDS`]) | 4 |
 //! | string or bytes status value or action result ([`MAX_FIELD_VALUE_LEN`]) | 64 bytes |
 //! | string or bytes config value or action argument ([`MAX_VALUE_LEN`]) | 64 bytes |
@@ -225,9 +225,10 @@ pub mod service;
 pub mod status;
 
 pub use action::{
-    Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, ActionPage, ActionResult,
-    MAX_ACTION_ARGS, MAX_PAGE_CHUNK, MAX_RECORD_FIELDS, MAX_RECORDS, MAX_STREAM_CHUNK,
-    MAX_STREAM_FILES, PageInfo, Records, StreamChunk, StreamFile, StreamInfo,
+    Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, ActionResult, FeedInfo,
+    FeedPage, MAX_ACTION_ARGS, MAX_FEED_CHUNK, MAX_RECORD_FIELDS, MAX_RECORDS, MAX_STREAM_CHUNK,
+    MAX_STREAM_FILES, Record, Records, RecordsPage, ResultFormat, SnapshotInfo, StreamChunk,
+    StreamFile, StreamInfo,
 };
 pub use config::{
     Config, ConfigEntry, ConfigError, ConfigRegistry, ConfigSectionOps, ConfigUpdate, EntryState,

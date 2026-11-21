@@ -1,4 +1,4 @@
-// ROHI local control protocol, version 1.
+// ROHI local control protocol, version 2.
 //
 // One request, one response, correlated by `request_id`. The messages are
 // bounded: every string, bytes and repeated field has a fixed maximum
@@ -10,32 +10,32 @@
 //   config   - desired persistent state, named sections of typed fields
 //   status   - observed runtime state of named services, read-only
 //   actions  - explicit runtime operations declared by services
-//   stream   - bounded, offset-based reads of the byte streams an action returns
-//   tail     - one bounded page of the recent text a service keeps in RAM
+//   results  - the five result formats of an action (empty, inline, records, feed, stream)
 //   info     - static description of the device
 //
 // Compactness: the generated types store every bounded field inline, so the
 // size of a message is the size of its largest possible content. Names are
 // sent by discovery only; runtime requests address sections, services and
 // actions by numeric id, and runtime enum values and issues are numbers whose
-// names live in the schema. Collections are never paged: every response
-// fits one bounded message. A result that cannot fit is not paged either: the
-// action returns a stream and the client reads its files in bounded chunks.
-// The one cursor paged exception is an action that declares a page result
-// (`ActionPage`, the log tail), see below.
+// names live in the schema. Collections of configuration and status are never
+// paged: every response fits one bounded message. The result of an action has
+// one of five formats (`ResultFormat`): a finite collection (`Records`) is
+// read page by page with `ReadResultPage`, a binary result (`Stream`) in
+// chunks, and a changing source (`Feed`) by polling with a cursor, see
+// "Action results" below.
 //
 // Unknown enum values must be treated as "unknown" by clients.
 
 syntax = "proto3";
 
-package rohi.control.v1;
+package rohi.control.v2;
 
 // ---------------------------------------------------------------------------
 // Envelopes
 // ---------------------------------------------------------------------------
 
 message Request {
-  // Must equal the protocol version of the device (1).
+  // Must equal the protocol version of the device (2).
   uint32 protocol_version = 1;
   // Chosen by the client, echoed in the response.
   uint32 request_id = 2;
@@ -55,10 +55,9 @@ message Request {
     InvokeActionRequest invoke_action = 22;
     ReadStreamRequest read_stream = 23;
     CloseStreamRequest close_stream = 24;
+    ReadResultPageRequest read_result_page = 25;
+    CloseResultPageRequest close_result_page = 26;
   }
-  // 26 and 27 were the request authorization of the signed-control design, which is removed:
-  // the security of a link belongs to its transport. Never reuse them.
-  reserved 26, 27;
 }
 
 message Response {
@@ -80,18 +79,19 @@ message Response {
     GetServiceStatusResponse get_service_status = 19;
     ListActionsResponse list_actions = 20;
     GetActionSchemaResponse get_action_schema = 21;
-    InvokeActionResponse invoke_action = 22;
+    // The answer of `InvokeAction` has one case per `ResultFormat`: `action_empty`,
+    // `action_inline`, `records_page`, `feed_page` or `action_stream`.
+    Empty action_empty = 22;
     ReadStreamResponse read_stream = 23;
     CloseStreamResponse close_stream = 24;
-    // The answer of `InvokeAction` when the result does not fit one message:
-    // instead of `invoke_action`, never both.
     StreamInfo action_stream = 25;
-    // The answer of `InvokeAction` for an action that returns one cursor page
-    // (`ActionInfo.returns_page`), instead of `invoke_action`, never both.
-    ActionPage action_page = 28;
+    InlineResult action_inline = 26;
+    // The first page (`InvokeAction`) or a later page (`ReadResultPage`) of a
+    // `Records` result.
+    RecordsPage records_page = 27;
+    FeedPage feed_page = 28;
+    CloseResultPageResponse close_result_page = 29;
   }
-  // 27 was the answer of the removed `GetAuthChallenge`. Never reuse it.
-  reserved 27;
 }
 
 // ---------------------------------------------------------------------------
@@ -507,8 +507,8 @@ message GetServiceStatusResponse {
 //
 // Explicit runtime operations declared by services (scan, reconnect,
 // provision, ...). Status stays read-only; everything that changes the
-// runtime is an action. An action takes typed arguments and returns zero or
-// more records of typed fields.
+// runtime is an action. An action takes typed arguments and returns one result
+// in the format it declares (`ActionInfo.result_format`).
 
 // What a link must be allowed to do to invoke an action. Independent of
 // `ActionInfo.secret_args`.
@@ -523,6 +523,25 @@ enum ActionAccess {
   ACTION_ACCESS_PROVISION = 3;
 }
 
+// The format of the result of an action. It names the logical shape and the
+// guarantees of the result, not the number of messages that carried it, and
+// it is fixed by the action: a result never changes format with its size.
+enum ResultFormat {
+  RESULT_FORMAT_UNSPECIFIED = 0;
+  // The operation succeeded and returns no data, by contract (`action_empty`).
+  RESULT_FORMAT_EMPTY = 1;
+  // One record of the named, typed fields of the schema `results` (`action_inline`).
+  RESULT_FORMAT_INLINE = 2;
+  // A finite collection of records, each with the fields of `results`
+  // (`records_page`, then `ReadResultPage`). An empty collection is an empty
+  // `Records`, not `Empty`.
+  RESULT_FORMAT_RECORDS = 3;
+  // One bounded page of a changing, cursor-addressed source (`feed_page`).
+  RESULT_FORMAT_FEED = 4;
+  // A binary snapshot of named files read in chunks (`action_stream`).
+  RESULT_FORMAT_STREAM = 5;
+}
+
 message ActionInfo {
   uint32 service_id = 1;
   // Stable numeric id, unique within the service.
@@ -534,12 +553,9 @@ message ActionInfo {
   // Name of the owning service. A service may have actions without reporting
   // status, so clients cannot resolve the name from the status listing.
   string service = 6;
-  // The action answers with a stream (`action_stream`) instead of records;
-  // it has no result fields.
-  bool returns_stream = 7;
-  // The action answers with one cursor page (`action_page`) instead of
-  // records; it has no result fields.
-  bool returns_page = 8;
+  // The format of the result, one of five; never `RESULT_FORMAT_UNSPECIFIED`
+  // from a device. See "Action results".
+  ResultFormat result_format = 7;
   // What the link must be allowed to do to invoke the action; never
   // `ACTION_ACCESS_UNSPECIFIED` from a device.
   ActionAccess access = 4;
@@ -569,7 +585,8 @@ message GetActionSchemaResponse {
   ActionInfo action = 1;
   // All arguments are required.
   repeated FieldDescriptor args = 2;
-  // Fields of every returned record.
+  // Fields of the record (`Inline`) or of every record (`Records`); none for
+  // the other formats.
   repeated FieldDescriptor results = 3;
   repeated EnumDescriptor enums = 4;
   repeated SelectionDescriptor selections = 5;
@@ -581,13 +598,66 @@ message InvokeActionRequest {
   repeated ActionArg args = 3;
 }
 
+// ---------------------------------------------------------------------------
+// Action results
+// ---------------------------------------------------------------------------
+//
+// `InvokeAction` answers with exactly one result of the format of the action:
+//
+// - `Empty` (`action_empty`): no data, one reply.
+// - `Inline` (`action_inline`): one record of typed fields, one reply.
+// - `Records` (`records_page`): the first page of a finite collection. When
+//   `page_token` is set there are more records, read with `ReadResultPage`.
+// - `Feed` (`feed_page`): one cursor page of a changing source, see "Feeds".
+// - `Stream` (`action_stream`): a binary snapshot, see "Streams".
+//
+// The device executes the operation once, on `InvokeAction`; later pages never
+// run it again.
+
 message ActionRecord {
   repeated FieldValue fields = 1;
 }
 
-message InvokeActionResponse {
-  repeated ActionRecord records = 1;
+message InlineResult {
+  // Each field of the schema at most once.
+  repeated FieldValue fields = 1;
 }
+
+// A page of a finite collection: whole records, never split, in a stable
+// order. A page holds at most `MAX_RECORDS` records and fits the encoded
+// response limit. An empty `records` with no token is an empty collection.
+message RecordsPage {
+  repeated ActionRecord records = 1;
+  // Set when more records follow: pass it to `ReadResultPage` (and
+  // `CloseResultPage`). Opaque to clients; it names a snapshot and a position
+  // and grants no authority. Absent on the last page.
+  bytes page_token = 2;
+}
+
+// Reads the page that starts at `page_token`. Only the connection that
+// invoked the action, with the privilege of the action, may read it; the
+// device does not run the action again. Repeating a request returns the same
+// page while the snapshot is held (it is closed, times out or the link is
+// lost; then `ERROR_CODE_NOT_FOUND`). A token of another connection, a closed
+// or expired one, or one that is malformed is `ERROR_CODE_NOT_FOUND` and returns
+// no records.
+message ReadResultPageRequest {
+  uint32 service_id = 1;
+  uint32 action_id = 2;
+  bytes page_token = 3;
+}
+
+// Releases the snapshot of `page_token` early. A client may also stop without
+// closing: the snapshot times out and a disconnect releases it. A device holds
+// a few snapshots at once; an action that needs one more answers
+// `ERROR_CODE_BUSY`.
+message CloseResultPageRequest {
+  uint32 service_id = 1;
+  uint32 action_id = 2;
+  bytes page_token = 3;
+}
+
+message CloseResultPageResponse {}
 
 // ---------------------------------------------------------------------------
 // Streams
@@ -650,43 +720,45 @@ message CloseStreamRequest {
 message CloseStreamResponse {}
 
 // ---------------------------------------------------------------------------
-// Cursor pages
+// Feeds
 // ---------------------------------------------------------------------------
 //
-// An action declared with a page result (`ActionInfo.returns_page`, for
-// example `logging.tail`) reads an append-only source in RAM page by page
-// with a cursor. It is one `InvokeAction` and one reply: no stream is opened
-// and the device keeps no state for the client, so the page can be polled for
-// as long as needed. The arguments are the ones of the action; for the log
+// An action of the format `Feed` (for example `logging.tail`) reads a source
+// that changes while the client polls it, page by page with a cursor. It is
+// one `InvokeAction` and one reply: nothing is opened, the device keeps no
+// state for the client and no snapshot, so any number of clients can poll it
+// for as long as needed. Its access is checked on every invocation. An empty
+// page means "caught up", not "complete". The arguments are the ones of the
+// action; the entries the source defines are its own contract. For the log
 // tail they are `session` (0 on the first call) and `after` (0 for the oldest
-// line held).
+// line held), and an entry is one text line.
 //
-// - `data` is whole text lines, UTF-8, each ending in a newline. A line is
-//   never split across pages. A line too long for one page is shortened by the
-//   device (and flagged in its own text), so every page makes progress.
-// - `data` holds at most `MAX_PAGE_CHUNK` bytes; more records are read with
-//   the `session` and the `cursor` of the reply as the arguments of the next
-//   call.
+// - `data` holds at most `MAX_FEED_CHUNK` bytes: whole entries of the source,
+//   never split across pages. The source says how it keeps progress when an
+//   entry is longer than a page.
+// - The next call carries the `session` and the `cursor` of the reply.
 // - An empty `data` means there is nothing newer than the cursor.
-// - The source is volatile: it is read from RAM only, never from storage.
+// - The source may be volatile (the log tail is read from RAM only, never
+//   from storage) and may lose old entries: see `gap`.
 
-message ActionPage {
-  // Identifies this boot of the device. Sequences are valid only inside one
-  // session: a request with another session starts over (`reset`).
+message FeedPage {
+  // Identifies the epoch of the source (a boot of the device). Sequences are
+  // valid only inside one epoch: a request with another session starts over
+  // (`reset`).
   uint32 session = 1;
-  // The sequence of the last line in `data`; the `after` of the next request.
-  // Without lines it is the cursor the request carried (0 after a reset).
+  // The sequence of the last entry in `data`; the `after` of the next request.
+  // Without entries it is the cursor the request carried (0 after a reset).
   uint64 cursor = 2;
-  // The sequence of the oldest line the device holds; 1 when it holds none.
+  // The sequence of the oldest entry the source holds; 1 when it holds none.
   uint64 oldest_sequence = 3;
-  // The sequence of the newest line the device holds; 0 when it holds none.
+  // The sequence of the newest entry the source holds; 0 when it holds none.
   uint64 newest_sequence = 4;
   // The request carried a session or a cursor that does not belong to this
-  // boot: the page is the start of the snapshot of this boot and the client
+  // epoch: the page is the start of the source in this epoch and the client
   // must start over.
   bool reset = 5;
-  // Lines between the cursor of the request and the first line of `data` that
-  // the device had already overwritten; 0 when there is no gap.
+  // Entries between the cursor of the request and the first entry of `data`
+  // that the source had already overwritten; 0 when there is no gap.
   uint64 gap = 6;
   bytes data = 7;
 }

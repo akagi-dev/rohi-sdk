@@ -27,7 +27,7 @@ use it without a firmware-specific integration.
 
 | Aspect | State |
 |--------|-------|
-| Protocol | version 1; **still under development** and changing without a version bump: keep client and firmware on the same revision |
+| Protocol | version 2; **still under development**: keep client and firmware on the same revision |
 | Transport | BLE on devices and, on Linux, on the [`std` Altruist Urban](../guides/linux-ble.md) (BlueZ); independently, TCP (`tcp://HOST:PORT`: a preamble, then either 4-byte-length Protobuf records or the PSK handshake and encrypted records; no BLE frames) for the [`std` Altruist Urban](../guides/altruist-urban-std.md#control-over-tcp-and-the-rohi-tool) |
 | Security | TCP is `protected` by default (plaintext reads; a handshake with a 32-byte pre-shared key unlocks everything, with authenticated and encrypted records; no forward secrecy); **BLE is open** (no pairing, no link encryption) in this build, an accepted insecure state; no TLS, see [Access control](#access-control) |
 | Scope | local control only; telemetry uplink is a separate service |
@@ -115,11 +115,13 @@ BLE and TCP are thin frontends: they frame bytes (BLE fragments, TCP records), o
 request to a slot of a bounded mailbox. One `control_task` owns the one `Controller` and runs Config, Status, Actions and
 streams for every transport, one request at a time. A connection has one request in flight; a full mailbox is answered
 `Busy`. A long action therefore delays the requests of other connections. Every connection has a session identity that is
-unique across transports; closing it releases only its streams.
+unique across transports; closing it releases only its streams and result snapshots.
+
+
 
 ## Where to go next
 
 - Operate a device: [Desktop application](../use/desktop/index.md), [Mobile application](../use/mobile.md) (planned).
-- The authoritative definition is the schema [`control.proto`](https://github.com/akagi-dev/rohi-sdk/blob/master/crates/control-proto/proto/rohi/control/v1/control.proto)
+- The authoritative definition is the schema [`control.proto`](https://github.com/akagi-dev/rohi-sdk/blob/master/crates/control-proto/proto/rohi/control/v2/control.proto)
   and the rustdoc of `rohi-control-proto`, `rohi-control` and `rohi-control-ble`, see [SDK crates](sdk-crates.md).
 - Extend the protocol: [Add a control operation or an action](../guides/add-control-operation.md).

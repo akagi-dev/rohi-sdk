@@ -182,7 +182,8 @@ use embassy_sync::blocking_mutex::raw::RawMutex;
 use heapless::Vec;
 
 use crate::action::{
-    Action, ActionDescriptor, ActionError, ActionResult, RecordCollector, StreamChunk, check_args,
+    Action, ActionDescriptor, ActionError, ActionResult, Check, RecordCollector, Records,
+    RecordsPage, ResultFormat, StreamChunk, check_args,
 };
 use crate::isolated::isolated;
 use crate::schema::{actions_valid, enums_valid, fields_valid, issues_valid};
@@ -320,9 +321,9 @@ async fn invoke_of<S: Action>(
         .find(|descriptor| descriptor.id == action)
         .ok_or(ActionError::UnknownAction)
         .inspect_err(|error| log_action_failed(S::NAME, action, *error))?;
-    // A page action is polled (the log tail once a second): trace, so that
+    // A feed is polled (the log tail once a second): trace, so that
     // reading the persistent log's own tail does not feed it.
-    let level = if descriptor.page {
+    let level = if descriptor.format == ResultFormat::Feed {
         log::Level::Trace
     } else {
         log::Level::Debug
@@ -335,21 +336,50 @@ async fn invoke_of<S: Action>(
         descriptor.name
     );
     check_args(descriptor, args).inspect_err(|error| log_action_failed(S::NAME, action, *error))?;
-    let mut out = RecordCollector::new(descriptor);
+    let mut out = RecordCollector::new(descriptor, false);
     service
         .invoke(action, args, &mut out)
         .await
         .inspect_err(|error| log_action_failed(S::NAME, action, *error))?;
-    match (out.stream, out.page) {
-        (None, None) => Ok(ActionResult::Records(out.records)),
-        (Some(stream), None) if out.records.is_empty() => Ok(ActionResult::Stream(stream)),
-        (None, Some(page)) if out.records.is_empty() => Ok(ActionResult::Page(page)),
-        _ => {
+    match out.check() {
+        Check::Result => Ok(out.take_result()),
+        Check::Snapshot(snapshot) => {
+            // The same collector reads the first page: one buffer, not two.
+            out.start_read();
+            service
+                .read_records(action, snapshot.id, 0, &mut out)
+                .await
+                .inspect_err(|error| log_action_failed(S::NAME, action, *error))?;
+            Ok(ActionResult::Records(RecordsPage {
+                records: out.take_records(),
+                snapshot: Some(snapshot),
+            }))
+        }
+        Check::Bad => {
             let error = ActionError::Internal;
             log_action_failed(S::NAME, action, error);
             Err(error)
         }
     }
+}
+
+// Reads the records of a snapshot of `action` from the record `from` on.
+#[inline(never)]
+async fn read_records_of<S: Action>(
+    service: &S,
+    action: u32,
+    snapshot: u32,
+    from: u32,
+) -> Result<Records, ActionError> {
+    let descriptor = S::ACTIONS
+        .iter()
+        .find(|descriptor| descriptor.id == action && descriptor.format == ResultFormat::Records)
+        .ok_or(ActionError::UnknownSnapshot)?;
+    let mut out = RecordCollector::new(descriptor, true);
+    service
+        .read_records(action, snapshot, from, &mut out)
+        .await?;
+    Ok(out.records)
 }
 
 #[cold]
@@ -557,6 +587,17 @@ pub trait ActionRegistry {
         action: u32,
         args: &[(u32, Value)],
     ) -> Result<ActionResult, ActionError>;
+    /// Reads the records of a held snapshot of `action` of the service with
+    /// the given id, from the record `from` on.
+    async fn read_records(
+        &self,
+        service: u32,
+        action: u32,
+        snapshot: u32,
+        from: u32,
+    ) -> Result<Records, ActionError>;
+    /// Releases a snapshot of the service with the given id.
+    async fn close_records(&self, service: u32, snapshot: u32) -> Result<(), ActionError>;
     /// Reads a chunk of a file of an open stream of the service with the given
     /// id into `buf`.
     async fn read_stream(
@@ -569,7 +610,8 @@ pub trait ActionRegistry {
     ) -> Result<StreamChunk, ActionError>;
     /// Closes a stream of the service with the given id.
     async fn close_stream(&self, service: u32, stream: u32) -> Result<(), ActionError>;
-    /// The control link was lost: every service releases its open streams.
+    /// The control link was lost: every service releases its open streams and
+    /// snapshots.
     fn link_lost(&self);
 
     /// Whether a service with this id has actions.
@@ -607,6 +649,14 @@ impl ActionRegistry for () {
         _: u32,
         _: &[(u32, Value)],
     ) -> Result<ActionResult, ActionError> {
+        Err(ActionError::UnknownService)
+    }
+
+    async fn read_records(&self, _: u32, _: u32, _: u32, _: u32) -> Result<Records, ActionError> {
+        Err(ActionError::UnknownService)
+    }
+
+    async fn close_records(&self, _: u32, _: u32) -> Result<(), ActionError> {
         Err(ActionError::UnknownService)
     }
 
@@ -744,6 +794,28 @@ macro_rules! tuple_registries {
                     return isolated(invoke_of(self.$index, action, args)).await;
                 })+
                 log_unknown_service("invoke", service);
+                Err(ActionError::UnknownService)
+            }
+
+            async fn read_records(
+                &self,
+                service: u32,
+                action: u32,
+                snapshot: u32,
+                from: u32,
+            ) -> Result<Records, ActionError> {
+                $(if $name::ID == service {
+                    return isolated(read_records_of(self.$index, action, snapshot, from)).await;
+                })+
+                log_unknown_service("read_records", service);
+                Err(ActionError::UnknownService)
+            }
+
+            async fn close_records(&self, service: u32, snapshot: u32) -> Result<(), ActionError> {
+                $(if $name::ID == service {
+                    return isolated(self.$index.close_records(snapshot)).await;
+                })+
+                log_unknown_service("close_records", service);
                 Err(ActionError::UnknownService)
             }
 

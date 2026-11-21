@@ -161,8 +161,7 @@ async fn download_gives_decodable_files_and_clear_empties_the_log() {
     device.close_stream(&stream).await.unwrap();
     assert!(!sequences.is_empty());
 
-    let records = device.invoke("logging", "clear", &[]).await.unwrap();
-    assert!(records.is_empty());
+    device.invoke_empty("logging", "clear", &[]).await.unwrap();
     eventually("an empty history", WAIT, async || {
         (status_number(&mut device, status_field::STORED_RECORDS).await == Some(0)).then_some(())
     })
@@ -215,7 +214,7 @@ async fn a_cleared_log_stays_cleared_across_a_restart_and_keeps_working() {
     let history = status_number(&mut device, status_field::HISTORY)
         .await
         .unwrap();
-    device.invoke("logging", "clear", &[]).await.unwrap();
+    device.invoke_empty("logging", "clear", &[]).await.unwrap();
     assert_eq!(
         status_number(&mut device, status_field::HISTORY).await,
         Some(history + 1)
@@ -487,7 +486,7 @@ async fn clear_is_busy_while_a_download_is_open_and_the_tail_is_not_affected() {
 
     let stream = stream_of(&mut device, "download", &[]).await;
     for _ in 0..2 {
-        match device.invoke("logging", "clear", &[]).await {
+        match device.invoke_empty("logging", "clear", &[]).await {
             Err(Error::Device(ErrorCode::Busy)) => {}
             other => panic!("clear while a download is open: {other:?}"),
         }
@@ -507,7 +506,7 @@ async fn clear_is_busy_while_a_download_is_open_and_the_tail_is_not_affected() {
     assert!(during.text.starts_with(before.text.lines().next().unwrap()));
 
     device.close_stream(&stream).await.unwrap();
-    device.invoke("logging", "clear", &[]).await.unwrap();
+    device.invoke_empty("logging", "clear", &[]).await.unwrap();
     eventually("an empty history", WAIT, async || {
         (status_number(&mut device, status_field::STORED_RECORDS).await == Some(0)).then_some(())
     })

@@ -50,19 +50,6 @@ impl TcpKey {
         Ok(Self(bytes))
     }
 
-    /// A new random key, from the random source of the operating system.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::InvalidInput`] without such a source.
-    pub fn generate() -> Result<Self> {
-        let mut bytes = [0u8; 32];
-        fill_random(&mut bytes)?;
-        let key = Self::from_bytes(bytes);
-        bytes.zeroize();
-        key
-    }
-
     /// Reads the key file `path`: 64 hex characters, with or without `0x`.
     ///
     /// On Unix a file that other users can read is refused.
@@ -83,7 +70,7 @@ impl TcpKey {
         key
     }
 
-    /// The key material, to derive a session from or to send to a device over a protected link.
+    /// The key material, to derive the session keys of the handshake from.
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
@@ -96,46 +83,6 @@ impl TcpKey {
 /// [`Error::InvalidInput`] without a random source.
 pub fn random(out: &mut [u8]) -> Result<()> {
     fill_random(out)
-}
-
-/// The text of a key file for `key`.
-pub fn key_text(key: &[u8; 32]) -> String {
-    use std::fmt::Write as _;
-
-    let mut text = String::with_capacity(65);
-    for byte in key {
-        let _ = write!(text, "{byte:02x}");
-    }
-    text.push('\n');
-    text
-}
-
-/// Writes a new key file that only its owner can read; an existing file is never replaced.
-///
-/// # Errors
-///
-/// [`Error::InvalidInput`] when the file exists or cannot be written.
-pub fn write_new(path: &Path, key: &[u8; 32]) -> Result<()> {
-    use std::io::Write as _;
-
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
-    }
-    let mut text = key_text(key);
-    let written = options
-        .open(path)
-        .and_then(|mut file| file.write_all(text.as_bytes()));
-    text.zeroize();
-    written.map_err(|e| {
-        Error::InvalidInput(format!(
-            "cannot create the key file {}: {e}",
-            path.display()
-        ))
-    })
 }
 
 fn parse_key(text: &str) -> Result<[u8; 32]> {
@@ -188,7 +135,7 @@ fn fill_random(out: &mut [u8]) -> Result<()> {
 #[cfg(not(unix))]
 fn fill_random(_: &mut [u8]) -> Result<()> {
     Err(Error::InvalidInput(
-        "no random source: create the key file by hand".into(),
+        "no random source on this platform".into(),
     ))
 }
 
@@ -196,12 +143,16 @@ fn fill_random(_: &mut [u8]) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn hex(key: &[u8; 32]) -> String {
+        key.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
     #[test]
     fn a_key_round_trips_through_its_text() {
         let key = [0xab; 32];
-        let text = key_text(&key);
+        let text = hex(&key);
         assert_eq!(parse_key(&text).unwrap(), key);
-        assert_eq!(parse_key(&format!("0x{}", text.trim())).unwrap(), key);
+        assert_eq!(parse_key(&format!("0x{text}\n")).unwrap(), key);
     }
 
     #[test]
@@ -213,18 +164,17 @@ mod tests {
     }
 
     #[test]
-    fn the_key_file_is_private_and_never_replaced() {
+    fn a_key_file_that_others_can_read_is_refused() {
         let dir = std::env::temp_dir().join(format!("rohi-psk-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("tcp.key");
-        let _ = std::fs::remove_file(&path);
-        let key = TcpKey::generate().unwrap();
-        write_new(&path, key.as_bytes()).unwrap();
-        assert!(write_new(&path, key.as_bytes()).is_err());
-        assert_eq!(TcpKey::load(&path).unwrap().as_bytes(), key.as_bytes());
+        let key = [0x5a; 32];
+        std::fs::write(&path, hex(&key)).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            assert_eq!(TcpKey::load(&path).unwrap().as_bytes(), &key);
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
             assert!(TcpKey::load(&path).is_err());
         }

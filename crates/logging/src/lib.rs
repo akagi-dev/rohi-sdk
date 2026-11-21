@@ -28,8 +28,8 @@
 //! section ([`LoggingConfig`]), a status, and the actions `download`, `clear` and
 //! `tail` ([`LoggingService`]). `download` returns the compressed archive as a
 //! [stream](rohi_service::StreamInfo). `tail` returns the latest records as one
-//! [page](rohi_service::ActionPage) of at most
-//! [`MAX_PAGE_CHUNK`](rohi_service::MAX_PAGE_CHUNK) bytes: no stream, nothing
+//! [feed page](rohi_service::FeedPage) of at most
+//! [`MAX_FEED_CHUNK`](rohi_service::MAX_FEED_CHUNK) bytes: no stream, nothing
 //! kept for the client.
 //!
 //! Two stores, two purposes. The **archive** is the compressed, rotated history
@@ -130,7 +130,7 @@
 //!   queue is full and the archive copy is dropped. The `tail` action
 //!   ([`action::TAIL`]) never touches storage, the batch or the queue and waits
 //!   for nobody: it returns **one page** of at most
-//!   [`MAX_PAGE_CHUNK`](rohi_service::MAX_PAGE_CHUNK) bytes of whole lines,
+//!   [`MAX_FEED_CHUNK`](rohi_service::MAX_FEED_CHUNK) bytes of whole lines,
 //!   newline terminated, never splitting a line. The page names the `session` of the boot, the
 //!   `cursor` (the sequence of its last line), the `oldest_sequence` and `newest_sequence` held, a
 //!   `reset` flag (the request carried a session of another boot or a cursor

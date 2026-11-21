@@ -101,8 +101,8 @@ use embassy_sync::mutex::Mutex;
 use heapless::Vec;
 use rohi_service::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, EnumDescriptor, EnumVariant,
-    FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES, Service, ServiceHealth,
-    ServiceSummary, Status, StatusWriter, Unit, Value, ValueKind, WriteError,
+    FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES, ResultFormat, Service,
+    ServiceHealth, ServiceSummary, Status, StatusWriter, Unit, Value, ValueKind, WriteError,
 };
 #[cfg(feature = "packet-export")]
 use rohi_service::{MAX_STREAM_CHUNK, StreamChunk, StreamFile, StreamInfo};
@@ -703,7 +703,7 @@ impl<
                 "profile_index",
                 ValueKind::U64,
             )])
-            .stream(),
+            .format(ResultFormat::Stream),
     ];
 
     #[cfg_attr(not(feature = "packet-export"), allow(unused_variables))]

@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use common::*;
 use rohi::model::{EntryState, Value};
-use rohi::{Device, Error, TcpKey, TcpLink, write_tcp_key};
+use rohi::{Device, Error, TcpKey, TcpLink};
 use tempfile::TempDir;
 
 const TCP_ACCESS_MODE: u32 = 1;
@@ -39,16 +39,31 @@ fn key(seed: u8) -> TcpKey {
 
 fn key_file(dir: &Path, name: &str, key: &TcpKey) -> std::path::PathBuf {
     let path = dir.join(name);
-    write_tcp_key(&path, key.as_bytes()).unwrap();
+    let hex: String = key
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let mut file = std::fs::OpenOptions::new();
+    file.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        file.mode(0o600);
+    }
+    file.open(&path)
+        .and_then(|mut file| std::io::Write::write_all(&mut file, hex.as_bytes()))
+        .unwrap();
     path
 }
 
 /// Asks the device for a new key; the device generates it.
 async fn generate_psk(device: &mut Device<TcpLink>) -> Result<TcpKey, Error> {
-    let records = device.invoke("control", "tcp_generate_psk", &[]).await?;
-    let bytes = records
+    let record = device
+        .invoke_inline("control", "tcp_generate_psk", &[])
+        .await?;
+    let bytes = record
         .iter()
-        .flatten()
         .find_map(|field| match (&field.field_id, &field.value) {
             (1, Value::Bytes(bytes)) => Some(bytes.clone()),
             _ => None,
@@ -115,7 +130,7 @@ async fn one_control_service_and_section_are_discoverable_with_their_defaults() 
     }
     assert!(
         device
-            .invoke("control_tcp", "reveal_psk", &[])
+            .invoke_outcome("control_tcp", "reveal_psk", &[])
             .await
             .is_err()
     );
@@ -173,6 +188,10 @@ async fn a_protected_endpoint_without_a_key_reads_and_refuses_the_rest() {
         status.get("tcp_state"),
         Some(&Value::Enum("running".into()))
     );
+    // A missing key is not a fault of the service: no issue, and the health is ok.
+    let (health, issues) = summary(&mut plain, "control").await;
+    assert_eq!(health, rohi::model::ServiceHealth::Ok);
+    assert!(issues.is_empty(), "{issues:?}");
     // Mutations and provisioning are denied, and say there is no key to authenticate with.
     assert_eq!(reason(patch_ssid(&mut plain, "no").await), "no_psk");
     let refused = generate_psk(&mut plain).await.map(|_| ());
@@ -219,6 +238,14 @@ async fn a_protected_endpoint_serves_plaintext_reads_and_the_key_serves_everythi
     assert_eq!(
         config_text(&mut plain, "wireless", SSID).await.as_deref(),
         Some("first")
+    );
+    // A collection is a read: a plaintext connection runs the scan and follows its pages.
+    assert!(
+        !plain
+            .records_all("wireless", "wifi_scan", &[])
+            .await
+            .unwrap()
+            .is_empty()
     );
     assert_eq!(
         reason(patch_ssid(&mut plain, "second").await),
@@ -375,7 +402,10 @@ async fn a_stored_key_and_mode_survive_a_restart_and_a_factory_reset_removes_the
     patch_ssid(&mut device, "kept").await.unwrap();
 
     // A factory reset removes the key; the connection of the old key ends with it.
-    device.invoke("system", "factory_reset", &[]).await.unwrap();
+    device
+        .invoke_inline("system", "factory_reset", &[])
+        .await
+        .unwrap();
     drop(device);
     let refused =
         TcpLink::connect_secure(&sim.control.to_string(), Duration::from_secs(10), &psk).await;

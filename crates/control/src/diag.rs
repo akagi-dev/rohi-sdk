@@ -44,6 +44,8 @@ fn op_name(call: &Call) -> &'static str {
         Call::InvokeAction(_) => "invoke_action",
         Call::ReadStream(_) => "read_stream",
         Call::CloseStream(_) => "close_stream",
+        Call::ReadResultPage(_) => "read_result_page",
+        Call::CloseResultPage(_) => "close_result_page",
     }
 }
 
@@ -107,19 +109,21 @@ pub(crate) fn denied(id: u32, call: &Call, privilege: Privilege, link: &LinkSecu
 
 #[cold]
 #[inline(never)]
-pub(crate) fn unknown_stream(id: u32, call: &Call, link: &LinkSecurity) {
-    let (service, stream) = match call {
-        Call::ReadStream(r) => (r.service_id, r.stream_id),
-        Call::CloseStream(r) => (r.service_id, r.stream_id),
-        _ => (0, 0),
+pub(crate) fn unknown_held(id: u32, call: &Call, link: &LinkSecurity) {
+    // The token of a page is never logged.
+    let service = match call {
+        Call::ReadStream(r) => r.service_id,
+        Call::CloseStream(r) => r.service_id,
+        Call::ReadResultPage(r) => r.service_id,
+        Call::CloseResultPage(r) => r.service_id,
+        _ => 0,
     };
     log::debug!(
         target: "control",
-        "Request refers to an unknown stream (id={} op={} service={} stream={} session={})",
+        "Request refers to an unknown stream or snapshot (id={} op={} service={} session={})",
         id,
         op_name(call),
         service,
-        stream,
         link.session
     );
 }
@@ -147,7 +151,7 @@ pub(crate) fn response_lost(id: u32) {
 #[cold]
 #[inline(never)]
 pub(crate) fn link_lost(streams: usize) {
-    log::info!(target: "control", "Link lost, streams released (count={})", streams);
+    log::info!(target: "control", "Link lost, streams and snapshots released (count={})", streams);
 }
 
 #[cold]
@@ -247,7 +251,7 @@ pub(crate) fn invoked(service: u32, action: u32, privilege: Privilege, what: &'s
             what
         );
     } else {
-        let level = if what == "page" {
+        let level = if what == "feed" {
             log::Level::Trace
         } else {
             log::Level::Debug
@@ -277,13 +281,13 @@ pub(crate) fn stream_opened(service: u32, stream: u32, session: u64, files: usiz
 
 #[cold]
 #[inline(never)]
-pub(crate) fn stream_evicted(service: u32, stream: u32, result: Result<(), ActionError>) {
+pub(crate) fn held_evicted(service: u32, id: u32, stream: bool) {
     log::warn!(
         target: "control",
-        "Stream table full, closed the oldest stream (service={} stream={} result={:?})",
+        "Table full, closing the oldest stream or snapshot (service={} id={} stream={})",
         service,
-        stream,
-        result
+        id,
+        stream
     );
 }
 
@@ -343,17 +347,89 @@ pub(crate) fn stream_gone(service: u32, stream: u32) {
 
 #[cold]
 #[inline(never)]
-pub(crate) fn session_stream_closed(
+pub(crate) fn session_held_closed(
     session: u64,
     service: u32,
-    stream: u32,
+    id: u32,
+    stream: bool,
     result: Result<(), ActionError>,
 ) {
     log::info!(
         target: "control",
-        "Session ended, stream closed (session={} service={} stream={} result={:?})",
+        "Session ended, stream or snapshot closed (session={} service={} id={} stream={} result={:?})",
         session,
         service,
+        id,
+        stream,
+        result
+    );
+}
+
+#[inline(never)]
+pub(crate) fn snapshot_opened(service: u32, snapshot: u32, session: u64, total: u16) {
+    log::debug!(
+        target: "control",
+        "Snapshot opened (service={} snapshot={} session={} records={})",
+        service,
+        snapshot,
+        session,
+        total
+    );
+}
+
+#[inline(never)]
+pub(crate) fn snapshot_closed(service: u32, snapshot: u32, result: Result<(), ActionError>) {
+    log::debug!(
+        target: "control",
+        "Snapshot closed (service={} snapshot={} result={:?})",
+        service,
+        snapshot,
+        result
+    );
+}
+
+#[inline(never)]
+pub(crate) fn snapshot_gone(service: u32, snapshot: u32) {
+    log::debug!(
+        target: "control",
+        "Snapshot closed or expired in the service (service={} snapshot={})",
+        service,
+        snapshot
+    );
+}
+
+#[inline(never)]
+pub(crate) fn page_read(service: u32, snapshot: u32, from: u16, count: usize) {
+    log::trace!(
+        target: "control",
+        "Result page read (service={} snapshot={} from={} records={})",
+        service,
+        snapshot,
+        from,
+        count
+    );
+}
+
+#[cold]
+#[inline(never)]
+pub(crate) fn page_overflow(service: u32, action: u32, fitting: usize, written: usize) {
+    log::warn!(
+        target: "control",
+        "Result page rejected: no progress or too large (service={} action={} fitting={} written={})",
+        service,
+        action,
+        fitting,
+        written
+    );
+}
+
+#[inline(never)]
+pub(crate) fn held_closed(service: u32, id: u32, stream: bool, result: Result<(), ActionError>) {
+    log::debug!(
+        target: "control",
+        "Stream or snapshot closed (service={} id={} stream={} result={:?})",
+        service,
+        id,
         stream,
         result
     );

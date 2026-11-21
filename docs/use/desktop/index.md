@@ -89,6 +89,5 @@ Each command has its own page: [Discovery & connection](discovery.md), [Configur
 | `rohi reboot` | `rohi system reboot` |
 | `rohi factory-reset [--yes]` | `rohi system factory_reset`: no confirmation prompt, and no automatic reboot (run `rohi system reboot` when `restart_required` says so) |
 
-The two last rows are a breaking change of Control Protocol version 1 (which stays `1`): the dedicated reboot and
-factory reset requests were removed from the protocol, so a `rohi` and a firmware built before it do not work together.
+The reboot and the factory reset are ordinary actions of the `system` service, not requests of their own.
 

@@ -529,8 +529,8 @@ pub fn action_help(paint: Paint, schema: &ActionSchema, syntax: Syntax) -> Strin
     out
 }
 
-/// A cursor page an action returned: a line of metadata, then the text.
-pub fn page(page: &ActionPage) -> String {
+/// A feed page an action returned: a line of metadata, then the data as text.
+pub fn feed(page: &FeedPage) -> String {
     let mut out = format!(
         "# session={} cursor={} oldest_sequence={} newest_sequence={} reset={} gap={}\n",
         page.session, page.cursor, page.oldest_sequence, page.newest_sequence, page.reset, page.gap
@@ -542,11 +542,24 @@ pub fn page(page: &ActionPage) -> String {
     out
 }
 
-/// The records an action returned, one table row each.
-pub fn records(paint: Paint, records: &[Record], schema: &ActionSchema) -> String {
-    if schema.results.is_empty() {
-        return "Done\n".to_owned();
+/// What an action with no result says: it succeeded.
+pub fn empty() -> String {
+    "Done\n".to_owned()
+}
+
+/// The record an inline action returned, one `name: value` line per field.
+pub fn inline(record: &Record, schema: &ActionSchema) -> String {
+    let mut out = String::new();
+    for field in &schema.results {
+        if let Some(entry) = record.iter().find(|entry| entry.field_id == field.id) {
+            let _ = writeln!(out, "{}: {}", field.name, value(&entry.value, Some(field)));
+        }
     }
+    out
+}
+
+/// The records of a collection, one table row each.
+pub fn records(paint: Paint, records: &[Record], schema: &ActionSchema) -> String {
     if records.is_empty() {
         return "No results\n".to_owned();
     }

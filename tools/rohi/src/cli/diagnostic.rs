@@ -312,8 +312,7 @@ fn unauthorized_diagnostic(reason: &str) -> Diagnostic {
     let diagnostic = Diagnostic::new(format!("the device refused the request: {reason}"));
     match reason {
         "no_psk" => diagnostic
-            .hint("no TCP key is provisioned, so nobody can authenticate to the TCP endpoint")
-            .hint("make the device generate one: `rohi action control tcp_generate_psk` (over BLE; the action prints the key)"),
+            .hint("no TCP key is provisioned, so nobody can authenticate to the TCP endpoint"),
         "encryption_required" => diagnostic
             .hint("this request needs an encrypted and authenticated link")
             .hint("connect to the TCP endpoint with the key (the handshake): `--psk-file FILE`"),
