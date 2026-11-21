@@ -28,26 +28,33 @@
 //! | [`BleTransport`] | The byte pipe: `recv`, `send`, link properties, connection epoch |
 //! | [`BleConfig`] | Peripheral configuration: default name prefix, configured [`BleName`], [`BleGattSpec`] |
 //! | [`BleState`] / [`BleConnectionInfo`] / [`BleError`] | Published state, link security, errors |
-//! | [`BleSettings`] / [`BleOverrides`] | The persistent `ble` section |
-//! | [`BleService`] / [`BleProbe`] | The `ble` service and its platform readings |
+//! | [`BleSettings`] | The BLE field of the `wireless` section |
+//! | [`BleProbe`] | The platform's read-only view of the peripheral state, for the `wireless` service |
 //!
-//! # The `ble` section and service
+//! # BLE in the `wireless` section and service
 //!
-//! The section has one property, `name` (1 to [`MAX_BLE_NAME_LEN`] bytes,
-//! optional): without an override the firmware default applies,
-//! `<PREFIX>-<last two MAC bytes>` (see [`BleConfig::name_prefix`]). It is
-//! read when the peripheral starts, so a change applies after a reboot. The service reports `state`
-//! (`disabled`, `advertising`, `connected`, `error`; see [`state`]), `name`,
-//! `encrypted`, `authenticated` and `max_payload`; it has no actions.
+//! BLE has one config field, `ble_name` (1 to [`MAX_BLE_NAME_LEN`] bytes,
+//! optional) in the `wireless` section: without an override the firmware
+//! default applies, `<PREFIX>-<last two MAC bytes>` (see
+//! [`BleConfig::name_prefix`]). It is read when the peripheral starts, so a
+//! change applies after a reboot. BLE is always on and has no status field or
+//! action of its own: a failed peripheral is reported as the health and the
+//! issues of the [`WirelessService`](crate::WirelessService).
 
 use core::fmt;
 
 mod config;
 mod managed;
-mod service;
 
-pub use config::{BleName, BleOverrides, BleSettings, MAX_BLE_NAME_LEN};
-pub use service::{BleProbe, BleService, STATES, issue, state, status_field};
+pub use config::{BleName, BleSettings, MAX_BLE_NAME_LEN};
+
+/// What the `wireless` service reads from the BLE peripheral. The transport
+/// itself is owned by the control link, so the platform hands out a separate
+/// view of the same peripheral.
+pub trait BleProbe {
+    /// Current state of the peripheral.
+    fn state(&self) -> BleState;
+}
 
 /// Largest ATT payload a BLE transport ever has to carry (MTU 247 minus the
 /// 3-byte ATT header). Fragmenting layers must never exceed

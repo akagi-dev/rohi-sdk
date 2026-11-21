@@ -57,7 +57,7 @@ async fn status_number(device: &mut Device<TcpLink>, field: u32) -> Option<u64> 
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn logging_is_a_service_with_download_and_clear_and_the_tail_is_no_action() {
+async fn logging_is_a_service_with_download_clear_and_tail_actions() {
     let sim = Sim::start(&Launch::new());
     let mut device = sim.device().await;
 
@@ -70,7 +70,7 @@ async fn logging_is_a_service_with_download_and_clear_and_the_tail_is_no_action(
         .map(|action| action.name.as_str())
         .collect();
     names.sort_unstable();
-    assert_eq!(names, ["clear", "download"]);
+    assert_eq!(names, ["clear", "download", "tail"]);
 
     let status = fields(&mut device, "logging").await;
     assert_eq!(status["storage"], text("internal"));
@@ -161,8 +161,7 @@ async fn download_gives_decodable_files_and_clear_empties_the_log() {
     device.close_stream(&stream).await.unwrap();
     assert!(!sequences.is_empty());
 
-    let records = device.invoke("logging", "clear", &[]).await.unwrap();
-    assert!(records.is_empty());
+    device.invoke_empty("logging", "clear", &[]).await.unwrap();
     eventually("an empty history", WAIT, async || {
         (status_number(&mut device, status_field::STORED_RECORDS).await == Some(0)).then_some(())
     })
@@ -180,7 +179,7 @@ async fn the_sd_card_is_unavailable_on_the_host_and_never_replaced_by_the_file()
         .await
         .unwrap();
     let issues = eventually("storage_unavailable", WAIT, async || {
-        let (_, _, _, issues) = summary(&mut device, "logging").await;
+        let (_, issues) = summary(&mut device, "logging").await;
         issues
             .contains(&"storage_unavailable".to_owned())
             .then_some(issues)
@@ -215,7 +214,7 @@ async fn a_cleared_log_stays_cleared_across_a_restart_and_keeps_working() {
     let history = status_number(&mut device, status_field::HISTORY)
         .await
         .unwrap();
-    device.invoke("logging", "clear", &[]).await.unwrap();
+    device.invoke_empty("logging", "clear", &[]).await.unwrap();
     assert_eq!(
         status_number(&mut device, status_field::HISTORY).await,
         Some(history + 1)
@@ -299,8 +298,8 @@ async fn tail_serves_the_records_in_ram_and_follows_them_once() {
     for round in 0..3 {
         device
             .config_patch(
-                "wifi",
-                &[set(wifi::SSID, text(&format!("tail-{round}")))],
+                "wireless",
+                &[set(wireless::WIFI_SSID, text(&format!("tail-{round}")))],
                 false,
             )
             .await
@@ -424,8 +423,11 @@ async fn following_the_tail_at_debug_generates_no_records_of_its_own() {
     for round in 0..altruist_urban::logging::TAIL_RECORDS {
         device
             .config_patch(
-                "wifi",
-                &[set(wifi::SSID, text(&format!("debug-tail-{round}")))],
+                "wireless",
+                &[set(
+                    wireless::WIFI_SSID,
+                    text(&format!("debug-tail-{round}")),
+                )],
                 false,
             )
             .await
@@ -484,7 +486,7 @@ async fn clear_is_busy_while_a_download_is_open_and_the_tail_is_not_affected() {
 
     let stream = stream_of(&mut device, "download", &[]).await;
     for _ in 0..2 {
-        match device.invoke("logging", "clear", &[]).await {
+        match device.invoke_empty("logging", "clear", &[]).await {
             Err(Error::Device(ErrorCode::Busy)) => {}
             other => panic!("clear while a download is open: {other:?}"),
         }
@@ -504,7 +506,7 @@ async fn clear_is_busy_while_a_download_is_open_and_the_tail_is_not_affected() {
     assert!(during.text.starts_with(before.text.lines().next().unwrap()));
 
     device.close_stream(&stream).await.unwrap();
-    device.invoke("logging", "clear", &[]).await.unwrap();
+    device.invoke_empty("logging", "clear", &[]).await.unwrap();
     eventually("an empty history", WAIT, async || {
         (status_number(&mut device, status_field::STORED_RECORDS).await == Some(0)).then_some(())
     })

@@ -132,10 +132,12 @@ pub struct Cli {
     )]
     pub scan_timeout: u64,
 
-    /// File with the pre-shared key of a TCP endpoint (64 hex characters). A
-    /// restricted endpoint serves only clients that complete a handshake with
-    /// it, and `rohi` then encrypts every request. Never put the key itself on
-    /// the command line; get a key from the device with `rohi control_tcp reveal_psk`, which prints it.
+    /// File with the pre-shared key of a TCP endpoint (64 hex characters). With
+    /// it `rohi` completes the handshake and encrypts every request: the way to
+    /// change or provision a `protected` endpoint, and the only way into a
+    /// `private` one. Without it requests are plaintext, which a `protected`
+    /// endpoint answers for reads only. Never put the key itself on the command
+    /// line.
     #[arg(
         long,
         global = true,
@@ -179,7 +181,7 @@ Examples:
     /// Show the runtime status of the device and its services.
     ///
     /// Without a service this is one compact request: the device health set by
-    /// the firmware and the state, health and readiness of every service.
+    /// the firmware and the health of every service.
     /// With a service name it shows that service in detail: its
     /// service-specific values and the active issues, each with a stable
     /// code. Services are discovered from the device; `rohi status` lists
@@ -190,7 +192,7 @@ Examples:
     #[command(after_help = "\
 Examples:
   rohi status
-  rohi status wifi
+  rohi status wireless
   rohi status --watch
   rohi status connectivity --watch --interval 5
   rohi -o json status sensors")]
@@ -243,14 +245,14 @@ Examples:
         after_help = "\
 Examples:
   rohi config
-  rohi config wifi
-  rohi config wifi ssid=office password=-
-  rohi config wifi scan_timeout=5000
-  rohi config wifi scan_timeout=null
-  rohi config wifi password=none
-  rohi config wifi scan_timeout=5000 --dry-run
-  rohi config wifi --help
-  echo 'hunter2hunter2' | rohi config wifi password=-"
+  rohi config wireless
+  rohi config wireless wifi_ssid=office wifi_password=-
+  rohi config wireless wifi_scan_timeout=5000
+  rohi config wireless wifi_scan_timeout=null
+  rohi config wireless wifi_password=none
+  rohi config wireless wifi_scan_timeout=5000 --dry-run
+  rohi config wireless --help
+  echo 'hunter2hunter2' | rohi config wireless wifi_password=-"
     )]
     Config {
         #[command(subcommand)]
@@ -302,14 +304,14 @@ Examples:
         after_help = "\
 Examples:
   rohi action
-  rohi action wifi
-  rohi action wifi scan
-  rohi action wifi reconnect
-  rohi action wifi reconnect --help
+  rohi action wireless
+  rohi action wireless wifi_scan
+  rohi action wireless wifi_reconnect
+  rohi action wireless wifi_reconnect --help
   rohi action identity provision secret=-
   rohi action system reboot
-  rohi -o json action wifi scan
-  rohi wifi scan
+  rohi -o json action wireless wifi_scan
+  rohi wireless wifi_scan
   rohi system reboot
   rohi system factory_reset
   rohi identity provision -
@@ -335,7 +337,7 @@ Examples:
         long_about = "Show or follow the latest log records of the device, download or clear its\n\
             persistent log.\n\n\
             A convenience over the actions of the `logging` service: `rohi logs` runs\n\
-            the `TailLogs` request, which reads the few most recent records the device\n\
+            the `logging.tail` action, which reads the few most recent records the device\n\
             keeps in RAM page by page (they are lost on a restart, and older ones are\n\
             overwritten; nothing is opened on the device), `logs\n\
             download` runs `logging.download`, which saves the archive kept in flash, and\n\

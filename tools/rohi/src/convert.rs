@@ -114,6 +114,26 @@ pub(crate) fn field_value(
     })
 }
 
+/// The fields of a record, as the schema `schema` describes them.
+pub(crate) fn record(fields: &[pb::FieldValue], schema: &[FieldDescriptor]) -> Record {
+    fields
+        .iter()
+        .filter_map(|field| field_value(field, schema))
+        .collect()
+}
+
+/// A page of a `Records` result.
+pub(crate) fn records_page(page: &pb::RecordsPage, schema: &[FieldDescriptor]) -> RecordsPage {
+    RecordsPage {
+        records: page
+            .records
+            .iter()
+            .map(|record| self::record(&record.fields, schema))
+            .collect(),
+        next_page_token: (!page.page_token.is_empty()).then(|| page.page_token.to_vec()),
+    }
+}
+
 pub(crate) fn to_action_arg(arg: &FieldValue, schema: &[FieldDescriptor]) -> Option<pb::ActionArg> {
     Some(pb::ActionArg {
         field_id: arg.field_id,
@@ -266,11 +286,8 @@ pub(crate) fn summary(summary: &pb::ServiceStatusSummary) -> ServiceSummary {
         id: summary.service_id,
         service: summary.name.as_str().to_owned(),
         version: summary.version,
-        state: ServiceState::from_proto(summary.state),
         health: ServiceHealth::from_proto(summary.health),
-        ready: summary.ready,
         revision: summary.revision,
-        state_age_ms: u64::from(summary.state_age_ms),
     }
 }
 
@@ -305,5 +322,6 @@ pub(crate) fn action_info(info: &pb::ActionInfo) -> ActionInfo {
         name: info.name.as_str().to_owned(),
         access: ActionAccess::from_proto(info.access),
         secret_args: info.secret_args,
+        format: ResultFormat::from_proto(info.result_format),
     }
 }

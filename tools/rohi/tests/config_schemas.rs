@@ -30,7 +30,7 @@ use std::fmt::Write as _;
 
 use rohi_config::{ConfigOverrides, ConfigSection, HasOverrides};
 use rohi_location::LocationConfig;
-use rohi_net::{BleSettings, NetworkConfig, WifiConfig};
+use rohi_net::WirelessConfig;
 use rohi_service::{Config, FieldError, Value};
 use rohi_time_ntp::NtpServersConfig;
 
@@ -100,7 +100,7 @@ fn describe<C: Config>(out: &mut String) {
     for id in <C::Overrides as ConfigOverrides<C>>::FIELD_IDS {
         assert!(overrides.capture(&config, *id));
     }
-    let mut buffer = [0u8; 256];
+    let mut buffer = [0u8; 512];
     let used = rohi_config::encode_to_slice(&overrides, &mut buffer).unwrap();
     let hex: String = buffer[..used].iter().map(|b| format!("{b:02x}")).collect();
     writeln!(out, "  cbor {hex}").unwrap();
@@ -126,9 +126,7 @@ fn golden(name: &str, actual: &str) {
 #[test]
 fn the_managed_sections_of_the_device_are_pinned() {
     let mut out = String::new();
-    describe::<WifiConfig>(&mut out);
-    describe::<NetworkConfig>(&mut out);
-    describe::<BleSettings>(&mut out);
+    describe::<WirelessConfig>(&mut out);
     describe::<LocationConfig>(&mut out);
     describe::<NtpServersConfig>(&mut out);
     golden("config-sections.txt", &out);
@@ -137,5 +135,5 @@ fn the_managed_sections_of_the_device_are_pinned() {
 // Keeps the section types linked to their overrides in the dump above.
 const _: fn() = || {
     fn has_overrides<C: HasOverrides>() {}
-    has_overrides::<WifiConfig>();
+    has_overrides::<WirelessConfig>();
 };

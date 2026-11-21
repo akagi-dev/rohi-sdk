@@ -6,7 +6,7 @@ protocol**, and the device describes itself with three kinds of things:
 | Concept | The user asks | The firmware provides |
 |---------|---------------|-----------------------|
 | **Config** | what is the device set up to do? | typed settings with defaults, validation and persistence |
-| **Status** | what is it doing now? | live state, health, readiness, metrics and active issues |
+| **Status** | what is it doing now? | live health, metrics and active issues |
 | **Action** | what can I ask it to do? | discoverable operations with typed arguments and results |
 
 Because these are described by schemas the device sends, the same client can show the settings of an Altruist Urban

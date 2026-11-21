@@ -30,8 +30,8 @@ use crate::WifiError;
 ///
 /// `Scanning` is shown while a scan runs and the link is not connected;
 /// `Idle` after a `disconnect` request. See
-/// [`WifiService`](crate::WifiService) for how the states read as service
-/// states.
+/// [`WirelessService`](crate::WirelessService) for how the states read as the
+/// `wifi_state` field and as service health.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum WifiState {
     /// No network is configured (no SSID, or the configuration was rejected as

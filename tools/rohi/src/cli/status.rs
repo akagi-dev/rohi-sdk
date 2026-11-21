@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use super::diagnostic::CliError;
 use super::{Ctx, dto};
-use crate::model::{ServicesStatus, Value};
+use crate::model::{ServiceHealth, ServicesStatus, Value};
 use crate::{ClientTransport, Device, PublicKey, format};
 
 /// The device summary, or one service in detail.
@@ -115,8 +115,8 @@ async fn sensor_id<T: ClientTransport>(
     else {
         return Ok(None);
     };
-    // Only a provisioned identity is ready: without one there is no key to ask for.
-    if !summary.ready {
+    // Only a provisioned identity is `ok`: without one there is no key to ask for.
+    if summary.health != ServiceHealth::Ok {
         return Ok(None);
     }
     let schema = device.service_schema(SERVICE).await?;

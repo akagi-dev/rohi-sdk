@@ -46,12 +46,8 @@ impl Privilege {
 
 /// The kind of transport a connection belongs to. TCP has an access mode, BLE is open, see
 /// [`TransportAccessMode`](crate::TransportAccessMode).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Transport {
-    /// Not declared: an [`AccessPolicy`](crate::AccessPolicy) treats it as
-    /// restricted and never as open.
-    #[default]
-    Unspecified,
     /// A BLE central.
     Ble,
     /// A TCP client.
@@ -60,7 +56,7 @@ pub enum Transport {
 
 /// Security properties of the link a request arrived on, as reported by the
 /// transport.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LinkSecurity {
     /// The link is encrypted.
     pub encrypted: bool,
@@ -75,6 +71,19 @@ pub struct LinkSecurity {
     pub transport: Transport,
 }
 
+impl LinkSecurity {
+    /// A link of `transport` that is neither encrypted nor authenticated, in session 0. The
+    /// transport is always declared: there is no default one.
+    pub const fn new(transport: Transport) -> Self {
+        Self {
+            encrypted: false,
+            authenticated: false,
+            session: 0,
+            transport,
+        }
+    }
+}
+
 /// Decides whether a request with the given [`Privilege`] may run on a link.
 ///
 /// The transport only reports link properties; this is the single place
@@ -86,13 +95,14 @@ pub struct LinkSecurity {
 /// ```
 /// use rohi_control::{
 ///     AuthorizationPolicy, LinkSecurity, Privilege, RequireAuthenticated, RequireEncryption,
+///     Transport,
 /// };
 ///
-/// let encrypted = LinkSecurity { encrypted: true, ..Default::default() };
+/// let encrypted = LinkSecurity { encrypted: true, ..LinkSecurity::new(Transport::Tcp) };
 /// assert!(RequireEncryption.allows(Privilege::Mutate, &encrypted));
 /// assert!(!RequireAuthenticated.allows(Privilege::Mutate, &encrypted));
 /// // Reads are open under both.
-/// assert!(RequireAuthenticated.allows(Privilege::Read, &LinkSecurity::default()));
+/// assert!(RequireAuthenticated.allows(Privilege::Read, &LinkSecurity::new(Transport::Tcp)));
 /// ```
 pub trait AuthorizationPolicy {
     /// `true` when the operation is allowed.
@@ -112,6 +122,11 @@ pub trait AuthorizationPolicy {
     fn protects_secrets(&self, link: &LinkSecurity) -> bool {
         link.encrypted
     }
+
+    /// Called once for every request that decoded, before it is authorized, whatever the
+    /// outcome: a policy that keeps the request counter of the device does it here. The default
+    /// does nothing.
+    fn request_decoded(&self) {}
 }
 
 /// Allows everything. Used until a link security policy is configured.

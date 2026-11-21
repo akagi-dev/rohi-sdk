@@ -7,9 +7,10 @@ timed out, a storage write failed):
 - the **archive**, a bounded ring of compressed files in internal flash (a file next to the configuration flash for the
   simulated device) that survives a reset: `rohi logs download` saves it.
 
-The log is the `logging` [service](status.md) with its own status, configuration section and two [actions](actions.md)
-(`download`, `clear`). The latest records in RAM are not an action: `rohi logs` reads them with the `TailLogs` request of the
-control protocol, one bounded reply (at most 512 bytes of text) per request, with no stream to open or close.
+The log is the `logging` [service](status.md) with its own status, configuration section and three [actions](actions.md)
+(`download`, `clear`, `tail`). `rohi logs` reads the latest records in RAM with the read-only `tail` action, which returns one
+bounded page (at most 512 bytes of text) per call, with no stream to open or close; `rohi action logging tail session=0 after=0`
+shows such a page as it is (its metadata and text).
 
 > **Status.** The behaviour below is covered by host tests, including an emulated flash with power-loss injection, and by
 > end-to-end tests of the `altruist-urban` host process. It has not been run on a device: see the
@@ -52,7 +53,7 @@ A cursor of an earlier boot is therefore never mistaken for one of this boot, ev
 
 `rohi logs -f` asks the device for what is new once a second and prints each record once, in order. A client that is caught up
 gets an empty page, and polling the tail writes no log records of its own, not even at the `debug` level of the persistent
-log (the control plane reports requests at `trace`, which the persistent log never keeps), so following never feeds the tail it
+log (the control plane and the service registry report a page action at `trace`, which the persistent log never keeps), so following never feeds the tail it
 reads. It says so on stderr when something happened it cannot hide:
 
 - `The device restarted: the log it keeps in RAM starts over`: the session changed (the device reports `reset`); the records of

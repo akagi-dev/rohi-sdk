@@ -393,13 +393,13 @@ impl<T: ClientTransport> Device<T> {
         Ok(actions)
     }
 
-    /// The entries of the catalog a bitset field selects from, in pages of the
-    /// catalog action: `bit_index` (field 1) and `name` (field 2).
+    /// The entries of the catalog a bitset field selects from: `bit_index`
+    /// (field 1) and `name` (field 2) of each record of the catalog action.
     ///
     /// # Errors
     ///
-    /// [`Error::Protocol`] when the catalog is not a read-only action with
-    /// one offset argument and such records.
+    /// [`Error::Protocol`] when the catalog is not a read-only `Records` action
+    /// without arguments and with such records.
     pub async fn catalog(&mut self, selection: &Selection) -> Result<Vec<CatalogEntry>> {
         if self.actions.is_none() {
             self.actions().await?;
@@ -415,49 +415,34 @@ impl<T: ClientTransport> Device<T> {
             .cloned()
             .ok_or_else(not_found)?;
         let schema = self.action_schema(&info.service, &info.name).await?;
-        let [offset] = schema.args.as_slice() else {
-            return Err(Error::Protocol(format!(
-                "the catalog {} {} must take one offset",
-                info.service, info.name
-            )));
-        };
         if info.access != ActionAccess::Read
             || schema.action.access != ActionAccess::Read
-            || offset.kind != ValueKind::U64
+            || schema.action.format != ResultFormat::Records
+            || !schema.args.is_empty()
         {
             return Err(Error::Protocol(format!(
-                "the catalog {} {} must be read-only and take a u64 offset",
+                "the catalog {} {} must be a read-only collection without arguments",
                 info.service, info.name
             )));
         }
-        let offset_id = offset.id;
         let mut entries = Vec::new();
-        loop {
-            let args = [FieldValue {
-                field_id: offset_id,
-                value: Value::U64(entries.len() as u64),
-            }];
-            let records = self.invoke(&info.service, &info.name, &args).await?;
-            if records.is_empty() {
-                return Ok(entries);
-            }
-            for record in records {
-                let bit = record.iter().find_map(|f| match (f.field_id, &f.value) {
-                    (1, Value::U64(bit)) => Some(*bit),
-                    _ => None,
-                });
-                let name = record.iter().find_map(|f| match (f.field_id, &f.value) {
-                    (2, Value::String(name)) => Some(name.clone()),
-                    _ => None,
-                });
-                let (Some(bit), Some(name)) = (bit, name) else {
-                    return Err(Error::Protocol(
-                        "a catalog record without bit_index and name".into(),
-                    ));
-                };
-                entries.push(CatalogEntry { bit, name });
-            }
+        for record in self.records_all(&info.service, &info.name, &[]).await? {
+            let bit = record.iter().find_map(|f| match (f.field_id, &f.value) {
+                (1, Value::U64(bit)) => Some(*bit),
+                _ => None,
+            });
+            let name = record.iter().find_map(|f| match (f.field_id, &f.value) {
+                (2, Value::String(name)) => Some(name.clone()),
+                _ => None,
+            });
+            let (Some(bit), Some(name)) = (bit, name) else {
+                return Err(Error::Protocol(
+                    "a catalog record without bit_index and name".into(),
+                ));
+            };
+            entries.push(CatalogEntry { bit, name });
         }
+        Ok(entries)
     }
 
     async fn action_ids(&mut self, service: &str, action: &str) -> Result<(u32, u32)> {
@@ -522,30 +507,103 @@ impl<T: ClientTransport> Device<T> {
         Ok(schema)
     }
 
-    /// Runs an action with the given arguments (all required) and returns its
-    /// result records.
+    /// Runs an action that returns [`ResultFormat::Empty`]: success carries no
+    /// data.
     ///
     /// # Errors
     ///
-    /// [`Error::Protocol`] when the action returns a stream: use
-    /// [`invoke_outcome`](Self::invoke_outcome) for those.
-    pub async fn invoke(
+    /// [`Error::Protocol`] when the action declares another format.
+    pub async fn invoke_empty(
+        &mut self,
+        service: &str,
+        action: &str,
+        args: &[FieldValue],
+    ) -> Result<()> {
+        match self.invoke_outcome(service, action, args).await? {
+            ActionOutcome::Empty => Ok(()),
+            other => Err(wrong_format(service, action, "empty", &other)),
+        }
+    }
+
+    /// Runs an action that returns [`ResultFormat::Inline`]: one record.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Protocol`] when the action declares another format.
+    pub async fn invoke_inline(
+        &mut self,
+        service: &str,
+        action: &str,
+        args: &[FieldValue],
+    ) -> Result<Record> {
+        match self.invoke_outcome(service, action, args).await? {
+            ActionOutcome::Inline(record) => Ok(record),
+            other => Err(wrong_format(service, action, "inline", &other)),
+        }
+    }
+
+    /// Runs an action that returns [`ResultFormat::Records`] and follows its
+    /// pages: the pages are read one by one by [`RecordsPages::next_page`], so
+    /// a long collection is never held whole unless the caller keeps it.
+    /// Stopping early needs [`RecordsPages::close`]; a client that just drops it
+    /// leaves the device to time the snapshot out.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Protocol`] when the action declares another format.
+    pub async fn records_pages(
+        &mut self,
+        service: &str,
+        action: &str,
+        args: &[FieldValue],
+    ) -> Result<RecordsPages> {
+        let schema = self.action_schema(service, action).await?;
+        match self.invoke_outcome(service, action, args).await? {
+            ActionOutcome::Records(page) => Ok(RecordsPages {
+                service_id: schema.action.service_id,
+                action_id: schema.action.id,
+                results: schema.results,
+                first: Some(page.records),
+                next: page.next_page_token.clone(),
+                held: page.next_page_token,
+            }),
+            other => Err(wrong_format(service, action, "records", &other)),
+        }
+    }
+
+    /// Runs an action that returns [`ResultFormat::Records`] and collects all
+    /// its records, following the pages and releasing the snapshot at the
+    /// end, also after an error.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Protocol`] when the action declares another format.
+    pub async fn records_all(
         &mut self,
         service: &str,
         action: &str,
         args: &[FieldValue],
     ) -> Result<Vec<Record>> {
-        match self.invoke_outcome(service, action, args).await? {
-            ActionOutcome::Records(records) => Ok(records),
-            ActionOutcome::Stream(_) => Err(Error::Protocol(format!(
-                "{service} {action} returns a stream, which this call cannot show"
-            ))),
-        }
+        let mut pages = self.records_pages(service, action, args).await?;
+        let mut all = Vec::new();
+        let result = loop {
+            match pages.next_page(self).await {
+                Ok(Some(records)) => all.extend(records),
+                Ok(None) => break Ok(()),
+                Err(error) => break Err(error),
+            }
+        };
+        let closed = pages.close(self).await;
+        result?;
+        closed?;
+        Ok(all)
     }
 
-    /// Runs an action and returns what it returned: records, or a stream the
-    /// caller reads with [`read_stream`](Self::read_stream) and must
-    /// [`close_stream`](Self::close_stream).
+    /// Runs an action and returns what it returned, whatever its format: one
+    /// case per [`ResultFormat`]. A stream must be read with
+    /// [`read_stream`](Self::read_stream) and
+    /// [`closed`](Self::close_stream); the later pages of a collection are read
+    /// with [`records_pages`](Self::records_pages) instead.
     pub async fn invoke_outcome(
         &mut self,
         service: &str,
@@ -569,8 +627,24 @@ impl<T: ClientTransport> Device<T> {
         self.session.set_timeout(normal.max(ACTION_TIMEOUT));
         let reply = self.call(Call::InvokeAction(request)).await;
         self.session.set_timeout(normal);
-        match reply? {
-            Reply::ActionStream(info) => Ok(ActionOutcome::Stream(Stream {
+        let outcome = match reply? {
+            Reply::ActionEmpty(_) => ActionOutcome::Empty,
+            Reply::ActionInline(inline) => {
+                ActionOutcome::Inline(convert::record(&inline.fields, &schema.results))
+            }
+            Reply::RecordsPage(page) => {
+                ActionOutcome::Records(convert::records_page(&page, &schema.results))
+            }
+            Reply::FeedPage(page) => ActionOutcome::Feed(FeedPage {
+                session: page.session,
+                cursor: page.cursor,
+                oldest_sequence: page.oldest_sequence,
+                newest_sequence: page.newest_sequence,
+                reset: page.reset,
+                gap: page.gap,
+                data: page.data.to_vec(),
+            }),
+            Reply::ActionStream(info) => ActionOutcome::Stream(Stream {
                 service_id: info.service_id,
                 id: info.id,
                 files: info
@@ -582,19 +656,61 @@ impl<T: ClientTransport> Device<T> {
                         size_bytes: file.size_bytes,
                     })
                     .collect(),
-            })),
-            Reply::InvokeAction(done) => Ok(ActionOutcome::Records(
-                done.records
-                    .iter()
-                    .map(|record| {
-                        record
-                            .fields
-                            .iter()
-                            .filter_map(|field| convert::field_value(field, &schema.results))
-                            .collect()
-                    })
-                    .collect(),
-            )),
+            }),
+            other => return Err(unexpected(&other)),
+        };
+        // The reply must be of the format the schema declares.
+        if outcome_format(&outcome) != schema.action.format {
+            return Err(Error::Protocol(format!(
+                "{service} {action} answered with a result other than {}",
+                schema.action.format
+            )));
+        }
+        Ok(outcome)
+    }
+
+    /// Reads the page of a collection that starts at `token`, the
+    /// `next_page_token` of an earlier page. The device does not run the action
+    /// again, and a repeated read returns the same page while the snapshot is
+    /// held.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Device`] with [`ErrorCode::NotFound`] when the snapshot was
+    /// closed or timed out, or belongs to another connection.
+    pub async fn read_records_page(
+        &mut self,
+        service_id: u32,
+        action_id: u32,
+        results: &[FieldDescriptor],
+        token: &[u8],
+    ) -> Result<RecordsPage> {
+        let call = Call::ReadResultPage(pb::ReadResultPageRequest {
+            service_id,
+            action_id,
+            page_token: heapless::Vec::from_slice(token).map_err(|_| Error::TooLarge)?,
+        });
+        match self.call(call).await? {
+            Reply::RecordsPage(page) => Ok(convert::records_page(&page, results)),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Releases the snapshot a page token names, early. Optional: the device
+    /// also releases it when it times out or the connection ends.
+    pub async fn close_records(
+        &mut self,
+        service_id: u32,
+        action_id: u32,
+        token: &[u8],
+    ) -> Result<()> {
+        let call = Call::CloseResultPage(pb::CloseResultPageRequest {
+            service_id,
+            action_id,
+            page_token: heapless::Vec::from_slice(token).map_err(|_| Error::TooLarge)?,
+        });
+        match self.call(call).await? {
+            Reply::CloseResultPage(_) => Ok(()),
             other => Err(unexpected(&other)),
         }
     }
@@ -637,26 +753,25 @@ impl<T: ClientTransport> Device<T> {
     /// `session` or `after` is 0. Continue with the `cursor` and the `session` of
     /// the page; an empty page means there is nothing newer.
     ///
-    /// Nothing is opened on the device: there is no stream to close, and the
-    /// call can be repeated as often as needed.
-    pub async fn tail_logs(&mut self, service: &str, session: u32, after: u64) -> Result<TailPage> {
-        let service_id = self.service_id(service).await?;
-        let call = Call::TailLogs(pb::TailLogsRequest {
-            service_id,
-            session,
-            after,
-        });
-        match self.call(call).await? {
-            Reply::TailLogs(page) => Ok(TailPage {
-                session: page.session,
-                cursor: page.cursor,
-                oldest_sequence: page.oldest_sequence,
-                newest_sequence: page.newest_sequence,
-                reset: page.reset,
-                gap: page.gap,
-                data: page.data.to_vec(),
-            }),
-            other => Err(unexpected(&other)),
+    /// This is the `tail` feed of the service (`session` and `after` are its
+    /// arguments 1 and 2). Nothing is opened on the device: there is no snapshot or
+    /// stream to close, and the call can be repeated as often as needed.
+    pub async fn tail_logs(&mut self, service: &str, session: u32, after: u64) -> Result<FeedPage> {
+        let args = [
+            FieldValue {
+                field_id: 1,
+                value: Value::U64(session.into()),
+            },
+            FieldValue {
+                field_id: 2,
+                value: Value::U64(after),
+            },
+        ];
+        match self.invoke_outcome(service, "tail", &args).await? {
+            ActionOutcome::Feed(page) => Ok(page),
+            _ => Err(Error::Protocol(format!(
+                "{service} tail does not return a feed"
+            ))),
         }
     }
 
@@ -680,4 +795,78 @@ fn unexpected(reply: &Reply) -> Error {
         _ => "another response",
     };
     Error::Protocol(format!("unexpected response: {kind}"))
+}
+
+/// The pages of a `Records` result, followed one at a time. See
+/// [`Device::records_pages`].
+#[derive(Debug)]
+pub struct RecordsPages {
+    service_id: u32,
+    action_id: u32,
+    results: Vec<FieldDescriptor>,
+    // The first page, not yet handed out.
+    first: Option<Vec<Record>>,
+    // The token of the next page.
+    next: Option<Vec<u8>>,
+    // A token that names the snapshot held on the device, to close it.
+    held: Option<Vec<u8>>,
+}
+
+impl RecordsPages {
+    /// The next page of records, or `None` after the last one. The first page
+    /// was fetched by the invocation; it is not empty unless the collection
+    /// is.
+    pub async fn next_page<T: ClientTransport>(
+        &mut self,
+        device: &mut Device<T>,
+    ) -> Result<Option<Vec<Record>>> {
+        if let Some(first) = self.first.take() {
+            return Ok(Some(first));
+        }
+        let Some(token) = self.next.take() else {
+            return Ok(None);
+        };
+        let page = device
+            .read_records_page(self.service_id, self.action_id, &self.results, &token)
+            .await?;
+        self.held = Some(token);
+        self.next = page.next_page_token;
+        Ok(Some(page.records))
+    }
+
+    /// Releases the snapshot on the device. Safe to call at any time, also after
+    /// the last page, and more than once; a collection that fitted its first
+    /// page holds nothing.
+    pub async fn close<T: ClientTransport>(&mut self, device: &mut Device<T>) -> Result<()> {
+        self.next = None;
+        self.first = None;
+        let Some(token) = self.held.take() else {
+            return Ok(());
+        };
+        match device
+            .close_records(self.service_id, self.action_id, &token)
+            .await
+        {
+            // Closed or timed out on the device already.
+            Err(Error::Device(ErrorCode::NotFound)) => Ok(()),
+            other => other,
+        }
+    }
+}
+
+fn outcome_format(outcome: &ActionOutcome) -> ResultFormat {
+    match outcome {
+        ActionOutcome::Empty => ResultFormat::Empty,
+        ActionOutcome::Inline(_) => ResultFormat::Inline,
+        ActionOutcome::Records(_) => ResultFormat::Records,
+        ActionOutcome::Feed(_) => ResultFormat::Feed,
+        ActionOutcome::Stream(_) => ResultFormat::Stream,
+    }
+}
+
+fn wrong_format(service: &str, action: &str, wanted: &str, got: &ActionOutcome) -> Error {
+    Error::Protocol(format!(
+        "{service} {action} returns {}, not {wanted}",
+        outcome_format(got)
+    ))
 }

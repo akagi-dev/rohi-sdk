@@ -23,41 +23,87 @@ use heapless::Vec;
 use rohi_control_proto::control::{
     self as pb, Request_::Request as Call, Response_::Response as Reply,
 };
-use rohi_control_proto::{PROTOCOL_VERSION, decode, encode, limits};
+use rohi_control_proto::{MessageEncode, PROTOCOL_VERSION, decode, encode, limits};
 use rohi_service::{
-    ActionError, ActionRegistry, ActionResult, ConfigError, ConfigRegistry, MAX_ACTION_ARGS,
-    MAX_MUTATIONS, Mutation, ServiceStatusSummary, StatusError, StatusRegistry, TailRequest, Value,
+    ActionError, ActionRegistry, ActionResult, ConfigError, ConfigRegistry, FeedPage,
+    MAX_ACTION_ARGS, MAX_MUTATIONS, Mutation, Record, Records, RecordsPage, ResultFormat,
+    ServiceStatusSummary, StatusError, StatusRegistry, Value,
 };
 
 use crate::{AuthorizationPolicy, ControlBackend, LinkSecurity, Privilege, Transport};
 use crate::{diag, mapping};
 use rohi_service::isolated;
 
-/// The most streams the controller tracks at once, over all services.
+/// The most streams and result snapshots the controller tracks at once, over
+/// all services.
 pub const MAX_OPEN_STREAMS: usize = 16;
 
-/// A stream the controller handed to a client: who may use it and with what
-/// privilege.
+/// What a client holds open in a service.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Held {
+    /// A stream of files.
+    Stream,
+    /// A snapshot of the records of `action`, `total` records long.
+    Records { action: u32, total: u16 },
+}
+
+/// A stream or snapshot the controller handed to a client: who may use it and
+/// with what privilege.
 #[derive(Clone, Copy)]
-struct OwnedStream {
+struct Owned {
     service: u32,
-    stream: u32,
+    id: u32,
     session: u64,
     privilege: Privilege,
+    held: Held,
+}
+
+impl Owned {
+    fn is_stream(&self) -> bool {
+        self.held == Held::Stream
+    }
+}
+
+// A stream or snapshot to close: the service, its id and whether it is a stream.
+type Closing = (u32, u32, bool);
+
+// The opaque token of a page of a snapshot: the snapshot and the index of the
+// first record of the page. It names a position and grants nothing: who may
+// use it is decided by the table of owners.
+const TOKEN_LEN: usize = 6;
+const _: () = assert!(TOKEN_LEN <= limits::MAX_PAGE_TOKEN_LEN);
+
+fn page_token(snapshot: u32, next: u16) -> Vec<u8, { limits::MAX_PAGE_TOKEN_LEN }> {
+    let mut token = Vec::new();
+    let _ = token.extend_from_slice(&snapshot.to_le_bytes());
+    let _ = token.extend_from_slice(&next.to_le_bytes());
+    token
+}
+
+fn parse_page_token(token: &[u8]) -> Option<(u32, u16)> {
+    let token: &[u8; TOKEN_LEN] = token.try_into().ok()?;
+    Some((
+        u32::from_le_bytes([token[0], token[1], token[2], token[3]]),
+        u16::from_le_bytes([token[4], token[5]]),
+    ))
 }
 
 /// Dispatches control requests to a [`ControlBackend`], gated by an
 /// [`AuthorizationPolicy`].
 ///
 /// It owns the backend and the policy. The only state it keeps between
-/// requests is who owns each open stream (see
+/// requests is who owns each open stream and result snapshot (see
 /// [`LinkSecurity::session`]), so one controller serves every connection; the per-connection
 /// part is the [`LinkSecurity`] passed to [`handle`](Self::handle). See the
 /// [crate documentation](crate) for the operations, privileges and errors.
 pub struct Controller<B, P> {
     backend: B,
     policy: P,
-    streams: Mutex<CriticalSectionRawMutex, RefCell<Vec<OwnedStream, MAX_OPEN_STREAMS>>>,
+    streams: Mutex<CriticalSectionRawMutex, RefCell<Vec<Owned, MAX_OPEN_STREAMS>>>,
+    // Streams and snapshots to close in their services once the reply of the
+    // request is encoded: an eviction, or a result that fitted its first page.
+    // Keeping them out of the request future keeps the big reply out of it.
+    pending: Mutex<CriticalSectionRawMutex, RefCell<Vec<Closing, 2>>>,
 }
 
 impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
@@ -67,6 +113,7 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             backend,
             policy,
             streams: Mutex::new(RefCell::new(Vec::new())),
+            pending: Mutex::new(RefCell::new(Vec::new())),
         }
     }
 
@@ -76,8 +123,8 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
     }
 
     /// Every control link was lost or replaced: services release the streams
-    /// the previous clients left open, and the controller forgets who owned
-    /// them. Prefer [`session_closed`](Self::session_closed)
+    /// and snapshots the previous clients left open, and the controller
+    /// forgets who owned them. Prefer [`session_closed`](Self::session_closed)
     /// when one of several connections ends.
     pub fn link_lost(&self) {
         let released = self.streams.lock(|streams| {
@@ -90,22 +137,22 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
         self.backend.actions().link_lost();
     }
 
-    /// The connection `session` ended: only its own streams are closed in their
-    /// services. Streams of other sessions are untouched.
+    /// The connection `session` ended: only its own streams and snapshots are
+    /// closed in their services. Those of other sessions are untouched.
     pub async fn session_closed(&self, session: u64) {
-        let mut owned: Vec<(u32, u32), MAX_OPEN_STREAMS> = Vec::new();
+        let mut owned: Vec<Owned, MAX_OPEN_STREAMS> = Vec::new();
         self.streams.lock(|streams| {
-            streams.borrow_mut().retain(|stream| {
-                if stream.session != session {
+            streams.borrow_mut().retain(|held| {
+                if held.session != session {
                     return true;
                 }
-                let _ = owned.push((stream.service, stream.stream));
+                let _ = owned.push(*held);
                 false
             });
         });
-        for (service, stream) in owned.iter().copied() {
-            let result = self.backend.actions().close_stream(service, stream).await;
-            diag::session_stream_closed(session, service, stream, result);
+        for held in owned.iter() {
+            let result = self.close_held(held).await;
+            diag::session_held_closed(session, held.service, held.id, held.is_stream(), result);
         }
     }
 
@@ -126,8 +173,15 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
     /// Secret values in the decoded request are wiped before this returns; the
     /// bytes of `request` stay with the caller.
     pub async fn handle(&self, link: &LinkSecurity, request: &[u8], response: &mut [u8]) -> usize {
+        self.close_pending().await;
         let (request_id, reply) = self.dispatch(link, request).await;
         diag::reply(request_id, &reply);
+        let len = self.encode_reply(request_id, reply, response);
+        self.close_pending().await;
+        len
+    }
+
+    fn encode_reply(&self, request_id: u32, reply: Reply, response: &mut [u8]) -> usize {
         let message = pb::Response {
             protocol_version: PROTOCOL_VERSION,
             request_id,
@@ -162,6 +216,7 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
                 return (0, error(pb::ErrorCode::InvalidArgument));
             }
         };
+        self.policy.request_decoded();
         let id = request.request_id;
         if request.protocol_version != PROTOCOL_VERSION {
             diag::unsupported_version(id, request.protocol_version);
@@ -182,20 +237,48 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
         let mut secure_link = false;
         let privilege = match &call {
             Call::ReadStream(request) => {
-                match self.owned_privilege(link, request.service_id, request.stream_id) {
-                    Some(privilege) => privilege,
+                match self.owned(link, request.service_id, request.stream_id, None) {
+                    Some(owned) => owned.privilege,
                     None => {
-                        diag::unknown_stream(id, &call, link);
+                        diag::unknown_held(id, &call, link);
                         return (id, action_error(ActionError::UnknownStream));
                     }
                 }
             }
             Call::CloseStream(request) => {
-                match self.owned_privilege(link, request.service_id, request.stream_id) {
-                    Some(privilege) => privilege,
+                match self.owned(link, request.service_id, request.stream_id, None) {
+                    Some(owned) => owned.privilege,
                     None => {
-                        diag::unknown_stream(id, &call, link);
+                        diag::unknown_held(id, &call, link);
                         return (id, action_error(ActionError::UnknownStream));
+                    }
+                }
+            }
+            Call::ReadResultPage(request) => {
+                match self.owned_page(
+                    link,
+                    request.service_id,
+                    request.action_id,
+                    &request.page_token,
+                ) {
+                    Some((owned, _)) => owned.privilege,
+                    None => {
+                        diag::unknown_held(id, &call, link);
+                        return (id, action_error(ActionError::UnknownSnapshot));
+                    }
+                }
+            }
+            Call::CloseResultPage(request) => {
+                match self.owned_page(
+                    link,
+                    request.service_id,
+                    request.action_id,
+                    &request.page_token,
+                ) {
+                    Some((owned, _)) => owned.privilege,
+                    None => {
+                        diag::unknown_held(id, &call, link);
+                        return (id, action_error(ActionError::UnknownSnapshot));
                     }
                 }
             }
@@ -237,47 +320,111 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
         }
     }
 
-    // The privilege a stream was created with, when `link` is the session
-    // that created it. A stream of another session is reported as unknown.
-    fn owned_privilege(&self, link: &LinkSecurity, service: u32, stream: u32) -> Option<Privilege> {
+    // What `link` holds open: a stream (`records_of` is `None`) or a snapshot
+    // of the records of the action, when `link` is the session that created
+    // it. One of another session is reported as unknown.
+    fn owned(
+        &self,
+        link: &LinkSecurity,
+        service: u32,
+        id: u32,
+        records_of: Option<u32>,
+    ) -> Option<Owned> {
         self.streams.lock(|streams| {
             streams
                 .borrow()
                 .iter()
                 .find(|owned| {
                     owned.service == service
-                        && owned.stream == stream
+                        && owned.id == id
                         && owned.session == link.session
+                        && match (owned.held, records_of) {
+                            (Held::Stream, None) => true,
+                            (Held::Records { action, .. }, Some(wanted)) => action == wanted,
+                            _ => false,
+                        }
                 })
-                .map(|owned| owned.privilege)
+                .copied()
         })
     }
 
-    fn forget_stream(&self, service: u32, stream: u32) {
+    // The snapshot a page token of `link` names, with the index of the
+    // first record of the page.
+    fn owned_page(
+        &self,
+        link: &LinkSecurity,
+        service: u32,
+        action: u32,
+        token: &[u8],
+    ) -> Option<(Owned, u16)> {
+        let (snapshot, next) = parse_page_token(token)?;
+        let owned = self.owned(link, service, snapshot, Some(action))?;
+        match owned.held {
+            Held::Records { total, .. } if next < total => Some((owned, next)),
+            _ => None,
+        }
+    }
+
+    fn forget(&self, session: u64, service: u32, id: u32, stream: bool) {
         self.streams.lock(|streams| {
-            streams
-                .borrow_mut()
-                .retain(|owned| owned.service != service || owned.stream != stream);
+            streams.borrow_mut().retain(|owned| {
+                owned.session != session
+                    || owned.service != service
+                    || owned.id != id
+                    || owned.is_stream() != stream
+            });
         });
     }
 
-    // Records the owner of a new stream. When the table is full the oldest
-    // stream is closed to make room: it is the likeliest to be abandoned.
-    async fn own_stream(&self, owned: OwnedStream) {
+    async fn close_held(&self, held: &Owned) -> Result<(), ActionError> {
+        self.close_one(held.service, held.id, held.is_stream())
+            .await
+    }
+
+    async fn close_one(&self, service: u32, id: u32, stream: bool) -> Result<(), ActionError> {
+        if stream {
+            self.backend.actions().close_stream(service, id).await
+        } else {
+            self.backend.actions().close_records(service, id).await
+        }
+    }
+
+    // Records the owner of a new stream or snapshot. When the table is full the
+    // oldest one is closed to make room: it is the likeliest to be abandoned.
+    fn own(&self, owned: Owned) {
         let evicted = self.streams.lock(|streams| {
             let mut streams = streams.borrow_mut();
-            streams.retain(|old| old.service != owned.service || old.stream != owned.stream);
+            // A view that holds nothing may give every session the same id.
+            streams.retain(|old| {
+                old.service != owned.service
+                    || old.id != owned.id
+                    || old.session != owned.session
+                    || old.is_stream() != owned.is_stream()
+            });
             let evicted = streams.is_full().then(|| streams.remove(0));
             let _ = streams.push(owned);
             evicted
         });
         if let Some(old) = evicted {
-            let result = self
-                .backend
-                .actions()
-                .close_stream(old.service, old.stream)
-                .await;
-            diag::stream_evicted(old.service, old.stream, result);
+            diag::held_evicted(old.service, old.id, old.is_stream());
+            self.close_later(old.service, old.id, old.is_stream());
+        }
+    }
+
+    // `stream` tells a stream from a snapshot.
+    fn close_later(&self, service: u32, id: u32, stream: bool) {
+        self.pending.lock(|pending| {
+            let _ = pending.borrow_mut().push((service, id, stream));
+        });
+    }
+
+    // Closes in their services what `close_later` queued.
+    async fn close_pending(&self) {
+        while let Some((service, id, stream)) =
+            self.pending.lock(|pending| pending.borrow_mut().pop())
+        {
+            let result = self.close_one(service, id, stream).await;
+            diag::held_closed(service, id, stream, result);
         }
     }
 
@@ -305,9 +452,10 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
                 self.get_action_schema(request.service_id, request.action_id)
             }
             Call::InvokeAction(request) => isolated(self.invoke(link, privilege, request)).await,
-            Call::ReadStream(request) => isolated(self.read_stream(request)).await,
-            Call::CloseStream(request) => isolated(self.close_stream(request)).await,
-            Call::TailLogs(request) => self.tail_logs(request),
+            Call::ReadStream(request) => isolated(self.read_stream(link, request)).await,
+            Call::CloseStream(request) => isolated(self.close_stream(link, request)).await,
+            Call::ReadResultPage(request) => isolated(self.read_result_page(link, request)).await,
+            Call::CloseResultPage(request) => isolated(self.close_result_page(link, request)).await,
         }
     }
 
@@ -530,7 +678,7 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
         }
     }
 
-    async fn close_stream(&self, request: pb::CloseStreamRequest) -> Reply {
+    async fn close_stream(&self, link: &LinkSecurity, request: pb::CloseStreamRequest) -> Reply {
         let result = self
             .backend
             .actions()
@@ -538,7 +686,7 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             .await;
         diag::stream_closed(request.service_id, request.stream_id, result);
         if matches!(result, Ok(()) | Err(ActionError::UnknownStream)) {
-            self.forget_stream(request.service_id, request.stream_id);
+            self.forget(link.session, request.service_id, request.stream_id, true);
         }
         match result {
             Ok(()) => Reply::CloseStream(pb::CloseStreamResponse {}),
@@ -623,7 +771,7 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
         }
     }
 
-    async fn read_stream(&self, request: pb::ReadStreamRequest) -> Reply {
+    async fn read_stream(&self, link: &LinkSecurity, request: pb::ReadStreamRequest) -> Reply {
         let mut buf = [0u8; limits::MAX_STREAM_CHUNK];
         match self
             .backend
@@ -665,45 +813,10 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
                 if e == ActionError::UnknownStream {
                     // Closed or timed out in the service.
                     diag::stream_gone(request.service_id, request.stream_id);
-                    self.forget_stream(request.service_id, request.stream_id);
+                    self.forget(link.session, request.service_id, request.stream_id, true);
                 }
                 self.action_failure(e, request.service_id)
             }
-        }
-    }
-
-    // One bounded page of text straight into the data field of the reply: no
-    // buffer of its own, no stream and nothing kept for the client.
-    #[inline(never)]
-    fn tail_logs(&self, request: pb::TailLogsRequest) -> Reply {
-        let mut reply = pb::TailLogsResponse::default();
-        if reply.data.resize_default(limits::MAX_TAIL_CHUNK).is_err() {
-            return error(pb::ErrorCode::Internal);
-        }
-        let page = self.backend.actions().tail_logs(
-            request.service_id,
-            TailRequest {
-                session: request.session,
-                after: request.after,
-            },
-            reply.data.as_mut_slice(),
-        );
-        match page {
-            Ok(page) if page.len <= limits::MAX_TAIL_CHUNK => {
-                reply.data.truncate(page.len);
-                reply.session = page.session;
-                reply.cursor = page.cursor;
-                reply.oldest_sequence = page.oldest_sequence;
-                reply.newest_sequence = page.newest_sequence;
-                reply.reset = page.reset;
-                reply.gap = page.gap;
-                Reply::TailLogs(reply)
-            }
-            Ok(page) => {
-                diag::tail_oversized(request.service_id, page.len);
-                error(pb::ErrorCode::Internal)
-            }
-            Err(e) => self.action_failure(e, request.service_id),
         }
     }
 
@@ -722,7 +835,12 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
             }
         }
         let result = if valid {
-            diag::invoking(request.service_id, request.action_id, args.len());
+            let quiet = self
+                .backend
+                .actions()
+                .action(request.service_id, request.action_id)
+                .is_ok_and(|action| action.format == ResultFormat::Feed);
+            diag::invoking(request.service_id, request.action_id, args.len(), quiet);
             self.backend
                 .actions()
                 .invoke(request.service_id, request.action_id, &args)
@@ -743,6 +861,14 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
         }
         match result {
             Err(e) => self.action_failure(e, request.service_id),
+            Ok(ActionResult::Empty) => {
+                diag::invoked(request.service_id, request.action_id, privilege, "empty");
+                Reply::ActionEmpty(pb::Empty {})
+            }
+            Ok(ActionResult::Inline(record)) => {
+                diag::invoked(request.service_id, request.action_id, privilege, "inline");
+                inline_reply(&record)
+            }
             Ok(ActionResult::Stream(stream)) => {
                 diag::invoked(request.service_id, request.action_id, privilege, "stream");
                 diag::stream_opened(
@@ -751,13 +877,13 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
                     link.session,
                     stream.files.len(),
                 );
-                self.own_stream(OwnedStream {
+                self.own(Owned {
                     service: request.service_id,
-                    stream: stream.id,
+                    id: stream.id,
                     session: link.session,
                     privilege,
-                })
-                .await;
+                    held: Held::Stream,
+                });
                 let mut files = Vec::new();
                 for file in &stream.files {
                     let file = pb::StreamFile {
@@ -775,24 +901,239 @@ impl<B: ControlBackend, P: AuthorizationPolicy> Controller<B, P> {
                     files,
                 })
             }
-            Ok(ActionResult::Records(records)) => {
+            Ok(ActionResult::Feed(page)) => {
+                diag::invoked(request.service_id, request.action_id, privilege, "feed");
+                feed_reply(&page)
+            }
+            Ok(ActionResult::Records(page)) => {
                 diag::invoked(request.service_id, request.action_id, privilege, "records");
-                let mut out = Vec::new();
-                for record in &records {
-                    let mut fields = Vec::new();
-                    for (id, value) in record {
-                        if fields.push(mapping::field_value(*id, value)).is_err() {
-                            break;
-                        }
-                    }
-                    if out.push(pb::ActionRecord { fields }).is_err() {
-                        break;
-                    }
-                }
-                Reply::InvokeAction(pb::InvokeActionResponse { records: out })
+                self.first_page(link, privilege, request.service_id, request.action_id, page)
             }
         }
     }
+
+    // The first page of a `Records` result. A collection that fits one page is
+    // complete: its snapshot is released at once. Otherwise the connection owns
+    // the snapshot and the reply carries the token of the next page.
+    fn first_page(
+        &self,
+        link: &LinkSecurity,
+        privilege: Privilege,
+        service: u32,
+        action: u32,
+        page: RecordsPage,
+    ) -> Reply {
+        let RecordsPage { records, snapshot } = page;
+        let included = fit_records(&records);
+        let Some(info) = snapshot else {
+            // Without a snapshot there is nothing to continue in: all records
+            // must fit.
+            if included < records.len() {
+                diag::page_overflow(service, action, included, records.len());
+                return error(pb::ErrorCode::Internal);
+            }
+            return records_reply(&records, included, None);
+        };
+        if included == 0 || included > usize::from(info.total) {
+            diag::page_overflow(service, action, included, records.len());
+            self.release_later(service, info.id);
+            return error(pb::ErrorCode::Internal);
+        }
+        if included == usize::from(info.total) {
+            self.release_later(service, info.id);
+            return records_reply(&records, included, None);
+        }
+        self.own(Owned {
+            service,
+            id: info.id,
+            session: link.session,
+            privilege,
+            held: Held::Records {
+                action,
+                total: info.total,
+            },
+        });
+        diag::snapshot_opened(service, info.id, link.session, info.total);
+        let next = included as u16;
+        records_reply(&records, included, Some(page_token(info.id, next)))
+    }
+
+    // A result that was complete in its first page, or could not be used.
+    fn release_later(&self, service: u32, snapshot: u32) {
+        self.close_later(service, snapshot, false);
+    }
+
+    async fn read_result_page(
+        &self,
+        link: &LinkSecurity,
+        request: pb::ReadResultPageRequest,
+    ) -> Reply {
+        let Some((owned, next)) = self.owned_page(
+            link,
+            request.service_id,
+            request.action_id,
+            &request.page_token,
+        ) else {
+            return action_error(ActionError::UnknownSnapshot);
+        };
+        let Held::Records { total, .. } = owned.held else {
+            return action_error(ActionError::UnknownSnapshot);
+        };
+        // The records stay where the read left them: one copy of a page.
+        let read = self
+            .backend
+            .actions()
+            .read_records(
+                request.service_id,
+                request.action_id,
+                owned.id,
+                u32::from(next),
+            )
+            .await;
+        match &read {
+            Ok(records) => page_after(&owned, request.action_id, next, total, records),
+            Err(e) => {
+                if *e == ActionError::UnknownSnapshot {
+                    // Closed or expired in the service.
+                    diag::snapshot_gone(request.service_id, owned.id);
+                    self.forget(link.session, request.service_id, owned.id, false);
+                }
+                self.action_failure(*e, request.service_id)
+            }
+        }
+    }
+
+    async fn close_result_page(
+        &self,
+        link: &LinkSecurity,
+        request: pb::CloseResultPageRequest,
+    ) -> Reply {
+        let Some((owned, _)) = self.owned_page(
+            link,
+            request.service_id,
+            request.action_id,
+            &request.page_token,
+        ) else {
+            return action_error(ActionError::UnknownSnapshot);
+        };
+        let result = self
+            .backend
+            .actions()
+            .close_records(request.service_id, owned.id)
+            .await;
+        diag::snapshot_closed(request.service_id, owned.id, result);
+        if matches!(result, Ok(()) | Err(ActionError::UnknownSnapshot)) {
+            self.forget(link.session, request.service_id, owned.id, false);
+        }
+        match result {
+            Ok(()) => Reply::CloseResultPage(pb::CloseResultPageResponse {}),
+            Err(e) => self.action_failure(e, request.service_id),
+        }
+    }
+}
+
+// The page read from `next` on: it advances, holds a record and never more than
+// remain, and carries the token of the following page when there is one.
+#[inline(never)]
+fn page_after(owned: &Owned, action: u32, next: u16, total: u16, records: &Records) -> Reply {
+    let included = fit_records(records);
+    let remaining = usize::from(total - next);
+    if included == 0 || included > remaining {
+        diag::page_overflow(owned.service, action, included, records.len());
+        return error(pb::ErrorCode::Internal);
+    }
+    diag::page_read(owned.service, owned.id, next, included);
+    let following = usize::from(next) + included;
+    let token = (following < usize::from(total)).then(|| page_token(owned.id, following as u16));
+    records_reply(records, included, token)
+}
+
+// An `Inline` result: the fields of one record.
+#[inline(never)]
+fn inline_reply(record: &Record) -> Reply {
+    let mut out = pb::InlineResult::default();
+    for (id, value) in record {
+        if out.fields.push(mapping::field_value(*id, value)).is_err() {
+            return error(pb::ErrorCode::Internal);
+        }
+    }
+    Reply::ActionInline(out)
+}
+
+// What the envelope of a response (version, request id, the case tag and its
+// length) takes around a `RecordsPage`.
+pub(crate) const ENVELOPE: usize = 16;
+
+fn records_page(records: &Records, count: usize) -> pb::RecordsPage {
+    let mut page = pb::RecordsPage::default();
+    for record in records.iter().take(count) {
+        let mut fields = Vec::new();
+        for (id, value) in record {
+            if fields.push(mapping::field_value(*id, value)).is_err() {
+                break;
+            }
+        }
+        if page.records.push(pb::ActionRecord { fields }).is_err() {
+            break;
+        }
+    }
+    page
+}
+
+// The encoded size of a page of the first `count` records, with the longest token.
+#[inline(never)]
+pub(crate) fn records_size(records: &Records, count: usize) -> usize {
+    let mut page = records_page(records, count);
+    let _ = page.page_token.extend_from_slice(&[0; TOKEN_LEN]);
+    page.compute_size()
+}
+
+// How many whole records of `records` (a prefix) fit a response of
+// `response_len` bytes, with the longest token. A record is never split.
+pub(crate) fn fit_within(records: &Records, response_len: usize) -> usize {
+    let room = response_len.saturating_sub(ENVELOPE);
+    let mut count = records.len();
+    while count > 0 && records_size(records, count) > room {
+        count -= 1;
+    }
+    count
+}
+
+fn fit_records(records: &Records) -> usize {
+    fit_within(records, limits::MAX_RESPONSE_LEN)
+}
+
+// The page of the first `included` records, with the token of the next page
+// when more follow.
+#[inline(never)]
+fn records_reply(
+    records: &Records,
+    included: usize,
+    token: Option<Vec<u8, { limits::MAX_PAGE_TOKEN_LEN }>>,
+) -> Reply {
+    let mut page = records_page(records, included);
+    if let Some(token) = token {
+        page.page_token = token;
+    }
+    Reply::RecordsPage(page)
+}
+
+// One bounded feed page: nothing is kept for the client.
+#[inline(never)]
+fn feed_reply(page: &FeedPage) -> Reply {
+    let mut reply = pb::FeedPage {
+        session: page.info.session,
+        cursor: page.info.cursor,
+        oldest_sequence: page.info.oldest_sequence,
+        newest_sequence: page.info.newest_sequence,
+        reset: page.info.reset,
+        gap: page.info.gap,
+        ..Default::default()
+    };
+    if reply.data.extend_from_slice(&page.data).is_err() {
+        return error(pb::ErrorCode::Internal);
+    }
+    Reply::FeedPage(reply)
 }
 
 fn denied(reason: &'static str) -> Reply {
@@ -831,9 +1172,10 @@ fn action_error(e: ActionError) -> Reply {
             out.set_reason(mapping::text(reason));
             Reply::Error(out)
         }
-        ActionError::UnknownService | ActionError::UnknownAction | ActionError::UnknownStream => {
-            error(pb::ErrorCode::NotFound)
-        }
+        ActionError::UnknownService
+        | ActionError::UnknownAction
+        | ActionError::UnknownStream
+        | ActionError::UnknownSnapshot => error(pb::ErrorCode::NotFound),
         ActionError::InvalidArgument => error(pb::ErrorCode::InvalidArgument),
         ActionError::Busy => error(pb::ErrorCode::Busy),
         ActionError::Unavailable => error(pb::ErrorCode::Unavailable),

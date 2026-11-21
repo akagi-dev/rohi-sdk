@@ -22,7 +22,8 @@ use embassy_futures::block_on;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use rohi_crash::{Crash, Policy, Report, Reset, Slot};
 use rohi_service::{
-    ActionRegistry, Service, ServiceHealth, ServiceState, Status, StatusRegistry, Statuses, Value,
+    ActionRegistry, ActionResult, ResultFormat, Service, ServiceHealth, Status, StatusRegistry,
+    Statuses, Value,
 };
 
 use super::*;
@@ -92,11 +93,13 @@ fn both_actions_are_declared_with_their_access_and_no_secrets() {
     assert_eq!((reboot.id, reboot.name), (1, "reboot"));
     assert_eq!(reboot.access, ActionAccess::Mutate);
     assert!(reboot.args.is_empty() && reboot.results.is_empty());
+    assert_eq!(reboot.format, ResultFormat::Empty);
 
     let reset = &actions[1];
     assert_eq!((reset.id, reset.name), (2, "factory_reset"));
     assert_eq!(reset.access, ActionAccess::Provision);
     assert!(reset.args.is_empty());
+    assert_eq!(reset.format, ResultFormat::Inline);
     assert_eq!(reset.results.len(), 1);
     assert_eq!(
         (
@@ -110,7 +113,7 @@ fn both_actions_are_declared_with_their_access_and_no_secrets() {
     assert!(
         actions
             .iter()
-            .all(|action| !action.secret_args && !action.stream)
+            .all(|action| !action.secret_args && action.format != ResultFormat::Stream)
     );
 }
 
@@ -128,7 +131,7 @@ fn reboot_is_scheduled_and_answers_without_results() {
     let system = SystemService(Fake::default());
     let actions = (&system,);
     let done = block_on(actions.invoke(ID, action::REBOOT, &[])).unwrap();
-    assert!(done.records().is_empty());
+    assert_eq!(done, ActionResult::Empty);
     assert_eq!(system.0.reboots.get(), 1);
 }
 
@@ -152,8 +155,8 @@ fn factory_reset_reports_whether_a_restart_is_required_and_does_not_reboot() {
         let actions = (&system,);
         let done = block_on(actions.invoke(ID, action::FACTORY_RESET, &[])).unwrap();
         assert_eq!(
-            done.records(),
-            [[(result_field::RESTART_REQUIRED, Value::Bool(required))]]
+            done.inline().map(|record| record.as_slice()),
+            Some(&[(result_field::RESTART_REQUIRED, Value::Bool(required))][..])
         );
         assert_eq!(system.0.resets.get(), 1);
         assert_eq!(system.0.reboots.get(), 0);
@@ -240,9 +243,8 @@ fn the_status_schema_is_valid_and_the_service_is_not_essential() {
 #[test]
 fn a_platform_without_a_boot_report_has_an_empty_status() {
     let (status, fields) = status_of(None);
-    assert_eq!(status.summary.state, ServiceState::Running);
     assert_eq!(status.summary.health, ServiceHealth::Ok);
-    assert!(status.summary.ready);
+    assert_eq!(status.summary.health, ServiceHealth::Ok);
     assert!(fields.is_empty());
     assert!(status.issues.is_empty());
 }

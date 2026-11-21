@@ -6,7 +6,7 @@ one of them.
 | Concept | Responsibility | Typical user question |
 |---------|----------------|-----------------------|
 | **[Config](config.md)** | typed settings, defaults, validation and persistence | what is the device set up to do? |
-| **[Status](status.md)** | runtime state, health, readiness, metrics and diagnostic issues | what is it doing now? |
+| **[Status](status.md)** | runtime health, metrics and diagnostic issues | what is it doing now? |
 | **[Action](action.md)** | discoverable operations with typed arguments and results | what can I ask it to do? |
 
 They are separate on purpose: configuration is **desired, persistent** state, status is **observed, read-only** state and

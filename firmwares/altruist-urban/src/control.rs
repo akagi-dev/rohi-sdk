@@ -23,13 +23,13 @@
 //!                                                              |
 //!                                             UrbanDevice (this module)
 //!                          config sections: wifi, network, ble, connectivity, location, time, logging,
-//!                                           control_tcp
+//!                                           control (std platform only)
 //!                          status: wifi, network, ble, connectivity, location, time,
 //!                                  sensors, identity, logging, system,
-//!                                  control_tcp, control_ble
+//!                                  control
 //!                          actions: wifi, identity, logging (read, download, clear),
 //!                                   system (reboot, factory_reset),
-//!                                   control_tcp (reveal_psk)
+//!                                   control (tcp_generate_psk)
 //! ```
 //!
 //! The registries only talk to runtime handles; they never own a store, a flash
@@ -53,18 +53,17 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::Delay;
 use rohi_sdk::control::{ControlAccess, Device, DeviceInfo};
 use rohi_sdk::crash::Report;
-use rohi_sdk::endpoints::{
-    ControlBleService, ControlTcpService, PSK_LEN, PskStore, PskStoreError, TcpPskSection,
-};
+use rohi_sdk::endpoints::{ControlService, PSK_LEN, PskStore, PskStoreError, TcpPskSection};
 use rohi_sdk::identity::{Identity, IdentityService, IdentityStore, IdentityStoreError, PublicKey};
 use rohi_sdk::location::LocationService;
-use rohi_sdk::net::{BleProbe, BleService, IpBackend, NetworkHandle, NetworkService, WifiService};
+use rohi_sdk::net::{BleProbe, IpBackend, NetworkHandle, WirelessService};
 use rohi_sdk::sensors::SensorsService;
 use rohi_sdk::service::{
     Action, ActionRegistry, ConfigError as RegistryError, ConfigRegistry, FactoryReset, Startup,
     Status, StatusSet, Statuses,
 };
 use rohi_sdk::system::{SystemError, SystemPlatform, SystemService};
+use rohi_sdk::time::EmbassyClock;
 use static_cell::StaticCell;
 
 use crate::config::{
@@ -100,14 +99,13 @@ fn identity_error(error: ConfigError) -> IdentityStoreError {
     }
 }
 
-/// The access state of the control plane: the mode of every transport, whether a TCP
-/// pre-shared key is provisioned and the counters of the endpoints. The configuration owner
-/// publishes into it, the control worker reads it, and the endpoint services
-/// report it.
+/// The access state of the control plane: the mode of the TCP endpoint, whether a TCP
+/// pre-shared key is provisioned, and the state and counters of the endpoints. The configuration
+/// owner publishes into it, the control worker reads it, and the `control` service reports it.
 pub static ACCESS: ControlAccess = ControlAccess::new(access_entropy);
 
 /// The random source of the TCP handshake, set by the platform before the control
-/// plane starts. Without one a restricted TCP endpoint refuses every client.
+/// plane starts. Without one no TCP client can complete the handshake.
 type EntropySource = fn(&mut [u8]) -> bool;
 
 static ENTROPY: BlockingMutex<CriticalSectionRawMutex, Cell<Option<EntropySource>>> =
@@ -182,16 +180,14 @@ pub type UrbanConfig = StorageConfig<ConfigSections>;
 static SECTIONS: StaticCell<ConfigSections> = StaticCell::new();
 
 /// The services of the device, by capability.
-type UrbanWifi<I> = Startup<WifiService<'static, RawMutex, Delay, net::Probe<I>>>;
-type UrbanNetwork<I> = Startup<NetworkService<'static, RawMutex, net::Probe<I>>>;
-type UrbanBle<B> = BleService<B>;
+type UrbanWireless<B> =
+    Startup<WirelessService<'static, RawMutex, Delay, EmbassyClock, net::Probe, B>>;
 type UrbanConnectivity = connectivity::UrbanConnectivity;
 type UrbanLocation = LocationService<'static, RawMutex>;
 type UrbanSensors = SensorsService<'static, RawMutex>;
 type UrbanIdentity = IdentityService<StoredIdentity>;
 type UrbanSystem = SystemService<UrbanSystemPlatform>;
-type UrbanControlTcp = ControlTcpService<'static, StoredPsk>;
-type UrbanControlBle = ControlBleService<'static>;
+type UrbanControl = ControlService<'static, StoredPsk>;
 type UrbanTelemetry = telemetry::UrbanTelemetry;
 
 /// What the `system` service needs from the Altruist Urban: the deferred reboot
@@ -236,10 +232,8 @@ impl SystemPlatform for UrbanSystemPlatform {
 ///
 /// Each service is created once and referenced by the registries of the
 /// capabilities it has, so that no registry owns or copies a service.
-pub struct UrbanServices<I: 'static, B, L> {
-    wifi: UrbanWifi<I>,
-    network: UrbanNetwork<I>,
-    ble: UrbanBle<B>,
+pub struct UrbanServices<B, L> {
+    wireless: UrbanWireless<B>,
     connectivity: UrbanConnectivity,
     location: UrbanLocation,
     sensors: UrbanSensors,
@@ -247,16 +241,13 @@ pub struct UrbanServices<I: 'static, B, L> {
     telemetry: UrbanTelemetry,
     logging: L,
     system: UrbanSystem,
-    control_tcp: UrbanControlTcp,
-    control_ble: UrbanControlBle,
+    control: UrbanControl,
 }
 
 /// The services that report status. The `time` service is the time runtime
 /// itself.
-pub type UrbanStatusServices<I, B, L> = (
-    &'static UrbanWifi<I>,
-    &'static UrbanNetwork<I>,
-    &'static UrbanBle<B>,
+pub type UrbanStatusServices<B, L> = (
+    &'static UrbanWireless<B>,
     &'static UrbanConnectivity,
     &'static UrbanLocation,
     &'static time::Time,
@@ -265,30 +256,29 @@ pub type UrbanStatusServices<I, B, L> = (
     &'static UrbanTelemetry,
     &'static L,
     &'static UrbanSystem,
-    &'static UrbanControlTcp,
-    &'static UrbanControlBle,
+    &'static UrbanControl,
 );
 
 /// The status registry of the device.
-pub type UrbanStatuses<I, B, L> = Statuses<RawMutex, UrbanStatusServices<I, B, L>>;
+pub type UrbanStatuses<B, L> = Statuses<RawMutex, UrbanStatusServices<B, L>>;
 
 /// The services that offer actions.
-pub type UrbanActions<I, L> = (
-    &'static UrbanWifi<I>,
+pub type UrbanActions<B, L> = (
+    &'static UrbanWireless<B>,
     &'static UrbanIdentity,
     &'static UrbanTelemetry,
     &'static UrbanConnectivity,
     &'static L,
     &'static UrbanSystem,
-    &'static UrbanControlTcp,
+    &'static UrbanControl,
 );
 
-/// The control backend of the Altruist Urban over the IP backend `I` and the
-/// BLE probe `B` of the platform.
-pub type UrbanDevice<I, B, L> = Device<UrbanConfig, UrbanStatuses<I, B, L>, UrbanActions<I, L>>;
+/// The control backend of the Altruist Urban over the BLE probe `B` of the
+/// platform.
+pub type UrbanDevice<B, L> = Device<UrbanConfig, UrbanStatuses<B, L>, UrbanActions<B, L>>;
 
 /// The static slot of the service instances of the platform.
-pub type ServicesSlot<I, B, L> = StaticCell<UrbanServices<I, B, L>>;
+pub type ServicesSlot<B, L> = StaticCell<UrbanServices<B, L>>;
 
 fn uptime_ms() -> u64 {
     time::service().monotonic_now().millis
@@ -299,14 +289,14 @@ pub struct Platform<I: 'static, B: 'static, L: 'static> {
     /// Firmware name and board, reported by `GetInfo`.
     pub info: DeviceInfo,
     /// The slot of the service instances, a `static` of the platform.
-    pub services: &'static ServicesSlot<I, B, L>,
+    pub services: &'static ServicesSlot<B, L>,
     /// The IP data plane; `None` tells that the network runtime did not
-    /// start: its services then report a failed start instead of looking
-    /// disabled.
+    /// start: the `wireless` service then reports a failed start instead of
+    /// looking disabled.
     pub network: Option<NetworkHandle<'static, I>>,
     /// The probe of the wireless heap, if the platform has one.
     pub heap: Option<fn() -> rohi_sdk::net::HeapStats>,
-    /// The view of the control link (BLE: the peripheral) for the `ble`
+    /// The view of the control link (BLE: the peripheral) for the `wireless`
     /// service.
     pub ble: B,
     /// The `logging` service of the platform: its runtime owns the log storage.
@@ -326,7 +316,7 @@ pub fn device<I, B, L>(
     platform: Platform<I, B, L>,
     config: ConfigHandle,
     identity: IdentityHandle,
-) -> UrbanDevice<I, B, L>
+) -> UrbanDevice<B, L>
 where
     I: IpBackend + 'static,
     B: BleProbe + 'static,
@@ -335,8 +325,8 @@ where
     // Two services with one id would route requests to the wrong service; this
     // is a build error already in `cargo check`.
     const {
-        assert!(<UrbanStatusServices<I, B, L> as StatusSet<RawMutex>>::IDS_UNIQUE);
-        assert!(<UrbanActions<I, L> as ActionRegistry>::IDS_UNIQUE);
+        assert!(<UrbanStatusServices<B, L> as StatusSet<RawMutex>>::IDS_UNIQUE);
+        assert!(<UrbanActions<B, L> as ActionRegistry>::IDS_UNIQUE);
     }
     let Platform {
         info,
@@ -352,16 +342,17 @@ where
     let network_failed = network.is_none();
     let sections: &'static ConfigSections = SECTIONS.init(config_sections(config));
     let storage_config = StorageConfig::new(sections, maintenance());
-    let services: &'static UrbanServices<I, B, L> = services.init(UrbanServices {
-        wifi: Startup::new(
-            WifiService::new(net::handle(), Delay, net::Probe::new(network, heap)),
+    let services: &'static UrbanServices<B, L> = services.init(UrbanServices {
+        wireless: Startup::new(
+            WirelessService::new(
+                net::handle(),
+                Delay,
+                EmbassyClock,
+                net::Probe::new(heap),
+                ble,
+            ),
             network_failed,
         ),
-        network: Startup::new(
-            NetworkService::new(net::handle(), net::Probe::new(network, heap)),
-            network_failed,
-        ),
-        ble: BleService(ble),
         connectivity: connectivity::service(
             config,
             connectivity::packets(store::handle(), entropy),
@@ -376,17 +367,14 @@ where
             reboot: reboot_fn,
             boot_report,
         }),
-        control_tcp: ControlTcpService::new(&ACCESS, StoredPsk(config)),
-        control_ble: ControlBleService::new(&ACCESS),
+        control: ControlService::new(&ACCESS, StoredPsk(config)),
     });
     Device::new(
         info,
         uptime_ms,
         storage_config,
         Statuses::new((
-            &services.wifi,
-            &services.network,
-            &services.ble,
+            &services.wireless,
             &services.connectivity,
             &services.location,
             time::service(),
@@ -395,17 +383,16 @@ where
             &services.telemetry,
             &services.logging,
             &services.system,
-            &services.control_tcp,
-            &services.control_ble,
+            &services.control,
         )),
         (
-            &services.wifi,
+            &services.wireless,
             &services.identity,
             &services.telemetry,
             &services.connectivity,
             &services.logging,
             &services.system,
-            &services.control_tcp,
+            &services.control,
         ),
     )
 }
@@ -418,7 +405,7 @@ pub const GATT: rohi_sdk::net::BleGattSpec = rohi_sdk::net::BleGattSpec {
 };
 
 /// BLE defaults of the Altruist Urban: the name is `ALTRUIST-URBAN-` and the
-/// last two bytes of the MAC until the `ble` section sets one.
+/// last two bytes of the MAC until the `ble_name` field of the `wireless` section sets one.
 pub const BLE_CONFIG: rohi_sdk::net::BleConfig = rohi_sdk::net::BleConfig {
     name_prefix: "ALTRUIST-URBAN",
     name: None,
@@ -426,7 +413,7 @@ pub const BLE_CONFIG: rohi_sdk::net::BleConfig = rohi_sdk::net::BleConfig {
     gatt: GATT,
 };
 
-/// [`BLE_CONFIG`] with the name of the `ble` section as the configuration
+/// [`BLE_CONFIG`] with the `ble_name` of the `wireless` section as the configuration
 /// owner published it at boot: the defaults, the firmware overrides and the
 /// stored overrides. Read once, when the peripheral starts. BLE control runs without
 /// pairing and without link encryption in this build.

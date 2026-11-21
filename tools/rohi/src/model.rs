@@ -84,18 +84,6 @@ open_enum! {
 }
 
 open_enum! {
-    /// Lifecycle state of a service.
-    ServiceState: pb::ServiceState {
-        Disabled = Disabled => "disabled",
-        Stopped = Stopped => "stopped",
-        Starting = Starting => "starting",
-        Running = Running => "running",
-        Stopping = Stopping => "stopping",
-        Failed = Failed => "failed",
-    }
-}
-
-open_enum! {
     /// Operational quality of a service.
     ServiceHealth: pb::ServiceHealth {
         Unknown = Unknown => "unknown",
@@ -131,6 +119,23 @@ open_enum! {
         Read = Read => "read",
         Mutate = Mutate => "mutate",
         Provision = Provision => "provision",
+    }
+}
+
+open_enum! {
+    /// The format of the result of an action: its logical shape and
+    /// guarantees, one per action.
+    ResultFormat: pb::ResultFormat {
+        /// No data, by contract.
+        Empty = Empty => "empty",
+        /// One record of typed fields.
+        Inline = Inline => "inline",
+        /// A finite collection of records, read page by page.
+        Records = Records => "records",
+        /// One cursor page of a changing source.
+        Feed = Feed => "feed",
+        /// Files read in chunks.
+        Stream = Stream => "stream",
     }
 }
 
@@ -412,16 +417,10 @@ pub struct ServiceSummary {
     pub service: String,
     /// Version of the status schema.
     pub version: u32,
-    /// Lifecycle state.
-    pub state: ServiceState,
     /// Operational quality.
     pub health: ServiceHealth,
-    /// Whether the service can currently do its job.
-    pub ready: bool,
-    /// Changes when state, health, readiness or issues change.
+    /// Changes when health or issues change.
     pub revision: u32,
-    /// Time in the current state.
-    pub state_age_ms: u64,
 }
 
 /// Compact status of the whole device.
@@ -501,6 +500,8 @@ pub struct ActionInfo {
     pub access: ActionAccess,
     /// Whether the arguments are secrets; they must be read with `NAME=-`.
     pub secret_args: bool,
+    /// The format of the result.
+    pub format: ResultFormat,
 }
 
 /// Schema of an action.
@@ -511,12 +512,24 @@ pub struct ActionSchema {
     pub action: ActionInfo,
     /// Arguments; all are required.
     pub args: Vec<FieldDescriptor>,
-    /// Fields of every result record.
+    /// Fields of the record (`Inline`) or of every record (`Records`).
     pub results: Vec<FieldDescriptor>,
 }
 
-/// One result record of an action.
+/// One record of typed fields.
 pub type Record = Vec<FieldValue>;
+
+/// One page of a `Records` result: whole records in a stable order. When
+/// `next_page_token` is set the device holds the rest of the collection; read
+/// it with [`Device::read_records_page`](crate::Device::read_records_page) or
+/// follow it with [`RecordsPages`](crate::RecordsPages).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecordsPage {
+    /// The records of the page; none for an empty collection.
+    pub records: Vec<Record>,
+    /// The opaque token of the next page, when there is one.
+    pub next_page_token: Option<Vec<u8>>,
+}
 
 // -- streams ------------------------------------------------------------------
 
@@ -544,32 +557,39 @@ pub struct Stream {
     pub files: Vec<StreamFile>,
 }
 
-/// What an action returned.
+/// What an action returned: one case per [`ResultFormat`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum ActionOutcome {
-    /// Typed records.
-    Records(Vec<Record>),
+    /// Nothing, by contract.
+    Empty,
+    /// One record.
+    Inline(Record),
+    /// The first page of a collection, which may be empty or may continue.
+    Records(RecordsPage),
+    /// One cursor page of a changing source, with nothing kept on the device.
+    Feed(FeedPage),
     /// Files to read in chunks.
     Stream(Stream),
 }
 
-/// One page of the tail of a service, see
+/// One cursor page a feed action returned, for example `logging.tail`, see
 /// [`Device::tail_logs`](crate::Device::tail_logs).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TailPage {
-    /// Identifies the boot of the device the sequences belong to.
+pub struct FeedPage {
+    /// Identifies the epoch (the boot of the device) the sequences belong to.
     pub session: u32,
-    /// Sequence of the last line of `data`: the cursor of the next request.
+    /// Sequence of the last entry of `data`: the cursor of the next request.
     pub cursor: u64,
-    /// Sequence of the oldest line the device holds.
+    /// Sequence of the oldest entry the source holds.
     pub oldest_sequence: u64,
-    /// Sequence of the newest line the device holds; 0 when it holds none.
+    /// Sequence of the newest entry the source holds; 0 when it holds none.
     pub newest_sequence: u64,
-    /// The request belonged to another boot: `data` starts over.
+    /// The request belonged to another epoch: `data` starts over.
     pub reset: bool,
-    /// Lines the device overwrote between the cursor of the request and `data`.
+    /// Entries the source overwrote between the cursor of the request and `data`.
     pub gap: u64,
-    /// Whole text lines, each ending in a newline; empty when nothing is new.
+    /// Whole entries (for the log tail: text lines, each ending in a newline);
+    /// empty when nothing is new.
     pub data: Vec<u8>,
 }
 

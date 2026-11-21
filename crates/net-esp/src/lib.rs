@@ -123,9 +123,9 @@
 //! | `EspWifi` and its `NetRunner` | [`rohi_net::WifiBackend`] | Station driver on `esp-radio` and `embassy-net`; the runner is the background task of the IP stack |
 //! | `EspIp` with `EspTcpConnection`, `EspUdpSocket` | [`rohi_net::IpBackend`], [`rohi_net::UdpSocket`] | DNS, TCP and UDP on the same `embassy-net` stack |
 //! | `EspBle` and its `BleRunner` | [`rohi_net::BleTransport`] | BLE peripheral on `esp-radio` and the TrouBLE host stack |
-//! | `EspBleStatus` | [`rohi_net::BleProbe`] | Copyable read-only view for the `ble` service |
+//! | `EspBleStatus` | [`rohi_net::BleProbe`] | Copyable read-only view for the `wireless` service |
 //! | `EspWireless`, `wireless_heap!`, `WirelessHeapRegion` | | Shared radio runtime and heap |
-//! | `WirelessHeap`, `wireless_heap()` | | Heap usage, also `WirelessHeap::stats` for [`rohi_net::WifiProbe`] |
+//! | `WirelessHeap`, `wireless_heap()` | | Heap usage, also `WirelessHeap::stats` for [`rohi_net::WirelessProbe`] |
 //!
 //! The Altruist Urban firmware wires these pieces in
 //! `firmwares/altruist-urban/src/` (`bin/firmware.rs`: bring-up order; `esp/net.rs`:
@@ -159,8 +159,8 @@
 //! vendor results (for example the scan `Vec`) are converted into bounded
 //! ROHI types inside the backend and dropped there. The heap usage is
 //! reported through `WirelessHeap` and, via [`rohi_net::HeapStats`], by the
-//! heap fields of the `wifi` service. With `heap-stats` the minimum free heap
-//! is an estimate derived from the allocator's maximum usage.
+//! `heap_free` field of the `wireless` service. With `heap-stats` the minimum free
+//! heap is an estimate derived from the allocator's maximum usage.
 //!
 //! **Resource bounds.**
 //!

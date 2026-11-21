@@ -77,7 +77,7 @@
 //!
 //! | Interaction | Kind | Mechanism |
 //! |-------------|------|-----------|
-//! | Desired `WifiConfig` and `NetworkConfig` | state | `WifiHandle::set_wifi_config` / `set_network_config` (latest value wins, synchronous) |
+//! | Desired Wi-Fi and IP parts of `WirelessConfig` | state | `WifiHandle::set_wifi_config` / `set_network_config` (latest value wins, synchronous) |
 //! | Effective routes, telemetry profiles and NTP servers | state | latest-value signal to the running task, only the newest value matters |
 //! | Latest system / Wi-Fi status | state | published `WifiStatus` (`Watch`) |
 //! | Scan, reconnect, disconnect | command | bounded queue, `Busy` when full |

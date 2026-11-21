@@ -14,8 +14,8 @@ rohi -o json status network
 
 Services are discovered from the device, so `rohi status <name>` works for any service the summary lists. Without a
 service the output is the summary table; with `-o json` it is
-`{ "device": .., "uptime_ms": .., "health": .., "services": [..] }`. The sections below explain state,
-health, readiness, issues and revisions.
+`{ "device": .., "uptime_ms": .., "health": .., "services": [..] }`. The sections below explain health,
+issues and revisions.
 
 ## Four questions, four places
 
@@ -39,10 +39,7 @@ port        443
 
 $ rohi status connectivity          # observed: what is happening now
 Service:  connectivity
-State:    running
 Health:   degraded
-Ready:    yes
-Since:    34s
 
 frames_created           212
 frames_delivered         209
@@ -66,42 +63,33 @@ Device:  altruist-urban-0.4.0 (urban-esp32c3)
 Uptime:  2h 14m
 Health:  degraded
 
-SERVICE       STATE     HEALTH    READY  SINCE
-network        running   ok        yes    2h 14m
-connectivity  running   degraded  yes    34s
-time          running   ok        yes    2h 13m
-sensors       running   ok        yes    2h 14m
-identity      running   ok        yes    2h 14m
-location      disabled  -         no     -
+SERVICE       HEALTH
+network       ok
+connectivity  degraded
+time          ok
+sensors       ok
+identity      ok
+location      -
 ```
 
-**State, health and readiness are three separate things**, not one big status:
+**Health is the one common indicator** of a service:
 
-| | Answers | Values |
-|---|---|---|
-| State | where is it in its lifecycle? | `disabled`, `stopped`, `starting`, `running`, `stopping`, `failed` |
-| Health | how well does it work? | `ok`, `degraded`, `error`, or `-` (unknown) |
-| Ready | can it do its job *right now*? | `yes` / `no` |
+| Health | Meaning |
+|--------|---------|
+| `ok` | working |
+| `degraded` | works with reduced capability, or something is wrong (telemetry without a location, a Wi-Fi that lost its link) |
+| `error` | not working |
+| `-` (unknown) | not known yet (Wi-Fi is still connecting) or not in use: turned off by configuration or never set, which is **not an error** |
 
-So the same word means different things in different columns, and combinations carry information:
-
-| State | Health | Ready | Meaning |
-|-------|--------|-------|---------|
-| `running` | `ok` | yes | working |
-| `running` | `degraded` | yes | works, but something is wrong (telemetry without a location) |
-| `running` | `degraded` | no | the task runs, the backend does not answer |
-| `starting` | `-` | no | Wi-Fi is still connecting |
-| `disabled` | `-` | no | turned off by configuration or never set: **not an error** |
-| `failed` | `error` | no | crashed and not recovering |
-
-`SINCE` is how long the service has been in its current state.
+What else a service has to tell, such as a link state or a sensor state, is a value of that service in
+`rohi status <service>`.
 
 ### Device health
 
 `Health:` in the header is decided **by the firmware**, not computed by the tool. The firmware knows which services
 are mandatory, optional or redundant: a cellular modem may be degraded while Ethernet is fine. With the default policy
-a failed essential service makes the device `error`, a degraded service or a running service that is not ready makes
-it `degraded`, and disabled services do not count.
+an essential service with `error` health makes the device `error`, a degraded service makes it `degraded`, and
+services with `unknown` health do not count.
 
 ## One service in detail
 
@@ -109,18 +97,15 @@ it `degraded`, and disabled services do not count.
 issues**:
 
 ```console
-$ rohi status network
-Service:  network
-State:    running
+$ rohi status wireless
+Service:  wireless
 Health:   ok
-Ready:    yes
-Since:    2h 14m
 
-ssid     office
-rssi     -61 dBm
-ip       192.168.1.42
-gateway  192.168.1.1
-dns      192.168.1.1
+wifi_state       connected
+wifi_ip          192.168.1.42
+wifi_rssi        -61 dBm
+wifi_reconnects  0
+heap_free        41200 B
 ```
 
 An **issue** has a stable machine-readable code (`connection_timeout`, `no_location`), a severity, a message and an
@@ -128,11 +113,11 @@ age. Scripts react to the code, people read the message. Only issues that are ac
 diagnostics. With `-o json` the values are keyed by field name and carry their units:
 
 ```console
-$ rohi -o json status network
+$ rohi -o json status wireless
 {
   "schema_version": 1,
-  "service": { "service": "network", "state": "running", "health": "ok", "ready": true, ... },
-  "values": { "ssid": "office", "rssi": -61, "ip": "192.168.1.42" },
+  "service": { "service": "wireless", "health": "ok", "revision": 3, ... },
+  "values": { "wifi_state": "connected", "wifi_rssi": -61, "wifi_ip": "192.168.1.42" },
   "units": { "rssi": "dBm" },
   "issues": []
 }
@@ -145,7 +130,7 @@ $ rohi status --watch                 # reprint when something observable change
 $ rohi status connectivity --watch --interval 5
 ```
 
-Every service has a **status revision** that changes when its state, health, readiness or active issues change. A
+Every service has a **status revision** that changes when its health or active issues change. A
 summary watch polls the compact summary and prints again only when a revision (or the device health) moved, so it
 stays cheap. Values that vary all the time (counters, signal strength) do not change the revision; `rohi status
 <service> --watch` re-reads the detail on every poll and prints when what is shown changed. Stop with Ctrl-C.
@@ -157,17 +142,17 @@ Status never changes anything. Operations are **actions**, listed and described 
 ```console
 $ rohi action
 SERVICE   ACTION         ACCESS
-network   scan           read
-network   reconnect      mutate
-network   disconnect     mutate
+wireless  wifi_scan      read
+wireless  wifi_reconnect mutate
+wireless  wifi_disconnect mutate
 identity  provision      provision
 identity  erase          mutate
 system    reboot         mutate
 system    factory_reset  provision
 
-$ rohi action network                  # the actions of one service, with their arguments
-$ rohi action network scan --help      # arguments and results, from the device schema
-$ rohi action network scan
+$ rohi action wireless                 # the actions of one service, with their arguments
+$ rohi action wireless wifi_scan --help  # arguments and results, from the device schema
+$ rohi action wireless wifi_scan
 SSID    RSSI     CHANNEL  SECURITY
 office  -50 dBm  6        wpa2
 guest   -70 dBm  11       open
@@ -188,9 +173,7 @@ section. Secrets are write-only. It is covered on [Configuration](configuration.
 
 | Service | What it reports | Typical issue codes |
 |---------|-----------------|---------------------|
-| `wifi` | connection state, network, signal, channel, radio heap | `authentication_failed`, `network_not_found`, `association_failed` |
-| `network` | IPv4 address, gateway, DNS, address mode, socket usage | `dhcp_failed` |
-| `ble` | peripheral state, advertised name, link security | `driver_error` |
+| `wireless` | Wi-Fi state, IPv4 address, signal and reconnects, radio heap; the BLE peripheral shows up in the health and the issues only | `authentication_failed`, `network_not_found`, `dhcp_failed`, `driver_error` |
 | `connectivity` | telemetry queue and counters | `connection_timeout`, `unauthorized`, `no_identity`, `no_utc_time`, `no_location` |
 | `time` | wall-clock time, source, age, failures | `network_unavailable`, `timeout`, `implausible` |
 | `sensors` | `<sensor>.<measurement>` values in canonical units | `bmx280_error`, `sds011_degraded`, ... |

@@ -18,7 +18,7 @@
 
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use rohi_service::{
-    FieldDescriptor, Service, ServiceHealth, ServiceState, ServiceSummary, Status, StatusSet,
+    FieldDescriptor, Service, ServiceHealth, ServiceSummary, Status, StatusSet,
     StatusWriter, WriteError,
 };
 
@@ -36,7 +36,7 @@ macro_rules! status {
             const STATUS_SCHEMA: &'static [FieldDescriptor] = &[];
 
             async fn summary(&self) -> ServiceSummary {
-                ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true)
+                ServiceSummary::new(ServiceHealth::Ok)
             }
 
             async fn status(&self, _: &mut impl StatusWriter) -> Result<(), WriteError> {

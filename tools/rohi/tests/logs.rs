@@ -938,14 +938,38 @@ async fn the_actions_are_ordinary_actions_of_the_logging_service() {
     let outcome = run(&bench, &["-o", "json", "action"]).await;
     outcome.ok();
     let text = outcome.stdout;
-    for name in ["download", "clear"] {
+    for name in ["download", "clear", "tail"] {
         assert!(text.contains(&format!("\"{name}\"")), "{text}");
     }
     assert!(text.contains("\"logging\""));
-    // The tail is the `TailLogs` request, not an action and not a stream.
-    assert!(!text.contains("\"tail\""), "{text}");
-    let gone = run(&bench, &["action", "logging", "tail", "session=0"]).await;
-    assert!(gone.result.is_err());
+    // The tail is an ordinary action; it needs both of its arguments.
+    let missing = run(&bench, &["action", "logging", "tail", "session=0"]).await;
+    assert!(missing.result.is_err());
+    let page = run(
+        &bench,
+        &["action", "logging", "tail", "session=0", "after=0"],
+    )
+    .await;
+    page.ok();
+    assert!(page.stdout.starts_with("# session="), "{}", page.stdout);
+    assert!(page.stdout.contains("reset=false gap=0"), "{}", page.stdout);
+    let json = run(
+        &bench,
+        &[
+            "-o",
+            "json",
+            "action",
+            "logging",
+            "tail",
+            "session=0",
+            "after=0",
+        ],
+    )
+    .await;
+    json.ok();
+    for field in ["\"session\"", "\"cursor\"", "\"gap\"", "\"data\""] {
+        assert!(json.stdout.contains(field), "{}", json.stdout);
+    }
 
     let download = run(&bench, &["logging", "download"]).await;
     download.ok();

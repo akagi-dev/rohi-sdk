@@ -88,11 +88,11 @@ ids, whole-section validation and a golden test of the stored bytes, so that
 [Add a service](../guides/add-service.md)
 
 ```text
-Add a service `[battery]` that reports state, health, readiness and the field
+Add a service `[battery]` that reports health and the field
 `voltage` in volts, with an issue `low_voltage` below [3.3] V. Follow
 docs/guides/add-service.md and copy the structure of the location service. Register it
 in firmwares/altruist-urban/src/control.rs. Add host tests for
-every state and show me the expected `rohi status [battery]` output.
+every health value and show me the expected `rohi status [battery]` output.
 ```
 
 ### Add an action

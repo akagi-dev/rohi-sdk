@@ -30,11 +30,11 @@ btmgmt info | grep -i 'current settings'         # le is listed
 ## What to expect
 
 The device advertises the service UUID of the ROHI Control Service with the name `ALTRUIST-URBAN-<last two bytes of the
-adapter address>`, or the name of the `ble` configuration section. The `ble` service reports `advertising`, then
-`connected` while a phone is connected, and `max_payload` from the negotiated MTU.
+adapter address>`, or the `ble_name` of the `wireless` configuration section (read at start, so a change applies after a restart).
+The `wireless` service has no BLE field: a working peripheral (advertising or connected) reads as `ok`.
 
-If BlueZ, the D-Bus socket or the adapter is missing, the device still starts and serves TCP; the `ble` service reports
-the failure and bringing BLE up is retried every few seconds. Use `rohi --device tcp://127.0.0.1:9300 status ble`
+If BlueZ, the D-Bus socket or the adapter is missing, the device still starts and serves TCP; the `wireless` service reports
+the failure as its health and issues and bringing BLE up is retried every few seconds. Use `rohi --device tcp://127.0.0.1:9300 status wireless`
 to see it, or the log (`--log-level debug`).
 
 ## Smoke test with a phone
@@ -49,12 +49,12 @@ firmwares/altruist-urban/scripts/ble-smoke.sh hci1       # another adapter
 With the device running, in the ROHI mobile application:
 
 1. Scan: `ALTRUIST-URBAN-XXXX` appears.
-2. Connect. Open the configuration: read the `wifi`, `network`, `ble`, `time`, `location` and `connectivity` sections.
+2. Connect. Open the configuration: read the `wireless`, `time`, `location` and `connectivity` sections.
 3. Change a value (for example the `location`) and read it back; restart the device with the same storage and check the
    value persisted.
 4. Open the status of every service, including the `sensors` and `identity` diagnostics. With `sensor-simulator`, run
    `printf 'set co2 1500\n' | nc -N 127.0.0.1 9301` (the management port is also on loopback) and watch the value change.
-5. Invoke an action (`wifi scan`).
+5. Invoke an action (`wireless wifi_scan`).
 6. Disconnect, then connect again: the device advertises again after every disconnect.
 
 The same steps work with the desktop tool over BLE from another machine or a second adapter: `rohi scan`,
@@ -69,7 +69,7 @@ The same steps work with the desktop tool over BLE from another machine or a sec
   and the result and platform limitations are recorded in the [support matrix](../support/overview.md).
 - **Open: no pairing.** BLE control has no pairing and no link encryption in this build, and no setting changes that. The
   link is never reported as encrypted or authenticated, and every client in range may change the device, provision the
-  identity, reset it and run `control_tcp reveal_psk`. Do not treat this as production-secure.
+  identity, reset it and run `control tcp_generate_psk`. Do not treat this as production-secure.
 - **Connection detection.** BlueZ does not report an ATT connection to a GATT application. A central counts as connected
   when it subscribes to the TX characteristic or writes the RX characteristic, and as disconnected when its notification
   session ends. A central that never subscribes cannot receive responses and is not tracked.

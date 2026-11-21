@@ -21,15 +21,15 @@
 //!
 //! - [`BleLink`] / [`scan`]: BLE central built on `btleplug`, finds devices
 //!   exposing the ROHI Control Service and moves chunks;
-//! - [`TcpLink`]: Protobuf records over a TCP socket, plaintext behind a length
-//!   ([`rohi_control_tcp::frame`]) for an open development endpoint or authenticated and
+//! - [`TcpLink`]: Protobuf records over a TCP socket, plaintext behind a preamble and
+//!   a length ([`rohi_control_tcp::frame`], what `open` and `protected` endpoints serve) or authenticated and
 //!   encrypted after a handshake with a pre-shared key ([`TcpKey`],
 //!   [`rohi_control_tcp::secure`]), for a device that serves the control
 //!   protocol over TCP such as the `std` Altruist Urban;
 //! - [`Session`]: on a chunked link frames requests with
 //!   [`rohi_control_ble::frame`]; matches responses by request id, enforces
 //!   timeouts;
-//! - [`Device`]: generic async API (`config_*`, `services*`, `invoke`)
+//! - [`Device`]: generic async API (`config_*`, `services*`, `invoke_outcome`, `records_all`)
 //!   returning the plain types of [`model`], never protobuf; it knows no
 //!   module by name;
 //! - [`format`](mod@format): human readable rendering of the model.
@@ -52,14 +52,14 @@ mod session;
 mod tcp;
 
 pub use ble::{BleLink, DiscoveredDevice, scan, scan_until};
-pub use client::Device;
+pub use client::{Device, RecordsPages};
 pub use error::{Error, Result};
 pub use provision::DerivedIdentity;
 #[cfg(feature = "provision")]
 pub use provision::derive_identity;
 #[cfg(feature = "provision")]
 pub use provision::ss58;
-pub use psk::{TcpKey, write_new as write_tcp_key};
+pub use psk::TcpKey;
 pub use rohi_identity::PublicKey;
 pub use session::{ClientTransport, DEFAULT_TIMEOUT, Framing, Session};
 pub use tcp::TcpLink;

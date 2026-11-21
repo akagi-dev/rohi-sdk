@@ -15,10 +15,10 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-//! The `network` config section in the generic management plane: the field
-//! codecs of the domain types, the enum of the address mode and the validation
-//! of the section. The fields, their ids and the persisted overrides are
-//! declared once, on [`NetworkConfig`](super::NetworkConfig).
+//! The `ip_*` fields of the `wireless` section in the generic management
+//! plane: the field codecs of the domain types and the enum of the address
+//! mode. The fields, their ids and the persisted overrides are declared once,
+//! on [`WirelessConfig`](crate::WirelessConfig).
 
 use core::fmt::Write as _;
 use core::net::Ipv4Addr;
@@ -28,9 +28,9 @@ use heapless::String;
 use rohi_config::{Codec, TextValue, VariantValue};
 use rohi_service::{EnumDescriptor, EnumVariant, FieldError, Value, ValueKind};
 
-use super::config::{AddressMode, Hostname, Ipv4, NetworkConfig};
+use super::config::{AddressMode, Hostname, Ipv4};
 
-/// Values of the `address_mode` field.
+/// Values of the `ip_mode` field.
 pub mod address_mode {
     /// The address comes from a DHCP server.
     pub const DHCP: u32 = 0;
@@ -38,10 +38,10 @@ pub mod address_mode {
     pub const STATIC: u32 = 1;
 }
 
-/// Id of the enum of the `address_mode` field.
+/// Id of the enum of the `ip_mode` field.
 pub const ADDRESS_MODE_ENUM: u32 = 1;
 
-/// The enum of the `address_mode` config field.
+/// The enum of the `ip_mode` config field.
 pub const ADDRESS_MODES: &[EnumDescriptor] = &[EnumDescriptor::new(
     ADDRESS_MODE_ENUM,
     &[
@@ -96,183 +96,5 @@ impl TextValue for Hostname {
 
     fn as_text(&self) -> Option<&str> {
         Some(self.as_str())
-    }
-}
-
-/// The static address needs all its parts, and the section is valid as a
-/// whole.
-pub(super) fn validate_section(config: &NetworkConfig) -> Result<(), FieldError> {
-    NetworkConfig::validate(config).map_err(|_| FieldError::Invalid)
-}
-
-#[cfg(test)]
-mod tests {
-    extern crate std;
-
-    use rohi_config::ConfigOverrides;
-    use rohi_service::{Config, MAX_CONFIG_FIELDS};
-
-    use super::*;
-    use crate::NetworkOverrides;
-    use rohi_config::ConfigSection;
-
-    const ADDRESS_MODE: u32 = 1;
-    const IP: u32 = 2;
-    const PREFIX_LEN: u32 = 3;
-    const GATEWAY: u32 = 4;
-    const DNS: u32 = 5;
-    const HOSTNAME: u32 = 6;
-    const DHCP_TIMEOUT: u32 = 7;
-
-    fn text(value: &str) -> Value {
-        Value::text(value).unwrap()
-    }
-
-    #[test]
-    fn the_reported_version_is_the_stored_one() {
-        assert_eq!(<NetworkOverrides as ConfigSection>::VERSION, 1);
-    }
-
-    #[test]
-    fn every_field_can_be_overridden() {
-        let mut ids: std::vec::Vec<_> = NetworkConfig::FIELDS.iter().map(|f| f.field.id).collect();
-        ids.sort_unstable();
-        assert_eq!(ids, NetworkOverrides::FIELD_IDS);
-    }
-
-    #[test]
-    fn the_schema_is_well_formed() {
-        assert!(NetworkConfig::FIELDS.len() <= MAX_CONFIG_FIELDS);
-        let mut ids: std::vec::Vec<_> = NetworkConfig::FIELDS.iter().map(|f| f.field.id).collect();
-        ids.sort_unstable();
-        ids.dedup();
-        assert_eq!(ids.len(), NetworkConfig::FIELDS.len());
-        for field in NetworkConfig::FIELDS {
-            assert!(field.field.name.len() <= 24, "{}", field.field.name);
-        }
-    }
-
-    #[test]
-    fn the_defaults_are_dhcp_without_a_static_address() {
-        let config = NetworkConfig::default();
-        assert_eq!(Config::validate(&config), Ok(()));
-        let read = |id| config.read_field(id).unwrap();
-        assert_eq!(read(ADDRESS_MODE), Some(Value::Enum(address_mode::DHCP)));
-        assert_eq!(read(DHCP_TIMEOUT), Some(Value::U64(20_000)));
-        for id in [IP, PREFIX_LEN, GATEWAY, DNS, HOSTNAME] {
-            assert_eq!(read(id), None);
-        }
-    }
-
-    #[test]
-    fn a_static_address_is_set_field_by_field_and_validated_as_a_whole() {
-        let mut config = NetworkConfig::default();
-        config
-            .set_field(ADDRESS_MODE, Value::Enum(address_mode::STATIC))
-            .unwrap();
-        // Static mode without an address is incomplete.
-        assert_eq!(Config::validate(&config), Err(FieldError::Invalid));
-
-        config.set_field(IP, text("192.168.1.50")).unwrap();
-        config.set_field(PREFIX_LEN, Value::U64(24)).unwrap();
-        config.set_field(GATEWAY, text("192.168.1.1")).unwrap();
-        config.set_field(DNS, text("1.1.1.1")).unwrap();
-        assert_eq!(Config::validate(&config), Ok(()));
-        assert_eq!(config.read_field(IP), Ok(Some(text("192.168.1.50"))));
-        assert_eq!(config.read_field(PREFIX_LEN), Ok(Some(Value::U64(24))));
-        assert_eq!(config.read_field(DNS), Ok(Some(text("1.1.1.1"))));
-
-        // A gateway outside the network is rejected by the whole section.
-        config.set_field(GATEWAY, text("10.0.0.1")).unwrap();
-        assert_eq!(Config::validate(&config), Err(FieldError::Invalid));
-
-        // Clearing the override of the DNS server restores the default: none.
-        let mut overrides = NetworkOverrides::default();
-        assert!(overrides.capture(&config, DNS));
-        assert_eq!(
-            rohi_config::materialize::<NetworkConfig>(&Default::default(), &overrides).dns,
-            config.dns
-        );
-        assert!(overrides.clear(DNS));
-        assert_eq!(
-            rohi_config::materialize::<NetworkConfig>(&Default::default(), &overrides)
-                .read_field(DNS),
-            Ok(None)
-        );
-    }
-
-    #[test]
-    fn bad_values_are_refused() {
-        let mut config = NetworkConfig::default();
-        assert_eq!(
-            config.set_field(IP, text("not an address")),
-            Err(FieldError::Invalid)
-        );
-        assert_eq!(
-            config.set_field(IP, text("192.168.1.256")),
-            Err(FieldError::Invalid)
-        );
-        assert_eq!(
-            config.set_field(IP, Value::U64(1)),
-            Err(FieldError::WrongKind)
-        );
-        assert_eq!(
-            config.set_field(PREFIX_LEN, Value::U64(300)),
-            Err(FieldError::OutOfRange)
-        );
-        assert_eq!(
-            config.set_field(ADDRESS_MODE, Value::Enum(7)),
-            Err(FieldError::OutOfRange)
-        );
-        assert_eq!(
-            config.set_field(HOSTNAME, text("bad name")),
-            Err(FieldError::Invalid)
-        );
-        assert_eq!(
-            config.set_field(DHCP_TIMEOUT, Value::U64(u64::MAX)),
-            Err(FieldError::OutOfRange)
-        );
-        assert_eq!(
-            config.set_field(99, Value::U64(1)),
-            Err(FieldError::UnknownField)
-        );
-    }
-
-    #[test]
-    fn clearing_an_override_restores_the_default_of_a_required_field() {
-        let mut overrides = NetworkOverrides::default();
-        let mut config = rohi_config::materialize::<NetworkConfig>(&Default::default(), &overrides);
-        config.set_field(DHCP_TIMEOUT, Value::U64(5_000)).unwrap();
-        overrides.capture(&config, DHCP_TIMEOUT);
-        assert_eq!(
-            rohi_config::materialize::<NetworkConfig>(&Default::default(), &overrides)
-                .dhcp_timeout_ms,
-            5_000
-        );
-        overrides.clear(DHCP_TIMEOUT);
-        assert_eq!(
-            rohi_config::materialize::<NetworkConfig>(&Default::default(), &overrides)
-                .dhcp_timeout_ms,
-            20_000
-        );
-    }
-
-    #[test]
-    fn the_host_name_is_optional() {
-        let mut config = NetworkConfig::default();
-        config.set_field(HOSTNAME, text("altruist-1")).unwrap();
-        assert_eq!(config.read_field(HOSTNAME), Ok(Some(text("altruist-1"))));
-        let mut overrides = NetworkOverrides::default();
-        overrides.capture(&config, HOSTNAME);
-        overrides.clear(HOSTNAME);
-        assert_eq!(
-            rohi_config::materialize::<NetworkConfig>(&Default::default(), &overrides).hostname,
-            None
-        );
-    }
-
-    #[test]
-    fn there_is_no_secret_field() {
-        assert!(NetworkConfig::FIELDS.iter().all(|field| !field.secret));
     }
 }

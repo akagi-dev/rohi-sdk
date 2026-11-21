@@ -29,16 +29,16 @@
 //! mobile   -> GATT (BlueZ, rohi-control-ble) -> ControlBle --+   (one Controller, UrbanDevice)
 //! ```
 //!
-//! Each transport has its own access mode ([`crate::control::access`]): TCP is
-//! restricted by default and serves only clients that complete the handshake with the
-//! pre-shared key (authenticated, encrypted records), BLE is open (provisioning needs an
-//! encrypted link). TCP is bound to the loopback address
+//! The access policy follows the access mode of the TCP endpoint ([`crate::control::access`]):
+//! `protected` by default, where a plaintext client may read and a client that completed the
+//! handshake with the pre-shared key (authenticated, encrypted records) may do everything;
+//! `open` and `private` are the other two. BLE is open (no pairing, no link encryption). TCP is bound to the loopback address
 //! unless the developer asks otherwise, see
 //! [`Args::unsafe_allow_remote`](super::args::Args::unsafe_allow_remote).
 
 use rohi_sdk::control::{AccessPolicy, ControlHub, Controller, DeviceInfo};
 use rohi_sdk::host::NativeIp;
-use rohi_sdk::net::{BleName, BleProbe, BleState, DEFAULT_BLE_PAYLOAD, NetworkHandle};
+use rohi_sdk::net::{BleProbe, BleState, NetworkHandle};
 use rohi_sdk::sim::ip::SimIp;
 use static_cell::StaticCell;
 
@@ -56,15 +56,15 @@ const BOARD: &str = "urban-std";
 /// faults of the simulated world.
 pub type HostIp = SimIp<NativeIp>;
 
-/// The view of the BLE peripheral for the `ble` service.
+/// The view of the BLE peripheral for the `wireless` service.
 #[cfg(feature = "std-ble")]
 pub type HostBle = rohi_sdk::host::ble::BluezProbe;
 
-/// The view of the BLE peripheral for the `ble` service.
+/// The view of the BLE peripheral for the `wireless` service.
 #[cfg(not(feature = "std-ble"))]
 pub type HostBle = NoBle;
 
-/// The `ble` service of a build without a BLE peripheral: it is disabled, not
+/// The BLE view of a build without a BLE peripheral: it is disabled, not
 /// pretending to advertise.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NoBle;
@@ -73,18 +73,10 @@ impl BleProbe for NoBle {
     fn state(&self) -> BleState {
         BleState::Disabled
     }
-
-    fn max_payload(&self) -> usize {
-        DEFAULT_BLE_PAYLOAD
-    }
-
-    fn name(&self) -> Option<BleName> {
-        None
-    }
 }
 
 /// The control backend of the Altruist Urban on the host.
-pub type HostDevice = UrbanDevice<HostIp, HostBle, logging::Service>;
+pub type HostDevice = UrbanDevice<HostBle, logging::Service>;
 
 /// The controller every transport serves, through the [`HUB`].
 pub type HostController = Controller<HostDevice, AccessPolicy<'static>>;
@@ -93,13 +85,13 @@ pub type HostController = Controller<HostDevice, AccessPolicy<'static>>;
 /// transports.
 pub static HUB: ControlHub<'static, 2> = ControlHub::new();
 
-static SERVICES: ServicesSlot<HostIp, HostBle, logging::Service> = StaticCell::new();
+static SERVICES: ServicesSlot<HostBle, logging::Service> = StaticCell::new();
 static CONTROLLER: StaticCell<HostController> = StaticCell::new();
 
 /// The controller over the runtime handles of the application, built once.
 ///
 /// `network` is the IP data plane; `ble` the view of the BLE peripheral for
-/// the `ble` service.
+/// the `wireless` service.
 pub fn controller(
     network: Option<NetworkHandle<'static, HostIp>>,
     ble: HostBle,
@@ -130,7 +122,7 @@ pub fn controller(
 }
 
 /// Records the control listener, which the launch options may have moved away
-/// from the stored `control_tcp` settings; `None` when it could not listen (`failed`).
+/// from the stored `control` settings; `None` when it could not listen (`failed`).
 #[cfg(feature = "std-tcp")]
 pub fn record_tcp(listening: Option<std::net::SocketAddr>) {
     use rohi_sdk::control::{EndpointState, Transport};

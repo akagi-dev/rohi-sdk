@@ -24,7 +24,7 @@
 //! `const` block when its section or service is constructed: a violation is a
 //! build error, never a surprise on the device.
 
-use crate::action::{ActionDescriptor, MAX_ACTION_ARGS, MAX_RECORD_FIELDS};
+use crate::action::{ActionDescriptor, MAX_ACTION_ARGS, MAX_RECORD_FIELDS, ResultFormat};
 use crate::field::{ConfigField, EnumDescriptor, FieldDescriptor};
 use crate::status::{FIRST_SERVICE_ISSUE, ISSUE_STARTUP_FAILED, IssueDescriptor};
 use crate::{
@@ -262,9 +262,20 @@ pub(crate) const fn issues_valid(issues: &[IssueDescriptor]) -> bool {
     true
 }
 
+// The result fields and the format agree: only `Inline` and `Records` describe
+// fields.
+const fn format_valid(action: &ActionDescriptor) -> bool {
+    match action.format {
+        ResultFormat::Inline | ResultFormat::Records => !action.results.is_empty(),
+        ResultFormat::Empty | ResultFormat::Feed | ResultFormat::Stream => {
+            action.results.is_empty()
+        }
+    }
+}
+
 /// Whether the actions are valid: names fit, ids and names are unique, the
 /// arguments and results fit the protocol and are valid fields of the enums of
-/// their action.
+/// their action, and the result fields agree with the format.
 pub(crate) const fn actions_valid(actions: &[ActionDescriptor]) -> bool {
     let mut index = 0;
     while index < actions.len() {
@@ -272,6 +283,7 @@ pub(crate) const fn actions_valid(actions: &[ActionDescriptor]) -> bool {
         if !name_ok(action.name)
             || action.args.len() > MAX_ACTION_ARGS
             || action.results.len() > MAX_RECORD_FIELDS
+            || !format_valid(action)
             || !enums_valid(action.enums, MAX_SERVICE_ENUMS)
             || !args_valid(action.args, action.enums)
             || !fields_valid(action.results, action.enums)

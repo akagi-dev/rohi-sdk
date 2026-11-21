@@ -18,7 +18,7 @@
 //! `rohi logs`: the device log, as the actions of the `logging` service.
 //!
 //! This module is a convenience over the generic interfaces of the device and
-//! knows nothing the device does not tell it: the tail is the `TailLogs` request,
+//! knows nothing the device does not tell it: the tail is the `logging.tail` action,
 //! one bounded page of the latest records the device keeps in RAM per call (no
 //! stream, nothing opened on the device), `download` a stream of the retained
 //! segment files, `clear` nothing. `rohi action logging ...` reaches the actions.
@@ -105,7 +105,7 @@ fn text_of(records: &[LogRecord]) -> String {
     text
 }
 
-/// What one `TailLogs` page held.
+/// What one `logging.tail` page held.
 struct Tailed {
     /// Identifies the boot of the device the sequences belong to.
     session: u32,
@@ -121,7 +121,7 @@ struct Tailed {
     records: Vec<LogRecord>,
 }
 
-/// One `TailLogs` page: the records after `after` of the boot `session`; the
+/// One `logging.tail` page: the records after `after` of the boot `session`; the
 /// oldest ones the device holds when `session` or `after` is 0.
 async fn tail<T: ClientTransport>(
     device: &mut Device<T>,
@@ -288,8 +288,8 @@ async fn download<T: ClientTransport>(
 ) -> Result<(), CliError> {
     let stream = match device.invoke_outcome(SERVICE, "download", &[]).await? {
         ActionOutcome::Stream(stream) => stream,
-        ActionOutcome::Records(_) => {
-            return Err(Error::Protocol("logging.download returned records".into()).into());
+        _ => {
+            return Err(Error::Protocol("logging.download returned no stream".into()).into());
         }
     };
     let saved = save(device, &stream, directory, force, ctx).await;
@@ -441,7 +441,7 @@ async fn clear<T: ClientTransport>(
             yes,
         )
         .await?;
-    device.invoke(SERVICE, "clear", &[]).await?;
+    device.invoke_empty(SERVICE, "clear", &[]).await?;
     ctx.io.emit(
         ctx.format,
         &dto::Versioned::new(serde_json::json!({ "cleared": true })),

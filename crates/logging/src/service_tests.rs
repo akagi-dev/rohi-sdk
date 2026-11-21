@@ -26,15 +26,16 @@ use std::vec::Vec;
 use embassy_futures::block_on;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use rohi_service::{
-    Action, ActionAccess, ActionError, ActionRegistry, ActionResult, MAX_STREAM_CHUNK,
-    MAX_TAIL_CHUNK, Service, ServiceHealth, ServiceState, Status, StatusRegistry, StatusWriter,
-    Statuses, TailPage, TailRequest, Value, WriteError,
+    Action, ActionAccess, ActionError, ActionRegistry, ActionResult, MAX_FEED_CHUNK,
+    MAX_STREAM_CHUNK, ResultFormat, Service, ServiceHealth, Status, StatusRegistry, StatusWriter,
+    Statuses, Value, WriteError,
 };
 use rohi_time::UnixTime;
 
 #[cfg(feature = "lz4")]
 use crate::storage::MAX_SEGMENTS;
 use crate::storage::{LogStorage, Medium, RamMedium, RingStorage};
+use crate::tail::{TailPage, TailRequest};
 use crate::*;
 
 const SECTORS: usize = 32;
@@ -308,9 +309,8 @@ fn issues(logging: &TestLogging<'_>) -> Vec<u32> {
     out.iter().map(|issue| issue.code).collect()
 }
 
-fn summary(logging: &TestLogging<'_>) -> (ServiceState, ServiceHealth, bool) {
-    let summary = block_on(logging.service().summary());
-    (summary.state, summary.health, summary.ready)
+fn summary(logging: &TestLogging<'_>) -> ServiceHealth {
+    block_on(logging.service().summary()).health
 }
 
 #[test]
@@ -330,13 +330,14 @@ fn the_service_is_a_normal_service_with_a_valid_schema() {
     );
     let names: Vec<_> = <LoggingService<'_, NoopRawMutex, &Clock, Test, 64, 8> as Action>::ACTIONS
         .iter()
-        .map(|action| (action.name, action.access, action.stream))
+        .map(|action| (action.name, action.access, action.format))
         .collect();
     assert_eq!(
         names,
         [
-            ("download", ActionAccess::Read, true),
-            ("clear", ActionAccess::Mutate, false)
+            ("download", ActionAccess::Read, ResultFormat::Stream),
+            ("clear", ActionAccess::Mutate, ResultFormat::Empty),
+            ("tail", ActionAccess::Read, ResultFormat::Feed)
         ]
     );
 }
@@ -345,15 +346,9 @@ fn the_service_is_a_normal_service_with_a_valid_schema() {
 fn the_service_starts_then_reports_ok_and_the_space() {
     let rig = Rig::new();
     let logging = rig.logging(CONFIG);
-    assert_eq!(
-        summary(&logging),
-        (ServiceState::Starting, ServiceHealth::Unknown, false)
-    );
+    assert_eq!(summary(&logging), ServiceHealth::Unknown);
     step(&rig, &logging);
-    assert_eq!(
-        summary(&logging),
-        (ServiceState::Running, ServiceHealth::Ok, true)
-    );
+    assert_eq!(summary(&logging), ServiceHealth::Ok);
     assert!(issues(&logging).is_empty());
     assert_eq!(
         number(&logging, status_field::CAPACITY_BYTES),
@@ -661,7 +656,7 @@ fn too_many_streams_are_busy_until_one_is_closed() {
         Some(ActionError::Busy)
     );
     // The tail is no stream: it needs no slot of the table.
-    assert_eq!(tail_page(&logging, 0, 0, MAX_TAIL_CHUNK).1.len(), 5);
+    assert_eq!(tail_page(&logging, 0, 0, MAX_FEED_CHUNK).1.len(), 5);
     block_on(logging.service().close_stream(second.id)).unwrap();
     assert!(invoke(&logging, action::DOWNLOAD, &[]).is_ok());
     block_on(logging.service().close_stream(first.id)).unwrap();
@@ -735,10 +730,7 @@ fn an_unavailable_backend_is_reported_and_never_replaced_by_another() {
         ..CONFIG
     });
     step(&rig, &logging);
-    assert_eq!(
-        summary(&logging),
-        (ServiceState::Running, ServiceHealth::Error, false)
-    );
+    assert_eq!(summary(&logging), ServiceHealth::Error);
     assert_eq!(issues(&logging), [issue::STORAGE_UNAVAILABLE]);
     assert_eq!(
         field(&logging, status_field::STORAGE),
@@ -765,7 +757,7 @@ fn an_unavailable_backend_is_reported_and_never_replaced_by_another() {
         Some(ActionError::Unavailable)
     );
     // The RAM tail does not need the storage.
-    assert!(!tail_page(&logging, 0, 0, MAX_TAIL_CHUNK).1.is_empty());
+    assert!(!tail_page(&logging, 0, 0, MAX_FEED_CHUNK).1.is_empty());
     assert_eq!(
         invoke(&logging, action::DOWNLOAD, &[]).err(),
         Some(ActionError::Unavailable)
@@ -779,10 +771,7 @@ fn an_unavailable_backend_is_reported_and_never_replaced_by_another() {
         block_on(logging.step());
     }
     settle(&rig, &logging);
-    assert_eq!(
-        summary(&logging),
-        (ServiceState::Running, ServiceHealth::Ok, true)
-    );
+    assert_eq!(summary(&logging), ServiceHealth::Ok);
     assert!(issues(&logging).is_empty());
     let records = read(&logging, 0, 50);
     assert_eq!(records.len(), 5);
@@ -894,10 +883,7 @@ fn a_failing_medium_degrades_the_service_and_it_recovers() {
     log_many(&logging, 5, 100);
     step(&rig, &logging);
     step(&rig, &logging);
-    assert_eq!(
-        summary(&logging),
-        (ServiceState::Running, ServiceHealth::Degraded, false)
-    );
+    assert_eq!(summary(&logging), ServiceHealth::Degraded);
     assert!(issues(&logging).contains(&issue::WRITE_FAILED));
     assert_eq!(number(&logging, status_field::DROPPED_RECORDS), Some(5));
     // The application is not affected: logging still returns at once.
@@ -910,10 +896,7 @@ fn a_failing_medium_degrades_the_service_and_it_recovers() {
         block_on(logging.step());
     }
     settle(&rig, &logging);
-    assert_eq!(
-        summary(&logging),
-        (ServiceState::Running, ServiceHealth::Ok, true)
-    );
+    assert_eq!(summary(&logging), ServiceHealth::Ok);
     assert!(issues(&logging).is_empty());
     let records = read(&logging, 0, 100);
     assert_eq!(records.first().unwrap().sequence, 1);
@@ -940,7 +923,7 @@ fn damaged_storage_does_not_stop_the_log_and_is_reported() {
     *rig.internal.0.borrow_mut().raw(9) = first ^ 0x01;
     let logging = rig.logging(CONFIG);
     step(&rig, &logging);
-    assert_eq!(summary(&logging).0, ServiceState::Running);
+    assert_ne!(summary(&logging), ServiceHealth::Unknown);
     assert!(number(&logging, status_field::SEGMENTS).unwrap() > 0);
     log(&logging, "after the damage");
     settle(&rig, &logging);
@@ -987,7 +970,7 @@ fn the_task_takes_records_when_they_arrive() {
     let mut task = core::pin::pin!(logging.run(Never));
     // Nothing to do: it opens the backend and waits.
     assert!(embassy_futures::poll_once(task.as_mut()).is_pending());
-    assert_eq!(summary(&logging).0, ServiceState::Running);
+    assert_ne!(summary(&logging), ServiceHealth::Unknown);
 
     log(&logging, "one");
     log(&logging, "two");
@@ -1025,7 +1008,7 @@ fn clear_opens_the_backend_when_the_task_has_not_run_yet() {
     let rig = Rig::new();
     let logging = rig.logging(CONFIG);
     assert!(invoke(&logging, action::CLEAR, &[]).is_ok());
-    assert_eq!(summary(&logging).0, ServiceState::Running);
+    assert_ne!(summary(&logging), ServiceHealth::Unknown);
 }
 
 #[test]
@@ -1238,7 +1221,7 @@ fn a_payload_damaged_while_the_device_was_off_is_dropped_and_reported() {
     let logging = rig.logging(CONFIG);
     step(&rig, &logging);
     assert!(issues(&logging).contains(&issue::STORAGE_CORRUPT));
-    assert_eq!(summary(&logging).1, ServiceHealth::Degraded);
+    assert_eq!(summary(&logging), ServiceHealth::Degraded);
     log(&logging, "still logging");
     settle(&rig, &logging);
     let (history, records) = read_in_history(&logging, 0);
@@ -1872,26 +1855,57 @@ fn a_download_that_pins_the_ring_defers_the_records_without_writing_them() {
     );
 }
 
-// The RAM tail: the `TailLogs` request.
+// The RAM tail: the `tail` action.
+
+fn tail_args(session: u64, after: u64) -> [(u32, Value); 2] {
+    [
+        (tail_field::SESSION, Value::U64(session)),
+        (tail_field::AFTER, Value::U64(after)),
+    ]
+}
+
+fn page_of(result: Result<ActionResult, ActionError>) -> rohi_service::FeedPage {
+    match result.unwrap() {
+        ActionResult::Feed(page) => page,
+        other => panic!("{other:?}"),
+    }
+}
 
 /// A page of the tail through the registry, the way the controller asks for it.
+/// A `room` below the page size reads the sink directly, to test where a page
+/// ends.
 fn tail_page(
     logging: &TestLogging<'_>,
     session: u32,
     after: u64,
     room: usize,
 ) -> (TailPage, Vec<LogRecord>) {
-    let service = logging.service();
-    let registry = (&service,);
-    let mut buf = std::vec![0u8; room];
-    let page = registry
-        .tail_logs(
-            <LoggingService<'_, NoopRawMutex, &Clock, Test, 64, 8> as Service>::ID,
-            TailRequest { session, after },
-            &mut buf,
-        )
-        .unwrap();
-    let text = std::str::from_utf8(&buf[..page.len]).unwrap();
+    let (page, data) = if room >= MAX_FEED_CHUNK {
+        let page = page_of(invoke(
+            logging,
+            action::TAIL,
+            &tail_args(session.into(), after),
+        ));
+        let info = page.info;
+        let tail = TailPage {
+            session: info.session,
+            len: page.data.len(),
+            cursor: info.cursor,
+            oldest_sequence: info.oldest_sequence,
+            newest_sequence: info.newest_sequence,
+            reset: info.reset,
+            gap: info.gap,
+        };
+        (tail, page.data.to_vec())
+    } else {
+        let mut buf = std::vec![0u8; room];
+        let tail = logging
+            .sink()
+            .tail_page(TailRequest { session, after }, &mut buf);
+        buf.truncate(tail.len);
+        (tail, buf)
+    };
+    let text = std::str::from_utf8(&data).unwrap();
     assert!(text.is_empty() || text.ends_with('\n'), "whole lines only");
     (page, parse(text.as_bytes()))
 }
@@ -1902,7 +1916,7 @@ fn tailed(logging: &TestLogging<'_>, session: u32, after: u64) -> Vec<LogRecord>
     let mut cursor = after;
     let mut session = session;
     for _ in 0..100 {
-        let (page, records) = tail_page(logging, session, cursor, MAX_TAIL_CHUNK);
+        let (page, records) = tail_page(logging, session, cursor, MAX_FEED_CHUNK);
         assert!(!page.reset, "unexpected reset");
         if records.is_empty() {
             return all;
@@ -1928,7 +1942,7 @@ fn the_first_page_is_the_oldest_records_held_in_order_with_the_session_of_the_bo
     let logging = rig.logging(CONFIG);
     logging.set_session(7);
     log_many(&logging, 20, 1);
-    let (page, records) = tail_page(&logging, 0, 0, MAX_TAIL_CHUNK);
+    let (page, records) = tail_page(&logging, 0, 0, MAX_FEED_CHUNK);
     assert_eq!(page.session, 7);
     assert_eq!((page.reset, page.gap), (false, 0));
     let capacity = logging.sink().tail_capacity() as u64;
@@ -1957,7 +1971,7 @@ fn a_session_is_never_zero() {
     let rig = Rig::new();
     let logging = rig.logging(CONFIG);
     log(&logging, "one");
-    assert_eq!(tail_page(&logging, 0, 0, MAX_TAIL_CHUNK).0.session, 1);
+    assert_eq!(tail_page(&logging, 0, 0, MAX_FEED_CHUNK).0.session, 1);
     logging.set_session(0);
     assert_eq!(logging.sink().tail_session(), 1);
 }
@@ -1967,7 +1981,7 @@ fn following_returns_each_record_once_and_an_idle_poll_is_an_empty_page() {
     let rig = Rig::new();
     let logging = rig.logging(CONFIG);
     logging.set_session(3);
-    let (idle, records) = tail_page(&logging, 0, 0, MAX_TAIL_CHUNK);
+    let (idle, records) = tail_page(&logging, 0, 0, MAX_FEED_CHUNK);
     assert!(records.is_empty());
     assert_eq!(
         (idle.session, idle.len, idle.cursor, idle.reset),
@@ -1983,7 +1997,7 @@ fn following_returns_each_record_once_and_an_idle_poll_is_an_empty_page() {
             seen = record.sequence;
             all.push(record);
         }
-        let (empty, records) = tail_page(&logging, 3, seen, MAX_TAIL_CHUNK);
+        let (empty, records) = tail_page(&logging, 3, seen, MAX_FEED_CHUNK);
         assert!(records.is_empty());
         assert_eq!((empty.cursor, empty.reset, empty.gap), (seen, false, 0));
     }
@@ -1999,7 +2013,7 @@ fn a_page_carries_at_most_its_buffer_and_the_next_one_continues() {
     for n in 0..8 {
         log(&logging, &std::format!("{n} {}", "y".repeat(100)));
     }
-    let first = tail_page(&logging, 0, 0, MAX_TAIL_CHUNK);
+    let first = tail_page(&logging, 0, 0, MAX_FEED_CHUNK);
     let line = segment::text::line_len(first.1.last().unwrap());
     assert!(line * 2 > MIN_PAGE);
     let mut cursor = 0;
@@ -2027,13 +2041,13 @@ fn an_overwritten_cursor_is_a_gap_and_the_page_continues_at_the_oldest_record() 
     logging.set_session(3);
     log_many(&logging, 30, 1);
     let capacity = logging.sink().tail_capacity() as u64;
-    let (page, records) = tail_page(&logging, 3, 2, MAX_TAIL_CHUNK);
+    let (page, records) = tail_page(&logging, 3, 2, MAX_FEED_CHUNK);
     assert!(!page.reset);
     assert_eq!(records[0].sequence, 30 - capacity + 1);
     // Records 3.. up to the oldest held are gone, and the page says so.
     assert_eq!(page.gap, 30 - capacity - 2);
     // Following on from the page there is no gap.
-    let (next, _) = tail_page(&logging, 3, page.cursor, MAX_TAIL_CHUNK);
+    let (next, _) = tail_page(&logging, 3, page.cursor, MAX_FEED_CHUNK);
     assert_eq!(next.gap, 0);
 }
 
@@ -2043,15 +2057,15 @@ fn another_boot_or_a_cursor_from_the_future_is_a_reset_with_the_start_of_the_sna
     let logging = rig.logging(CONFIG);
     logging.set_session(5);
     log_many(&logging, 4, 1);
-    let (page, records) = tail_page(&logging, 4, 3, MAX_TAIL_CHUNK);
+    let (page, records) = tail_page(&logging, 4, 3, MAX_FEED_CHUNK);
     assert_eq!((page.session, page.reset), (5, true));
     assert_eq!(sequences(&records), [1, 2, 3, 4]);
-    let (page, records) = tail_page(&logging, 5, 99, MAX_TAIL_CHUNK);
+    let (page, records) = tail_page(&logging, 5, 99, MAX_FEED_CHUNK);
     assert!(page.reset);
     assert_eq!(sequences(&records), [1, 2, 3, 4]);
     let empty = rig.logging(CONFIG);
     empty.set_session(6);
-    let (page, records) = tail_page(&empty, 5, 3, MAX_TAIL_CHUNK);
+    let (page, records) = tail_page(&empty, 5, 3, MAX_FEED_CHUNK);
     assert!(records.is_empty());
     assert_eq!((page.session, page.reset, page.cursor), (6, true, 0));
 }
@@ -2065,7 +2079,7 @@ fn the_tail_does_not_touch_the_storage_or_the_queue() {
     let operations = rig.internal.operations();
     let queued = logging.sink().queued();
     for after in 0..6 {
-        let _ = tail_page(&logging, 0, after, MAX_TAIL_CHUNK);
+        let _ = tail_page(&logging, 0, after, MAX_FEED_CHUNK);
     }
     assert_eq!(rig.internal.operations(), operations);
     assert_eq!(logging.sink().queued(), queued);
@@ -2136,11 +2150,11 @@ fn clear_empties_the_archive_and_neither_the_tail_nor_its_session() {
     let logging = rig.logging(CONFIG);
     logging.set_session(2);
     log_many(&logging, 4, 1);
-    let before = tail_page(&logging, 2, 0, MAX_TAIL_CHUNK);
+    let before = tail_page(&logging, 2, 0, MAX_FEED_CHUNK);
     settle(&rig, &logging);
     assert!(invoke(&logging, action::CLEAR, &[]).is_ok());
     assert_eq!(number(&logging, status_field::STORED_RECORDS), Some(0));
-    let after = tail_page(&logging, 2, 0, MAX_TAIL_CHUNK);
+    let after = tail_page(&logging, 2, 0, MAX_FEED_CHUNK);
     assert_eq!(sequences(&after.1), [1, 2, 3, 4]);
     assert_eq!(sequences(&before.1), sequences(&after.1));
     assert_eq!((after.0.session, after.0.reset), (2, false));
@@ -2169,46 +2183,91 @@ fn the_tail_needs_no_stream_and_leaves_the_download_table_alone() {
 }
 
 #[test]
-fn the_tail_is_not_an_action_and_its_old_id_stays_unused() {
+fn the_tail_is_a_read_action_with_a_feed_result_and_two_required_arguments() {
     let actions = <LoggingService<'_, NoopRawMutex, &Clock, Test, 64, 8> as Action>::ACTIONS;
-    assert!(actions.iter().all(|action| action.id != 4));
-    let rig = Rig::new();
-    let logging = rig.logging(CONFIG);
+    let tail = actions.iter().find(|action| action.id == 4).unwrap();
+    assert_eq!((tail.name, tail.access), ("tail", ActionAccess::Read));
+    assert_eq!(action::TAIL, 4);
+    assert!(tail.format == ResultFormat::Feed && tail.results.is_empty());
+    let args: Vec<_> = tail
+        .args
+        .iter()
+        .map(|arg| (arg.id, arg.name, arg.kind))
+        .collect();
     assert_eq!(
-        invoke(&logging, 4, &[]).err(),
-        Some(ActionError::UnknownAction)
+        args,
+        [
+            (1, "session", rohi_service::ValueKind::U64),
+            (2, "after", rohi_service::ValueKind::U64)
+        ]
     );
 }
 
 #[test]
-fn a_buffer_too_small_for_a_line_is_refused() {
+fn the_tail_refuses_bad_arguments() {
     let rig = Rig::new();
     let logging = rig.logging(CONFIG);
     log(&logging, "one");
-    let service = logging.service();
-    let mut buf = [0u8; 16];
-    assert_eq!(
-        service.tail_logs(
-            TailRequest {
-                session: 0,
-                after: 0
-            },
-            &mut buf
-        ),
-        Err(ActionError::InvalidArgument)
-    );
-    // A buffer bigger than a page is used up to a page.
-    let mut big = [0u8; MAX_TAIL_CHUNK * 2];
-    let page = service
-        .tail_logs(
-            TailRequest {
-                session: 0,
-                after: 0,
-            },
-            &mut big,
-        )
-        .unwrap();
-    assert!(page.len > 0 && page.len <= MAX_TAIL_CHUNK);
+    let bad: [&[(u32, Value)]; 6] = [
+        &[],
+        &[(tail_field::SESSION, Value::U64(0))],
+        &[(tail_field::AFTER, Value::U64(0))],
+        &[
+            (tail_field::SESSION, Value::U64(0)),
+            (tail_field::SESSION, Value::U64(0)),
+        ],
+        &[
+            (tail_field::SESSION, Value::I64(0)),
+            (tail_field::AFTER, Value::U64(0)),
+        ],
+        &[
+            (tail_field::SESSION, Value::U64(0)),
+            (tail_field::AFTER, Value::U64(0)),
+            (3, Value::U64(0)),
+        ],
+    ];
+    for args in bad {
+        assert_eq!(
+            invoke(&logging, action::TAIL, args).err(),
+            Some(ActionError::InvalidArgument),
+            "{args:?}"
+        );
+    }
+    // A session that does not fit a `u32` is refused, not narrowed to one that does.
+    for session in [u64::from(u32::MAX) + 1, 1 << 32 | 3, u64::MAX] {
+        assert_eq!(
+            invoke(&logging, action::TAIL, &tail_args(session, 0)).err(),
+            Some(ActionError::InvalidArgument),
+            "{session}"
+        );
+    }
+    assert!(invoke(&logging, action::TAIL, &tail_args(u32::MAX.into(), 0)).is_ok());
+}
+
+#[test]
+fn a_page_is_at_most_a_page_and_never_a_stream() {
+    let rig = Rig::new();
+    let logging = rig.logging(CONFIG);
+    log_many(&logging, 8, 1);
+    let page = page_of(invoke(&logging, action::TAIL, &tail_args(0, 0)));
+    assert!(!page.data.is_empty() && page.data.len() <= MAX_FEED_CHUNK);
+    assert_eq!(logging.open_streams(), 0);
+}
+
+#[test]
+fn two_readers_follow_the_tail_independently() {
+    let rig = Rig::new();
+    let logging = rig.logging(CONFIG);
+    logging.set_session(9);
+    log_many(&logging, 3, 1);
+    let (first, _) = tail_page(&logging, 0, 0, MAX_FEED_CHUNK);
+    let (second, _) = tail_page(&logging, 0, 0, MAX_FEED_CHUNK);
+    assert_eq!(first, second, "a read leaves nothing behind for the next");
+    log_many(&logging, 2, 4);
+    let (a, a_records) = tail_page(&logging, first.session, first.cursor, MAX_FEED_CHUNK);
+    let (b, b_records) = tail_page(&logging, first.session, 1, MAX_FEED_CHUNK);
+    assert_eq!((a.cursor, a_records.len()), (5, 2));
+    assert_eq!((b.cursor, b_records.len()), (5, 4));
 }
 
 #[test]
@@ -2228,9 +2287,9 @@ fn the_worst_case_line_is_shortened_whole_and_every_page_makes_progress() {
     let mut session = 0;
     let mut lines = 0;
     for _ in 0..3 {
-        let (page, records) = tail_page(&logging, session, cursor, MAX_TAIL_CHUNK);
+        let (page, records) = tail_page(&logging, session, cursor, MAX_FEED_CHUNK);
         session = page.session;
-        assert!(page.len <= MAX_TAIL_CHUNK);
+        assert!(page.len <= MAX_FEED_CHUNK);
         assert_eq!(records.len(), 1, "one oversized line fills a page");
         // Shortened, flagged, still a valid record of control characters.
         assert!(records[0].truncated);
@@ -2242,7 +2301,7 @@ fn the_worst_case_line_is_shortened_whole_and_every_page_makes_progress() {
     }
     assert_eq!(lines, 3);
     assert!(
-        tail_page(&logging, session, cursor, MAX_TAIL_CHUNK)
+        tail_page(&logging, session, cursor, MAX_FEED_CHUNK)
             .1
             .is_empty()
     );
@@ -2273,12 +2332,12 @@ fn the_tail_survives_a_reboot_only_as_a_new_session() {
         let logging = rig.logging(CONFIG);
         logging.set_session(11);
         log_many(&logging, 3, 1);
-        tail_page(&logging, 0, 0, MAX_TAIL_CHUNK).0.session
+        tail_page(&logging, 0, 0, MAX_FEED_CHUNK).0.session
     };
     let logging = rig.logging(CONFIG);
     logging.set_session(12);
     // The client reconnects with the old session: it must start over.
-    let (page, records) = tail_page(&logging, session, 3, MAX_TAIL_CHUNK);
+    let (page, records) = tail_page(&logging, session, 3, MAX_FEED_CHUNK);
     assert!(records.is_empty());
     assert_eq!((page.session, page.reset), (12, true));
 }

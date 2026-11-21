@@ -283,7 +283,14 @@ fn the_command_tree_has_no_module_specific_commands() {
         .collect();
     assert_eq!(names, ["scan", "status", "config", "action", "logs"]);
     // Any other word is a service of the device, resolved when connected.
-    for service in ["wifi", "connectivity", "backup", "sensors", "time", "info"] {
+    for service in [
+        "wireless",
+        "connectivity",
+        "backup",
+        "sensors",
+        "time",
+        "info",
+    ] {
         let cli = parse(&[service]).unwrap();
         assert!(
             matches!(&cli.command, rohi::cli::Command::External(words) if words == &[service]),
@@ -306,8 +313,8 @@ fn usage_errors_have_exit_code_2() {
     for args in [
         &["config", "reset"][..],
         &["config", "diff"],
-        &["config", "wifi", "--bogus"],
-        &["action", "wifi", "scan", "--bogus"],
+        &["config", "wireless", "--bogus"],
+        &["action", "wireless", "wifi_scan", "--bogus"],
         &["status", "--interval", "5"],
     ] {
         assert_eq!(parse(args).err().unwrap().exit_code(), 2, "{args:?}");
@@ -330,10 +337,10 @@ Device:  fake-1.0.0 (bench-esp32c3)
 Uptime:  1m 30s
 Health:  ok
 
-SERVICE   STATE     HEALTH  READY  SINCE
-radio     running   ok      yes    0ms
-identity  stopped   -       no     0ms
-location  disabled  -       no     -
+SERVICE   HEALTH
+radio     ok
+identity  -
+location  -
 "
     );
     assert!(outcome.stderr.is_empty());
@@ -348,7 +355,7 @@ async fn a_service_in_detail_shows_values_units_and_issues() {
     assert!(
         outcome
             .stdout
-            .starts_with("Service:  radio\nState:    running\nHealth:   degraded\nReady:    no\n"),
+            .starts_with("Service:  radio\nHealth:   degraded\n"),
         "{}",
         outcome.stdout
     );
@@ -384,8 +391,8 @@ async fn status_json_is_keyed_by_names_and_carries_no_protocol_types() {
     assert_eq!(json["device"]["firmware"], "fake-1.0.0");
     assert_eq!(json["health"], "ok");
     assert_eq!(json["services"][0]["service"], "radio");
-    assert_eq!(json["services"][0]["state"], "running");
-    assert_eq!(json["services"][0]["ready"], true);
+    assert_eq!(json["services"][0]["health"], "ok");
+    assert!(json["services"][0].get("state").is_none());
 
     let one = run(&bench, &["-o", "json", "status", "radio"]).await;
     let json = one.ok().json();
@@ -474,8 +481,8 @@ async fn color_is_applied_only_when_asked_for_and_never_to_json() {
     let text = &colored.ok().stdout;
     // Health words take their color; padding stays outside of the escapes so
     // the columns line up.
-    assert!(text.contains("\x1b[32mrunning\x1b[0m  "), "{text:?}");
-    assert!(text.contains("\x1b[1mSERVICE\x1b[0m"), "{text:?}");
+    assert!(text.contains("radio     \x1b[32mok\x1b[0m\n"), "{text:?}");
+    assert!(text.contains("\x1b[1mSERVICE\x1b[0m   "), "{text:?}");
     let stripped: String = text
         .split('\x1b')
         .enumerate()
@@ -561,7 +568,7 @@ async fn sections_are_listed_and_described_from_the_device() {
     outcome.ok();
     assert_eq!(
         outcome.stdout,
-        "SECTION       VERSION\nwifi          1\nconnectivity  1\ngadget        3\nlocation      1\n"
+        "SECTION       VERSION\nwireless      1\nconnectivity  1\ngadget        3\nlocation      1\n"
     );
     let outcome = run(&bench, &["-o", "json", "config"]).await;
     assert_eq!(outcome.ok().json()["sections"][2]["name"], "gadget");
@@ -591,7 +598,7 @@ all overrides.
     );
 
     // Secrets get their own line in the help.
-    let outcome = run(&bench, &["config", "wifi", "-h"]).await;
+    let outcome = run(&bench, &["config", "wireless", "-h"]).await;
     let help = outcome.ok().stdout.clone();
     assert!(help.contains("password"), "{help}");
     assert!(help.contains("string, secret, nullable"), "{help}");
@@ -818,12 +825,17 @@ async fn secrets_never_travel_on_the_command_line_or_come_back() {
     let bench = Bench::new();
     let outcome = run(
         &bench,
-        &["config", "wifi", "ssid=office", "password=hunter2hunter2"],
+        &[
+            "config",
+            "wireless",
+            "wifi_ssid=office",
+            "wifi_password=hunter2hunter2",
+        ],
     )
     .await;
     assert!(matches!(outcome.error(), CliError::Usage(_)));
     assert!(
-        outcome.message().contains("password=-"),
+        outcome.message().contains("wifi_password=-"),
         "{}",
         outcome.message()
     );
@@ -837,14 +849,16 @@ async fn secrets_never_travel_on_the_command_line_or_come_back() {
     };
     let outcome = run_with(
         &bench,
-        &["config", "wifi", "ssid=office", "password=-"],
+        &["config", "wireless", "wifi_ssid=office", "wifi_password=-"],
         terminal,
     )
     .await;
     outcome.ok();
     assert!(!outcome.stdout.contains("hunter2") && !outcome.stderr.contains("hunter2"));
     assert!(
-        outcome.stdout.contains("password         <redacted>\n"),
+        outcome
+            .stdout
+            .contains("wifi_password         <redacted>\n"),
         "{}",
         outcome.stdout
     );
@@ -855,33 +869,41 @@ async fn secrets_never_travel_on_the_command_line_or_come_back() {
         input: &["hunter2hunter3"],
         ..Default::default()
     };
-    let outcome = run_with(&bench, &["config", "wifi", "password=-"], terminal).await;
+    let outcome = run_with(&bench, &["config", "wireless", "wifi_password=-"], terminal).await;
     outcome.ok();
-    assert_eq!(outcome.stderr, "password: \n");
-    let stored = bench.wifi.value.borrow().clone().unwrap();
+    assert_eq!(outcome.stderr, "wifi_password: \n");
+    let stored = bench.wireless.value.borrow().clone().unwrap();
     assert_eq!(
-        stored.password,
+        stored.wifi_password,
         Override::Value(Some(WifiPassword::from_bytes(b"hunter2hunter3").unwrap()))
     );
 
     // Reading shows the secret as redacted, in text and in JSON.
-    let outcome = run(&bench, &["config", "wifi"]).await;
+    let outcome = run(&bench, &["config", "wireless"]).await;
     assert_eq!(
         outcome.ok().stdout,
-        "ssid             office\npassword         <redacted>\n\
-scan_timeout     20000 ms\n\
-connect_timeout  30000 ms\n\
-backoff_initial  1000 ms\n\
-backoff_max      60000 ms\n\
-link_refresh     10000 ms\n"
+        "wifi_ssid             office\nwifi_password         <redacted>\n\
+wifi_scan_timeout     20000 ms\n\
+wifi_connect_timeout  30000 ms\n\
+wifi_backoff_initial  1000 ms\n\
+wifi_backoff_max      60000 ms\n\
+wifi_link_refresh     10000 ms\n\
+ip_mode               dhcp\n\
+ip_address            <unset>\n\
+ip_prefix_len         <unset>\n\
+ip_gateway            <unset>\n\
+ip_dns                <unset>\n\
+ip_hostname           <unset>\n\
+ip_dhcp_timeout       20000 ms\n\
+ble_name              <unset>\n"
     );
-    let outcome = run(&bench, &["-o", "json", "config", "wifi"]).await;
+    let outcome = run(&bench, &["-o", "json", "config", "wireless"]).await;
     let json = outcome.ok().json();
-    assert_eq!(json["values"]["password"], json!({ "secret": true }));
+    assert_eq!(json["values"]["wifi_password"], json!({ "secret": true }));
     assert!(!outcome.stdout.contains("hunter2"));
 
     // Empty stdin is an error, never an empty secret.
-    let outcome = run(&bench, &["config", "wifi", "password=-"]).await;
+    let outcome = run(&bench, &["config", "wireless", "wifi_password=-"]).await;
     assert!(matches!(outcome.error(), CliError::PasswordRequired { .. }));
 
     // An empty line is a value for the device to judge, not a missing one.
@@ -889,7 +911,7 @@ link_refresh     10000 ms\n"
         input: &[""],
         ..Default::default()
     };
-    let outcome = run_with(&bench, &["config", "wifi", "password=-"], terminal).await;
+    let outcome = run_with(&bench, &["config", "wireless", "wifi_password=-"], terminal).await;
     assert!(
         !matches!(outcome.result, Err(CliError::PasswordRequired { .. })),
         "{}",
@@ -897,14 +919,17 @@ link_refresh     10000 ms\n"
     );
 
     // `null` is not a secret: it removes the override, no input is read.
-    let outcome = run(&bench, &["config", "wifi", "password=null"]).await;
+    let outcome = run(&bench, &["config", "wireless", "wifi_password=null"]).await;
     assert!(
-        outcome.ok().stdout.contains("password         <unset>\n"),
+        outcome
+            .ok()
+            .stdout
+            .contains("wifi_password         <unset>\n"),
         "{}",
         outcome.stdout
     );
     assert_eq!(
-        bench.wifi.value.borrow().clone().unwrap().password,
+        bench.wireless.value.borrow().clone().unwrap().wifi_password,
         Override::Default
     );
 }
@@ -984,7 +1009,7 @@ async fn configured() -> Bench {
     };
     run_with(
         &bench,
-        &["config", "wifi", "ssid=office", "password=-"],
+        &["config", "wireless", "wifi_ssid=office", "wifi_password=-"],
         terminal,
     )
     .await
@@ -1007,14 +1032,14 @@ async fn export_writes_the_explicit_overrides_without_secrets_or_read_only_field
     assert_eq!(
         json,
         json!({
-            "wifi": { "ssid": "office" },
+            "wireless": { "wifi_ssid": "office" },
             "connectivity": { "interval_s": 60, "endpoint": "http://old.example.org:80" },
             "gadget": { "label": "lamp", "mode": "fast" },
         })
     );
     assert!(!outcome.stdout.contains("hunter2"));
     assert!(!outcome.stdout.contains("serial"));
-    assert!(!outcome.stdout.contains("scan_timeout"));
+    assert!(!outcome.stdout.contains("wifi_scan_timeout"));
 
     // A section without overrides is not exported.
     let outcome = run(&Bench::new(), &["config", "export"]).await;
@@ -1027,8 +1052,8 @@ async fn export_writes_the_explicit_overrides_without_secrets_or_read_only_field
         format!("Exported 3 section(s) to {}\n", file.display())
     );
     let written: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
-    assert_eq!(written["wifi"]["ssid"], "office");
-    assert!(written["wifi"].get("password").is_none());
+    assert_eq!(written["wireless"]["wifi_ssid"], "office");
+    assert!(written["wireless"].get("wifi_password").is_none());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1040,7 +1065,7 @@ async fn diff_shows_what_applying_would_change_and_changes_nothing() {
         r#"{
             "connectivity": { "endpoint": "http://new.example.org:80", "interval_s": 120 },
             "gadget": { "mode": null, "level": 20 },
-            "wifi": null
+            "wireless": null
         }"#,
     );
     let outcome = run(&bench, &["config", "diff", path(&file)]).await;
@@ -1054,7 +1079,7 @@ connectivity:
 gadget:
   + level           20 %
   - mode            fast -> (default)
-wifi:
+wireless:
   reset section
 "
     );
@@ -1097,7 +1122,7 @@ async fn apply_merges_unsets_and_resets_with_one_confirmation() {
         r#"{
             "connectivity": { "endpoint": "http://new.example.org:443" },
             "gadget": { "mode": null },
-            "wifi": null
+            "wireless": null
         }"#,
     );
     let terminal = Terminal {
@@ -1115,7 +1140,7 @@ async fn apply_merges_unsets_and_resets_with_one_confirmation() {
     assert!(
         outcome
             .stdout
-            .starts_with("Applied: connectivity, gadget, wifi\n"),
+            .starts_with("Applied: connectivity, gadget, wireless\n"),
         "{}",
         outcome.stdout
     );
@@ -1136,7 +1161,7 @@ async fn apply_merges_unsets_and_resets_with_one_confirmation() {
         bench.gadget.value.borrow().clone().unwrap().mode,
         Override::Default
     );
-    assert!(bench.wifi.value.borrow().is_none());
+    assert!(bench.wireless.value.borrow().is_none());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1216,7 +1241,7 @@ async fn bad_files_never_reach_the_device() {
         ("{", "not valid JSON"),
         (
             r#"{ "mqtt": {} }"#,
-            "the device has no section `mqtt`; its sections are: wifi, connectivity, gadget, location",
+            "the device has no section `mqtt`; its sections are: wireless, connectivity, gadget, location",
         ),
         (
             r#"{ "gadget": { "colour": 1 } }"#,
@@ -1227,7 +1252,7 @@ async fn bad_files_never_reach_the_device() {
             "gadget.serial is read-only",
         ),
         (
-            r#"{ "wifi": { "password": "hunter2hunter2" } }"#,
+            r#"{ "wireless": { "wifi_password": "hunter2hunter2" } }"#,
             "secret and cannot be part of a file",
         ),
         (
@@ -1275,14 +1300,14 @@ async fn bad_files_never_reach_the_device() {
 #[test]
 fn a_partial_apply_names_what_was_and_was_not_applied() {
     let error = CliError::PartialApply(Box::new(PartialApply {
-        applied: vec!["wifi".into()],
+        applied: vec!["wireless".into()],
         failed: "connectivity".into(),
         pending: vec!["gadget".into()],
         source: Error::Timeout,
     }));
     let text = error.diagnostic().to_string();
     assert!(text.contains("failed: connectivity"), "{text}");
-    assert!(text.contains("applied:\n  wifi"), "{text}");
+    assert!(text.contains("applied:\n  wireless"), "{text}");
     assert!(text.contains("not applied:\n  gadget"), "{text}");
     assert!(text.contains("atomic per section only"), "{text}");
 }
@@ -1591,11 +1616,7 @@ async fn system_factory_reset_formats_the_configuration_and_does_not_reboot() {
 
         // No confirmation prompt, and the result is the generic record.
         let outcome = run(&bench, args).await;
-        let rows = table_rows(&outcome.ok().stdout)
-            .into_iter()
-            .map(|row| row.join(" "))
-            .collect::<Vec<_>>();
-        assert_eq!(rows, ["RESTART_REQUIRED", "true"], "{args:?}");
+        assert_eq!(outcome.ok().stdout, "restart_required: true\n", "{args:?}");
         assert!(bench.gadget.value.borrow().is_none());
         assert!(bench.location.mem.value.borrow().is_none());
         assert!(bench.identity.0.borrow().is_none());
@@ -1609,7 +1630,8 @@ async fn system_factory_reset_formats_the_configuration_and_does_not_reboot() {
         .await
         .ok()
         .json();
-    assert_eq!(json["records"][0]["restart_required"], true);
+    assert_eq!(json["format"], "inline");
+    assert_eq!(json["record"]["restart_required"], true);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1627,7 +1649,10 @@ async fn system_reboot_is_its_own_action() {
         .await
         .ok()
         .json();
-    assert_eq!(json["records"], json!([]));
+    // No data is neither an empty collection nor an empty record.
+    assert_eq!(json["format"], "empty");
+    assert_eq!(json.get("records"), None);
+    assert_eq!(json.get("record"), None);
 
     // A device that cannot schedule a reboot says so.
     bench.system.0.can_reboot.set(false);
@@ -1682,7 +1707,7 @@ fn built_in_commands_take_precedence_over_services() {
         Command::Config { .. }
     ));
     assert!(matches!(
-        parse(&["action", "wifi"]).unwrap().command,
+        parse(&["action", "wireless"]).unwrap().command,
         Command::Action { .. }
     ));
     assert!(matches!(
@@ -1715,11 +1740,7 @@ async fn positional_arguments_follow_the_schema_order_not_the_field_ids() {
         ],
     )
     .await;
-    let rows = table_rows(&outcome.ok().stdout)
-        .into_iter()
-        .map(|row| row.join(" "))
-        .collect::<Vec<_>>();
-    assert_eq!(rows, ["ENDPOINT", "https://example.org"]);
+    assert_eq!(outcome.ok().stdout, "endpoint: https://example.org\n");
     let [(name, args)] = &calls(&bench)[..] else {
         panic!()
     };
@@ -2097,7 +2118,8 @@ async fn global_options_work_before_and_after_the_service() {
         let cli = parse(args).unwrap();
         assert_eq!(cli.output, rohi::cli::OutputFormat::Json, "{args:?}");
         let json = run(&bench, args).await.ok().json();
-        assert_eq!(json["records"][0]["restart_required"], true, "{args:?}");
+        assert_eq!(json["format"], "inline", "{args:?}");
+        assert_eq!(json["record"]["restart_required"], true, "{args:?}");
     }
     let cli = parse(&["--device", "tcp://localhost:9000", "system", "reboot"]).unwrap();
     assert_eq!(cli.device.as_deref(), Some("tcp://localhost:9000"));
@@ -2278,7 +2300,7 @@ async fn the_location_is_set_with_the_generic_config_and_shows_in_the_status() {
     let bench = Bench::new();
     let outcome = run(&bench, &["status", "location"]).await;
     assert!(
-        outcome.ok().stdout.contains("State:    disabled"),
+        outcome.ok().stdout.contains("Health:   unknown"),
         "{}",
         outcome.stdout
     );
@@ -2310,7 +2332,7 @@ async fn the_location_is_set_with_the_generic_config_and_shows_in_the_status() {
     let outcome = run(&bench, &["status", "location"]).await;
     outcome.ok();
     assert!(
-        outcome.stdout.contains("State:    running"),
+        outcome.stdout.contains("Health:   ok"),
         "{}",
         outcome.stdout
     );
@@ -2406,7 +2428,7 @@ async fn resetting_the_location_makes_the_device_not_know_where_it_is() {
     assert!(bench.location.shared.current().is_none());
     let outcome = run(&bench, &["status", "location"]).await;
     assert!(
-        outcome.ok().stdout.contains("State:    disabled"),
+        outcome.ok().stdout.contains("Health:   unknown"),
         "{}",
         outcome.stdout
     );
@@ -2581,15 +2603,20 @@ async fn none_sets_an_explicit_empty_override_and_null_clears_it() {
     );
 
     // An open network is an explicit choice, for a secret field as well.
-    run(&bench, &["config", "wifi", "ssid=office"]).await.ok();
-    let outcome = run(&bench, &["config", "wifi", "password=none"]).await;
+    run(&bench, &["config", "wireless", "wifi_ssid=office"])
+        .await
+        .ok();
+    let outcome = run(&bench, &["config", "wireless", "wifi_password=none"]).await;
     assert!(
-        outcome.ok().stdout.contains("password         <none>\n"),
+        outcome
+            .ok()
+            .stdout
+            .contains("wifi_password         <none>\n"),
         "{}",
         outcome.stdout
     );
     assert_eq!(
-        bench.wifi.value.borrow().clone().unwrap().password,
+        bench.wireless.value.borrow().clone().unwrap().wifi_password,
         Override::Value(None)
     );
 }
@@ -2677,27 +2704,99 @@ async fn export_diff_and_apply_keep_none_apart_from_clear_and_default() {
 async fn no_ssid_means_wifi_is_disabled_and_ssid_none_disables_it_explicitly() {
     let bench = Bench::new();
     // Disabled by default: no network name.
-    let outcome = run(&bench, &["config", "wifi"]).await;
+    let outcome = run(&bench, &["config", "wireless"]).await;
     assert!(
-        outcome.ok().stdout.contains("ssid             <unset>\n"),
+        outcome
+            .ok()
+            .stdout
+            .contains("wifi_ssid             <unset>\n"),
         "{}",
         outcome.stdout
     );
-    run(&bench, &["config", "wifi", "ssid=office"]).await.ok();
-    let outcome = run(&bench, &["config", "wifi", "ssid=none"]).await;
+    run(&bench, &["config", "wireless", "wifi_ssid=office"])
+        .await
+        .ok();
+    let outcome = run(&bench, &["config", "wireless", "wifi_ssid=none"]).await;
     assert!(
-        outcome.ok().stdout.contains("ssid             <none>\n"),
+        outcome
+            .ok()
+            .stdout
+            .contains("wifi_ssid             <none>\n"),
         "{}",
         outcome.stdout
     );
     assert_eq!(
-        bench.wifi.value.borrow().clone().unwrap().ssid,
+        bench.wireless.value.borrow().clone().unwrap().wifi_ssid,
         Override::Value(None)
     );
-    let outcome = run(&bench, &["config", "wifi", "ssid=null"]).await;
+    let outcome = run(&bench, &["config", "wireless", "wifi_ssid=null"]).await;
     assert!(
-        outcome.ok().stdout.contains("ssid             <unset>\n"),
+        outcome
+            .ok()
+            .stdout
+            .contains("wifi_ssid             <unset>\n"),
         "{}",
         outcome.stdout
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_collection_longer_than_a_page_is_followed_and_released() {
+    let bench = Bench::new();
+    let outcome = run(&bench, &["action", "radio", "survey"]).await;
+    let stdout = outcome.ok().stdout.clone();
+    // All fourteen rows, header first: the pages are one table.
+    let rows = table_rows(&stdout);
+    assert_eq!(rows.len(), 1 + usize::from(SURVEY), "{stdout}");
+    assert_eq!(rows[1], ["net00"]);
+    assert_eq!(rows[14], ["net13"]);
+    assert_eq!(bench.radio.pages.get(), 3);
+    // Nothing is left held on the device.
+    assert_eq!(bench.radio.held.get(), 0);
+
+    let json = run(&bench, &["-o", "json", "action", "radio", "survey"])
+        .await
+        .ok()
+        .json();
+    assert_eq!(json["format"], "records");
+    assert_eq!(
+        json["records"].as_array().unwrap().len(),
+        usize::from(SURVEY)
+    );
+    assert_eq!(json["records"][13]["ssid"], "net13");
+    assert_eq!(bench.radio.held.get(), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_empty_collection_an_empty_result_and_one_record_are_shown_differently() {
+    let bench = Bench::new();
+    // No data: the action has no result.
+    let outcome = run(&bench, &["action", "radio", "reconnect"]).await;
+    assert_eq!(outcome.ok().stdout, "Done\n");
+    let json = run(&bench, &["-o", "json", "action", "radio", "reconnect"])
+        .await
+        .ok()
+        .json();
+    assert_eq!(json["format"], "empty");
+
+    // One record is one object, not a one-element collection.
+    let json = run(
+        &bench,
+        &[
+            "-o",
+            "json",
+            "action",
+            "example",
+            "configure",
+            "endpoint=https://example.org",
+            "enabled=true",
+            "timeout_ms=5",
+        ],
+    )
+    .await
+    .ok()
+    .json();
+    assert_eq!(json["format"], "inline");
+    assert_eq!(json["record"]["endpoint"], "https://example.org");
+    assert_eq!(json.get("records"), None);
 }

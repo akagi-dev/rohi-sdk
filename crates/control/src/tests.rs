@@ -27,9 +27,9 @@ use rohi_control_proto::control::{
 use rohi_control_proto::{PROTOCOL_VERSION, decode, encode, limits};
 use rohi_service::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, Config, EnumDescriptor,
-    EnumVariant, FIRST_SERVICE_ISSUE, FieldDescriptor, FieldError, Issue, IssueDescriptor,
-    IssueSeverity, Section, SectionStore, Service, ServiceHealth, ServiceState, ServiceSummary,
-    Status, StatusWriter, Statuses, StoreError, Unit, Value, ValueKind, WriteError,
+    EnumVariant, FIRST_SERVICE_ISSUE, FeedInfo, FieldDescriptor, FieldError, Issue,
+    IssueDescriptor, IssueSeverity, ResultFormat, Section, SectionStore, Service, ServiceHealth,
+    ServiceSummary, Status, StatusWriter, Statuses, StoreError, Unit, Value, ValueKind, WriteError,
 };
 
 use crate::*;
@@ -118,9 +118,9 @@ impl Status for Radio {
         &[IssueDescriptor::new(FIRST_SERVICE_ISSUE, "link_lost")];
     async fn summary(&self) -> ServiceSummary {
         if *self.degraded.borrow() {
-            ServiceSummary::new(ServiceState::Running, ServiceHealth::Degraded, false)
+            ServiceSummary::new(ServiceHealth::Degraded)
         } else {
-            ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true)
+            ServiceSummary::new(ServiceHealth::Ok)
         }
     }
 
@@ -144,11 +144,9 @@ impl Status for Radio {
 
 impl Action for Radio {
     const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new(1, "scan", ActionAccess::Read).results(&[FieldDescriptor::new(
-            1,
-            "ssid",
-            ValueKind::String,
-        )]),
+        ActionDescriptor::new(1, "scan", ActionAccess::Read)
+            .format(ResultFormat::Records)
+            .results(&[FieldDescriptor::new(1, "ssid", ValueKind::String)]),
         ActionDescriptor::new(2, "reconnect", ActionAccess::Mutate),
         ActionDescriptor::new(3, "provision", ActionAccess::Provision)
             .args(&[FieldDescriptor::new(1, "secret", ValueKind::Bytes)])
@@ -215,7 +213,7 @@ const PLAIN: LinkSecurity = LinkSecurity {
     encrypted: false,
     authenticated: false,
     session: 0,
-    transport: Transport::Unspecified,
+    transport: Transport::Ble,
 };
 
 fn text<const N: usize>(value: &str) -> String<N> {
@@ -663,7 +661,7 @@ fn the_declared_access_decides_the_privilege_not_the_secret_flag() {
     let controller = Controller::new(device(), OnlyReadsAndMutations);
     assert!(matches!(
         call(&controller, &PLAIN, invoke(1)),
-        Reply::InvokeAction(_)
+        Reply::ActionEmpty(_)
     ));
     assert_eq!(
         error_code(&call(&controller, &PLAIN, invoke(2))),
@@ -678,7 +676,7 @@ fn the_declared_access_decides_the_privilege_not_the_secret_flag() {
     );
     assert!(matches!(
         call(&controller, &PLAIN, invoke(2)),
-        Reply::InvokeAction(_)
+        Reply::ActionEmpty(_)
     ));
     assert_eq!(maintenance.calls.get(), 2);
 }
@@ -718,8 +716,7 @@ fn service_status_is_compact_in_the_summary_and_detailed_per_service() {
     assert_eq!(summary.service_id, RADIO);
     assert_eq!(summary.name.as_str(), "radio");
     assert_eq!(summary.version, 1);
-    assert_eq!(summary.state, pb::ServiceState::Running);
-    assert!(summary.ready);
+    assert_eq!(summary.health, pb::ServiceHealth::Ok);
     assert_eq!(summary.revision, 1);
 
     let Reply::GetServiceSchema(schema) = call(
@@ -826,7 +823,7 @@ fn actions_are_discovered_described_and_invoked() {
     assert_eq!(schema.args[0].kind, pb::ValueKind::Bytes);
     assert!(schema.action().unwrap().secret_args);
 
-    let Reply::InvokeAction(done) = call(
+    let Reply::RecordsPage(done) = call(
         &controller,
         &PLAIN,
         Call::InvokeAction(pb::InvokeActionRequest {
@@ -900,13 +897,13 @@ fn the_policy_gates_writes_and_privileged_actions() {
         encrypted: true,
         authenticated: false,
         session: 0,
-        transport: Transport::Unspecified,
+        transport: Transport::Ble,
     };
     let strong = LinkSecurity {
         encrypted: true,
         authenticated: true,
         session: 0,
-        transport: Transport::Unspecified,
+        transport: Transport::Ble,
     };
 
     let write = || Call::PatchConfigSection(patch(1, &[mutation(3, string_value("a.io"))]));
@@ -938,7 +935,7 @@ fn the_policy_gates_writes_and_privileged_actions() {
     // An unprivileged action is open; a privileged one needs encryption.
     assert!(matches!(
         call(&controller, &PLAIN, action(1, Vec::new())),
-        Reply::InvokeAction(_)
+        Reply::RecordsPage(_)
     ));
     assert_eq!(
         error_code(&call(&controller, &PLAIN, action(2, Vec::new()))),
@@ -961,7 +958,7 @@ fn the_policy_gates_writes_and_privileged_actions() {
     );
     assert!(matches!(
         call(&controller, &strong, action(3, args)),
-        Reply::InvokeAction(_)
+        Reply::ActionEmpty(_)
     ));
 }
 
@@ -997,7 +994,7 @@ impl Status for Many {
     };
 
     async fn summary(&self) -> ServiceSummary {
-        ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true)
+        ServiceSummary::new(ServiceHealth::Ok)
     }
 
     async fn status(&self, out: &mut impl StatusWriter) -> Result<(), WriteError> {
@@ -1237,9 +1234,10 @@ const FILE_BYTES: &[u8] = b"0123456789abcdef";
 
 impl Action for Files {
     const ACTIONS: &'static [ActionDescriptor] = &[
-        ActionDescriptor::new(1, "export", ActionAccess::Read).stream(),
+        ActionDescriptor::new(1, "export", ActionAccess::Read).format(ResultFormat::Stream),
         ActionDescriptor::new(2, "list", ActionAccess::Read),
-        ActionDescriptor::new(3, "export_private", ActionAccess::Mutate).stream(),
+        ActionDescriptor::new(3, "export_private", ActionAccess::Mutate)
+            .format(ResultFormat::Stream),
     ];
 
     async fn invoke(
@@ -1469,15 +1467,22 @@ fn the_action_listing_tells_which_actions_return_a_stream() {
     ) else {
         panic!("not a list");
     };
-    let streams: std::vec::Vec<bool> = list.actions.iter().map(|a| a.returns_stream).collect();
-    assert_eq!(streams, [true, false, true]);
+    let formats: std::vec::Vec<_> = list.actions.iter().map(|a| a.result_format).collect();
+    assert_eq!(
+        formats,
+        [
+            pb::ResultFormat::Stream,
+            pb::ResultFormat::Empty,
+            pb::ResultFormat::Stream
+        ]
+    );
 }
 
 const OTHER: LinkSecurity = LinkSecurity {
     encrypted: false,
     authenticated: false,
     session: 2,
-    transport: Transport::Unspecified,
+    transport: Transport::Ble,
 };
 
 pub(super) fn export(action: u32) -> Call {
@@ -1533,7 +1538,7 @@ fn a_stream_needs_the_privilege_of_the_action_that_created_it() {
         encrypted: true,
         authenticated: false,
         session: 1,
-        transport: Transport::Unspecified,
+        transport: Transport::Ble,
     };
     assert_eq!(
         error_code(&call(&controller, &PLAIN, export(3))),
@@ -1625,73 +1630,94 @@ fn a_bitset_argument_refers_to_its_catalog_through_the_selection_table() {
 #[service(name = "tailing")]
 struct Tailing {
     served: Cell<u32>,
-    oversized: Cell<bool>,
 }
 
 const TAIL_TEXT: &[u8] = b"1 5 - INFO t: one\n2 6 - INFO t: two\n";
+const TAIL_ARGS: &[FieldDescriptor] = &[
+    FieldDescriptor::new(1, "session", ValueKind::U64),
+    FieldDescriptor::new(2, "after", ValueKind::U64),
+];
+
+mod tail_action {
+    pub const TAIL: u32 = 1;
+    pub const ADMIN: u32 = 2;
+    pub const OVERSIZED: u32 = 3;
+}
 
 impl Action for Tailing {
-    const ACTIONS: &'static [ActionDescriptor] = &[];
+    const ACTIONS: &'static [ActionDescriptor] = &[
+        ActionDescriptor::new(tail_action::TAIL, "tail", ActionAccess::Read)
+            .args(TAIL_ARGS)
+            .format(ResultFormat::Feed),
+        ActionDescriptor::new(tail_action::ADMIN, "admin", ActionAccess::Mutate)
+            .format(ResultFormat::Feed),
+        ActionDescriptor::new(tail_action::OVERSIZED, "oversized", ActionAccess::Read)
+            .format(ResultFormat::Feed),
+    ];
 
     async fn invoke(
         &self,
-        _: u32,
-        _: &[(u32, Value)],
-        _: &mut impl ActionOutput,
+        action: u32,
+        args: &[(u32, Value)],
+        out: &mut impl ActionOutput,
     ) -> Result<(), ActionError> {
-        Err(ActionError::UnknownAction)
-    }
-
-    fn tail_logs(
-        &self,
-        request: rohi_service::TailRequest,
-        buf: &mut [u8],
-    ) -> Result<rohi_service::TailPage, ActionError> {
         self.served.set(self.served.get() + 1);
-        assert_eq!(buf.len(), limits::MAX_TAIL_CHUNK);
-        let len = if self.oversized.get() {
-            buf.len() + 1
-        } else {
-            buf[..TAIL_TEXT.len()].copy_from_slice(TAIL_TEXT);
-            TAIL_TEXT.len()
+        let number = |id| {
+            args.iter().find_map(|(field, value)| match value {
+                Value::U64(number) if *field == id => Some(*number),
+                _ => None,
+            })
         };
-        Ok(rohi_service::TailPage {
-            session: if request.session == 0 {
-                7
-            } else {
-                request.session
-            },
-            len,
-            cursor: request.after + 2,
+        let (session, after) = (number(1).unwrap_or(0), number(2).unwrap_or(0));
+        let info = FeedInfo {
+            session: if session == 0 { 7 } else { session as u32 },
+            cursor: after + 2,
             oldest_sequence: 1,
-            newest_sequence: request.after + 2,
-            reset: request.session == 99,
+            newest_sequence: after + 2,
+            reset: session == 99,
             gap: 3,
-        })
+        };
+        let page = match action {
+            tail_action::OVERSIZED => out.feed(info, &[b'x'; limits::MAX_FEED_CHUNK + 1]),
+            _ => out.feed(info, TAIL_TEXT),
+        };
+        page.map_err(|_| ActionError::Internal)
     }
 }
 
-fn tail_request(service_id: u32, session: u32, after: u64) -> Call {
-    Call::TailLogs(pb::TailLogsRequest {
+fn tail_call(service_id: u32, action_id: u32, session: u64, after: u64) -> Call {
+    let arg = |field_id, value| pb::ActionArg {
+        field_id,
+        value: Some(pb::ActionArg_::Value::U64Value(value)),
+    };
+    let mut args = Vec::new();
+    if action_id == tail_action::TAIL {
+        args.push(arg(1, session)).ok().unwrap();
+        args.push(arg(2, after)).ok().unwrap();
+    }
+    Call::InvokeAction(pb::InvokeActionRequest {
         service_id,
-        session,
-        after,
+        action_id,
+        args,
     })
 }
 
 #[test]
-fn a_tail_page_is_one_request_and_one_reply_without_a_stream() {
+fn a_page_is_one_invoke_and_one_reply_without_a_stream() {
     let tailing = Tailing {
         served: Cell::new(0),
-        oversized: Cell::new(false),
     };
     let controller = Controller::new(
         Device::new(INFO, uptime, (), (), (&tailing,)),
         RequireEncryption,
     );
-    // Reads are open on a plain link: a tail page needs no encryption.
-    let Reply::TailLogs(page) = call(&controller, &PLAIN, tail_request(Tailing::ID, 0, 10)) else {
-        panic!("not a tail page");
+    // Reads are open on a plain link: a page of a `Read` action needs no encryption.
+    let Reply::FeedPage(page) = call(
+        &controller,
+        &PLAIN,
+        tail_call(Tailing::ID, tail_action::TAIL, 0, 10),
+    ) else {
+        panic!("not a page");
     };
     assert_eq!(page.data.as_slice(), TAIL_TEXT);
     assert_eq!(
@@ -1705,8 +1731,12 @@ fn a_tail_page_is_one_request_and_one_reply_without_a_stream() {
     );
     assert_eq!((page.reset, page.gap), (false, 3));
     // The reply of another session is flagged by the service, as it set it.
-    let Reply::TailLogs(page) = call(&controller, &PLAIN, tail_request(Tailing::ID, 99, 0)) else {
-        panic!("not a tail page");
+    let Reply::FeedPage(page) = call(
+        &controller,
+        &PLAIN,
+        tail_call(Tailing::ID, tail_action::TAIL, 99, 0),
+    ) else {
+        panic!("not a page");
     };
     assert!(page.reset);
     assert_eq!(tailing.served.get(), 2);
@@ -1727,52 +1757,87 @@ fn a_tail_page_is_one_request_and_one_reply_without_a_stream() {
 }
 
 #[test]
-fn a_tail_page_is_refused_for_a_service_without_a_tail_or_an_oversized_page() {
+fn a_page_action_is_discovered_and_follows_its_declared_access() {
     let tailing = Tailing {
         served: Cell::new(0),
-        oversized: Cell::new(false),
     };
-    let files = files();
     let controller = Controller::new(
-        Device::new(INFO, uptime, (), (), (&tailing, &files)),
-        OpenPolicy,
+        Device::new(INFO, uptime, (), (), (&tailing,)),
+        RequireEncryption,
     );
-    // The service has actions but no tail.
+    let Reply::ListActions(list) = call(
+        &controller,
+        &PLAIN,
+        Call::ListActions(pb::ListActionsRequest::default()),
+    ) else {
+        panic!("not a list");
+    };
+    let formats: std::vec::Vec<_> = list
+        .actions
+        .iter()
+        .map(|action| action.result_format)
+        .collect();
+    assert_eq!(formats, [pb::ResultFormat::Feed; 3]);
+    // A page of an action that mutates needs the privilege of a mutation.
+    let admin = tail_call(Tailing::ID, tail_action::ADMIN, 0, 0);
     assert_eq!(
-        error_code(&call(&controller, &PLAIN, tail_request(Files::ID, 0, 0))),
-        pb::ErrorCode::NotFound
+        error_code(&call(&controller, &PLAIN, admin.clone())),
+        pb::ErrorCode::PermissionDenied
     );
-    // No such service.
+    assert_eq!(tailing.served.get(), 0);
+    let encrypted = LinkSecurity {
+        encrypted: true,
+        authenticated: false,
+        session: 0,
+        transport: Transport::Ble,
+    };
+    assert!(matches!(
+        call(&controller, &encrypted, admin),
+        Reply::FeedPage(_)
+    ));
+}
+
+#[test]
+fn a_page_beyond_its_bound_is_never_sent() {
+    let tailing = Tailing {
+        served: Cell::new(0),
+    };
+    let controller = Controller::new(Device::new(INFO, uptime, (), (), (&tailing,)), OpenPolicy);
     assert_eq!(
-        error_code(&call(&controller, &PLAIN, tail_request(12345, 0, 0))),
-        pb::ErrorCode::NotFound
-    );
-    // A service that answers more than a page is an internal error, not a
-    // truncated reply.
-    tailing.oversized.set(true);
-    assert_eq!(
-        error_code(&call(&controller, &PLAIN, tail_request(Tailing::ID, 0, 0))),
+        error_code(&call(
+            &controller,
+            &PLAIN,
+            tail_call(Tailing::ID, tail_action::OVERSIZED, 0, 0)
+        )),
         pb::ErrorCode::Internal
     );
 }
 
 #[test]
-fn a_status_only_service_has_no_tail() {
-    let radio = radio();
-    let controller = Controller::new(
-        Device::new(
-            INFO,
-            uptime,
-            (),
-            Statuses::<NoopRawMutex, _>::new((&radio,)),
-            (),
-        ),
-        OpenPolicy,
+fn a_page_of_a_missing_service_or_action_is_not_found_and_the_old_rpc_is_gone() {
+    let tailing = Tailing {
+        served: Cell::new(0),
+    };
+    let controller = Controller::new(Device::new(INFO, uptime, (), (), (&tailing,)), OpenPolicy);
+    assert_eq!(
+        error_code(&call(&controller, &PLAIN, tail_call(12345, 1, 0, 0))),
+        pb::ErrorCode::NotFound
     );
     assert_eq!(
-        error_code(&call(&controller, &PLAIN, tail_request(RADIO, 0, 0))),
-        pb::ErrorCode::NotSupported
+        error_code(&call(&controller, &PLAIN, tail_call(Tailing::ID, 99, 0, 0))),
+        pb::ErrorCode::NotFound
     );
+    // Arguments that do not fit the action are refused before it runs.
+    let bad = Call::InvokeAction(pb::InvokeActionRequest {
+        service_id: Tailing::ID,
+        action_id: tail_action::TAIL,
+        args: Vec::new(),
+    });
+    assert_eq!(
+        error_code(&call(&controller, &PLAIN, bad)),
+        pb::ErrorCode::InvalidArgument
+    );
+    assert_eq!(tailing.served.get(), 0);
 }
 
 #[test]
@@ -1887,8 +1952,9 @@ mod link_security {
             error_code(&call(&controller, &TCP_SECURE, mutate())),
             pb::ErrorCode::NotFound
         );
-        let stats = access.stats(Transport::Tcp);
-        assert_eq!((stats.accepted, stats.denied), (2, 3));
+        // Every decoded request is counted once, the refused ones too, and a refusal is no error.
+        assert_eq!(access.requests(), 5);
+        assert_eq!(access.errors(), 0);
     }
 
     #[test]
@@ -1920,7 +1986,7 @@ mod link_security {
             pb::ErrorCode::PermissionDenied
         );
         // BLE has no mode to change; the link keeps the properties the transport reported.
-        access.set_mode(Transport::Ble, TransportAccessMode::Restricted);
+        access.set_mode(Transport::Ble, TransportAccessMode::Private);
         assert_eq!(access.mode(Transport::Ble), TransportAccessMode::Open);
         assert_eq!(
             error_code(&call(&controller, &BLE, mutate())),
@@ -1978,7 +2044,11 @@ mod link_security {
             encrypted: true,
             ..TCP
         };
-        for mode in [TransportAccessMode::Open, TransportAccessMode::Restricted] {
+        for mode in [
+            TransportAccessMode::Open,
+            TransportAccessMode::Protected,
+            TransportAccessMode::Private,
+        ] {
             access.set_mode(Transport::Tcp, mode);
             // Never over an unprotected link, whatever the mode says (the open modes allow the
             // plain action, which proves the refusal is the action's own).
@@ -1993,17 +2063,118 @@ mod link_security {
             }
             // On a protected TCP link it runs. Open BLE is the accepted insecure state of this phase.
             assert!(
-                matches!(invoke(&TCP_SECURE, 1), Reply::InvokeAction(_)),
+                matches!(invoke(&TCP_SECURE, 1), Reply::ActionEmpty(_)),
                 "{mode:?}"
             );
-            assert!(
-                matches!(invoke(&BLE, 1), Reply::InvokeAction(_)),
-                "{mode:?}"
-            );
+            assert!(matches!(invoke(&BLE, 1), Reply::ActionEmpty(_)), "{mode:?}");
         }
         // An action that is not marked is as open as its mode.
         access.set_mode(Transport::Tcp, TransportAccessMode::Open);
-        assert!(matches!(invoke(&TCP, 2), Reply::InvokeAction(_)));
+        assert!(matches!(invoke(&TCP, 2), Reply::ActionEmpty(_)));
+    }
+
+    #[test]
+    fn the_modes_decide_what_a_client_without_proof_may_do() {
+        restricted!(controller, access);
+        let read = || Call::GetInfo(pb::GetInfoRequest {});
+        let allowed = |reply: &Reply| {
+            !matches!(
+                reply,
+                Reply::Error(error) if error.code == pb::ErrorCode::PermissionDenied
+            )
+        };
+        // (mode, read, mutate, provision) for a client without proof, then after the handshake.
+        let table = [
+            (TransportAccessMode::Open, true, true, true),
+            (TransportAccessMode::Protected, true, false, false),
+            (TransportAccessMode::Private, false, false, false),
+        ];
+        for (mode, can_read, can_mutate, can_provision) in table {
+            access.set_mode(Transport::Tcp, mode);
+            assert_eq!(
+                allowed(&call(&controller, &TCP, read())),
+                can_read,
+                "{mode:?}"
+            );
+            assert_eq!(
+                allowed(&call(&controller, &TCP, mutate())),
+                can_mutate,
+                "{mode:?}"
+            );
+            assert_eq!(
+                allowed(&call(&controller, &TCP, provision())),
+                can_provision,
+                "{mode:?}"
+            );
+            // A connection that completed the handshake may do all three in every mode.
+            assert!(allowed(&call(&controller, &TCP_SECURE, read())), "{mode:?}");
+            assert!(
+                allowed(&call(&controller, &TCP_SECURE, mutate())),
+                "{mode:?}"
+            );
+            assert!(
+                allowed(&call(&controller, &TCP_SECURE, provision())),
+                "{mode:?}"
+            );
+            // Encrypted without being authenticated proves nothing.
+            let half = LinkSecurity {
+                encrypted: true,
+                ..TCP
+            };
+            assert_eq!(
+                allowed(&call(&controller, &half, mutate())),
+                can_mutate,
+                "{mode:?}"
+            );
+            // BLE is untouched by the mode of TCP.
+            assert!(allowed(&call(&controller, &BLE, mutate())), "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn requests_are_counted_once_and_a_refusal_is_not_an_error() {
+        restricted!(controller, access);
+        let mut out = [0u8; limits::MAX_RESPONSE_LEN];
+        // Not a request: not counted.
+        block_on(controller.handle(&TCP, &[0xFF, 0xFF], &mut out));
+        assert_eq!(access.requests(), 0);
+        let _ = call(&controller, &TCP, Call::GetInfo(pb::GetInfoRequest {}));
+        let _ = call(&controller, &TCP, mutate());
+        let _ = call(&controller, &BLE, mutate());
+        assert_eq!(access.requests(), 3);
+        assert_eq!(access.errors(), 0);
+        access.transport_error(Transport::Tcp, 1);
+        access.transport_error(Transport::Ble, 2);
+        assert_eq!(access.errors(), 2);
+        assert_eq!(access.stats(Transport::Tcp).errors, 1);
+    }
+
+    #[test]
+    fn the_availability_follows_the_expected_endpoints_only() {
+        use crate::Availability::*;
+        let access = ControlAccess::new(entropy);
+        assert_eq!(access.availability(), None);
+        // Absent by build is not a failure, whatever the state says.
+        access.set_state(Transport::Ble, EndpointState::Failed);
+        assert_eq!(access.availability(), None);
+        access.expect(Transport::Tcp);
+        assert_eq!(access.availability(), Starting);
+        access.set_state(Transport::Tcp, EndpointState::Running);
+        assert_eq!(access.availability(), All);
+        access.expect(Transport::Ble);
+        assert_eq!(access.availability(), Some);
+        access.set_state(Transport::Ble, EndpointState::Running);
+        assert_eq!(access.availability(), All);
+        access.set_state(Transport::Ble, EndpointState::Disabled);
+        assert_eq!(access.availability(), Starting);
+        access.set_state(Transport::Tcp, EndpointState::Failed);
+        access.set_state(Transport::Ble, EndpointState::Failed);
+        assert_eq!(access.availability(), Failed);
+        // Sessions, counters, mode and key do not move it.
+        access.session_opened(Transport::Tcp);
+        access.transport_error(Transport::Tcp, 1);
+        access.set_tcp_psk(true);
+        assert_eq!(access.availability(), Failed);
     }
 
     #[test]
@@ -2043,5 +2214,609 @@ mod link_security {
                     | pb::ErrorCode::InvalidArgument
             ));
         }
+    }
+}
+
+// --- results of the five formats ---------------------------------------------
+
+#[derive(Service)]
+struct Library {
+    // The snapshot held, 0 when none.
+    held: Cell<u32>,
+    runs: Cell<u32>,
+    reads: Cell<u32>,
+    closed: Cell<u32>,
+}
+
+mod library {
+    pub const LIST: u32 = 1;
+    pub const LIST_PRIVATE: u32 = 2;
+    pub const SHORT: u32 = 3;
+    pub const NONE: u32 = 4;
+    pub const INLINE: u32 = 5;
+    pub const EMPTY: u32 = 6;
+    pub const STUCK: u32 = 7;
+    pub const VIEW: u32 = 8;
+    pub const TOTAL: u16 = 10;
+    pub const SNAPSHOT: u32 = 41;
+}
+
+const BOOKS: &[FieldDescriptor] = &[FieldDescriptor::new(1, "title", ValueKind::String)];
+
+impl Library {
+    fn write(out: &mut impl ActionOutput, from: u32, total: u32) -> Result<(), ActionError> {
+        for index in from..total {
+            if out.next_record().is_err() {
+                break;
+            }
+            let mut title = String::<16>::new();
+            core::fmt::write(&mut title, format_args!("book{index}"))
+                .map_err(|_| ActionError::Internal)?;
+            out.text(1, &title).map_err(|_| ActionError::Internal)?;
+        }
+        Ok(())
+    }
+}
+
+impl Action for Library {
+    const ACTIONS: &'static [ActionDescriptor] = &[
+        ActionDescriptor::new(library::LIST, "list", ActionAccess::Read)
+            .format(ResultFormat::Records)
+            .results(BOOKS),
+        ActionDescriptor::new(library::LIST_PRIVATE, "list_private", ActionAccess::Mutate)
+            .format(ResultFormat::Records)
+            .results(BOOKS),
+        ActionDescriptor::new(library::SHORT, "short", ActionAccess::Read)
+            .format(ResultFormat::Records)
+            .results(BOOKS),
+        ActionDescriptor::new(library::NONE, "none", ActionAccess::Read)
+            .format(ResultFormat::Records)
+            .results(BOOKS),
+        ActionDescriptor::new(library::INLINE, "newest", ActionAccess::Read)
+            .format(ResultFormat::Inline)
+            .results(BOOKS),
+        ActionDescriptor::new(library::EMPTY, "tidy", ActionAccess::Mutate),
+        ActionDescriptor::new(library::STUCK, "stuck", ActionAccess::Read)
+            .format(ResultFormat::Records)
+            .results(BOOKS),
+        ActionDescriptor::new(library::VIEW, "view", ActionAccess::Read)
+            .format(ResultFormat::Records)
+            .results(BOOKS),
+    ];
+
+    async fn invoke(
+        &self,
+        action: u32,
+        _: &[(u32, Value)],
+        out: &mut impl ActionOutput,
+    ) -> Result<(), ActionError> {
+        self.runs.set(self.runs.get() + 1);
+        let snapshot = |out: &mut dyn FnMut(rohi_service::SnapshotInfo) -> Result<(), _>,
+                        total: u16| {
+            if self.held.get() != 0 {
+                return Err(ActionError::Busy);
+            }
+            self.held.set(library::SNAPSHOT);
+            out(rohi_service::SnapshotInfo {
+                id: library::SNAPSHOT,
+                total,
+            })
+            .map_err(|_: WriteError| ActionError::Internal)
+        };
+        match action {
+            library::LIST | library::LIST_PRIVATE | library::STUCK => {
+                snapshot(&mut |info| out.snapshot(info), library::TOTAL)
+            }
+            library::SHORT => snapshot(&mut |info| out.snapshot(info), 4),
+            // A view holds nothing: every session gets the same id.
+            library::VIEW => out
+                .snapshot(rohi_service::SnapshotInfo {
+                    id: library::SNAPSHOT,
+                    total: library::TOTAL,
+                })
+                .map_err(|_| ActionError::Internal),
+            library::NONE | library::EMPTY => Ok(()),
+            library::INLINE => out.text(1, "book9").map_err(|_| ActionError::Internal),
+            _ => Err(ActionError::UnknownAction),
+        }
+    }
+
+    async fn read_records(
+        &self,
+        action: u32,
+        snapshot: u32,
+        from: u32,
+        out: &mut impl ActionOutput,
+    ) -> Result<(), ActionError> {
+        if action != library::VIEW && (self.held.get() != snapshot || snapshot == 0) {
+            return Err(ActionError::UnknownSnapshot);
+        }
+        self.reads.set(self.reads.get() + 1);
+        match action {
+            library::STUCK => Ok(()),
+            library::SHORT => Self::write(out, from, 4),
+            _ => Self::write(out, from, u32::from(library::TOTAL)),
+        }
+    }
+
+    async fn close_records(&self, snapshot: u32) -> Result<(), ActionError> {
+        if snapshot == 0 {
+            return Err(ActionError::UnknownSnapshot);
+        }
+        if self.held.get() != snapshot {
+            // A view, or a snapshot already gone.
+            return Ok(());
+        }
+        self.held.set(0);
+        self.closed.set(self.closed.get() + 1);
+        Ok(())
+    }
+
+    fn link_lost(&self) {
+        self.held.set(0);
+    }
+}
+
+fn library() -> Library {
+    Library {
+        held: Cell::new(0),
+        runs: Cell::new(0),
+        reads: Cell::new(0),
+        closed: Cell::new(0),
+    }
+}
+
+fn library_controller(library: &Library) -> Controller<Device<(), (), (&Library,)>, OpenPolicy> {
+    Controller::new(Device::new(INFO, uptime, (), (), (library,)), OpenPolicy)
+}
+
+fn run(action: u32) -> Call {
+    Call::InvokeAction(pb::InvokeActionRequest {
+        service_id: Library::ID,
+        action_id: action,
+        args: Vec::new(),
+    })
+}
+
+fn page_of(action: u32, token: &[u8]) -> Call {
+    Call::ReadResultPage(pb::ReadResultPageRequest {
+        service_id: Library::ID,
+        action_id: action,
+        page_token: Vec::from_slice(token).unwrap(),
+    })
+}
+
+fn close_page_of(action: u32, token: &[u8]) -> Call {
+    Call::CloseResultPage(pb::CloseResultPageRequest {
+        service_id: Library::ID,
+        action_id: action,
+        page_token: Vec::from_slice(token).unwrap(),
+    })
+}
+
+fn titles(page: &pb::RecordsPage) -> std::vec::Vec<std::string::String> {
+    page.records
+        .iter()
+        .map(|record| match &record.fields[0].value {
+            Some(pb::FieldValue_::Value::StringValue(title)) => title.as_str().into(),
+            _ => panic!("not a title"),
+        })
+        .collect()
+}
+
+#[test]
+fn empty_inline_and_an_empty_collection_are_three_distinct_replies() {
+    let library = library();
+    let controller = library_controller(&library);
+    assert!(matches!(
+        call(&controller, &PLAIN, run(library::EMPTY)),
+        Reply::ActionEmpty(_)
+    ));
+    let Reply::ActionInline(inline) = call(&controller, &PLAIN, run(library::INLINE)) else {
+        panic!("not inline");
+    };
+    assert_eq!(inline.fields.len(), 1);
+    let Reply::RecordsPage(none) = call(&controller, &PLAIN, run(library::NONE)) else {
+        panic!("not records");
+    };
+    assert!(none.records.is_empty() && none.page_token.is_empty());
+    assert_eq!(library.held.get(), 0);
+}
+
+#[test]
+fn the_format_of_every_action_is_discoverable() {
+    let library = library();
+    let controller = library_controller(&library);
+    let Reply::ListActions(list) = call(
+        &controller,
+        &PLAIN,
+        Call::ListActions(pb::ListActionsRequest::default()),
+    ) else {
+        panic!("not a list");
+    };
+    let formats: std::vec::Vec<_> = list.actions.iter().map(|a| a.result_format).collect();
+    assert_eq!(
+        formats,
+        [
+            pb::ResultFormat::Records,
+            pb::ResultFormat::Records,
+            pb::ResultFormat::Records,
+            pb::ResultFormat::Records,
+            pb::ResultFormat::Inline,
+            pb::ResultFormat::Empty,
+            pb::ResultFormat::Records,
+            pb::ResultFormat::Records,
+        ]
+    );
+}
+
+#[test]
+fn a_collection_is_read_page_by_page_from_one_run() {
+    let library = library();
+    let controller = library_controller(&library);
+    let Reply::RecordsPage(first) = call(&controller, &PLAIN, run(library::LIST)) else {
+        panic!("not records");
+    };
+    assert_eq!(titles(&first).len(), limits::MAX_RECORDS);
+    assert_eq!(titles(&first)[0], "book0");
+    assert!(!first.page_token.is_empty());
+
+    let read = |token: &[u8]| match call(&controller, &PLAIN, page_of(library::LIST, token)) {
+        Reply::RecordsPage(page) => page,
+        other => panic!("{other:?}"),
+    };
+    let second = read(&first.page_token);
+    assert_eq!(titles(&second), ["book6", "book7", "book8", "book9"]);
+    // The last page has no token.
+    assert!(second.page_token.is_empty());
+    // A repeated read of the same token returns the same page.
+    assert_eq!(read(&first.page_token), second);
+    // The action ran once: later pages never run it again.
+    assert_eq!(library.runs.get(), 1);
+
+    // The snapshot is held until it is closed, also after the last page.
+    assert_eq!(library.held.get(), library::SNAPSHOT);
+    assert!(matches!(
+        call(
+            &controller,
+            &PLAIN,
+            close_page_of(library::LIST, &first.page_token)
+        ),
+        Reply::CloseResultPage(_)
+    ));
+    assert_eq!((library.held.get(), library.closed.get()), (0, 1));
+    // A closed snapshot returns nothing, and closing twice is refused.
+    assert_eq!(
+        error_code(&call(
+            &controller,
+            &PLAIN,
+            page_of(library::LIST, &first.page_token)
+        )),
+        pb::ErrorCode::NotFound
+    );
+    assert_eq!(
+        error_code(&call(
+            &controller,
+            &PLAIN,
+            close_page_of(library::LIST, &first.page_token)
+        )),
+        pb::ErrorCode::NotFound
+    );
+}
+
+#[test]
+fn a_collection_that_fits_the_first_page_holds_nothing() {
+    let library = library();
+    let controller = library_controller(&library);
+    let Reply::RecordsPage(page) = call(&controller, &PLAIN, run(library::SHORT)) else {
+        panic!("not records");
+    };
+    assert_eq!(titles(&page).len(), 4);
+    assert!(page.page_token.is_empty());
+    // Released at once: the client has everything and nothing to close.
+    assert_eq!((library.held.get(), library.closed.get()), (0, 1));
+}
+
+#[test]
+fn one_snapshot_is_held_at_a_time() {
+    let library = library();
+    let controller = library_controller(&library);
+    assert!(matches!(
+        call(&controller, &PLAIN, run(library::LIST)),
+        Reply::RecordsPage(_)
+    ));
+    assert_eq!(
+        error_code(&call(&controller, &OTHER, run(library::LIST))),
+        pb::ErrorCode::Busy
+    );
+}
+
+#[test]
+fn a_page_cannot_be_read_or_closed_by_another_session() {
+    let library = library();
+    let controller = library_controller(&library);
+    let Reply::RecordsPage(first) = call(&controller, &PLAIN, run(library::LIST)) else {
+        panic!("not records");
+    };
+    let token = first.page_token.as_slice();
+    // Another session learns nothing, not even that the snapshot exists.
+    for request in [
+        page_of(library::LIST, token),
+        close_page_of(library::LIST, token),
+    ] {
+        assert_eq!(
+            error_code(&call(&controller, &OTHER, request)),
+            pb::ErrorCode::NotFound
+        );
+    }
+    assert_eq!(library.reads.get(), 1);
+    assert_eq!(library.held.get(), library::SNAPSHOT);
+    // The owner still has it.
+    assert!(matches!(
+        call(&controller, &PLAIN, page_of(library::LIST, token)),
+        Reply::RecordsPage(_)
+    ));
+}
+
+#[test]
+fn invalid_foreign_and_out_of_range_tokens_return_nothing() {
+    let library = library();
+    let controller = library_controller(&library);
+    let Reply::RecordsPage(first) = call(&controller, &PLAIN, run(library::LIST)) else {
+        panic!("not records");
+    };
+    let good = first.page_token.to_vec();
+    let with = |snapshot: u32, next: u16| {
+        let mut token = snapshot.to_le_bytes().to_vec();
+        token.extend_from_slice(&next.to_le_bytes());
+        token
+    };
+    let bad: std::vec::Vec<(u32, std::vec::Vec<u8>)> = std::vec![
+        (library::LIST, std::vec::Vec::new()),
+        (library::LIST, good[..5].to_vec()),
+        // Another snapshot, a position at or beyond the end.
+        (library::LIST, with(library::SNAPSHOT + 1, 6)),
+        (library::LIST, with(library::SNAPSHOT, library::TOTAL)),
+        (library::LIST, with(library::SNAPSHOT, u16::MAX)),
+        // The right token of another action.
+        (library::LIST_PRIVATE, good.clone()),
+        (library::NONE, good.clone()),
+    ];
+    for (action, token) in &bad {
+        for request in [page_of(*action, token), close_page_of(*action, token)] {
+            assert_eq!(
+                error_code(&call(&controller, &PLAIN, request)),
+                pb::ErrorCode::NotFound,
+                "{action} {token:?}"
+            );
+        }
+    }
+    // Nothing was read or released by any of them.
+    assert_eq!(library.reads.get(), 1);
+    assert_eq!(library.held.get(), library::SNAPSHOT);
+    // A position inside the result is valid: a client may resume anywhere.
+    let Reply::RecordsPage(middle) = call(
+        &controller,
+        &PLAIN,
+        page_of(library::LIST, &with(library::SNAPSHOT, 8)),
+    ) else {
+        panic!("not records");
+    };
+    assert_eq!(titles(&middle), ["book8", "book9"]);
+}
+
+#[test]
+fn a_page_needs_the_privilege_of_its_action() {
+    let library = library();
+    let controller = Controller::new(
+        Device::new(INFO, uptime, (), (), (&library,)),
+        RequireEncryption,
+    );
+    let encrypted = LinkSecurity {
+        encrypted: true,
+        authenticated: false,
+        session: 1,
+        transport: Transport::Ble,
+    };
+    assert_eq!(
+        error_code(&call(&controller, &PLAIN, run(library::LIST_PRIVATE))),
+        pb::ErrorCode::PermissionDenied
+    );
+    let Reply::RecordsPage(first) = call(&controller, &encrypted, run(library::LIST_PRIVATE))
+    else {
+        panic!("not records");
+    };
+    let token = first.page_token.as_slice();
+    // The same session on a link that lost its encryption is refused.
+    let downgraded = LinkSecurity {
+        encrypted: false,
+        ..encrypted
+    };
+    for request in [
+        page_of(library::LIST_PRIVATE, token),
+        close_page_of(library::LIST_PRIVATE, token),
+    ] {
+        assert_eq!(
+            error_code(&call(&controller, &downgraded, request)),
+            pb::ErrorCode::PermissionDenied
+        );
+    }
+    assert_eq!(library.reads.get(), 1);
+    assert!(matches!(
+        call(
+            &controller,
+            &encrypted,
+            page_of(library::LIST_PRIVATE, token)
+        ),
+        Reply::RecordsPage(_)
+    ));
+}
+
+#[test]
+fn a_closed_connection_and_a_lost_link_release_the_snapshot() {
+    let library = library();
+    let controller = library_controller(&library);
+    let Reply::RecordsPage(first) = call(&controller, &PLAIN, run(library::LIST)) else {
+        panic!("not records");
+    };
+    // Another connection ending changes nothing.
+    block_on(controller.session_closed(OTHER.session));
+    assert_eq!(library.held.get(), library::SNAPSHOT);
+    block_on(controller.session_closed(PLAIN.session));
+    assert_eq!((library.held.get(), library.closed.get()), (0, 1));
+    assert_eq!(
+        error_code(&call(
+            &controller,
+            &PLAIN,
+            page_of(library::LIST, &first.page_token)
+        )),
+        pb::ErrorCode::NotFound
+    );
+
+    // A lost link releases it in the service and forgets the owner.
+    let Reply::RecordsPage(first) = call(&controller, &PLAIN, run(library::LIST)) else {
+        panic!("not records");
+    };
+    controller.link_lost();
+    assert_eq!(library.held.get(), 0);
+    assert_eq!(
+        error_code(&call(
+            &controller,
+            &PLAIN,
+            page_of(library::LIST, &first.page_token)
+        )),
+        pb::ErrorCode::NotFound
+    );
+}
+
+#[test]
+fn a_new_session_cannot_use_a_snapshot_the_service_forgot() {
+    let library = library();
+    let controller = library_controller(&library);
+    let Reply::RecordsPage(first) = call(&controller, &PLAIN, run(library::LIST)) else {
+        panic!("not records");
+    };
+    // The service times it out by itself; the next read finds it gone.
+    library.held.set(0);
+    assert_eq!(
+        error_code(&call(
+            &controller,
+            &PLAIN,
+            page_of(library::LIST, &first.page_token)
+        )),
+        pb::ErrorCode::NotFound
+    );
+    // Its id is free again and the old token is not that snapshot.
+    assert!(matches!(
+        call(&controller, &OTHER, run(library::LIST)),
+        Reply::RecordsPage(_)
+    ));
+    assert_eq!(
+        error_code(&call(
+            &controller,
+            &PLAIN,
+            page_of(library::LIST, &first.page_token)
+        )),
+        pb::ErrorCode::NotFound
+    );
+}
+
+#[test]
+fn a_page_that_cannot_advance_is_an_error_and_releases_the_snapshot() {
+    let library = library();
+    let controller = library_controller(&library);
+    assert_eq!(
+        error_code(&call(&controller, &PLAIN, run(library::STUCK))),
+        pb::ErrorCode::Internal
+    );
+    assert_eq!((library.held.get(), library.closed.get()), (0, 1));
+}
+
+#[test]
+fn a_page_holds_the_records_that_fit_and_never_splits_one() {
+    let record = |len: usize| {
+        let mut record = rohi_service::Record::new();
+        record
+            .push((1, Value::text(&"x".repeat(len)).unwrap()))
+            .ok();
+        record
+    };
+    let mut records = rohi_service::Records::new();
+    for _ in 0..limits::MAX_RECORDS {
+        records.push(record(40)).ok().unwrap();
+    }
+    // Everything fits the response, with the longest token.
+    assert_eq!(
+        controller::fit_within(&records, limits::MAX_RESPONSE_LEN),
+        6
+    );
+    // A smaller room takes a prefix of whole records: the encoded size of the
+    // page decides.
+    let room = |count| controller::records_size(&records, count) + controller::ENVELOPE;
+    assert!(room(2) < room(3));
+    assert_eq!(controller::fit_within(&records, room(3)), 3);
+    assert_eq!(controller::fit_within(&records, room(3) - 1), 2);
+    // Not even one record fits: no page, the caller fails instead of looping.
+    assert_eq!(controller::fit_within(&records, 10), 0);
+}
+
+#[test]
+fn two_sessions_may_hold_a_view_with_the_same_id_and_neither_loses_its_pages() {
+    let library = library();
+    let controller = library_controller(&library);
+    let Reply::RecordsPage(first) = call(&controller, &PLAIN, run(library::VIEW)) else {
+        panic!("not records");
+    };
+    let Reply::RecordsPage(second) = call(&controller, &OTHER, run(library::VIEW)) else {
+        panic!("not records");
+    };
+    assert_eq!(first.page_token, second.page_token);
+    // The second session did not take the first one's entry over.
+    for link in [&PLAIN, &OTHER] {
+        assert!(matches!(
+            call(&controller, link, page_of(library::VIEW, &first.page_token)),
+            Reply::RecordsPage(_)
+        ));
+    }
+    // Closing is per session too.
+    assert!(matches!(
+        call(
+            &controller,
+            &PLAIN,
+            close_page_of(library::VIEW, &first.page_token)
+        ),
+        Reply::CloseResultPage(_)
+    ));
+    assert_eq!(
+        error_code(&call(
+            &controller,
+            &PLAIN,
+            page_of(library::VIEW, &first.page_token)
+        )),
+        pb::ErrorCode::NotFound
+    );
+    assert!(matches!(
+        call(
+            &controller,
+            &OTHER,
+            page_of(library::VIEW, &first.page_token)
+        ),
+        Reply::RecordsPage(_)
+    ));
+}
+
+#[test]
+fn a_link_always_names_its_transport_and_starts_unprotected() {
+    for transport in [Transport::Ble, Transport::Tcp] {
+        let link = LinkSecurity::new(transport);
+        assert_eq!(
+            (
+                link.transport,
+                link.encrypted,
+                link.authenticated,
+                link.session
+            ),
+            (transport, false, false, 0)
+        );
     }
 }

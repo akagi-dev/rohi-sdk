@@ -25,8 +25,8 @@ use embassy_futures::block_on;
 use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use rohi_control::{
-    AuthorizationPolicy, ControlAccess, ControlHub, Controller, Device, DeviceInfo, OpenPolicy,
-    RequireEncryption,
+    AuthorizationPolicy, ControlAccess, ControlHub, Controller, Device, DeviceInfo, LinkSecurity,
+    OpenPolicy, RequireEncryption, Transport,
 };
 use rohi_control_proto::control::{
     self as pb, Request_::Request as Call, Response_::Response as Reply,
@@ -36,8 +36,7 @@ use rohi_control_proto::{PROTOCOL_VERSION, decode, encode};
 use rohi_net::{BleConnectionInfo, BleError, BleState, BleTransport, MAX_BLE_PAYLOAD};
 use rohi_service::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, FieldDescriptor, Service,
-    ServiceHealth, ServiceState, ServiceSummary, Status, StatusWriter, Statuses, Value, ValueKind,
-    WriteError,
+    ServiceHealth, ServiceSummary, Status, StatusWriter, Statuses, Value, ValueKind, WriteError,
 };
 
 use crate::ControlBle;
@@ -413,7 +412,7 @@ impl Status for Radio<'_> {
     ];
 
     async fn summary(&self) -> ServiceSummary {
-        ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true)
+        ServiceSummary::new(ServiceHealth::Ok)
     }
 
     async fn status(&self, out: &mut impl StatusWriter) -> Result<(), WriteError> {
@@ -593,7 +592,8 @@ fn multi_fragment_response_preserves_the_protobuf_bytes() {
 
     // The bytes equal what the dispatcher produces directly.
     let mut direct = [0u8; MAX_RESPONSE_LEN];
-    let len = block_on(controller.handle(&Default::default(), &request, &mut direct));
+    let len =
+        block_on(controller.handle(&LinkSecurity::new(Transport::Ble), &request, &mut direct));
     assert_eq!(bytes, direct[..len]);
 
     let response: pb::Response = decode(&bytes).unwrap();
@@ -630,7 +630,7 @@ fn multi_fragment_request_is_reassembled() {
     assert_eq!(id, 8);
     let response: pb::Response = decode(&bytes).unwrap();
     assert_eq!(response.request_id, 3);
-    assert!(matches!(response.response, Some(Reply::InvokeAction(_))));
+    assert!(matches!(response.response, Some(Reply::ActionEmpty(_))));
 }
 
 #[test]
@@ -716,7 +716,7 @@ fn disconnect_discards_the_partial_request() {
     run(&shared, &controller, count);
     let (_, bytes) = response_bytes(&shared.take_sent());
     let response: pb::Response = decode(&bytes).unwrap();
-    assert!(matches!(response.response, Some(Reply::InvokeAction(_))));
+    assert!(matches!(response.response, Some(Reply::ActionEmpty(_))));
 }
 
 #[test]
@@ -823,7 +823,7 @@ fn link_security_reaches_the_policy() {
     run(&shared, &controller, 1);
     let (_, bytes) = response_bytes(&shared.take_sent());
     let response: pb::Response = decode(&bytes).unwrap();
-    assert!(matches!(response.response, Some(Reply::InvokeAction(_))));
+    assert!(matches!(response.response, Some(Reply::ActionEmpty(_))));
     assert_eq!(radio.calls.borrow().as_slice(), ["disconnect"]);
 }
 

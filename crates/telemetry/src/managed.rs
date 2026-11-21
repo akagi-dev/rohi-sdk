@@ -75,8 +75,8 @@ use minicbor::{CborLen, Decode, Encode};
 use rohi_config::{ConfigSection, MAX_SECTION_PAYLOAD};
 use rohi_service::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, FieldDescriptor, Issue,
-    IssueDescriptor, IssueSeverity, MAX_ISSUES, MAX_RECORDS, Service, ServiceHealth, ServiceState,
-    ServiceSummary, Status, StatusWriter, Value, ValueKind, WriteError,
+    IssueDescriptor, IssueSeverity, MAX_ISSUES, MAX_RECORDS, ResultFormat, Service, ServiceHealth,
+    ServiceSummary, SnapshotInfo, Status, StatusWriter, Value, ValueKind, WriteError,
 };
 
 use crate::catalog::CATALOG;
@@ -103,7 +103,7 @@ pub mod action {
     pub const SET_PUBLIC: u32 = 1;
     /// Sets or removes the private section of a slot.
     pub const SET_PRIVATE: u32 = 2;
-    /// Pages the measurement catalog.
+    /// Lists the measurement catalog.
     pub const MEASUREMENTS: u32 = 3;
 }
 
@@ -117,8 +117,6 @@ pub mod action_field {
     pub const RECIPIENT: u32 = 2;
     /// Argument of `set_private`: the bitset (the recipient takes id 2).
     pub const PRIVATE_SELECTION: u32 = 3;
-    /// Argument of `measurements`: the zero-based ordinal of the first record.
-    pub const OFFSET: u32 = 1;
     /// Result of `measurements`: stable bit index.
     pub const BIT_INDEX: u32 = 1;
     /// Result of `measurements`: canonical name.
@@ -315,6 +313,29 @@ impl<M: RawMutex, S: TelemetryStore<P>, C: FormatCapabilities, const P: usize>
         self.store.commit(&candidate).await?;
         Ok(())
     }
+
+    // The measurements the format can encode, in catalog order.
+    fn catalog(&self) -> impl Iterator<Item = &'static crate::catalog::MeasurementDescriptor> + '_ {
+        let supported = self.caps.supported();
+        CATALOG
+            .iter()
+            .filter(move |entry| supported.contains(entry.id))
+    }
+
+    fn catalog_len(&self) -> usize {
+        self.catalog().count()
+    }
+
+    // Writes the records of the catalog from the record `from` on, as many as
+    // `out` takes.
+    fn write_catalog(&self, out: &mut impl ActionOutput, from: usize) -> Result<(), ActionError> {
+        for entry in self.catalog().skip(from).take(MAX_RECORDS) {
+            out.next_record().map_err(|_| ActionError::Internal)?;
+            write(out.u64(action_field::BIT_INDEX, u64::from(entry.id.0)))?;
+            write(out.text(action_field::NAME, entry.name))?;
+        }
+        Ok(())
+    }
 }
 
 /// Borrowed encoding of the section for the size check.
@@ -353,13 +374,6 @@ fn arg(args: &[(u32, Value)], id: u32) -> Result<&Value, ActionError> {
         .ok_or(ActionError::InvalidArgument)
 }
 
-fn offset(args: &[(u32, Value)], id: u32) -> Result<usize, ActionError> {
-    let offset = arg(args, id)?
-        .as_u64()
-        .ok_or(ActionError::InvalidArgument)?;
-    usize::try_from(offset).map_err(|_| ActionError::InvalidArgument)
-}
-
 // A number that is no slot of any build is a refused index, not a malformed argument.
 fn index(args: &[(u32, Value)]) -> Result<u8, ActionError> {
     let index = arg(args, action_field::INDEX)?
@@ -387,8 +401,6 @@ fn recipient(args: &[(u32, Value)], id: u32) -> Result<RecipientAddress, ActionE
 }
 
 const INDEX: FieldDescriptor = FieldDescriptor::new(action_field::INDEX, "index", ValueKind::U64);
-const OFFSET: FieldDescriptor =
-    FieldDescriptor::new(action_field::OFFSET, "offset", ValueKind::U64);
 const fn selection_field(id: u32, name: &'static str) -> FieldDescriptor {
     FieldDescriptor::new(id, name, ValueKind::Bytes).with_selection(
         32,
@@ -473,8 +485,8 @@ where
 
     async fn summary(&self) -> ServiceSummary {
         match self.store.load().await {
-            Ok(_) => ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true),
-            Err(_) => ServiceSummary::new(ServiceState::Failed, ServiceHealth::Error, false),
+            Ok(_) => ServiceSummary::new(ServiceHealth::Ok),
+            Err(_) => ServiceSummary::new(ServiceHealth::Error),
         }
     }
 
@@ -526,7 +538,7 @@ impl<M: RawMutex, S: TelemetryStore<P>, C: FormatCapabilities, const P: usize> A
             selection_field(action_field::PRIVATE_SELECTION, "selection"),
         ]),
         ActionDescriptor::new(action::MEASUREMENTS, "measurements", ActionAccess::Read)
-            .args(&[OFFSET])
+            .format(ResultFormat::Records)
             .results(&[
                 FieldDescriptor::new(action_field::BIT_INDEX, "bit_index", ValueKind::U64),
                 FieldDescriptor::new(action_field::NAME, "name", ValueKind::String),
@@ -554,25 +566,48 @@ impl<M: RawMutex, S: TelemetryStore<P>, C: FormatCapabilities, const P: usize> A
                     .await
             }
             action::MEASUREMENTS => {
-                let offset = offset(args, action_field::OFFSET)?;
-                // The catalog of what the format can encode now.
-                let supported = self.caps.supported();
-                for entry in CATALOG
-                    .iter()
-                    .filter(|entry| supported.contains(entry.id))
-                    .skip(offset)
-                    .take(MAX_RECORDS)
-                {
-                    out.next_record().map_err(|_| ActionError::Internal)?;
-                    write(out.u64(action_field::BIT_INDEX, u64::from(entry.id.0)))?;
-                    write(out.text(action_field::NAME, entry.name))?;
+                let total = self.catalog_len();
+                if total > MAX_RECORDS {
+                    let total = u16::try_from(total).map_err(|_| ActionError::Internal)?;
+                    out.snapshot(SnapshotInfo {
+                        id: CATALOG_SNAPSHOT,
+                        total,
+                    })
+                    .map_err(|_| ActionError::Internal)
+                } else {
+                    self.write_catalog(out, 0)
                 }
-                Ok(())
             }
             _ => Err(ActionError::UnknownAction),
         }
     }
+
+    // The catalog is fixed for the build, so its one snapshot is a view that
+    // costs nothing: it is never held, and closing it is a no-op.
+    async fn read_records(
+        &self,
+        action: u32,
+        snapshot: u32,
+        from: u32,
+        out: &mut impl ActionOutput,
+    ) -> Result<(), ActionError> {
+        if action != action::MEASUREMENTS || snapshot != CATALOG_SNAPSHOT {
+            return Err(ActionError::UnknownSnapshot);
+        }
+        self.write_catalog(out, from as usize)
+    }
+
+    async fn close_records(&self, snapshot: u32) -> Result<(), ActionError> {
+        if snapshot == CATALOG_SNAPSHOT {
+            Ok(())
+        } else {
+            Err(ActionError::UnknownSnapshot)
+        }
+    }
 }
+
+// The one snapshot of the measurement catalog.
+const CATALOG_SNAPSHOT: u32 = 1;
 
 fn write(result: Result<(), WriteError>) -> Result<(), ActionError> {
     result.map_err(|_| ActionError::Internal)

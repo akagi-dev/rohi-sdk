@@ -27,7 +27,7 @@
 //! use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 //! use rohi_service::{
 //!     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, ActionRegistry,
-//!     FieldDescriptor, Service, ServiceHealth, ServiceState, ServiceSummary, Status, StatusError,
+//!     FieldDescriptor, Service, ServiceHealth, ServiceSummary, Status, StatusError,
 //!     StatusRegistry, StatusWriter, Statuses, Value, ValueKind, WriteError,
 //! };
 //!
@@ -40,7 +40,7 @@
 //!         &[FieldDescriptor::new(1, "connected", ValueKind::Bool)];
 //!
 //!     async fn summary(&self) -> ServiceSummary {
-//!         ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true)
+//!         ServiceSummary::new(ServiceHealth::Ok)
 //!     }
 //!
 //!     async fn status(&self, out: &mut impl StatusWriter) -> Result<(), WriteError> {
@@ -70,7 +70,7 @@
 //!     const STATUS_SCHEMA: &'static [FieldDescriptor] = &[];
 //!
 //!     async fn summary(&self) -> ServiceSummary {
-//!         ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true)
+//!         ServiceSummary::new(ServiceHealth::Ok)
 //!     }
 //!
 //!     async fn status(&self, _out: &mut impl StatusWriter) -> Result<(), WriteError> {
@@ -121,11 +121,10 @@
 //!
 //! [`Statuses`] keeps one [`Tracker`] per service. It adds what every service
 //! needs without its cooperation: a **status revision** that changes when
-//! state, health, readiness or the active issues change (values that vary all
-//! the time, such as counters or signal strength, deliberately do not bump
-//! it), and the **time in the current state**. Revisions and ages are derived
-//! from what the service reports when a client asks, with the device uptime
-//! given by the caller.
+//! the health or the active issues change (values that vary all the time,
+//! such as counters or signal strength, deliberately do not bump it). The
+//! revision and the age of issues are derived from what the service reports
+//! when a client asks, with the device uptime given by the caller.
 //!
 //! # Ids and names
 //!
@@ -183,8 +182,8 @@ use embassy_sync::blocking_mutex::raw::RawMutex;
 use heapless::Vec;
 
 use crate::action::{
-    Action, ActionDescriptor, ActionError, ActionResult, RecordCollector, StreamChunk, TailPage,
-    TailRequest, check_args,
+    Action, ActionDescriptor, ActionError, ActionResult, Check, RecordCollector, Records,
+    RecordsPage, ResultFormat, StreamChunk, check_args,
 };
 use crate::isolated::isolated;
 use crate::schema::{actions_valid, enums_valid, fields_valid, issues_valid};
@@ -228,14 +227,13 @@ const fn actions_schema_valid<S: Action>() -> bool {
 }
 
 /// The bookkeeping the status registry keeps for one service: the status
-/// revision and the time since the last state change.
+/// revision and the age of issues.
 ///
 /// Revisions and ages are derived from what the service reports, so a service
 /// does not have to cooperate. Observation happens when a client asks, with
 /// the device uptime given by the caller; poll the compact summary regularly
-/// for precise ages. A revision follows the lifecycle state, health,
-/// readiness and the active issues; it does not follow the service-specific
-/// status fields.
+/// for precise ages. A revision follows the health and the active issues; it
+/// does not follow the service-specific status fields.
 pub struct Tracker<M: RawMutex>(TrackCell<M>);
 
 impl<M: RawMutex> Tracker<M> {
@@ -275,11 +273,8 @@ async fn observe<S: Status, M: RawMutex>(
             id: S::ID,
             name: S::NAME,
             version: u32::from(S::VERSION),
-            state: summary.state,
             health: summary.health,
-            ready: summary.ready,
             revision: track.revision,
-            state_age_ms: now_ms.saturating_sub(track.state_since_ms),
             essential: S::ESSENTIAL,
         },
         issues,
@@ -326,27 +321,65 @@ async fn invoke_of<S: Action>(
         .find(|descriptor| descriptor.id == action)
         .ok_or(ActionError::UnknownAction)
         .inspect_err(|error| log_action_failed(S::NAME, action, *error))?;
-    log::debug!(
+    // A feed is polled (the log tail once a second): trace, so that
+    // reading the persistent log's own tail does not feed it.
+    let level = if descriptor.format == ResultFormat::Feed {
+        log::Level::Trace
+    } else {
+        log::Level::Debug
+    };
+    log::log!(
         target: "service",
+        level,
         "Invoking action (service={} action={})",
         S::NAME,
         descriptor.name
     );
     check_args(descriptor, args).inspect_err(|error| log_action_failed(S::NAME, action, *error))?;
-    let mut out = RecordCollector::new(descriptor);
+    let mut out = RecordCollector::new(descriptor, false);
     service
         .invoke(action, args, &mut out)
         .await
         .inspect_err(|error| log_action_failed(S::NAME, action, *error))?;
-    match out.stream {
-        Some(_) if !out.records.is_empty() => {
+    match out.check() {
+        Check::Result => Ok(out.take_result()),
+        Check::Snapshot(snapshot) => {
+            // The same collector reads the first page: one buffer, not two.
+            out.start_read();
+            service
+                .read_records(action, snapshot.id, 0, &mut out)
+                .await
+                .inspect_err(|error| log_action_failed(S::NAME, action, *error))?;
+            Ok(ActionResult::Records(RecordsPage {
+                records: out.take_records(),
+                snapshot: Some(snapshot),
+            }))
+        }
+        Check::Bad => {
             let error = ActionError::Internal;
             log_action_failed(S::NAME, action, error);
             Err(error)
         }
-        Some(stream) => Ok(ActionResult::Stream(stream)),
-        None => Ok(ActionResult::Records(out.records)),
     }
+}
+
+// Reads the records of a snapshot of `action` from the record `from` on.
+#[inline(never)]
+async fn read_records_of<S: Action>(
+    service: &S,
+    action: u32,
+    snapshot: u32,
+    from: u32,
+) -> Result<Records, ActionError> {
+    let descriptor = S::ACTIONS
+        .iter()
+        .find(|descriptor| descriptor.id == action && descriptor.format == ResultFormat::Records)
+        .ok_or(ActionError::UnknownSnapshot)?;
+    let mut out = RecordCollector::new(descriptor, true);
+    service
+        .read_records(action, snapshot, from, &mut out)
+        .await?;
+    Ok(out.records)
 }
 
 #[cold]
@@ -554,6 +587,17 @@ pub trait ActionRegistry {
         action: u32,
         args: &[(u32, Value)],
     ) -> Result<ActionResult, ActionError>;
+    /// Reads the records of a held snapshot of `action` of the service with
+    /// the given id, from the record `from` on.
+    async fn read_records(
+        &self,
+        service: u32,
+        action: u32,
+        snapshot: u32,
+        from: u32,
+    ) -> Result<Records, ActionError>;
+    /// Releases a snapshot of the service with the given id.
+    async fn close_records(&self, service: u32, snapshot: u32) -> Result<(), ActionError>;
     /// Reads a chunk of a file of an open stream of the service with the given
     /// id into `buf`.
     async fn read_stream(
@@ -566,15 +610,9 @@ pub trait ActionRegistry {
     ) -> Result<StreamChunk, ActionError>;
     /// Closes a stream of the service with the given id.
     async fn close_stream(&self, service: u32, stream: u32) -> Result<(), ActionError>;
-    /// The control link was lost: every service releases its open streams.
+    /// The control link was lost: every service releases its open streams and
+    /// snapshots.
     fn link_lost(&self);
-    /// Writes one page of the tail of the service with the given id into `buf`.
-    fn tail_logs(
-        &self,
-        service: u32,
-        request: TailRequest,
-        buf: &mut [u8],
-    ) -> Result<TailPage, ActionError>;
 
     /// Whether a service with this id has actions.
     fn contains(&self, service: u32) -> bool {
@@ -614,6 +652,14 @@ impl ActionRegistry for () {
         Err(ActionError::UnknownService)
     }
 
+    async fn read_records(&self, _: u32, _: u32, _: u32, _: u32) -> Result<Records, ActionError> {
+        Err(ActionError::UnknownService)
+    }
+
+    async fn close_records(&self, _: u32, _: u32) -> Result<(), ActionError> {
+        Err(ActionError::UnknownService)
+    }
+
     async fn read_stream(
         &self,
         _: u32,
@@ -630,10 +676,6 @@ impl ActionRegistry for () {
     }
 
     fn link_lost(&self) {}
-
-    fn tail_logs(&self, _: u32, _: TailRequest, _: &mut [u8]) -> Result<TailPage, ActionError> {
-        Err(ActionError::UnknownService)
-    }
 }
 
 // One tracker per tuple element; the generic `M` of the expanding impl is not
@@ -755,6 +797,28 @@ macro_rules! tuple_registries {
                 Err(ActionError::UnknownService)
             }
 
+            async fn read_records(
+                &self,
+                service: u32,
+                action: u32,
+                snapshot: u32,
+                from: u32,
+            ) -> Result<Records, ActionError> {
+                $(if $name::ID == service {
+                    return isolated(read_records_of(self.$index, action, snapshot, from)).await;
+                })+
+                log_unknown_service("read_records", service);
+                Err(ActionError::UnknownService)
+            }
+
+            async fn close_records(&self, service: u32, snapshot: u32) -> Result<(), ActionError> {
+                $(if $name::ID == service {
+                    return isolated(self.$index.close_records(snapshot)).await;
+                })+
+                log_unknown_service("close_records", service);
+                Err(ActionError::UnknownService)
+            }
+
             async fn read_stream(
                 &self,
                 service: u32,
@@ -781,19 +845,6 @@ macro_rules! tuple_registries {
             fn link_lost(&self) {
                 log::info!(target: "service", "Link lost, notifying services (count={})", $count);
                 $(self.$index.link_lost();)+
-            }
-
-            fn tail_logs(
-                &self,
-                service: u32,
-                request: TailRequest,
-                buf: &mut [u8],
-            ) -> Result<TailPage, ActionError> {
-                $(if $name::ID == service {
-                    return self.$index.tail_logs(request, buf);
-                })+
-                log_unknown_service("tail_logs", service);
-                Err(ActionError::UnknownService)
             }
         }
     };

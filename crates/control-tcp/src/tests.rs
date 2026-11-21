@@ -33,7 +33,7 @@ use rohi_control_proto::control::{
 use rohi_control_proto::limits::{MAX_REQUEST_LEN, MAX_RESPONSE_LEN};
 use rohi_control_proto::{PROTOCOL_VERSION, decode, encode};
 
-use crate::frame::{HEADER_LEN, decode_header, encode_header};
+use crate::frame::{HEADER_LEN, decode_header, encode_header, plain_preamble};
 use crate::{Acceptor, ControlTcp, Timed};
 
 #[derive(Default)]
@@ -57,6 +57,11 @@ struct Wire {
 struct Connection(Rc<RefCell<Wire>>);
 
 impl Connection {
+    // A plaintext client: the preamble, then the records.
+    fn plain(incoming: &[u8], chunk: usize) -> Self {
+        Self::new(&[plain_preamble().as_slice(), incoming].concat(), chunk)
+    }
+
     fn new(incoming: &[u8], chunk: usize) -> Self {
         let wire = Wire {
             incoming: incoming.iter().copied().collect(),
@@ -263,7 +268,7 @@ fn serve(connections: &[&Connection]) {
 
 #[test]
 fn a_request_is_answered_with_one_record() {
-    let connection = Connection::new(&get_info(5), 1024);
+    let connection = Connection::plain(&get_info(5), 1024);
     serve(&[&connection]);
     let replies = responses(&connection.outgoing());
     assert_eq!(replies.len(), 1);
@@ -273,7 +278,7 @@ fn a_request_is_answered_with_one_record() {
 
 #[test]
 fn records_split_into_single_bytes_are_reassembled() {
-    let connection = Connection::new(&get_info(9), 1);
+    let connection = Connection::plain(&get_info(9), 1);
     serve(&[&connection]);
     let replies = responses(&connection.outgoing());
     assert_eq!(replies.len(), 1);
@@ -285,7 +290,7 @@ fn requests_are_answered_in_order_on_one_connection() {
     let mut bytes = get_info(1);
     bytes.extend(get_info(2));
     bytes.extend(get_info(3));
-    let connection = Connection::new(&bytes, 7);
+    let connection = Connection::plain(&bytes, 7);
     serve(&[&connection]);
     let ids: Vec<u32> = responses(&connection.outgoing())
         .iter()
@@ -298,7 +303,7 @@ fn requests_are_answered_in_order_on_one_connection() {
 fn malformed_protobuf_is_answered_and_the_connection_stays_open() {
     let mut bytes = record(&[0xff, 0xff, 0xff, 0xff, 0xff]);
     bytes.extend(get_info(4));
-    let connection = Connection::new(&bytes, 1024);
+    let connection = Connection::plain(&bytes, 1024);
     serve(&[&connection]);
     let replies = responses(&connection.outgoing());
     assert_eq!(replies.len(), 2);
@@ -312,7 +317,7 @@ fn an_oversized_record_is_rejected_before_its_payload_is_read() {
     // Only the header is on the wire: the payload is never read.
     let mut bytes = encode_header(MAX_REQUEST_LEN as u32 + 1).to_vec();
     bytes.extend(get_info(1));
-    let connection = Connection::new(&bytes, 1024);
+    let connection = Connection::plain(&bytes, 1024);
     serve(&[&connection]);
     let replies = responses(&connection.outgoing());
     assert_eq!(replies.len(), 1);
@@ -324,7 +329,7 @@ fn an_oversized_record_is_rejected_before_its_payload_is_read() {
 #[test]
 fn the_largest_request_is_accepted() {
     // Not valid Protobuf, but within the limit: it reaches the controller.
-    let connection = Connection::new(&record(&[0u8; MAX_REQUEST_LEN]), 1024);
+    let connection = Connection::plain(&record(&[0u8; MAX_REQUEST_LEN]), 1024);
     serve(&[&connection]);
     let replies = responses(&connection.outgoing());
     assert_eq!(replies.len(), 1);
@@ -335,7 +340,7 @@ fn the_largest_request_is_accepted() {
 fn an_empty_record_is_rejected_and_closes_the_connection() {
     let mut bytes = encode_header(0).to_vec();
     bytes.extend(get_info(1));
-    let connection = Connection::new(&bytes, 1024);
+    let connection = Connection::plain(&bytes, 1024);
     serve(&[&connection]);
     let replies = responses(&connection.outgoing());
     assert_eq!(replies.len(), 1);
@@ -346,23 +351,23 @@ fn an_empty_record_is_rejected_and_closes_the_connection() {
 fn a_connection_that_ends_inside_a_payload_gets_no_response() {
     let mut bytes = get_info(1);
     bytes.truncate(bytes.len() - 1);
-    let connection = Connection::new(&bytes, 1024);
+    let connection = Connection::plain(&bytes, 1024);
     serve(&[&connection]);
     assert!(connection.outgoing().is_empty());
 }
 
 #[test]
 fn a_connection_that_ends_inside_a_header_gets_no_response() {
-    let connection = Connection::new(&get_info(1)[..2], 1024);
+    let connection = Connection::plain(&get_info(1)[..2], 1024);
     serve(&[&connection]);
     assert!(connection.outgoing().is_empty());
 }
 
 #[test]
 fn a_reset_connection_is_dropped_and_the_next_client_is_served() {
-    let first = Connection::new(&get_info(1)[..3], 1024);
+    let first = Connection::plain(&get_info(1)[..3], 1024);
     first.0.borrow_mut().reset_when_empty = true;
-    let second = Connection::new(&get_info(2), 1024);
+    let second = Connection::plain(&get_info(2), 1024);
     serve(&[&first, &second]);
     assert!(first.outgoing().is_empty());
     let replies = responses(&second.outgoing());
@@ -374,8 +379,8 @@ fn a_reset_connection_is_dropped_and_the_next_client_is_served() {
 fn each_client_starts_from_a_clean_state() {
     // The first client leaves half a record behind; it must not leak into the
     // second connection.
-    let first = Connection::new(&get_info(1)[..6], 1024);
-    let second = Connection::new(&get_info(2), 1024);
+    let first = Connection::plain(&get_info(1)[..6], 1024);
+    let second = Connection::plain(&get_info(2), 1024);
     serve(&[&first, &second]);
     let replies = responses(&second.outgoing());
     assert_eq!(replies.len(), 1);
@@ -417,7 +422,7 @@ fn a_request_with_no_free_slot_is_answered_busy_and_its_payload_is_skipped() {
     let first = hub.connect(rohi_control::Transport::Ble).unwrap();
     let second = hub.connect(rohi_control::Transport::Ble).unwrap();
     let held = (first.request().unwrap(), second.request().unwrap());
-    let wire = Connection::new(&[get_info(1), get_info(2)].concat(), 4096);
+    let wire = Connection::plain(&[get_info(1), get_info(2)].concat(), 4096);
     let mut control = ControlTcp::new(Clients([wire.clone()].into()), &hub);
     drive(&hub, &controller, control.serve_next()).unwrap();
     let answers = responses(&wire.outgoing());
@@ -439,7 +444,7 @@ fn a_client_beyond_the_session_limit_is_refused() {
     let live: Vec<_> = (0..rohi_control::MAX_SESSIONS)
         .map(|_| hub.connect(rohi_control::Transport::Ble).unwrap())
         .collect();
-    let wire = Connection::new(&get_info(1), 4096);
+    let wire = Connection::plain(&get_info(1), 4096);
     let mut control = ControlTcp::new(Clients([wire.clone()].into()), &hub);
     drive(&hub, &controller, control.serve_next()).unwrap();
     assert!(wire.outgoing().is_empty());
@@ -452,7 +457,7 @@ fn every_tcp_connection_is_its_own_session_across_transports() {
     let access = plain_access();
     let hub = ControlHub::<2>::with_access(&access);
     let ble = hub.connect(rohi_control::Transport::Ble).unwrap();
-    let wire = Connection::new(&get_info(1), 4096);
+    let wire = Connection::plain(&get_info(1), 4096);
     let mut control = ControlTcp::new(Clients([wire.clone()].into()), &hub);
     drive(&hub, &controller, control.serve_next()).unwrap();
     assert_eq!(responses(&wire.outgoing()).len(), 1);
@@ -465,8 +470,8 @@ fn every_tcp_connection_is_its_own_session_across_transports() {
 use core::cell::Cell;
 
 use rohi_service::{
-    Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, Service, StreamChunk,
-    StreamFile, StreamInfo, Value,
+    Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, ResultFormat, Service,
+    StreamChunk, StreamFile, StreamInfo, Value,
 };
 
 #[derive(Service)]
@@ -477,7 +482,7 @@ struct Probe {
 
 impl Action for Probe {
     const ACTIONS: &'static [ActionDescriptor] =
-        &[ActionDescriptor::new(1, "export", ActionAccess::Read).stream()];
+        &[ActionDescriptor::new(1, "export", ActionAccess::Read).format(ResultFormat::Stream)];
 
     async fn invoke(
         &self,
@@ -567,8 +572,8 @@ fn a_stream_is_released_with_its_connection_and_never_reaches_the_next_client() 
         board: "demo-board",
     };
     let controller = Controller::new(Device::new(info, || 0, (), (), (&probe,)), OpenPolicy);
-    let first = Connection::new(&[export(), read_stream()].concat(), 4096);
-    let second = Connection::new(&read_stream(), 4096);
+    let first = Connection::plain(&[export(), read_stream()].concat(), 4096);
+    let second = Connection::plain(&read_stream(), 4096);
     let clients = Clients([first.clone(), second.clone()].into());
     let access = plain_access();
     let hub = ControlHub::<2>::with_access(&access);
@@ -605,8 +610,8 @@ fn a_stream_left_open_cannot_be_read_by_the_next_connection_even_if_it_lives() {
         board: "demo-board",
     };
     let controller = Controller::new(Device::new(info, || 0, (), (), (&probe,)), OpenPolicy);
-    let first = Connection::new(&export(), 4096);
-    let second = Connection::new(&read_stream(), 4096);
+    let first = Connection::plain(&export(), 4096);
+    let second = Connection::plain(&read_stream(), 4096);
     let clients = Clients([first.clone(), second.clone()].into());
     let access = plain_access();
     let hub = ControlHub::<2>::with_access(&access);
@@ -622,13 +627,13 @@ fn a_stream_left_open_cannot_be_read_by_the_next_connection_even_if_it_lives() {
 }
 
 // ---------------------------------------------------------------------------
-// The secure channel: restricted endpoints
+// The secure channel: protected and private endpoints
 // ---------------------------------------------------------------------------
 
 mod secure_endpoint {
     use core::cell::Cell;
 
-    use rohi_control::{AccessPolicy, Transport};
+    use rohi_control::{AccessPolicy, Transport, TransportAccessMode};
 
     use super::*;
     use crate::PskSource;
@@ -653,7 +658,7 @@ mod secure_endpoint {
         true
     }
 
-    fn restricted_access() -> ControlAccess {
+    fn protected_access() -> ControlAccess {
         let access = ControlAccess::new(entropy);
         access.set_tcp_psk(true);
         access
@@ -749,7 +754,7 @@ mod secure_endpoint {
         }
     }
 
-    // Serves one scripted connection to its end on a restricted endpoint with `key`.
+    // Serves one scripted connection to its end on a protected endpoint with `key`.
     fn serve_one(access: &ControlAccess, key: &Key, bytes: &[u8]) -> Connection {
         let controller = secured(access);
         let hub = ControlHub::<2>::with_access(access);
@@ -782,7 +787,7 @@ mod secure_endpoint {
 
     #[test]
     fn a_request_with_no_free_slot_is_answered_busy_and_the_connection_ends() {
-        let access = restricted_access();
+        let access = protected_access();
         let key = Key(Cell::new(Some(KEY)));
         let mut script = Script::start(&KEY);
         script.request(info(1), 1);
@@ -799,13 +804,13 @@ mod secure_endpoint {
         let answers = script.responses(&wire.outgoing());
         assert_eq!(answers.len(), 1);
         assert!(is_error(&answers[0], pb::ErrorCode::Busy));
-        assert_eq!(access.stats(Transport::Tcp).auth_failures, 0);
+        assert_eq!(access.stats(Transport::Tcp).last_error, error_kind::BUSY);
         drop(held);
     }
 
     #[test]
     fn an_authenticated_client_is_served_over_encrypted_records() {
-        let access = restricted_access();
+        let access = protected_access();
         let key = Key(Cell::new(Some(KEY)));
         let mut script = Script::start(&KEY);
         script.request(info(1), 1);
@@ -826,12 +831,12 @@ mod secure_endpoint {
             !written.windows(10).any(|window| window == b"demo-board"),
             "the response is not in the clear"
         );
-        assert_eq!(access.stats(Transport::Tcp).auth_failures, 0);
+        assert_eq!(access.errors(), 0);
     }
 
     #[test]
     fn the_handshake_makes_the_link_encrypted_and_authenticated_for_the_policy() {
-        let access = restricted_access();
+        let access = protected_access();
         let key = Key(Cell::new(Some(KEY)));
         let mut script = Script::start(&KEY);
         script.request(reset(), 7);
@@ -842,13 +847,12 @@ mod secure_endpoint {
             is_error(&answers[0], pb::ErrorCode::NotFound),
             "{answers:?}"
         );
-        let stats = access.stats(Transport::Tcp);
-        assert_eq!((stats.accepted, stats.denied), (1, 0));
+        assert_eq!((access.requests(), access.errors()), (1, 0));
     }
 
     #[test]
     fn a_client_with_another_key_gets_nothing_and_nothing_is_processed() {
-        let access = restricted_access();
+        let access = protected_access();
         let key = Key(Cell::new(Some(KEY)));
         let mut script = Script::with_another_key();
         script.request(reset(), 1);
@@ -858,14 +862,14 @@ mod secure_endpoint {
         let written = wire.outgoing();
         assert_eq!(written.len(), SERVER_HELLO_LEN);
         let stats = access.stats(Transport::Tcp);
-        assert_eq!((stats.accepted, stats.denied), (0, 0));
-        assert_eq!(stats.auth_failures, 1);
+        // One failed handshake is one error, not two.
+        assert_eq!((access.requests(), access.errors()), (0, 1));
         assert_eq!(stats.last_error, error_kind::AUTH);
     }
 
     #[test]
-    fn plaintext_records_are_never_served_on_a_restricted_endpoint() {
-        let access = restricted_access();
+    fn plaintext_records_without_a_preamble_are_never_served() {
+        let access = protected_access();
         let key = Key(Cell::new(Some(KEY)));
         // The framing of the open mode, and a handshake that is not one.
         for bytes in [
@@ -879,11 +883,11 @@ mod secure_endpoint {
                 "nothing is answered in the clear"
             );
         }
-        assert_eq!(access.stats(Transport::Tcp).accepted, 0);
+        assert_eq!(access.requests(), 0);
     }
 
     #[test]
-    fn without_a_key_a_restricted_endpoint_serves_nobody() {
+    fn without_a_key_a_client_of_the_handshake_is_refused() {
         let access = ControlAccess::new(entropy);
         let key = Key(Cell::new(None));
         let mut script = Script::start(&KEY);
@@ -906,7 +910,7 @@ mod secure_endpoint {
 
     #[test]
     fn a_tampered_record_ends_the_connection_without_a_response() {
-        let access = restricted_access();
+        let access = protected_access();
         let key = Key(Cell::new(Some(KEY)));
         for index in 0..(RECORD_HEADER_LEN + 5 + TAG_LEN) {
             let mut script = Script::start(&KEY);
@@ -918,12 +922,12 @@ mod secure_endpoint {
             let wire = serve_one(&access, &key, &bytes);
             assert_eq!(wire.outgoing().len(), SERVER_HELLO_LEN, "byte {index}");
         }
-        assert_eq!(access.stats(Transport::Tcp).accepted, 0);
+        assert_eq!(access.requests(), 0);
     }
 
     #[test]
     fn a_replayed_dropped_or_reordered_record_ends_the_connection() {
-        let access = restricted_access();
+        let access = protected_access();
         let key = Key(Cell::new(Some(KEY)));
         let mut script = Script::start(&KEY);
         let handshake = script.bytes.clone();
@@ -952,7 +956,7 @@ mod secure_endpoint {
 
     #[test]
     fn a_connection_that_ends_inside_a_record_gets_no_response() {
-        let access = restricted_access();
+        let access = protected_access();
         let key = Key(Cell::new(Some(KEY)));
         let mut script = Script::start(&KEY);
         script.request(info(1), 1);
@@ -976,7 +980,7 @@ mod secure_endpoint {
 
     #[test]
     fn a_record_over_the_request_limit_ends_the_connection_in_silence() {
-        let access = restricted_access();
+        let access = protected_access();
         let key = Key(Cell::new(Some(KEY)));
         let script = Script::start(&KEY);
         let mut bytes = script.bytes.clone();
@@ -991,7 +995,7 @@ mod secure_endpoint {
 
     #[test]
     fn a_new_key_ends_the_connections_of_the_old_one() {
-        let access = restricted_access();
+        let access = protected_access();
         let key = Key(Cell::new(Some(KEY)));
         let mut script = Script::start(&KEY);
         script.request(info(1), 1);
@@ -1055,7 +1059,7 @@ mod secure_endpoint {
 
     #[test]
     fn cancelling_the_serving_future_closes_the_session_and_leaves_nothing_behind() {
-        let access = restricted_access();
+        let access = protected_access();
         let key = Key(Cell::new(Some(KEY)));
         let script = Script::start(&KEY);
         // A client that connects, authenticates and then says nothing.
@@ -1122,10 +1126,10 @@ mod secure_endpoint {
         assert_eq!(access.stats(Transport::Tcp).sessions, 0);
     }
 
-    // A client of a restricted endpoint that sends one byte every 400 ms from byte `from` on,
+    // A client of a protected endpoint that sends one byte every 400 ms from byte `from` on,
     // against limits of one second: no single read is slow, the whole is.
     fn trickle(bytes: &[u8], from: usize) -> (ControlAccess, Connection) {
-        let access = restricted_access();
+        let access = protected_access();
         let key = Key(Cell::new(Some(KEY)));
         let wire = Connection::trickling(bytes, from, Duration::from_millis(400));
         let controller = secured(&access);
@@ -1145,7 +1149,7 @@ mod secure_endpoint {
         assert!(wire.consumed() < CLIENT_HELLO_LEN);
         assert!(wire.outgoing().is_empty());
         assert_eq!(access.stats(Transport::Tcp).last_error, error_kind::IO);
-        assert_eq!(access.stats(Transport::Tcp).auth_failures, 0);
+        assert_eq!(access.errors(), 1);
     }
 
     #[test]
@@ -1158,7 +1162,7 @@ mod secure_endpoint {
         assert!(wire.consumed() < script.bytes.len());
         assert_eq!(wire.outgoing().len(), SERVER_HELLO_LEN);
         assert_eq!(access.stats(Transport::Tcp).last_error, error_kind::IO);
-        assert_eq!(access.stats(Transport::Tcp).accepted, 0);
+        assert_eq!(access.requests(), 0);
     }
 
     #[test]
@@ -1167,7 +1171,7 @@ mod secure_endpoint {
         let mut script = Script::start(&KEY);
         let handshake = script.bytes.len();
         script.request(info(1), 1);
-        let access = restricted_access();
+        let access = protected_access();
         let key = Key(Cell::new(Some(KEY)));
         let wire = Connection::trickling(&script.bytes, handshake, Duration::from_millis(2));
         let controller = secured(&access);
@@ -1176,5 +1180,149 @@ mod secure_endpoint {
             .with_timeouts(Duration::from_secs(1), Duration::from_secs(1));
         drive_secured(&hub, &controller, control.serve_next()).unwrap();
         assert_eq!(script.responses(&wire.outgoing()).len(), 1);
+    }
+
+    // The plaintext requests of a client: the preamble, then the records.
+    fn plain_script(calls: &[Call]) -> Vec<u8> {
+        let mut bytes = plain_preamble().to_vec();
+        for (id, call) in calls.iter().enumerate() {
+            let request = pb::Request {
+                protocol_version: PROTOCOL_VERSION,
+                request_id: id as u32 + 1,
+                request: Some(call.clone()),
+            };
+            let mut payload = [0u8; 64];
+            let len = encode(&request, &mut payload).unwrap();
+            bytes.extend(record(&payload[..len]));
+        }
+        bytes
+    }
+
+    fn denied(response: &pb::Response) -> bool {
+        is_error(response, pb::ErrorCode::PermissionDenied)
+    }
+
+    #[test]
+    fn a_protected_endpoint_serves_plaintext_reads_and_refuses_plaintext_mutations() {
+        let access = protected_access();
+        let key = Key(Cell::new(Some(KEY)));
+        let wire = serve_one(&access, &key, &plain_script(&[info(1), reset(), info(3)]));
+        let answers = responses(&wire.outgoing());
+        assert_eq!(answers.len(), 3);
+        assert!(matches!(answers[0].response, Some(Reply::GetInfo(_))));
+        assert!(denied(&answers[1]));
+        // The refusal does not end the connection.
+        assert!(matches!(answers[2].response, Some(Reply::GetInfo(_))));
+        // Requests are counted, the refusal is not an error.
+        assert_eq!((access.requests(), access.errors()), (3, 0));
+    }
+
+    #[test]
+    fn a_protected_endpoint_serves_both_framings_and_only_proof_unlocks_a_mutation() {
+        let access = protected_access();
+        let key = Key(Cell::new(Some(KEY)));
+        let plain = serve_one(&access, &key, &plain_script(&[reset()]));
+        assert!(denied(&responses(&plain.outgoing())[0]));
+        let mut script = Script::start(&KEY);
+        script.request(reset(), 1);
+        let secure = serve_one(&access, &key, &script.bytes);
+        let answers = script.responses(&secure.outgoing());
+        // Allowed, then NotFound: the demo device has no such section.
+        assert!(
+            is_error(&answers[0], pb::ErrorCode::NotFound),
+            "{answers:?}"
+        );
+        assert_eq!((access.requests(), access.errors()), (2, 0));
+    }
+
+    #[test]
+    fn an_open_endpoint_allows_plaintext_mutations_without_proof() {
+        let access = protected_access();
+        access.set_mode(Transport::Tcp, TransportAccessMode::Open);
+        let key = Key(Cell::new(None));
+        let wire = serve_one(&access, &key, &plain_script(&[reset()]));
+        let answers = responses(&wire.outgoing());
+        assert!(
+            is_error(&answers[0], pb::ErrorCode::NotFound),
+            "{answers:?}"
+        );
+        // A key is not needed to be served, and the authenticated way still works.
+        let mut script = Script::start(&KEY);
+        script.request(reset(), 1);
+        let key = Key(Cell::new(Some(KEY)));
+        let wire = serve_one(&access, &key, &script.bytes);
+        assert_eq!(script.responses(&wire.outgoing()).len(), 1);
+    }
+
+    #[test]
+    fn a_private_endpoint_never_serves_plaintext_and_does_not_count_it_as_an_error() {
+        let access = protected_access();
+        access.set_mode(Transport::Tcp, TransportAccessMode::Private);
+        let key = Key(Cell::new(Some(KEY)));
+        let wire = serve_one(&access, &key, &plain_script(&[info(1)]));
+        assert!(wire.outgoing().is_empty());
+        // Nothing after the first four bytes was read, let alone processed.
+        assert_eq!(wire.consumed(), 4);
+        assert_eq!((access.requests(), access.errors()), (0, 0));
+        // The authenticated client is served, whatever it asks.
+        let mut script = Script::start(&KEY);
+        script.request(info(1), 1);
+        script.request(reset(), 2);
+        let wire = serve_one(&access, &key, &script.bytes);
+        let answers = script.responses(&wire.outgoing());
+        assert!(matches!(answers[0].response, Some(Reply::GetInfo(_))));
+        assert!(
+            is_error(&answers[1], pb::ErrorCode::NotFound),
+            "{answers:?}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_preamble_or_version_ends_the_connection_and_counts_once() {
+        let key = Key(Cell::new(Some(KEY)));
+        let mut wrong_version = plain_preamble().to_vec();
+        wrong_version[4] ^= 0xff;
+        wrong_version.extend(get_info(1));
+        // Not a preamble: a request in the old plaintext framing, text, and a hello of another
+        // protocol.
+        for bytes in [
+            get_info(1),
+            b"GET / HTTP/1.1\r\n\r\n".to_vec(),
+            b"ROHX\x01".to_vec(),
+            wrong_version,
+        ] {
+            let access = protected_access();
+            let wire = serve_one(&access, &key, &bytes);
+            assert!(wire.outgoing().is_empty(), "{bytes:?}");
+            assert_eq!((access.requests(), access.errors()), (0, 1), "{bytes:?}");
+            assert_eq!(access.stats(Transport::Tcp).last_error, error_kind::FRAME);
+        }
+    }
+
+    #[test]
+    fn a_failed_handshake_never_falls_back_to_plaintext() {
+        let access = protected_access();
+        let key = Key(Cell::new(Some(KEY)));
+        let mut script = Script::with_another_key();
+        // After the handshake that cannot verify, a client tries plain records anyway.
+        script.bytes.extend(plain_script(&[info(1)]));
+        let wire = serve_one(&access, &key, &script.bytes);
+        assert_eq!(wire.outgoing().len(), SERVER_HELLO_LEN);
+        assert_eq!((access.requests(), access.errors()), (0, 1));
+    }
+
+    #[test]
+    fn a_missing_key_leaves_plaintext_reads_and_counts_a_handshake_as_one_error() {
+        let access = ControlAccess::new(entropy);
+        let key = Key(Cell::new(None));
+        let wire = serve_one(&access, &key, &plain_script(&[info(1), reset()]));
+        let answers = responses(&wire.outgoing());
+        assert!(matches!(answers[0].response, Some(Reply::GetInfo(_))));
+        assert!(denied(&answers[1]));
+        let mut script = Script::start(&KEY);
+        script.request(info(1), 1);
+        let wire = serve_one(&access, &key, &script.bytes);
+        assert!(wire.outgoing().is_empty());
+        assert_eq!(access.errors(), 1);
     }
 }

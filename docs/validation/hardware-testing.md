@@ -129,7 +129,7 @@ any claim about the shared `control_task`: fill the main stack with a pattern at
 
 - Config read and patch, Status of every service, `rohi status logging`;
 - an expensive action (`rohi connectivity get_payload 0`), a stream (`rohi logs download`) and its close;
-- `rohi wifi reconnect`;
+- `rohi action wireless wifi_reconnect`;
 - one request while a second central is refused (`Busy`) and a disconnect during a running action.
 
 Record the result and the margin in the [support matrix](../support/overview.md) before the resource budget is lowered. Also

@@ -312,11 +312,10 @@ fn unauthorized_diagnostic(reason: &str) -> Diagnostic {
     let diagnostic = Diagnostic::new(format!("the device refused the request: {reason}"));
     match reason {
         "no_psk" => diagnostic
-            .hint("no TCP key is provisioned, so a restricted TCP endpoint serves nobody")
-            .hint("make the device generate one: `rohi control_tcp reveal_psk` (over BLE; the action prints the key)"),
+            .hint("no TCP key is provisioned, so nobody can authenticate to the TCP endpoint"),
         "encryption_required" => diagnostic
             .hint("this request needs an encrypted and authenticated link")
-            .hint("connect to a restricted TCP endpoint with the key: `--psk-file FILE`"),
+            .hint("connect to the TCP endpoint with the key (the handshake): `--psk-file FILE`"),
         "pairing_required" => diagnostic
             .hint("this BLE endpoint is restricted or the request carries a secret: pair with the device first (an encrypted link)"),
         _ => diagnostic,
@@ -330,7 +329,7 @@ mod tests {
     #[test]
     fn rendering_has_the_message_details_and_hints() {
         let rendered = CliError::PartialApply(Box::new(PartialApply {
-            applied: vec!["wifi".into()],
+            applied: vec!["wireless".into()],
             failed: "connectivity".into(),
             pending: vec![],
             source: Error::Device(ErrorCode::InvalidArgument),
@@ -342,7 +341,7 @@ mod tests {
             "{rendered}"
         );
         assert!(rendered.contains("failed: connectivity"), "{rendered}");
-        assert!(rendered.contains("applied:\n  wifi"), "{rendered}");
+        assert!(rendered.contains("applied:\n  wireless"), "{rendered}");
     }
 
     #[test]

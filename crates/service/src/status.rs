@@ -19,16 +19,15 @@
 //!
 //! A service implements [`Status`] on top of its **live** runtime state; there
 //! is no stored status struct to duplicate. The [`StatusRegistry`](crate::StatusRegistry)
-//! adds the bookkeeping every service needs (status revision, time in the
-//! current state) without the service cooperating, see
-//! [`Tracker`](crate::Tracker).
+//! adds the bookkeeping every service needs (the status revision) without the
+//! service cooperating, see [`Tracker`](crate::Tracker).
 //!
 //! ```
 //! use embassy_futures::block_on;
 //! use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 //! use rohi_service::{
-//!     FieldDescriptor, Service, ServiceHealth, ServiceState, ServiceSummary, Status,
-//!     StatusRegistry, StatusWriter, Statuses, Unit, ValueKind, WriteError,
+//!     FieldDescriptor, Service, ServiceHealth, ServiceSummary, Status, StatusRegistry,
+//!     StatusWriter, Statuses, Unit, ValueKind, WriteError,
 //! };
 //!
 //! #[derive(Service)]
@@ -42,7 +41,7 @@
 //!         &[FieldDescriptor::new(1, "rssi", ValueKind::I64).unit(Unit::Dbm)];
 //!
 //!     async fn summary(&self) -> ServiceSummary {
-//!         ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true)
+//!         ServiceSummary::new(ServiceHealth::Ok)
 //!     }
 //!
 //!     async fn status(&self, out: &mut impl StatusWriter) -> Result<(), WriteError> {
@@ -53,7 +52,7 @@
 //! let wifi = WifiService { rssi: -61 };
 //! let statuses = Statuses::<NoopRawMutex, _>::new((&wifi,));
 //! let status = block_on(statuses.status(WifiService::ID, 1_000)).unwrap();
-//! assert_eq!(status.summary.state, ServiceState::Running);
+//! assert_eq!(status.summary.health, ServiceHealth::Ok);
 //! assert_eq!(status.fields.len(), 1);
 //! ```
 //!
@@ -64,20 +63,16 @@
 //! [`MAX_FIELD_VALUE_LEN`] bytes and never cut). Field ids are stable and only
 //! ever added.
 //!
-//! # State, health and readiness
+//! # Health
 //!
-//! State, health and readiness are **separate** values, never one big enum:
+//! [`ServiceHealth`] is the one common operational indicator of a service:
+//! `unknown`, `ok`, `degraded` or `error`. There is no separate lifecycle
+//! state or readiness flag; a service that needs to tell more (a link state,
+//! a sensor state) does so in its own status fields.
 //!
-//! | | Values |
-//! |---|---|
-//! | [`ServiceState`] (lifecycle) | `disabled`, `stopped`, `starting`, `running`, `stopping`, `failed` |
-//! | [`ServiceHealth`] (quality) | `unknown`, `ok`, `degraded`, `error` |
-//! | `ready` | whether the service can currently do its job |
-//!
-//! Examples: a connecting Wi-Fi is `starting / unknown / not ready`; a
-//! telemetry service that cannot reach its backend is
-//! `running / degraded / not ready`; an optional GPS turned off is
-//! `disabled / unknown / not ready`, which is **not an error**.
+//! Examples: a connecting Wi-Fi is `unknown`; a telemetry service that cannot
+//! reach its backend is `degraded`; an optional GPS turned off is `unknown`,
+//! which is **not an error**.
 //!
 //! # Issues
 //!
@@ -89,25 +84,24 @@
 //! ([`Startup`] reports [`ISSUE_STARTUP_FAILED`]); services start at
 //! `FIRST_SERVICE_ISSUE`. History does not belong here: it is diagnostics.
 //!
-//! # Revision and state age
+//! # Revision
 //!
-//! The registry derives a **status revision** that changes when state,
-//! health, readiness or the active issues change (values that vary all the
-//! time, such as counters or signal strength, deliberately do not bump it),
-//! and the **time in the current state**. Revisions and ages are derived from
-//! what the service reports when a client asks; an issue that carries no age
-//! is aged by the time since the set of active issues last changed.
+//! The registry derives a **status revision** that changes when the health or
+//! the active issues change (values that vary all the time, such as counters
+//! or signal strength, deliberately do not bump it). Revisions and ages are
+//! derived from what the service reports when a client asks; an issue that
+//! carries no age is aged by the time since the set of active issues last
+//! changed.
 //!
 //! # Device health
 //!
 //! **Device health** is decided by the firmware, never by the client.
 //! `ControlBackend::device_health` of
 //! [`rohi-control`](../../rohi_control/index.html) defaults to
-//! [`default_device_health`]: disabled services do not count; a failed or
-//! `error` service is an error for the device when it is
-//! [`ESSENTIAL`](Status::ESSENTIAL) (the default) and a degradation otherwise;
-//! a `degraded` service, or a running one that is not ready, degrades the
-//! device. Firmware with other redundancy rules overrides it.
+//! [`default_device_health`]: an `error` service is an error for the device
+//! when it is [`ESSENTIAL`](Status::ESSENTIAL) (the default) and a degradation
+//! otherwise; a `degraded` service degrades the device; `unknown` and `ok`
+//! services do not count. Firmware with other redundancy rules overrides it.
 
 use core::cell::Cell;
 
@@ -116,30 +110,13 @@ use embassy_sync::blocking_mutex::raw::RawMutex;
 use heapless::Vec;
 
 use crate::action::enum_ok;
-use crate::action::{Action, ActionDescriptor, ActionError, ActionOutput};
+use crate::action::{Action, ActionDescriptor, ActionError, ActionOutput, StreamChunk};
 use crate::field::{EnumDescriptor, FieldDescriptor};
 use crate::service::Service;
 use crate::{MAX_FIELD_VALUE_LEN, MAX_FIELDS, MAX_ISSUES};
 use rohi_config::Value;
 
-/// Lifecycle state of a service.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ServiceState {
-    /// Turned off by configuration; not an error.
-    Disabled,
-    /// Not running.
-    Stopped,
-    /// Starting up.
-    Starting,
-    /// Running.
-    Running,
-    /// Shutting down.
-    Stopping,
-    /// Crashed and not recovering by itself.
-    Failed,
-}
-
-/// Operational quality of a service, independent of its lifecycle.
+// Operational quality of a service: the one common status indicator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ServiceHealth {
     /// Not known, for example while starting or when disabled.
@@ -216,22 +193,14 @@ pub struct Issue {
 /// What a service reports about itself in one call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ServiceSummary {
-    /// Lifecycle state.
-    pub state: ServiceState,
     /// Operational quality.
     pub health: ServiceHealth,
-    /// Whether the service can currently perform its intended role.
-    pub ready: bool,
 }
 
 impl ServiceSummary {
-    /// A summary of the given state, health and readiness.
-    pub const fn new(state: ServiceState, health: ServiceHealth, ready: bool) -> Self {
-        Self {
-            state,
-            health,
-            ready,
-        }
+    /// A summary of the given health.
+    pub const fn new(health: ServiceHealth) -> Self {
+        Self { health }
     }
 }
 
@@ -346,8 +315,8 @@ impl Collector {
 /// runtime state.
 ///
 /// The status is written field by field; there is no stored status struct.
-/// Field ids are stable and only ever added. Shared bookkeeping (state age,
-/// revision, device health) is done by the status registry, not by the
+/// Field ids are stable and only ever added. Shared bookkeeping (revision,
+/// device health) is done by the status registry, not by the
 /// service; the service only reports what it knows.
 ///
 /// A service implements `Status` only if it has runtime state to show, and
@@ -368,7 +337,7 @@ pub trait Status: Service {
     /// Optional services degrade the device health at most.
     const ESSENTIAL: bool = true;
 
-    /// Lifecycle state, health and readiness.
+    /// Health.
     async fn summary(&self) -> ServiceSummary;
 
     /// Appends the currently active issues.
@@ -419,7 +388,7 @@ impl<S: Status> Status for Startup<S> {
 
     async fn summary(&self) -> ServiceSummary {
         if self.failed {
-            return ServiceSummary::new(ServiceState::Failed, ServiceHealth::Error, false);
+            return ServiceSummary::new(ServiceHealth::Error);
         }
         Status::summary(&self.service).await
     }
@@ -458,6 +427,39 @@ impl<S: Action> Action for Startup<S> {
         }
         Action::invoke(&self.service, action, args, out).await
     }
+
+    // What a started service holds is read and released through the wrapper too.
+    async fn read_records(
+        &self,
+        action: u32,
+        snapshot: u32,
+        from: u32,
+        out: &mut impl ActionOutput,
+    ) -> Result<(), ActionError> {
+        Action::read_records(&self.service, action, snapshot, from, out).await
+    }
+
+    async fn close_records(&self, snapshot: u32) -> Result<(), ActionError> {
+        Action::close_records(&self.service, snapshot).await
+    }
+
+    async fn read_stream(
+        &self,
+        stream: u32,
+        file: u32,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> Result<StreamChunk, ActionError> {
+        Action::read_stream(&self.service, stream, file, offset, buf).await
+    }
+
+    async fn close_stream(&self, stream: u32) -> Result<(), ActionError> {
+        Action::close_stream(&self.service, stream).await
+    }
+
+    fn link_lost(&self) {
+        Action::link_lost(&self.service);
+    }
 }
 
 /// Id, name and version of a service.
@@ -480,17 +482,10 @@ pub struct ServiceStatusSummary {
     pub name: &'static str,
     /// Version of the status schema.
     pub version: u32,
-    /// Lifecycle state.
-    pub state: ServiceState,
     /// Operational quality.
     pub health: ServiceHealth,
-    /// Whether the service can currently perform its intended role.
-    pub ready: bool,
-    /// Incremented whenever the state, health, readiness or the active
-    /// issues change.
+    /// Incremented whenever the health or the active issues change.
     pub revision: u32,
-    /// Time spent in the current lifecycle state.
-    pub state_age_ms: u64,
     /// Whether the device depends on the service, see
     /// [`Status::ESSENTIAL`].
     pub essential: bool,
@@ -517,13 +512,12 @@ pub enum StatusError {
 #[derive(Clone, Copy)]
 pub(crate) struct Track {
     pub(crate) revision: u32,
-    // What the revision follows: state, health, readiness and issues.
+    // What the revision follows: health and issues.
     hash: u32,
     // Only the active issues: their age restarts when the set changes, not
     // when something else about the service does.
     issues_hash: u32,
-    state: ServiceState,
-    pub(crate) state_since_ms: u64,
+    health: ServiceHealth,
     issues_since_ms: u64,
 }
 
@@ -547,8 +541,7 @@ fn issues_hash(issues: &[Issue]) -> u32 {
 }
 
 fn observable_hash(summary: &ServiceSummary, issues_hash: u32) -> u32 {
-    let mut hash = fnv(FNV_OFFSET, &[summary.state as u8, summary.health as u8]);
-    hash = fnv(hash, &[u8::from(summary.ready)]);
+    let hash = fnv(FNV_OFFSET, &[summary.health as u8]);
     fnv(hash, &issues_hash.to_le_bytes())
 }
 
@@ -556,7 +549,7 @@ pub(crate) type TrackCell<M> = Mutex<M, Cell<Option<Track>>>;
 
 /// Updates the track of a service with what it reported just now and fills
 /// in the age of the issues that have none. `hash` and the revision follow
-/// state, health, readiness and the active issues only, never the
+/// the health and the active issues only, never the
 /// service-specific status fields.
 pub(crate) fn track_observation<M: RawMutex>(
     name: &'static str,
@@ -573,16 +566,12 @@ pub(crate) fn track_observation<M: RawMutex>(
             revision: 1,
             hash,
             issues_hash,
-            state: summary.state,
-            state_since_ms: now_ms,
+            health: summary.health,
             issues_since_ms: now_ms,
         });
-        if track.state != summary.state {
-            track.state = summary.state;
-            track.state_since_ms = now_ms;
-        }
         if track.hash != hash {
             track.hash = hash;
+            track.health = summary.health;
             track.revision = track.revision.wrapping_add(1);
         }
         if track.issues_hash != issues_hash {
@@ -615,7 +604,7 @@ fn log_observation(
         name,
         summary,
         issues,
-        previous.map(|previous| previous.state),
+        previous.map(|previous| previous.health),
         track,
     );
 }
@@ -626,15 +615,14 @@ fn log_status_change(
     name: &'static str,
     summary: &ServiceSummary,
     issues: usize,
-    previous: Option<ServiceState>,
+    previous: Option<ServiceHealth>,
     track: &Track,
 ) {
-    if summary.state == ServiceState::Failed && previous != Some(ServiceState::Failed) {
+    if summary.health == ServiceHealth::Error && previous != Some(ServiceHealth::Error) {
         log::warn!(
             target: "service",
-            "Service failed (service={} health={:?} issues={} revision={})",
+            "Service failed (service={} issues={} revision={})",
             name,
-            summary.health,
             issues,
             track.revision
         );
@@ -643,21 +631,18 @@ fn log_status_change(
     match previous {
         Some(previous) => log::debug!(
             target: "service",
-            "State changed: {:?} -> {:?} (service={} health={:?} issues={} revision={})",
+            "Health changed: {:?} -> {:?} (service={} issues={} revision={})",
             previous,
-            summary.state,
-            name,
             summary.health,
+            name,
             issues,
             track.revision
         ),
         None => log::debug!(
             target: "service",
-            "Service first seen: {:?} (service={} health={:?} ready={} issues={})",
-            summary.state,
-            name,
+            "Service first seen: {:?} (service={} issues={})",
             summary.health,
-            summary.ready,
+            name,
             issues
         ),
     }
@@ -678,32 +663,18 @@ pub struct ServiceSchema {
 
 /// The default device health policy.
 ///
-/// Disabled services do not count. A failed service or one with `Error`
-/// health is an error when the device depends on it and a degradation
-/// otherwise; a degraded service, or a running one that is not ready,
-/// degrades the device. Firmware with other redundancy rules (for example a
+/// A service with `Error` health is an error when the device depends on it
+/// and a degradation otherwise; a degraded service degrades the device.
+/// `Unknown` and `Ok` services do not count. Firmware with other redundancy rules (for example a
 /// cellular modem that is irrelevant while Ethernet works) supplies its own
 /// policy.
 pub fn default_device_health(services: &[ServiceStatusSummary]) -> DeviceHealth {
     services
         .iter()
-        .map(|service| {
-            if service.state == ServiceState::Disabled {
-                return DeviceHealth::Ok;
-            }
-            if service.state == ServiceState::Failed || service.health == ServiceHealth::Error {
-                return if service.essential {
-                    DeviceHealth::Error
-                } else {
-                    DeviceHealth::Degraded
-                };
-            }
-            if service.health == ServiceHealth::Degraded
-                || (service.state == ServiceState::Running && !service.ready)
-            {
-                return DeviceHealth::Degraded;
-            }
-            DeviceHealth::Ok
+        .map(|service| match service.health {
+            ServiceHealth::Error if service.essential => DeviceHealth::Error,
+            ServiceHealth::Error | ServiceHealth::Degraded => DeviceHealth::Degraded,
+            ServiceHealth::Unknown | ServiceHealth::Ok => DeviceHealth::Ok,
         })
         .max()
         .unwrap_or(DeviceHealth::Ok)

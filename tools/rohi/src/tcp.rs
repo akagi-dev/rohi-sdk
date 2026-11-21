@@ -21,9 +21,11 @@
 //!
 //! The link carries whole messages: every request and every response is one
 //! record, a Protobuf message behind a 4-byte little-endian length
-//! ([`rohi_control_tcp::frame`], an open endpoint) or an authenticated and encrypted record
-//! of the channel that [`TcpLink::connect_secure`] set up with the pre-shared key
-//! ([`rohi_control_tcp::secure`], a restricted endpoint). There is no fragmentation and no BLE framing; the
+//! ([`rohi_control_tcp::frame`], after the plaintext preamble: what a `protected` endpoint serves
+//! for reads and an `open` one for everything) or an authenticated and encrypted record of the
+//! channel that [`TcpLink::connect_secure`] set up with the pre-shared key
+//! ([`rohi_control_tcp::secure`]: every request in every mode, so the way to mutate and
+//! provision on a `protected` or `private` endpoint). There is no fragmentation and no BLE framing; the
 //! [`Session`](crate::Session) hands the encoded request to the link and gets
 //! the encoded response back (see [`Framing::Messages`]). Everything above,
 //! [`Device`](crate::Device) and the commands of the CLI, is the same for BLE
@@ -32,7 +34,7 @@
 use std::time::Duration;
 
 use rohi_control_proto::limits::{MAX_REQUEST_LEN, MAX_RESPONSE_LEN};
-use rohi_control_tcp::frame::{HEADER_LEN, decode_header, encode_header};
+use rohi_control_tcp::frame::{HEADER_LEN, decode_header, encode_header, plain_preamble};
 use rohi_control_tcp::secure::{
     Channel, ClientHandshake, NONCE_LEN, RECORD_HEADER_LEN, SERVER_HELLO_LEN, TAG_LEN,
 };
@@ -48,7 +50,7 @@ use crate::session::{ClientTransport, Framing};
 pub struct TcpLink {
     stream: TcpStream,
     buffer: Vec<u8>,
-    // `Some` on a restricted endpoint: the records are sealed with the keys of the handshake.
+    // `Some` after the handshake: the records are sealed with the keys of the handshake.
     channel: Option<Channel>,
 }
 
@@ -57,12 +59,7 @@ fn link_error(error: impl std::fmt::Display) -> Error {
 }
 
 impl TcpLink {
-    /// Connects to `endpoint` (`host:port`), waiting at most `wait`.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Tcp`] when the endpoint cannot be reached in time.
-    pub async fn connect(endpoint: &str, wait: Duration) -> Result<Self> {
+    async fn open(endpoint: &str, wait: Duration) -> Result<Self> {
         let stream = timeout(wait, TcpStream::connect(endpoint))
             .await
             .map_err(|_| link_error(format!("{endpoint}: connection timed out")))?
@@ -75,6 +72,23 @@ impl TcpLink {
         })
     }
 
+    /// Connects to `endpoint` (`host:port`), waiting at most `wait`, with plaintext records:
+    /// the plaintext preamble, then length-prefixed records. A `protected` endpoint answers reads
+    /// and refuses the rest, an `open` one serves everything but secret actions, and a
+    /// `private` one hangs up.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Tcp`] when the endpoint cannot be reached in time.
+    pub async fn connect(endpoint: &str, wait: Duration) -> Result<Self> {
+        let mut link = Self::open(endpoint, wait).await?;
+        link.stream
+            .write_all(&plain_preamble())
+            .await
+            .map_err(link_error)?;
+        Ok(link)
+    }
+
     /// Connects to `endpoint` (`host:port`) and authenticates with `key`: the handshake of
     /// [`rohi_control_tcp::secure`], then authenticated and encrypted records only. A device that
     /// does not know the key is refused, never trusted.
@@ -84,7 +98,7 @@ impl TcpLink {
     /// [`Error::Tcp`] when the endpoint cannot be reached in time or closes the connection, and
     /// [`Error::Unauthorized`] when the device does not prove that it knows the key.
     pub async fn connect_secure(endpoint: &str, wait: Duration, key: &TcpKey) -> Result<Self> {
-        let mut link = Self::connect(endpoint, wait).await?;
+        let mut link = Self::open(endpoint, wait).await?;
         let mut nonce = [0u8; NONCE_LEN];
         crate::psk::random(&mut nonce)?;
         let (handshake, hello) = ClientHandshake::start(key.as_bytes(), &nonce);
@@ -101,7 +115,7 @@ impl TcpLink {
             .map_err(|e| {
                 link_error(format!(
                     "{endpoint}: the device closed the connection during the handshake ({e}); \
-                     is it an open endpoint, or does it have no key?"
+                     does it have a key, and is it this one?"
                 ))
             })?;
         let (channel, finish) = handshake.on_server_hello(&server_hello).map_err(|_| {
@@ -230,6 +244,9 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
+            let mut preamble = [0u8; 5];
+            stream.read_exact(&mut preamble).await.unwrap();
+            assert_eq!(preamble, plain_preamble());
             let mut head = [0u8; HEADER_LEN];
             stream.read_exact(&mut head).await.unwrap();
             let mut message = vec![0u8; u32::from_le_bytes(head) as usize];
@@ -380,7 +397,7 @@ mod secure_tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap().to_string();
         tokio::spawn(async move {
-            // An open endpoint would read a record header, not a hello: it hangs up.
+            // An endpoint without a key hangs up on a hello.
             let (stream, _) = listener.accept().await.unwrap();
             drop(stream);
         });

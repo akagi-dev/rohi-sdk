@@ -25,8 +25,8 @@
 use heapless::Vec;
 use rohi_service::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, FIRST_SERVICE_ISSUE,
-    FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES, Service, ServiceHealth,
-    ServiceState, ServiceSummary, Status, StatusWriter, Value, ValueKind, WriteError,
+    FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES, ResultFormat, Service,
+    ServiceHealth, ServiceSummary, Status, StatusWriter, Value, ValueKind, WriteError,
 };
 
 use crate::{Identity, PublicKey, SECRET_LEN};
@@ -124,8 +124,8 @@ pub mod action_field {
 ///
 /// # Behaviour
 ///
-/// * A status of `stopped` with the informational issue `not_provisioned` is
-///   the normal state of a fresh device. An unreadable storage is `failed`
+/// * A health of `unknown` with the informational issue `not_provisioned` is
+///   the normal state of a fresh device. An unreadable storage is `error`
 ///   with the error issue `storage_unavailable`.
 /// * `provision` succeeds only when not provisioned, otherwise it is
 ///   *rejected* with the reason `already_provisioned`. An existing identity is
@@ -150,7 +150,7 @@ pub mod action_field {
 /// use rohi_identity::{
 ///     Identity, IdentityService, IdentityStore, IdentityStoreError, PublicKey, action_field,
 /// };
-/// use rohi_service::{ActionError, ActionRegistry, ServiceState, Status, Value, service_id};
+/// use rohi_service::{ActionError, ActionRegistry, ServiceHealth, Status, Value, service_id};
 ///
 /// // The firmware implements the store on its configuration handle; this one
 /// // lives in memory.
@@ -174,14 +174,14 @@ pub mod action_field {
 /// let memory = Memory::default();
 /// let service = IdentityService(&memory);
 /// // A fresh device is stopped, not failed.
-/// assert_eq!(block_on(service.summary()).state, ServiceState::Stopped);
+/// assert_eq!(block_on(service.summary()).health, ServiceHealth::Unknown);
 ///
 /// // Action 1 is `provision`, action 2 is `erase`.
 /// let identity = service_id("identity");
 /// let registry = (&service,);
 /// let secret = [(action_field::SECRET, Value::bytes(&[7; 32]).unwrap())];
 /// block_on(registry.invoke(identity, 1, &secret)).unwrap();
-/// assert_eq!(block_on(service.summary()).state, ServiceState::Running);
+/// assert_eq!(block_on(service.summary()).health, ServiceHealth::Ok);
 ///
 /// // An existing identity is never replaced silently.
 /// let other = [(action_field::SECRET, Value::bytes(&[8; 32]).unwrap())];
@@ -206,12 +206,12 @@ impl<S: IdentityStore> Status for IdentityService<S> {
 
     async fn summary(&self) -> ServiceSummary {
         match self.0.public_key().await {
-            Ok(Some(_)) => ServiceSummary::new(ServiceState::Running, ServiceHealth::Ok, true),
+            Ok(Some(_)) => ServiceSummary::new(ServiceHealth::Ok),
             // A fresh device: not an error, telemetry waits for provisioning.
-            Ok(None) => ServiceSummary::new(ServiceState::Stopped, ServiceHealth::Unknown, false),
+            Ok(None) => ServiceSummary::new(ServiceHealth::Unknown),
             Err(error) => {
                 log::debug!(target: "identity", "Store unavailable (err={:?})", error);
-                ServiceSummary::new(ServiceState::Failed, ServiceHealth::Error, false)
+                ServiceSummary::new(ServiceHealth::Error)
             }
         }
     }
@@ -251,6 +251,7 @@ impl<S: IdentityStore> Action for IdentityService<S> {
                 "secret",
                 ValueKind::Bytes,
             )])
+            .format(ResultFormat::Inline)
             .results(&[FieldDescriptor::new(
                 action_field::PUBLIC_KEY,
                 "public_key",
@@ -384,12 +385,9 @@ mod tests {
         let expected = Identity::from_secret(&[7; SECRET_LEN])
             .unwrap()
             .public_key();
-        let records = records.records();
-        assert_eq!(records.len(), 1);
-        assert_eq!(
-            records[0][0].1.as_bytes(),
-            Some(expected.as_bytes().as_slice())
-        );
+        let record = records.inline().unwrap();
+        assert_eq!(record.len(), 1);
+        assert_eq!(record[0].1.as_bytes(), Some(expected.as_bytes().as_slice()));
         assert_eq!(*memory.0.borrow(), Some(expected));
     }
 
@@ -428,7 +426,7 @@ mod tests {
         let service = IdentityService(&memory);
         let statuses = Statuses::<NoopRawMutex, _>::new((&service,));
         let status = block_on(statuses.status(SERVICE_ID, 0)).unwrap();
-        assert_eq!(status.summary.state, ServiceState::Stopped);
+        assert_eq!(status.summary.health, ServiceHealth::Unknown);
         assert_eq!(status.issues[0].code, issue::NOT_PROVISIONED);
         assert_eq!(status.fields.len(), 1);
 

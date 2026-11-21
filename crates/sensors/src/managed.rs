@@ -25,8 +25,8 @@ use embassy_sync::blocking_mutex::raw::RawMutex;
 use heapless::Vec;
 use rohi_service::{
     FIRST_SERVICE_ISSUE, FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES,
-    Service, ServiceHealth, ServiceState, ServiceSummary, Status, StatusWriter, Unit, Value,
-    ValueKind, WriteError,
+    Service, ServiceHealth, ServiceSummary, Status, StatusWriter, Unit, Value, ValueKind,
+    WriteError,
 };
 
 use crate::measurements::{Measurement, MeasurementsSnapshot};
@@ -175,7 +175,7 @@ fn summary(snapshot: &MeasurementsSnapshot) -> ServiceSummary {
     };
     let total = present().count();
     if total == 0 {
-        return ServiceSummary::new(ServiceState::Disabled, ServiceHealth::Unknown, false);
+        return ServiceSummary::new(ServiceHealth::Unknown);
     }
     let failed = present()
         .filter(|status| status.state == SensorState::Error)
@@ -191,16 +191,16 @@ fn summary(snapshot: &MeasurementsSnapshot) -> ServiceSummary {
         )
     });
     if starting {
-        return ServiceSummary::new(ServiceState::Starting, ServiceHealth::Unknown, false);
+        return ServiceSummary::new(ServiceHealth::Unknown);
     }
     let health = if failed == total {
         ServiceHealth::Error
-    } else if failed + degraded > 0 {
+    } else if failed + degraded > 0 || !ready {
         ServiceHealth::Degraded
     } else {
         ServiceHealth::Ok
     };
-    ServiceSummary::new(ServiceState::Running, health, ready)
+    ServiceSummary::new(health)
 }
 
 #[cold]
@@ -215,13 +215,11 @@ fn warn_unavailable(what: &str, error: MeasurementServiceError) {
 /// store owner task. The status fields (`<sensor>.<measurement>`, canonical
 /// units, at most 20) are listed in the [crate documentation](crate#the-sensors-service).
 ///
-/// * **State.** `disabled` when no sensor is detected (not an error);
-///   `starting` while every present sensor is initializing or warming up;
-///   otherwise `running`. The service is ready when some sensor is `Ready`.
-/// * **Health** (of a running service). `ok`; `degraded` when some sensor is
-///   degraded or failed; `error` when all present sensors failed. If the
-///   measurement owner does not answer, the service is `running` with unknown
-///   health and an empty status.
+/// * **Health.** `unknown` when no sensor is detected (not an error) or while
+///   every present sensor is initializing or warming up. Otherwise `ok`;
+///   `degraded` when some sensor is degraded or failed, or when no sensor is
+///   `Ready`; `error` when all present sensors failed. If the measurement owner
+///   does not answer, the health is `unknown` and the status is empty.
 /// * **Issues.** A sensor in `Error` or `Degraded` state is an active issue
 ///   with the code `<sensor>_fault` (`bmx280_fault`, `scd4x_fault`,
 ///   `sds011_fault`, `microphone_fault`, `zmod4510_fault`, `ags3871_fault`,
@@ -245,7 +243,7 @@ impl<M: RawMutex> Status for SensorsService<'_, M> {
             // The measurement owner did not answer.
             Err(e) => {
                 warn_unavailable("summary", e);
-                ServiceSummary::new(ServiceState::Running, ServiceHealth::Unknown, false)
+                ServiceSummary::new(ServiceHealth::Unknown)
             }
         }
     }
@@ -335,15 +333,14 @@ mod tests {
     #[test]
     fn a_ready_sensor_makes_the_service_ready() {
         let summary = summary(&snapshot());
-        assert_eq!(summary.state, ServiceState::Running);
         assert_eq!(summary.health, ServiceHealth::Ok);
-        assert!(summary.ready);
+        assert_eq!(summary.health, ServiceHealth::Ok);
     }
 
     #[test]
     fn a_device_without_sensors_is_disabled() {
         let empty = MeasurementStore::new().snapshot(MonotonicTimestamp::from_millis(1));
-        assert_eq!(summary(&empty).state, ServiceState::Disabled);
+        assert_eq!(summary(&empty).health, ServiceHealth::Unknown);
     }
 
     #[test]

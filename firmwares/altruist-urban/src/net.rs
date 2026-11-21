@@ -26,65 +26,42 @@
 //!
 //! The backend (`EspWifi` on the ESP, the simulated backend of the `std` platform) and
 //! the IP stack are the platform's; this module holds what is common: the
-//! shared state, the manager loop, the probe of the `wifi` and `network`
-//! services and the wait for the first attempt.
+//! shared state, the manager loop, the radio heap probe of the `wireless`
+//! service and the wait for the first attempt.
 
 use embassy_time::{Delay, Duration, Instant, with_timeout};
 use log::{info, warn};
 use rohi_sdk::net::{
-    HeapStats, IpBackend, IpUsage, ManagerConfig, NetworkHandle, NetworkProbe, WifiBackend,
-    WifiHandle, WifiManager, WifiProbe, WifiShared, WifiState, WifiStatus,
+    HeapStats, ManagerConfig, WifiBackend, WifiHandle, WifiManager, WifiShared, WifiState,
+    WifiStatus, WirelessProbe,
 };
 
 use crate::tasks::RawMutex;
 
 static WIFI: WifiShared<RawMutex> = WifiShared::new();
 
-/// Milliseconds since boot: the clock of the link uptime.
+/// Milliseconds since boot: the clock of the link metrics.
 pub fn uptime_ms() -> u64 {
     Instant::now().as_millis()
 }
 
-/// What the `wifi` and `network` services read from the platform: the wireless
-/// heap (when the platform has one) and the clock, and the socket usage of the
-/// IP stack (when it started).
-pub struct Probe<I: 'static> {
-    ip: Option<NetworkHandle<'static, I>>,
+/// What the `wireless` service reads from the platform: the wireless heap,
+/// when the platform has one.
+#[derive(Clone, Copy)]
+pub struct Probe {
     heap: Option<fn() -> HeapStats>,
 }
 
-impl<I> Clone for Probe<I> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<I> Copy for Probe<I> {}
-
-impl<I> Probe<I> {
-    /// `ip` is the IP data plane of the platform, `None` if it did not start.
+impl Probe {
     /// `heap` reads the wireless heap, `None` on a platform without one.
-    pub const fn new(
-        ip: Option<NetworkHandle<'static, I>>,
-        heap: Option<fn() -> HeapStats>,
-    ) -> Self {
-        Self { ip, heap }
+    pub const fn new(heap: Option<fn() -> HeapStats>) -> Self {
+        Self { heap }
     }
 }
 
-impl<I> WifiProbe for Probe<I> {
+impl WirelessProbe for Probe {
     fn heap(&self) -> Option<HeapStats> {
         self.heap.map(|heap| heap())
-    }
-
-    fn now_ms(&self) -> Option<u64> {
-        Some(uptime_ms())
-    }
-}
-
-impl<I: IpBackend> NetworkProbe for Probe<I> {
-    fn sockets(&self) -> Option<IpUsage> {
-        self.ip.map(|ip| ip.usage())
     }
 }
 

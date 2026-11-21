@@ -24,26 +24,25 @@
 mod common;
 
 use common::*;
-use rohi::model::ServiceState;
+use rohi::model::ServiceHealth;
 
 #[tokio::test(flavor = "current_thread")]
 async fn without_the_simulator_no_sensor_is_reported_as_working() {
     let sim = Sim::start(&Launch::new());
     let mut device = sim.device().await;
 
-    let (state, _, ready, _) = summary(&mut device, "sensors").await;
-    assert!(!ready, "{state:?}");
+    let (health, _) = summary(&mut device, "sensors").await;
+    assert_ne!(health, ServiceHealth::Ok);
     let sensors = fields(&mut device, "sensors").await;
     assert!(
         sensors.values().all(|value| f32_of(Some(value)).is_none()),
         "{sensors:?}"
     );
 
-    // The BLE service tells that no BLE peripheral runs; it does not pretend
-    // to advertise over TCP.
-    let (state, _, ready, _) = summary(&mut device, "ble").await;
-    assert_eq!(state, ServiceState::Disabled);
-    assert!(!ready);
+    // Without a BLE peripheral and with Wi-Fi not configured the wireless
+    // service has nothing to report; it does not pretend to advertise over TCP.
+    let (health, _) = summary(&mut device, "wireless").await;
+    assert_eq!(health, ServiceHealth::Unknown);
 
     // Commands that need simulated sensors are refused, not silently ignored.
     let reply = sim.manage("set co2 1500");

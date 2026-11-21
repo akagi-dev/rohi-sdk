@@ -51,6 +51,11 @@ max_growth = 2300
 reason = "accepted frame growth for the BLE control task"
 
 [[regression.approved_frame_growth]]
+symbol = "registry::invoke_of<"
+max_growth = 1600
+reason = "an action result is one of five formats: the result type of the registry carries a page of records with its snapshot (one collector reads both the action and its first page), +0.5 to 1.5 KB of poll frame; the pools of the control task shrank by 1.7 KB"
+
+[[regression.approved_frame_growth]]
 symbol = "rust_begin_unwind"
 max_growth = 640
 reason = "the panic handler now stores the crash in the retained slot (rohi_crash_esp::on_panic)"
@@ -71,7 +76,7 @@ reason = "the sensors status observer is laid out differently after the logging 
 # `max_data` was raised by 200 B (ESP32-C3, 30 300 → 30 500) and 300 B (ESP32-C6, 33 500 → 33 800) when the
 # connectivity rewrite was merged with the persistent logging (#68): `.data` measured 30 400 B and 33 740 B.
 
-# The managed control endpoints (#56): the control worker and the BLE frontend are two tasks (`control_task`
+# The managed control endpoints (#56, one `control` service since #80): the control worker and the BLE frontend are two tasks (`control_task`
 # 15 128 B, `control_ble_task` 2 784 B on the ESP32-C3), the request slot of the `ControlHub` (3 272 B, `.bss`)
 # replaces the reassembly and response buffers the BLE loop owned, and the new sections, services and the BLE
 # pairing of the host stack (trouble-host `security`) add statics. Measured: `.data` 31 144 B (ESP32-C3) and
@@ -99,7 +104,9 @@ max_data = 33900
 max_bss = 198100
 max_task_ram = 41200
 min_main_stack = 131900
-max_frame = 8500
+# The frame of `Controller::read_result_page` (a page of records read from a held snapshot, 9 632 B) is the largest; the
+# main stack of the ESP32-C6 is 134 168 B. Measured with the result formats: .data 33 660 B, .bss 195 992 B, task pools 38 744 B.
+max_frame = 9700
 
 [chips.esp32c6.focus]
 control_dispatch = ["rohi_control::controller", "rohi_service::registry"]
