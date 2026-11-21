@@ -48,7 +48,7 @@ Uptime:  2h 14m
 Health:  ok
 
 SERVICE       HEALTH
-network       ok
+wireless      ok
 connectivity  ok
 ...
 ```
