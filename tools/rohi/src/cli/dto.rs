@@ -210,7 +210,7 @@ pub fn feed(page: &FeedPage) -> Json {
         "newest_sequence": page.newest_sequence,
         "reset": page.reset,
         "gap": page.gap,
-        "data": String::from_utf8_lossy(&page.data),
+        "data": hex(&page.data),
     })
 }
 
