@@ -304,7 +304,14 @@ fn a_panic_after_a_stable_run_ends_the_streak() {
     assert_eq!(late.streak(), 1);
     let mut soon = crash(policy.rapid_window_ms - 1, "soon");
     slot.capture(&mut soon, &policy);
-    assert_eq!(soon.streak(), 2);
+    assert_eq!(
+        soon.streak(),
+        1,
+        "the late panic before it is not part of a streak"
+    );
+    let mut again = crash(policy.rapid_window_ms - 1, "again");
+    slot.capture(&mut again, &policy);
+    assert_eq!(again.streak(), 2);
 }
 
 #[test]

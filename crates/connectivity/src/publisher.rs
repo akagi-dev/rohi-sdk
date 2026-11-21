@@ -298,10 +298,12 @@ impl<
         match select3(attempt, provider.changed(), self.state.changed()).await {
             Either3::First(result) => {
                 let now = self.clock.now();
+                // A change of the routes first drops what it touches (a changed or
+                // replaced route loses its queue); `complete` then ignores a result
+                // for such a route and records one for a route that was not touched.
                 if !self.route_snapshot_is_current(config) {
                     let current = self.state.routes();
                     self.reconcile(&current, now);
-                    return;
                 }
                 log_delivery(&delivery, &result);
                 self.router.complete(delivery, result, now);

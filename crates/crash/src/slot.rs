@@ -214,7 +214,7 @@ impl Slot {
         let (serial, streak, missed) = match &previous {
             Some(stored) => (
                 stored.crash.serial.wrapping_add(1),
-                if rapid {
+                if rapid && stored.crash.uptime_ms < policy.rapid_window_ms {
                     stored.crash.streak.saturating_add(1)
                 } else {
                     1

@@ -46,8 +46,15 @@ pub struct Backoff {
 }
 
 impl Backoff {
-    /// Create a backoff starting at `initial_ms` and growing up to `max_ms`.
+    /// Create a backoff starting at `initial_ms` and growing up to `max_ms`. A zero `initial_ms`
+    /// is raised to 1 ms, and `max_ms` is never below `initial_ms`, so a retry never spins.
     pub const fn new(initial_ms: u32, max_ms: u32) -> Self {
+        let initial_ms = if initial_ms == 0 { 1 } else { initial_ms };
+        let max_ms = if max_ms < initial_ms {
+            initial_ms
+        } else {
+            max_ms
+        };
         Self {
             initial_ms,
             max_ms,
@@ -113,6 +120,16 @@ mod tests {
         assert_eq!(b.next_delay_ms(), 500);
         b.reset();
         assert_eq!(b.next_delay_ms(), 100);
+    }
+
+    #[test]
+    fn a_zero_delay_is_raised_so_retries_never_spin() {
+        let mut b = Backoff::new(0, 0);
+        assert_eq!(b.next_delay_ms(), 1);
+        assert_eq!(b.next_delay_ms(), 1);
+        let mut b = Backoff::new(0, 8);
+        assert_eq!(b.next_delay_ms(), 1);
+        assert_eq!(b.next_delay_ms(), 2);
     }
 
     #[test]

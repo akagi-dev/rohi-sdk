@@ -1572,3 +1572,58 @@ fn format_is_a_separate_low_level_operation() {
     };
     assert_eq!(store.section_count(), 0);
 }
+
+/// Reports a failure after the write was programmed, like a driver that loses the status.
+struct LateFailure {
+    inner: Mem,
+    armed: bool,
+}
+
+use rohi_config::ConfigStorage;
+
+impl ConfigStorage for LateFailure {
+    type Error = MemoryError;
+    const ERASE_SIZE: usize = Mem::ERASE_SIZE;
+    const WRITE_SIZE: usize = Mem::WRITE_SIZE;
+
+    fn capacity(&self) -> usize {
+        self.inner.capacity()
+    }
+
+    fn read(&mut self, offset: usize, output: &mut [u8]) -> Result<(), MemoryError> {
+        self.inner.read(offset, output)
+    }
+
+    fn write(&mut self, offset: usize, data: &[u8]) -> Result<(), MemoryError> {
+        self.inner.write(offset, data)?;
+        if self.armed && data == COMMIT_WORD.to_le_bytes() {
+            self.armed = false;
+            return Err(MemoryError::Injected);
+        }
+        Ok(())
+    }
+
+    fn erase(&mut self, offset: usize, len: usize) -> Result<(), MemoryError> {
+        self.inner.erase(offset, len)
+    }
+}
+
+#[test]
+fn an_error_after_the_commit_word_leaves_the_store_as_a_restart_finds_it() {
+    let storage = LateFailure {
+        inner: Mem::new(),
+        armed: false,
+    };
+    let mut store = ConfigStore::format(storage).map_err(|e| e.error).unwrap();
+    store.set(&identity(1)).unwrap();
+    let mut storage = store.into_storage();
+    storage.armed = true;
+    let mut store = ConfigStore::open(storage).unwrap();
+
+    assert!(store.set(&identity(2)).is_err());
+    let after_failure = store.get::<Identity>().unwrap();
+
+    let mut restarted = ConfigStore::open(store.into_storage()).unwrap();
+    assert_eq!(after_failure, restarted.get::<Identity>().unwrap());
+    assert_eq!(after_failure, Some(identity(2)));
+}

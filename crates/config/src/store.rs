@@ -795,17 +795,26 @@ impl<S: ConfigStorage> ConfigStore<S> {
         }
 
         // The commit word is written last: it makes the slot valid.
-        self.storage
+        let committed = self
+            .storage
             .write(
                 target_base + slot_size - COMMIT_WORD_SIZE,
                 &COMMIT_WORD.to_le_bytes(),
             )
-            .map_err(ConfigError::Storage)?;
-        let info = match inspect(&mut self.storage, target_base, slot_size, true)
-            .map_err(ConfigError::Storage)?
-        {
-            SlotState::Valid(info) => info,
-            _ => return Err(ConfigError::VerifyFailed),
+            .and_then(|()| inspect(&mut self.storage, target_base, slot_size, true));
+        let info = match committed {
+            Ok(SlotState::Valid(info)) => info,
+            failed => {
+                // The word may have been programmed before the failure: a restart would load
+                // the new slot, so the store must agree with the flash, not with the old state.
+                if let Ok((_, active, _)) = Self::scan(&mut self.storage) {
+                    self.active = active;
+                }
+                return Err(match failed {
+                    Err(error) => ConfigError::Storage(error),
+                    Ok(_) => ConfigError::VerifyFailed,
+                });
+            }
         };
         self.active = Some(Active { slot: target, info });
         // The damaged slot, if any, was the inactive one and is now replaced.

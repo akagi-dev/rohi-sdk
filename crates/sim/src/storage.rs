@@ -37,7 +37,7 @@
 //! logic of the store at the next start.
 
 use std::fmt;
-use std::fs::{File, OpenOptions};
+use std::fs::{DirBuilder, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -136,15 +136,9 @@ impl FileFlash {
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
         {
-            std::fs::create_dir_all(parent).map_err(|e| fail("cannot create the directory", &e))?;
+            create_private_dir(parent).map_err(|e| fail("cannot create the directory", &e))?;
         }
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)
-            .map_err(|e| fail("cannot open", &e))?;
+        let mut file = open_private(path).map_err(|e| fail("cannot open", &e))?;
         file.try_lock()
             .map_err(|_| fail("in use", &"another process uses this storage file"))?;
         let length = file.metadata().map_err(|e| fail("cannot stat", &e))?.len();
@@ -346,6 +340,29 @@ impl ConfigStorage for FileFlash {
     }
 }
 
+/// Creates `path` and its missing parents for the owner only: the image holds the keys and
+/// passwords of the device.
+pub(crate) fn create_private_dir(path: &Path) -> std::io::Result<()> {
+    let mut builder = DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(path)
+}
+
+/// Opens (creating if needed) an image file for its owner only; the mode of an existing file is
+/// tightened too.
+pub(crate) fn open_private(path: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let file = options.open(path)?;
+    #[cfg(unix)]
+    file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+    Ok(file)
+}
+
 #[cfg(test)]
 mod tests {
     use minicbor::{CborLen, Decode, Encode};
@@ -386,6 +403,23 @@ mod tests {
         let flash = FileFlash::open(&path).unwrap();
         let mut store = ConfigStore::try_open(flash).map_err(|e| e.error).unwrap();
         assert_eq!(store.get::<Probe>().unwrap(), Some(Probe { value: 7 }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_image_and_its_directory_are_private_to_the_owner() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state/device.flash");
+        drop(FileFlash::open(&path).unwrap());
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(path.parent().unwrap()), 0o700);
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        drop(FileFlash::open(&path).unwrap());
+        assert_eq!(mode(&path), 0o600);
     }
 
     #[test]

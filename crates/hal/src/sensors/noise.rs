@@ -207,7 +207,7 @@ impl LevelMeter {
             self.sum_sq += (y * y) as u64;
             self.sub_samples += 1;
 
-            if self.sub_samples == self.config.sub_window_samples {
+            if self.sub_samples >= self.config.sub_window_samples {
                 let mean_sq = self.sum_sq as f64 / self.sub_samples as f64;
                 self.sum_sq = 0;
                 self.sub_samples = 0;
@@ -215,7 +215,7 @@ impl LevelMeter {
                 self.max_mean_sq = self.max_mean_sq.max(mean_sq as f32);
                 self.sub_windows += 1;
 
-                if self.sub_windows == self.config.sub_windows_per_window {
+                if self.sub_windows >= self.config.sub_windows_per_window {
                     result = Some(NoiseLevels {
                         average: self.level_db(self.energy_sum / self.sub_windows as f64),
                         maximum: self.level_db(self.max_mean_sq as f64),

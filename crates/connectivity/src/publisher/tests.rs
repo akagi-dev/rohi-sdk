@@ -58,6 +58,8 @@ struct World {
     routes_on_capture: RefCell<Option<RouteSet>>,
     routes_on_build: RefCell<Option<RouteSet>>,
     routes_on_delivery: RefCell<Option<RouteSet>>,
+    // Published while the attempt runs; the attempt still answers.
+    routes_after_delivery: RefCell<Option<RouteSet>>,
     sent: RefCell<Vec<(String, Vec<u8>)>>,
     // Hosts that answer with a status other than 202.
     answers: RefCell<Vec<(&'static str, u16)>>,
@@ -136,6 +138,9 @@ impl PacketTransport for Transport<'_> {
         if let Some(routes) = routes {
             self.state.publish(&routes);
             return core::future::pending().await;
+        }
+        if let Some(routes) = self.world.routes_after_delivery.borrow_mut().take() {
+            self.state.publish(&routes);
         }
         self.world
             .sent
@@ -500,6 +505,29 @@ fn replacing_the_endpoint_cancels_an_in_flight_delivery_and_sends_nothing_stale(
     assert!(world.sent.borrow().is_empty());
     assert_eq!(publisher.router().pool().in_use(), 0);
     assert_eq!(publisher.router().queued(), 0);
+}
+
+#[test]
+fn editing_another_route_during_a_delivery_keeps_the_result_of_this_one() {
+    let world = World::default();
+    let state = ConnectivityState::<NoopRawMutex, 3>::new();
+    let clock = Cell::new(0);
+    let mut config = RouteSet::default();
+    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
+    state.publish(&config);
+    config.set_endpoint(1, 0, Some("http://b.example")).unwrap();
+    world.routes_after_delivery.replace(Some(config));
+    let mut publisher: P<4> = publisher(&world, &state, &clock);
+
+    block_on(publisher.step());
+
+    let route = state.views()[0].unwrap();
+    assert_eq!(route.counters.delivered, 1);
+    assert_eq!(
+        route.queue_depth, 0,
+        "the delivered packet is not sent again"
+    );
+    assert_eq!(hosts(&world), ["a.example"]);
 }
 
 #[test]

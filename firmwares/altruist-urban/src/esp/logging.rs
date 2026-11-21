@@ -198,16 +198,21 @@ impl Log for Fanout {
     fn flush(&self) {}
 }
 
-/// Installs the `log` backend. The ceiling is `debug` so that the persistent
-/// level can be raised to `debug` at runtime without a new firmware; the
-/// console level stays what `ESP_LOG` says. Call once, first thing at boot.
+/// Installs the `log` backend. The ceiling is `debug`, or the console level when
+/// `ESP_LOG` asks for more (`trace`), so that the persistent level can be raised to
+/// `debug` at runtime without a new firmware; the console level stays what `ESP_LOG`
+/// says. Call once, first thing at boot.
 pub fn init_logger() {
     // SAFETY: called once, before any other task runs and before interrupts
     // that log are enabled; the same sequence `esp-println` uses.
     unsafe {
         // Only fails when a logger is already installed: keep it.
         let _ = log::set_logger_racy(&Fanout);
-        log::set_max_level_racy(LevelFilter::Debug);
+        log::set_max_level_racy(if CONSOLE_LEVEL > LevelFilter::Debug {
+            CONSOLE_LEVEL
+        } else {
+            LevelFilter::Debug
+        });
     }
 }
 

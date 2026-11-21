@@ -33,7 +33,7 @@
 //! leaves what a power loss would: the ring journal discards the incomplete
 //! last write when it recovers at the next start.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -41,7 +41,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use log::{info, warn};
 use rohi_logging::storage::{Medium, SECTOR_SIZE};
 
-use crate::storage::OpenError;
+use crate::storage::{OpenError, create_private_dir, open_private};
 
 /// Erase sectors of the log region, as the `rohi-log` partition of the device.
 pub const LOG_SECTORS: u32 = 256;
@@ -98,15 +98,9 @@ impl FileLogFlash {
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
         {
-            std::fs::create_dir_all(parent).map_err(|e| fail("cannot create the directory", &e))?;
+            create_private_dir(parent).map_err(|e| fail("cannot create the directory", &e))?;
         }
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)
-            .map_err(|e| fail("cannot open", &e))?;
+        let mut file = open_private(path).map_err(|e| fail("cannot open", &e))?;
         file.try_lock()
             .map_err(|_| fail("in use", &"another process uses this log file"))?;
         let length = file.metadata().map_err(|e| fail("cannot stat", &e))?.len();

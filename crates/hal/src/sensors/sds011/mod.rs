@@ -478,7 +478,8 @@ impl<U: Read + Write, D: DelayNs + Clone> Sds011<U, D> {
         let mut first = true;
         while samples.len() < target {
             if !first {
-                let next = spent_ms.saturating_add(self.config.sample_interval_ms);
+                // A zero interval still moves the clock, so the window always closes.
+                let next = spent_ms.saturating_add(self.config.sample_interval_ms.max(1));
                 if next > self.config.cycle_timeout_ms {
                     break;
                 }
@@ -568,7 +569,10 @@ impl<U: Read + Write, D: DelayNs + Clone> Sds011<U, D> {
         }
         self.delay.delay_ms(self.config.warmup_ms).await;
         let sample = self.sample_cycle().await?;
-        self.go_to_sleep().await?;
+        // The sample is good whatever the sensor answers to the sleep command.
+        if let Err(e) = self.go_to_sleep().await {
+            log::warn!(target: "sensor.sds011", "Sleep not confirmed, sample kept (err={:?})", e);
+        }
         Ok(Some(sample))
     }
 

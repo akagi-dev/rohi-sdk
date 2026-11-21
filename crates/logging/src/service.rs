@@ -332,7 +332,6 @@ fn warn_boot_records_too_large() {
 }
 const PINNED_RETRY_MS: u64 = 1_000;
 const SWEEP_MS: u64 = 10_000;
-const FLUSH_BYTES: usize = 1_536;
 
 // The shortest page the tail serves: the longest line without a message.
 const MIN_TAIL_CHUNK: usize = crate::segment::text::MIN_WITHIN_LEN;
@@ -750,8 +749,7 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize>
     // Takes the queued records into the batch, in order, while the storage can
     // take them.
     fn drain(&self, inner: &mut Inner<B>, now: u64) -> bool {
-        let mut full = false;
-        while inner.storage.is_some() && !inner.faulted && now >= inner.stalled_until_ms && !full {
+        while inner.storage.is_some() && !inner.faulted && now >= inner.stalled_until_ms {
             let Some(mut record) = inner.carry.take().or_else(|| self.sink.try_recv()) else {
                 break;
             };
@@ -765,9 +763,8 @@ impl<M: RawMutex, C: LogClock, B: Backends, const N: usize, const TAIL: usize>
                 return true;
             }
             inner.next_sequence += 1;
-            full = inner.batch.len() >= FLUSH_BYTES;
         }
-        full
+        false
     }
 
     async fn flush(&self, inner: &mut Inner<B>, now: u64) {
