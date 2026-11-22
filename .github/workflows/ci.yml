@@ -83,6 +83,15 @@ jobs:
         run: cargo test -p altruist-urban
       - name: Test connectivity without the packet export
         run: cargo test -p rohi-connectivity --no-default-features
+      - name: The connectivity core does not depend on any transport
+        run: |
+          if cargo tree -p rohi-connectivity -e normal --prefix none | grep -E '^(rohi-connectivity-|rohi-net|embedded-nal) '; then
+            echo "rohi-connectivity must not depend on a transport crate or the network stack"; exit 1
+          fi
+      - name: Test the connectivity transports and the Meshtastic service
+        run: |
+          cargo test -p rohi-connectivity-http -p rohi-meshtastic -p rohi-connectivity-meshtastic
+          cargo test -p altruist-urban --features meshtastic-uart --lib meshtastic
       - name: Test TCP with simulated sensors (unit and end-to-end)
         run: cargo test -p altruist-urban --features std,std-tcp,sensor-simulator
       - name: Test TCP without simulated sensors
@@ -135,8 +144,12 @@ jobs:
         run: cargo check-esp32c3
       - name: Check examples
         run: cargo check -p rohi-examples --no-default-features --features ${{ matrix.chip }} --target ${{ matrix.target }} 
+      - name: Check the Meshtastic UART backend
+        run: cargo check -p altruist-urban --no-default-features --features ${{ matrix.chip }},meshtastic-uart --target ${{ matrix.target }}
       - name: Clippy
         run: cargo clippy -p altruist-urban -p rohi-hal-esp -p rohi-net-esp -p rohi-config-esp --no-default-features --features ${{ matrix.chip }} --target ${{ matrix.target }} -- -D warnings
+      - name: Clippy with the Meshtastic UART backend
+        run: cargo clippy -p altruist-urban -p rohi-hal-esp --no-default-features --features ${{ matrix.chip }},altruist-urban/meshtastic-uart --target ${{ matrix.target }} -- -D warnings
       # Separate invocation: the examples enable the panic-handler of esp-backtrace, a second panic_impl next to the firmware's
       - name: Clippy examples
         run: cargo clippy -p rohi-examples --no-default-features --features ${{ matrix.chip }} --target ${{ matrix.target }} -- -D warnings

@@ -16,6 +16,8 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 use super::*;
+use crate::testing::TestPolicy;
+
 use crate::endpoint::MAX_ENDPOINT_LEN;
 
 // More slots than a device keeps, to cover every edge; the firmware uses 2.
@@ -30,7 +32,7 @@ fn there_is_no_route_until_one_is_set_and_the_defaults_are_documented() {
     let mut set = set();
     assert_eq!(set.count(), 0);
     assert!((0..3).all(|index| set.get(index).is_none()));
-    set.set_endpoint(1, 0, Some("http://ingress.example.org"))
+    set.set_endpoint(1, 0, Some("http://ingress.example.org"), &TestPolicy)
         .unwrap();
     assert_eq!(set.count(), 1);
     assert!(set.get(0).is_none() && set.get(2).is_none());
@@ -45,22 +47,22 @@ fn there_is_no_route_until_one_is_set_and_the_defaults_are_documented() {
 fn indices_are_bounded_by_the_capacity() {
     let mut set = set();
     for index in [0, 1, 2] {
-        set.set_endpoint(index, 0, Some("http://a.example"))
+        set.set_endpoint(index, 0, Some("http://a.example"), &TestPolicy)
             .unwrap();
     }
     for index in [3, 4, usize::MAX] {
         let before = set.clone();
         assert_eq!(
-            set.set_endpoint(index, 0, Some("http://a.example")),
+            set.set_endpoint(index, 0, Some("http://a.example"), &TestPolicy),
             Err(RouteError::InvalidIndex)
         );
         assert_eq!(
-            set.set_endpoint(index, 0, None),
+            set.set_endpoint(index, 0, None, &TestPolicy),
             Err(RouteError::InvalidIndex)
         );
         assert_eq!(set.set_interval(index, 60), Err(RouteError::InvalidIndex));
         assert_eq!(
-            set.set_fallback(index, Some("http://b.example")),
+            set.set_fallback(index, Some("http://b.example"), &TestPolicy),
             Err(RouteError::InvalidIndex)
         );
         assert_eq!(set, before);
@@ -71,21 +73,20 @@ fn indices_are_bounded_by_the_capacity() {
 #[test]
 fn endpoints_and_intervals_are_validated() {
     let mut set = set();
-    for bad in [
-        "",
-        "https://a.example",
-        "http://a.example/x",
-        "a.example",
-        "http://",
-    ] {
+    assert_eq!(
+        set.set_endpoint(0, 0, Some("https://a.example"), &TestPolicy),
+        Err(RouteError::UnsupportedEndpoint)
+    );
+    for bad in ["", "http://a.example/x", "a.example", "http://"] {
         assert_eq!(
-            set.set_endpoint(0, 0, Some(bad)),
+            set.set_endpoint(0, 0, Some(bad), &TestPolicy),
             Err(RouteError::InvalidEndpoint),
             "{bad:?}"
         );
     }
     assert_eq!(set, Set::EMPTY);
-    set.set_endpoint(0, 0, Some("http://a.example")).unwrap();
+    set.set_endpoint(0, 0, Some("http://a.example"), &TestPolicy)
+        .unwrap();
     for bad in [0, MIN_INTERVAL_S - 1, MAX_INTERVAL_S + 1, u32::MAX] {
         assert_eq!(set.set_interval(0, bad), Err(RouteError::InvalidInterval));
     }
@@ -93,7 +94,7 @@ fn endpoints_and_intervals_are_validated() {
     set.set_interval(0, MAX_INTERVAL_S).unwrap();
     assert_eq!(set.get(0).unwrap().interval_s, MAX_INTERVAL_S);
     assert_eq!(
-        set.set_fallback(0, Some("http://a.example/x")),
+        set.set_fallback(0, Some("http://a.example/x"), &TestPolicy),
         Err(RouteError::InvalidEndpoint)
     );
 }
@@ -101,18 +102,20 @@ fn endpoints_and_intervals_are_validated() {
 #[test]
 fn an_absent_endpoint_deletes_the_route_and_an_empty_slot_stays_empty() {
     let mut set = set();
-    set.set_endpoint(0, 1, Some("http://a.example")).unwrap();
-    set.set_endpoint(1, 0, Some("http://b.example")).unwrap();
+    set.set_endpoint(0, 1, Some("http://a.example"), &TestPolicy)
+        .unwrap();
+    set.set_endpoint(1, 0, Some("http://b.example"), &TestPolicy)
+        .unwrap();
     let generation = set.generation;
-    set.set_endpoint(0, 0, None).unwrap();
+    set.set_endpoint(0, 0, None, &TestPolicy).unwrap();
     assert!(set.get(0).is_none());
     assert_eq!(set.get(1).unwrap().endpoint.as_str(), "http://b.example");
     assert!(set.generation > generation);
 
     // Deleting an empty slot is not an error and changes nothing.
     let before = set.clone();
-    set.set_endpoint(0, 0, None).unwrap();
-    set.set_endpoint(2, 0, None).unwrap();
+    set.set_endpoint(0, 0, None, &TestPolicy).unwrap();
+    set.set_endpoint(2, 0, None, &TestPolicy).unwrap();
     assert_eq!(set, before);
 }
 
@@ -121,22 +124,28 @@ fn set_interval_and_set_fallback_need_an_existing_route() {
     let mut set = set();
     assert_eq!(set.set_interval(0, 60), Err(RouteError::RouteNotFound));
     assert_eq!(
-        set.set_fallback(0, Some("http://b.example")),
+        set.set_fallback(0, Some("http://b.example"), &TestPolicy),
         Err(RouteError::RouteNotFound)
     );
-    assert_eq!(set.set_fallback(0, None), Err(RouteError::RouteNotFound));
+    assert_eq!(
+        set.set_fallback(0, None, &TestPolicy),
+        Err(RouteError::RouteNotFound)
+    );
     assert_eq!(set, Set::EMPTY);
 }
 
 #[test]
 fn replacing_the_endpoint_or_profile_is_a_new_generation_and_keeps_the_rest() {
     let mut set = set();
-    set.set_endpoint(0, 0, Some("http://a.example")).unwrap();
+    set.set_endpoint(0, 0, Some("http://a.example"), &TestPolicy)
+        .unwrap();
     set.set_interval(0, 120).unwrap();
-    set.set_fallback(0, Some("http://f.example")).unwrap();
+    set.set_fallback(0, Some("http://f.example"), &TestPolicy)
+        .unwrap();
     let old = set.get(0).unwrap().clone();
 
-    set.set_endpoint(0, 0, Some("http://b.example")).unwrap();
+    set.set_endpoint(0, 0, Some("http://b.example"), &TestPolicy)
+        .unwrap();
     let new = set.get(0).unwrap();
     assert_eq!(new.endpoint.as_str(), "http://b.example");
     assert_eq!(
@@ -147,45 +156,53 @@ fn replacing_the_endpoint_or_profile_is_a_new_generation_and_keeps_the_rest() {
     assert_eq!(new.destinations, new.generation);
 
     let before = new.generation;
-    set.set_endpoint(0, 1, Some("http://b.example")).unwrap(); // only the profile
+    set.set_endpoint(0, 1, Some("http://b.example"), &TestPolicy)
+        .unwrap(); // only the profile
     assert_eq!(set.get(0).unwrap().profile_index, 1);
     assert!(set.get(0).unwrap().generation > before);
 
     // The same profile and endpoint again: nothing changes.
     let same = set.clone();
-    set.set_endpoint(0, 1, Some("http://b.example")).unwrap();
+    set.set_endpoint(0, 1, Some("http://b.example"), &TestPolicy)
+        .unwrap();
     assert_eq!(set, same);
 }
 
 #[test]
 fn a_deleted_and_recreated_slot_inherits_nothing() {
     let mut set = set();
-    set.set_endpoint(1, 0, Some("http://a.example")).unwrap();
+    set.set_endpoint(1, 0, Some("http://a.example"), &TestPolicy)
+        .unwrap();
     set.set_interval(1, 300).unwrap();
-    set.set_fallback(1, Some("http://f.example")).unwrap();
+    set.set_fallback(1, Some("http://f.example"), &TestPolicy)
+        .unwrap();
     let old = set.get(1).unwrap().generation;
-    set.set_endpoint(1, 0, None).unwrap();
-    set.set_endpoint(1, 0, Some("http://a.example")).unwrap();
+    set.set_endpoint(1, 0, None, &TestPolicy).unwrap();
+    set.set_endpoint(1, 0, Some("http://a.example"), &TestPolicy)
+        .unwrap();
     let new = set.get(1).unwrap();
     assert!(new.generation > old);
     assert_eq!(new.interval_s, DEFAULT_INTERVAL_S);
     assert_eq!(new.fallback, None);
-    assert!(set.validate().is_ok());
+    assert!(set.validate(&TestPolicy).is_ok());
 }
 
 #[test]
 fn the_fallback_is_single_replaceable_removable_and_distinct_from_the_primary() {
     let mut set = set();
-    set.set_endpoint(0, 0, Some("http://a.example:80")).unwrap();
+    set.set_endpoint(0, 0, Some("http://a.example:80"), &TestPolicy)
+        .unwrap();
     assert_eq!(
-        set.set_fallback(0, Some("http://A.example")),
+        set.set_fallback(0, Some("http://A.example"), &TestPolicy),
         Err(RouteError::DuplicateEndpoint),
         "same host and default port"
     );
-    set.set_fallback(0, Some("http://f1.example")).unwrap();
+    set.set_fallback(0, Some("http://f1.example"), &TestPolicy)
+        .unwrap();
     let generation = set.get(0).unwrap().generation;
     let destinations = set.get(0).unwrap().destinations;
-    set.set_fallback(0, Some("http://f2.example")).unwrap();
+    set.set_fallback(0, Some("http://f2.example"), &TestPolicy)
+        .unwrap();
     let route = set.get(0).unwrap();
     assert_eq!(
         route.fallback.as_ref().unwrap().as_str(),
@@ -198,20 +215,22 @@ fn the_fallback_is_single_replaceable_removable_and_distinct_from_the_primary() 
     assert!(route.destinations > destinations);
 
     let same = set.clone();
-    set.set_fallback(0, Some("http://f2.example")).unwrap();
+    set.set_fallback(0, Some("http://f2.example"), &TestPolicy)
+        .unwrap();
     assert_eq!(set, same);
 
-    set.set_fallback(0, None).unwrap();
+    set.set_fallback(0, None, &TestPolicy).unwrap();
     assert_eq!(set.get(0).unwrap().fallback, None);
     let same = set.clone();
-    set.set_fallback(0, None).unwrap();
+    set.set_fallback(0, None, &TestPolicy).unwrap();
     assert_eq!(set, same);
 
     // A new primary equal to the fallback is refused and changes nothing.
-    set.set_fallback(0, Some("http://f1.example")).unwrap();
+    set.set_fallback(0, Some("http://f1.example"), &TestPolicy)
+        .unwrap();
     let before = set.clone();
     assert_eq!(
-        set.set_endpoint(0, 0, Some("http://f1.example")),
+        set.set_endpoint(0, 0, Some("http://f1.example"), &TestPolicy),
         Err(RouteError::DuplicateEndpoint)
     );
     assert_eq!(set, before);
@@ -220,46 +239,63 @@ fn the_fallback_is_single_replaceable_removable_and_distinct_from_the_primary() 
 #[test]
 fn changing_one_slot_never_changes_another() {
     let mut set = set();
-    set.set_endpoint(0, 0, Some("http://a.example")).unwrap();
-    set.set_endpoint(1, 1, Some("http://b.example")).unwrap();
+    set.set_endpoint(0, 0, Some("http://a.example"), &TestPolicy)
+        .unwrap();
+    set.set_endpoint(1, 1, Some("http://b.example"), &TestPolicy)
+        .unwrap();
     let slot1 = set.get(1).unwrap().clone();
-    set.set_endpoint(0, 1, Some("http://c.example")).unwrap();
+    set.set_endpoint(0, 1, Some("http://c.example"), &TestPolicy)
+        .unwrap();
     set.set_interval(0, 90).unwrap();
-    set.set_fallback(0, Some("http://f.example")).unwrap();
-    set.set_endpoint(0, 0, None).unwrap();
+    set.set_fallback(0, Some("http://f.example"), &TestPolicy)
+        .unwrap();
+    set.set_endpoint(0, 0, None, &TestPolicy).unwrap();
     assert_eq!(set.get(1), Some(&slot1));
 }
 
 #[test]
 fn validate_rejects_inconsistent_stored_values() {
     let mut set = set();
-    set.set_endpoint(0, 0, Some("http://a.example")).unwrap();
-    set.set_fallback(0, Some("http://f.example")).unwrap();
-    assert!(set.validate().is_ok());
+    set.set_endpoint(0, 0, Some("http://a.example"), &TestPolicy)
+        .unwrap();
+    set.set_fallback(0, Some("http://f.example"), &TestPolicy)
+        .unwrap();
+    assert!(set.validate(&TestPolicy).is_ok());
 
     let mut bad = set.clone();
     bad.slots[0].as_mut().unwrap().interval_s = 1;
-    assert_eq!(bad.validate(), Err(RouteError::InvalidInterval));
+    assert_eq!(bad.validate(&TestPolicy), Err(RouteError::InvalidInterval));
 
     let mut bad = set.clone();
     bad.slots[0].as_mut().unwrap().generation = 0;
-    assert_eq!(bad.validate(), Err(RouteError::InconsistentGeneration));
+    assert_eq!(
+        bad.validate(&TestPolicy),
+        Err(RouteError::InconsistentGeneration)
+    );
 
     let mut bad = set.clone();
     bad.generation = 0;
-    assert_eq!(bad.validate(), Err(RouteError::InconsistentGeneration));
+    assert_eq!(
+        bad.validate(&TestPolicy),
+        Err(RouteError::InconsistentGeneration)
+    );
 
     let mut bad = set.clone();
     bad.slots[0].as_mut().unwrap().fallback = Some(EndpointUri::new("http://a.example").unwrap());
-    assert_eq!(bad.validate(), Err(RouteError::DuplicateEndpoint));
+    assert_eq!(
+        bad.validate(&TestPolicy),
+        Err(RouteError::DuplicateEndpoint)
+    );
 }
 
 #[test]
 fn the_section_round_trips_and_another_capacity_is_refused() {
     use rohi_config::ConfigSection;
     let mut set = Routes::<2>::default();
-    set.set_endpoint(1, 1, Some("http://a.example")).unwrap();
-    set.set_fallback(1, Some("http://f.example")).unwrap();
+    set.set_endpoint(1, 1, Some("http://a.example"), &TestPolicy)
+        .unwrap();
+    set.set_fallback(1, Some("http://f.example"), &TestPolicy)
+        .unwrap();
     let section = ConnectivitySection(set);
     let mut buffer = [0u8; 512];
     let mut writer = &mut buffer[..];
@@ -285,9 +321,31 @@ fn the_two_slot_device_section_fits_the_budget_with_the_longest_endpoints() {
     };
     let mut set = Routes::<2>::default();
     for index in 0..2 {
-        set.set_endpoint(index, 1, Some(&long('a'))).unwrap();
-        set.set_fallback(index, Some(&long('b'))).unwrap();
+        set.set_endpoint(index, 1, Some(&long('a')), &TestPolicy)
+            .unwrap();
+        set.set_fallback(index, Some(&long('b')), &TestPolicy)
+            .unwrap();
     }
     let len = minicbor::len(ConnectivitySection(set));
     assert!(len <= rohi_config::MAX_SECTION_PAYLOAD, "{len}");
+}
+
+#[test]
+fn a_stored_http_only_section_is_read_unchanged() {
+    // Version 2: [generation, [slot0, slot1]], a route is [profile, interval_s, endpoint (CBOR
+    // text), fallback, generation, destinations]. The endpoint is plain text, so a section
+    // written when the core only knew HTTP decodes as it always did.
+    let stored: [u8; 28] = [
+        0x82, 0x01, 0x82, 0xf6, 0x86, 0x01, 0x18, 0x3c, 0x70, b'h', b't', b't', b'p', b':', b'/',
+        b'/', b'a', b'.', b'e', b'x', b'a', b'm', b'p', b'l', b'e', 0xf6, 0x01, 0x01,
+    ];
+    let section: ConnectivitySection<2> = minicbor::decode(&stored).unwrap();
+    let route = section.0.get(1).unwrap();
+    assert_eq!(route.endpoint.as_str(), "http://a.example");
+    assert_eq!(section.0.validate(&TestPolicy), Ok(()));
+    let mut buffer = [0u8; 64];
+    let mut writer = &mut buffer[..];
+    minicbor::encode(&section, &mut writer).unwrap();
+    let used = 64 - writer.len();
+    assert_eq!(&buffer[..used], stored.as_slice());
 }

@@ -40,6 +40,8 @@ pub mod flash;
 #[cfg(feature = "crash-inject")]
 pub mod inject;
 pub mod logging;
+#[cfg(feature = "meshtastic-uart")]
+pub mod meshtastic;
 pub mod net;
 pub mod reboot;
 pub mod resources;

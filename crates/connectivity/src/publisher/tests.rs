@@ -27,7 +27,7 @@ use super::*;
 
 // The capacities the tests exercise: more than a device keeps, to cover every edge.
 type RouteSet = crate::Routes<3>;
-use crate::endpoint::Endpoint;
+use crate::testing::{TestPolicy, status};
 use crate::transport::{TransportAck, TransportError};
 
 struct Clk<'a>(&'a Cell<u64>);
@@ -129,9 +129,13 @@ struct Transport<'a> {
 }
 
 impl PacketTransport for Transport<'_> {
+    fn handles(&self, scheme: &str) -> bool {
+        scheme == "http"
+    }
+
     async fn deliver(
         &mut self,
-        endpoint: Endpoint<'_>,
+        endpoint: &str,
         packet: &[u8],
     ) -> Result<TransportAck, TransportError> {
         let routes = { self.world.routes_on_delivery.borrow_mut().take() };
@@ -142,18 +146,22 @@ impl PacketTransport for Transport<'_> {
         if let Some(routes) = self.world.routes_after_delivery.borrow_mut().take() {
             self.state.publish(&routes);
         }
+        let host = endpoint
+            .strip_prefix("http://")
+            .and_then(|rest| rest.split(':').next())
+            .unwrap_or(endpoint);
         self.world
             .sent
             .borrow_mut()
-            .push((endpoint.host.into(), packet.to_vec()));
-        let status = self
+            .push((host.into(), packet.to_vec()));
+        let code = self
             .world
             .answers
             .borrow()
             .iter()
-            .find(|(host, _)| *host == endpoint.host)
+            .find(|(answers_host, _)| *answers_host == host)
             .map_or(202, |(_, status)| *status);
-        crate::classify_status(status)
+        status(code)
     }
 }
 
@@ -189,8 +197,12 @@ fn routes_due_together_share_one_capture_and_one_sealed_packet() {
     let state = ConnectivityState::<NoopRawMutex, 3>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
-    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
-    config.set_endpoint(1, 0, Some("http://b.example")).unwrap();
+    config
+        .set_endpoint(0, 0, Some("http://a.example"), &TestPolicy)
+        .unwrap();
+    config
+        .set_endpoint(1, 0, Some("http://b.example"), &TestPolicy)
+        .unwrap();
     state.publish(&config);
     let mut publisher: P<4> = publisher(&world, &state, &clock);
 
@@ -219,10 +231,10 @@ fn each_route_keeps_its_own_cadence() {
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
     config
-        .set_endpoint(0, 0, Some("http://fast.example"))
+        .set_endpoint(0, 0, Some("http://fast.example"), &TestPolicy)
         .unwrap();
     config
-        .set_endpoint(1, 0, Some("http://slow.example"))
+        .set_endpoint(1, 0, Some("http://slow.example"), &TestPolicy)
         .unwrap();
     config.set_interval(0, 30).unwrap();
     config.set_interval(1, 300).unwrap();
@@ -255,10 +267,10 @@ fn a_failing_primary_hands_the_same_bytes_to_the_fallback() {
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
     config
-        .set_endpoint(0, 0, Some("http://primary.example"))
+        .set_endpoint(0, 0, Some("http://primary.example"), &TestPolicy)
         .unwrap();
     config
-        .set_fallback(0, Some("http://backup.example"))
+        .set_fallback(0, Some("http://backup.example"), &TestPolicy)
         .unwrap();
     state.publish(&config);
     let mut publisher: P<4> = publisher(&world, &state, &clock);
@@ -281,7 +293,9 @@ fn a_policy_change_invalidates_queued_packets_before_anything_is_sent() {
     let state = ConnectivityState::<NoopRawMutex, 3>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
-    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
+    config
+        .set_endpoint(0, 0, Some("http://a.example"), &TestPolicy)
+        .unwrap();
     state.publish(&config);
     let mut publisher: P<4> = publisher(&world, &state, &clock);
     block_on(publisher.step()); // queued, attempt fails with 503
@@ -309,7 +323,9 @@ fn a_production_failure_is_a_diagnostic_not_a_transport_error_and_does_not_stop_
     let state = ConnectivityState::<NoopRawMutex, 3>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
-    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
+    config
+        .set_endpoint(0, 0, Some("http://a.example"), &TestPolicy)
+        .unwrap();
     state.publish(&config);
     let mut publisher: P<4> = publisher(&world, &state, &clock);
 
@@ -335,14 +351,18 @@ fn an_exhausted_pool_is_counted_and_other_work_continues() {
     let state = ConnectivityState::<NoopRawMutex, 3>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
-    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
+    config
+        .set_endpoint(0, 0, Some("http://a.example"), &TestPolicy)
+        .unwrap();
     state.publish(&config);
     let mut publisher: P<1> = publisher(&world, &state, &clock);
     block_on(publisher.step());
     assert_eq!(publisher.router().pool().in_use(), 1);
 
     // A second route needs another packet instant: no slot is free.
-    config.set_endpoint(1, 0, Some("http://b.example")).unwrap();
+    config
+        .set_endpoint(1, 0, Some("http://b.example"), &TestPolicy)
+        .unwrap();
     state.publish(&config);
     block_on(publisher.step());
     let exhausted: u32 = state
@@ -371,12 +391,14 @@ fn removing_a_route_stops_its_deliveries_and_frees_its_packets() {
     let state = ConnectivityState::<NoopRawMutex, 3>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
-    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
+    config
+        .set_endpoint(0, 0, Some("http://a.example"), &TestPolicy)
+        .unwrap();
     state.publish(&config);
     let mut publisher: P<4> = publisher(&world, &state, &clock);
     block_on(publisher.step());
     assert_eq!(publisher.router().pool().in_use(), 1);
-    config.set_endpoint(0, 0, None).unwrap();
+    config.set_endpoint(0, 0, None, &TestPolicy).unwrap();
     state.publish(&config);
     clock.set(100_000);
     block_on(publisher.step());
@@ -390,7 +412,9 @@ fn an_unreadable_store_leaves_no_active_route() {
     let state = ConnectivityState::<NoopRawMutex, 3>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
-    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
+    config
+        .set_endpoint(0, 0, Some("http://a.example"), &TestPolicy)
+        .unwrap();
     state.publish(&config);
     state.mark_unreadable();
     assert!(state.is_unreadable());
@@ -407,7 +431,9 @@ fn a_profile_that_disappears_during_the_capture_never_joins_the_execution() {
     let state = ConnectivityState::<NoopRawMutex, 3>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
-    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
+    config
+        .set_endpoint(0, 0, Some("http://a.example"), &TestPolicy)
+        .unwrap();
     state.publish(&config);
     let mut publisher: P<4> = publisher(&world, &state, &clock);
 
@@ -435,7 +461,9 @@ fn removing_a_route_during_capture_does_not_publish_or_send_its_packet() {
     let state = ConnectivityState::<NoopRawMutex, 3>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
-    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
+    config
+        .set_endpoint(0, 0, Some("http://a.example"), &TestPolicy)
+        .unwrap();
     state.publish(&config);
     world.routes_on_capture.replace(Some(RouteSet::default()));
     let mut publisher: P<4> = publisher(&world, &state, &clock);
@@ -453,10 +481,12 @@ fn changing_fallbacks_during_build_does_not_admit_a_stale_packet() {
     let state = ConnectivityState::<NoopRawMutex, 3>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
-    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
+    config
+        .set_endpoint(0, 0, Some("http://a.example"), &TestPolicy)
+        .unwrap();
     state.publish(&config);
     config
-        .set_fallback(0, Some("http://backup.example"))
+        .set_fallback(0, Some("http://backup.example"), &TestPolicy)
         .unwrap();
     world.routes_on_build.replace(Some(config));
     let mut publisher: P<4> = publisher(&world, &state, &clock);
@@ -474,10 +504,12 @@ fn changing_fallbacks_cancels_an_in_flight_delivery() {
     let state = ConnectivityState::<NoopRawMutex, 3>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
-    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
+    config
+        .set_endpoint(0, 0, Some("http://a.example"), &TestPolicy)
+        .unwrap();
     state.publish(&config);
     config
-        .set_fallback(0, Some("http://backup.example"))
+        .set_fallback(0, Some("http://backup.example"), &TestPolicy)
         .unwrap();
     world.routes_on_delivery.replace(Some(config));
     let mut publisher: P<4> = publisher(&world, &state, &clock);
@@ -494,9 +526,13 @@ fn replacing_the_endpoint_cancels_an_in_flight_delivery_and_sends_nothing_stale(
     let state = ConnectivityState::<NoopRawMutex, 3>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
-    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
+    config
+        .set_endpoint(0, 0, Some("http://a.example"), &TestPolicy)
+        .unwrap();
     state.publish(&config);
-    config.set_endpoint(0, 0, Some("http://b.example")).unwrap();
+    config
+        .set_endpoint(0, 0, Some("http://b.example"), &TestPolicy)
+        .unwrap();
     world.routes_on_delivery.replace(Some(config));
     let mut publisher: P<4> = publisher(&world, &state, &clock);
 
@@ -513,9 +549,13 @@ fn editing_another_route_during_a_delivery_keeps_the_result_of_this_one() {
     let state = ConnectivityState::<NoopRawMutex, 3>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
-    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
+    config
+        .set_endpoint(0, 0, Some("http://a.example"), &TestPolicy)
+        .unwrap();
     state.publish(&config);
-    config.set_endpoint(1, 0, Some("http://b.example")).unwrap();
+    config
+        .set_endpoint(1, 0, Some("http://b.example"), &TestPolicy)
+        .unwrap();
     world.routes_after_delivery.replace(Some(config));
     let mut publisher: P<4> = publisher(&world, &state, &clock);
 
@@ -537,7 +577,9 @@ fn a_deleted_and_recreated_slot_starts_clean() {
     let state = ConnectivityState::<NoopRawMutex, 3>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
-    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
+    config
+        .set_endpoint(0, 0, Some("http://a.example"), &TestPolicy)
+        .unwrap();
     state.publish(&config);
     let mut publisher: P<4> = publisher(&world, &state, &clock);
     block_on(publisher.step());
@@ -545,8 +587,10 @@ fn a_deleted_and_recreated_slot_starts_clean() {
     assert_eq!((old.queue_depth, old.counters.retries), (1, 1));
 
     // Deleted and recreated with the same endpoint: nothing is inherited.
-    config.set_endpoint(0, 0, None).unwrap();
-    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
+    config.set_endpoint(0, 0, None, &TestPolicy).unwrap();
+    config
+        .set_endpoint(0, 0, Some("http://a.example"), &TestPolicy)
+        .unwrap();
     state.publish(&config);
     block_on(publisher.step());
     let new = state.views()[0].unwrap();
@@ -565,8 +609,12 @@ fn updating_slot_zero_never_changes_slot_one_and_each_profile_slot_has_its_own_p
     let state = ConnectivityState::<NoopRawMutex, 3>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
-    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
-    config.set_endpoint(1, 1, Some("http://b.example")).unwrap();
+    config
+        .set_endpoint(0, 0, Some("http://a.example"), &TestPolicy)
+        .unwrap();
+    config
+        .set_endpoint(1, 1, Some("http://b.example"), &TestPolicy)
+        .unwrap();
     state.publish(&config);
     let mut publisher: P<4> = publisher(&world, &state, &clock);
 
@@ -581,7 +629,9 @@ fn updating_slot_zero_never_changes_slot_one_and_each_profile_slot_has_its_own_p
     }
     let before = state.views()[1].unwrap();
 
-    config.set_endpoint(0, 1, Some("http://c.example")).unwrap();
+    config
+        .set_endpoint(0, 1, Some("http://c.example"), &TestPolicy)
+        .unwrap();
     config.set_interval(0, 120).unwrap();
     state.publish(&config);
     clock.set(1);
@@ -595,8 +645,12 @@ fn a_profile_slot_that_does_not_exist_suspends_its_route_only() {
     let state = ConnectivityState::<NoopRawMutex, 3>::new();
     let clock = Cell::new(0);
     let mut config = RouteSet::default();
-    config.set_endpoint(0, 5, Some("http://a.example")).unwrap();
-    config.set_endpoint(1, 0, Some("http://b.example")).unwrap();
+    config
+        .set_endpoint(0, 5, Some("http://a.example"), &TestPolicy)
+        .unwrap();
+    config
+        .set_endpoint(1, 0, Some("http://b.example"), &TestPolicy)
+        .unwrap();
     state.publish(&config);
     let mut publisher: P<4> = publisher(&world, &state, &clock);
 

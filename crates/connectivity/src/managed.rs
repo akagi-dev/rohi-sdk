@@ -50,7 +50,14 @@
 //! fallback. (An implementation that omits the argument is read the same way.)
 //! In a positional or named CLI call this is an empty argument, for example
 //! `connectivity set_endpoint 0 0 ""` or `... endpoint=`. Anything else must
-//! be a valid `http://host[:port]` of at most 64 bytes.
+//! be a valid endpoint URI of at most 64 bytes whose scheme this build supports
+//! (`http://host[:port]`, `meshtastic+uart://!xxxxxxxx`, ...): `invalid_endpoint` for a malformed
+//! one and `unsupported_endpoint_scheme` for a scheme with no backend. Both are decided
+//! before anything is stored and without any network or radio I/O; the whole candidate
+//! set is checked, so a stored set the build cannot deliver (after a firmware without
+//! that transport) stays untouched in storage, reports the issue
+//! `unsupported_scheme`, sends nothing and is repaired by deleting or replacing
+//! the offending route.
 //!
 //! `set_endpoint` creates the route of an empty slot for the telemetry
 //! profile slot `profile_index` (it must exist, else `invalid_profile_index`)
@@ -101,13 +108,14 @@ use embassy_sync::mutex::Mutex;
 use heapless::Vec;
 use rohi_service::{
     Action, ActionAccess, ActionDescriptor, ActionError, ActionOutput, EnumDescriptor, EnumVariant,
-    FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES, ResultFormat, Service,
-    ServiceHealth, ServiceSummary, Status, StatusWriter, Unit, Value, ValueKind, WriteError,
+    FieldDescriptor, Issue, IssueDescriptor, IssueSeverity, MAX_ISSUES, Service, ServiceHealth,
+    ServiceSummary, Status, StatusWriter, Unit, Value, ValueKind, WriteError,
 };
 #[cfg(feature = "packet-export")]
-use rohi_service::{MAX_STREAM_CHUNK, StreamChunk, StreamFile, StreamInfo};
+use rohi_service::{MAX_STREAM_CHUNK, ResultFormat, StreamChunk, StreamFile, StreamInfo};
 
 use crate::config::{RouteError, Routes};
+use crate::endpoint::EndpointPolicy;
 #[cfg(feature = "packet-export")]
 use crate::pool::{PacketHandle, PacketPool};
 use crate::provider::PacketExporter;
@@ -187,6 +195,9 @@ pub mod issue {
     pub const PROFILE_MISSING: u32 = FIRST_SERVICE_ISSUE + 1;
     /// The last attempt to build a packet failed.
     pub const PACKET_BUILD_FAILED: u32 = FIRST_SERVICE_ISSUE + 2;
+    /// The stored routes use an endpoint scheme this build cannot deliver; no route is
+    /// active until a route is removed or replaced.
+    pub const UNSUPPORTED_ENDPOINT: u32 = FIRST_SERVICE_ISSUE + 4;
     /// Packets are queued but every delivery path of a route is failing and
     /// cooling down.
     pub const DELIVERY_FAILING: u32 = FIRST_SERVICE_ISSUE + 3;
@@ -261,12 +272,14 @@ pub struct ConnectivityService<
     M: RawMutex,
     S,
     X,
+    P,
     const ROUTES: usize,
     const EXPORTS: usize,
     const BYTES: usize,
 > {
     store: S,
     exporter: X,
+    policy: P,
     state: &'a ConnectivityState<M, ROUTES>,
     // Serializes read-modify-write: no lost updates between Actions.
     edit: Mutex<M, ()>,
@@ -274,8 +287,8 @@ pub struct ConnectivityService<
     exports: BlockingMutex<M, RefCell<Exports<EXPORTS, BYTES>>>,
 }
 
-impl<M: RawMutex, S, X, const R: usize, const E: usize, const B: usize> Service
-    for ConnectivityService<'_, M, S, X, R, E, B>
+impl<M: RawMutex, S, X, P, const R: usize, const E: usize, const B: usize> Service
+    for ConnectivityService<'_, M, S, X, P, R, E, B>
 {
     const ID: u32 = SERVICE_ID;
     const NAME: &'static str = "connectivity";
@@ -286,17 +299,19 @@ impl<
     M: RawMutex,
     S: ConnectivityStore<R>,
     X: PacketExporter,
+    P: EndpointPolicy,
     const R: usize,
     const E: usize,
     const B: usize,
-> ConnectivityService<'a, M, S, X, R, E, B>
+> ConnectivityService<'a, M, S, X, P, R, E, B>
 {
     /// A service over `store`, building exports with `exporter` and reporting
     /// the runtime state of `state`.
-    pub const fn new(store: S, exporter: X, state: &'a ConnectivityState<M, R>) -> Self {
+    pub const fn new(store: S, exporter: X, policy: P, state: &'a ConnectivityState<M, R>) -> Self {
         Self {
             store,
             exporter,
+            policy,
             state,
             edit: Mutex::new(()),
             #[cfg(feature = "packet-export")]
@@ -310,11 +325,14 @@ impl<
 
     async fn edit(
         &self,
-        change: impl FnOnce(&mut Routes<R>) -> Result<(), RouteError>,
+        change: impl FnOnce(&mut Routes<R>, &P) -> Result<(), RouteError>,
     ) -> Result<(), ActionError> {
         let _guard = self.edit.lock().await;
         let mut candidate = self.store.load().await?;
-        change(&mut candidate).map_err(reject)?;
+        change(&mut candidate, &self.policy).map_err(reject)?;
+        // The whole candidate, not only the edited route: a set the build cannot
+        // deliver is never stored. Deleting the offending route is always a valid edit.
+        candidate.validate(&self.policy).map_err(reject)?;
         if minicbor::len(SectionRef(&candidate)) > MAX_SECTION_PAYLOAD {
             return Err(ActionError::Rejected("section_too_large"));
         }
@@ -387,6 +405,7 @@ fn reject(error: RouteError) -> ActionError {
         RouteError::RouteNotFound => "route_not_found",
         RouteError::DuplicateEndpoint => "duplicate_endpoint",
         RouteError::InvalidEndpoint => "invalid_endpoint",
+        RouteError::UnsupportedEndpoint => "unsupported_endpoint_scheme",
         RouteError::InvalidInterval => "invalid_interval",
         RouteError::InconsistentGeneration => "inconsistent_generation",
     })
@@ -539,10 +558,11 @@ impl<
     M: RawMutex,
     S: ConnectivityStore<R>,
     X: PacketExporter,
+    P: EndpointPolicy,
     const R: usize,
     const E: usize,
     const B: usize,
-> Status for ConnectivityService<'_, M, S, X, R, E, B>
+> Status for ConnectivityService<'_, M, S, X, P, R, E, B>
 where
     Slots<R>: RouteSlots,
 {
@@ -554,10 +574,11 @@ where
         IssueDescriptor::new(issue::PROFILE_MISSING, "profile_missing"),
         IssueDescriptor::new(issue::PACKET_BUILD_FAILED, "packet_build_failed"),
         IssueDescriptor::new(issue::DELIVERY_FAILING, "delivery_failing"),
+        IssueDescriptor::new(issue::UNSUPPORTED_ENDPOINT, "unsupported_scheme"),
     ];
 
     async fn summary(&self) -> ServiceSummary {
-        if self.state.is_unreadable() {
+        if self.state.is_unreadable() || self.state.is_unsupported() {
             return ServiceSummary::new(ServiceHealth::Error);
         }
         if self.state.routes().count() == 0 {
@@ -591,6 +612,9 @@ where
         };
         if self.state.is_unreadable() {
             push(issue::STORAGE_UNAVAILABLE);
+        }
+        if self.state.is_unsupported() {
+            push(issue::UNSUPPORTED_ENDPOINT);
         }
         let views = self.state.views();
         if views
@@ -672,10 +696,11 @@ impl<
     M: RawMutex,
     S: ConnectivityStore<R>,
     X: PacketExporter,
+    P: EndpointPolicy,
     const R: usize,
     const E: usize,
     const B: usize,
-> Action for ConnectivityService<'_, M, S, X, R, E, B>
+> Action for ConnectivityService<'_, M, S, X, P, R, E, B>
 {
     const ACTIONS: &'static [ActionDescriptor] = &[
         ActionDescriptor::new(action::SET_ENDPOINT, "set_endpoint", ActionAccess::Mutate).args(&[
@@ -722,7 +747,7 @@ impl<
                 if endpoint.is_some() && self.exporter.resolve(profile).is_none() {
                     return Err(ActionError::Rejected("invalid_profile_index"));
                 }
-                self.edit(|routes| routes.set_endpoint(index, profile, endpoint))
+                self.edit(|routes, policy| routes.set_endpoint(index, profile, endpoint, policy))
                     .await
             }
             action::SET_INTERVAL => {
@@ -732,13 +757,13 @@ impl<
                     .ok_or(ActionError::InvalidArgument)?;
                 let seconds = u32::try_from(seconds)
                     .map_err(|_| ActionError::Rejected("invalid_interval"))?;
-                self.edit(|routes| routes.set_interval(index, seconds))
+                self.edit(|routes, _| routes.set_interval(index, seconds))
                     .await
             }
             action::SET_FALLBACK => {
                 let index = slot(args)?;
                 let endpoint = optional_endpoint(args, action_field::FALLBACK_ENDPOINT)?;
-                self.edit(|routes| routes.set_fallback(index, endpoint))
+                self.edit(|routes, policy| routes.set_fallback(index, endpoint, policy))
                     .await
             }
             #[cfg(feature = "packet-export")]

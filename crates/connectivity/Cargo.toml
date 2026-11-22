@@ -7,7 +7,7 @@ edition.workspace = true
 homepage.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Robonomics Open Hardware connectivity: per-route publication of sealed telemetry packets with ordered fallback delivery over HTTP"
+description = "Robonomics Open Hardware connectivity: per-route publication of sealed telemetry packets with ordered fallback delivery over pluggable transports"
 
 [badges]
 maintenance = { status = "actively-developed" }
@@ -16,15 +16,12 @@ maintenance = { status = "actively-developed" }
 rohi-telemetry.workspace = true
 rohi-config.workspace = true
 rohi-service.workspace = true
-rohi-net.workspace = true
 rohi-time.workspace = true
 minicbor.workspace = true
 heapless.workspace = true
 embassy-sync.workspace = true
 embassy-futures.workspace = true
 embedded-hal-async.workspace = true
-embedded-io-async.workspace = true
-embedded-nal-async.workspace = true
 log.workspace = true
 
 [features]
@@ -34,5 +31,3 @@ log.workspace = true
 default = ["packet-export"]
 packet-export = []
 
-[dev-dependencies]
-rohi-net = { path = "../net", features = ["testing"] }

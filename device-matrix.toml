@@ -109,8 +109,15 @@ source = "crates/time-ntp"
 id = "telemetry"
 kind = "service"
 name = "Telemetry (profiles, packets and delivery routes)"
-provides = "signed packets with public and encrypted sections built from the selections of two indexed profile slots, delivered per indexed route slot to HTTP endpoints with one fallback"
+provides = "signed packets with public and encrypted sections built from the selections of two indexed profile slots, delivered per indexed route slot to HTTP endpoints (and, with the opt-in `meshtastic-uart` feature, Meshtastic endpoints) with one fallback"
 source = "crates/telemetry"
+
+[[capability]]
+id = "meshtastic-uart"
+kind = "service"
+name = "Meshtastic radio over UART"
+provides = "the `meshtastic` section (`baud_rate`) and service (radio identity, frame counters, health and issues; the `send`, `inbox` and `reconnect` actions) over a local Meshtastic radio on UART0, and delivery of sealed telemetry packets to `meshtastic+uart://!xxxxxxxx` endpoints (Transport v1, PKI unicast, per-fragment routing ACK); opt-in with the `meshtastic-uart` feature"
+source = "crates/meshtastic"
 
 [[capability]]
 id = "ble-control"
@@ -279,6 +286,18 @@ title = "rohi-connectivity"
 reference = "crates/connectivity"
 
 [[evidence]]
+id = "src-meshtastic"
+kind = "source"
+title = "rohi-meshtastic"
+reference = "crates/meshtastic"
+
+[[evidence]]
+id = "src-connectivity-meshtastic"
+kind = "source"
+title = "rohi-connectivity-meshtastic"
+reference = "crates/connectivity-meshtastic"
+
+[[evidence]]
 id = "src-control-ble"
 kind = "source"
 title = "rohi-control-ble"
@@ -373,6 +392,18 @@ id = "test-connectivity"
 kind = "test"
 title = "rohi-connectivity router and publisher tests"
 reference = "crates/connectivity/src/router/tests.rs"
+
+[[evidence]]
+id = "test-meshtastic"
+kind = "test"
+title = "rohi-meshtastic session, link and service tests"
+reference = "crates/meshtastic/src/uart/tests.rs"
+
+[[evidence]]
+id = "test-connectivity-meshtastic"
+kind = "test"
+title = "rohi-connectivity-meshtastic transport and mixed-route tests"
+reference = "crates/connectivity-meshtastic/tests/mixed_route.rs"
 
 [[evidence]]
 id = "test-control-ble"
@@ -1256,6 +1287,60 @@ evidence = [
   "test-system",
   "test-std-system",
   "test-rohi-cli",
+  "ci-workflow",
+  "doc-hwtest",
+]
+
+[[entry]]
+hardware = "altruist-urban-esp32c3"
+firmware = "rohi-altruist-urban"
+capability = "meshtastic-uart"
+board_part = "not-applicable"
+implementation = "implemented"
+integration = "integrated"
+host_tests = "passing"
+simulation = "none"
+target_build = "ci-built"
+hardware_verification = "not-verified"
+limitations = [
+  "Opt-in: build with the `meshtastic-uart` feature. It needs a separate Meshtastic radio whose Serial module speaks the protobuf PhoneAPI (`PROTO`) on UART0.",
+  "UART0 uses GPIO21 (TX) and GPIO20 (RX), the chip defaults; they are not verified against the C3 board revision, and no hardware run against a radio is recorded.",
+  "The firmware log goes over USB Serial/JTAG, so UART0 is free; the ROM bootloader still prints on UART0 at reset.",
+  "The routing ACK of every fragment is the delivery proof; interoperability with the robins edge ingress is not verified on hardware. BLE is not implemented.",
+]
+evidence = [
+  "src-meshtastic",
+  "src-connectivity-meshtastic",
+  "test-meshtastic",
+  "test-connectivity-meshtastic",
+  "doc-boards",
+  "ci-workflow",
+  "doc-hwtest",
+]
+
+[[entry]]
+hardware = "altruist-urban-esp32c6"
+firmware = "rohi-altruist-urban"
+capability = "meshtastic-uart"
+board_part = "not-applicable"
+implementation = "implemented"
+integration = "integrated"
+host_tests = "passing"
+simulation = "none"
+target_build = "ci-built"
+hardware_verification = "not-verified"
+limitations = [
+  "Opt-in: build with the `meshtastic-uart` feature. It needs a separate Meshtastic radio whose Serial module speaks the protobuf PhoneAPI (`PROTO`) on UART0.",
+  "UART0 uses GPIO22 (TX) and GPIO20 (RX), the pins the CN4 documentation reserves for the Meshtastic module; which signal is TX is not documented, so the direction is unverified: swap them if the radio stays silent.",
+  "The firmware log goes over USB Serial/JTAG, so UART0 is free; the ROM bootloader still prints on UART0 at reset.",
+  "The routing ACK of every fragment is the delivery proof; interoperability with the robins edge ingress is not verified on hardware. BLE is not implemented.",
+]
+evidence = [
+  "src-meshtastic",
+  "src-connectivity-meshtastic",
+  "test-meshtastic",
+  "test-connectivity-meshtastic",
+  "doc-boards",
   "ci-workflow",
   "doc-hwtest",
 ]

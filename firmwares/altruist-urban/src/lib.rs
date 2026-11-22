@@ -67,11 +67,18 @@ pub mod control;
 pub mod identity;
 pub mod location;
 pub mod logging;
+#[cfg(feature = "meshtastic-uart")]
+pub mod meshtastic;
 pub mod net;
 pub mod reboot;
 pub mod tasks;
 pub mod telemetry;
 pub mod time;
+
+#[cfg(all(feature = "meshtastic-uart", feature = "std"))]
+compile_error!(
+    "the Meshtastic UART backend exists on the ESP platform only: build `meshtastic-uart` with an ESP chip feature, not with `std`"
+);
 
 #[cfg(feature = "esp")]
 pub mod esp;

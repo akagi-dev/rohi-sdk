@@ -1,0 +1,28 @@
+[package]
+name = "rohi-meshtastic"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Robonomics Open Hardware Meshtastic service: PhoneAPI session over a UART, radio link state, configuration, status and diagnostic actions"
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[dependencies]
+rohi-time.workspace = true
+rohi-config.workspace = true
+rohi-service.workspace = true
+heapless.workspace = true
+minicbor.workspace = true
+embassy-sync.workspace = true
+embassy-futures.workspace = true
+embedded-hal-async.workspace = true
+embedded-io-async.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+rohi-config = { workspace = true, features = ["std"] }

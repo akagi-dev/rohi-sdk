@@ -15,7 +15,26 @@
 //  limitations under the License.
 //
 ///////////////////////////////////////////////////////////////////////////////
-//! Delivery endpoints: `http://host[:port]`.
+//! Delivery endpoints: an opaque, bounded URI and the policy that gives it meaning.
+//!
+//! The core never parses a host, a port or a node ID. [`EndpointUri`] only
+//! checks the *shape* (`scheme://rest`, bounded, printable ASCII) so that it can
+//! be stored, compared and logged safely. What the URI means is decided by the
+//! transport crates through an [`EndpointPolicy`], which the firmware composes
+//! (see [`Mux`](crate::Mux)) and which the configuration service consults
+//! **before** a change is stored. No policy does network, radio or serial I/O.
+//!
+//! ```
+//! use rohi_connectivity::{EndpointPolicy, EndpointUri, StructuralPolicy};
+//!
+//! let uri = EndpointUri::new("http://ingress.example.org:8080").unwrap();
+//! assert_eq!(uri.scheme(), "http");
+//! // No scheme, whitespace or control characters.
+//! assert!(EndpointUri::new("ingress.example.org").is_none());
+//! assert!(EndpointUri::new("http://a b").is_none());
+//! // The structural policy accepts any well-formed URI and compares bytes.
+//! assert!(StructuralPolicy.validate(uri.as_str()).is_ok());
+//! ```
 
 use core::fmt;
 
@@ -25,75 +44,112 @@ use minicbor::{CborLen, Decode, Encode};
 /// Maximum length of the endpoint URI, in bytes: the longest text a config
 /// value can hold.
 pub const MAX_ENDPOINT_LEN: usize = 64;
-/// Default HTTP port.
-pub const DEFAULT_PORT: u16 = 80;
 
-const SCHEME: &str = "http://";
-
-/// Where packets are sent, split into its parts.
+/// Why an endpoint URI was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Endpoint<'a> {
-    /// Host name or IPv4 address, also the HTTP `Host` header.
-    pub host: &'a str,
-    /// TCP port.
-    pub port: u16,
+pub enum EndpointError {
+    /// Not a valid URI of its scheme.
+    Invalid,
+    /// This build has no backend for the scheme.
+    UnsupportedScheme,
 }
 
-impl<'a> Endpoint<'a> {
-    /// Splits `http://host[:port]`; `None` for anything else.
-    ///
-    /// ```
-    /// use rohi_connectivity::Endpoint;
-    ///
-    /// let endpoint = Endpoint::parse("http://ingress.example.org:8080").unwrap();
-    /// assert_eq!((endpoint.host, endpoint.port), ("ingress.example.org", 8080));
-    /// assert_eq!(Endpoint::parse("http://10.0.0.7").unwrap().port, 80);
-    /// // No TLS, path, user information or empty port.
-    /// assert_eq!(Endpoint::parse("https://ingress.example.org"), None);
-    /// assert_eq!(Endpoint::parse("http://ingress.example.org/x"), None);
-    /// assert_eq!(Endpoint::parse("http://ingress.example.org:"), None);
-    /// ```
-    ///
-    /// The scheme is required and the port defaults to [`DEFAULT_PORT`]. The
-    /// host is letters, digits, `.` and `-` only (a DNS name or an IPv4
-    /// address): it is written into the HTTP `Host` header, so it can never
-    /// carry spaces or line breaks. There is no user information, path, query
-    /// or fragment: the path of the ingress is fixed by the protocol.
-    pub fn parse(uri: &'a str) -> Option<Self> {
-        let authority = uri.strip_prefix(SCHEME)?;
-        let (host, port) = match authority.split_once(':') {
-            Some((host, port)) => (host, Some(port)),
-            None => (authority, None),
-        };
-        let host_is_valid = !host.is_empty()
-            && host
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'));
-        if !host_is_valid {
-            return None;
+impl fmt::Display for EndpointError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Invalid => f.write_str("invalid endpoint"),
+            Self::UnsupportedScheme => f.write_str("unsupported endpoint scheme"),
         }
-        let port = match port {
-            None => DEFAULT_PORT,
-            Some(digits) => {
-                if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
-                    return None;
-                }
-                match digits.parse::<u16>() {
-                    Ok(port) if port != 0 => port,
-                    _ => return None,
-                }
-            }
-        };
-        Some(Self { host, port })
     }
 }
 
-/// The URI of the telemetry ingress: `http://host[:port]`, at most
-/// [`MAX_ENDPOINT_LEN`] bytes.
+impl core::error::Error for EndpointError {}
+
+/// The meaning of endpoint URIs in one build: which schemes it supports, what
+/// is valid and which spellings denote the same delivery path.
 ///
-/// See [`Endpoint::parse`] for the accepted form. A value that is not valid is
-/// refused by [`new`](Self::new); one that was decoded from storage is checked
-/// by [`Routes::validate`](crate::Routes::validate).
+/// Synchronous and free of I/O: it checks the text only. Whether the Wi-Fi,
+/// the radio or the gateway is reachable is an operational failure of the
+/// delivery attempt, never a reason to refuse a configuration.
+pub trait EndpointPolicy {
+    /// Whether this policy owns `scheme` (the text before `://`, as written).
+    fn supports(&self, scheme: &str) -> bool;
+
+    /// Checks that `uri` is a valid, supported endpoint.
+    ///
+    /// # Errors
+    ///
+    /// [`EndpointError::UnsupportedScheme`] when the scheme has no backend,
+    /// [`EndpointError::Invalid`] when the rest is not valid for it.
+    fn validate(&self, uri: &str) -> Result<(), EndpointError>;
+
+    /// Whether `a` and `b` (both valid) are the same delivery path, for
+    /// duplicate detection. The text is never rewritten to compare.
+    fn equivalent(&self, a: &str, b: &str) -> bool;
+}
+
+impl<P: EndpointPolicy + ?Sized> EndpointPolicy for &P {
+    fn supports(&self, scheme: &str) -> bool {
+        (**self).supports(scheme)
+    }
+    fn validate(&self, uri: &str) -> Result<(), EndpointError> {
+        (**self).validate(uri)
+    }
+    fn equivalent(&self, a: &str, b: &str) -> bool {
+        (**self).equivalent(a, b)
+    }
+}
+
+/// A policy that accepts every well-formed URI and compares them byte for byte.
+///
+/// For tests and for builds that only check the shape; a firmware that
+/// delivers anything composes the policies of its transports instead.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StructuralPolicy;
+
+impl EndpointPolicy for StructuralPolicy {
+    fn supports(&self, _scheme: &str) -> bool {
+        true
+    }
+    fn validate(&self, uri: &str) -> Result<(), EndpointError> {
+        if is_well_formed(uri) {
+            Ok(())
+        } else {
+            Err(EndpointError::Invalid)
+        }
+    }
+    fn equivalent(&self, a: &str, b: &str) -> bool {
+        a == b
+    }
+}
+
+/// The text before `://`, or the empty string when there is none.
+pub fn scheme_of(uri: &str) -> &str {
+    uri.split_once("://").map_or("", |(scheme, _)| scheme)
+}
+
+// `scheme://rest`: an ASCII scheme (`[A-Za-z][A-Za-z0-9+.-]*`), a nonempty rest
+// and nothing but printable ASCII, so no space, control or non-ASCII character.
+fn is_well_formed(uri: &str) -> bool {
+    let Some((scheme, rest)) = uri.split_once("://") else {
+        return false;
+    };
+    let mut scheme_bytes = scheme.bytes();
+    let scheme_ok = scheme_bytes.next().is_some_and(|b| b.is_ascii_alphabetic())
+        && scheme_bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'.' | b'-'));
+    scheme_ok
+        && !rest.is_empty()
+        && uri.len() <= MAX_ENDPOINT_LEN
+        && uri.bytes().all(|b| b.is_ascii_graphic())
+}
+
+/// The URI of a delivery endpoint, at most [`MAX_ENDPOINT_LEN`] bytes.
+///
+/// Opaque: only the shape is checked (see the [module](self) page); the value
+/// is stored as the CBOR text it always was, so a stored HTTP route reads
+/// unchanged. A value that is malformed is refused by [`new`](Self::new); one
+/// that was decoded from storage is checked by
+/// [`Routes::validate`](crate::Routes::validate).
 #[derive(Clone, PartialEq, Eq, Encode, Decode, CborLen)]
 #[cbor(transparent)]
 pub struct EndpointUri(
@@ -107,9 +163,11 @@ pub struct EndpointUri(
 );
 
 impl EndpointUri {
-    /// `None` if `uri` is not a valid endpoint or too long.
+    /// `None` if `uri` is not `scheme://rest` of printable ASCII or too long.
     pub fn new(uri: &str) -> Option<Self> {
-        Endpoint::parse(uri)?;
+        if !is_well_formed(uri) {
+            return None;
+        }
         String::try_from(uri).ok().map(Self)
     }
 
@@ -118,9 +176,15 @@ impl EndpointUri {
         &self.0
     }
 
-    /// The parts of the endpoint; `None` if the stored text is not valid.
-    pub fn endpoint(&self) -> Option<Endpoint<'_>> {
-        Endpoint::parse(&self.0)
+    /// The scheme: the text before `://`.
+    pub fn scheme(&self) -> &str {
+        scheme_of(&self.0)
+    }
+
+    /// Whether the stored text has the shape of an endpoint; `false` only for
+    /// a value decoded from damaged storage.
+    pub fn is_well_formed(&self) -> bool {
+        is_well_formed(&self.0)
     }
 }
 
@@ -150,7 +214,51 @@ impl rohi_config::TextValue for EndpointUri {
 fn log_invalid_endpoint(len: usize) {
     log::warn!(
         target: "connectivity",
-        "Endpoint rejected, expected http://host[:port] (len_b={})",
+        "Endpoint rejected, expected scheme://... (len_b={})",
         len
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shape_is_checked_and_bounded() {
+        for ok in ["http://a", "meshtastic+uart://!deadbeef", "x1.y-z+w://q"] {
+            assert!(EndpointUri::new(ok).is_some(), "{ok}");
+        }
+        for bad in [
+            "",
+            "http://",
+            "://a",
+            "1http://a",
+            "http:/a",
+            "http://a b",
+            "http://a\n",
+            "http://é",
+            "ht tp://a",
+        ] {
+            assert!(EndpointUri::new(bad).is_none(), "{bad:?}");
+        }
+        let at_limit = std::format!("http://{}", "a".repeat(MAX_ENDPOINT_LEN - 7));
+        assert!(EndpointUri::new(&at_limit).is_some());
+        assert!(EndpointUri::new(&std::format!("{at_limit}a")).is_none());
+    }
+
+    #[test]
+    fn scheme_is_the_text_before_the_separator() {
+        assert_eq!(scheme_of("meshtastic+ble://!1"), "meshtastic+ble");
+        assert_eq!(scheme_of("nothing"), "");
+    }
+
+    #[test]
+    fn cbor_is_a_plain_text_string() {
+        let uri = EndpointUri::new("http://ingress.example").unwrap();
+        let mut buffer = [0u8; 64];
+        let used = rohi_config::encode_to_slice(&uri, &mut buffer).unwrap();
+        // A definite-length text string: major type 3.
+        assert_eq!(buffer[0] >> 5, 3);
+        assert_eq!(&buffer[1..used], b"http://ingress.example");
+    }
 }

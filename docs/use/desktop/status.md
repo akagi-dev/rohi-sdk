@@ -179,6 +179,7 @@ section. Secrets are write-only. It is covered on [Configuration](configuration.
 | `sensors` | `<sensor>.<measurement>` values in canonical units | `bmx280_error`, `sds011_degraded`, ... |
 | `identity` | provisioned or not, public key | `not_provisioned` |
 | `location` | where the device is and where that comes from ([Location](https://docs.rs/rohi-location)) | `not_set` |
+| `meshtastic` | the local Meshtastic radio on a UART (opt-in `meshtastic-uart` build): identity, counters, `send`, `inbox`, `reconnect` ([guide](../../guides/meshtastic.md)) | `uart_unavailable`, `radio_not_configured`, `radio_unresponsive`, `protocol_error`, `radio_reconnecting` |
 
 A firmware may offer more or fewer; `rohi status` shows what the connected device really has. Adding a service needs
 no change to the tool: [Add a service](../../guides/add-service.md).

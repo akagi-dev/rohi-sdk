@@ -207,6 +207,24 @@ shared code went with them. `max_data` and `max_bss` of `memcheck-budgets.toml` 
 unencrypted** and a link is always reported as unencrypted and unauthenticated; suitable only for trusted environments.
 Advertising, connection, writes, notifications, disconnect and reconnect were **not** run on a device.
 
+## Meshtastic UART (opt-in)
+
+`--features meshtastic-uart` adds the `meshtastic` service, the radio session task and the Meshtastic transport. Measured with
+`scripts/measure.sh esp32c3 meshtastic-uart` against `scripts/measure.sh esp32c3` (same commit, bytes):
+
+| Metric | Default | `meshtastic-uart` | Delta |
+|--------|--------:|------------------:|------:|
+| `.text` | 1 090 150 | 1 124 388 | +34 238 |
+| `.rodata` | 168 920 | 172 600 | +3 680 |
+| `.data` | 29 536 | 29 672 | +136 |
+| `.bss` | 190 152 | 193 576 | +3 424 |
+| flash (text, rodata, data) | 1 389 314 | 1 427 368 | +38 054 |
+| static RAM (`.data` + `.bss`) | 219 688 | 223 248 | +3 560 |
+
+`.data` stays below the `max_data` budget of the ESP32-C3. The link (queues, inbox, counters) is built on first use so that it
+stays in `.bss`; it holds the six-entry inbox of 64-byte texts, one outgoing message of 260 B and 16 routing results. The ESP32-C6
+was not measured. The default image (without the feature) passes `scripts/memcheck.sh` for the ESP32-C3.
+
 ## Not measured, not verified
 
 - Everything on hardware: boot time, the time of a log format and a download, stack high-water marks, flash wear, BLE control without pairing and the

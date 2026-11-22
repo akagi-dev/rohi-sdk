@@ -46,6 +46,7 @@ rohi-sdk = { workspace = true, features = [
   # `connectivity-packet-export` is the `get_payload` Action and its stream pool; drop it to build without
   # (`connectivity` stays), see docs/validation/compact-firmware-report.md for what that saves and loses.
   "connectivity-packet-export",
+  "connectivity-http",
   "telemetry-sensors",
   "telemetry-location",
   "telemetry-robonomics",
@@ -72,6 +73,7 @@ esp-println = { workspace = true, optional = true }
 esp-bootloader-esp-idf = { workspace = true, optional = true }
 esp-rtos = { workspace = true, optional = true }
 embassy-embedded-hal = { workspace = true, optional = true }
+embedded-io-async = { workspace = true, optional = true }
 
 [features]
 # Without a feature only the portable application is built. A platform feature
@@ -92,6 +94,13 @@ std = [
   "dep:critical-section",
   "dep:zeroize",
 ]
+# The Meshtastic radio on a UART: the `meshtastic` service and `meshtastic+uart://` delivery. On ESP it also
+# takes the board UART0 (chip features: `esp32c3`, `esp32c6`); not available on the host platform.
+meshtastic-uart = [
+  "rohi-sdk/meshtastic",
+  "rohi-sdk/connectivity-meshtastic",
+  "rohi-sdk/esp-meshtastic-uart",
+]
 # LZ4 compressed log segments (`.log.lz4`). Off by default: plain-text segments, no codec in the image.
 lz4 = ["rohi-sdk/logging-lz4"]
 # ROHI control over TCP (development transport, loopback by default).
@@ -111,11 +120,13 @@ esp = [
   "dep:esp-bootloader-esp-idf",
   "dep:esp-rtos",
   "dep:embassy-embedded-hal",
+  "dep:embedded-io-async",
 ]
 esp32c3 = [
   "esp",
   "esp-hal/esp32c3",
   "esp-println/esp32c3",
+  "esp-println/jtag-serial",
   "esp-bootloader-esp-idf/esp32c3",
   "esp-rtos/esp32c3",
   "rohi-sdk/esp32c3",
@@ -124,6 +135,7 @@ esp32c6 = [
   "esp",
   "esp-hal/esp32c6",
   "esp-println/esp32c6",
+  "esp-println/jtag-serial",
   "esp-bootloader-esp-idf/esp32c6",
   "esp-rtos/esp32c6",
   "rohi-sdk/esp32c6",
@@ -131,6 +143,7 @@ esp32c6 = [
 
 [dev-dependencies]
 minicbor = { workspace = true, features = ["std"] }
+critical-section = { workspace = true, features = ["std"] }
 tempfile = "3"
 tokio = { workspace = true, features = ["rt", "macros", "time", "sync", "io-util", "net"] }
 rohi = { path = "../../tools/rohi", default-features = false }

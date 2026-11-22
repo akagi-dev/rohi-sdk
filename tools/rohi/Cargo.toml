@@ -68,6 +68,7 @@ rohi-control.workspace = true
 rohi-service.workspace = true
 rohi-system.workspace = true
 rohi-connectivity = { workspace = true, features = ["packet-export"] }
+rohi-connectivity-http.workspace = true
 rohi-location.workspace = true
 rohi-time.workspace = true
 log.workspace = true

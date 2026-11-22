@@ -34,6 +34,9 @@ features = [
   "control",
   "ble",
   "connectivity",
+  "connectivity-http",
+  "meshtastic",
+  "connectivity-meshtastic",
   "tcp",
   "host",
   "sim",
@@ -61,6 +64,9 @@ rohi-control-ble = { workspace = true, optional = true }
 rohi-control-tcp = { workspace = true, optional = true }
 rohi-control-endpoints = { workspace = true, optional = true }
 rohi-connectivity = { workspace = true, optional = true }
+rohi-connectivity-http = { workspace = true, optional = true }
+rohi-meshtastic = { workspace = true, optional = true }
+rohi-connectivity-meshtastic = { workspace = true, optional = true }
 rohi-hal-esp = { workspace = true, optional = true }
 rohi-config-esp = { workspace = true, optional = true }
 rohi-net-esp = { workspace = true, optional = true }
@@ -104,7 +110,15 @@ telemetry-sensors = ["telemetry", "sensors", "rohi-telemetry/sensors"]
 telemetry-location = ["telemetry", "location", "rohi-telemetry/location"]
 # The Robonomics Connectivity Protocol packet format.
 telemetry-robonomics = ["telemetry", "identity", "dep:rohi-telemetry-robonomics"]
-connectivity = ["telemetry", "net", "time", "dep:rohi-connectivity"]
+connectivity = ["telemetry", "time", "dep:rohi-connectivity"]
+# HTTP delivery of sealed packets, `connectivity::http`.
+connectivity-http = ["connectivity", "net", "dep:rohi-connectivity-http"]
+# The `meshtastic` service: UART session, link state, config, status and diagnostic actions.
+meshtastic = ["service", "config", "time", "dep:rohi-meshtastic"]
+# Delivery of sealed packets over a local Meshtastic radio (`meshtastic+uart://`).
+connectivity-meshtastic = ["connectivity", "meshtastic", "dep:rohi-connectivity-meshtastic"]
+# The board UART of the Meshtastic radio on ESP, when the ESP crates are built.
+esp-meshtastic-uart = ["rohi-hal-esp?/meshtastic-uart"]
 # `connectivity.get_payload`, the export of a freshly built packet as a stream (with its packet pool).
 connectivity-packet-export = ["connectivity", "rohi-connectivity/packet-export"]
 

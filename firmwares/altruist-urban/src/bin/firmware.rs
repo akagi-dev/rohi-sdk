@@ -104,7 +104,8 @@ async fn main(spawner: Spawner) -> ! {
 
     // Without the board there is no sensing, but configuration, Wi-Fi and the
     // control link still work: the device stays reachable.
-    let board = match AltruistUrban::new(hardware) {
+    #[cfg_attr(not(feature = "meshtastic-uart"), allow(unused_mut))]
+    let mut board = match AltruistUrban::new(hardware) {
         Ok(board) => Some(board),
         Err(error) => {
             error!("Board initialization failed, sensors disabled: {:?}", error);
@@ -112,6 +113,14 @@ async fn main(spawner: Spawner) -> ! {
         }
     };
     store::start(spawner);
+    // The radio is optional and independent of the sensors: its UART goes to its own task.
+    #[cfg(feature = "meshtastic-uart")]
+    altruist_urban::esp::meshtastic::start(
+        spawner,
+        board
+            .as_mut()
+            .and_then(|board| board.meshtastic_uart.take()),
+    );
 
     // A Wi-Fi or BLE failure must never stop the sensors: log and carry on.
     let mut wifi_configured = false;
