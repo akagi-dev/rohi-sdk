@@ -287,7 +287,7 @@ fn first_varint(bytes: &[u8]) -> Result<u32, Malformed> {
             return varint_u32(value);
         }
     }
-    Ok(0)
+    Err(Malformed)
 }
 
 fn decode_metadata(bytes: &[u8]) -> Result<FromRadio<'_>, Malformed> {
