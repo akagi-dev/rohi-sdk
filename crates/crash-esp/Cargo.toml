@@ -25,6 +25,6 @@ esp-println = { workspace = true, optional = true }
 [features]
 default = []
 # Exactly one chip feature must be enabled by the final firmware build.
-esp32c3 = ["_esp", "esp-hal/esp32c3", "esp-backtrace/esp32c3", "esp-println/esp32c3"]
-esp32c6 = ["_esp", "esp-hal/esp32c6", "esp-backtrace/esp32c6", "esp-println/esp32c6"]
+esp32c3 = ["_esp", "esp-hal/esp32c3", "esp-backtrace/esp32c3", "esp-println/esp32c3", "esp-println/jtag-serial"]
+esp32c6 = ["_esp", "esp-hal/esp32c6", "esp-backtrace/esp32c6", "esp-println/esp32c6", "esp-println/jtag-serial"]
 _esp = ["dep:esp-hal", "dep:esp-backtrace", "dep:esp-println"]

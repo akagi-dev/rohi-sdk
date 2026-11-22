@@ -228,6 +228,23 @@ fn an_unknown_hardware_model_is_a_number_not_a_guess() {
 }
 
 #[test]
+fn the_first_failed_handshake_is_already_a_recovery_with_its_issue() {
+    let now = Cell::new(0);
+    let link = Link::new();
+    let service = MeshtasticService::new(&link, Time(&now));
+    link.session_begin();
+    link.session_down(Some(LastError::HandshakeTimeout), Some(false));
+    let status = status_of(&service);
+    assert_eq!(status.summary.health, ServiceHealth::Degraded);
+    let codes: std::vec::Vec<u32> = status.issues.iter().map(|issue| issue.code).collect();
+    assert_eq!(
+        codes,
+        [issue::RADIO_RECONNECTING],
+        "degraded always says why"
+    );
+}
+
+#[test]
 fn health_and_issues_follow_the_policy() {
     let now = Cell::new(0);
     let link = Link::new();
@@ -462,10 +479,7 @@ fn a_full_inbox_returns_six_records_within_the_page_limit() {
         .collect();
     assert_eq!(
         ids,
-        (4..=9)
-            .rev()
-            .map(Value::U64)
-            .collect::<std::vec::Vec<_>>()
+        (4..=9).rev().map(Value::U64).collect::<std::vec::Vec<_>>()
     );
 }
 

@@ -648,7 +648,7 @@ fn the_baud_rate_is_applied_when_a_session_starts_and_a_refusal_is_reported() {
 }
 
 #[test]
-fn an_idle_session_sends_a_heartbeat_and_a_busy_one_is_not_kept_from_it() {
+fn an_idle_session_sends_a_heartbeat() {
     let world = World::new();
     let mut session = UartSession::new(
         &world.link,

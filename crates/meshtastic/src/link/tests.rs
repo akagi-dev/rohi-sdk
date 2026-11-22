@@ -190,6 +190,24 @@ fn a_lost_session_ends_the_wait_and_drops_what_was_queued() {
 }
 
 #[test]
+fn every_waiter_hears_that_the_session_ended() {
+    use embassy_futures::join::join3;
+    let link = Link::new();
+    link.session_up(0);
+    let (mut a, mut b) = (LinkRadio::new(&link), LinkRadio::new(&link));
+    let ender = async {
+        for _ in 0..5 {
+            embassy_futures::yield_now().await;
+        }
+        link.session_down(Some(LastError::UartIo), None);
+    };
+    // Two waiters on the same link, as the transport and a diagnostic action are: both are woken.
+    let (first, second, ()) = block_on(join3(a.next_result(), b.next_result(), ender));
+    assert_eq!(first, Err(RadioError::Disconnected));
+    assert_eq!(second, Err(RadioError::Disconnected));
+}
+
+#[test]
 fn counters_saturate_and_a_reconnect_is_an_attempt_after_the_first() {
     let link = Link::new();
     link.session_begin();

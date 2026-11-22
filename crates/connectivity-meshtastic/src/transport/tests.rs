@@ -455,3 +455,28 @@ fn a_silent_radio_times_out_and_an_answering_one_does_not_need_the_timer() {
         Err(TransportError::Timeout)
     );
 }
+
+/// Remembers how long it was asked to wait, and then waits for the radio.
+struct RecordingDelay<'a>(&'a core::cell::Cell<u32>);
+
+impl embedded_hal_async::delay::DelayNs for RecordingDelay<'_> {
+    async fn delay_ns(&mut self, ns: u32) {
+        // `delay_ms` arrives in chunks of at most u32::MAX ns.
+        self.0.set(self.0.get() + ns / 1_000_000);
+        IdleDelay.delay_ns(0).await;
+    }
+}
+
+#[test]
+fn one_attempt_is_bounded_whatever_the_number_of_fragments() {
+    let f = Fixture::new();
+    let waited = core::cell::Cell::new(0);
+    let mut transport = MeshtasticTransport::new(Link::Uart, f.radio(), RecordingDelay(&waited));
+    // 16 fragments at the default 15 s each would be 4 minutes.
+    let _ = deliver(&mut transport, GATEWAY, &payload(MAX_PAYLOAD));
+    assert_eq!(waited.get(), MAX_ATTEMPT_MS);
+    // A small packet gets its fragments' share.
+    waited.set(0);
+    let _ = deliver(&mut transport, GATEWAY, &payload(10));
+    assert_eq!(waited.get(), DEFAULT_ACK_TIMEOUT_MS);
+}

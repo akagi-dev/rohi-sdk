@@ -17,8 +17,10 @@ is decided by the board (`rohi-hal-esp`), never by the configuration or by an en
 | ESP32-C3 | GPIO21 | GPIO20 | chip defaults, **not verified** against the board revision |
 | ESP32-C6 | GPIO22 | GPIO20 | the pins the CN4 documentation reserves for the Meshtastic module; the direction is **unverified**, swap them if the radio stays silent |
 
-UART1 stays with the SDS011. UART0 is also the boot console of the chip, so the firmware sends its log over USB
-Serial/JTAG (`esp-println` feature `jtag-serial`); the ROM bootloader still prints on UART0 before the application starts.
+UART1 stays with the SDS011. UART0 is also the boot console of the chip, so the firmware (every build of it, with or
+without this feature) and the examples send their log over USB Serial/JTAG (`esp-println` feature `jtag-serial`)
+and no longer to UART0 when no USB host is attached; the persistent log in flash is unchanged. The ROM bootloader still
+prints on UART0 before the application starts.
 Use 3.3 V logic and a common ground.
 
 ## Configuration

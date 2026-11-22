@@ -32,6 +32,7 @@
 //! * A payload that is empty or larger than the framing allows is
 //!   [`Incompatible`](TransportError::Incompatible) and nothing is sent, so
 //!   an HTTP fallback can still carry it.
+//! * An attempt lasts at most [`DEFAULT_ACK_TIMEOUT_MS`] per fragment and [`MAX_ATTEMPT_MS`] in all.
 //! * Dropping the attempt (a route change) is safe: the packet bytes are not
 //!   modified and late acknowledgements of its fragments find no taker.
 
@@ -39,14 +40,17 @@ use embedded_hal_async::delay::DelayNs;
 use rohi_connectivity::{AckKind, Disposition, PacketTransport, TransportAck, TransportError};
 use rohi_time::with_timeout;
 
-use crate::frame::{FrameError, Framer, MTU};
+use crate::frame::{Framer, MTU};
 use crate::uri::{Endpoint, Link};
 use rohi_meshtastic::{MeshtasticRadio, Outgoing, RadioError, RoutingResult, routing};
 
 /// The `PortNum` of version 1 of the transport: `PRIVATE_APP`.
 pub const PORT_PRIVATE_APP: u32 = 256;
 /// Default wait for the acknowledgement of one fragment, in milliseconds.
-pub const DEFAULT_ACK_TIMEOUT_MS: u32 = 60_000;
+pub const DEFAULT_ACK_TIMEOUT_MS: u32 = 15_000;
+/// Longest one delivery attempt, in milliseconds, whatever the number of fragments. The publisher
+/// makes one attempt at a time for all routes, so a silent mesh must not hold the others for long.
+pub const MAX_ATTEMPT_MS: u32 = 45_000;
 
 /// Delivers sealed packets through a local Meshtastic radio.
 pub struct MeshtasticTransport<R, D> {
@@ -172,14 +176,15 @@ impl<R: MeshtasticRadio, D: DelayNs> PacketTransport for MeshtasticTransport<R, 
             .ok_or(TransportError::Unsupported)?;
         let framer = Framer::new(packet).map_err(|error| {
             log::debug!(target: "meshtastic", "Packet cannot be framed (err={:?} size_b={})", error, packet.len());
-            match error {
-                FrameError::Empty | FrameError::TooLarge => TransportError::Incompatible,
-            }
+            TransportError::Incompatible
         })?;
         let count = framer.count();
         log::debug!(target: "meshtastic", "Sending packet (size_b={} fragments={})", packet.len(), count);
 
-        let budget = self.ack_timeout_ms.saturating_mul(count as u32);
+        let budget = self
+            .ack_timeout_ms
+            .saturating_mul(count as u32)
+            .min(MAX_ATTEMPT_MS);
         let first_id = self.radio.reserve_ids(count);
         let exchange = Self::exchange(&mut self.radio, first_id, endpoint, self.port, &framer);
         let result = with_timeout(&mut self.delay, budget, exchange)

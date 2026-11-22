@@ -31,12 +31,14 @@
 //! (practically never; they restart with the device).
 
 use core::cell::RefCell;
+use core::task::Poll;
 
 use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
+use embassy_sync::waitqueue::MultiWakerRegistration;
 use heapless::{Deque, String, Vec};
 
 use crate::proto::encode_packet;
@@ -195,6 +197,21 @@ pub struct Diagnostics {
     pub recovering: bool,
 }
 
+// The number of sessions that ended, and everybody who waits to hear of the next one.
+struct Epoch {
+    count: u32,
+    wakers: MultiWakerRegistration<4>,
+}
+
+impl Epoch {
+    const fn new() -> Self {
+        Self {
+            count: 0,
+            wakers: MultiWakerRegistration::new(),
+        }
+    }
+}
+
 struct Inner {
     diagnostics: Diagnostics,
     inbox: Deque<InboxEntry, INBOX>,
@@ -253,7 +270,8 @@ pub struct MeshtasticLink<M: RawMutex> {
     state: BlockingMutex<M, RefCell<Inner>>,
     outgoing: Channel<M, ToRadio, 1>,
     results: Channel<M, RoutingResult, RESULTS>,
-    lost: Signal<M, ()>,
+    // Counts the sessions that ended; every waiter on the radio watches it, not just one.
+    epoch: BlockingMutex<M, RefCell<Epoch>>,
     reconnect: Signal<M, ()>,
 }
 
@@ -270,7 +288,7 @@ impl<M: RawMutex> MeshtasticLink<M> {
             state: BlockingMutex::new(RefCell::new(Inner::new())),
             outgoing: Channel::new(),
             results: Channel::new(),
-            lost: Signal::new(),
+            epoch: BlockingMutex::new(RefCell::new(Epoch::new())),
             reconnect: Signal::new(),
         }
     }
@@ -364,6 +382,7 @@ impl<M: RawMutex> MeshtasticLink<M> {
     ///
     /// [`RadioError`]; nothing was queued.
     pub async fn submit(&self, packet: &Outgoing<'_>) -> Result<(), RadioError> {
+        let seen = self.epoch();
         if !self.snapshot().connected {
             return Err(RadioError::NotConnected);
         }
@@ -373,10 +392,40 @@ impl<M: RawMutex> MeshtasticLink<M> {
             .map_err(|_| RadioError::Io)?;
         let len = encode_packet(&mut message, packet).map_err(|_| RadioError::Io)?;
         message.truncate(len);
-        match select(self.outgoing.send(message), self.lost.wait()).await {
+        match select(self.outgoing.send(message), self.session_ended(seen)).await {
             Either::First(()) => Ok(()),
             Either::Second(()) => Err(RadioError::Disconnected),
         }
+    }
+
+    /// The number of sessions that ended so far; take it before checking `connected`, then
+    /// wait with [`session_ended`](Self::session_ended).
+    fn epoch(&self) -> u32 {
+        self.epoch.lock(|epoch| epoch.borrow().count)
+    }
+
+    fn state_epoch_bump(&self) {
+        self.epoch.lock(|epoch| {
+            let mut epoch = epoch.borrow_mut();
+            epoch.count = epoch.count.wrapping_add(1);
+            epoch.wakers.wake();
+        });
+    }
+
+    /// Completes when a session ended after `seen` was taken. Any number of tasks may wait.
+    async fn session_ended(&self, seen: u32) {
+        core::future::poll_fn(|cx| {
+            self.epoch.lock(|epoch| {
+                let mut epoch = epoch.borrow_mut();
+                if epoch.count != seen {
+                    Poll::Ready(())
+                } else {
+                    epoch.wakers.register(cx.waker());
+                    Poll::Pending
+                }
+            })
+        })
+        .await
     }
 
     /// Forgets a diagnostic send that was not submitted after all.
@@ -430,7 +479,6 @@ impl<M: RawMutex> MeshtasticLink<M> {
 
     /// The radio finished its handshake: packets can be sent.
     pub fn session_up(&self, now_ms: u64) {
-        self.lost.reset();
         self.with(|inner| {
             let d = &mut inner.diagnostics;
             d.link.connected = true;
@@ -457,7 +505,8 @@ impl<M: RawMutex> MeshtasticLink<M> {
                 Some(false) => d.handshake_failures = d.handshake_failures.saturating_add(1),
                 None => {}
             }
-            if d.link.sessions > 0 {
+            // A session that ended with a reason is being recovered, also the very first one.
+            if error.is_some() || d.link.sessions > 0 {
                 d.recovering = true;
             }
         });
@@ -477,7 +526,7 @@ impl<M: RawMutex> MeshtasticLink<M> {
         });
         while self.outgoing.try_receive().is_ok() {}
         while self.results.try_receive().is_ok() {}
-        self.lost.signal(());
+        self.state_epoch_bump();
     }
 
     /// A message of the local radio about itself.
@@ -627,7 +676,11 @@ impl<M: RawMutex> MeshtasticRadio for LinkRadio<'_, M> {
     }
 
     async fn next_result(&mut self) -> Result<RoutingResult, RadioError> {
-        match select(self.link.results.receive(), self.link.lost.wait()).await {
+        let seen = self.link.epoch();
+        if !self.link.snapshot().connected {
+            return Err(RadioError::Disconnected);
+        }
+        match select(self.link.results.receive(), self.link.session_ended(seen)).await {
             Either::First(result) => Ok(result),
             Either::Second(()) => Err(RadioError::Disconnected),
         }

@@ -52,5 +52,7 @@ pub mod frame;
 pub mod transport;
 pub mod uri;
 
-pub use transport::{DEFAULT_ACK_TIMEOUT_MS, MeshtasticTransport, PORT_PRIVATE_APP};
+pub use transport::{
+    DEFAULT_ACK_TIMEOUT_MS, MAX_ATTEMPT_MS, MeshtasticTransport, PORT_PRIVATE_APP,
+};
 pub use uri::{Endpoint, Link, MeshtasticPolicy, NodeId, SCHEME_BLE, SCHEME_UART};
