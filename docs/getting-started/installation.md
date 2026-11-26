@@ -51,6 +51,14 @@ Intel Mac (`x86_64-darwin`): macOS Bash is 3.2 and cannot enter `nix develop` di
 nix run .
 ```
 
+If the shell says `command not found: nix` after a multi-user install, Nix is on disk but not on `PATH` (a non-login terminal, or the installer snippet missing from `zshrc`). This is the default daemon profile, not a machine-specific path:
+
+```bash
+. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+```
+
+A single-user install uses `~/.nix-profile/etc/profile.d/nix.sh` instead. Put the matching line in `~/.zshrc` so new terminals see `nix`.
+
 If the clone path contains non-ASCII characters, keep build artifacts off that path: `CARGO_TARGET_DIR=/tmp/rohi-target cargo test`. A path like `~/src/rohi-sdk` does not need that.
 
 ## Verify the installation
