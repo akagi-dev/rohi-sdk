@@ -40,15 +40,17 @@ const NIBBLE_TABLE: [u32; 16] = {
     table
 };
 
-/// Incremental CRC-32 calculator.
+/// Incremental CRC-32 (IEEE 802.3). This detects corruption, not authenticity.
 #[derive(Clone, Copy, Debug)]
 pub struct Crc32(u32);
 
 impl Crc32 {
+    /// Returns an empty checksum.
     pub const fn new() -> Self {
         Self(0xFFFF_FFFF)
     }
 
+    /// Adds `data` to the checksum.
     pub fn update(&mut self, data: &[u8]) {
         let mut crc = self.0;
         for &byte in data {
@@ -59,8 +61,16 @@ impl Crc32 {
         self.0 = crc;
     }
 
+    /// Returns the checksum of everything added so far.
     pub const fn finish(self) -> u32 {
         !self.0
+    }
+
+    /// Returns the checksum of `bytes` alone.
+    pub fn of(bytes: &[u8]) -> u32 {
+        let mut crc = Self::new();
+        crc.update(bytes);
+        crc.finish()
     }
 }
 
@@ -79,6 +89,7 @@ mod tests {
         let mut crc = Crc32::new();
         crc.update(b"123456789");
         assert_eq!(crc.finish(), 0xCBF4_3926);
+        assert_eq!(Crc32::of(b"123456789"), 0xCBF4_3926);
     }
 
     #[test]

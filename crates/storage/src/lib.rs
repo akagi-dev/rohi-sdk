@@ -64,12 +64,14 @@
 
 #![no_std]
 
+pub mod crc;
 mod flash;
 mod medium;
 mod region;
 pub mod ring;
 mod shared;
 
+pub use crc::Crc32;
 pub use flash::{FlashMedium, FlashMediumError};
 pub use medium::{Medium, RamError, RamMedium, SECTOR_SIZE};
 pub use region::FlashRegion;

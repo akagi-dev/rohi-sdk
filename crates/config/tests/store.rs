@@ -30,6 +30,13 @@ type Mem = MemoryStorage<16384, 4096>;
 type Fault = Box<dyn Fn(&mut Mem)>;
 const SLOT: usize = 8192;
 
+#[test]
+fn crc_reexports_share_the_storage_type() {
+    let crc: rohi_storage::ring::Crc32 = Crc32::new();
+    let crc: rohi_storage::crc::Crc32 = crc;
+    assert_eq!(crc.finish(), 0);
+}
+
 #[derive(Debug, Clone, PartialEq, Encode, Decode, CborLen, ConfigSection)]
 #[config(version = 1)]
 struct Identity {

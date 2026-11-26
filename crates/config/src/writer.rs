@@ -20,7 +20,7 @@
 
 use minicbor::encode::Write;
 
-use crate::crc::Crc32;
+use crate::Crc32;
 use crate::slot::CHUNK;
 use crate::{ConfigError, ConfigStorage};
 

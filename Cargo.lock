@@ -4112,6 +4112,7 @@ dependencies = [
  "proptest",
  "rohi-config-derive",
  "rohi-service",
+ "rohi-storage",
  "zeroize",
 ]
 

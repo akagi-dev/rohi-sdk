@@ -31,7 +31,7 @@ pub const FORMAT_VERSION: u8 = 2;
 
 const MAGIC: [u8; 4] = *b"RLG1";
 
-pub use rohi_storage::ring::Crc32;
+pub use rohi_storage::Crc32;
 
 /// Why a segment header was refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
