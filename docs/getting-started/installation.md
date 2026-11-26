@@ -36,11 +36,22 @@ the `espflash` binary must be available in your PATH. For setup details, see the
 ## Nix Way
 
 The repository is a Nix flake. The development shell provides the pinned Rust toolchain, `espflash`, `mdbook` and the
-linker, nothing else has to be installed.
+linker, nothing else has to be installed. Intel Mac (`x86_64-darwin`) uses
+[`nixpkgs-26.05-darwin`](https://github.com/NixOS/nixpkgs/tree/nixpkgs-26.05-darwin): Nixpkgs 26.11 dropped that
+platform, and [`nix-systems/default`](https://github.com/nix-systems/default) no longer lists it. `dbus` is Linux-only
+(BLE on macOS uses Core Bluetooth). The `e2e` shell (`edge`) is not built for Intel Mac.
 
 ```bash
 nix develop
 ```
+
+Intel Mac (`x86_64-darwin`): macOS Bash is 3.2 and cannot enter `nix develop` directly. From the repository root this is the same shell:
+
+```bash
+nix run .
+```
+
+If the clone path contains non-ASCII characters, keep build artifacts off that path: `CARGO_TARGET_DIR=/tmp/rohi-target cargo test`. A path like `~/src/rohi-sdk` does not need that.
 
 ## Verify the installation
 
