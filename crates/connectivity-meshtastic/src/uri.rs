@@ -82,7 +82,7 @@ impl Endpoint {
             SCHEME_BLE => Link::Ble,
             _ => return None,
         };
-let gateway = NodeId::parse(rest)?;
+        let gateway = NodeId::parse(rest)?;
         if gateway == NodeId::BROADCAST {
             return None;
         }
