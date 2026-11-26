@@ -107,7 +107,7 @@
                 ]
                 ++ lib.optionals stdenv.hostPlatform.isLinux [ dbus ];
             }
-            // lib.optionalAttrs (system != "x86_64-darwin") {
+            // pkgs.lib.optionalAttrs (system != "x86_64-darwin") {
               env.RUSTC_WRAPPER = pkgs.lib.getExe pkgs.sccache;
             }
           );
