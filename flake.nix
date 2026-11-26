@@ -75,7 +75,7 @@
           script = pkgs.writeShellScript "rohi-devshell" ''
             set -euo pipefail
             export PATH="${pkgs.bashInteractive}/bin:$PATH"
-            exec nix develop --command "''${SHELL:-zsh}"
+            exec nix develop --command ${pkgs.bashInteractive}/bin/bash
           '';
         in
         {

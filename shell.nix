@@ -27,7 +27,6 @@ let
       {
         "CARGO_TARGET_${rustTarget}_LINKER" = "/usr/bin/clang";
         "CARGO_TARGET_${rustTarget}_RUSTFLAGS" = "-Clink-arg=-fuse-ld=/usr/bin/ld";
-        RUSTFLAGS = "-Clink-arg=-fuse-ld=/usr/bin/ld";
         CC = "/usr/bin/clang";
         CXX = "/usr/bin/clang++";
       }
