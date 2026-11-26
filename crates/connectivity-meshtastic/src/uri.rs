@@ -82,10 +82,11 @@ impl Endpoint {
             SCHEME_BLE => Link::Ble,
             _ => return None,
         };
-        Some(Self {
-            link,
-            gateway: NodeId::parse(rest)?,
-        })
+let gateway = NodeId::parse(rest)?;
+        if gateway == NodeId::BROADCAST {
+            return None;
+        }
+        Some(Self { link, gateway })
     }
 }
 
