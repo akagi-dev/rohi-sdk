@@ -192,7 +192,7 @@ fn an_established_session_is_ok_and_reports_the_radio() {
     let link = Link::new();
     link.session_begin();
     link.set_node(0xdead_beef);
-    link.set_metadata("2.5.9.abcdef", 43);
+    link.set_metadata("2.5.9.abcdef", Some(43));
     link.session_up(10_000);
     link.note_rx(10_000);
     link.note_tx();
@@ -219,12 +219,21 @@ fn an_established_session_is_ok_and_reports_the_radio() {
 fn an_unknown_hardware_model_is_a_number_not_a_guess() {
     let now = Cell::new(0);
     let link = Link::new();
-    link.set_metadata("2.5.9", 9999);
+    link.set_metadata("2.5.9", Some(9999));
     let service = MeshtasticService::new(&link, Time(&now));
     assert_eq!(
         field(&status_of(&service), 3),
         Some(Value::text("model_9999").unwrap())
     );
+}
+
+#[test]
+fn metadata_without_a_hardware_model_omits_the_status_field() {
+    let now = Cell::new(0);
+    let link = Link::new();
+    link.set_metadata("2.5.9", None);
+    let service = MeshtasticService::new(&link, Time(&now));
+    assert_eq!(field(&status_of(&service), 3), None);
 }
 
 #[test]

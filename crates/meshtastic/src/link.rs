@@ -535,7 +535,7 @@ impl<M: RawMutex> MeshtasticLink<M> {
     }
 
     /// The firmware version and hardware model of the radio.
-    pub fn set_metadata(&self, firmware: &str, hardware: u32) {
+    pub fn set_metadata(&self, firmware: &str, hardware: Option<u32>) {
         self.with(|inner| {
             inner.diagnostics.firmware.clear();
             let end = firmware.len().min(FIRMWARE_MAX);
@@ -545,7 +545,7 @@ impl<M: RawMutex> MeshtasticLink<M> {
                 .find(|n| firmware.is_char_boundary(*n))
                 .unwrap_or(0);
             let _ = inner.diagnostics.firmware.push_str(&firmware[..end]);
-            inner.diagnostics.hardware = Some(hardware);
+            inner.diagnostics.hardware = hardware;
         });
     }
 

@@ -178,7 +178,7 @@ pub enum FromRadio<'a> {
         /// The firmware version text.
         firmware: &'a [u8],
         /// The `HardwareModel` number.
-        hardware: u32,
+        hardware: Option<u32>,
     },
     /// The number of the local node.
     MyInfo(u32),
@@ -292,11 +292,11 @@ fn first_varint(bytes: &[u8]) -> Result<u32, Malformed> {
 
 fn decode_metadata(bytes: &[u8]) -> Result<FromRadio<'_>, Malformed> {
     let mut reader = Reader { bytes };
-    let (mut firmware, mut hardware) = (&[][..], 0u32);
+    let (mut firmware, mut hardware) = (&[][..], None);
     while let Some((number, field)) = reader.next()? {
         match (number, field) {
             (1, Field::Bytes(version)) => firmware = version,
-            (9, Field::Varint(model)) => hardware = varint_u32(model)?,
+            (9, Field::Varint(model)) => hardware = Some(varint_u32(model)?),
             _ => {}
         }
     }

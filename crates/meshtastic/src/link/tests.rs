@@ -244,13 +244,13 @@ fn counters_saturate_and_a_reconnect_is_an_attempt_after_the_first() {
 #[test]
 fn a_metadata_text_is_kept_whole_and_bounded() {
     let link = Link::new();
-    link.set_metadata("2.5.9.abcdef", 43);
+    link.set_metadata("2.5.9.abcdef", Some(43));
     let d = link.diagnostics();
     assert_eq!(
         (d.firmware.as_str(), d.hardware),
         ("2.5.9.abcdef", Some(43))
     );
-    link.set_metadata(&"é".repeat(40), 1);
+    link.set_metadata(&"é".repeat(40), Some(1));
     let d = link.diagnostics();
     assert!(d.firmware.len() <= FIRMWARE_MAX && d.firmware.chars().all(|c| c == 'é'));
 }

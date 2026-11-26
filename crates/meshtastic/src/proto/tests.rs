@@ -219,7 +219,16 @@ fn text_messages_and_radio_metadata_are_recognised() {
         decode_from_radio(&field(13, 2, &metadata)),
         Ok(FromRadio::Metadata {
             firmware: b"2.5.9.abcdef",
-            hardware: 43
+            hardware: Some(43)
+        })
+    );
+
+    let firmware_only = field(1, 2, b"2.5.9");
+    assert_eq!(
+        decode_from_radio(&field(13, 2, &firmware_only)),
+        Ok(FromRadio::Metadata {
+            firmware: b"2.5.9",
+            hardware: None
         })
     );
 }
