@@ -23,12 +23,11 @@ let
       };
     in
     if stdenv.hostPlatform.isDarwin then
-      # clangStdenv still injects -fuse-ld=ld64.lld; that linker mishandles Unicode paths.
       {
-        "CARGO_TARGET_${rustTarget}_LINKER" = "/usr/bin/clang";
-        "CARGO_TARGET_${rustTarget}_RUSTFLAGS" = "-Clink-arg=-fuse-ld=/usr/bin/ld";
-        CC = "/usr/bin/clang";
-        CXX = "/usr/bin/clang++";
+        "CARGO_TARGET_${rustTarget}_LINKER" = "${clang}/bin/clang";
+        "CARGO_TARGET_${rustTarget}_RUSTFLAGS" = "-Clink-arg=-fuse-ld=${llvmPackages.lld}/bin/ld64.lld";
+        CC = "${clang}/bin/clang";
+        CXX = "${clang}/bin/clang++";
       }
     else
       {
