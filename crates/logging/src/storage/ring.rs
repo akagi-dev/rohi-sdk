@@ -67,7 +67,7 @@
 
 use heapless::Vec;
 
-use super::medium::SECTOR_SIZE;
+use super::SECTOR_SIZE;
 use super::{
     ChunkMeta, Limits, LogStorage, MAX_SEGMENTS, Medium, Recovery, SegmentId, SegmentInfo,
     StorageError, StorageStats,
@@ -258,7 +258,7 @@ impl Segment {
     }
 
     fn overlaps(&self, first: u32, count: u32) -> bool {
-        self.first_sector < first + count && first < self.first_sector + self.sectors
+        rohi_storage::ring::overlaps(self.first_sector, self.sectors, first, count)
     }
 }
 
@@ -829,10 +829,8 @@ impl<M: Medium> LogStorage for RingStorage<M> {
         self.segment_sectors = sectors;
 
         let head = loop {
-            let mut head = self.head();
-            if head + sectors > total {
-                head = 0;
-            }
+            let head = rohi_storage::ring::placement(self.head(), sectors, total)
+                .ok_or(StorageError::InvalidLimits)?;
             let crowded = self
                 .segments
                 .iter()

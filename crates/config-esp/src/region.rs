@@ -67,14 +67,8 @@ impl FlashRegion {
     /// assert_eq!(region.absolute(usize::MAX, 2), Err(EspStorageError::OutOfBounds));
     /// ```
     pub fn absolute(&self, relative: usize, len: usize) -> Result<usize, EspStorageError> {
-        let end = relative
-            .checked_add(len)
-            .ok_or(EspStorageError::OutOfBounds)?;
-        if end > self.length {
-            return Err(EspStorageError::OutOfBounds);
-        }
-        self.offset
-            .checked_add(relative)
+        rohi_storage::FlashRegion::new(self.offset, self.length)
+            .absolute(relative, len)
             .ok_or(EspStorageError::OutOfBounds)
     }
 }

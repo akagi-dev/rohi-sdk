@@ -22,7 +22,7 @@ use embedded_storage::nor_flash::{
     ErrorType, MultiwriteNorFlash, NorFlash, NorFlashError, NorFlashErrorKind,
 };
 
-use super::medium::{Medium, SECTOR_SIZE};
+use super::{FlashRegion, Medium, SECTOR_SIZE};
 
 /// Why a [`FlashMedium`] operation failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,7 +86,9 @@ impl<F: NorFlash + MultiwriteNorFlash> FlashMedium<F> {
     /// is not aligned to the erase size of the driver.
     pub fn new(flash: F, offset: u32, sectors: u32) -> Result<Self, FlashMediumError> {
         let end = u64::from(offset) + u64::from(sectors) * SECTOR_SIZE as u64;
-        let aligned = SECTOR_SIZE.is_multiple_of(F::ERASE_SIZE)
+        let aligned = F::ERASE_SIZE > 0
+            && F::READ_SIZE > 0
+            && SECTOR_SIZE.is_multiple_of(F::ERASE_SIZE)
             && (offset as usize).is_multiple_of(F::ERASE_SIZE)
             && F::ERASE_SIZE.is_multiple_of(F::READ_SIZE)
             && F::READ_SIZE <= MAX_WORD
@@ -96,7 +98,7 @@ impl<F: NorFlash + MultiwriteNorFlash> FlashMedium<F> {
             && F::WRITE_SIZE > 0
             && SCRATCH.is_multiple_of(F::WRITE_SIZE)
             && sectors > 0;
-        if !aligned || end > flash.capacity() as u64 {
+        if !aligned || end > flash.capacity() as u64 || end > u32::MAX as u64 {
             return Err(FlashMediumError::OutOfBounds);
         }
         Ok(Self {
@@ -112,12 +114,10 @@ impl<F: NorFlash + MultiwriteNorFlash> FlashMedium<F> {
     }
 
     fn check(&self, offset: u32, len: usize) -> Result<(), FlashMediumError> {
-        let end = u64::from(offset) + len as u64;
-        if end > u64::from(self.sectors) * SECTOR_SIZE as u64 {
-            Err(FlashMediumError::OutOfBounds)
-        } else {
-            Ok(())
-        }
+        FlashRegion::new(0, self.sectors as usize * SECTOR_SIZE)
+            .absolute(offset as usize, len)
+            .map(|_| ())
+            .ok_or(FlashMediumError::OutOfBounds)
     }
 
     fn map(error: F::Error) -> FlashMediumError {
@@ -157,11 +157,15 @@ where
     }
 
     fn erase(&mut self, first: u32, count: u32) -> Result<(), FlashMediumError> {
-        self.check(first * SECTOR_SIZE as u32, count as usize * SECTOR_SIZE)?;
-        let from = self.offset + first * SECTOR_SIZE as u32;
-        self.flash
-            .erase(from, from + count * SECTOR_SIZE as u32)
-            .map_err(Self::map)
+        let start = first
+            .checked_mul(SECTOR_SIZE as u32)
+            .ok_or(FlashMediumError::OutOfBounds)?;
+        let len = count
+            .checked_mul(SECTOR_SIZE as u32)
+            .ok_or(FlashMediumError::OutOfBounds)?;
+        self.check(start, len as usize)?;
+        let from = self.offset + start;
+        self.flash.erase(from, from + len).map_err(Self::map)
     }
 
     fn write(&mut self, offset: u32, data: &[u8]) -> Result<(), FlashMediumError> {

@@ -28,8 +28,6 @@
 //! on a device. A backend with files (an SD card) implements `LogStorage`
 //! directly.
 
-mod flash;
-mod medium;
 mod ring;
 
 #[cfg(test)]
@@ -43,9 +41,8 @@ use core::fmt;
 
 use heapless::Vec;
 
-pub use flash::{FlashMedium, FlashMediumError};
-pub use medium::{Medium, RamError, RamMedium, SECTOR_SIZE};
 pub use ring::RingStorage;
+pub use rohi_storage::{FlashMedium, FlashMediumError, Medium, RamError, RamMedium, SECTOR_SIZE};
 
 use crate::Compression;
 

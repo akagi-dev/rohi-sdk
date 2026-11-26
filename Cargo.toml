@@ -29,6 +29,7 @@ rohi-hal-esp = { path = "crates/hal-esp" }
 rohi-config = { path = "crates/config" }
 rohi-config-derive = { path = "crates/config-derive" }
 rohi-config-esp = { path = "crates/config-esp" }
+rohi-storage = { path = "crates/storage" }
 rohi-net = { path = "crates/net" }
 rohi-net-esp = { path = "crates/net-esp" }
 rohi-net-std = { path = "crates/net-std" }

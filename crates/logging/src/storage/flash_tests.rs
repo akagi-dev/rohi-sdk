@@ -148,6 +148,20 @@ impl MultiwriteNorFlash for Emu {}
 
 type Storage = FlashLogStorage<Emu>;
 
+#[test]
+fn erase_rejects_sector_arithmetic_overflow() {
+    let mut medium = FlashMedium::new(Emu::new(), BASE, SECTORS).unwrap();
+    assert_eq!(
+        medium.erase(u32::MAX, 1),
+        Err(FlashMediumError::OutOfBounds)
+    );
+    assert_eq!(
+        medium.erase(0, u32::MAX),
+        Err(FlashMediumError::OutOfBounds)
+    );
+    assert_eq!(medium.erase(SECTORS, 1), Err(FlashMediumError::OutOfBounds));
+}
+
 fn open(flash: Emu) -> Storage {
     let medium = FlashMedium::new(flash, BASE, SECTORS).unwrap();
     let mut storage = RingStorage::new(medium);

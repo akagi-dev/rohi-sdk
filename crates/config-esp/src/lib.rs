@@ -283,10 +283,9 @@ compile_error!(
 pub mod esp;
 pub mod layout;
 mod region;
-mod shared;
 mod storage;
 
 pub use error::EspStorageError;
 pub use region::FlashRegion;
-pub use shared::{FlashCell, SharedFlash};
+pub use rohi_storage::{FlashCell, SharedFlash};
 pub use storage::EspConfigStorage;

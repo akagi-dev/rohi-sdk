@@ -31,44 +31,7 @@ pub const FORMAT_VERSION: u8 = 2;
 
 const MAGIC: [u8; 4] = *b"RLG1";
 
-/// The CRC-32 (IEEE 802.3) of a byte stream, computed incrementally.
-#[derive(Clone, Copy, Debug)]
-pub struct Crc32(u32);
-
-impl Default for Crc32 {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Crc32 {
-    /// An empty checksum.
-    pub const fn new() -> Self {
-        Self(0xFFFF_FFFF)
-    }
-
-    /// Adds `bytes`.
-    pub fn update(&mut self, bytes: &[u8]) {
-        for byte in bytes {
-            self.0 ^= u32::from(*byte);
-            for _ in 0..8 {
-                self.0 = (self.0 >> 1) ^ (0xEDB8_8320 & 0u32.wrapping_sub(self.0 & 1));
-            }
-        }
-    }
-
-    /// The checksum of everything added so far.
-    pub const fn finish(self) -> u32 {
-        !self.0
-    }
-
-    /// The checksum of `bytes` alone.
-    pub fn of(bytes: &[u8]) -> u32 {
-        let mut crc = Self::new();
-        crc.update(bytes);
-        crc.finish()
-    }
-}
+pub use rohi_storage::ring::Crc32;
 
 /// Why a segment header was refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

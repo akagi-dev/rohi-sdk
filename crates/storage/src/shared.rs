@@ -38,8 +38,7 @@ pub type FlashCell<M, F> = Mutex<M, RefCell<F>>;
 /// owner can observe another half way through an operation.
 ///
 /// A handle is `Copy`; it adds no state of its own and cannot name a region,
-/// that is the job of [`EspConfigStorage`](crate::EspConfigStorage) and of the
-/// log medium.
+/// that is the job of the configuration backend and the log medium.
 pub struct SharedFlash<M: RawMutex + 'static, F: 'static> {
     cell: &'static FlashCell<M, F>,
 }
