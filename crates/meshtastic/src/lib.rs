@@ -54,6 +54,7 @@ pub mod uart;
 
 pub use link::{
     Diagnostics, InboxEntry, InboxKind, LastError, LinkRadio, LinkSnapshot, MeshtasticLink,
+    PendingWrite,
 };
 pub use node::NodeId;
 pub use radio::{MeshtasticRadio, Outgoing, RadioError, RoutingResult, routing};

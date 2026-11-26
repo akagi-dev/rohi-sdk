@@ -602,3 +602,24 @@ fn an_incompatible_primary_and_a_failing_fallback_keep_the_packet_for_a_later_at
     assert_eq!(router.next_delivery(&config, t(5_000)).unwrap().path, 1);
     assert_eq!(router.queued(), 1);
 }
+
+#[test]
+fn invalidating_another_packet_keeps_the_head_incompatibility() {
+    let config = with_fallback();
+    let mut router = R::new();
+    router.sync(&config, exists, t(0));
+    for (revision, bytes) in [(2, b"head".as_slice()), (1, b"stale".as_slice())] {
+        let handle = packet(&mut router, revision, bytes);
+        assert_eq!(router.admit(0, handle, t(0)), Admit::Queued);
+        router.pool_mut().release(handle);
+    }
+
+    let primary = router.next_delivery(&config, t(0)).unwrap();
+    router.complete(primary, Err(TransportError::Incompatible), t(0));
+    let fallback = router.next_delivery(&config, t(0)).unwrap();
+    router.complete(fallback, Err(TransportError::Timeout), t(0));
+
+    router.invalidate(|stamp| stamp.revision == 2);
+    assert_eq!(router.queued(), 1);
+    assert_eq!(router.next_delivery(&config, t(5_000)).unwrap().path, 1);
+}

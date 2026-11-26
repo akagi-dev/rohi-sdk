@@ -480,6 +480,8 @@ impl<const R: usize, const DEPTH: usize, const SLOTS: usize, const BYTES: usize>
     /// packets and routes are untouched.
     pub fn invalidate(&mut self, is_current: impl Fn(&ProfileStamp) -> bool) {
         for runtime in self.routes.iter_mut().flatten() {
+            let head = runtime.outbox.front().copied();
+            let mut head_discarded = false;
             let mut kept: Deque<PacketHandle, DEPTH> = Deque::new();
             while let Some(handle) = runtime.outbox.pop_front() {
                 let current = self
@@ -489,11 +491,12 @@ impl<const R: usize, const DEPTH: usize, const SLOTS: usize, const BYTES: usize>
                 if current {
                     let _ = kept.push_back(handle);
                 } else {
+                    head_discarded |= Some(handle) == head;
                     self.pool.release(handle);
                     runtime.counters.invalidated += 1;
                 }
             }
-            if kept.len() != runtime.outbox.len() {
+            if head_discarded {
                 runtime.incompatible = 0;
             }
             runtime.outbox = kept;

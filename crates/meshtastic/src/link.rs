@@ -37,6 +37,7 @@ use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embassy_sync::channel::Channel;
+use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
 use embassy_sync::waitqueue::MultiWakerRegistration;
 use heapless::{Deque, String, Vec};
@@ -61,6 +62,17 @@ pub const UNRESPONSIVE_AFTER: u32 = 3;
 
 /// One encoded `ToRadio` message.
 pub type ToRadio = Vec<u8, TO_RADIO_MAX>;
+
+/// One encoded message awaiting a successful backend write and flush.
+///
+/// The backend must report completion only after both writing and flushing
+/// [`message`](Self::message) succeeds.
+pub struct PendingWrite {
+    /// The encoded `ToRadio` message.
+    pub message: ToRadio,
+    /// The packet id whose submission completes when this message is written.
+    pub packet_id: u32,
+}
 
 /// The most recent classified error. Bounded and stable: the numbers are part of the status schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -218,6 +230,9 @@ struct Inner {
     // Packets sent by the diagnostics: their acknowledgements belong to the inbox.
     pending: Vec<u32, INBOX>,
     next_id: u32,
+    transport_result_first: u32,
+    transport_result_count: u8,
+    transport_results_seen: u16,
     baud: u32,
 }
 
@@ -252,6 +267,9 @@ impl Inner {
             inbox: Deque::new(),
             pending: Vec::new(),
             next_id: 1,
+            transport_result_first: 0,
+            transport_result_count: 0,
+            transport_results_seen: 0,
             baud: 115_200,
         }
     }
@@ -268,8 +286,10 @@ impl Inner {
 /// State and queues shared between a link backend, the transport and the service.
 pub struct MeshtasticLink<M: RawMutex> {
     state: BlockingMutex<M, RefCell<Inner>>,
-    outgoing: Channel<M, ToRadio, 1>,
+    outgoing: Channel<M, PendingWrite, 1>,
     results: Channel<M, RoutingResult, RESULTS>,
+    write_gate: Mutex<M, ()>,
+    write_complete: Signal<M, u32>,
     // Counts the sessions that ended; every waiter on the radio watches it, not just one.
     epoch: BlockingMutex<M, RefCell<Epoch>>,
     reconnect: Signal<M, ()>,
@@ -288,6 +308,8 @@ impl<M: RawMutex> MeshtasticLink<M> {
             state: BlockingMutex::new(RefCell::new(Inner::new())),
             outgoing: Channel::new(),
             results: Channel::new(),
+            write_gate: Mutex::new(()),
+            write_complete: Signal::new(),
             epoch: BlockingMutex::new(RefCell::new(Epoch::new())),
             reconnect: Signal::new(),
         }
@@ -325,14 +347,27 @@ impl<M: RawMutex> MeshtasticLink<M> {
     /// Reserves `count` consecutive, nonzero packet IDs: the transport and the diagnostics draw
     /// from the same counter, so no two packets of the device share an ID.
     pub fn reserve_ids(&self, count: usize) -> u32 {
+        self.with(|inner| Self::reserve_ids_inner(inner, count))
+    }
+
+    fn reserve_transport_ids(&self, count: usize) -> u32 {
         self.with(|inner| {
-            if inner.next_id > u32::MAX - count as u32 {
-                inner.next_id = 1;
-            }
-            let first = inner.next_id;
-            inner.next_id += count as u32;
+            let first = Self::reserve_ids_inner(inner, count);
+            inner.transport_result_first = first;
+            inner.transport_result_count = count.min(RESULTS) as u8;
+            inner.transport_results_seen = 0;
+            while self.results.try_receive().is_ok() {}
             first
         })
+    }
+
+    fn reserve_ids_inner(inner: &mut Inner, count: usize) -> u32 {
+        if inner.next_id > u32::MAX - count as u32 {
+            inner.next_id = 1;
+        }
+        let first = inner.next_id;
+        inner.next_id += count as u32;
+        first
     }
 
     /// The configured baud rate of the UART.
@@ -375,13 +410,18 @@ impl<M: RawMutex> MeshtasticLink<M> {
         self.reconnect.wait().await;
     }
 
-    /// Hands a packet to the backend, which writes it to the radio. Fails at once while
-    /// the radio is not connected; waits for room otherwise, and stops waiting when the session ends.
+    /// Hands a packet to the backend and waits until it reports the write and flush complete.
+    ///
+    /// Dropping this future after the packet is queued does not withdraw it; the backend may
+    /// still write it. Fails at once while the radio is not connected, and stops waiting when
+    /// the session ends.
     ///
     /// # Errors
     ///
-    /// [`RadioError`]; nothing was queued.
+    /// [`RadioError::NotConnected`] if there is no active session, [`RadioError::Disconnected`]
+    /// if the session ends before completion, or [`RadioError::Io`] if encoding fails.
     pub async fn submit(&self, packet: &Outgoing<'_>) -> Result<(), RadioError> {
+        let _guard = self.write_gate.lock().await;
         let seen = self.epoch();
         if !self.snapshot().connected {
             return Err(RadioError::NotConnected);
@@ -392,9 +432,26 @@ impl<M: RawMutex> MeshtasticLink<M> {
             .map_err(|_| RadioError::Io)?;
         let len = encode_packet(&mut message, packet).map_err(|_| RadioError::Io)?;
         message.truncate(len);
-        match select(self.outgoing.send(message), self.session_ended(seen)).await {
-            Either::First(()) => Ok(()),
+        self.write_complete.reset();
+        let pending = PendingWrite {
+            message,
+            packet_id: packet.id,
+        };
+        match select(self.outgoing.send(pending), self.session_ended(seen)).await {
             Either::Second(()) => Err(RadioError::Disconnected),
+            Either::First(()) => loop {
+                match select(self.write_complete.wait(), self.session_ended(seen)).await {
+                    Either::First(id) if id == packet.id => return Ok(()),
+                    Either::First(_) => {}
+                    Either::Second(()) => {
+                        return if self.write_complete.try_take() == Some(packet.id) {
+                            Ok(())
+                        } else {
+                            Err(RadioError::Disconnected)
+                        };
+                    }
+                }
+            },
         }
     }
 
@@ -447,9 +504,17 @@ impl<M: RawMutex> MeshtasticLink<M> {
         });
     }
 
-    /// The next message for the radio; the backend writes it to its link.
-    pub async fn next_outgoing(&self) -> ToRadio {
+    /// Receives the next message for the radio.
+    ///
+    /// The backend must call [`note_write_complete`](Self::note_write_complete) with its
+    /// `packet_id` only after the message is written and flushed successfully.
+    pub async fn next_outgoing(&self) -> PendingWrite {
         self.outgoing.receive().await
+    }
+
+    /// Reports that packet `id` was written and flushed to the local radio.
+    pub fn note_write_complete(&self, id: u32) {
+        self.write_complete.signal(id);
     }
 
     // ---- what the backend reports ------------------------------------------------------------
@@ -523,6 +588,8 @@ impl<M: RawMutex> MeshtasticLink<M> {
             d.bad_streak = 0;
             // The acknowledgements of the old session never come.
             inner.pending.clear();
+            inner.transport_result_count = 0;
+            inner.transport_results_seen = 0;
         });
         while self.outgoing.try_receive().is_ok() {}
         while self.results.try_receive().is_ok() {}
@@ -598,10 +665,25 @@ impl<M: RawMutex> MeshtasticLink<M> {
     /// A routing result. The acknowledgement of a diagnostic send goes to the inbox, every other
     /// result to the transport; neither can starve the other.
     pub fn on_routing(&self, from: u32, result: RoutingResult) {
-        let diagnostic = self.with(|inner| {
+        let (diagnostic, dropped) = self.with(|inner| {
             let Some(position) = inner.pending.iter().position(|id| *id == result.request_id)
             else {
-                return false;
+                let link = &mut inner.diagnostics.link;
+                if result.error == 0 {
+                    link.acked = link.acked.saturating_add(1);
+                } else {
+                    link.failed = link.failed.saturating_add(1);
+                }
+                let index = result.request_id.wrapping_sub(inner.transport_result_first) as usize;
+                if index >= usize::from(inner.transport_result_count) {
+                    return (false, false);
+                }
+                let bit = 1u16 << index;
+                if inner.transport_results_seen & bit != 0 {
+                    return (false, false);
+                }
+                inner.transport_results_seen |= bit;
+                return (false, self.results.try_send(result).is_err());
             };
             inner.pending.remove(position);
             let mut text = String::new();
@@ -616,20 +698,9 @@ impl<M: RawMutex> MeshtasticLink<M> {
                 packet_id: result.request_id,
                 text,
             });
-            true
+            (true, false)
         });
-        if diagnostic {
-            return;
-        }
-        self.with(|inner| {
-            let link = &mut inner.diagnostics.link;
-            if result.error == 0 {
-                link.acked = link.acked.saturating_add(1);
-            } else {
-                link.failed = link.failed.saturating_add(1);
-            }
-        });
-        if self.results.try_send(result).is_err() {
+        if !diagnostic && dropped {
             log::debug!(target: "meshtastic", "Routing result dropped, queue full");
         }
     }
@@ -668,7 +739,7 @@ impl<'a, M: RawMutex> LinkRadio<'a, M> {
 
 impl<M: RawMutex> MeshtasticRadio for LinkRadio<'_, M> {
     fn reserve_ids(&mut self, count: usize) -> u32 {
-        self.link.reserve_ids(count)
+        self.link.reserve_transport_ids(count)
     }
 
     async fn send(&mut self, packet: &Outgoing<'_>) -> Result<(), RadioError> {

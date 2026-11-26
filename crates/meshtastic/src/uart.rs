@@ -416,7 +416,8 @@ where
                     }
                 }
                 Either4::Second(message) => {
-                    Self::write(link, io, &message).await?;
+                    Self::write(link, io, &message.message).await?;
+                    link.note_write_complete(message.packet_id);
                     last_tx = clock.now().millis;
                 }
                 Either4::Third(()) if connected => {

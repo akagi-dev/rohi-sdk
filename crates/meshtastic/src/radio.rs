@@ -90,12 +90,17 @@ pub trait MeshtasticRadio {
     /// of a dropped attempt cannot be taken for one of a later attempt.
     fn reserve_ids(&mut self, count: usize) -> u32;
 
-    /// Hands `packet` to the radio. Returns once the radio accepted it; the
+    /// Hands `packet` to the radio. Returns once the local link has written and flushed it; the
     /// mesh outcome arrives through [`next_result`](Self::next_result).
+    ///
+    /// Dropping this future after the packet is queued does not withdraw it; the backend may
+    /// still write it.
     ///
     /// # Errors
     ///
-    /// [`RadioError`]; nothing was sent.
+    /// [`RadioError::NotConnected`] if the local radio is unavailable, [`RadioError::Disconnected`]
+    /// if the link ends before the write completes, or [`RadioError::Io`] if the message cannot
+    /// be encoded or written.
     async fn send(&mut self, packet: &Outgoing<'_>) -> Result<(), RadioError>;
 
     /// Waits for the next routing result of any packet this radio sent

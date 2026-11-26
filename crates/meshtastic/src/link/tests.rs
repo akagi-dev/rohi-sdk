@@ -16,6 +16,7 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 use embassy_futures::block_on;
+use embassy_futures::join::join;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 
 use super::*;
@@ -38,6 +39,24 @@ fn result(request_id: u32, error: u8) -> RoutingResult {
     RoutingResult { request_id, error }
 }
 
+fn send_and_write(
+    link: &Link,
+    radio: &mut LinkRadio<'_, NoopRawMutex>,
+    packet: &Outgoing<'_>,
+) -> (Result<(), RadioError>, PendingWrite) {
+    block_on(async {
+        let sending = radio.send(packet);
+        let writing = async {
+            let pending = link.next_outgoing().await;
+            link.note_tx();
+            link.note_write_complete(pending.packet_id);
+            pending
+        };
+        let (result, pending) = join(sending, writing).await;
+        (result, pending)
+    })
+}
+
 #[test]
 fn nothing_is_sent_to_a_radio_that_is_not_connected() {
     let link = Link::new();
@@ -54,13 +73,14 @@ fn a_packet_reaches_the_backend_as_an_encoded_to_radio() {
     let link = Link::new();
     link.session_up(0);
     let mut radio = LinkRadio::new(&link);
-    block_on(radio.send(&outgoing(7))).unwrap();
-    let message = block_on(link.next_outgoing());
+    let (result, pending) = send_and_write(&link, &mut radio, &outgoing(7));
+    result.unwrap();
     let mut expected = [0u8; 64];
     let len = encode_packet(&mut expected, &outgoing(7)).unwrap();
-    assert_eq!(message.as_slice(), &expected[..len]);
+    assert_eq!(pending.message.as_slice(), &expected[..len]);
+    assert_eq!(pending.packet_id, 7);
     // What the radio receives is a ToRadio, not something we would take for a FromRadio result.
-    assert_eq!(decode_from_radio(&message), Ok(FromRadio::Other));
+    assert_eq!(decode_from_radio(&pending.message), Ok(FromRadio::Other));
 }
 
 #[test]
@@ -73,19 +93,21 @@ fn the_largest_packet_fits_the_message_buffer() {
         payload: &payload,
         ..outgoing(u32::MAX)
     };
-    block_on(radio.send(&packet)).unwrap();
-    assert!(block_on(link.next_outgoing()).len() <= TO_RADIO_MAX);
+    let (result, pending) = send_and_write(&link, &mut radio, &packet);
+    result.unwrap();
+    assert!(pending.message.len() <= TO_RADIO_MAX);
 }
 
 #[test]
 fn telemetry_results_are_delivered_in_order_and_counted() {
     let link = Link::new();
     link.session_up(0);
-    link.on_routing(5, result(1, 0));
-    link.on_routing(5, result(2, 5));
     let mut radio = LinkRadio::new(&link);
-    assert_eq!(block_on(radio.next_result()).unwrap().request_id, 1);
-    assert_eq!(block_on(radio.next_result()).unwrap().request_id, 2);
+    let first = radio.reserve_ids(2);
+    link.on_routing(5, result(first, 0));
+    link.on_routing(5, result(first + 1, 5));
+    assert_eq!(block_on(radio.next_result()).unwrap().request_id, first);
+    assert_eq!(block_on(radio.next_result()).unwrap().request_id, first + 1);
     let snapshot = link.snapshot();
     assert_eq!(
         (snapshot.acked, snapshot.failed, snapshot.sessions),
@@ -116,9 +138,11 @@ fn ids_are_nonzero_consecutive_and_never_reused_after_the_range_wraps() {
 fn a_diagnostic_ack_goes_to_the_inbox_and_never_to_the_transport() {
     let link = Link::new();
     link.session_up(0);
+    let mut radio = LinkRadio::new(&link);
+    let transport_id = radio.reserve_ids(1);
     link.note_diagnostic_send(10);
     link.on_routing(0xdead_beef, result(10, 0));
-    link.on_routing(0xdead_beef, result(11, 0));
+    link.on_routing(0xdead_beef, result(transport_id, 0));
     let inbox = link.inbox();
     assert_eq!(inbox.len(), 1);
     assert_eq!(
@@ -127,15 +151,46 @@ fn a_diagnostic_ack_goes_to_the_inbox_and_never_to_the_transport() {
     );
     assert_eq!(inbox[0].text.as_str(), "ok");
     // The transport sees its own result and only that one, whether or not anybody read the inbox.
-    let mut radio = LinkRadio::new(&link);
-    assert_eq!(block_on(radio.next_result()).unwrap().request_id, 11);
+    assert_eq!(
+        block_on(radio.next_result()).unwrap().request_id,
+        transport_id
+    );
     // A failure carries its code; a second ack of the same packet is not a diagnostic any more.
     link.note_diagnostic_send(12);
+    let next_transport_id = radio.reserve_ids(1);
     link.on_routing(1, result(12, 5));
     assert_eq!(link.inbox()[0].text.as_str(), "error 5");
     link.on_routing(1, result(12, 0));
     assert_eq!(link.inbox().len(), 2);
-    assert_eq!(block_on(radio.next_result()).unwrap().request_id, 12);
+    link.on_routing(1, result(next_transport_id, 0));
+    assert_eq!(
+        block_on(radio.next_result()).unwrap().request_id,
+        next_transport_id
+    );
+}
+
+#[test]
+fn late_results_cannot_fill_the_queue_or_hide_new_attempt_acknowledgements() {
+    let link = Link::new();
+    link.session_up(0);
+    let mut radio = LinkRadio::new(&link);
+    let stale = radio.reserve_ids(RESULTS);
+    for offset in 0..RESULTS as u32 {
+        link.on_routing(1, result(stale + offset, 0));
+    }
+
+    let current = radio.reserve_ids(RESULTS);
+    for offset in 0..RESULTS as u32 {
+        link.on_routing(1, result(stale + offset, 0));
+        link.on_routing(1, result(current + offset, 0));
+        link.on_routing(1, result(current + offset, 0));
+    }
+    for offset in 0..RESULTS as u32 {
+        assert_eq!(
+            block_on(radio.next_result()).unwrap().request_id,
+            current + offset
+        );
+    }
 }
 
 #[test]
@@ -166,7 +221,9 @@ fn texts_that_cannot_be_kept_whole_are_skipped_and_nothing_else_changes() {
 fn a_lost_session_ends_the_wait_and_drops_what_was_queued() {
     let link = Link::new();
     link.session_up(100);
-    link.on_routing(1, result(1, 0));
+    let mut radio = LinkRadio::new(&link);
+    let id = radio.reserve_ids(1);
+    link.on_routing(1, result(id, 0));
     link.set_node(5);
     link.add_peer(6);
     link.add_peer(5); // the radio itself
@@ -179,7 +236,6 @@ fn a_lost_session_ends_the_wait_and_drops_what_was_queued() {
         (false, None, 0, None)
     );
     assert_eq!(d.last_error, LastError::UartIo);
-    let mut radio = LinkRadio::new(&link);
     // The stale result is gone; waiting reports the loss instead of hanging.
     assert_eq!(block_on(radio.next_result()), Err(RadioError::Disconnected));
     // The acknowledgement of a send of the old session is not expected any more.

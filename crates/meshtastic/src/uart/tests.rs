@@ -21,6 +21,7 @@ use std::vec;
 use std::vec::Vec;
 
 use embassy_futures::block_on;
+use embassy_futures::join::join;
 use embassy_futures::select::{Either, select};
 use embassy_futures::yield_now;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
@@ -229,6 +230,8 @@ struct Io<'a> {
     inbound: &'a Pipe,
     outbound: &'a Pipe,
     baud: &'a Cell<u32>,
+    flush_blocked: &'a Cell<bool>,
+    flush_entered: &'a Cell<bool>,
     baud_fails: bool,
 }
 
@@ -277,6 +280,10 @@ impl embedded_io_async::Write for Io<'_> {
     }
 
     async fn flush(&mut self) -> Result<(), FakeError> {
+        self.flush_entered.set(true);
+        while self.flush_blocked.get() {
+            yield_now().await;
+        }
         Ok(())
     }
 }
@@ -315,6 +322,8 @@ struct World {
     to_device: Pipe,
     from_device: Pipe,
     baud: Cell<u32>,
+    flush_blocked: Cell<bool>,
+    flush_entered: Cell<bool>,
     now: Cell<u64>,
 }
 
@@ -325,6 +334,8 @@ impl World {
             to_device: Pipe::default(),
             from_device: Pipe::default(),
             baud: Cell::new(0),
+            flush_blocked: Cell::new(false),
+            flush_entered: Cell::new(false),
             now: Cell::new(1_000),
         }
     }
@@ -334,6 +345,8 @@ impl World {
             inbound: &self.to_device,
             outbound: &self.from_device,
             baud: &self.baud,
+            flush_blocked: &self.flush_blocked,
+            flush_entered: &self.flush_entered,
             baud_fails: false,
         }
     }
@@ -499,6 +512,52 @@ fn text_and_acks_are_fanned_out_to_the_inbox_and_the_transport_independently() {
             ]
         );
         assert_eq!(PORT_TEXT_MESSAGE_APP, 1);
+    });
+}
+
+#[test]
+fn send_waits_until_uart_flush_completes() {
+    let world = World::new();
+    let mut session = world.session(world.io());
+    run(session.session(), async {
+        while world.from_device.bytes.borrow().is_empty() {
+            yield_now().await;
+        }
+        let nonce = want_config_id(&world.written()[0]);
+        world.handshake(1, &[], nonce).await;
+
+        world.flush_entered.set(false);
+        world.flush_blocked.set(true);
+        let mut radio = LinkRadio::new(&world.link);
+        let id = radio.reserve_ids(1);
+        let packet = Outgoing {
+            destination: 7,
+            id,
+            port: 256,
+            payload: &[1, 2],
+            want_ack: true,
+            pki: true,
+        };
+        let complete = Cell::new(false);
+        let sending = async {
+            let result = radio.send(&packet).await;
+            complete.set(true);
+            result
+        };
+        let release_flush = async {
+            while !world.flush_entered.get() {
+                yield_now().await;
+            }
+            for _ in 0..5 {
+                yield_now().await;
+            }
+            assert!(!complete.get(), "send must wait for the UART flush");
+            world.flush_blocked.set(false);
+        };
+        let (result, ()) = join(sending, release_flush).await;
+        assert_eq!(result, Ok(()));
+        assert!(complete.get());
+        assert_eq!(world.written().len(), 1);
     });
 }
 

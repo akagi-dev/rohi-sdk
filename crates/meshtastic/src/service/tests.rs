@@ -18,7 +18,10 @@
 use core::cell::Cell;
 
 use embassy_futures::block_on;
+use embassy_futures::join::join;
+use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embassy_sync::signal::Signal;
 use rohi_config::{ConfigSection, Override};
 use rohi_service::{
     ActionRegistry, ActionResult, Config, ServiceHealth, StatusRegistry, Statuses, Value,
@@ -26,6 +29,7 @@ use rohi_service::{
 use rohi_time::MonotonicTimestamp;
 
 use super::*;
+use crate::link::PendingWrite;
 use crate::radio::RoutingResult;
 
 type Link = MeshtasticLink<NoopRawMutex>;
@@ -44,20 +48,48 @@ fn text(value: &str) -> Value {
     Value::text(value).unwrap()
 }
 
+fn send_with_backend(
+    service: &MeshtasticService<'_, NoopRawMutex, Time<'_>>,
+    to: &str,
+    body: &str,
+) -> (
+    Result<ActionResult, ActionError>,
+    std::vec::Vec<PendingWrite>,
+) {
+    let actions = (service,);
+    let done = Signal::<NoopRawMutex, ()>::new();
+    let written = std::cell::RefCell::new(std::vec::Vec::new());
+    let action = async {
+        let result = actions
+            .invoke(
+                SERVICE_ID,
+                action::SEND,
+                &[
+                    (action_field::TO, text(to)),
+                    (action_field::TEXT, text(body)),
+                ],
+            )
+            .await;
+        done.signal(());
+        result
+    };
+    let backend = async {
+        while let Either::First(pending) = select(service.link.next_outgoing(), done.wait()).await {
+            service.link.note_tx();
+            service.link.note_write_complete(pending.packet_id);
+            written.borrow_mut().push(pending);
+        }
+    };
+    let (result, ()) = block_on(join(action, backend));
+    (result, written.into_inner())
+}
+
 fn send(
     service: &MeshtasticService<'_, NoopRawMutex, Time<'_>>,
     to: &str,
     body: &str,
 ) -> Result<ActionResult, ActionError> {
-    let actions = (service,);
-    block_on(actions.invoke(
-        SERVICE_ID,
-        action::SEND,
-        &[
-            (action_field::TO, text(to)),
-            (action_field::TEXT, text(body)),
-        ],
-    ))
+    send_with_backend(service, to, body).0
 }
 
 fn status_of(
@@ -345,7 +377,8 @@ fn send_submits_a_unicast_text_with_an_ack_request_and_returns_the_local_packet_
     let now = Cell::new(0);
     let link = connected_link();
     let service = MeshtasticService::new(&link, Time(&now));
-    let result = send(&service, "!DEADbeef", "Hello ROHI").unwrap();
+    let (result, writes) = send_with_backend(&service, "!DEADbeef", "Hello ROHI");
+    let result = result.unwrap();
     let ActionResult::Inline(fields) = result else {
         panic!("{result:?}")
     };
@@ -353,7 +386,7 @@ fn send_submits_a_unicast_text_with_an_ack_request_and_returns_the_local_packet_
         panic!("{fields:?}")
     };
     // What went to the radio: the encoded packet with this id.
-    let message = block_on(link.next_outgoing());
+    let message = &writes[0].message;
     let mut expected = [0u8; 128];
     let len = crate::proto::encode_packet(
         &mut expected,
@@ -370,7 +403,7 @@ fn send_submits_a_unicast_text_with_an_ack_request_and_returns_the_local_packet_
     assert_eq!(message.as_slice(), &expected[..len]);
     // The packet takes its id from the counter shared with the transport.
     assert_eq!(link.reserve_ids(1), id as u32 + 1);
-    // A success is local submission: nothing is in the inbox until the ack arrives.
+    // A success is local radio acceptance: nothing is in the inbox until the mesh ack arrives.
     assert!(link.inbox().is_empty());
     link.on_routing(
         0xdead_beef,
@@ -389,7 +422,7 @@ fn send_refuses_bad_input_without_transmitting_and_an_unready_radio_is_unavailab
     let service = MeshtasticService::new(&link, Time(&now));
     let long = "x".repeat(INBOX_TEXT_MAX);
     assert!(send(&service, "!deadbeef", &long).is_ok(), "64 bytes fit");
-    let _ = block_on(link.next_outgoing());
+    assert!(!link.has_outgoing());
     for to in [
         "deadbeef",
         "!deadbee",
