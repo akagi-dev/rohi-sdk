@@ -25,9 +25,12 @@
 //!
 //! ```text
 //! let (hardware, runtime) = Hardware::split(peripherals);
+//! #[cfg(feature = "meshtastic-uart")]
+//! let radio_uart = hardware.take_meshtastic_uart();
 //! let board = AltruistUrban::new(hardware)?;
 //! // board.i2c, board.sds011_uart, board.microphone go to the sensor drivers;
 //! // runtime carries the timer, the radios and the flash for the runtime.
+//! // radio_uart is owned by the Meshtastic task, independently of board setup.
 //! ```
 //!
 //! The compiled version of this sequence is
@@ -160,9 +163,6 @@ pub struct AltruistUrban {
     pub i2c: I2c<'static, Async>,
     /// UART of the SDS011.
     pub sds011_uart: Uart<'static, Async>,
-    /// UART0 of the Meshtastic radio. `None` without the `meshtastic-uart` feature, or when the
-    /// UART could not be set up (logged; the rest of the board is unaffected).
-    pub meshtastic_uart: Option<Uart<'static, Async>>,
     /// Noise microphone.
     pub microphone: I2sMicrophone,
 }
@@ -190,6 +190,22 @@ fn meshtastic_uart(
             failed(Error::Uart(error));
             None
         }
+    }
+}
+
+impl Hardware {
+    /// Configures UART0 for the Meshtastic radio and takes it from the board peripherals.
+    ///
+    /// Available with the `meshtastic-uart` feature. Call before [`AltruistUrban::new`] so radio
+    /// initialization does not depend on sensor board setup. Returns `None` if the UART config is
+    /// rejected; the failure is logged and the remaining board peripherals are unaffected.
+    #[cfg(feature = "meshtastic-uart")]
+    pub fn take_meshtastic_uart(&mut self) -> Option<Uart<'static, Async>> {
+        meshtastic_uart(
+            self.meshtastic_uart.take()?,
+            self.meshtastic_tx.take()?,
+            self.meshtastic_rx.take()?,
+        )
     }
 }
 
@@ -225,16 +241,6 @@ impl AltruistUrban {
             .with_rx(hardware.uart_rx)
             .into_async();
 
-        // The radio is optional: a failure here never takes the sensors with it.
-        #[cfg(feature = "meshtastic-uart")]
-        let meshtastic_uart = meshtastic_uart(
-            hardware.meshtastic_uart,
-            hardware.meshtastic_tx,
-            hardware.meshtastic_rx,
-        );
-        #[cfg(not(feature = "meshtastic-uart"))]
-        let meshtastic_uart = None;
-
         let i2s_config = TdmConfig::new_tdm_philips()
             .with_sample_rate(Rate::from_hz(SAMPLE_RATE_HZ))
             .with_data_format(DataFormat::Data32Channel32)
@@ -262,7 +268,6 @@ impl AltruistUrban {
         Ok(Self {
             i2c,
             sds011_uart,
-            meshtastic_uart,
             microphone,
         })
     }

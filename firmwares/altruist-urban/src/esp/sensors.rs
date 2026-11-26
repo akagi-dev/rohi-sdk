@@ -61,7 +61,6 @@ pub fn start(spawner: Spawner, board: AltruistUrban) {
         i2c,
         sds011_uart,
         microphone,
-        meshtastic_uart: _,
     } = board;
     let i2c_bus = I2C_BUS.init(Mutex::new(i2c));
     crate::tasks::spawn(spawner, "bmx280_task", bmx280_task(i2c_handle(i2c_bus)));

@@ -209,6 +209,9 @@ impl<'a> Reader<'a> {
         for shift in (0..70).step_by(7) {
             let (&byte, rest) = self.bytes.split_first().ok_or(Malformed)?;
             self.bytes = rest;
+            if shift == 63 && byte > 1 {
+                return Err(Malformed);
+            }
             value |= u64::from(byte & 0x7f).checked_shl(shift).ok_or(Malformed)?;
             if byte & 0x80 == 0 {
                 return Ok(value);

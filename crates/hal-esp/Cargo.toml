@@ -27,6 +27,5 @@ default = []
 # Exactly one chip feature must be enabled by the final firmware build.
 esp32c3 = ["dep:esp-hal", "rohi-time/embassy-time", "esp-hal/esp32c3"]
 esp32c6 = ["dep:esp-hal", "rohi-time/embassy-time", "esp-hal/esp32c6"]
-# Sets up UART0 of the Meshtastic radio in `AltruistUrban::new` (TX/RX pins of the board file). Off: the
-# UART is not touched and `AltruistUrban::meshtastic_uart` is `None`.
+# Enables `Hardware::take_meshtastic_uart` for UART0 of the Meshtastic radio (TX/RX pins of the board file).
 meshtastic-uart = []

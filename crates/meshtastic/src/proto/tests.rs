@@ -198,6 +198,24 @@ fn truncated_or_invalid_messages_are_malformed_not_panics() {
 }
 
 #[test]
+fn varints_reject_values_wider_than_u64() {
+    let mut overwide_final_byte = Reader {
+        bytes: &[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x02],
+    };
+    assert_eq!(overwide_final_byte.varint(), Err(Malformed));
+
+    let mut continued_tenth_byte = Reader {
+        bytes: &[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x80],
+    };
+    assert_eq!(continued_tenth_byte.varint(), Err(Malformed));
+
+    let mut largest_valid = Reader {
+        bytes: &[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01],
+    };
+    assert_eq!(largest_valid.varint(), Ok(u64::MAX));
+}
+
+#[test]
 fn text_messages_and_radio_metadata_are_recognised() {
     let mut data = field(1, 0, &varint(1));
     data.extend(field(2, 2, b"Hello ROHI"));

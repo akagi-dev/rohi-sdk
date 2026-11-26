@@ -75,11 +75,11 @@ pub struct Hardware {
     pub(super) i2s_ws: GPIO1<'static>,
     pub(super) i2s_din: GPIO11<'static>,
     #[cfg_attr(not(feature = "meshtastic-uart"), allow(dead_code))]
-    pub(super) meshtastic_uart: UART0<'static>,
+    pub(super) meshtastic_uart: Option<UART0<'static>>,
     #[cfg_attr(not(feature = "meshtastic-uart"), allow(dead_code))]
-    pub(super) meshtastic_tx: GPIO22<'static>,
+    pub(super) meshtastic_tx: Option<GPIO22<'static>>,
     #[cfg_attr(not(feature = "meshtastic-uart"), allow(dead_code))]
-    pub(super) meshtastic_rx: GPIO20<'static>,
+    pub(super) meshtastic_rx: Option<GPIO20<'static>>,
 }
 
 impl Hardware {
@@ -98,9 +98,9 @@ impl Hardware {
                 i2s_bclk: peripherals.GPIO10,
                 i2s_ws: peripherals.GPIO1,
                 i2s_din: peripherals.GPIO11,
-                meshtastic_uart: peripherals.UART0,
-                meshtastic_tx: peripherals.GPIO22,
-                meshtastic_rx: peripherals.GPIO20,
+                meshtastic_uart: Some(peripherals.UART0),
+                meshtastic_tx: Some(peripherals.GPIO22),
+                meshtastic_rx: Some(peripherals.GPIO20),
             },
             Runtime {
                 timg0: peripherals.TIMG0,
