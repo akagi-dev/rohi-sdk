@@ -41,6 +41,44 @@ use it without a firmware-specific integration.
 | Security | TCP is `protected` by default (plaintext reads; a handshake with a 32-byte pre-shared key unlocks everything, with authenticated and encrypted records; no forward secrecy); **BLE is open** (no pairing, no link encryption) in this build, an accepted insecure state; no TLS, see [Access control](#access-control) |
 | Scope | local control only; telemetry uplink is a separate service |
 
+## Buf schema module
+
+The canonical schema is configured for publication at
+[`buf.build/akagi-dev/rohi-control-proto`](https://buf.build/akagi-dev/rohi-control-proto), starting with the first
+tagged release after the registry setup below. Its Protobuf package `rohi.control.v2` identifies the protocol generation;
+the repository release version identifies a specific schema revision. While the protocol is under development, use a
+release matching the device firmware, not an unpinned latest version.
+
+For example, after a `v0.8.0` release has been published, a client's `buf.yaml` can include:
+
+```yaml
+version: v2
+deps:
+  - buf.build/akagi-dev/rohi-control-proto:v0.8.0
+```
+
+Run `buf dep update` and commit the resulting `buf.lock`. It pins the exact registry commit and digest, even if a label
+is moved. Select an actually published release label for the firmware in use. Buf can then resolve imports such as
+`rohi/control/v2/control.proto` for the client's own generation workflow; the SDK's Rust build continues to use
+`micropb-gen`.
+
+### Publishing and compatibility
+
+Before enabling the workflow, a registry administrator must create the **public** module
+`buf.build/akagi-dev/rohi-control-proto` with default label `main`, and add a Buf token with permission to push that
+module as the GitHub Actions repository secret `BUF_TOKEN`. Never commit the token. An empty module has no baseline
+for breaking checks until the first release is published; a missing or inaccessible module fails the check.
+
+Pull requests and pushes to `master` run `buf lint` and `buf breaking --against-registry` against the latest published
+`main` label. The `FILE` policy protects generated source compatibility as well as wire compatibility. The existing
+`UNIT_NONE` zero enum value is exempt from the zero-value suffix lint rule to preserve the public API.
+
+Publish a release by pushing an immutable `vMAJOR.MINOR.PATCH` Git tag (for example `v0.8.0`) on the tested release
+commit. The tag workflow repeats lint and the registry breaking check, then pushes the schema with both `main` and the
+tag as Buf labels. The first release establishes the baseline. Publish releases in order and do not move or reuse tags:
+`main` tracks the most recently published release, not every commit on the Git branch. Pre-release tags are not
+published by this workflow. Creating a GitHub Release without pushing a matching tag does not publish a schema.
+
 ## Access control
 
 Requests have a **privilege**: `Read` (observe and discover), `Mutate` (change configuration, reboot, factory reset,
