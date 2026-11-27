@@ -1,0 +1,14 @@
+version: v2
+modules:
+  - path: proto
+    name: buf.build/akagi-dev/rohi-control-proto
+lint:
+  use:
+    - STANDARD
+  # UNIT_NONE is an existing public enum value; do not rename it.
+  ignore_only:
+    ENUM_ZERO_VALUE_SUFFIX:
+      - proto/rohi/control/v2/control.proto
+breaking:
+  use:
+    - FILE
