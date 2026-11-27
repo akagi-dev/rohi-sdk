@@ -1,0 +1,44 @@
+name: Control protocol Buf
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    if: github.ref_type != 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: bufbuild/buf-action@v1
+        with:
+          version: 1.59.0
+          setup_only: true
+      - name: Lint control schema
+        run: buf lint crates/control-proto
+      - name: Check against published schema
+        run: buf breaking crates/control-proto --against-registry
+
+  publish:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: bufbuild/buf-action@v1
+        with:
+          version: 1.59.0
+          setup_only: true
+      - name: Validate release tag and schema
+        run: |
+          [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          buf lint crates/control-proto
+      - name: Publish control schema
+        env:
+          BUF_TOKEN: ${{ secrets.BUF_TOKEN }}
+        run: buf push crates/control-proto --label main --label "$GITHUB_REF_NAME"
