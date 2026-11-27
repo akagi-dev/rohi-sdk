@@ -21,6 +21,7 @@ lz4 = []
 rohi-config.workspace = true
 rohi-service.workspace = true
 rohi-time.workspace = true
+rohi-storage.workspace = true
 minicbor.workspace = true
 heapless.workspace = true
 embassy-sync.workspace = true

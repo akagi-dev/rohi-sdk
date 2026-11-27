@@ -181,7 +181,6 @@ extern crate self as rohi_config;
 
 pub mod cbor;
 mod codec;
-mod crc;
 mod error;
 mod field_codec;
 mod format;
@@ -196,7 +195,6 @@ mod value;
 mod writer;
 
 pub use codec::{decode_exact, encode_to_slice};
-pub use crc::Crc32;
 pub use error::{ConfigError, Corruption, DecodeFailure, DecodeKind, EncodeError, SectionError};
 pub use field_codec::{Codec, Standard, Text, TextValue, Variant, VariantValue};
 pub use format::{
@@ -206,6 +204,7 @@ pub use id::SectionId;
 pub use memory::{MemoryError, MemoryStorage};
 pub use overrides::ConfigOverrides;
 pub use overrides::{HasOverrides, Override, RedactedOverride, materialize};
+pub use rohi_storage::Crc32;
 pub use section::ConfigSection;
 pub use storage::ConfigStorage;
 pub use store::{ConfigOpenState, ConfigStore, OpenFailure, SectionInfo};

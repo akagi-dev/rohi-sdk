@@ -1,0 +1,17 @@
+[package]
+name = "rohi-storage"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Platform-neutral flash storage primitives for ROHI"
+
+[dependencies]
+embedded-storage.workspace = true
+embassy-sync.workspace = true
+
+[dev-dependencies]
+critical-section = { version = "1", features = ["std"] }

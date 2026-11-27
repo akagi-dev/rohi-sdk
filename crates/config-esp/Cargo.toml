@@ -18,8 +18,8 @@ maintenance = { status = "actively-developed" }
 
 [dependencies]
 rohi-config.workspace = true
+rohi-storage.workspace = true
 embedded-storage.workspace = true
-embassy-sync.workspace = true
 log.workspace = true
 
 esp-storage = { workspace = true, features = [

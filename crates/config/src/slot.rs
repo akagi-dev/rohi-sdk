@@ -23,7 +23,7 @@
 
 use minicbor::Decoder;
 
-use crate::crc::Crc32;
+use crate::Crc32;
 use crate::format::{
     COMMIT_WORD, COMMIT_WORD_SIZE, FORMAT_VERSION, MAX_HEAD, MAX_SECTION_PAYLOAD, MAX_SECTIONS,
     parse_bytes_head,

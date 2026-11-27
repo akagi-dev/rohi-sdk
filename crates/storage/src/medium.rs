@@ -16,8 +16,7 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-//! The erasable array of sectors a [`RingStorage`](super::RingStorage) is
-//! laid out on.
+//! An erasable array of sectors.
 
 use core::fmt::Debug;
 
@@ -146,7 +145,10 @@ impl<const SECTORS: usize> Medium for RamMedium<SECTORS> {
 
     fn write(&mut self, offset: u32, data: &[u8]) -> Result<(), RamError> {
         let start = offset as usize;
-        if start + data.len() > SECTORS * SECTOR_SIZE {
+        if start
+            .checked_add(data.len())
+            .is_none_or(|end| end > SECTORS * SECTOR_SIZE)
+        {
             return Err(RamError::OutOfBounds);
         }
         for (index, byte) in data.iter().enumerate() {
@@ -168,7 +170,10 @@ impl<const SECTORS: usize> Medium for RamMedium<SECTORS> {
 
     fn read(&mut self, offset: u32, buf: &mut [u8]) -> Result<(), RamError> {
         let start = offset as usize;
-        if start + buf.len() > SECTORS * SECTOR_SIZE {
+        if start
+            .checked_add(buf.len())
+            .is_none_or(|end| end > SECTORS * SECTOR_SIZE)
+        {
             return Err(RamError::OutOfBounds);
         }
         for (index, byte) in buf.iter_mut().enumerate() {
