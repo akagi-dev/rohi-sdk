@@ -24,7 +24,8 @@
 //! peripheral types. Drivers and firmware tasks never name pins.
 //!
 //! ```text
-//! let (hardware, runtime) = Hardware::split(peripherals);
+//! #[cfg_attr(not(feature = "meshtastic-uart"), allow(unused_mut))]
+//! let (mut hardware, runtime) = Hardware::split(peripherals);
 //! #[cfg(feature = "meshtastic-uart")]
 //! let radio_uart = hardware.take_meshtastic_uart();
 //! let board = AltruistUrban::new(hardware)?;

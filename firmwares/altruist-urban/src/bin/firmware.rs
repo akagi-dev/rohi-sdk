@@ -73,7 +73,8 @@ async fn main(spawner: Spawner) -> ! {
     altruist_urban::esp::inject::at("early");
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
-    let (hardware, runtime) = Hardware::split(peripherals);
+    #[cfg_attr(not(feature = "meshtastic-uart"), allow(unused_mut))]
+    let (mut hardware, runtime) = Hardware::split(peripherals);
 
     // One owner for the radio: it takes the wireless heap and creates the Wi-Fi
     // and BLE drivers, see `rohi_sdk::esp::net`. All sizes come from
