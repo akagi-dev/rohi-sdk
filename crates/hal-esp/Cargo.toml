@@ -27,3 +27,5 @@ default = []
 # Exactly one chip feature must be enabled by the final firmware build.
 esp32c3 = ["dep:esp-hal", "rohi-time/embassy-time", "esp-hal/esp32c3"]
 esp32c6 = ["dep:esp-hal", "rohi-time/embassy-time", "esp-hal/esp32c6"]
+# Enables `Hardware::take_meshtastic_uart` for UART0 of the Meshtastic radio (TX/RX pins of the board file).
+meshtastic-uart = []

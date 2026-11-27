@@ -957,8 +957,15 @@ crate::firmware_configs! {
     private IdentityBinding, TelemetryBinding, ConnectivityBinding, TcpPskBinding
 }
 
-#[cfg(not(feature = "std-tcp"))]
+#[cfg(all(not(feature = "std-tcp"), not(feature = "meshtastic-uart")))]
 crate::firmware_configs! {
     managed WirelessBinding, LocationBinding, TimeBinding, LoggingBinding;
+    private IdentityBinding, TelemetryBinding, ConnectivityBinding, TcpPskBinding
+}
+
+// The `meshtastic` section exists only where there is a UART radio to configure.
+#[cfg(all(not(feature = "std-tcp"), feature = "meshtastic-uart"))]
+crate::firmware_configs! {
+    managed WirelessBinding, LocationBinding, TimeBinding, LoggingBinding, crate::meshtastic::MeshtasticBinding;
     private IdentityBinding, TelemetryBinding, ConnectivityBinding, TcpPskBinding
 }

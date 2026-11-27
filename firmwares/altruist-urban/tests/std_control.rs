@@ -210,8 +210,11 @@ async fn a_protected_endpoint_without_a_key_reads_and_refuses_the_rest() {
         device.set_timeout(Duration::from_secs(5));
         assert!(device.info().await.is_err());
     }
-    let log = sim.log();
-    assert!(log.contains("No pre-shared key"), "{log}");
+    eventually("missing key warning", Duration::from_secs(10), async || {
+        let log = sim.log();
+        log.contains("No pre-shared key").then_some(())
+    })
+    .await;
     sim.stop();
 }
 

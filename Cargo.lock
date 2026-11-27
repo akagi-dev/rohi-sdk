@@ -63,6 +63,7 @@ dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",
  "embassy-time",
+ "embedded-io-async 0.7.0",
  "env_logger",
  "esp-bootloader-esp-idf",
  "esp-hal",
@@ -4079,6 +4080,7 @@ dependencies = [
  "minicbor",
  "rohi-config",
  "rohi-connectivity",
+ "rohi-connectivity-http",
  "rohi-control",
  "rohi-control-ble",
  "rohi-control-proto",
@@ -4151,16 +4153,44 @@ dependencies = [
  "embassy-futures",
  "embassy-sync 0.8.0",
  "embedded-hal-async",
- "embedded-io-async 0.7.0",
- "embedded-nal-async",
  "heapless 0.9.4",
  "log",
  "minicbor",
  "rohi-config",
- "rohi-net",
  "rohi-service",
  "rohi-telemetry",
  "rohi-time",
+]
+
+[[package]]
+name = "rohi-connectivity-http"
+version = "0.8.0"
+dependencies = [
+ "embassy-futures",
+ "embedded-hal-async",
+ "embedded-io-async 0.7.0",
+ "embedded-nal-async",
+ "heapless 0.9.4",
+ "log",
+ "rohi-connectivity",
+ "rohi-net",
+ "rohi-time",
+]
+
+[[package]]
+name = "rohi-connectivity-meshtastic"
+version = "0.8.0"
+dependencies = [
+ "embassy-futures",
+ "embedded-hal-async",
+ "log",
+ "rohi-connectivity",
+ "rohi-connectivity-http",
+ "rohi-meshtastic",
+ "rohi-net",
+ "rohi-telemetry",
+ "rohi-time",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -4369,6 +4399,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "rohi-meshtastic"
+version = "0.8.0"
+dependencies = [
+ "embassy-futures",
+ "embassy-sync 0.8.0",
+ "embedded-hal-async",
+ "embedded-io-async 0.7.0",
+ "heapless 0.9.4",
+ "log",
+ "minicbor",
+ "rohi-config",
+ "rohi-service",
+ "rohi-time",
+]
+
+[[package]]
 name = "rohi-net"
 version = "0.8.0"
 dependencies = [
@@ -4431,6 +4477,8 @@ dependencies = [
  "rohi-config",
  "rohi-config-esp",
  "rohi-connectivity",
+ "rohi-connectivity-http",
+ "rohi-connectivity-meshtastic",
  "rohi-control",
  "rohi-control-ble",
  "rohi-control-endpoints",
@@ -4442,6 +4490,7 @@ dependencies = [
  "rohi-identity",
  "rohi-location",
  "rohi-logging",
+ "rohi-meshtastic",
  "rohi-net",
  "rohi-net-esp",
  "rohi-net-std",

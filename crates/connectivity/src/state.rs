@@ -49,6 +49,7 @@ pub struct ConnectivityState<M: RawMutex, const ROUTES: usize> {
     views: BlockingMutex<M, RefCell<[Option<RouteView>; ROUTES]>>,
     health: BlockingMutex<M, RefCell<Health>>,
     unreadable: BlockingMutex<M, Cell<bool>>,
+    unsupported: BlockingMutex<M, Cell<bool>>,
     changed: Signal<M, u32>,
 }
 
@@ -70,6 +71,7 @@ impl<M: RawMutex, const R: usize> ConnectivityState<M, R> {
                 built: 0,
             })),
             unreadable: BlockingMutex::new(Cell::new(false)),
+            unsupported: BlockingMutex::new(Cell::new(false)),
             changed: Signal::new(),
         }
     }
@@ -77,6 +79,7 @@ impl<M: RawMutex, const R: usize> ConnectivityState<M, R> {
     /// Makes `routes` effective and wakes the publisher.
     pub fn publish(&self, routes: &Routes<R>) {
         self.unreadable.lock(|flag| flag.set(false));
+        self.unsupported.lock(|flag| flag.set(false));
         let generation = routes.generation;
         self.routes
             .lock(|current| *current.borrow_mut() = routes.clone());
@@ -88,6 +91,19 @@ impl<M: RawMutex, const R: usize> ConnectivityState<M, R> {
     pub fn mark_unreadable(&self) {
         self.unreadable.lock(|flag| flag.set(true));
         self.publish_empty();
+    }
+
+    /// The stored routes use an endpoint scheme this build cannot deliver: no
+    /// route is active, the stored value is kept untouched and the status says
+    /// so until the routes are corrected.
+    pub fn mark_unsupported(&self) {
+        self.unsupported.lock(|flag| flag.set(true));
+        self.publish_empty();
+    }
+
+    /// Whether the stored routes were refused for an unsupported endpoint scheme.
+    pub fn is_unsupported(&self) -> bool {
+        self.unsupported.lock(Cell::get)
     }
 
     fn publish_empty(&self) {

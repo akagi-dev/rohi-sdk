@@ -37,6 +37,7 @@ use rohi_telemetry::ProfileStamp;
 use rohi_time::{Clock, MonotonicTimestamp};
 
 use crate::config::Routes;
+use crate::endpoint::EndpointUri;
 use crate::pool::PacketHandle;
 use crate::provider::{BuildFailure, PacketProvider};
 use crate::router::{Admit, Delivery, Router, SkipReason};
@@ -287,7 +288,7 @@ impl<
         } else {
             route.fallback.as_ref()
         };
-        let Some(endpoint) = uri.and_then(|uri| uri.endpoint()) else {
+        let Some(endpoint) = uri.map(EndpointUri::as_str) else {
             return;
         };
         let Some((_, bytes)) = self.router.pool().get(delivery.packet) else {
@@ -400,6 +401,13 @@ fn log_delivery(delivery: &Delivery, result: &Result<TransportAck, TransportErro
             Disposition::Unauthorized => log::warn!(
                 target: "connectivity",
                 "Delivery unauthorized (route={} path={} err={:?})",
+                delivery.route,
+                delivery.path,
+                error
+            ),
+            Disposition::Incompatible => log::debug!(
+                target: "connectivity",
+                "Path cannot carry packet (route={} path={} err={:?})",
                 delivery.route,
                 delivery.path,
                 error

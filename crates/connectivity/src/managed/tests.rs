@@ -26,6 +26,7 @@ use rohi_telemetry::ProfileStamp;
 use super::*;
 use crate::endpoint::MAX_ENDPOINT_LEN;
 use crate::provider::BuildFailure;
+use crate::testing::TestPolicy;
 
 // The capacities of the device: two route slots.
 type RouteSet = crate::Routes<2>;
@@ -128,7 +129,8 @@ impl Fixture {
     }
 }
 
-type Svc<'a, 'e> = ConnectivityService<'a, NoopRawMutex, &'a Memory, &'e Exporter<'e>, 2, 2, 1024>;
+type Svc<'a, 'e> =
+    ConnectivityService<'a, NoopRawMutex, &'a Memory, &'e Exporter<'e>, TestPolicy, 2, 2, 1024>;
 
 fn text(value: &str) -> Value {
     Value::text(value).unwrap()
@@ -225,7 +227,7 @@ fn the_actions_are_the_four_documented_ones() {
 fn a_route_needs_an_existing_profile_slot_and_starts_with_the_defaults() {
     let fixture = Fixture::new();
     let exporter = fixture.exporter();
-    let service = Svc::new(&fixture.memory, &exporter, &fixture.state);
+    let service = Svc::new(&fixture.memory, &exporter, TestPolicy, &fixture.state);
     for profile in [2, 3, 255] {
         assert_eq!(
             set_endpoint(&service, 0, profile, "http://a.example").unwrap_err(),
@@ -251,7 +253,7 @@ fn a_route_needs_an_existing_profile_slot_and_starts_with_the_defaults() {
 fn route_indices_0_and_1_are_slots_and_2_and_beyond_are_rejected() {
     let fixture = Fixture::new();
     let exporter = fixture.exporter();
-    let service = Svc::new(&fixture.memory, &exporter, &fixture.state);
+    let service = Svc::new(&fixture.memory, &exporter, TestPolicy, &fixture.state);
     set_endpoint(&service, 0, 0, "http://a.example").unwrap();
     set_endpoint(&service, 1, 0, "http://b.example").unwrap();
     let before = fixture.memory.stored.borrow().clone();
@@ -273,7 +275,7 @@ fn route_indices_0_and_1_are_slots_and_2_and_beyond_are_rejected() {
 fn an_empty_endpoint_is_absent_and_deletes_the_route_or_the_fallback() {
     let fixture = Fixture::new();
     let exporter = fixture.exporter();
-    let service = Svc::new(&fixture.memory, &exporter, &fixture.state);
+    let service = Svc::new(&fixture.memory, &exporter, TestPolicy, &fixture.state);
     set_endpoint(&service, 0, 0, "http://a.example").unwrap();
     set_endpoint(&service, 1, 1, "http://b.example").unwrap();
     set_fallback(&service, 0, "http://f.example").unwrap();
@@ -329,7 +331,7 @@ fn an_empty_endpoint_is_absent_and_deletes_the_route_or_the_fallback() {
 fn a_missing_endpoint_argument_is_refused_by_the_registry_but_means_absent_to_the_service() {
     let fixture = Fixture::new();
     let exporter = fixture.exporter();
-    let service = Svc::new(&fixture.memory, &exporter, &fixture.state);
+    let service = Svc::new(&fixture.memory, &exporter, TestPolicy, &fixture.state);
     set_endpoint(&service, 0, 0, "http://a.example").unwrap();
     // The registry requires every declared argument: the wire form of "absent" is "".
     assert_eq!(
@@ -376,14 +378,12 @@ impl ActionOutput for NoOutput {
 fn arguments_are_validated_and_a_refused_change_commits_nothing() {
     let fixture = Fixture::new();
     let exporter = fixture.exporter();
-    let service = Svc::new(&fixture.memory, &exporter, &fixture.state);
-    for bad in [
-        "https://a.example",
-        "http://a.example/x",
-        "a.example",
-        "http://",
-        "x",
-    ] {
+    let service = Svc::new(&fixture.memory, &exporter, TestPolicy, &fixture.state);
+    assert_eq!(
+        set_endpoint(&service, 0, 0, "https://a.example").unwrap_err(),
+        rejected("unsupported_endpoint_scheme")
+    );
+    for bad in ["http://a.example/x", "a.example", "http://", "x"] {
         assert_eq!(
             set_endpoint(&service, 0, 0, bad).unwrap_err(),
             rejected("invalid_endpoint"),
@@ -424,7 +424,7 @@ fn arguments_are_validated_and_a_refused_change_commits_nothing() {
     );
     assert_eq!(
         set_fallback(&service, 0, "https://f.example").unwrap_err(),
-        rejected("invalid_endpoint")
+        rejected("unsupported_endpoint_scheme")
     );
     assert_eq!(*fixture.memory.commits.borrow(), 2);
 }
@@ -433,7 +433,7 @@ fn arguments_are_validated_and_a_refused_change_commits_nothing() {
 fn replacing_a_route_keeps_the_interval_and_fallback_and_a_recreated_one_starts_clean() {
     let fixture = Fixture::new();
     let exporter = fixture.exporter();
-    let service = Svc::new(&fixture.memory, &exporter, &fixture.state);
+    let service = Svc::new(&fixture.memory, &exporter, TestPolicy, &fixture.state);
     set_endpoint(&service, 1, 0, "http://a.example").unwrap();
     set_interval(&service, 1, 300).unwrap();
     set_fallback(&service, 1, "http://f.example").unwrap();
@@ -463,7 +463,7 @@ fn replacing_a_route_keeps_the_interval_and_fallback_and_a_recreated_one_starts_
 fn a_failed_commit_or_an_unreadable_store_changes_nothing() {
     let fixture = Fixture::new();
     let exporter = fixture.exporter();
-    let service = Svc::new(&fixture.memory, &exporter, &fixture.state);
+    let service = Svc::new(&fixture.memory, &exporter, TestPolicy, &fixture.state);
     set_endpoint(&service, 0, 0, "http://a.example").unwrap();
     let before = fixture.memory.stored.borrow().clone();
     *fixture.memory.fail_commit.borrow_mut() = true;
@@ -517,7 +517,7 @@ fn view(state: RouteState, queue_depth: usize, generation: u32) -> crate::router
 fn status_summary_follows_the_routes() {
     let fixture = Fixture::new();
     let exporter = fixture.exporter();
-    let service = Svc::new(&fixture.memory, &exporter, &fixture.state);
+    let service = Svc::new(&fixture.memory, &exporter, TestPolicy, &fixture.state);
     assert_eq!(
         block_on(service.summary()).health,
         ServiceHealth::Unknown,
@@ -531,7 +531,7 @@ fn status_summary_follows_the_routes() {
 fn status_reports_empty_slots_apart_from_active_ones_and_never_leaks_a_stale_view() {
     let fixture = Fixture::new();
     let exporter = fixture.exporter();
-    let service = Svc::new(&fixture.memory, &exporter, &fixture.state);
+    let service = Svc::new(&fixture.memory, &exporter, TestPolicy, &fixture.state);
 
     // Both slots empty: only the state of each.
     let empty = status(&service);
@@ -549,8 +549,12 @@ fn status_reports_empty_slots_apart_from_active_ones_and_never_leaks_a_stale_vie
     }
 
     let mut routes = RouteSet::default();
-    routes.set_endpoint(1, 1, Some("http://a.example")).unwrap();
-    routes.set_fallback(1, Some("http://f.example")).unwrap();
+    routes
+        .set_endpoint(1, 1, Some("http://a.example"), &TestPolicy)
+        .unwrap();
+    routes
+        .set_fallback(1, Some("http://f.example"), &TestPolicy)
+        .unwrap();
     routes.set_interval(1, 90).unwrap();
     fixture.state.publish(&routes);
     let generation = routes.get(1).unwrap().generation;
@@ -607,8 +611,10 @@ fn status_reports_empty_slots_apart_from_active_ones_and_never_leaks_a_stale_vie
 
     // The slot is deleted and reused before the publisher looked again: the old
     // view is not this route's, so it reports a clean one.
-    routes.set_endpoint(1, 0, None).unwrap();
-    routes.set_endpoint(1, 0, Some("http://c.example")).unwrap();
+    routes.set_endpoint(1, 0, None, &TestPolicy).unwrap();
+    routes
+        .set_endpoint(1, 0, Some("http://c.example"), &TestPolicy)
+        .unwrap();
     fixture.state.publish(&routes);
     let fields = status(&service);
     assert_eq!(
@@ -638,7 +644,7 @@ fn status_reports_empty_slots_apart_from_active_ones_and_never_leaks_a_stale_vie
 fn the_longest_endpoints_fit_the_status_and_the_section() {
     let fixture = Fixture::new();
     let exporter = fixture.exporter();
-    let service = Svc::new(&fixture.memory, &exporter, &fixture.state);
+    let service = Svc::new(&fixture.memory, &exporter, TestPolicy, &fixture.state);
     let endpoint = std::format!("http://{}.example.org:8080", "h".repeat(40));
     let fallback = std::format!("http://{}.example.org:8081", "g".repeat(40));
     assert_eq!(
@@ -666,9 +672,11 @@ fn the_longest_endpoints_fit_the_status_and_the_section() {
 fn failing_deliveries_degrade_the_health_even_when_packets_are_built() {
     let fixture = Fixture::new();
     let exporter = fixture.exporter();
-    let service = Svc::new(&fixture.memory, &exporter, &fixture.state);
+    let service = Svc::new(&fixture.memory, &exporter, TestPolicy, &fixture.state);
     let mut routes = RouteSet::default();
-    routes.set_endpoint(0, 0, Some("http://a.example")).unwrap();
+    routes
+        .set_endpoint(0, 0, Some("http://a.example"), &TestPolicy)
+        .unwrap();
     fixture.state.publish(&routes);
     let generation = routes.get(0).unwrap().generation;
 
@@ -782,7 +790,7 @@ fn read(service: &Svc<'_, '_>, stream: u32, offset: u64) -> Result<(Vec<u8>, boo
 fn get_payload_streams_one_immutable_packet_without_any_route() {
     let fixture = Fixture::new();
     let exporter = fixture.exporter();
-    let service = Svc::new(&fixture.memory, &exporter, &fixture.state);
+    let service = Svc::new(&fixture.memory, &exporter, TestPolicy, &fixture.state);
     assert_eq!(fixture.memory.stored.borrow().count(), 0);
     let (stream, size) = packet(&service, 0).unwrap();
     assert_eq!(size, 700);
@@ -820,7 +828,7 @@ fn get_payload_streams_one_immutable_packet_without_any_route() {
 fn get_payload_takes_the_profile_slots_0_and_1_only() {
     let fixture = Fixture::new();
     let exporter = fixture.exporter();
-    let service = Svc::new(&fixture.memory, &exporter, &fixture.state);
+    let service = Svc::new(&fixture.memory, &exporter, TestPolicy, &fixture.state);
     assert!(packet(&service, 0).is_ok());
     assert!(packet(&service, 1).is_ok());
     for index in [2, 3, 256, u64::MAX] {
@@ -837,7 +845,7 @@ fn get_payload_takes_the_profile_slots_0_and_1_only() {
 fn concurrent_streams_are_bounded_and_never_overwrite_each_other() {
     let fixture = Fixture::new();
     let exporter = fixture.exporter();
-    let service = Svc::new(&fixture.memory, &exporter, &fixture.state);
+    let service = Svc::new(&fixture.memory, &exporter, TestPolicy, &fixture.state);
     let (a, _) = packet(&service, 0).unwrap();
     let (b, _) = packet(&service, 0).unwrap();
     assert_ne!(a, b);
@@ -861,7 +869,7 @@ fn concurrent_streams_are_bounded_and_never_overwrite_each_other() {
 fn a_stream_is_not_served_after_its_policy_changed_and_failures_are_stable_codes() {
     let fixture = Fixture::new();
     let exporter = fixture.exporter();
-    let service = Svc::new(&fixture.memory, &exporter, &fixture.state);
+    let service = Svc::new(&fixture.memory, &exporter, TestPolicy, &fixture.state);
     let (stream, _) = packet(&service, 0).unwrap();
     *fixture.revision.borrow_mut() = 2;
     assert_eq!(
@@ -888,7 +896,7 @@ fn a_stream_is_not_served_after_its_policy_changed_and_failures_are_stable_codes
 fn an_abandoned_stream_expires_and_makes_room() {
     let fixture = Fixture::new();
     let exporter = fixture.exporter();
-    let service = Svc::new(&fixture.memory, &exporter, &fixture.state);
+    let service = Svc::new(&fixture.memory, &exporter, TestPolicy, &fixture.state);
     let (a, _) = packet(&service, 0).unwrap();
     let (_b, _) = packet(&service, 0).unwrap();
     assert_eq!(packet(&service, 0).unwrap_err(), ActionError::Busy);
@@ -910,8 +918,10 @@ fn an_expired_stream_does_not_block_a_new_get_payload() {
     let fixture = Fixture::new();
     let exporter = fixture.exporter();
     // One slot only: the abandoned stream holds all of the capacity.
-    type One<'a> = ConnectivityService<'a, NoopRawMutex, &'a Memory, &'a Exporter<'a>, 2, 1, 1024>;
-    let service: One<'_> = ConnectivityService::new(&fixture.memory, &exporter, &fixture.state);
+    type One<'a> =
+        ConnectivityService<'a, NoopRawMutex, &'a Memory, &'a Exporter<'a>, TestPolicy, 2, 1, 1024>;
+    let service: One<'_> =
+        ConnectivityService::new(&fixture.memory, &exporter, TestPolicy, &fixture.state);
     let registry = (&service,);
     let open = |service: &One<'_>| {
         block_on((service,).invoke(
@@ -928,4 +938,65 @@ fn an_expired_stream_does_not_block_a_new_get_payload() {
     assert!(open(&service).is_ok(), "the new request reclaims the slot");
     assert_eq!(service.open_streams(), 1);
     registry.link_lost();
+}
+
+#[test]
+fn a_stored_set_the_build_cannot_deliver_is_kept_and_repaired_by_removing_the_route() {
+    let fixture = Fixture::new();
+    let exporter = fixture.exporter();
+    let service = Svc::new(&fixture.memory, &exporter, TestPolicy, &fixture.state);
+    set_endpoint(&service, 0, 0, "http://a.example").unwrap();
+    // Stored by a firmware that had another transport.
+    let mut stored = fixture.memory.stored.borrow().clone();
+    stored.slots[0].as_mut().unwrap().fallback = crate::EndpointUri::new("other+link://!deadbeef");
+    *fixture.memory.stored.borrow_mut() = stored.clone();
+
+    // All or nothing: an unrelated edit is refused while the set is not deliverable, and
+    // nothing is rewritten or dropped.
+    assert_eq!(
+        set_interval(&service, 0, 120).unwrap_err(),
+        rejected("unsupported_endpoint_scheme")
+    );
+    assert_eq!(*fixture.memory.stored.borrow(), stored);
+
+    // Deleting the route is the recovery, without erasing anything else.
+    set_endpoint(&service, 0, 0, "").unwrap();
+    assert_eq!(fixture.memory.stored.borrow().count(), 0);
+}
+
+#[test]
+fn an_unsupported_stored_set_reports_the_issue_and_sends_nothing() {
+    use rohi_service::Issue;
+
+    let fixture = Fixture::new();
+    let exporter = fixture.exporter();
+    let service = Svc::new(&fixture.memory, &exporter, TestPolicy, &fixture.state);
+    fixture.state.mark_unsupported();
+    assert!(fixture.state.is_unsupported());
+    assert_eq!(fixture.state.routes().count(), 0);
+    let mut issues: heapless::Vec<Issue, MAX_ISSUES> = heapless::Vec::new();
+    block_on(service.issues(&mut issues));
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.code == issue::UNSUPPORTED_ENDPOINT)
+    );
+    assert_eq!(
+        block_on(service.summary()),
+        ServiceSummary::new(ServiceHealth::Error)
+    );
+    // A committed set clears it.
+    fixture.state.publish(&Routes::EMPTY);
+    assert!(!fixture.state.is_unsupported());
+}
+
+#[test]
+fn the_status_schema_of_the_service_is_valid_for_the_protocol() {
+    // Names, ids and enums are checked when the registry is built, a build error otherwise.
+    let fixture = Fixture::new();
+    let exporter = fixture.exporter();
+    let service = Svc::new(&fixture.memory, &exporter, TestPolicy, &fixture.state);
+    let registry = rohi_service::Statuses::<NoopRawMutex, _>::new((&service,));
+    let status = block_on(rohi_service::StatusRegistry::status(&registry, Svc::ID, 0)).unwrap();
+    assert!(status.issues.is_empty());
 }

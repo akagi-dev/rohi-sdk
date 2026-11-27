@@ -73,7 +73,8 @@ async fn main(spawner: Spawner) -> ! {
     altruist_urban::esp::inject::at("early");
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
-    let (hardware, runtime) = Hardware::split(peripherals);
+    #[cfg_attr(not(feature = "meshtastic-uart"), allow(unused_mut))]
+    let (mut hardware, runtime) = Hardware::split(peripherals);
 
     // One owner for the radio: it takes the wireless heap and creates the Wi-Fi
     // and BLE drivers, see `rohi_sdk::esp::net`. All sizes come from
@@ -104,6 +105,8 @@ async fn main(spawner: Spawner) -> ! {
 
     // Without the board there is no sensing, but configuration, Wi-Fi and the
     // control link still work: the device stays reachable.
+    #[cfg(feature = "meshtastic-uart")]
+    altruist_urban::esp::meshtastic::start(spawner, hardware.take_meshtastic_uart());
     let board = match AltruistUrban::new(hardware) {
         Ok(board) => Some(board),
         Err(error) => {
@@ -112,7 +115,6 @@ async fn main(spawner: Spawner) -> ! {
         }
     };
     store::start(spawner);
-
     // A Wi-Fi or BLE failure must never stop the sensors: log and carry on.
     let mut wifi_configured = false;
     let mut ip = None;

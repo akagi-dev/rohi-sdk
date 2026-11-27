@@ -24,10 +24,14 @@
 //! peripheral types. Drivers and firmware tasks never name pins.
 //!
 //! ```text
-//! let (hardware, runtime) = Hardware::split(peripherals);
+//! #[cfg_attr(not(feature = "meshtastic-uart"), allow(unused_mut))]
+//! let (mut hardware, runtime) = Hardware::split(peripherals);
+//! #[cfg(feature = "meshtastic-uart")]
+//! let radio_uart = hardware.take_meshtastic_uart();
 //! let board = AltruistUrban::new(hardware)?;
 //! // board.i2c, board.sds011_uart, board.microphone go to the sensor drivers;
 //! // runtime carries the timer, the radios and the flash for the runtime.
+//! // radio_uart is owned by the Meshtastic task, independently of board setup.
 //! ```
 //!
 //! The compiled version of this sequence is
@@ -135,6 +139,9 @@ pub struct Runtime {
     pub flash: FLASH<'static>,
 }
 
+/// Baud rate of the Meshtastic radio until the `meshtastic` section says another.
+pub const MESHTASTIC_BAUD_RATE: u32 = 115_200;
+
 /// Board initialization failure, returned by [`AltruistUrban::new`].
 #[derive(Debug)]
 pub enum Error {
@@ -166,6 +173,41 @@ pub struct AltruistUrban {
 fn failed(error: Error) -> Error {
     log::error!(target: "board", "Initialization failed (err={:?})", error);
     error
+}
+
+/// 8N1 without flow control at [`MESHTASTIC_BAUD_RATE`]; the session sets the configured rate.
+#[cfg(feature = "meshtastic-uart")]
+fn meshtastic_uart(
+    uart: esp_hal::peripherals::UART0<'static>,
+    tx: impl esp_hal::gpio::interconnect::PeripheralOutput<'static>,
+    rx: impl esp_hal::gpio::interconnect::PeripheralInput<'static>,
+) -> Option<Uart<'static, Async>> {
+    let config = uart::Config::default()
+        .with_baudrate(MESHTASTIC_BAUD_RATE)
+        .with_rx(RxConfig::default().with_fifo_full_threshold(32u16));
+    match Uart::new(uart, config) {
+        Ok(uart) => Some(uart.with_tx(tx).with_rx(rx).into_async()),
+        Err(error) => {
+            failed(Error::Uart(error));
+            None
+        }
+    }
+}
+
+impl Hardware {
+    /// Configures UART0 for the Meshtastic radio and takes it from the board peripherals.
+    ///
+    /// Available with the `meshtastic-uart` feature. Call before [`AltruistUrban::new`] so radio
+    /// initialization does not depend on sensor board setup. Returns `None` if the UART config is
+    /// rejected; the failure is logged and the remaining board peripherals are unaffected.
+    #[cfg(feature = "meshtastic-uart")]
+    pub fn take_meshtastic_uart(&mut self) -> Option<Uart<'static, Async>> {
+        meshtastic_uart(
+            self.meshtastic_uart.take()?,
+            self.meshtastic_tx.take()?,
+            self.meshtastic_rx.take()?,
+        )
+    }
 }
 
 impl AltruistUrban {

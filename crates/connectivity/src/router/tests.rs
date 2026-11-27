@@ -16,6 +16,7 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 use super::*;
+use crate::testing::{TestPolicy, status};
 
 // More slots than a device keeps, to cover every edge.
 type RouteSet = crate::Routes<3>;
@@ -39,7 +40,9 @@ fn exists(index: u8) -> bool {
 
 fn config() -> RouteSet {
     let mut config = RouteSet::default();
-    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
+    config
+        .set_endpoint(0, 0, Some("http://a.example"), &TestPolicy)
+        .unwrap();
     config
 }
 
@@ -51,7 +54,7 @@ fn packet(router: &mut R, revision: u32, bytes: &[u8]) -> PacketHandle {
 }
 
 fn ok() -> Result<TransportAck, TransportError> {
-    Ok(TransportAck { status: 202 })
+    Ok(crate::testing::ACCEPTED)
 }
 
 fn view(router: &R, config: &RouteSet, index: usize, now: u64) -> RouteView {
@@ -124,7 +127,7 @@ fn only_202_completes_a_packet_and_the_same_bytes_are_retried() {
     assert_eq!(again.packet, first.packet);
     assert_eq!(router.pool().get(again.packet).unwrap().1, b"signed-bytes");
     // A 200 is not an acknowledgement.
-    router.complete(again, crate::classify_status(200), t(5_000));
+    router.complete(again, crate::testing::status(200), t(5_000));
     assert_eq!(router.queued(), 1);
     let third = router.next_delivery(&config, t(15_000)).unwrap();
     router.complete(third, ok(), t(15_000));
@@ -136,7 +139,9 @@ fn only_202_completes_a_packet_and_the_same_bytes_are_retried() {
 
 fn with_fallback() -> RouteSet {
     let mut config = config();
-    config.set_fallback(0, Some("http://one.example")).unwrap();
+    config
+        .set_fallback(0, Some("http://one.example"), &TestPolicy)
+        .unwrap();
     config
 }
 
@@ -151,7 +156,7 @@ fn a_failing_primary_fails_over_at_once_and_a_fallback_ack_completes_the_route()
 
     let d = router.next_delivery(&config, t(0)).unwrap();
     assert_eq!(d.path, 0);
-    router.complete(d, Err(TransportError::Status(503)), t(0));
+    router.complete(d, status(503), t(0));
     let d = router.next_delivery(&config, t(0)).unwrap();
     assert_eq!(d.path, 1, "the fallback, without waiting for the primary");
     router.complete(d, ok(), t(0));
@@ -170,7 +175,7 @@ fn without_a_fallback_there_is_only_the_primary_path() {
     router.admit(0, handle, t(0));
     router.pool_mut().release(handle);
     let d = router.next_delivery(&config, t(0)).unwrap();
-    router.complete(d, Err(TransportError::Status(503)), t(0));
+    router.complete(d, status(503), t(0));
     assert!(router.next_delivery(&config, t(0)).is_none());
     assert_eq!(router.next_delivery(&config, t(5_000)).unwrap().path, 0);
 }
@@ -205,7 +210,7 @@ fn an_authorization_error_fails_over_and_the_path_waits_long() {
     router.admit(0, handle, t(0));
     router.pool_mut().release(handle);
     let d = router.next_delivery(&config, t(0)).unwrap();
-    router.complete(d, Err(TransportError::Status(401)), t(0));
+    router.complete(d, status(401), t(0));
     assert_eq!(router.queued(), 1, "the packet is kept");
     let d = router.next_delivery(&config, t(0)).unwrap();
     assert_eq!(d.path, 1);
@@ -228,7 +233,7 @@ fn a_permanent_rejection_drops_the_packet_without_trying_the_fallback() {
     router.admit(0, handle, t(0));
     router.pool_mut().release(handle);
     let d = router.next_delivery(&config, t(0)).unwrap();
-    router.complete(d, Err(TransportError::Status(400)), t(0));
+    router.complete(d, status(400), t(0));
     assert_eq!(router.queued(), 0);
     assert!(router.next_delivery(&config, t(0)).is_none());
     assert_eq!(view(&router, &config, 0, 0).counters.rejected, 1);
@@ -239,13 +244,15 @@ fn a_permanent_rejection_drops_the_packet_without_trying_the_fallback() {
         router.pool_mut().release(handle);
         router.next_delivery(&config, t(0)).unwrap()
     };
-    router.complete(d, Err(TransportError::Status(413)), t(0));
+    router.complete(d, status(413), t(0));
     assert_eq!(view(&router, &config, 0, 0).counters.rejected, 2);
 }
 
 fn two_routes() -> RouteSet {
     let mut config = config();
-    config.set_endpoint(1, 0, Some("http://b.example")).unwrap();
+    config
+        .set_endpoint(1, 0, Some("http://b.example"), &TestPolicy)
+        .unwrap();
     config
 }
 
@@ -330,7 +337,9 @@ fn a_destination_edit_flushes_only_that_route_and_an_interval_edit_does_not() {
     router.sync(&config, exists, t(1));
     assert_eq!(router.queued(), 2);
 
-    config.set_fallback(0, Some("http://f.example")).unwrap();
+    config
+        .set_fallback(0, Some("http://f.example"), &TestPolicy)
+        .unwrap();
     router.sync(&config, exists, t(2));
     let views = router.views(&config, t(2));
     let (zero, one) = (views[0].unwrap(), views[1].unwrap());
@@ -351,7 +360,7 @@ fn deleting_a_route_frees_its_state_and_never_moves_the_other_slot() {
     router.pool_mut().release(handle);
     let before = view(&router, &config, 1, 0);
 
-    config.set_endpoint(0, 0, None).unwrap();
+    config.set_endpoint(0, 0, None, &TestPolicy).unwrap();
     router.sync(&config, exists, t(1));
     let views = router.views(&config, t(1));
     assert!(views[0].is_none(), "the slot is empty, not shifted");
@@ -376,8 +385,10 @@ fn removing_or_recreating_a_route_inherits_nothing() {
     let d = router.next_delivery(&config, t(0)).unwrap();
     router.complete(d, Err(TransportError::Timeout), t(0));
 
-    config.set_endpoint(0, 0, None).unwrap();
-    config.set_endpoint(0, 0, Some("http://a.example")).unwrap();
+    config.set_endpoint(0, 0, None, &TestPolicy).unwrap();
+    config
+        .set_endpoint(0, 0, Some("http://a.example"), &TestPolicy)
+        .unwrap();
     router.sync(&config, exists, t(1_000));
     assert_eq!(router.queued(), 0);
     assert_eq!(router.pool().in_use(), 0);
@@ -403,7 +414,9 @@ fn replacing_the_endpoint_of_a_slot_drops_the_old_queue_without_a_slot_change() 
     let d = router.next_delivery(&config, t(0)).unwrap();
     router.complete(d, Err(TransportError::Timeout), t(0));
 
-    config.set_endpoint(0, 0, Some("http://b.example")).unwrap();
+    config
+        .set_endpoint(0, 0, Some("http://b.example"), &TestPolicy)
+        .unwrap();
     router.sync(&config, exists, t(1));
     assert_eq!(router.queued(), 0);
     assert_eq!(router.pool().in_use(), 0);
@@ -485,7 +498,9 @@ fn a_busy_route_cannot_starve_the_others() {
         .into_iter()
         .enumerate()
     {
-        config.set_endpoint(index, 0, Some(host)).unwrap();
+        config
+            .set_endpoint(index, 0, Some(host), &TestPolicy)
+            .unwrap();
     }
     let mut router = R::new();
     router.sync(&config, exists, t(0));
@@ -509,4 +524,102 @@ fn a_busy_route_cannot_starve_the_others() {
     assert_eq!(served[1], 1, "{served:?}");
     assert_eq!(served[2], 1, "{served:?}");
     assert!(served[0] >= 6, "{served:?}");
+}
+
+fn queue(router: &mut R, bytes: &[u8], now: u64) {
+    let handle = packet(router, 1, bytes);
+    assert_eq!(router.admit(0, handle, t(now)), Admit::Queued);
+    router.pool_mut().release(handle);
+}
+
+#[test]
+fn an_incompatible_path_hands_this_packet_to_the_other_path_without_a_penalty() {
+    let config = with_fallback();
+    let mut router = R::new();
+    router.sync(&config, exists, t(0));
+    queue(&mut router, b"big", 0);
+
+    let primary = router.next_delivery(&config, t(0)).unwrap();
+    assert_eq!(primary.path, 0);
+    router.complete(primary, Err(TransportError::Incompatible), t(0));
+    // The fallback is offered at once; the primary is neither cooling nor counted as a retry.
+    let fallback = router.next_delivery(&config, t(0)).unwrap();
+    assert_eq!((fallback.path, fallback.packet), (1, primary.packet));
+    router.complete(fallback, ok(), t(0));
+    assert_eq!(router.queued(), 0);
+    let counters = view(&router, &config, 0, 0).counters;
+    assert_eq!(
+        (counters.delivered, counters.retries, counters.incompatible),
+        (1, 0, 0)
+    );
+
+    // The next packet starts with every path open: nothing was disabled for good.
+    queue(&mut router, b"small", 60_000);
+    assert_eq!(router.next_delivery(&config, t(60_000)).unwrap().path, 0);
+}
+
+#[test]
+fn a_packet_no_path_can_carry_is_dropped_once_and_counted() {
+    let config = with_fallback();
+    let mut router = R::new();
+    router.sync(&config, exists, t(0));
+    queue(&mut router, b"huge", 0);
+
+    for path in 0..2 {
+        let d = router.next_delivery(&config, t(0)).unwrap();
+        assert_eq!(d.path, path);
+        router.complete(d, Err(TransportError::Incompatible), t(0));
+    }
+    assert_eq!(
+        router.queued(),
+        0,
+        "no retry loop on a packet nobody can carry"
+    );
+    assert!(router.next_delivery(&config, t(0)).is_none());
+    assert_eq!(router.pool().in_use(), 0);
+    let counters = view(&router, &config, 0, 0).counters;
+    assert_eq!(
+        (counters.incompatible, counters.rejected, counters.retries),
+        (1, 0, 0)
+    );
+}
+
+#[test]
+fn an_incompatible_primary_and_a_failing_fallback_keep_the_packet_for_a_later_attempt() {
+    let config = with_fallback();
+    let mut router = R::new();
+    router.sync(&config, exists, t(0));
+    queue(&mut router, b"big", 0);
+
+    let d = router.next_delivery(&config, t(0)).unwrap();
+    router.complete(d, Err(TransportError::Incompatible), t(0));
+    let d = router.next_delivery(&config, t(0)).unwrap();
+    assert_eq!(d.path, 1);
+    router.complete(d, Err(TransportError::Timeout), t(0));
+    // Only the fallback cools down; the primary stays excluded for this packet.
+    assert!(router.next_delivery(&config, t(4_999)).is_none());
+    assert_eq!(router.next_wakeup(&config), Some(t(5_000)));
+    assert_eq!(router.next_delivery(&config, t(5_000)).unwrap().path, 1);
+    assert_eq!(router.queued(), 1);
+}
+
+#[test]
+fn invalidating_another_packet_keeps_the_head_incompatibility() {
+    let config = with_fallback();
+    let mut router = R::new();
+    router.sync(&config, exists, t(0));
+    for (revision, bytes) in [(2, b"head".as_slice()), (1, b"stale".as_slice())] {
+        let handle = packet(&mut router, revision, bytes);
+        assert_eq!(router.admit(0, handle, t(0)), Admit::Queued);
+        router.pool_mut().release(handle);
+    }
+
+    let primary = router.next_delivery(&config, t(0)).unwrap();
+    router.complete(primary, Err(TransportError::Incompatible), t(0));
+    let fallback = router.next_delivery(&config, t(0)).unwrap();
+    router.complete(fallback, Err(TransportError::Timeout), t(0));
+
+    router.invalidate(|stamp| stamp.revision == 2);
+    assert_eq!(router.queued(), 1);
+    assert_eq!(router.next_delivery(&config, t(5_000)).unwrap().path, 1);
 }

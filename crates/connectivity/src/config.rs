@@ -23,7 +23,7 @@
 //! the route of one slot never moves another. There are no names.
 //!
 //! A route publishes one telemetry profile slot (`profile_index`) on its own
-//! interval to a primary HTTP endpoint with **at most one fallback**
+//! interval to a primary endpoint (an opaque URI, see [`crate::endpoint`]) with **at most one fallback**
 //! endpoint; the fallback is another way to deliver the *same* packet, never a
 //! separate publisher, profile or interval.
 //!
@@ -49,7 +49,7 @@
 use minicbor::{CborLen, Decode, Encode};
 use rohi_config::ConfigSection;
 
-use crate::endpoint::EndpointUri;
+use crate::endpoint::{EndpointError, EndpointPolicy, EndpointUri};
 
 /// Shortest allowed publication interval, in seconds.
 pub const MIN_INTERVAL_S: u32 = 10;
@@ -94,8 +94,10 @@ pub enum RouteError {
     RouteNotFound,
     /// The endpoint is already used by this route, as primary or fallback.
     DuplicateEndpoint,
-    /// The endpoint is not a valid `http://host[:port]`.
+    /// The endpoint is not a valid URI of its scheme.
     InvalidEndpoint,
+    /// This build has no backend for the scheme of the endpoint.
+    UnsupportedEndpoint,
     /// The interval is outside [`MIN_INTERVAL_S`]..=[`MAX_INTERVAL_S`].
     InvalidInterval,
     /// A stored value is inconsistent (generations).
@@ -121,11 +123,15 @@ impl<const R: usize> Default for Routes<R> {
     }
 }
 
-fn same_endpoint(a: &EndpointUri, b: &EndpointUri) -> bool {
-    match (a.endpoint(), b.endpoint()) {
-        (Some(a), Some(b)) => a.host.eq_ignore_ascii_case(b.host) && a.port == b.port,
-        _ => a == b,
-    }
+fn same_endpoint(policy: &impl EndpointPolicy, a: &EndpointUri, b: &EndpointUri) -> bool {
+    a == b || policy.equivalent(a.as_str(), b.as_str())
+}
+
+fn check_endpoint(policy: &impl EndpointPolicy, uri: &EndpointUri) -> Result<(), RouteError> {
+    policy.validate(uri.as_str()).map_err(|error| match error {
+        EndpointError::Invalid => RouteError::InvalidEndpoint,
+        EndpointError::UnsupportedScheme => RouteError::UnsupportedEndpoint,
+    })
 }
 
 impl<const R: usize> Routes<R> {
@@ -171,15 +177,18 @@ impl<const R: usize> Routes<R> {
     /// * With **no** endpoint the route is deleted (`profile_index` is not
     ///   looked at); an empty slot stays empty.
     ///
+    /// The endpoint is checked by `policy` (supported scheme, valid for it, not
+    /// equivalent to the fallback) before anything changes.
+    ///
     /// ```
-    /// use rohi_connectivity::{DEFAULT_INTERVAL_S, Routes};
+    /// use rohi_connectivity::{DEFAULT_INTERVAL_S, Routes, StructuralPolicy};
     ///
     /// let mut routes = Routes::<2>::default();
-    /// routes.set_endpoint(1, 0, Some("http://ingress.example"))?;
+    /// routes.set_endpoint(1, 0, Some("http://ingress.example"), &StructuralPolicy)?;
     /// assert!(routes.get(0).is_none(), "slot 0 stays empty");
     /// assert_eq!(routes.get(1).map(|r| r.interval_s), Some(DEFAULT_INTERVAL_S));
     ///
-    /// routes.set_endpoint(1, 0, None)?; // an absent endpoint deletes the route
+    /// routes.set_endpoint(1, 0, None, &StructuralPolicy)?; // an absent endpoint deletes the route
     /// assert_eq!(routes.count(), 0);
     /// # Ok::<(), rohi_connectivity::RouteError>(())
     /// ```
@@ -192,6 +201,7 @@ impl<const R: usize> Routes<R> {
         index: usize,
         profile_index: u8,
         endpoint: Option<&str>,
+        policy: &impl EndpointPolicy,
     ) -> Result<(), RouteError> {
         Self::check(index)?;
         let Some(endpoint) = endpoint else {
@@ -202,6 +212,7 @@ impl<const R: usize> Routes<R> {
             return Ok(());
         };
         let endpoint = EndpointUri::new(endpoint).ok_or(RouteError::InvalidEndpoint)?;
+        check_endpoint(policy, &endpoint)?;
         match &self.slots[index] {
             Some(route) if route.profile_index == profile_index && route.endpoint == endpoint => {
                 return Ok(());
@@ -210,7 +221,7 @@ impl<const R: usize> Routes<R> {
                 if route
                     .fallback
                     .as_ref()
-                    .is_some_and(|fallback| same_endpoint(fallback, &endpoint)) =>
+                    .is_some_and(|fallback| same_endpoint(policy, fallback, &endpoint)) =>
             {
                 return Err(RouteError::DuplicateEndpoint);
             }
@@ -259,10 +270,19 @@ impl<const R: usize> Routes<R> {
     /// # Errors
     ///
     /// [`RouteError`]; the value is unchanged.
-    pub fn set_fallback(&mut self, index: usize, endpoint: Option<&str>) -> Result<(), RouteError> {
+    pub fn set_fallback(
+        &mut self,
+        index: usize,
+        endpoint: Option<&str>,
+        policy: &impl EndpointPolicy,
+    ) -> Result<(), RouteError> {
         Self::check(index)?;
         let uri = match endpoint {
-            Some(endpoint) => Some(EndpointUri::new(endpoint).ok_or(RouteError::InvalidEndpoint)?),
+            Some(endpoint) => {
+                let uri = EndpointUri::new(endpoint).ok_or(RouteError::InvalidEndpoint)?;
+                check_endpoint(policy, &uri)?;
+                Some(uri)
+            }
             None => None,
         };
         let route = self.slots[index]
@@ -273,7 +293,7 @@ impl<const R: usize> Routes<R> {
         }
         if uri
             .as_ref()
-            .is_some_and(|fallback| same_endpoint(&route.endpoint, fallback))
+            .is_some_and(|fallback| same_endpoint(policy, &route.endpoint, fallback))
         {
             return Err(RouteError::DuplicateEndpoint);
         }
@@ -293,14 +313,15 @@ impl<const R: usize> Routes<R> {
     /// # Errors
     ///
     /// The first [`RouteError`] found.
-    pub fn validate(&self) -> Result<(), RouteError> {
+    pub fn validate(&self, policy: &impl EndpointPolicy) -> Result<(), RouteError> {
         for route in self.slots.iter().flatten() {
             if !(MIN_INTERVAL_S..=MAX_INTERVAL_S).contains(&route.interval_s) {
                 return Err(RouteError::InvalidInterval);
             }
-            if route.endpoint.endpoint().is_none() {
+            if !route.endpoint.is_well_formed() {
                 return Err(RouteError::InvalidEndpoint);
             }
+            check_endpoint(policy, &route.endpoint)?;
             if route.generation == 0
                 || route.generation > route.destinations
                 || route.destinations > self.generation
@@ -308,10 +329,11 @@ impl<const R: usize> Routes<R> {
                 return Err(RouteError::InconsistentGeneration);
             }
             if let Some(fallback) = &route.fallback {
-                if fallback.endpoint().is_none() {
+                if !fallback.is_well_formed() {
                     return Err(RouteError::InvalidEndpoint);
                 }
-                if same_endpoint(&route.endpoint, fallback) {
+                check_endpoint(policy, fallback)?;
+                if same_endpoint(policy, &route.endpoint, fallback) {
                     return Err(RouteError::DuplicateEndpoint);
                 }
             }

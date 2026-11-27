@@ -34,8 +34,7 @@
 //! over plain TCP (DNS or an IPv4 literal, then `NetworkHandle::connect`),
 //! one request per connection, with a total timeout per attempt
 //! ([`DEFAULT_TIMEOUT_MS`], 20 s). The response body is ignored; only the
-//! status line is read (see [`classify_status`], the classification table is
-//! in [`transport`](crate::transport)). The transport is plain HTTP: TLS can
+//! status line is read (see [`classify_status`]). The transport is plain HTTP: TLS can
 //! later wrap the connection without touching the message or signature.
 //!
 //! The timeout is a `select` against [`DelayNs`]: when it fires the exchange
@@ -52,8 +51,11 @@ use heapless::String;
 use rohi_net::{IpBackend, NetError, NetworkHandle};
 use rohi_time::with_timeout;
 
+use rohi_connectivity::{AckKind, Disposition, PacketTransport, TransportAck, TransportError};
+
 use crate::endpoint::Endpoint;
-use crate::transport::{PacketTransport, TransportAck, TransportError, classify_status};
+
+const SCHEME: &str = "http";
 
 /// Path of the telemetry ingress.
 pub const TELEMETRY_PATH: &str = "/v1/telemetry";
@@ -84,8 +86,8 @@ const RESPONSE_CAPACITY: usize = 64;
 ///
 /// use embassy_futures::{block_on, join::join, yield_now};
 /// use embedded_hal_async::delay::DelayNs;
-/// use rohi_connectivity::http::request_head;
-/// use rohi_connectivity::{Endpoint, HttpTransport, PacketTransport, TransportAck};
+/// use rohi_connectivity::{AckKind, PacketTransport, TransportAck};
+/// use rohi_connectivity_http::{Endpoint, HttpTransport, request_head};
 /// use rohi_net::NetworkHandle;
 /// use rohi_net::testing::FakeIp;
 ///
@@ -124,8 +126,8 @@ const RESPONSE_CAPACITY: usize = 64;
 ///     received
 /// };
 ///
-/// let (result, received) = block_on(join(transport.deliver(endpoint, &packet), server));
-/// assert_eq!(result, Ok(TransportAck { status: 202 }));
+/// let (result, received) = block_on(join(transport.deliver("http://ingress.test", &packet), server));
+/// assert_eq!(result, Ok(TransportAck { kind: AckKind::Accepted, detail: 202 }));
 /// assert!(received.starts_with(head.as_bytes()));
 /// assert!(received.ends_with(&packet)); // the exact signed bytes
 /// ```
@@ -218,11 +220,17 @@ impl<'a, B: IpBackend, D: DelayNs> HttpTransport<'a, B, D> {
 }
 
 impl<B: IpBackend, D: DelayNs> PacketTransport for HttpTransport<'_, B, D> {
+    fn handles(&self, scheme: &str) -> bool {
+        scheme == SCHEME
+    }
+
     async fn deliver(
         &mut self,
-        endpoint: Endpoint<'_>,
+        endpoint_uri: &str,
         packet: &[u8],
     ) -> Result<TransportAck, TransportError> {
+        // Parsed before any I/O; a URI this transport cannot serve is not retried.
+        let endpoint = Endpoint::parse(endpoint_uri).ok_or(TransportError::Unsupported)?;
         log::debug!(
             target: "connectivity.http",
             "Posting packet (size_b={} port={} host={})",
@@ -241,6 +249,56 @@ impl<B: IpBackend, D: DelayNs> PacketTransport for HttpTransport<'_, B, D> {
         log::debug!(target: "connectivity.http", "Server answered (status={})", status);
         classify_status(status)
     }
+}
+
+/// Maps an HTTP status code to the delivery result: only `202 Accepted`
+/// commits the packet.
+///
+/// # Errors
+///
+/// [`TransportError::Rejected`] for every status other than `202`; its
+/// disposition says what to do with it:
+///
+/// | Status | Disposition |
+/// |--------|-------------|
+/// | `408`, `429`, `5xx` | [`Transient`](Disposition::Transient) |
+/// | `1xx`, `3xx`, `2xx` other than `202` (captive portal, proxy) | transient (not an acknowledgement) |
+/// | `401`, `403` | [`Unauthorized`](Disposition::Unauthorized) |
+/// | `400`, `413`, any other `4xx` | [`Permanent`](Disposition::Permanent): the packet is dropped and **not** offered to other endpoints |
+///
+/// ```
+/// use rohi_connectivity::{AckKind, Disposition, TransportAck, TransportError};
+/// use rohi_connectivity_http::classify_status;
+///
+/// assert_eq!(
+///     classify_status(202),
+///     Ok(TransportAck { kind: AckKind::Accepted, detail: 202 })
+/// );
+/// // Not an acceptance (a captive portal answers 200): the packet is kept.
+/// assert_eq!(classify_status(200).unwrap_err().disposition(), Disposition::Transient);
+/// assert_eq!(classify_status(401).unwrap_err().disposition(), Disposition::Unauthorized);
+/// assert_eq!(classify_status(413).unwrap_err().disposition(), Disposition::Permanent);
+/// ```
+pub const fn classify_status(status: u16) -> Result<TransportAck, TransportError> {
+    let disposition = match status {
+        202 => {
+            return Ok(TransportAck {
+                kind: AckKind::Accepted,
+                detail: 202,
+            });
+        }
+        // Request timeout, throttling and server failures are transient.
+        408 | 429 | 500..=599 => Disposition::Transient,
+        401 | 403 => Disposition::Unauthorized,
+        // Malformed (400), too large (413) and every other client error.
+        400..=499 => Disposition::Permanent,
+        // Informational, redirects and 2xx other than 202 are not an acceptance.
+        _ => Disposition::Transient,
+    };
+    Err(TransportError::Rejected {
+        code: status,
+        disposition,
+    })
 }
 
 #[inline(never)]
@@ -266,8 +324,7 @@ fn map_error(error: NetError) -> TransportError {
 /// byte that is not printable ASCII.
 ///
 /// ```
-/// use rohi_connectivity::Endpoint;
-/// use rohi_connectivity::http::request_head;
+/// use rohi_connectivity_http::{Endpoint, request_head};
 ///
 /// let endpoint = Endpoint::parse("http://ingress.example.org:8080").unwrap();
 /// assert_eq!(

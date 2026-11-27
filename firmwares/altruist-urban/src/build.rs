@@ -26,7 +26,7 @@
 //! reproducible). The Control API reports it as `build` and the telemetry
 //! HTTP requests carry it as `User-Agent`.
 
-use rohi_sdk::connectivity::MAX_USER_AGENT_LEN;
+use rohi_sdk::connectivity_http::MAX_USER_AGENT_LEN;
 
 /// Firmware name, without a version.
 pub const FIRMWARE: &str = env!("CARGO_PKG_NAME");

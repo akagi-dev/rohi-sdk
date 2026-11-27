@@ -24,7 +24,8 @@
 //! the section lives here, as a fixture.
 
 use rohi_config::Text;
-use rohi_connectivity::{Endpoint, EndpointUri};
+use rohi_connectivity::EndpointUri;
+use rohi_connectivity_http::Endpoint;
 use rohi_service::{Config, FieldError};
 
 const MIN_INTERVAL_S: u32 = 10;
@@ -32,7 +33,7 @@ const MAX_INTERVAL_S: u32 = 24 * 60 * 60;
 
 fn validate_section(config: &ConnectivityConfig) -> Result<(), FieldError> {
     if let Some(uri) = &config.endpoint
-        && uri.endpoint().is_none()
+        && Endpoint::parse(uri.as_str()).is_none()
     {
         return Err(FieldError::Invalid);
     }
@@ -62,7 +63,7 @@ pub struct ConnectivityConfig {
 impl ConnectivityConfig {
     /// The parts of the endpoint.
     pub fn endpoint(&self) -> Option<Endpoint<'_>> {
-        self.endpoint.as_ref()?.endpoint()
+        Endpoint::parse(self.endpoint.as_ref()?.as_str())
     }
 }
 

@@ -1,0 +1,27 @@
+[package]
+name = "rohi-connectivity-meshtastic"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Robonomics Open Hardware connectivity: delivery of sealed telemetry packets over Meshtastic Transport v1 through the local radio of rohi-meshtastic"
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[dependencies]
+rohi-connectivity.workspace = true
+rohi-meshtastic.workspace = true
+rohi-time.workspace = true
+sha2.workspace = true
+embedded-hal-async.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+embassy-futures.workspace = true
+rohi-connectivity-http.workspace = true
+rohi-telemetry.workspace = true
+rohi-net = { path = "../net", features = ["testing"] }

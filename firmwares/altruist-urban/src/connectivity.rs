@@ -33,8 +33,11 @@ use embassy_time::Delay;
 use log::{info, warn};
 use rohi_sdk::connectivity::{
     BuildFailure, ConnectivitySection, ConnectivityService, ConnectivityState, ConnectivityStore,
-    HttpTransport, PacketExporter, PacketProvider, Publisher, RouteError, Routes, StoreError,
+    PacketExporter, PacketProvider, Publisher, RouteError, Routes, StoreError,
 };
+#[cfg(not(feature = "meshtastic-uart"))]
+use rohi_sdk::connectivity_http::HttpPolicy;
+use rohi_sdk::connectivity_http::HttpTransport;
 use rohi_sdk::net::{IpBackend, NetworkHandle};
 use rohi_sdk::sensors::runtime::MeasurementHandle;
 use rohi_sdk::telemetry::adapters::{LocationTelemetrySource, SensorsTelemetrySource};
@@ -56,6 +59,17 @@ use crate::{location, telemetry, time};
 /// most one fallback): the storage of the route table, of the runtime and of the status schema is
 /// sized for this many. A stored table with another count is refused, not truncated.
 pub const ROUTES: usize = 2;
+
+/// The endpoint schemes this build can deliver: the policy the configuration is checked with.
+#[cfg(not(feature = "meshtastic-uart"))]
+pub type Policy = HttpPolicy;
+
+/// The delivery backends composed by this build, see [`Policy`].
+#[cfg(not(feature = "meshtastic-uart"))]
+pub const POLICY: Policy = HttpPolicy;
+
+#[cfg(feature = "meshtastic-uart")]
+pub use crate::meshtastic::{POLICY, Policy};
 
 /// The routes of the device.
 pub type RouteSet = Routes<ROUTES>;
@@ -129,7 +143,12 @@ impl PrivateBinding for ConnectivityBinding {
             Some(section) => {
                 if let Err(error) = validate_routes(&section.0) {
                     warn_invalid_routes(error);
-                    state().mark_unreadable();
+                    // An unsupported scheme is not damage: the stored value stays as it is.
+                    if error == RouteError::UnsupportedEndpoint {
+                        state().mark_unsupported();
+                    } else {
+                        state().mark_unreadable();
+                    }
                     return;
                 }
                 info!(
@@ -156,7 +175,7 @@ impl PrivateBinding for ConnectivityBinding {
 }
 
 fn validate_routes(routes: &RouteSet) -> Result<(), RouteError> {
-    routes.validate()?;
+    routes.validate(&POLICY)?;
     // A route bound to a profile slot this firmware does not have publishes nothing useful.
     if routes
         .slots
@@ -206,15 +225,9 @@ fn store_error(error: ServiceError) -> StoreError {
 impl ConnectivityStore<ROUTES> for StoredRoutes {
     async fn load(&self) -> Result<RouteSet, StoreError> {
         match self.0.get::<Section>().await {
-            Ok(Some(section)) => {
-                if let Err(error) = validate_routes(&section.0) {
-                    warn_invalid_routes(error);
-                    state().mark_unreadable();
-                    Err(StoreError::Internal)
-                } else {
-                    Ok(section.0)
-                }
-            }
+            // Not validated here: the service checks the whole candidate of every edit, so a set this
+            // build cannot deliver can still be repaired (removing the route) without erasing flash.
+            Ok(Some(section)) => Ok(section.0),
             Ok(None) => Ok(empty_routes(state().generation())),
             // A section of another version or format is not read and not migrated: the next
             // commit replaces it, so the device is never stuck on it.
@@ -227,6 +240,10 @@ impl ConnectivityStore<ROUTES> for StoredRoutes {
     }
 
     async fn commit(&self, candidate: &RouteSet) -> Result<(), StoreError> {
+        if let Err(error) = validate_routes(candidate) {
+            warn_invalid_routes(error);
+            return Err(StoreError::Internal);
+        }
         // The owner task commits and publishes in one step.
         self.0
             .set(&ConnectivitySection(candidate.clone()))
@@ -369,6 +386,7 @@ pub type UrbanConnectivity = ConnectivityService<
     RawMutex,
     StoredRoutes,
     UrbanPackets,
+    Policy,
     ROUTES,
     EXPORT_STREAMS,
     PACKET_BYTES,
@@ -376,13 +394,26 @@ pub type UrbanConnectivity = ConnectivityService<
 
 /// The service over the routes stored behind `config`.
 pub fn service(config: ConfigHandle, packets: UrbanPackets) -> UrbanConnectivity {
-    ConnectivityService::new(StoredRoutes(config), packets, state())
+    ConnectivityService::new(StoredRoutes(config), packets, POLICY, state())
 }
 
 /// Runs the publisher; never returns. The platform runs it in its connectivity
 /// task. It reads snapshots only.
 pub async fn run<I: IpBackend>(network: NetworkHandle<'static, I>, packets: UrbanPackets) -> ! {
-    let transport = HttpTransport::new(network, Delay).with_user_agent(crate::build::BUILD);
+    let http = HttpTransport::new(network, Delay).with_user_agent(crate::build::BUILD);
+    // Statically composed: HTTP, and Meshtastic over the UART when the build has it. One route
+    // may use both, primary and fallback.
+    #[cfg(feature = "meshtastic-uart")]
+    let transport = rohi_sdk::connectivity::Mux(
+        http,
+        rohi_sdk::connectivity_meshtastic::MeshtasticTransport::new(
+            rohi_sdk::connectivity_meshtastic::Link::Uart,
+            crate::meshtastic::radio(),
+            Delay,
+        ),
+    );
+    #[cfg(not(feature = "meshtastic-uart"))]
+    let transport = http;
     let mut publisher: Publisher<
         '_,
         RawMutex,
@@ -411,7 +442,7 @@ mod tests {
     fn invalid_persisted_routes_are_rejected() {
         let mut routes = RouteSet::default();
         routes
-            .set_endpoint(0, 0, Some("http://example.test"))
+            .set_endpoint(0, 0, Some("http://example.test"), &POLICY)
             .unwrap();
         if let Some(route) = routes.slots[0].as_mut() {
             route.interval_s = 0;
@@ -424,7 +455,12 @@ mod tests {
     fn a_route_of_a_missing_profile_slot_is_rejected() {
         let mut routes = RouteSet::default();
         routes
-            .set_endpoint(1, telemetry::PROFILES as u8, Some("http://example.test"))
+            .set_endpoint(
+                1,
+                telemetry::PROFILES as u8,
+                Some("http://example.test"),
+                &POLICY,
+            )
             .unwrap();
 
         assert_eq!(validate_routes(&routes), Err(RouteError::InvalidIndex));

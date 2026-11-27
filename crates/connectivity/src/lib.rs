@@ -22,7 +22,8 @@
 //!
 //! `rohi-connectivity` consumes **already sealed, immutable packets** built by
 //! the telemetry side (`rohi-telemetry` and a packet format such as
-//! `rohi-telemetry-robonomics`) and delivers them over HTTP. It never reads
+//! `rohi-telemetry-robonomics`) and delivers them over whichever transports the firmware
+//! composes (`rohi-connectivity-http`, `rohi-connectivity-meshtastic`). It never reads
 //! observations, keys or protocol messages: it owns routes, schedules,
 //! packet lifetime, delivery, retries, diagnostics and the read-only export of
 //! sealed packets. A telemetry profile slot exists independently of any route.
@@ -31,7 +32,7 @@
 //! PacketProvider ──► Router (per-slot deadline + one outbox, shared pool)
 //!   resolve/capture/build     │ primary ─► fallback
 //!   is_current                ▼
-//!                       PacketTransport ──► HTTP 202
+//!                       PacketTransport (opaque endpoint URI) ──► Mux ──► HTTP | Meshtastic
 //! ```
 //!
 //! # Routes
@@ -50,13 +51,15 @@
 //!
 //! # Delivery rules
 //!
-//! * Only HTTP `202` acknowledges a packet, from any path; the packet is then
-//!   complete for the whole route.
+//! * An acknowledgement from any path (HTTP `202`, or the routing ACK of every
+//!   Meshtastic fragment, see [`AckKind`]) completes the packet for the whole route.
 //! * A transient failure (DNS, connect, timeout, I/O, `408`, `429`, `5xx`,
 //!   anything that is not an acknowledgement) tries the next path at once and
 //!   backs the failing path off; `401`/`403` also fail over but pause that
 //!   path for ten minutes. `400`, `413` and other `4xx` drop the packet and
-//!   do **not** offer it to other endpoints.
+//!   do **not** offer it to other endpoints. A path that cannot carry
+//!   *this* packet (too large for the link) is [`Incompatible`](Disposition::Incompatible):
+//!   the other path is tried, and a packet that no path can carry is dropped and counted.
 //! * Retries and fallbacks send **byte-identical** packets; nothing is ever
 //!   signed or encrypted again. Delivery is **at-least-once**: a lost
 //!   acknowledgement can duplicate a packet, so the ingress deduplicates by
@@ -79,16 +82,18 @@
 //! measured with `scripts/memcheck.sh`; they size the storage of [`Routes`],
 //! [`ConnectivityState`], [`Router`], [`Publisher`] and the status schema of
 //! [`ConnectivityService`]. A persisted section over capacity is refused, not truncated.
-//! The persistent section is 1 KiB at most. The transport is plain
-//! HTTP (`http://host[:port]`, 64 bytes at most).
+//! The persistent section is 1 KiB at most. An endpoint is an opaque URI of 64 bytes at most; its
+//! meaning belongs to the transport crates.
 
 #[cfg(test)]
 extern crate std;
+#[cfg(test)]
+mod testing;
 
 pub mod config;
 pub mod endpoint;
-pub mod http;
 pub mod managed;
+pub mod mux;
 pub mod pool;
 pub mod provider;
 pub mod publisher;
@@ -100,12 +105,14 @@ pub use config::{
     ConnectivitySection, DEFAULT_INTERVAL_S, MAX_INTERVAL_S, MIN_INTERVAL_S, Route, RouteError,
     Routes,
 };
-pub use endpoint::{DEFAULT_PORT, Endpoint, EndpointUri, MAX_ENDPOINT_LEN};
-pub use http::{HttpTransport, MAX_USER_AGENT_LEN};
+pub use endpoint::{
+    EndpointError, EndpointPolicy, EndpointUri, MAX_ENDPOINT_LEN, StructuralPolicy, scheme_of,
+};
 pub use managed::{ConnectivityService, ConnectivityStore, RouteSlots, Slots, StoreError};
+pub use mux::{Disabled, Mux};
 pub use pool::{PacketHandle, PacketPool};
 pub use provider::{BuildFailure, PacketExporter, PacketProvider};
 pub use publisher::Publisher;
 pub use router::{Admit, Delivery, RouteCounters, RouteState, RouteView, Router, SkipReason};
 pub use state::{ConnectivityState, Health};
-pub use transport::{Disposition, PacketTransport, TransportAck, TransportError, classify_status};
+pub use transport::{AckKind, Disposition, PacketTransport, TransportAck, TransportError};

@@ -12,9 +12,11 @@ cargo test                                     # host: crates/*, tools/* and the
 cargo test -p altruist-urban --features std,std-tcp,sensor-simulator   # the std platform, incl. end-to-end tests
 cargo test -p rohi-logging --features lz4    # the optional LZ4 log codec (off by default; also `rohi --features lz4 --test logs`)
 cargo test -p rohi-connectivity --no-default-features   # without the `get_payload` export
+cargo test -p rohi-connectivity-http -p rohi-meshtastic -p rohi-connectivity-meshtastic   # HTTP delivery, the meshtastic service and session, Meshtastic delivery (incl. the mixed-route test)
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all -- --check
 cargo check-esp32c3 && cargo check-esp32c6   # firmware, one chip per invocation
+cargo check-esp32c3 --features meshtastic-uart   # the opt-in Meshtastic UART backend (also esp32c6); it cannot be built with `std`
 mdbook build docs && mdbook test docs        # the book
 scripts/memcheck.sh images esp32c3 out && scripts/memcheck.sh analyze esp32c3 out   # task pools, main stack, frames; CI: job Memcheck
 scripts/measure.sh esp32c3 [lz4]   # image and static RAM sizes of a variant (flash, .text, .rodata, .data, .bss); see docs/validation/compact-firmware-report.md
@@ -49,6 +51,8 @@ carries the same attribute.
 ## Capacities and transport security
 
 The capacities of the Altruist Urban are compile-time: route and profile slots (two of each, addressed by index) are const generics (`firmwares/altruist-urban/src/{connectivity,telemetry}.rs`) that size the storage, the status schema and the persisted sections, and the snapshot holds only what the compiled packet format encodes; a stored value over capacity is refused, never truncated. Security is owned by each transport: `rohi-control` consumes only the encrypted/authenticated flags that a transport sets (never a request field) and implements no cryptography; TCP does its own handshake and AEAD in `rohi-control-tcp::secure` (pre-shared key, no forward secrecy), BLE control is open (no pairing, no encryption) in the current phase, an accepted insecure state. An action with `.secure_link()` never runs on an unprotected TCP link; the TCP PSK is always device-generated (`control.tcp_generate_psk`); the TCP access mode (`open`, `protected`, `private`) decides what a client without the PSK may do, and a plaintext connection needs the `ROHP` preamble. LZ4 is the off-by-default `lz4` feature of `rohi-logging`; the log has no reader for older formats.
+
+The connectivity core is transport-neutral: `rohi-connectivity` stores opaque endpoint URIs (at most 64 bytes) and never depends on a transport crate; `rohi-connectivity-http` (`http://`) and `rohi-connectivity-meshtastic` (`meshtastic+uart://!xxxxxxxx`) implement `PacketTransport` and `EndpointPolicy`, composed statically with `Mux` by the firmware. Every route change is checked with the policy of the build before it is stored, and a stored route a build cannot deliver stays untouched and is repaired by removing it. The `meshtastic` service (`rohi-meshtastic`) owns the one UART session of the radio; the UART port and pins are chosen by the board HAL, never by configuration or by an endpoint, and UART0 is not shared with the log (`esp-println` `jtag-serial`). A status or action name over 24 bytes (an issue name, for example) or an enum over 9 variants fails the firmware build, not the unit tests of a crate: build a `Statuses` registry in a test.
 
 ## Logging
 

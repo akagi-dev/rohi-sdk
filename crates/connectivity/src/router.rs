@@ -72,7 +72,7 @@ pub const AUTHORIZATION_BACKOFF_MS: u64 = 10 * 60_000;
 pub struct RouteCounters {
     /// Packets queued for delivery.
     pub published: u32,
-    /// Packets acknowledged with `202`.
+    /// Packets acknowledged by a path ([`AckKind`](crate::AckKind) says what that promises).
     pub delivered: u32,
     /// Failed delivery attempts.
     pub retries: u32,
@@ -84,6 +84,8 @@ pub struct RouteCounters {
     pub pool_exhausted: u32,
     /// Packets dropped by a permanent rejection.
     pub rejected: u32,
+    /// Packets dropped because no path of the route can carry them.
+    pub incompatible: u32,
     /// Queued packets dropped because the policy or the fallback changed.
     pub invalidated: u32,
 }
@@ -154,6 +156,10 @@ impl Path {
 }
 
 struct Runtime<const DEPTH: usize> {
+    // Paths this route has: the primary, and the fallback when it has one.
+    path_count: usize,
+    // Bit `p`: path `p` cannot carry the packet at the head of the outbox.
+    incompatible: u8,
     generation: u32,
     destinations: u32,
     interval_s: u32,
@@ -163,6 +169,24 @@ struct Runtime<const DEPTH: usize> {
     counters: RouteCounters,
     profile_ok: bool,
     failed_before_delivery: bool,
+}
+
+impl<const DEPTH: usize> Runtime<DEPTH> {
+    // A path that can carry the head packet: it is not cooling down and has not
+    // declared the packet incompatible. The primary is preferred.
+    fn usable_path(&self, now: MonotonicTimestamp) -> Option<usize> {
+        (0..self.path_count)
+            .find(|p| self.paths[*p].blocked_until <= now && self.incompatible & (1 << p) == 0)
+    }
+
+    // The paths that could still carry the head packet.
+    fn candidates(&self) -> impl Iterator<Item = &Path> {
+        self.paths[..self.path_count]
+            .iter()
+            .enumerate()
+            .filter(|(p, _)| self.incompatible & (1 << p) == 0)
+            .map(|(_, path)| path)
+    }
 }
 
 /// A read-only view of the runtime of one route, for status.
@@ -225,6 +249,7 @@ impl<const R: usize, const DEPTH: usize, const SLOTS: usize, const BYTES: usize>
 
     fn drop_queue(pool: &mut PacketPool<SLOTS, BYTES>, runtime: &mut Runtime<DEPTH>) -> u32 {
         let mut dropped = 0;
+        runtime.incompatible = 0;
         while let Some(handle) = runtime.outbox.pop_front() {
             pool.release(handle);
             dropped += 1;
@@ -274,6 +299,7 @@ impl<const R: usize, const DEPTH: usize, const SLOTS: usize, const BYTES: usize>
                         runtime.counters.invalidated += Self::drop_queue(&mut self.pool, runtime);
                         runtime.paths = [Path::new(); PATHS];
                         runtime.destinations = route.destinations;
+                        runtime.path_count = path_count(route.fallback.is_some());
                     }
                     if runtime.interval_s != route.interval_s {
                         runtime.interval_s = route.interval_s;
@@ -286,6 +312,8 @@ impl<const R: usize, const DEPTH: usize, const SLOTS: usize, const BYTES: usize>
                 }
                 None => {
                     *slot = Some(Runtime {
+                        path_count: path_count(route.fallback.is_some()),
+                        incompatible: 0,
                         generation: route.generation,
                         destinations: route.destinations,
                         interval_s: route.interval_s,
@@ -363,8 +391,7 @@ impl<const R: usize, const DEPTH: usize, const SLOTS: usize, const BYTES: usize>
             if route.generation != runtime.generation {
                 continue;
             }
-            let paths = path_count(route.fallback.is_some());
-            if let Some(path) = (0..paths).find(|p| runtime.paths[*p].blocked_until <= now) {
+            if let Some(path) = runtime.usable_path(now) {
                 return Some(Delivery {
                     route: index,
                     generation: runtime.generation,
@@ -409,6 +436,7 @@ impl<const R: usize, const DEPTH: usize, const SLOTS: usize, const BYTES: usize>
                 runtime.failed_before_delivery = false;
                 runtime.counters.delivered += 1;
                 runtime.outbox.pop_front();
+                runtime.incompatible = 0;
                 self.pool.release(delivery.packet);
             }
             Err(error) => match error.disposition() {
@@ -416,7 +444,21 @@ impl<const R: usize, const DEPTH: usize, const SLOTS: usize, const BYTES: usize>
                     runtime.counters.rejected += 1;
                     runtime.failed_before_delivery = false;
                     runtime.outbox.pop_front();
+                    runtime.incompatible = 0;
                     self.pool.release(delivery.packet);
+                }
+                Disposition::Incompatible => {
+                    runtime.incompatible |= 1 << delivery.path;
+                    let all = (1u8 << runtime.path_count) - 1;
+                    if runtime.incompatible & all == all {
+                        // No path can carry it: the packet ends here, once, and later
+                        // packets start with every path open.
+                        runtime.counters.incompatible += 1;
+                        runtime.failed_before_delivery = false;
+                        runtime.incompatible = 0;
+                        runtime.outbox.pop_front();
+                        self.pool.release(delivery.packet);
+                    }
                 }
                 Disposition::Unauthorized => {
                     runtime.counters.retries += 1;
@@ -438,6 +480,8 @@ impl<const R: usize, const DEPTH: usize, const SLOTS: usize, const BYTES: usize>
     /// packets and routes are untouched.
     pub fn invalidate(&mut self, is_current: impl Fn(&ProfileStamp) -> bool) {
         for runtime in self.routes.iter_mut().flatten() {
+            let head = runtime.outbox.front().copied();
+            let mut head_discarded = false;
             let mut kept: Deque<PacketHandle, DEPTH> = Deque::new();
             while let Some(handle) = runtime.outbox.pop_front() {
                 let current = self
@@ -447,9 +491,13 @@ impl<const R: usize, const DEPTH: usize, const SLOTS: usize, const BYTES: usize>
                 if current {
                     let _ = kept.push_back(handle);
                 } else {
+                    head_discarded |= Some(handle) == head;
                     self.pool.release(handle);
                     runtime.counters.invalidated += 1;
                 }
+            }
+            if head_discarded {
+                runtime.incompatible = 0;
             }
             runtime.outbox = kept;
         }
@@ -469,40 +517,29 @@ impl<const R: usize, const DEPTH: usize, const SLOTS: usize, const BYTES: usize>
 
     /// The earliest moment something becomes due: a publication, or a cooling
     /// path of a route with queued packets. `None` when nothing is scheduled.
-    pub fn next_wakeup(&self, config: &Routes<R>) -> Option<MonotonicTimestamp> {
+    pub fn next_wakeup(&self, _config: &Routes<R>) -> Option<MonotonicTimestamp> {
         let mut earliest: Option<MonotonicTimestamp> = None;
         let mut consider = |at: MonotonicTimestamp| {
             earliest = Some(earliest.map_or(at, |current| current.min(at)));
         };
-        for (index, runtime) in self.routes.iter().enumerate() {
-            let Some(runtime) = runtime else { continue };
+        for runtime in self.routes.iter().flatten() {
             if runtime.profile_ok {
                 consider(runtime.next_publish_at);
             }
-            if !runtime.outbox.is_empty() {
-                let paths = path_count(
-                    config
-                        .get(index)
-                        .is_some_and(|route| route.fallback.is_some()),
-                );
-                if let Some(at) = runtime.paths[..paths].iter().map(|p| p.blocked_until).min() {
-                    consider(at);
-                }
+            if !runtime.outbox.is_empty()
+                && let Some(at) = runtime.candidates().map(|p| p.blocked_until).min()
+            {
+                consider(at);
             }
         }
         earliest
     }
 
     /// The runtime state of every slot: `None` for a slot without a route.
-    pub fn views(&self, config: &Routes<R>, now: MonotonicTimestamp) -> [Option<RouteView>; R] {
+    pub fn views(&self, _config: &Routes<R>, now: MonotonicTimestamp) -> [Option<RouteView>; R] {
         core::array::from_fn(|index| {
             let runtime = self.runtime(index)?;
-            let paths = path_count(
-                config
-                    .get(index)
-                    .is_some_and(|route| route.fallback.is_some()),
-            );
-            let active = (0..paths).find(|p| runtime.paths[*p].blocked_until <= now);
+            let active = runtime.usable_path(now);
             let state = if !runtime.profile_ok {
                 RouteState::ProfileMissing
             } else if runtime.outbox.is_empty() {

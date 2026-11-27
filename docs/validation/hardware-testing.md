@@ -84,6 +84,22 @@ here together with the final `WIRELESS_HEAP_SIZE`.
 
 The hardware checklist (provision, reboot, erase, re-provision) is in the [`rohi-identity` rustdoc](https://docs.rs/rohi-identity) (see also [Device identity](https://docs.rs/rohi-identity)); its results are not yet recorded.
 
+## Meshtastic radio over UART
+
+**No hardware run is recorded.** Run on both ESP32-C3 and ESP32-C6 with a Meshtastic radio whose Serial module is in
+`PROTO` mode (build with `--features meshtastic-uart`, see [Meshtastic radio over UART](../guides/meshtastic.md)):
+
+1. Boot; the radio answers and `rohi status meshtastic` shows its `node_id` and `firmware_version`.
+2. `rohi action meshtastic send to=<second node> text=...`; the second node receives the text.
+3. `rohi action meshtastic inbox` shows the routing ACK, and an incoming text after the second node replies.
+4. Restart the radio; the session recovers by itself (`reconnects` grows, health returns to `ok`).
+5. `rohi action meshtastic reconnect` resynchronizes without rebooting the ESP32.
+6. Unplug the radio; sensors, Wi-Fi and the control plane keep working, `rohi status meshtastic` reports the issue.
+7. Plug it back; normal operation resumes.
+8. Telemetry: a route with `meshtastic+uart://!<gateway>` and an HTTP fallback delivers one SINGLE and one FRAGMENT packet
+   to a `robins edge` gateway and receives the routing ACK of every fragment.
+9. Pins: confirm the C3 GPIO21/GPIO20 and the C6 GPIO22/GPIO20 directions and that the log reaches USB Serial/JTAG.
+
 ## BLE control
 
 **First hardware data point** (96 KiB heap, Wi-Fi + BLE running, chip not recorded): 14 656 B free, 11 120 B minimum

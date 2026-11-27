@@ -22,8 +22,9 @@ use embedded_hal_async::delay::DelayNs;
 use rohi_net::NetworkHandle;
 use rohi_net::testing::FakeIp;
 
+use rohi_connectivity::Disposition;
+
 use super::*;
-use crate::Disposition;
 
 const SERVER: IpAddr = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7));
 const HOST: &str = "ingress.test";
@@ -71,6 +72,15 @@ async fn server(ip: &Ip, port: u16, expected: usize, response: &[u8]) -> std::ve
     received
 }
 
+const ACCEPTED: TransportAck = TransportAck {
+    kind: AckKind::Accepted,
+    detail: 202,
+};
+
+fn uri_of(endpoint: Endpoint<'_>) -> std::string::String {
+    std::format!("http://{}:{}", endpoint.host, endpoint.port)
+}
+
 fn endpoint(port: u16) -> Endpoint<'static> {
     Endpoint { host: HOST, port }
 }
@@ -84,7 +94,7 @@ fn exchange(
     let head = request_head(endpoint, frame.len(), None).unwrap();
     let mut transport = HttpTransport::new(NetworkHandle::new(ip), NeverDelay);
     let (result, received) = block_on(join(
-        transport.deliver(endpoint, &frame),
+        transport.deliver(&uri_of(endpoint), &frame),
         server(ip, endpoint.port, head.len() + frame.len(), response),
     ));
     let mut expected = std::vec::Vec::from(head.as_bytes());
@@ -116,7 +126,7 @@ fn accepted_frame_is_sent_byte_for_byte_and_acknowledged() {
         endpoint(80),
         b"HTTP/1.1 202 Accepted\r\nContent-Length: 8\r\n\r\naccepted",
     );
-    assert_eq!(result, Ok(TransportAck { status: 202 }));
+    assert_eq!(result, Ok(ACCEPTED));
     assert_eq!(ip.open_connections(), 0, "the connection slot is released");
 }
 
@@ -124,7 +134,7 @@ fn accepted_frame_is_sent_byte_for_byte_and_acknowledged() {
 fn a_non_default_port_is_connected_to() {
     let ip = ip();
     let (result, _) = exchange(&ip, endpoint(8080), b"HTTP/1.1 202 Accepted\r\n\r\n");
-    assert_eq!(result, Ok(TransportAck { status: 202 }));
+    assert_eq!(result, Ok(ACCEPTED));
 }
 
 #[test]
@@ -168,7 +178,7 @@ fn an_ip_literal_needs_no_dns() {
 
 fn send_with<D: DelayNs>(ip: &Ip, delay: D) -> Result<TransportAck, TransportError> {
     let mut transport = HttpTransport::new(NetworkHandle::new(ip), delay);
-    block_on(transport.deliver(endpoint(80), &frame()))
+    block_on(transport.deliver(&uri_of(endpoint(80)), &frame()))
 }
 
 #[test]
@@ -212,7 +222,7 @@ fn closing_before_a_response_is_a_retryable_io_error() {
     let head = request_head(endpoint, frame.len(), None).unwrap();
     let mut transport = HttpTransport::new(NetworkHandle::new(&ip), NeverDelay);
     let (result, _) = block_on(join(
-        transport.deliver(endpoint, &frame),
+        transport.deliver(&uri_of(endpoint), &frame),
         server(&ip, 80, head.len() + frame.len(), b""),
     ));
     assert_eq!(result, Err(TransportError::Io));
@@ -263,7 +273,7 @@ fn user_agent_is_sent_and_leaves_the_rest_unchanged() {
     let mut transport =
         HttpTransport::new(NetworkHandle::new(&ip), NeverDelay).with_user_agent(agent);
     let (result, received) = block_on(join(
-        transport.deliver(endpoint(80), &frame),
+        transport.deliver(&uri_of(endpoint(80)), &frame),
         server(
             &ip,
             80,
@@ -271,14 +281,14 @@ fn user_agent_is_sent_and_leaves_the_rest_unchanged() {
             b"HTTP/1.1 202 Accepted\r\n\r\n",
         ),
     ));
-    assert_eq!(result, Ok(TransportAck { status: 202 }));
+    assert_eq!(result, Ok(ACCEPTED));
     assert!(received.starts_with(head.as_bytes()));
     assert!(received.ends_with(&frame));
 }
 
 #[test]
 fn longest_user_agent_fits_next_to_the_longest_endpoint() {
-    let host = "h".repeat(crate::endpoint::MAX_ENDPOINT_LEN - "http://".len());
+    let host = "h".repeat(rohi_connectivity::MAX_ENDPOINT_LEN - "http://".len());
     let endpoint = Endpoint {
         host: &host,
         port: 65535,
@@ -299,4 +309,21 @@ fn unfit_user_agents_are_refused() {
         request_head(endpoint(80), 1, Some("a\r\nX: b")),
         Err(TransportError::BadResponse)
     );
+}
+
+#[test]
+fn a_uri_this_transport_cannot_serve_fails_before_any_io() {
+    let ip = ip();
+    let mut transport = HttpTransport::new(NetworkHandle::new(&ip), NeverDelay);
+    for uri in [
+        "https://ingress.test",
+        "http://ingress.test/x",
+        "meshtastic+uart://!deadbeef",
+    ] {
+        let result = block_on(transport.deliver(uri, &frame()));
+        assert_eq!(result, Err(TransportError::Unsupported), "{uri}");
+        assert_eq!(result.unwrap_err().disposition(), Disposition::Incompatible);
+    }
+    assert_eq!(ip.dns_queries(), 0);
+    assert!(transport.handles("http") && !transport.handles("https"));
 }

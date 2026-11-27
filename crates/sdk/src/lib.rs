@@ -56,7 +56,10 @@
 //! | `host-ble` | `host::ble` | BlueZ BLE peripheral of `rohi-net-std` (Linux) | `host`, `ble` |
 //! | `sim` | `sim` | `rohi-sim`: simulated world for `std` applications | `host`, `hal`, `config` |
 //! | `sim-sensors` | `sim::sensors` | simulated sensor drivers of `rohi-sim` | `sim` |
-//! | `connectivity` | `connectivity` | `rohi-connectivity`: routes, fallback delivery and packet export | `telemetry`, `net`, `time` |
+//! | `connectivity` | `connectivity` | `rohi-connectivity`: routes, fallback delivery, transport-neutral core and packet export | `telemetry`, `time` |
+//! | `connectivity-http` | `connectivity_http` | `rohi-connectivity-http`: HTTP delivery and `http://` endpoint policy | `connectivity`, `net` |
+//! | `meshtastic` | `meshtastic` | `rohi-meshtastic`: the `meshtastic` service, UART session and radio link | `service`, `config`, `time` |
+//! | `connectivity-meshtastic` | `connectivity_meshtastic` | `rohi-connectivity-meshtastic`: Meshtastic Transport v1 delivery and `meshtastic+uart://` policy | `connectivity`, `meshtastic` |
 //! | `embassy-time` | `time::EmbassyClock` | the `embassy-time` clock of `rohi-time` | `time` |
 //! | `esp` | `esp::{hal, config, net}` | `rohi-hal-esp`, `rohi-config-esp`, `rohi-net-esp` | `hal`, `config`, `net` |
 //! | `esp32c3`, `esp32c6` | | chip selection of the `esp` crates | `esp` |
@@ -198,7 +201,7 @@
 //! | [`rohi-crash-esp`](../rohi_crash_esp/index.html) | ESP32-C3 and ESP32-C6 panic path: RTC fast memory slot, handler body, watchdog fallback, software reset | ESP | `on_panic`, `init`, `report`, `pending`, `acknowledge` | `rohi-crash`, `esp-hal`, `esp-backtrace`, `esp-println` | Persisting the record to the log (the firmware does it with `rohi-logging`) |
 //! | [`rohi-logging`](../rohi_logging/index.html) | Persistent logging: the `log` sink, segment format, flash ring storage over any `Medium`, `LoggingConfig` and the `logging` service | portable | `LogSink`, `LogRecord`, `LogLevel`, `LogClock`, `Logging`, `LoggingService`, `LoggingConfig`, `LogStorage`, `RingStorage` | `rohi-config`, `rohi-service`, `rohi-time`, Embassy sync, `log` | The flash driver, an SD backend |
 //! | [`rohi-telemetry-robonomics`](../rohi_telemetry_robonomics::wire/index.html) | Bounded bindings of `airalab/connectivity-protocol` (vendored, pinned revision) | portable | `core_v1`, `crypto_v1`, `device_v1`, `sensor_v1`, `limits` | `micropb` | Signing, mapping, transports |
-//! | [`rohi-connectivity`](../rohi_connectivity/index.html) | Delivery of sealed telemetry packets: per-route publication, ordered fallback endpoints, bounded outboxes over a packet pool, HTTP transport, packet export, the `connectivity` service | portable | `Router`, `Publisher`, `PacketProvider`, `PacketTransport`, `HttpTransport`, `ConnectivityService`, `ConnectivitySection` | `rohi-telemetry`, `rohi-net`, `rohi-time`, `rohi-config`, `rohi-service` | Packet contents, keys, sensors, protocol messages |
+//! | [`rohi-connectivity`](../rohi_connectivity/index.html) | Delivery of sealed telemetry packets: per-route publication, ordered fallback endpoints, bounded outboxes over a packet pool, the transport contract and static `Mux`, endpoint policy, packet export, the `connectivity` service | portable | `Router`, `Publisher`, `PacketProvider`, `PacketTransport`, `EndpointPolicy`, `Mux`, `ConnectivityService`, `ConnectivitySection` | `rohi-telemetry`, `rohi-time`, `rohi-config`, `rohi-service` | Packet contents, keys, sensors, protocol messages |
 //! | [`rohi-telemetry`](../rohi_telemetry/index.html) | Source-independent telemetry: observations, measurement catalog, packet profiles, public and private sections, the `telemetry` service | portable | `TelemetrySource`, `TelemetrySnapshot`, `PacketProfile`, `PacketFormat`, `TelemetryService` | `rohi-time`, `rohi-config`, `rohi-service` | Transports, protobuf, physical drivers |
 //! | [`rohi-telemetry-robonomics`](../rohi_telemetry_robonomics/index.html) | The Robonomics Connectivity Protocol as a packet format: vendored schema, recipient encryption, signed envelope | portable | `RobonomicsFormat`, `wire` | `rohi-telemetry`, `rohi-identity`, `micropb` | Routes, HTTP, sensors |
 //! | [`rohi-net-esp`](../rohi_net_esp/index.html) | ESP backend of `rohi-net` | ESP | `EspWireless`, `EspWifi`, `EspIp`, `EspBle`, `NetResources`, `BleResources`, `wireless_heap!` | `rohi-net`, `esp-radio`, `embassy-net`, TrouBLE | Product resource sizes, control protocol |
@@ -242,7 +245,7 @@
 //! rohi-telemetry ──► rohi-time, rohi-config, rohi-service (adapters: rohi-sensors, rohi-location)
 //! rohi-telemetry-robonomics ──► rohi-telemetry, rohi-identity, rohi-time
 //!                                             (the format; telemetry never depends on it)
-//! rohi-connectivity ──► rohi-telemetry, rohi-net, rohi-time, rohi-config, rohi-service
+//! rohi-connectivity ──► rohi-telemetry, rohi-time, rohi-config, rohi-service
 //!                                             (routes and delivery of sealed packets; no protocol, keys or sensors)
 //!
 //! rohi-control-ble ──► rohi-control ──► rohi-control-proto
@@ -292,6 +295,12 @@ pub use rohi_config as config;
 #[cfg(feature = "connectivity")]
 #[cfg_attr(docsrs, doc(cfg(feature = "connectivity")))]
 pub use rohi_connectivity as connectivity;
+#[cfg(feature = "connectivity-http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "connectivity-http")))]
+pub use rohi_connectivity_http as connectivity_http;
+#[cfg(feature = "connectivity-meshtastic")]
+#[cfg_attr(docsrs, doc(cfg(feature = "connectivity-meshtastic")))]
+pub use rohi_connectivity_meshtastic as connectivity_meshtastic;
 #[cfg(feature = "control")]
 #[cfg_attr(docsrs, doc(cfg(feature = "control")))]
 pub use rohi_control as control;
@@ -313,6 +322,9 @@ pub use rohi_identity as identity;
 #[cfg(feature = "location")]
 #[cfg_attr(docsrs, doc(cfg(feature = "location")))]
 pub use rohi_location as location;
+#[cfg(feature = "meshtastic")]
+#[cfg_attr(docsrs, doc(cfg(feature = "meshtastic")))]
+pub use rohi_meshtastic as meshtastic;
 #[cfg(feature = "sensors")]
 #[cfg_attr(docsrs, doc(cfg(feature = "sensors")))]
 pub use rohi_sensors as sensors;

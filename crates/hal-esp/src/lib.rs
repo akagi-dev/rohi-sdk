@@ -71,12 +71,18 @@
 //!
 //! ```text
 //! let (hardware, runtime) = Hardware::split(peripherals);        // esp-hal Peripherals
+//! #[cfg(feature = "meshtastic-uart")]
+//! let radio_uart = hardware.take_meshtastic_uart();              // radio task
 //! let board = AltruistUrban::new(hardware).expect("board init");  // buses configured
 //! // board.i2c            -> BMP280/BME280 and SCD4x drivers (shared bus)
 //! // board.sds011_uart    -> SDS011 driver
 //! // board.microphone     -> noise driver (AudioSource)
+//! // radio_uart           -> Meshtastic task, independent of sensor setup
 //! // runtime.{timg0, sw_interrupt, wifi, bt, flash} -> esp-rtos, radios, config store
 //! ```
+//! The optional `meshtastic-uart` feature configures UART0 through
+//! `Hardware::take_meshtastic_uart`; take it before `AltruistUrban::new` so a
+//! sensor initialization error cannot prevent the radio task from starting.
 //!
 //! The complete, compiled code is `firmwares/altruist-urban/src/bin/firmware.rs`
 //! (board initialization) and `firmwares/altruist-urban/src/esp/sensors.rs`
@@ -122,8 +128,9 @@
 //!
 //! # API navigation
 //!
-//! * `board::altruist_urban`: `Hardware::split`, `AltruistUrban::new`,
-//!   `AltruistUrban`, `Runtime`, `Error`, `SDS011_BAUD_RATE`; the pin tables.
+//! * `board::altruist_urban`: `Hardware::split`, `Hardware::take_meshtastic_uart`,
+//!   `AltruistUrban::new`, `AltruistUrban`, `Runtime`, `Error`, `SDS011_BAUD_RATE`;
+//!   the pin tables.
 //! * `I2sMicrophone` and `MicrophoneError`: audio source.
 //! * The portable side of each item: [`rohi_hal::sensors`], [`rohi_hal::runtime`].
 //!

@@ -33,6 +33,8 @@
 //! | I2S WS            | GPIO1  |
 //! | I2S BCLK          | GPIO10 |
 //! | I2S DIN           | GPIO11 |
+//! | Meshtastic UART0 TX | GPIO22 |
+//! | Meshtastic UART0 RX | GPIO20 |
 //!
 //! The schematic names the SDS011 nets `PM_TX` (GPIO5) and `PM_RX` (GPIO4)
 //! without stating the viewpoint; they are taken from the ESP32-C6 side.
@@ -41,12 +43,20 @@
 //! select the JTAG signal source and are sampled only when the
 //! `JTAG_SEL_ENABLE` eFuse is burned, so the SDS011 does not affect booting.
 //!
+//! GPIO20 and GPIO22 are the pins the board reserves for the LoRa Meshtastic module (CN4
+//! documentation); they carry UART0 of the radio: TX on GPIO22, RX on GPIO20.
+//! **Unverified on hardware**: the documentation does not say which signal is which, so swap
+//! `meshtastic_tx` / `meshtastic_rx` if the radio stays silent. UART0 is also the ROM boot console
+//! (GPIO16/GPIO17 by default), so the firmware sends its log over USB Serial/JTAG instead
+//! (`esp-println` feature `jtag-serial`).
+//!
 //! Not driven by the firmware: BUTTON (GPIO7), DATALOG LED (GPIO0), USB
 //! D-/D+ (GPIO12/GPIO13) and the CN4 expansion connector (GPIO6, 15, 18, 19,
-//! 21, 23; GPIO20 and GPIO22 are reserved for the LoRa Meshtastic module).
+//! 21, 23).
 
 use esp_hal::peripherals::{
-    DMA_CH0, GPIO1, GPIO2, GPIO3, GPIO4, GPIO5, GPIO10, GPIO11, I2C0, I2S0, Peripherals, UART1,
+    DMA_CH0, GPIO1, GPIO2, GPIO3, GPIO4, GPIO5, GPIO10, GPIO11, GPIO20, GPIO22, I2C0, I2S0,
+    Peripherals, UART0, UART1,
 };
 
 use super::Runtime;
@@ -64,6 +74,12 @@ pub struct Hardware {
     pub(super) i2s_bclk: GPIO10<'static>,
     pub(super) i2s_ws: GPIO1<'static>,
     pub(super) i2s_din: GPIO11<'static>,
+    #[cfg_attr(not(feature = "meshtastic-uart"), allow(dead_code))]
+    pub(super) meshtastic_uart: Option<UART0<'static>>,
+    #[cfg_attr(not(feature = "meshtastic-uart"), allow(dead_code))]
+    pub(super) meshtastic_tx: Option<GPIO22<'static>>,
+    #[cfg_attr(not(feature = "meshtastic-uart"), allow(dead_code))]
+    pub(super) meshtastic_rx: Option<GPIO20<'static>>,
 }
 
 impl Hardware {
@@ -82,6 +98,9 @@ impl Hardware {
                 i2s_bclk: peripherals.GPIO10,
                 i2s_ws: peripherals.GPIO1,
                 i2s_din: peripherals.GPIO11,
+                meshtastic_uart: Some(peripherals.UART0),
+                meshtastic_tx: Some(peripherals.GPIO22),
+                meshtastic_rx: Some(peripherals.GPIO20),
             },
             Runtime {
                 timg0: peripherals.TIMG0,

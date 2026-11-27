@@ -7,7 +7,8 @@ Telemetry has two independent halves that you configure with ordinary Actions of
   one **public section** and at most one recipient-**private section** that is encrypted to a recipient's public key. The
   packet format is fixed (Robonomics); there are no names and no format choice;
 * the **`connectivity` service** owns *where and how often* a profile is delivered: two fixed **route slots**, `0` and
-  `1`. A route has a profile slot, an interval, a primary HTTP endpoint and at most one **fallback** endpoint.
+  `1`. A route has a profile slot, an interval, a primary endpoint (an opaque URI: `http://host[:port]`, or `meshtastic+uart://!xxxxxxxx` in a build with the
+  [Meshtastic backend](meshtastic.md)) and at most one **fallback** endpoint.
 
 Indices are stable: changing or clearing one slot never moves the other. A profile exists without any route (and
 `get_payload` works without a network); a route only references a profile slot. Both profile slots start empty and disclose
@@ -53,7 +54,10 @@ measurements. `all` never includes the position: `location` must be named. Names
   60 s. A fallback is another way to deliver the *same* packet, not another publisher.
 * **Policy changes win.** Changing a profile (or clearing it by a factory reset) invalidates the packets that were built under the old
   policy before anything is sent again.
-* **Delivery.** Only HTTP `202` acknowledges a packet. Failures try the next path at once; `401`/`403` also pause the
+* **Delivery.** An acknowledgement from any path completes a packet: HTTP `202`, or the matching routing ACK of every Meshtastic
+  fragment (which proves the mesh delivered them, not that the gateway accepted the packet). A path that cannot carry
+  *this* packet (too large for the mesh) hands it to the other path without a penalty.
+  For HTTP: Failures try the next path at once; `401`/`403` also pause the
   failing path for ten minutes; `400`/`413` drop the packet without offering it to other endpoints. Retries send
   byte-identical bytes. Delivery is at-least-once, so the ingress deduplicates by the signed envelope.
   Every request carries `User-Agent: <build>`, the `build` of `rohi info`; it is not part of the signed payload.
@@ -65,7 +69,7 @@ measurements. `all` never includes the position: `location` must be named. Names
 * **Limits.** 2 profile slots with 1 private recipient each and 2 route slots with 1 fallback each: these are compile-time
   capacities of the Altruist Urban firmware (the storage is sized for them, a stored table over capacity is refused, not
   truncated, and the `connectivity` status schema has exactly two route slots, with the fields of each slot in the flat status as
-  `route0_*` and `route1_*`). Endpoints are up to 64 bytes, all within
+  `route0_*` and `route1_*`). Endpoints are up to 64 bytes, checked with the schemes the build supports before they are stored, all within
   the 1 KiB persistent section of each service. What the Robonomics format cannot encode (the SCD4x, for example) is not in
   the catalog and is rejected, never published under another name.
 

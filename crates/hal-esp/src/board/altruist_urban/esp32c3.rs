@@ -34,6 +34,13 @@
 //! | I2S BCLK          | GPIO7  |
 //! | I2S WS            | GPIO6  |
 //! | I2S DIN           | GPIO8  |
+//! | Meshtastic UART0 TX | GPIO21 |
+//! | Meshtastic UART0 RX | GPIO20 |
+//!
+//! The Meshtastic radio is on UART0, whose default pins GPIO21 (TX) and GPIO20 (RX) are used.
+//! **Not verified against the board revision**: confirm that both pins are free, reachable and
+//! suitable before claiming hardware support. UART0 is also the ROM boot console, so the firmware
+//! sends its log over USB Serial/JTAG instead (`esp-println` feature `jtag-serial`).
 //!
 //! Altruist Urban C3 board revision: the Urban board built around the
 //! ESP32-C3 module this firmware targets (`riscv32imc-unknown-none-elf`).
@@ -45,7 +52,8 @@
 //! with another pin map must get its own module, not an edit of this table.
 
 use esp_hal::peripherals::{
-    DMA_CH0, GPIO0, GPIO1, GPIO3, GPIO6, GPIO7, GPIO8, GPIO10, I2C0, I2S0, Peripherals, UART1,
+    DMA_CH0, GPIO0, GPIO1, GPIO3, GPIO6, GPIO7, GPIO8, GPIO10, GPIO20, GPIO21, I2C0, I2S0,
+    Peripherals, UART0, UART1,
 };
 
 use super::Runtime;
@@ -63,6 +71,12 @@ pub struct Hardware {
     pub(super) i2s_bclk: GPIO7<'static>,
     pub(super) i2s_ws: GPIO6<'static>,
     pub(super) i2s_din: GPIO8<'static>,
+    #[cfg_attr(not(feature = "meshtastic-uart"), allow(dead_code))]
+    pub(super) meshtastic_uart: Option<UART0<'static>>,
+    #[cfg_attr(not(feature = "meshtastic-uart"), allow(dead_code))]
+    pub(super) meshtastic_tx: Option<GPIO21<'static>>,
+    #[cfg_attr(not(feature = "meshtastic-uart"), allow(dead_code))]
+    pub(super) meshtastic_rx: Option<GPIO20<'static>>,
 }
 
 impl Hardware {
@@ -81,6 +95,9 @@ impl Hardware {
                 i2s_bclk: peripherals.GPIO7,
                 i2s_ws: peripherals.GPIO6,
                 i2s_din: peripherals.GPIO8,
+                meshtastic_uart: Some(peripherals.UART0),
+                meshtastic_tx: Some(peripherals.GPIO21),
+                meshtastic_rx: Some(peripherals.GPIO20),
             },
             Runtime {
                 timg0: peripherals.TIMG0,

@@ -242,10 +242,13 @@ pub struct UrbanServices<B, L> {
     logging: L,
     system: UrbanSystem,
     control: UrbanControl,
+    #[cfg(feature = "meshtastic-uart")]
+    meshtastic: crate::meshtastic::UrbanMeshtastic,
 }
 
 /// The services that report status. The `time` service is the time runtime
 /// itself.
+#[cfg(not(feature = "meshtastic-uart"))]
 pub type UrbanStatusServices<B, L> = (
     &'static UrbanWireless<B>,
     &'static UrbanConnectivity,
@@ -259,10 +262,27 @@ pub type UrbanStatusServices<B, L> = (
     &'static UrbanControl,
 );
 
+/// The services that report status, with the `meshtastic` service of the UART radio.
+#[cfg(feature = "meshtastic-uart")]
+pub type UrbanStatusServices<B, L> = (
+    &'static UrbanWireless<B>,
+    &'static UrbanConnectivity,
+    &'static UrbanLocation,
+    &'static time::Time,
+    &'static UrbanSensors,
+    &'static UrbanIdentity,
+    &'static UrbanTelemetry,
+    &'static L,
+    &'static UrbanSystem,
+    &'static UrbanControl,
+    &'static crate::meshtastic::UrbanMeshtastic,
+);
+
 /// The status registry of the device.
 pub type UrbanStatuses<B, L> = Statuses<RawMutex, UrbanStatusServices<B, L>>;
 
 /// The services that offer actions.
+#[cfg(not(feature = "meshtastic-uart"))]
 pub type UrbanActions<B, L> = (
     &'static UrbanWireless<B>,
     &'static UrbanIdentity,
@@ -271,6 +291,19 @@ pub type UrbanActions<B, L> = (
     &'static L,
     &'static UrbanSystem,
     &'static UrbanControl,
+);
+
+/// The services that offer actions, with the `meshtastic` service of the UART radio.
+#[cfg(feature = "meshtastic-uart")]
+pub type UrbanActions<B, L> = (
+    &'static UrbanWireless<B>,
+    &'static UrbanIdentity,
+    &'static UrbanTelemetry,
+    &'static UrbanConnectivity,
+    &'static L,
+    &'static UrbanSystem,
+    &'static UrbanControl,
+    &'static crate::meshtastic::UrbanMeshtastic,
 );
 
 /// The control backend of the Altruist Urban over the BLE probe `B` of the
@@ -368,32 +401,15 @@ where
             boot_report,
         }),
         control: ControlService::new(&ACCESS, StoredPsk(config)),
+        #[cfg(feature = "meshtastic-uart")]
+        meshtastic: crate::meshtastic::service(),
     });
     Device::new(
         info,
         uptime_ms,
         storage_config,
-        Statuses::new((
-            &services.wireless,
-            &services.connectivity,
-            &services.location,
-            time::service(),
-            &services.sensors,
-            &services.identity,
-            &services.telemetry,
-            &services.logging,
-            &services.system,
-            &services.control,
-        )),
-        (
-            &services.wireless,
-            &services.identity,
-            &services.telemetry,
-            &services.connectivity,
-            &services.logging,
-            &services.system,
-            &services.control,
-        ),
+        Statuses::new(status_services(services)),
+        action_services(services),
     )
 }
 
@@ -418,4 +434,39 @@ pub const BLE_CONFIG: rohi_sdk::net::BleConfig = rohi_sdk::net::BleConfig {
 /// pairing and without link encryption in this build.
 pub fn ble_config() -> rohi_sdk::net::BleConfig {
     BLE_CONFIG.with_settings(&crate::bindings::ble_settings())
+}
+
+fn status_services<B: BleProbe + 'static, L: Status + Action + 'static>(
+    services: &'static UrbanServices<B, L>,
+) -> UrbanStatusServices<B, L> {
+    (
+        &services.wireless,
+        &services.connectivity,
+        &services.location,
+        time::service(),
+        &services.sensors,
+        &services.identity,
+        &services.telemetry,
+        &services.logging,
+        &services.system,
+        &services.control,
+        #[cfg(feature = "meshtastic-uart")]
+        &services.meshtastic,
+    )
+}
+
+fn action_services<B: BleProbe + 'static, L: Status + Action + 'static>(
+    services: &'static UrbanServices<B, L>,
+) -> UrbanActions<B, L> {
+    (
+        &services.wireless,
+        &services.identity,
+        &services.telemetry,
+        &services.connectivity,
+        &services.logging,
+        &services.system,
+        &services.control,
+        #[cfg(feature = "meshtastic-uart")]
+        &services.meshtastic,
+    )
 }

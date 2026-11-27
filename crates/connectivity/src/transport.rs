@@ -18,50 +18,78 @@
 //! Transport abstraction and error classification.
 //!
 //! A [`PacketTransport`] sends the exact bytes of a sealed packet to one
-//! endpoint and reports an acknowledgement or a classified error. It never
-//! sees decoded content, so it cannot change what was signed.
-//! [`HttpTransport`](crate::HttpTransport) is the implementation shipped.
+//! endpoint, named by its opaque URI, and reports an acknowledgement or a
+//! classified error. It never sees decoded content, so it cannot change what
+//! was signed. The implementations live in their own crates
+//! (`rohi-connectivity-http`, `rohi-connectivity-meshtastic`) and are composed
+//! statically by the firmware with [`Mux`](crate::Mux).
 //!
 //! ```
-//! use rohi_connectivity::{Endpoint, PacketTransport, TransportAck, TransportError};
+//! use rohi_connectivity::{AckKind, PacketTransport, TransportAck, TransportError};
 //!
 //! /// Accepts every packet and counts the bytes it was given.
 //! struct Sink(usize);
 //!
 //! impl PacketTransport for Sink {
+//!     fn handles(&self, scheme: &str) -> bool {
+//!         scheme == "sink"
+//!     }
+//!
 //!     async fn deliver(
 //!         &mut self,
-//!         _endpoint: Endpoint<'_>,
+//!         _endpoint_uri: &str,
 //!         packet: &[u8],
 //!     ) -> Result<TransportAck, TransportError> {
 //!         self.0 += packet.len();
-//!         Ok(TransportAck { status: 202 })
+//!         Ok(TransportAck { kind: AckKind::Accepted, detail: 0 })
 //!     }
 //! }
 //! ```
 //!
+//! # What an acknowledgement means
+//!
+//! A route is complete for a packet when **any** path acknowledges it, but the
+//! paths do not promise the same thing, so [`TransportAck::kind`] says which:
+//!
+//! | [`AckKind`] | Meaning |
+//! |-------------|---------|
+//! | [`Accepted`](AckKind::Accepted) | the ingress itself accepted the packet (HTTP `202`) |
+//! | [`Relayed`](AckKind::Relayed) | the network delivered it to the next hop and said so (Meshtastic routing ACK of every fragment); it does **not** prove that the gateway reassembled, validated or published it |
+//!
+//! `delivered` counts both. Delivery is at-least-once either way.
+//!
 //! # Error classification
 //!
-//! Centralized in [`TransportError::disposition`] and [`classify_status`]:
+//! A [`TransportError`] carries its own [`Disposition`], decided by the
+//! transport that knows its protocol:
 //!
-//! | Result | Disposition |
-//! |--------|-------------|
-//! | `202 Accepted` | delivered: the logical route is complete for this packet |
-//! | network unavailable, DNS, connect, timeout, I/O error, malformed response | [`Transient`](Disposition::Transient): try the next path, retry later with backoff |
-//! | `408`, `429`, `5xx` | transient |
-//! | `1xx`, `3xx`, `2xx` other than `202` (captive portal, proxy) | transient (not an acknowledgement) |
-//! | `401`, `403` | [`Unauthorized`](Disposition::Unauthorized): try the next path, and the failing path pauses for the long authorization backoff |
-//! | `400`, `413`, any other `4xx` | [`Permanent`](Disposition::Permanent): the packet is dropped and is **not** offered to other endpoints |
+//! | Disposition | What the publisher does |
+//! |-------------|-------------------------|
+//! | [`Transient`](Disposition::Transient) | try the next path now, retry this one later with backoff |
+//! | [`Unauthorized`](Disposition::Unauthorized) | try the next path, pause this one for the long authorization backoff |
+//! | [`Permanent`](Disposition::Permanent) | the packet can never be accepted: drop it, do **not** offer it to other paths |
+//! | [`Incompatible`](Disposition::Incompatible) | this path cannot carry **this** packet (too large for the link, unsupported scheme): try the other path; when every path is incompatible the packet is dropped and counted. Never affects later packets and never backs the path off |
 
 use core::fmt;
 
-use crate::endpoint::Endpoint;
+/// What the acknowledgement of a delivery promises.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AckKind {
+    /// The ingress accepted the packet.
+    Accepted,
+    /// The network confirmed delivery to the next hop, without an
+    /// application-level receipt.
+    Relayed,
+}
 
-/// The ingress accepted the packet.
+/// A packet was acknowledged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TransportAck {
-    /// Transport specific status (the HTTP status code for HTTP).
-    pub status: u16,
+    /// What the acknowledgement promises.
+    pub kind: AckKind,
+    /// A transport specific number for diagnostics: the HTTP status code, the
+    /// number of acknowledged fragments.
+    pub detail: u16,
 }
 
 /// A packet could not be delivered.
@@ -69,18 +97,31 @@ pub struct TransportAck {
 pub enum TransportError {
     /// The network cannot carry traffic right now.
     NetworkUnavailable,
+    /// The local link to the radio or modem is not ready.
+    LinkUnavailable,
     /// Name resolution failed.
     Dns,
     /// The connection could not be established.
     Connect,
     /// The exchange took too long.
     Timeout,
-    /// The connection failed or closed before a response was received.
+    /// The connection or link failed or closed before an answer was received.
     Io,
-    /// The response is not a valid HTTP response.
+    /// The answer is not valid for the protocol.
     BadResponse,
-    /// The ingress answered with a status that is not an acceptance.
-    Status(u16),
+    /// The far side or the network refused the packet: a transport specific
+    /// `code` (an HTTP status, a routing error) and what to do about it.
+    Rejected {
+        /// The transport specific code, for diagnostics.
+        code: u16,
+        /// How the failure is handled.
+        disposition: Disposition,
+    },
+    /// This path cannot carry this packet, for example it exceeds the size
+    /// limit of the link.
+    Incompatible,
+    /// No backend of this build handles the scheme of the endpoint.
+    Unsupported,
 }
 
 /// What the publisher does after a failed delivery attempt.
@@ -96,6 +137,10 @@ pub enum Disposition {
     /// the next path, but the failing path pauses for the longest backoff, a
     /// quick retry cannot help and must not turn into a hot loop.
     Unauthorized,
+    /// This path cannot carry this packet: try the other path. The path is
+    /// not penalized and later packets use it normally; a packet that no path
+    /// can carry is dropped and counted.
+    Incompatible,
 }
 
 impl TransportError {
@@ -105,57 +150,22 @@ impl TransportError {
     /// use rohi_connectivity::{Disposition, TransportError};
     ///
     /// assert_eq!(TransportError::Timeout.disposition(), Disposition::Transient);
-    /// assert_eq!(TransportError::Status(503).disposition(), Disposition::Transient);
-    /// // Not an acceptance (a captive portal answers 200): the packet is kept.
-    /// assert_eq!(TransportError::Status(200).disposition(), Disposition::Transient);
-    /// assert_eq!(TransportError::Status(401).disposition(), Disposition::Unauthorized);
-    /// assert_eq!(TransportError::Status(413).disposition(), Disposition::Permanent);
+    /// assert_eq!(TransportError::Incompatible.disposition(), Disposition::Incompatible);
+    /// let refused = TransportError::Rejected { code: 413, disposition: Disposition::Permanent };
+    /// assert_eq!(refused.disposition(), Disposition::Permanent);
     /// ```
     pub const fn disposition(self) -> Disposition {
         match self {
             Self::NetworkUnavailable
+            | Self::LinkUnavailable
             | Self::Dns
             | Self::Connect
             | Self::Timeout
             | Self::Io
             | Self::BadResponse => Disposition::Transient,
-            Self::Status(status) => classify_status_code(status),
+            Self::Rejected { disposition, .. } => disposition,
+            Self::Incompatible | Self::Unsupported => Disposition::Incompatible,
         }
-    }
-}
-
-const fn classify_status_code(status: u16) -> Disposition {
-    match status {
-        // Request timeout, throttling and server failures are transient.
-        408 | 429 | 500..=599 => Disposition::Transient,
-        401 | 403 => Disposition::Unauthorized,
-        // Malformed (400), too large (413) and every other client error.
-        400..=499 => Disposition::Permanent,
-        // Informational, redirects and 2xx other than 202 (a captive portal,
-        // a proxy) are not an acceptance: keep the packet.
-        _ => Disposition::Transient,
-    }
-}
-
-/// Maps an HTTP status code to the delivery result: only `202 Accepted`
-/// commits the packet.
-///
-/// # Errors
-///
-/// [`TransportError::Status`] for every status other than `202`; its
-/// [`disposition`](TransportError::disposition) says what to do with it.
-///
-/// ```
-/// use rohi_connectivity::{TransportAck, TransportError, classify_status};
-///
-/// assert_eq!(classify_status(202), Ok(TransportAck { status: 202 }));
-/// assert_eq!(classify_status(200), Err(TransportError::Status(200)));
-/// ```
-pub const fn classify_status(status: u16) -> Result<TransportAck, TransportError> {
-    if status == 202 {
-        Ok(TransportAck { status })
-    } else {
-        Err(TransportError::Status(status))
     }
 }
 
@@ -163,12 +173,15 @@ impl fmt::Display for TransportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NetworkUnavailable => f.write_str("network unavailable"),
+            Self::LinkUnavailable => f.write_str("link unavailable"),
             Self::Dns => f.write_str("DNS lookup failed"),
             Self::Connect => f.write_str("connection failed"),
             Self::Timeout => f.write_str("timeout"),
             Self::Io => f.write_str("connection error"),
             Self::BadResponse => f.write_str("malformed response"),
-            Self::Status(status) => write!(f, "rejected with status {status}"),
+            Self::Rejected { code, .. } => write!(f, "rejected with code {code}"),
+            Self::Incompatible => f.write_str("packet not carried by this path"),
+            Self::Unsupported => f.write_str("unsupported endpoint scheme"),
         }
     }
 }
@@ -177,13 +190,19 @@ impl core::error::Error for TransportError {}
 
 /// Delivers sealed packets to an endpoint.
 ///
-/// Implementations send exactly the bytes they are given.
+/// Implementations send exactly the bytes they are given and parse the
+/// endpoint themselves, before any I/O.
 #[allow(async_fn_in_trait)]
 pub trait PacketTransport {
-    /// Sends `packet` to `endpoint` and waits for the acknowledgement.
+    /// Whether this transport delivers to endpoints of `scheme` (the text
+    /// before `://`); a [`Mux`](crate::Mux) dispatches on it.
+    fn handles(&self, scheme: &str) -> bool;
+
+    /// Sends `packet` to the endpoint `endpoint_uri` and waits for the
+    /// acknowledgement.
     ///
     /// Cancellation: safe at any point; the packet is not modified, so it can
-    /// be sent again (the ingress may or may not have received the cancelled
+    /// be sent again (the receiver may or may not have received the cancelled
     /// attempt, delivery is at-least-once).
     ///
     /// # Errors
@@ -193,7 +212,7 @@ pub trait PacketTransport {
     /// ([`TransportAck`]) completes the packet.
     async fn deliver(
         &mut self,
-        endpoint: Endpoint<'_>,
+        endpoint_uri: &str,
         packet: &[u8],
     ) -> Result<TransportAck, TransportError>;
 }
